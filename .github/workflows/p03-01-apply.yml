@@ -1,0 +1,53 @@
+name: p03-01-apply
+
+on:
+  push:
+    branches:
+      - codex/p03-01-expression-router
+    paths:
+      - .github/workflows/p03-01-apply.yml
+      - tools/apply_p03_01_patch.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply exact-mode integration patch
+        run: python tools/apply_p03_01_patch.py
+
+      - name: Install development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Compile changed runtime
+        run: python -m py_compile letter_triage.py local_server.py
+
+      - name: Run focused routing and HTTP tests
+        run: >-
+          python -m pytest -q
+          tests/http/test_letter_triage_portable.py
+          tests/http/test_reply_delay_and_media.py
+          tests/persona/test_reply_pipeline.py
+
+      - name: Check patch whitespace
+        run: git diff --check --exit-code
+
+      - name: Commit generated integration change
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add local_server.py
+          git commit -m "feat(reply): route exact expression modes end to end"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
