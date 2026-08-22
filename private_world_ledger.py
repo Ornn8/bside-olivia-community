@@ -14,6 +14,7 @@ from typing import Iterator
 from private_world_port import (
     ContinuationAwareness,
     HomeAccess,
+    LocalContinuationFact,
     PrivateWorldCharacterView,
     PrivateWorldControlView,
     PrivateWorldSnapshot,
@@ -37,45 +38,74 @@ class LedgerEvent:
 
     def __post_init__(self) -> None:
         if any(
-            not isinstance(value, str) or not _ID_RE.fullmatch(value)
-            for value in (self.event_id, self.delivery_id, self.event_type)
+            not isinstance(value, str)
+            or not _ID_RE.fullmatch(value)
+            for value in (
+                self.event_id,
+                self.delivery_id,
+                self.event_type,
+            )
         ):
             raise ValueError("event identifiers are invalid")
         if not isinstance(self.payload, dict):
             raise ValueError("event payload must be an object")
         try:
             encoded = json.dumps(
-                self.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                self.payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             )
         except (TypeError, ValueError) as exc:
-            raise ValueError("event payload must be JSON serializable") from exc
+            raise ValueError(
+                "event payload must be JSON serializable"
+            ) from exc
         if len(encoded.encode("utf-8")) > 8192:
             raise ValueError("event payload is too large")
         try:
-            timestamp = datetime.fromisoformat(self.occurred_at.replace("Z", "+00:00"))
+            timestamp = datetime.fromisoformat(
+                self.occurred_at.replace("Z", "+00:00")
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError("event timestamp is invalid") from exc
-        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-            raise ValueError("event timestamp must be timezone-aware")
+        if (
+            timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+        ):
+            raise ValueError(
+                "event timestamp must be timezone-aware"
+            )
 
     def _payload_json(self) -> str:
         return json.dumps(
-            self.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            self.payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
 
 
 class SQLitePrivateWorldLedger:
     def __init__(self, database_path: Path) -> None:
         path = Path(database_path)
-        if str(path) in {"", "."} or path.exists() and path.is_dir():
-            raise ValueError("an explicit database file path is required")
+        if (
+            str(path) in {"", "."}
+            or path.exists()
+            and path.is_dir()
+        ):
+            raise ValueError(
+                "an explicit database file path is required"
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         self._database_path = path
         self._initialize()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._database_path, timeout=5)
+        connection = sqlite3.connect(
+            self._database_path,
+            timeout=5,
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             with connection:
@@ -103,17 +133,27 @@ class SQLitePrivateWorldLedger:
                 """
             )
 
-    def apply_once(self, event: LedgerEvent, snapshot: PrivateWorldSnapshot) -> bool:
+    def apply_once(
+        self,
+        event: LedgerEvent,
+        snapshot: PrivateWorldSnapshot,
+    ) -> bool:
         if not isinstance(event, LedgerEvent) or not isinstance(
-            snapshot, PrivateWorldSnapshot
+            snapshot,
+            PrivateWorldSnapshot,
         ):
-            raise TypeError("apply_once requires a typed event and snapshot")
+            raise TypeError(
+                "apply_once requires a typed event and snapshot"
+            )
         try:
             with self._connection() as connection:
                 duplicate = connection.execute(
                     """SELECT 1 FROM private_world_events
                        WHERE event_id = ? OR delivery_id = ? LIMIT 1""",
-                    (event.event_id, event.delivery_id),
+                    (
+                        event.event_id,
+                        event.delivery_id,
+                    ),
                 ).fetchone()
                 if duplicate:
                     return False
@@ -122,7 +162,10 @@ class SQLitePrivateWorldLedger:
                        ORDER BY version DESC LIMIT 1"""
                 ).fetchone()
                 snapshot_json = json.dumps(
-                    snapshot.to_dict(), sort_keys=True, separators=(",", ":")
+                    snapshot.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
                 )
                 if latest is None:
                     write_snapshot = snapshot.version in {1, 2}
@@ -133,11 +176,16 @@ class SQLitePrivateWorldLedger:
                         )
                     write_snapshot = False
                 else:
-                    write_snapshot = snapshot.version == latest[0] + 1
+                    write_snapshot = (
+                        snapshot.version == latest[0] + 1
+                    )
                 if not write_snapshot and (
-                    latest is None or snapshot.version != latest[0]
+                    latest is None
+                    or snapshot.version != latest[0]
                 ):
-                    raise LedgerWriteError("snapshot version is not contiguous")
+                    raise LedgerWriteError(
+                        "snapshot version is not contiguous"
+                    )
                 connection.execute(
                     """INSERT INTO private_world_events
                        (event_id, delivery_id, event_type, payload_json, occurred_at)
@@ -154,10 +202,16 @@ class SQLitePrivateWorldLedger:
                     connection.execute(
                         """INSERT INTO private_world_snapshots
                            (version, payload_json, event_id) VALUES (?, ?, ?)""",
-                        (snapshot.version, snapshot_json, event.event_id),
+                        (
+                            snapshot.version,
+                            snapshot_json,
+                            event.event_id,
+                        ),
                     )
         except sqlite3.Error as exc:
-            raise LedgerWriteError("private world transaction failed") from exc
+            raise LedgerWriteError(
+                "private world transaction failed"
+            ) from exc
         return True
 
     def events(self) -> tuple[LedgerEvent, ...]:
@@ -167,7 +221,13 @@ class SQLitePrivateWorldLedger:
                    FROM private_world_events ORDER BY rowid"""
             ).fetchall()
         return tuple(
-            LedgerEvent(row[0], row[1], row[2], json.loads(row[3]), row[4])
+            LedgerEvent(
+                row[0],
+                row[1],
+                row[2],
+                json.loads(row[3]),
+                row[4],
+            )
             for row in rows
         )
 
@@ -180,6 +240,19 @@ class SQLitePrivateWorldLedger:
         if row is None:
             return PrivateWorldSnapshot()
         payload = json.loads(row[0])
+        continuation_facts = tuple(
+            LocalContinuationFact(
+                fact_id=item["fact_id"],
+                statement=item["statement"],
+                awareness=ContinuationAwareness(
+                    item["awareness"]
+                ),
+            )
+            for item in payload.get(
+                "continuation_facts",
+                (),
+            )
+        )
         return PrivateWorldSnapshot(
             version=payload["version"],
             familiarity=payload["familiarity"],
@@ -187,12 +260,19 @@ class SQLitePrivateWorldLedger:
             comfort=payload["comfort"],
             closeness=payload["closeness"],
             tension=payload["tension"],
-            relationship_stage=payload["relationship_stage"],
-            nickname_permissions=tuple(payload["nickname_permissions"]),
-            home_access=HomeAccess(payload["home_access"]),
+            relationship_stage=payload[
+                "relationship_stage"
+            ],
+            nickname_permissions=tuple(
+                payload["nickname_permissions"]
+            ),
+            home_access=HomeAccess(
+                payload["home_access"]
+            ),
             continuation_awareness=ContinuationAwareness(
                 payload["continuation_awareness"]
             ),
+            continuation_facts=continuation_facts,
         )
 
     def control_view(self) -> PrivateWorldControlView:

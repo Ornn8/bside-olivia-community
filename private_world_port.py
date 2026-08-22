@@ -1,4 +1,4 @@
-"""Provider-free contracts for private relationship state."""
+"""Provider-free contracts for private relationship and local-continuation state."""
 
 from __future__ import annotations
 
@@ -34,11 +34,78 @@ def _validate_score(name: str, value: int) -> None:
         raise PrivateWorldError(f"{name} must be an integer from 0 to 100")
 
 
-def _validate_tokens(values: tuple[str, ...]) -> None:
-    if len(values) > 16 or len(set(values)) != len(values):
+def _plain_text(value: object, *, field_name: str, max_length: int) -> str:
+    if not isinstance(value, str):
+        raise PrivateWorldError(f"{field_name} must be text")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > max_length
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise PrivateWorldError(f"{field_name} is invalid")
+    return normalized
+
+
+def _validate_nicknames(values: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise PrivateWorldError("nickname permissions must be a sequence")
+    if not isinstance(values, tuple):
+        values = tuple(values)
+    normalized = tuple(
+        _plain_text(value, field_name="nickname", max_length=32) for value in values
+    )
+    if any(any(character.isspace() for character in value) for value in normalized):
+        raise PrivateWorldError("nickname permissions cannot contain whitespace")
+    if len(normalized) > 16 or len(set(normalized)) != len(normalized):
         raise PrivateWorldError("nickname permissions must be unique and bounded")
-    if any(not isinstance(value, str) or not _TOKEN_RE.fullmatch(value) for value in values):
-        raise PrivateWorldError("nickname permission is invalid")
+    return normalized
+
+
+@dataclass(frozen=True)
+class LocalContinuationFact:
+    fact_id: str
+    statement: str
+    awareness: ContinuationAwareness = ContinuationAwareness.PENDING
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fact_id, str) or not _TOKEN_RE.fullmatch(self.fact_id):
+            raise PrivateWorldError("continuation fact id is invalid")
+        object.__setattr__(
+            self,
+            "statement",
+            _plain_text(
+                self.statement,
+                field_name="continuation statement",
+                max_length=600,
+            ),
+        )
+        if not isinstance(self.awareness, ContinuationAwareness):
+            raise PrivateWorldError("continuation awareness is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "fact_id": self.fact_id,
+            "statement": self.statement,
+            "awareness": self.awareness.value,
+        }
+
+
+def _validate_facts(
+    values: tuple[LocalContinuationFact, ...],
+) -> tuple[LocalContinuationFact, ...]:
+    if isinstance(values, (str, bytes)):
+        raise PrivateWorldError("continuation facts must be a sequence")
+    if not isinstance(values, tuple):
+        values = tuple(values)
+    if len(values) > 32 or any(
+        not isinstance(value, LocalContinuationFact) for value in values
+    ):
+        raise PrivateWorldError("continuation facts must be typed and bounded")
+    identifiers = tuple(value.fact_id for value in values)
+    if len(set(identifiers)) != len(identifiers):
+        raise PrivateWorldError("continuation fact ids must be unique")
+    return values
 
 
 def _validate_shared(
@@ -46,16 +113,19 @@ def _validate_shared(
     nickname_permissions: tuple[str, ...],
     home_access: HomeAccess,
     continuation_awareness: ContinuationAwareness,
-) -> None:
+    continuation_facts: tuple[LocalContinuationFact, ...],
+) -> tuple[tuple[str, ...], tuple[LocalContinuationFact, ...]]:
     if not isinstance(relationship_stage, str) or not _TOKEN_RE.fullmatch(
         relationship_stage
     ):
         raise PrivateWorldError("relationship stage is invalid")
-    _validate_tokens(nickname_permissions)
+    nicknames = _validate_nicknames(nickname_permissions)
+    facts = _validate_facts(continuation_facts)
     if not isinstance(home_access, HomeAccess):
         raise PrivateWorldError("home access is invalid")
     if not isinstance(continuation_awareness, ContinuationAwareness):
         raise PrivateWorldError("continuation awareness is invalid")
+    return nicknames, facts
 
 
 @dataclass(frozen=True)
@@ -69,16 +139,20 @@ class PrivateWorldControlView:
     nickname_permissions: tuple[str, ...]
     home_access: HomeAccess
     continuation_awareness: ContinuationAwareness
+    continuation_facts: tuple[LocalContinuationFact, ...] = ()
 
     def __post_init__(self) -> None:
         for name in _HIDDEN_NAMES:
             _validate_score(name, getattr(self, name))
-        _validate_shared(
+        nicknames, facts = _validate_shared(
             self.relationship_stage,
             self.nickname_permissions,
             self.home_access,
             self.continuation_awareness,
+            self.continuation_facts,
         )
+        object.__setattr__(self, "nickname_permissions", nicknames)
+        object.__setattr__(self, "continuation_facts", facts)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -88,6 +162,9 @@ class PrivateWorldControlView:
             "nickname_permissions": list(self.nickname_permissions),
             "home_access": self.home_access.value,
             "continuation_awareness": self.continuation_awareness.value,
+            "continuation_facts": [
+                fact.to_dict() for fact in self.continuation_facts
+            ],
         }
 
 
@@ -95,24 +172,44 @@ class PrivateWorldControlView:
 class PrivateWorldCharacterView:
     relationship_stage: str
     nickname_permissions: tuple[str, ...]
-    home_access: HomeAccess
-    continuation_awareness: ContinuationAwareness
+    home_history_allowed: bool
+    continuation_known: bool
+    continuation_facts: tuple[LocalContinuationFact, ...] = ()
 
     def __post_init__(self) -> None:
-        _validate_shared(
-            self.relationship_stage,
-            self.nickname_permissions,
-            self.home_access,
-            self.continuation_awareness,
+        if not isinstance(self.relationship_stage, str) or not _TOKEN_RE.fullmatch(
+            self.relationship_stage
+        ):
+            raise PrivateWorldError("relationship stage is invalid")
+        object.__setattr__(
+            self,
+            "nickname_permissions",
+            _validate_nicknames(self.nickname_permissions),
         )
+        if type(self.home_history_allowed) is not bool:
+            raise PrivateWorldError("home history permission must be boolean")
+        if type(self.continuation_known) is not bool:
+            raise PrivateWorldError("continuation known must be boolean")
+        facts = _validate_facts(self.continuation_facts)
+        if any(
+            fact.awareness is not ContinuationAwareness.CHARACTER_KNOWN
+            for fact in facts
+        ):
+            raise PrivateWorldError(
+                "character view may contain only character-known continuation facts"
+            )
+        object.__setattr__(self, "continuation_facts", facts)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "view": "character",
             "relationship_stage": self.relationship_stage,
             "nickname_permissions": list(self.nickname_permissions),
-            "home_access": self.home_access.value,
-            "continuation_awareness": self.continuation_awareness.value,
+            "home_history_allowed": self.home_history_allowed,
+            "continuation_known": self.continuation_known,
+            "continuation_facts": [
+                fact.to_dict() for fact in self.continuation_facts
+            ],
         }
 
 
@@ -128,20 +225,22 @@ class PrivateWorldSnapshot:
     nickname_permissions: tuple[str, ...] = ()
     home_access: HomeAccess = HomeAccess.NO_ACCESS
     continuation_awareness: ContinuationAwareness = ContinuationAwareness.CONTROL_ONLY
+    continuation_facts: tuple[LocalContinuationFact, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version < 1:
             raise PrivateWorldError("snapshot version must be positive")
         for name in _HIDDEN_NAMES:
             _validate_score(name, getattr(self, name))
-        if not isinstance(self.nickname_permissions, tuple):
-            object.__setattr__(self, "nickname_permissions", tuple(self.nickname_permissions))
-        _validate_shared(
+        nicknames, facts = _validate_shared(
             self.relationship_stage,
             self.nickname_permissions,
             self.home_access,
             self.continuation_awareness,
+            self.continuation_facts,
         )
+        object.__setattr__(self, "nickname_permissions", nicknames)
+        object.__setattr__(self, "continuation_facts", facts)
 
     def control_view(self) -> PrivateWorldControlView:
         return PrivateWorldControlView(
@@ -150,14 +249,26 @@ class PrivateWorldSnapshot:
             self.nickname_permissions,
             self.home_access,
             self.continuation_awareness,
+            self.continuation_facts,
         )
 
     def character_view(self) -> PrivateWorldCharacterView:
+        known_facts = tuple(
+            fact
+            for fact in self.continuation_facts
+            if fact.awareness is ContinuationAwareness.CHARACTER_KNOWN
+        )
+        continuation_known = (
+            self.continuation_awareness
+            is ContinuationAwareness.CHARACTER_KNOWN
+            or bool(known_facts)
+        )
         return PrivateWorldCharacterView(
             self.relationship_stage,
             self.nickname_permissions,
-            self.home_access,
-            self.continuation_awareness,
+            self.home_access is not HomeAccess.NO_ACCESS,
+            continuation_known,
+            known_facts,
         )
 
     def to_dict(self) -> dict[str, object]:
