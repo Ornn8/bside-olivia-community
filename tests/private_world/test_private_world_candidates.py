@@ -171,7 +171,7 @@ def test_store_requires_an_initialized_private_world_ledger(
     sqlite3.connect(unrelated).close()
     with pytest.raises(
         PrivateWorldCandidateError,
-        match="PRIVATE_WORLD_CANDIDATE_LEDGER_REQUIRED",
+        match="PRIVATE_WORLD_CANDIDATE_STORAGE_UNAVAILABLE",
     ):
         SQLitePrivateWorldCandidateStore(unrelated)
 
