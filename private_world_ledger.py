@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -18,6 +18,13 @@ from private_world_port import (
     PrivateWorldCharacterView,
     PrivateWorldControlView,
     PrivateWorldSnapshot,
+)
+
+
+PRIVATE_WORLD_LEDGER_SCHEMA_VERSION = 2
+_METADATA_KEY = "schema_version"
+_LEGACY_TABLES = frozenset(
+    {"private_world_events", "private_world_snapshots"}
 )
 
 
@@ -98,7 +105,16 @@ class SQLitePrivateWorldLedger:
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         self._database_path = path
+        self._migration_status = "unknown"
         self._initialize()
+
+    @property
+    def schema_version(self) -> int:
+        return PRIVATE_WORLD_LEDGER_SCHEMA_VERSION
+
+    @property
+    def migration_status(self) -> str:
+        return self._migration_status
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -113,25 +129,127 @@ class SQLitePrivateWorldLedger:
         finally:
             connection.close()
 
+    def _existing_schema_version(self) -> int:
+        if (
+            not self._database_path.is_file()
+            or self._database_path.stat().st_size == 0
+        ):
+            return 0
+        try:
+            with closing(
+                sqlite3.connect(
+                    self._database_path,
+                    timeout=5,
+                )
+            ) as connection:
+                rows = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+                tables = {str(row[0]) for row in rows}
+                if not tables:
+                    return 0
+                if "private_world_metadata" in tables:
+                    row = connection.execute(
+                        "SELECT value FROM private_world_metadata WHERE key = ?",
+                        (_METADATA_KEY,),
+                    ).fetchone()
+                    if row is None:
+                        raise LedgerWriteError(
+                            "private world schema metadata is incomplete"
+                        )
+                    try:
+                        return int(row[0])
+                    except (TypeError, ValueError) as exc:
+                        raise LedgerWriteError(
+                            "private world schema metadata is invalid"
+                        ) from exc
+                if _LEGACY_TABLES.issubset(tables):
+                    return 1
+                raise LedgerWriteError(
+                    "private world schema is unrecognized"
+                )
+        except sqlite3.Error as exc:
+            raise LedgerWriteError(
+                "private world schema inspection failed"
+            ) from exc
+
+    def _backup_legacy_database(self) -> None:
+        stamp = datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%S%fZ"
+        )
+        backup = self._database_path.with_name(
+            f"{self._database_path.name}.pre-v2-{stamp}.bak"
+        )
+        try:
+            with closing(
+                sqlite3.connect(
+                    self._database_path,
+                    timeout=5,
+                )
+            ) as source, closing(
+                sqlite3.connect(
+                    backup,
+                    timeout=5,
+                )
+            ) as destination:
+                source.backup(destination)
+                destination.commit()
+        except sqlite3.Error as exc:
+            backup.unlink(missing_ok=True)
+            raise LedgerWriteError(
+                "private world migration backup failed"
+            ) from exc
+
     def _initialize(self) -> None:
-        with self._connection() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS private_world_events (
-                    event_id TEXT PRIMARY KEY,
-                    delivery_id TEXT NOT NULL UNIQUE,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS private_world_snapshots (
-                    version INTEGER PRIMARY KEY,
-                    payload_json TEXT NOT NULL,
-                    event_id TEXT NOT NULL UNIQUE,
-                    FOREIGN KEY(event_id) REFERENCES private_world_events(event_id)
-                );
-                """
+        previous = self._existing_schema_version()
+        if previous > PRIVATE_WORLD_LEDGER_SCHEMA_VERSION:
+            raise LedgerWriteError(
+                "private world schema is newer than this runtime"
             )
+        if previous == 1:
+            self._backup_legacy_database()
+            self._migration_status = "migrated_v1_to_v2"
+        elif previous == 0:
+            self._migration_status = "created_v2"
+        else:
+            self._migration_status = "current_v2"
+
+        try:
+            with self._connection() as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS private_world_events (
+                        event_id TEXT PRIMARY KEY,
+                        delivery_id TEXT NOT NULL UNIQUE,
+                        event_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        occurred_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS private_world_snapshots (
+                        version INTEGER PRIMARY KEY,
+                        payload_json TEXT NOT NULL,
+                        event_id TEXT NOT NULL UNIQUE,
+                        FOREIGN KEY(event_id) REFERENCES private_world_events(event_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS private_world_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                    """
+                )
+                connection.execute(
+                    """INSERT INTO private_world_metadata (key, value)
+                       VALUES (?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                    (
+                        _METADATA_KEY,
+                        str(PRIVATE_WORLD_LEDGER_SCHEMA_VERSION),
+                    ),
+                )
+        except sqlite3.Error as exc:
+            raise LedgerWriteError(
+                "private world schema initialization failed"
+            ) from exc
 
     def apply_once(
         self,

@@ -105,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
             "OLIVIA_PROJECT_ROOT": str(root / "app"),
             "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
             "OLIVIA_MEMORY_ROOT": str(data_root / "memory"),
+            "OLIVIA_PRIVATE_WORLD_ENABLED": "1",
+            "OLIVIA_PRIVATE_WORLD_DB": str(
+                data_root / "private_world" / "private_world.sqlite3"
+            ),
             "OLIVIA_REPLY_DELAY_ENABLED": "1",
             "OLIVIA_REPLY_DELAY_MINUTES_MIN": "5",
             "OLIVIA_REPLY_DELAY_MINUTES_MAX": "10",
