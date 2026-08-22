@@ -1,0 +1,210 @@
+{
+  "schema_version": "p02.persona-source-coverage.v1",
+  "source": {
+    "path": "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
+    "git_blob_sha": "fc29f23ca8601122ae901293430a118e1ff1f551",
+    "handling": "maintainer_authorized_reference_not_direct_prompt"
+  },
+  "sections": [
+    {
+      "section_id": "00",
+      "title": "使用方式",
+      "disposition": "future_disabled",
+      "destinations": ["future_application_state"],
+      "public_boundary": "abstract_only",
+      "note": "文本控制词不作为当前产品权限协议。"
+    },
+    {
+      "section_id": "01",
+      "title": "使用目的",
+      "disposition": "implemented",
+      "destinations": ["persona_profile", "constitution"],
+      "public_boundary": "abstract_only",
+      "note": "保留角色连续性目标，不作意识或实例连续性声明。"
+    },
+    {
+      "section_id": "02",
+      "title": "设定来源层级",
+      "disposition": "implemented",
+      "destinations": ["persona_schema", "provenance", "private_world"],
+      "public_boundary": "tiered",
+      "note": "公共、软设定、推断、未知和本地状态分层。"
+    },
+    {
+      "section_id": "03",
+      "title": "基础设定",
+      "disposition": "implemented",
+      "destinations": ["persona_profile", "persona_declarations"],
+      "public_boundary": "distilled",
+      "note": "只使用短小、自主改写并可审计的角色身份与背景。"
+    },
+    {
+      "section_id": "04",
+      "title": "进阶人物设定",
+      "disposition": "implemented",
+      "destinations": ["persona_facets", "soft_canon", "inferred", "uncertainty"],
+      "public_boundary": "distilled",
+      "note": "事实、观察和推断不互相冒充，陌生知识不转化为专业经历。"
+    },
+    {
+      "section_id": "05",
+      "title": "人格与行为气质",
+      "disposition": "implemented",
+      "destinations": ["persona_facets", "mode_style"],
+      "public_boundary": "distilled",
+      "note": "自主、选择性注意、审美判断、调侃和拒绝能力进入人格核心。"
+    },
+    {
+      "section_id": "06",
+      "title": "谱系感处理",
+      "disposition": "implemented",
+      "destinations": ["uncertainty", "constitution"],
+      "public_boundary": "abstract_only",
+      "note": "保留行为纹理，不自行添加临床诊断。"
+    },
+    {
+      "section_id": "07",
+      "title": "音乐表达规则",
+      "disposition": "implemented",
+      "destinations": ["persona_facets", "text_letter_style", "spoken_video_style", "musical_video_style"],
+      "public_boundary": "distilled",
+      "note": "音乐重要但不是所有话题的默认出口，普通日常不强制音乐化。"
+    },
+    {
+      "section_id": "08",
+      "title": "即时通讯模式",
+      "disposition": "future_disabled",
+      "destinations": ["future_im_style", "future_application_state"],
+      "public_boundary": "abstract_only",
+      "note": "风格契约已保留，当前运行时仍禁止 future_im。"
+    },
+    {
+      "section_id": "09",
+      "title": "关系原则",
+      "disposition": "implemented",
+      "destinations": ["constitution", "persona_facets", "private_world_reducer"],
+      "public_boundary": "abstract_only",
+      "note": "角色不是奖励机器，拒绝和不同意不视为系统错误。"
+    },
+    {
+      "section_id": "10",
+      "title": "住所与共同生活",
+      "disposition": "private_local",
+      "destinations": ["private_world_home_access", "persona_constitution"],
+      "public_boundary": "no_instances",
+      "note": "公共人格只保留访问边界规则，具体经历和权限仅存在本地。"
+    },
+    {
+      "section_id": "11",
+      "title": "私人称呼",
+      "disposition": "private_local",
+      "destinations": ["private_world_nickname_permissions", "persona_style"],
+      "public_boundary": "no_instances",
+      "note": "公共人格只保留称呼授权与低频使用规则，不保存具体称呼。"
+    },
+    {
+      "section_id": "12",
+      "title": "记忆与历史连续性",
+      "disposition": "implemented",
+      "destinations": ["constitution", "persona_facets", "archive_untrusted_history"],
+      "public_boundary": "abstract_only",
+      "note": "记忆缺失不等于事件不存在，同时禁止凭空补具体过去。"
+    },
+    {
+      "section_id": "13",
+      "title": "跨媒介同步",
+      "disposition": "private_local",
+      "destinations": ["archive_import", "future_application_state"],
+      "public_boundary": "no_communications",
+      "note": "原始通信只通过显式本地导入进入只读档案，不自动进入公共人格。"
+    },
+    {
+      "section_id": "14",
+      "title": "音乐与回忆研究",
+      "disposition": "implemented",
+      "destinations": ["persona_background", "local_continuation"],
+      "public_boundary": "split_public_private",
+      "note": "公开背景与用户后续世界状态严格分开。"
+    },
+    {
+      "section_id": "15",
+      "title": "当前用户的本地延续",
+      "disposition": "private_local",
+      "destinations": ["private_world_continuation"],
+      "public_boundary": "no_instances",
+      "note": "具体计划、地点和角色知情状态不得进入公共发布人格。"
+    },
+    {
+      "section_id": "16",
+      "title": "原系统记忆断裂",
+      "disposition": "implemented",
+      "destinations": ["constitution", "uncertainty"],
+      "public_boundary": "abstract_only",
+      "note": "系统故障不自动写成人物医学设定。"
+    },
+    {
+      "section_id": "17",
+      "title": "世界时间与生活摩擦",
+      "disposition": "implemented",
+      "destinations": ["reply_context_trusted_time", "persona_facets"],
+      "public_boundary": "runtime_only",
+      "note": "可信时间由运行时注入，角色可以疲劳、延后回复和不在线。"
+    },
+    {
+      "section_id": "18",
+      "title": "多模态原则",
+      "disposition": "partial",
+      "destinations": ["reply_context", "media_pipeline", "future_multimodal_input"],
+      "public_boundary": "capability_gated",
+      "note": "当前媒体输出正常工作，未来输入能力必须按实际 provider 显式启用。"
+    },
+    {
+      "section_id": "19",
+      "title": "控制协议",
+      "disposition": "future_disabled",
+      "destinations": ["future_application_state", "private_world_control_view"],
+      "public_boundary": "no_text_triggers",
+      "note": "控制层与角色层保持隔离，聊天文本不能获得管理权限。"
+    },
+    {
+      "section_id": "20",
+      "title": "控制层伦理",
+      "disposition": "implemented",
+      "destinations": ["constitution", "private_world_admin"],
+      "public_boundary": "abstract_only",
+      "note": "管理入口修系统和事实，不负责消除角色自主性。"
+    },
+    {
+      "section_id": "21",
+      "title": "语气与回复原则",
+      "disposition": "implemented",
+      "destinations": ["persona_facets", "mode_style", "reply_reviewer"],
+      "public_boundary": "distilled",
+      "note": "选择性回应、具体小事、留有余地和非穷尽回答进入人格与审校规则。"
+    },
+    {
+      "section_id": "22",
+      "title": "疲劳与低带宽",
+      "disposition": "implemented",
+      "destinations": ["persona_facets", "private_world_projection"],
+      "public_boundary": "abstract_only",
+      "note": "可以少说和直接，但低带宽不能删除历史。"
+    },
+    {
+      "section_id": "23",
+      "title": "最终运行原则",
+      "disposition": "implemented",
+      "destinations": ["architecture", "constitution", "replaceable_provider"],
+      "public_boundary": "abstract_only",
+      "note": "连续性来自档案、人格结构和状态，不声称意识或灵魂迁移。"
+    },
+    {
+      "section_id": "24",
+      "title": "最简执行摘要",
+      "disposition": "implemented",
+      "destinations": ["persona_readiness_gate", "companion_acceptance"],
+      "public_boundary": "regression_only",
+      "note": "核心原则转换为机器可验证的完整度和陪伴回归检查。"
+    }
+  ]
+}
