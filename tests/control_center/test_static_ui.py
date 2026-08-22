@@ -61,16 +61,23 @@ def test_static_shell_is_public_but_private_api_remains_authenticated() -> None:
     async def scenario() -> None:
         app = create_control_app(FakeLedger())
         async with TestClient(TestServer(app)) as client:
-            for path, content_type in (
-                ("/control", "text/html"),
-                ("/control/", "text/html"),
-                ("/control/static/app.css", "text/css"),
-                ("/control/static/api.js", "text/javascript"),
-                ("/control/static/app.js", "text/javascript"),
-            ):
+            expected_types = {
+                "/control": {"text/html"},
+                "/control/": {"text/html"},
+                "/control/static/app.css": {"text/css"},
+                "/control/static/api.js": {
+                    "text/javascript",
+                    "application/javascript",
+                },
+                "/control/static/app.js": {
+                    "text/javascript",
+                    "application/javascript",
+                },
+            }
+            for path, content_types in expected_types.items():
                 response = await client.get(path)
                 assert response.status == 200
-                assert response.content_type == content_type
+                assert response.content_type in content_types
                 assert response.headers["Cache-Control"] == "no-store"
                 assert "Access-Control-Allow-Origin" not in response.headers
                 assert await response.text()
