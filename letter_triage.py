@@ -150,14 +150,15 @@ class RoutingContext:
     current_music_work: tuple[str, ...] = ()
 
     def to_model_dict(self) -> dict[str, object]:
+        current_work: list[str] = []
+        for item in self.current_music_work[:_MAX_CONTEXT_ITEMS]:
+            cleaned = _clean_context_text(item)
+            if cleaned:
+                current_work.append(cleaned)
         return {
             "spoken_video_available": bool(self.spoken_video_available),
             "musical_video_available": bool(self.musical_video_available),
-            "current_music_work": [
-                _clean_context_text(item)
-                for item in self.current_music_work[:_MAX_CONTEXT_ITEMS]
-                if _clean_context_text(item)
-            ],
+            "current_music_work": current_work,
         }
 
 
@@ -284,15 +285,12 @@ def _validated_result(
         return None
 
     if mode == "text_letter":
-        if explicit_request and disposition not in {"discuss", "refuse", "defer"}:
-            return None
         if (
             role in _ACTIVE_MUSIC_ROLES
-            and disposition not in {"refuse", "defer"}
-            and context.musical_video_available
-            and not direct
-            and music_better
-            and willing
+            or (
+                explicit_request
+                and disposition not in {"discuss", "refuse", "defer"}
+            )
         ):
             return None
     elif mode == "spoken_video":
