@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p02.private-world.v1",
+  "title": "P02 PrivateWorld views",
+  "oneOf": [
+    {"$ref": "#/$defs/snapshot"},
+    {"$ref": "#/$defs/control"},
+    {"$ref": "#/$defs/character"}
+  ],
+  "$defs": {
+    "token": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$"},
+    "score": {"type": "integer", "minimum": 0, "maximum": 100},
+    "home_access": {"enum": ["no_access", "visit_access", "errand_access", "domestic_access"]},
+    "awareness": {"enum": ["control_only", "character_known", "pending"]},
+    "shared": {
+      "type": "object",
+      "required": ["relationship_stage", "nickname_permissions", "home_access", "continuation_awareness"],
+      "properties": {
+        "relationship_stage": {"$ref": "#/$defs/token"},
+        "nickname_permissions": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/token"}},
+        "home_access": {"$ref": "#/$defs/home_access"},
+        "continuation_awareness": {"$ref": "#/$defs/awareness"}
+      }
+    },
+    "hidden": {
+      "type": "object",
+      "required": ["familiarity", "trust", "comfort", "closeness", "tension"],
+      "properties": {
+        "familiarity": {"$ref": "#/$defs/score"},
+        "trust": {"$ref": "#/$defs/score"},
+        "comfort": {"$ref": "#/$defs/score"},
+        "closeness": {"$ref": "#/$defs/score"},
+        "tension": {"$ref": "#/$defs/score"}
+      }
+    },
+    "control": {
+      "allOf": [
+        {"$ref": "#/$defs/shared"}, {"$ref": "#/$defs/hidden"},
+        {"type": "object", "additionalProperties": false, "required": ["view"], "properties": {
+          "view": {"const": "control"}, "familiarity": {}, "trust": {}, "comfort": {}, "closeness": {}, "tension": {},
+          "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
+        }}
+      ]
+    },
+    "character": {
+      "allOf": [
+        {"$ref": "#/$defs/shared"},
+        {"type": "object", "additionalProperties": false, "required": ["view"], "properties": {
+          "view": {"const": "character"}, "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
+        }}
+      ]
+    },
+    "snapshot": {
+      "allOf": [
+        {"$ref": "#/$defs/shared"}, {"$ref": "#/$defs/hidden"},
+        {"type": "object", "additionalProperties": false, "required": ["view", "version"], "properties": {
+          "view": {"const": "snapshot"}, "version": {"type": "integer", "minimum": 1},
+          "familiarity": {}, "trust": {}, "comfort": {}, "closeness": {}, "tension": {},
+          "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
+        }}
+      ]
+    }
+  }
+}
