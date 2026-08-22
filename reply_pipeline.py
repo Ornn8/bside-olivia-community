@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Any, Mapping, Protocol
 
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
+from reply_model_quality import create_model_quality_ports
 from reply_context import ReplyContext
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from reply_quality_gate import ReviewerPort, RewriterPort, run_reply_quality_gate
+from reply_reviewer import NullReviewer
 
 
 class OrchestratorPort(Protocol):
@@ -48,13 +51,30 @@ class ReplyPipeline:
         rewriter: RewriterPort,
     ) -> None:
         self.orchestrator = orchestrator
-        self.reviewer = reviewer
-        self.rewriter = rewriter
+        runtime_reviewer, runtime_rewriter = create_model_quality_ports(
+            orchestrator
+        )
+        self.reviewer = (
+            runtime_reviewer
+            if isinstance(reviewer, NullReviewer)
+            and runtime_reviewer is not None
+            else reviewer
+        )
+        self.rewriter = (
+            runtime_rewriter
+            if isinstance(rewriter, UnavailableRewriter)
+            and runtime_rewriter is not None
+            else rewriter
+        )
 
     async def run(self, request: object, context: ReplyContext) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
-        prepared = _prepare_generation_request(request, context, self.orchestrator)
+        prepared = _prepare_generation_request(
+            request,
+            context,
+            self.orchestrator,
+        )
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -63,11 +83,13 @@ class ReplyPipeline:
                 error_code=candidate.error_code,
                 retryable=candidate.retryable,
             )
-        gate = run_reply_quality_gate(
+        gate = await asyncio.to_thread(
+            run_reply_quality_gate,
             candidate.text,
             context,
             reviewer=self.reviewer,
             rewriter=self.rewriter,
+            generation_messages=_generation_messages(prepared),
         )
         if not gate.accepted:
             return PipelineResult(
@@ -143,3 +165,11 @@ def _prepare_generation_request(
         history=history,
     ).to_messages()
     return replace(request, content=None, messages=messages)
+
+
+def _generation_messages(
+    request: object,
+) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(request, ReplyRequest) or request.messages is None:
+        return ()
+    return tuple(dict(message) for message in request.messages)
