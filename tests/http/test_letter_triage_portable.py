@@ -88,6 +88,20 @@ def test_explicit_request_can_be_refused_even_if_music_would_add_value():
     assert result.request_disposition == "refuse"
 
 
+def test_text_reply_cannot_claim_it_is_actively_performing():
+    result, _ = _route(
+        reason_code="text_cannot_perform",
+        music_contexts=["explicit_performance_or_adaptation_request"],
+        music_role="performance",
+        music_intent="perform",
+        request_disposition="defer",
+        music_materially_better=True,
+        character_willing=False,
+    )
+    assert result.reply_mode == "text_letter"
+    assert result.status == "unavailable"
+
+
 def test_explicit_request_alone_cannot_trigger_musical_video():
     result, _ = _route(
         mode="musical_video",
