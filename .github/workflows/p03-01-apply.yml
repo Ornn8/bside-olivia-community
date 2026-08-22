@@ -53,7 +53,7 @@ jobs:
           tests/persona/test_reply_pipeline.py
 
       - name: Check patch whitespace
-        run: git diff --check --exit-code
+        run: git diff --check
 
       - name: Commit generated integration change
         shell: bash
