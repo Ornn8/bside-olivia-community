@@ -36,16 +36,31 @@ class PrivateWorldRuntime:
     def public_status(self) -> dict[str, object]:
         """Return status without paths, scores, names, or continuation text."""
 
+        event_count = self.event_count
+        snapshot_count = self.snapshot_count
+        status = self.status
+        reason_code = self.reason_code
+        if status == "available" and isinstance(
+            self.port,
+            SQLitePrivateWorldLedger,
+        ):
+            try:
+                counts = self.port.health()
+                event_count = int(counts["event_count"])
+                snapshot_count = int(counts["snapshot_count"])
+            except (OSError, RuntimeError, ValueError):
+                status = "unavailable"
+                reason_code = "PRIVATE_WORLD_STORAGE_UNAVAILABLE"
         return {
-            "status": self.status,
-            "provider": self.provider,
-            "reason_code": self.reason_code,
+            "status": status,
+            "provider": self.provider if status == "available" else "none",
+            "reason_code": reason_code,
             "enabled": self.enabled,
             "schema_version": self.schema_version,
             "migration_status": self.migration_status,
-            "event_count": self.event_count,
-            "snapshot_count": self.snapshot_count,
-            "probe": "in-process" if self.status == "available" else "not-run",
+            "event_count": event_count,
+            "snapshot_count": snapshot_count,
+            "probe": "in-process" if status == "available" else "not-run",
             "network_called": False,
         }
 
