@@ -152,7 +152,9 @@ class ReplyOrchestrator:
         drain: asyncio.Task[None] | None = None
         if not run._result.done() and not run._run_draining:
             run._run_draining = True
-            drain = asyncio.create_task(self._drain(run), name=f"reply-drain-{request.request_id}")
+            drain = asyncio.create_task(
+                self._drain(run), name=f"reply-drain-{request.request_id}"
+            )
         try:
             return await run.wait()
         except asyncio.CancelledError:
@@ -173,7 +175,14 @@ class ReplyOrchestrator:
             ReplyState.FAILED,
             error_code="IDEMPOTENCY_CONFLICT",
         )
-        self._set_result(run, ReplyResult(run.request.request_id, ReplyState.FAILED, error_code="IDEMPOTENCY_CONFLICT"))
+        self._set_result(
+            run,
+            ReplyResult(
+                run.request.request_id,
+                ReplyState.FAILED,
+                error_code="IDEMPOTENCY_CONFLICT",
+            ),
+        )
 
     async def _execute(self, run: ReplyRun) -> None:
         request = run.request
@@ -181,24 +190,48 @@ class ReplyOrchestrator:
             messages = request.normalized_messages()
         except (ValueError, GatewayError) as exc:
             code = getattr(exc, "code", "INVALID_INPUT")
-            await self._publish(run, ReplyEventType.TERMINAL_ERROR, ReplyState.FAILED, error_code=code)
-            self._set_result(run, ReplyResult(request.request_id, ReplyState.FAILED, error_code=code))
+            await self._publish(
+                run,
+                ReplyEventType.TERMINAL_ERROR,
+                ReplyState.FAILED,
+                error_code=code,
+            )
+            self._set_result(
+                run,
+                ReplyResult(
+                    request.request_id,
+                    ReplyState.FAILED,
+                    error_code=code,
+                ),
+            )
             return
 
+        provider_gateway = _provider_gateway(self.gateway, request)
         try:
-            await self._publish(run, ReplyEventType.REQUEST_ACCEPTED, ReplyState.ACCEPTED)
-            if getattr(self.gateway, "stream_enabled", False):
-                result = await asyncio.wait_for(self._consume_stream(run, messages), self.timeout_seconds)
+            await self._publish(
+                run, ReplyEventType.REQUEST_ACCEPTED, ReplyState.ACCEPTED
+            )
+            if getattr(provider_gateway, "stream_enabled", False):
+                result = await asyncio.wait_for(
+                    self._consume_stream(run, messages, provider_gateway),
+                    self.timeout_seconds,
+                )
             else:
                 response = await asyncio.wait_for(
-                    self.gateway.complete(messages, request_id=request.request_id),
+                    provider_gateway.complete(
+                        messages, request_id=request.request_id
+                    ),
                     self.timeout_seconds,
                 )
                 result = await self._complete_response(run, response)
             self._set_result(run, result)
         except asyncio.CancelledError:
-            await self._publish(run, ReplyEventType.CANCELLED, ReplyState.CANCELLED)
-            self._set_result(run, ReplyResult(request.request_id, ReplyState.CANCELLED))
+            await self._publish(
+                run, ReplyEventType.CANCELLED, ReplyState.CANCELLED
+            )
+            self._set_result(
+                run, ReplyResult(request.request_id, ReplyState.CANCELLED)
+            )
         except asyncio.TimeoutError:
             await self._publish(
                 run,
@@ -209,10 +242,19 @@ class ReplyOrchestrator:
             )
             self._set_result(
                 run,
-                ReplyResult(request.request_id, ReplyState.FAILED, error_code="LLM_TIMEOUT", retryable=True),
+                ReplyResult(
+                    request.request_id,
+                    ReplyState.FAILED,
+                    error_code="LLM_TIMEOUT",
+                    retryable=True,
+                ),
             )
         except GatewayError as exc:
-            event = ReplyEventType.RETRYABLE_ERROR if exc.retryable else ReplyEventType.TERMINAL_ERROR
+            event = (
+                ReplyEventType.RETRYABLE_ERROR
+                if exc.retryable
+                else ReplyEventType.TERMINAL_ERROR
+            )
             await self._publish(
                 run,
                 event,
@@ -222,7 +264,12 @@ class ReplyOrchestrator:
             )
             self._set_result(
                 run,
-                ReplyResult(request.request_id, ReplyState.FAILED, error_code=exc.code, retryable=exc.retryable),
+                ReplyResult(
+                    request.request_id,
+                    ReplyState.FAILED,
+                    error_code=exc.code,
+                    retryable=exc.retryable,
+                ),
             )
         except Exception:
             await self._publish(
@@ -231,9 +278,18 @@ class ReplyOrchestrator:
                 ReplyState.FAILED,
                 error_code="LLM_INTERNAL",
             )
-            self._set_result(run, ReplyResult(request.request_id, ReplyState.FAILED, error_code="LLM_INTERNAL"))
+            self._set_result(
+                run,
+                ReplyResult(
+                    request.request_id,
+                    ReplyState.FAILED,
+                    error_code="LLM_INTERNAL",
+                ),
+            )
 
-    async def _complete_response(self, run: ReplyRun, response: GatewayResponse) -> ReplyResult:
+    async def _complete_response(
+        self, run: ReplyRun, response: GatewayResponse
+    ) -> ReplyResult:
         if not response.text.strip():
             raise GatewayError("PROVIDER_PROTOCOL", retryable=False)
         await self._publish(
@@ -242,15 +298,22 @@ class ReplyOrchestrator:
             ReplyState.COMPLETED,
             text=response.text,
         )
-        return ReplyResult(run.request.request_id, ReplyState.COMPLETED, text=response.text)
+        return ReplyResult(
+            run.request.request_id,
+            ReplyState.COMPLETED,
+            text=response.text,
+        )
 
     async def _consume_stream(
         self,
         run: ReplyRun,
         messages: Sequence[Mapping[str, Any]],
+        gateway: Gateway,
     ) -> ReplyResult:
         chunks: list[str] = []
-        async for delta in self.gateway.stream(messages, request_id=run.request.request_id):
+        async for delta in gateway.stream(
+            messages, request_id=run.request.request_id
+        ):
             if delta.text:
                 chunks.append(delta.text)
                 await self._publish(
@@ -262,8 +325,12 @@ class ReplyOrchestrator:
         text = "".join(chunks).strip()
         if not text:
             raise GatewayError("PROVIDER_PROTOCOL", retryable=False)
-        await self._publish(run, ReplyEventType.COMPLETED, ReplyState.COMPLETED, text=text)
-        return ReplyResult(run.request.request_id, ReplyState.COMPLETED, text=text)
+        await self._publish(
+            run, ReplyEventType.COMPLETED, ReplyState.COMPLETED, text=text
+        )
+        return ReplyResult(
+            run.request.request_id, ReplyState.COMPLETED, text=text
+        )
 
     async def _publish(
         self,
@@ -307,6 +374,18 @@ class ReplyOrchestrator:
     def _set_result(run: ReplyRun, result: ReplyResult) -> None:
         if not run._result.done():
             run._result.set_result(result)
+
+
+def _provider_gateway(gateway: Gateway, request: ReplyRequest) -> Gateway:
+    """Preserve caller-assembled messages when using the local compatibility bridge."""
+
+    if request.messages is None:
+        return gateway
+    adapter = getattr(gateway, "adapter", None)
+    delegate = getattr(adapter, "gateway", None)
+    if delegate is None or not callable(getattr(delegate, "complete", None)):
+        return gateway
+    return delegate
 
 
 def _request_fingerprint(request: ReplyRequest) -> str:
