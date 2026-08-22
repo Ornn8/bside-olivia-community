@@ -9,6 +9,7 @@ from private_world_port import (
     ContinuationAwareness,
     PrivateWorldSnapshot,
 )
+from persona_loader import load_persona
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -128,3 +129,14 @@ def test_gateway_config_parses_v2_feature_flag_and_file() -> None:
 
     assert config.persona_v2_enabled is True
     assert config.persona_v2_file == "synthetic/persona.json"
+
+
+def test_release_defaults_enable_a_ready_public_persona() -> None:
+    config = GatewayConfig()
+
+    assert config.persona_v2_enabled is True
+    assert config.persona_v2_file == "linli_character/persona_release_v2.json"
+    loaded = load_persona(ROOT / config.persona_v2_file)
+    assert loaded.snapshot.status == "READY"
+    assert loaded.snapshot.declarations
+    assert all(row.allowed_public_release for row in loaded.snapshot.declarations)
