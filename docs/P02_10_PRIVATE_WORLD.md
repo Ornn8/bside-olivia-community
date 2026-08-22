@@ -23,6 +23,6 @@ administrator. The character view removes hidden scores, raw home-access
 levels, and every pending/control-only continuation. It exposes only a boolean
 home-history permission and character-known facts.
 
-This module does not persist, call a provider, infer events, render prompts, or
-update relationship values. P02-11 owns persistence and P02-13 owns the
-model-facing projection.
+This module does not persist and does not call a provider. It also does not
+infer events, render prompts, or update relationship values. P02-11 owns
+persistence and P02-13 owns the model-facing projection.
