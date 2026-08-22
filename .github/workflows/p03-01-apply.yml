@@ -7,17 +7,29 @@ on:
     paths:
       - .github/workflows/p03-01-apply.yml
       - tools/apply_p03_01_patch.py
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/p03-01-apply.yml
+      - tools/apply_p03_01_patch.py
+      - letter_triage.py
+      - tests/http/test_letter_triage_portable.py
+      - tests/http/test_reply_delay_and_media.py
 
 permissions:
   contents: write
 
 jobs:
   apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out branch
+      - name: Check out writable head branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -45,9 +57,11 @@ jobs:
 
       - name: Commit generated integration change
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add local_server.py
           git commit -m "feat(reply): route exact expression modes end to end"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${TARGET_BRANCH}"
