@@ -21,6 +21,8 @@
     "persona_file": {"type": "string", "minLength": 1},
     "persona_config": {"type": "string", "minLength": 1},
     "persona_evidence_file": {"type": "string", "minLength": 1},
+    "persona_v2_file": {"type": "string", "minLength": 1},
+    "persona_v2_enabled": {"type": "boolean"},
     "feature_enabled": {"type": "boolean"},
     "requires_api_key": {"type": "boolean"},
     "provider_options": {"type": "object"}
