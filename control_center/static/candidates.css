@@ -1,0 +1,78 @@
+.candidate-list {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.candidate-card {
+  padding: 1.25rem;
+  border: 1px solid #c8c8c4;
+  border-radius: 0.75rem;
+}
+
+.candidate-card h3 {
+  margin: 0.25rem 0 1rem;
+  line-height: 1.45;
+}
+
+.candidate-type {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.candidate-meta {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) 1fr;
+  gap: 0.45rem 1rem;
+  margin: 0 0 1rem;
+}
+
+.candidate-meta dt,
+.candidate-meta dd {
+  margin: 0;
+}
+
+.candidate-meta dt {
+  font-weight: 700;
+}
+
+.candidate-decision-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.candidate-decision-form label {
+  display: grid;
+  gap: 0.4rem;
+  font-weight: 700;
+}
+
+.candidate-decision-form textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 5rem;
+  padding: 0.65rem;
+  font: inherit;
+  border: 1px solid currentColor;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+}
+
+.candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.candidate-result {
+  min-height: 1.5rem;
+  margin: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .candidate-card {
+    border-color: #555650;
+  }
+}
