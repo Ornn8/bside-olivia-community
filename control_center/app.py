@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
@@ -33,9 +34,15 @@ PRIVATE_WORLD_API_KEY = web.AppKey(
 )
 SESSION_TOKEN_KEY = web.AppKey("control_center.session_token", str)
 
+_STATIC_ROOT = Path(__file__).with_name("static")
 _PUBLIC_ROUTES = frozenset(
     {
+        ("GET", "/control"),
+        ("GET", "/control/"),
         ("GET", "/control/health"),
+        ("GET", "/control/static/app.css"),
+        ("GET", "/control/static/api.js"),
+        ("GET", "/control/static/app.js"),
         ("POST", "/control/api/session/bootstrap"),
     }
 )
@@ -205,6 +212,36 @@ async def _json_body(request: web.Request) -> object:
         raise json.JSONDecodeError("invalid", "", 0) from exc
 
 
+def _static_response(name: str) -> web.FileResponse:
+    path = _STATIC_ROOT / name
+    if not path.is_file():
+        raise ControlRequestError(
+            "CONTROL_STATIC_UNAVAILABLE",
+            http_status=503,
+        )
+    return web.FileResponse(path)
+
+
+async def control_index(request: web.Request) -> web.FileResponse:
+    del request
+    return _static_response("index.html")
+
+
+async def control_css(request: web.Request) -> web.FileResponse:
+    del request
+    return _static_response("app.css")
+
+
+async def control_api_script(request: web.Request) -> web.FileResponse:
+    del request
+    return _static_response("api.js")
+
+
+async def control_app_script(request: web.Request) -> web.FileResponse:
+    del request
+    return _static_response("app.js")
+
+
 async def health(request: web.Request) -> web.Response:
     del request
     return _response(
@@ -319,7 +356,12 @@ def create_control_app(
     )
     app.add_routes(
         [
+            web.get("/control", control_index),
+            web.get("/control/", control_index),
             web.get("/control/health", health),
+            web.get("/control/static/app.css", control_css),
+            web.get("/control/static/api.js", control_api_script),
+            web.get("/control/static/app.js", control_app_script),
             web.post("/control/api/session/bootstrap", bootstrap),
             web.post("/control/api/session/logout", logout),
             web.get(
