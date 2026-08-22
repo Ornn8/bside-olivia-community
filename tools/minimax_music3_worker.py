@@ -4,12 +4,46 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from minimax_profile import (  # noqa: E402
+    MiniMaxInferenceProfile,
+    MiniMaxProfileError,
+    minimax_profile_from_mapping,
+)
+
+
+_ALLOWED_DURATIONS = frozenset({90, 118})
+_EXPECTED_LYRIC_LINES = {90: 12, 118: 16}
+_SONG_TAGS = ("[Intro]", "[Verse]", "[Interlude]", "[Verse]", "[Outro]")
+_TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
+_CAPTION_HEADINGS = ("### Global Metadata", "### Vocal Details", "### Arrangement")
+_NEGATIVE_SYNTAX = re.compile(
+    r"\b(?:no|not|without|avoid|exclude|excluding|never|absence|lack)\b",
+    flags=re.IGNORECASE,
+)
+_DISALLOWED_CAPTION_TERMS = re.compile(
+    r"\b(?:"
+    r"r&b|rnb|neo[- ]?soul|soul|jazz|gospel|cinematic|heritage|folk|pop|"
+    r"electronic|ambient|orchestral|orchestra|groove|swing|syncopated|"
+    r"backbeat|melisma|riff|ad[- ]?lib|drums?|percussion|bass|guitars?|"
+    r"strings?|cello|violins?|synth(?:esizer)?s?|pads?|choir|guzheng|"
+    r"erhu|pipa|dizi|flute"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,33 +80,73 @@ def _request_json(url: str, *, payload: dict | None = None, timeout: float = 30.
     return result
 
 
-def _graph(request: dict[str, object], *, filename_prefix: str) -> dict[str, object]:
-    content = " ".join(str(request.get("content", "")).split())[:180]
-    reply = " ".join(str(request.get("reply_text", "")).split())[:180]
-    duration = int(request.get("max_duration", 0))
-    if duration not in {90, 118}:
+def _duration(value: object) -> int:
+    if type(value) is not int or value not in _ALLOWED_DURATIONS:
         raise RuntimeError("MINIMAX_MUSIC3_DURATION_INVALID")
-    seed = int(request.get("seed", 200717))
-    fallback_lyrics = (
-        "[Intro]\n[Verse]\n"
-        f"{content}\n{reply}\n"
-        "今天是搬进新家的第一天\n"
-        "窗边的光落在琴键\n"
-        "[Chorus]\n"
-        "愿往后的每一封信\n"
-        "都能在这里被你听见\n"
-        "[Outro]"
+    return value
+
+
+def _bounded_text(value: object, *, code: str, max_bytes: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(code)
+    normalized = value.strip().replace("\r\n", "\n").replace("\r", "\n")
+    if len(normalized.encode("utf-8")) > max_bytes or any(
+        ord(character) < 32 and character not in {"\n", "\t"}
+        for character in normalized
+    ):
+        raise RuntimeError(code)
+    return normalized
+
+
+def _lyrics(value: object, duration: int) -> str:
+    normalized = _bounded_text(
+        value,
+        code="MINIMAX_MUSIC3_LYRICS_REQUIRED",
+        max_bytes=8192,
     )
-    fallback_caption = (
-        "Global Metadata: intimate Mandarin cinematic piano ballad, 68 BPM, D minor, "
-        "tender and reflective, warm room, restrained emotional arc, studio-quality natural sound. "
-        "Vocal Details: young adult Chinese female voice, clear gentle mezzo-soprano, intimate close-mic, "
-        "natural Mandarin pronunciation, controlled breath, no exaggerated vibrato, no childlike tone, "
-        "no imitation of any real singer. Arrangement: solo grand piano opening, soft strings gradually enter, "
-        "subtle cello and room reverb, sparse percussion near the final chorus, clean piano ending."
+    lines = tuple(line.strip() for line in normalized.split("\n") if line.strip())
+    tags = tuple(line for line in lines if _TAG_LINE.fullmatch(line))
+    if tags != _SONG_TAGS:
+        raise RuntimeError("MINIMAX_MUSIC3_LYRICS_INVALID")
+    lyric_lines = tuple(line for line in lines if not _TAG_LINE.fullmatch(line))
+    if len(lyric_lines) != _EXPECTED_LYRIC_LINES[duration]:
+        raise RuntimeError("MINIMAX_MUSIC3_LYRICS_INVALID")
+    return normalized
+
+
+def _caption(value: object) -> str:
+    normalized = _bounded_text(
+        value,
+        code="MINIMAX_MUSIC3_CAPTION_REQUIRED",
+        max_bytes=8192,
     )
-    lyrics = str(request.get("lyrics", "")).strip() or fallback_lyrics
-    caption = str(request.get("caption", "")).strip() or fallback_caption
+    headings = tuple(re.findall(r"^### .+$", normalized, flags=re.MULTILINE))
+    if headings != _CAPTION_HEADINGS:
+        raise RuntimeError("MINIMAX_MUSIC3_CAPTION_INVALID")
+    if _NEGATIVE_SYNTAX.search(normalized):
+        raise RuntimeError("MINIMAX_MUSIC3_CAPTION_NEGATIVE_SYNTAX")
+    if _DISALLOWED_CAPTION_TERMS.search(normalized):
+        raise RuntimeError("MINIMAX_MUSIC3_CAPTION_DISALLOWED_TERM")
+    return normalized
+
+
+def _validated_request(
+    request: object,
+) -> tuple[int, str, str, MiniMaxInferenceProfile]:
+    if not isinstance(request, dict):
+        raise RuntimeError("MINIMAX_MUSIC3_REQUEST_INVALID")
+    duration = _duration(request.get("max_duration"))
+    lyrics = _lyrics(request.get("lyrics"), duration)
+    caption = _caption(request.get("caption"))
+    try:
+        profile = minimax_profile_from_mapping(request.get("inference_profile"))
+    except MiniMaxProfileError as exc:
+        raise RuntimeError(str(exc) or "MINIMAX_PROFILE_INVALID") from exc
+    return duration, lyrics, caption, profile
+
+
+def _graph(request: dict[str, object], *, filename_prefix: str) -> dict[str, object]:
+    duration, lyrics, caption, profile = _validated_request(request)
     return {
         "1": {"class_type": "UNETLoader", "inputs": {
             "unet_name": "minimax_music3_dit_int8_convrot.safetensors", "weight_dtype": "default"}},
@@ -81,15 +155,18 @@ def _graph(request: dict[str, object], *, filename_prefix: str) -> dict[str, obj
             "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_music3_dav.safetensors"}},
         "4": {"class_type": "MiniMaxMusic3TextEncode", "inputs": {
-            "clip": ["2", 0], "caption": caption, "lyrics": lyrics, "seed": seed,
-            "max_duration": duration, "cfg_scale": 1.5, "top_k": 50}},
+            "clip": ["2", 0], "caption": caption, "lyrics": lyrics, "seed": profile.seed,
+            "max_duration": duration, "cfg_scale": profile.text_cfg_scale,
+            "top_k": profile.top_k}},
         "5": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["4", 0]}},
         "6": {"class_type": "EmptyMiniMaxMusic3LatentAudio", "inputs": {
             "seconds": ["4", 1], "batch_size": 1}},
         "7": {"class_type": "KSampler", "inputs": {
-            "model": ["1", 0], "seed": seed, "steps": 30, "cfg": 1.5,
-            "sampler_name": "euler", "scheduler": "simple", "positive": ["4", 0],
-            "negative": ["5", 0], "latent_image": ["6", 0], "denoise": 1.0}},
+            "model": ["1", 0], "seed": profile.seed, "steps": profile.steps,
+            "cfg": profile.sampler_cfg_scale, "sampler_name": profile.sampler_name,
+            "scheduler": profile.scheduler, "positive": ["4", 0],
+            "negative": ["5", 0], "latent_image": ["6", 0],
+            "denoise": profile.denoise}},
         "8": {"class_type": "VAEDecodeAudioTiled", "inputs": {
             "samples": ["7", 0], "vae": ["3", 0], "tile_size": 1536, "overlap": 64}},
         "9": {"class_type": "SaveAudio", "inputs": {
@@ -119,6 +196,16 @@ def _load_jobs(args: argparse.Namespace) -> list[tuple[Path, Path]]:
         output_path = output_value if output_value.is_absolute() else batch_path.parent / output_value
         jobs.append((request_path.resolve(), output_path.resolve()))
     return jobs
+
+
+def _read_request(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("MINIMAX_MUSIC3_REQUEST_INVALID") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("MINIMAX_MUSIC3_REQUEST_INVALID")
+    return value
 
 
 def _gpu_sample() -> dict[str, float] | None:
@@ -194,9 +281,11 @@ def main(argv: list[str] | None = None) -> int:
     jobs = _load_jobs(args)
     if not (comfy_root / "main.py").is_file() or any(not job[0].is_file() for job in jobs):
         raise SystemExit("MINIMAX_MUSIC3_INPUT_UNAVAILABLE")
-    requests = [json.loads(request_path.read_text(encoding="utf-8")) for request_path, _ in jobs]
-    if any(not isinstance(request, dict) for request in requests):
-        raise SystemExit("MINIMAX_MUSIC3_REQUEST_INVALID")
+    try:
+        requests = [_read_request(request_path) for request_path, _ in jobs]
+        validated = [_validated_request(request) for request in requests]
+    except RuntimeError as exc:
+        raise SystemExit(str(exc) or "MINIMAX_MUSIC3_REQUEST_INVALID") from exc
 
     metrics_path = Path(args.metrics_json).resolve() if args.metrics_json else None
     owner_root = metrics_path.parent if metrics_path else jobs[0][1].parent
@@ -208,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     temp_root.mkdir(parents=True, exist_ok=True)
     port = _free_port()
     command = [
-        str(Path(__import__("sys").executable)),
+        str(Path(sys.executable)),
         str(comfy_root / "main.py"),
         "--listen", "127.0.0.1",
         "--port", str(port),
@@ -224,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     started_at = time.monotonic()
     metrics: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "vram_mode": args.vram_mode,
         "reserve_vram_gb": max(0.25, args.reserve_vram),
         "cache_lru": max(3, args.cache_lru),
@@ -254,7 +343,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("MINIMAX_MUSIC3_SERVER_TIMEOUT")
             metrics["server_startup_seconds"] = round(time.monotonic() - started_at, 3)
 
-            for index, ((request_path, output), request) in enumerate(zip(jobs, requests), start=1):
+            for index, ((request_path, output), request, valid) in enumerate(
+                zip(jobs, requests, validated),
+                start=1,
+            ):
+                _duration_value, _lyrics_value, _caption_value, profile = valid
                 job_started_at = time.monotonic()
                 filename_prefix = f"audio/{index:02d}_{output.stem}"
                 submitted = _request_json(
@@ -277,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
                 metrics["jobs"].append({
                     "request_json": str(request_path),
                     "output": str(output),
+                    "inference_profile": profile.to_dict(),
                     "elapsed_seconds": round(time.monotonic() - job_started_at, 3),
                 })
         finally:
@@ -287,15 +381,24 @@ def main(argv: list[str] | None = None) -> int:
     if gpu_samples:
         metrics["gpu_samples"] = {
             "count": len(gpu_samples),
-            "utilization_percent_mean": round(sum(x["utilization_percent"] for x in gpu_samples) / len(gpu_samples), 2),
+            "utilization_percent_mean": round(
+                sum(x["utilization_percent"] for x in gpu_samples) / len(gpu_samples),
+                2,
+            ),
             "utilization_percent_max": max(x["utilization_percent"] for x in gpu_samples),
             "memory_used_mb_max": max(x["memory_used_mb"] for x in gpu_samples),
-            "power_watts_mean": round(sum(x["power_watts"] for x in gpu_samples) / len(gpu_samples), 2),
+            "power_watts_mean": round(
+                sum(x["power_watts"] for x in gpu_samples) / len(gpu_samples),
+                2,
+            ),
             "power_watts_max": max(x["power_watts"] for x in gpu_samples),
         }
     if metrics_path:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        metrics_path.write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         shutil.copyfile(log_path, metrics_path.with_suffix(".comfy.log"))
     shutil.rmtree(work_root, ignore_errors=True)
     return 0
