@@ -22,7 +22,9 @@ class PromptBudgetExceeded(PromptBudgetError):
 class PromptSection(str, Enum):
     CONSTITUTION = "constitution"
     FORBIDDEN = "forbidden"
+    PERSONA_PROFILE = "persona_profile"
     MODE_CONSTRAINTS = "mode_constraints"
+    MODE_STYLE = "mode_style"
     USER_INPUT = "user_input"
     PRIVATE_BEHAVIOR = "private_behavior"
     WORLD_FACT = "world_fact"
@@ -37,7 +39,9 @@ _REQUIRED = frozenset(
     {
         PromptSection.CONSTITUTION,
         PromptSection.FORBIDDEN,
+        PromptSection.PERSONA_PROFILE,
         PromptSection.MODE_CONSTRAINTS,
+        PromptSection.MODE_STYLE,
         PromptSection.USER_INPUT,
     }
 )
@@ -94,7 +98,9 @@ def plan_prompt_budget(
     item_ids = [item.item_id for item in candidates]
     if len(item_ids) != len(set(item_ids)):
         raise PromptBudgetError("item identifiers must be unique")
-    required_units = sum(item.cost_units for item in candidates if item.section in _REQUIRED)
+    required_units = sum(
+        item.cost_units for item in candidates if item.section in _REQUIRED
+    )
     input_units = sum(item.cost_units for item in candidates)
     if required_units > max_units:
         report = PromptBudgetReport(
@@ -103,7 +109,9 @@ def plan_prompt_budget(
             required_units=required_units,
             used_units=required_units,
             overflow_units=required_units - max_units,
-            included_ids=tuple(item.item_id for item in candidates if item.section in _REQUIRED),
+            included_ids=tuple(
+                item.item_id for item in candidates if item.section in _REQUIRED
+            ),
             dropped_ids=(),
         )
         raise PromptBudgetExceeded(report)

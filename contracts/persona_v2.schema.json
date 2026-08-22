@@ -4,19 +4,94 @@
   "title": "Persona 2.0 declaration registry",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "persona_id", "declarations"],
+  "required": [
+    "schema_version",
+    "persona_id",
+    "declarations"
+  ],
   "properties": {
-    "schema_version": {"const": "p02.persona.v2"},
+    "schema_version": {
+      "const": "p02.persona.v2"
+    },
     "persona_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9._:-]{1,96}$"
     },
+    "profile": {
+      "$ref": "#/$defs/profile"
+    },
     "declarations": {
       "type": "array",
-      "items": {"$ref": "#/$defs/declaration"}
+      "items": {
+        "$ref": "#/$defs/declaration"
+      }
     }
   },
   "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "display_name",
+        "locale",
+        "summary",
+        "required_facets",
+        "required_modes"
+      ],
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "locale": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+          "maxLength": 32
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "required_facets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "POLICY",
+              "IDENTITY",
+              "BACKGROUND",
+              "CORE_TRAIT",
+              "AUTONOMY",
+              "KNOWLEDGE_BOUNDARY",
+              "EXPRESSION_STYLE",
+              "RELATIONSHIP_STYLE",
+              "MEMORY_CONTINUITY",
+              "UNCERTAINTY",
+              "MODE_STYLE",
+              "SAFETY"
+            ]
+          }
+        },
+        "required_modes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "text_letter",
+              "spoken_video",
+              "musical_video",
+              "future_im"
+            ]
+          }
+        }
+      }
+    },
     "declaration": {
       "type": "object",
       "additionalProperties": false,
@@ -48,8 +123,28 @@
             "MODE_STYLE"
           ]
         },
+        "facet": {
+          "enum": [
+            "POLICY",
+            "IDENTITY",
+            "BACKGROUND",
+            "CORE_TRAIT",
+            "AUTONOMY",
+            "KNOWLEDGE_BOUNDARY",
+            "EXPRESSION_STYLE",
+            "RELATIONSHIP_STYLE",
+            "MEMORY_CONTINUITY",
+            "UNCERTAINTY",
+            "MODE_STYLE",
+            "SAFETY"
+          ]
+        },
         "confidence": {
-          "enum": ["HIGH", "MEDIUM", "LOW"]
+          "enum": [
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
         },
         "rights_status": {
           "enum": [
@@ -59,14 +154,21 @@
             "UNKNOWN_BLOCK_RELEASE"
           ]
         },
-        "allowed_public_release": {"type": "boolean"},
+        "allowed_public_release": {
+          "type": "boolean"
+        },
         "statement": {
           "type": "string",
           "minLength": 1,
           "maxLength": 600
         },
         "mode": {
-          "enum": ["text_letter", "spoken_video", "musical_video", "future_im"]
+          "enum": [
+            "text_letter",
+            "spoken_video",
+            "musical_video",
+            "future_im"
+          ]
         }
       },
       "allOf": [
@@ -74,27 +176,62 @@
           "if": {
             "properties": {
               "rights_status": {
-                "enum": ["LOCAL_PRIVATE_ONLY", "UNKNOWN_BLOCK_RELEASE"]
+                "enum": [
+                  "LOCAL_PRIVATE_ONLY",
+                  "UNKNOWN_BLOCK_RELEASE"
+                ]
               }
             }
           },
           "then": {
             "properties": {
-              "allowed_public_release": {"const": false}
+              "allowed_public_release": {
+                "const": false
+              }
             }
           }
         },
         {
           "if": {
-            "properties": {"tier": {"const": "MODE_STYLE"}}
+            "properties": {
+              "tier": {
+                "const": "MODE_STYLE"
+              }
+            }
           },
           "then": {
-            "required": ["mode"]
+            "required": [
+              "mode"
+            ]
           },
           "else": {
             "not": {
-              "required": ["mode"]
+              "required": [
+                "mode"
+              ]
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "facet": {
+                "const": "MODE_STYLE"
+              }
+            },
+            "required": [
+              "facet"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tier": {
+                "const": "MODE_STYLE"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           }
         }
       ]

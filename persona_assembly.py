@@ -33,7 +33,9 @@ class UntrustedFragment:
     text: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.fragment_id, str) or not _ID_RE.fullmatch(self.fragment_id):
+        if not isinstance(self.fragment_id, str) or not _ID_RE.fullmatch(
+            self.fragment_id
+        ):
             raise ValueError("fragment_id must be a stable identifier")
         if (
             not isinstance(self.text, str)
@@ -86,7 +88,9 @@ def assemble_persona(
         PromptBudgetItem(block.item_id, block.section, cost_counter(block.content))
         for block in blocks
     ) + (
-        PromptBudgetItem("user_input", PromptSection.USER_INPUT, cost_counter(user_input)),
+        PromptBudgetItem(
+            "user_input", PromptSection.USER_INPUT, cost_counter(user_input)
+        ),
     )
     plan = plan_prompt_budget(items, max_units=max_units)
     included_ids = set(plan.report.included_ids)
@@ -107,7 +111,17 @@ def _persona_blocks(
     history: tuple[UntrustedFragment, ...],
     evidence_summaries: tuple[UntrustedFragment, ...],
 ) -> tuple[_Block, ...]:
-    declarations = snapshot.declarations if snapshot.status == "READY" else ()
+    if snapshot.status == "READY":
+        if snapshot.profile is None:
+            raise ValueError("READY persona requires a profile")
+        declarations = snapshot.declarations
+    elif snapshot.status == "POLICY_ONLY":
+        declarations = tuple(
+            item for item in snapshot.declarations if item.tier == "CONSTITUTION"
+        )
+    else:
+        declarations = ()
+
     blocks: list[_Block] = []
     constitution = _declaration_blocks(
         declarations, "CONSTITUTION", PromptSection.CONSTITUTION
@@ -128,7 +142,30 @@ def _persona_blocks(
             )
         )
     blocks.append(
-        _json_block("forbidden", "forbidden", PromptSection.FORBIDDEN, _FORBIDDEN_RULES)
+        _json_block(
+            "forbidden", "forbidden", PromptSection.FORBIDDEN, _FORBIDDEN_RULES
+        )
+    )
+    if snapshot.status == "READY" and snapshot.profile is not None:
+        profile_payload: object = {
+            "display_name": snapshot.profile.display_name,
+            "locale": snapshot.profile.locale,
+            "summary": snapshot.profile.summary,
+        }
+    else:
+        profile_payload = {
+            "status": snapshot.status,
+            "instruction": (
+                "Use generic respectful behavior and do not claim a named character identity."
+            ),
+        }
+    blocks.append(
+        _json_block(
+            "persona_profile",
+            "persona_profile",
+            PromptSection.PERSONA_PROFILE,
+            profile_payload,
+        )
     )
     blocks.append(
         _json_block(
@@ -142,6 +179,31 @@ def _persona_blocks(
             },
         )
     )
+
+    matching_styles = tuple(
+        declaration
+        for declaration in declarations
+        if declaration.tier == "MODE_STYLE"
+        and declaration.mode == context.mode.value
+    )
+    mode_styles = _declaration_blocks(
+        matching_styles, "MODE_STYLE", PromptSection.MODE_STYLE
+    )
+    if mode_styles:
+        blocks.extend(mode_styles)
+    else:
+        blocks.append(
+            _json_block(
+                "mode_style",
+                "mode_style.fallback",
+                PromptSection.MODE_STYLE,
+                (
+                    "Follow the current output constraints.",
+                    "Use plain text and never include control markup or stage directions.",
+                ),
+            )
+        )
+
     blocks.append(
         _json_block(
             "private_behavior",
@@ -159,20 +221,26 @@ def _persona_blocks(
                 fact.to_dict(),
             )
         )
-    blocks.extend(_declaration_blocks(declarations, "PUBLIC_CANON", PromptSection.PUBLIC_CANON))
     blocks.extend(
-        _declaration_blocks(declarations, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON)
+        _declaration_blocks(
+            declarations, "PUBLIC_CANON", PromptSection.PUBLIC_CANON
+        )
     )
-    blocks.extend(_declaration_blocks(declarations, "INFERRED", PromptSection.INFERRED_TRAIT))
     blocks.extend(
-        _declaration_blocks(declarations, "UNCERTAINTY", PromptSection.EVIDENCE_SUMMARY)
+        _declaration_blocks(
+            declarations, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON
+        )
     )
-    matching_styles = tuple(
-        declaration
-        for declaration in declarations
-        if declaration.tier == "MODE_STYLE" and declaration.mode == context.mode.value
+    blocks.extend(
+        _declaration_blocks(
+            declarations, "INFERRED", PromptSection.INFERRED_TRAIT
+        )
     )
-    blocks.extend(_declaration_blocks(matching_styles, "MODE_STYLE", PromptSection.SOFT_CANON))
+    blocks.extend(
+        _declaration_blocks(
+            declarations, "UNCERTAINTY", PromptSection.EVIDENCE_SUMMARY
+        )
+    )
     for fragment in evidence_summaries:
         blocks.append(
             _json_block(
@@ -199,23 +267,31 @@ def _declaration_blocks(
     tier: str,
     section: PromptSection,
 ) -> tuple[_Block, ...]:
-    return tuple(
-        _json_block(
-            tier.lower(),
-            _budget_id("declaration", declaration.declaration_id),
-            section,
-            {
-                "declaration_id": declaration.declaration_id,
-                "source_id": declaration.source_id,
-                "statement": declaration.statement,
-            },
+    blocks: list[_Block] = []
+    for declaration in declarations:
+        if declaration.tier != tier:
+            continue
+        payload: dict[str, object] = {
+            "declaration_id": declaration.declaration_id,
+            "source_id": declaration.source_id,
+            "statement": declaration.statement,
+        }
+        if declaration.facet:
+            payload["facet"] = declaration.facet
+        blocks.append(
+            _json_block(
+                tier.lower(),
+                _budget_id("declaration", declaration.declaration_id),
+                section,
+                payload,
+            )
         )
-        for declaration in declarations
-        if declaration.tier == tier
-    )
+    return tuple(blocks)
 
 
-def _json_block(tag: str, item_id: str, section: PromptSection, payload: object) -> _Block:
+def _json_block(
+    tag: str, item_id: str, section: PromptSection, payload: object
+) -> _Block:
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     encoded = encoded.replace("<", r"\u003c").replace(">", r"\u003e")
     return _Block(item_id, section, f"<{tag}>\n{encoded}\n</{tag}>\n")
