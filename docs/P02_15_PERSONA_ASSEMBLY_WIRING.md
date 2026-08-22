@@ -1,11 +1,38 @@
-# P02-15 LetterAdapter Persona 2.0 wiring
+# P02-15 Letter generation Persona 2.0 wiring
 
-Set `persona_v2_enabled=true` (or `OLIVIA_PERSONA_V2_ENABLED=true`) to route
-`LetterAdapter._messages()` through `PersonaAssembly`. The default remains false,
-so the existing adapter path is unchanged until explicitly enabled.
+Persona 2.0 is enabled by default for the local letter pipeline. The legacy
+`LetterAdapter._messages()` entry remains a text-letter compatibility path,
+but the production reply sequence no longer relies on that method after
+triage.
 
-The v2 path loads `persona_v2_file` with DRAFT fallback, creates a text-letter
-`ReplyContext`, projects PrivateWorld state into finite character inputs, and
-passes MemoryPromptBuilder output as one escaped, untrusted history block. It
-does not modify `reply_orchestrator.py`, run a reviewer, or write relationship
-state.
+## Shared ReplyContext
+
+`generate_reply()` classifies the delivery mode first and creates one trusted
+`ReplyContext`. `ReplyPipeline` uses that same object twice:
+
+1. before generation, to select the matching Persona `MODE_STYLE`, output
+   constraints, trusted time, bounded PrivateWorld projection, and memory;
+2. after generation, to run the deterministic and optional semantic quality
+   gate.
+
+This prevents a spoken or musical reply from being generated with
+`text_letter` instructions and checked only after the fact.
+
+## Prepared-message provider boundary
+
+The pipeline converts a raw `ReplyRequest.content` into an immutable
+`ReplyRequest.messages` pair before the provider call:
+
+- system: Persona Constitution, compact Linli profile, actual mode and mode
+  style, bounded runtime facts, and escaped untrusted history;
+- user: the original current letter.
+
+The existing local compatibility bridge still owns legacy raw-content calls.
+When a request already contains assembled messages, `ReplyOrchestrator`
+selects the bridge's underlying provider directly so the bridge cannot discard
+or rebuild the system message.
+
+The orchestrator's cancellation, timeout, idempotency, event stream, and error
+semantics are otherwise unchanged. Reviewer transport, rewrite generation,
+canonical persistence, media scheduling, and relationship commits remain
+separate stages.

@@ -1,10 +1,20 @@
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from llm_gateway import GatewayResponse
+from memory_port import NullMemoryPort
+from memory_prompt import MemoryPromptBuilder
 from reply_context import ReplyContext, ReplyMode, TrustedTime
-from reply_orchestrator import ReplyResult, ReplyState
+from reply_orchestrator import (
+    ReplyOrchestrator,
+    ReplyRequest,
+    ReplyResult,
+    ReplyState,
+)
 from reply_pipeline import (
     PipelineResult,
     ReplyPipeline,
@@ -17,6 +27,9 @@ from reply_reviewer import (
     ReviewStatus,
     ReviewVerdict,
 )
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _context(mode: ReplyMode = ReplyMode.TEXT_LETTER) -> ReplyContext:
@@ -106,6 +119,98 @@ def test_pipeline_blocks_candidate_when_single_rewrite_fails() -> None:
     assert result.violation_codes == ("INTERNAL_CONTROL_MARKUP",)
 
 
+class RecordingProvider:
+    stream_enabled = False
+
+    def __init__(self) -> None:
+        self.messages: tuple[dict[str, str], ...] = ()
+
+    async def complete(
+        self,
+        messages: object,
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        self.messages = tuple(dict(message) for message in messages)  # type: ignore[arg-type]
+        return GatewayResponse(
+            text="我听见了。先不用急着给自己一个结论。",
+            request_id=request_id or "generated",
+            provider="synthetic",
+            model="synthetic",
+        )
+
+
+class CompatibilityBridge:
+    stream_enabled = False
+
+    def __init__(self, adapter: object) -> None:
+        self.adapter = adapter
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages: object,
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        self.calls += 1
+        raise AssertionError(
+            "prepared Persona messages must not be rebuilt by the bridge"
+        )
+
+
+@pytest.mark.parametrize(
+    ("mode", "style_id"),
+    [
+        (ReplyMode.TEXT_LETTER, "mode.text.no_forced_question"),
+        (ReplyMode.SPOKEN_VIDEO, "mode.spoken.natural_plain"),
+        (ReplyMode.MUSICAL_VIDEO, "mode.musical.only_when_motivated"),
+    ],
+)
+def test_generation_receives_the_same_mode_context_as_quality_gate(
+    mode: ReplyMode,
+    style_id: str,
+) -> None:
+    memory = NullMemoryPort()
+    provider = RecordingProvider()
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(persona_v2_enabled=True),
+        persona_v2_path=ROOT / "linli_character" / "persona_release_v2.json",
+        memory_prompt_builder=MemoryPromptBuilder(memory),
+        memory_port=memory,
+        gateway=provider,
+    )
+    bridge = CompatibilityBridge(adapter)
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(bridge, timeout_seconds=1),  # type: ignore[arg-type]
+        reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(
+                content="今天只是普通地有点累。",
+                request_id=f"mode-{mode.value}",
+                max_input_chars=10_000,
+            ),
+            _context(mode),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert bridge.calls == 0
+    assert tuple(message["role"] for message in provider.messages) == (
+        "system",
+        "user",
+    )
+    assert provider.messages[1]["content"] == "今天只是普通地有点累。"
+    system = provider.messages[0]["content"]
+    assert f'"mode":"{mode.value}"' in system
+    assert style_id in system
+    assert "林离 Olivia" in system
+
+
 class FakeTriage:
     reply_mode = "video"
 
@@ -132,13 +237,19 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
 ) -> None:
     import local_server
 
-    letter = {"letter_id": "letter-1", "reply_text": "", "letter_status": "PENDING"}
+    letter = {
+        "letter_id": "letter-1",
+        "reply_text": "",
+        "letter_status": "PENDING",
+    }
     scheduled: list[tuple[object, ...]] = []
     remembered: list[tuple[str, str]] = []
     monkeypatch.setattr(local_server.store, "letters", [letter])
     monkeypatch.setattr(local_server, "emotion_triage", FakeTriageService())
     monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
-    monkeypatch.setattr(local_server, "_schedule_text_reply_delay", lambda *args: None)
+    monkeypatch.setattr(
+        local_server, "_schedule_text_reply_delay", lambda *args: None
+    )
     monkeypatch.setattr(
         local_server, "_schedule_media_job", lambda *args: scheduled.append(args)
     )
@@ -163,7 +274,12 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
         ),
     )
 
-    assert asyncio.run(local_server.generate_reply("letter-1", "candidate input")) is True
+    assert (
+        asyncio.run(
+            local_server.generate_reply("letter-1", "candidate input")
+        )
+        is True
+    )
     assert letter["reply_text"] == "canonical final text"
     assert letter["letter_status"] == "COMPLETED"
     assert letter["quality_status"] == "accepted"
@@ -177,12 +293,18 @@ def test_blocked_candidate_never_reaches_storage_or_media(
 ) -> None:
     import local_server
 
-    letter = {"letter_id": "letter-2", "reply_text": "", "letter_status": "PENDING"}
+    letter = {
+        "letter_id": "letter-2",
+        "reply_text": "",
+        "letter_status": "PENDING",
+    }
     scheduled: list[tuple[object, ...]] = []
     monkeypatch.setattr(local_server.store, "letters", [letter])
     monkeypatch.setattr(local_server, "emotion_triage", FakeTriageService())
     monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
-    monkeypatch.setattr(local_server, "_schedule_text_reply_delay", lambda *args: None)
+    monkeypatch.setattr(
+        local_server, "_schedule_text_reply_delay", lambda *args: None
+    )
     monkeypatch.setattr(
         local_server, "_schedule_media_job", lambda *args: scheduled.append(args)
     )
@@ -202,7 +324,12 @@ def test_blocked_candidate_never_reaches_storage_or_media(
         ),
     )
 
-    assert asyncio.run(local_server.generate_reply("letter-2", "candidate input")) is False
+    assert (
+        asyncio.run(
+            local_server.generate_reply("letter-2", "candidate input")
+        )
+        is False
+    )
     assert letter["reply_text"] == ""
     assert letter["letter_status"] == "FAILED"
     assert letter["quality_status"] == "blocked"
