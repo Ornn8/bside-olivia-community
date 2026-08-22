@@ -76,6 +76,27 @@ PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
 
 
+def _exact_reply_mode(value: object) -> str:
+    """Normalize legacy wire values without losing the new internal mode."""
+
+    if isinstance(value, ReplyMode):
+        return value.value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"text", ReplyMode.TEXT_LETTER.value}:
+        return ReplyMode.TEXT_LETTER.value
+    if normalized == ReplyMode.SPOKEN_VIDEO.value:
+        return ReplyMode.SPOKEN_VIDEO.value
+    if normalized in {"video", ReplyMode.MUSICAL_VIDEO.value}:
+        # Before P03 every video reply was rendered by the musical path.
+        return ReplyMode.MUSICAL_VIDEO.value
+    return ReplyMode.TEXT_LETTER.value
+
+
+def _wire_reply_mode(value: object) -> str:
+    exact = _exact_reply_mode(value)
+    return "text" if exact == ReplyMode.TEXT_LETTER.value else "video"
+
+
 def _safe_log(event: str, **fields) -> None:
     """Emit structured diagnostics without request bodies, URLs or user data."""
     record = {"event": event, **fields}
@@ -399,6 +420,9 @@ def _load_store_state() -> None:
             setattr(store, name, value)
             if name == "letters":
                 for item in value:
+                    item["reply_mode"] = _exact_reply_mode(
+                        item.get("reply_mode", ReplyMode.TEXT_LETTER.value)
+                    )
                     if item.get("media_status") == "PROCESSING":
                         item["media_status"] = "QUEUED"
                         needs_persist = True
@@ -515,7 +539,12 @@ def letter_to_out(l):
         "letter_status": l.get("letter_status", 4) if published else "PENDING",
         "audit_status": l.get("audit_status", 2),
         "reply_type": 1 if published and l.get("reply_text") else 0,
-        "reply_mode": l.get("reply_mode", "text") if published else "text",
+        "reply_mode": _wire_reply_mode(l.get("reply_mode")) if published else "text",
+        "reply_mode_exact": (
+            _exact_reply_mode(l.get("reply_mode"))
+            if published
+            else ReplyMode.TEXT_LETTER.value
+        ),
         "triage": l.get("triage", {"status": "unavailable"}),
         "is_read": l.get("is_read", 1),
         "created_at": l.get("created_at", int(time.time())),
@@ -1013,7 +1042,11 @@ def _public_llm_error(code: str | None) -> tuple[str, bool]:
 def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
     """Record a publication deadline without blocking provider generation."""
 
-    if reply_mode != "text" or _os.environ.get("OLIVIA_REPLY_DELAY_ENABLED", "0").casefold() not in {"1", "true", "yes", "on"}:
+    if (
+        _exact_reply_mode(reply_mode) != ReplyMode.TEXT_LETTER.value
+        or _os.environ.get("OLIVIA_REPLY_DELAY_ENABLED", "0").casefold()
+        not in {"1", "true", "yes", "on"}
+    ):
         letter["reply_delay_minutes"] = 0.0
         letter["reply_not_before"] = 0.0
         return
@@ -1162,7 +1195,16 @@ async def route(method, path, body, query):
             "reply_text": reply_text,
             "reply_content": reply_text,
             "reply_video_url": l.get("reply_video_url", ""),
-            "reply_mode": l.get("reply_mode", "text") if reply_published else "text",
+            "reply_mode": (
+                _wire_reply_mode(l.get("reply_mode"))
+                if reply_published
+                else "text"
+            ),
+            "reply_mode_exact": (
+                _exact_reply_mode(l.get("reply_mode"))
+                if reply_published
+                else ReplyMode.TEXT_LETTER.value
+            ),
             "triage": l.get("triage", {"status": "unavailable"}),
             "media_status": l.get("media_status", "NOT_REQUESTED"),
             "media_error_code": l.get("media_error_code"),
@@ -1263,7 +1305,7 @@ async def route(method, path, body, query):
             "is_read": 1,
             "created_at": int(time.time()),
             "reply_text": "",
-            "reply_mode": "text",
+            "reply_mode": ReplyMode.TEXT_LETTER.value,
             "triage": {"status": "pending"},
             "music_duration_seconds": duration,
         }
@@ -1517,18 +1559,27 @@ def recover_pending_private_world() -> int:
 
 
 async def generate_reply(letter_id, content, *, idempotency_key=None):
-    """Run the narrow current-letter pipeline and record its terminal state."""
+    """Run one routed current-letter reply to its canonical terminal state."""
 
-    letter = next((item for item in store.letters if item["letter_id"] == letter_id), None)
+    letter = next(
+        (item for item in store.letters if item["letter_id"] == letter_id),
+        None,
+    )
     if letter is None:
         return False
-    triage = await emotion_triage.classify(content)
-    letter["triage"] = triage.to_dict()
-    letter["reply_mode"] = triage.reply_mode
-    if triage.reply_mode == "video":
+
+    decision = await emotion_triage.classify(content)
+    exact_mode = _exact_reply_mode(decision.reply_mode)
+    letter["triage"] = decision.to_dict()
+    letter["reply_mode"] = exact_mode
+    if exact_mode in {
+        ReplyMode.SPOKEN_VIDEO.value,
+        ReplyMode.MUSICAL_VIDEO.value,
+    }:
         letter["media_status"] = "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED"
-    _schedule_text_reply_delay(letter, triage.reply_mode)
+    _schedule_text_reply_delay(letter, exact_mode)
     _persist_store_state()
+
     try:
         request = ReplyRequest(
             content=content,
@@ -1536,13 +1587,11 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             idempotency_key=idempotency_key,
             max_input_chars=LLM_CONFIG.max_input_chars,
         )
-        gate_mode = (
-            ReplyMode.MUSICAL_VIDEO
-            if triage.reply_mode == "video"
-            else ReplyMode.TEXT_LETTER
-        )
         result = await asyncio.wait_for(
-            reply_pipeline.run(request, letters_adapter.build_reply_context(gate_mode)),
+            reply_pipeline.run(
+                request,
+                letters_adapter.build_reply_context(ReplyMode(exact_mode)),
+            ),
             timeout=LLM_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
@@ -1577,12 +1626,16 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     _commit_private_world_letter(letter)
     _persist_store_state()
-    if letter.get("reply_mode") == "video":
-        letter["reply_mode"] = "musical_video"
+
+    if exact_mode in {
+        ReplyMode.SPOKEN_VIDEO.value,
+        ReplyMode.MUSICAL_VIDEO.value,
+    }:
         letter["media_status"] = "PENDING"
-        _schedule_media_job(letter_id, content, result.text, "musical_video")
+        _schedule_media_job(letter_id, content, result.text, exact_mode)
+
     letters_adapter.remember_conversation(content, result.text)
-    _safe_log("letter_completed")
+    _safe_log("letter_completed", reply_mode=exact_mode)
     return True
 
 if __name__ == "__main__":
