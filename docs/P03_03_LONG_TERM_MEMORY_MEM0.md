@@ -11,7 +11,7 @@
 - Python 原生接入；
 - 支持自定义 OpenAI-compatible LLM；
 - 支持 Hugging Face 本地 embedding；
-- 支持本地 Qdrant path，无需强制云服务；
+- 支持 Qdrant 本地 path，无需强制云服务；
 - 支持 add、search、CRUD 和 metadata filters；
 - 可嵌入现有运行时，而不要求替换整个 Agent harness。
 
@@ -20,11 +20,17 @@
 - Letta：当前路线是完整 stateful agent runtime，会与现有 Persona、ReplyPipeline、PrivateWorld 和媒体编排重叠；
 - Zep：当前仓库更偏 Graphiti、示例与平台集成，不如 Mem0 适合作为本地 Python 应用中的窄记忆 Adapter。
 
-该选择仍通过 MEM-01 spike 验证。若当前锁定版本无法满足本地、删除、过滤或中文检索要求，则停止集成并回到选型门，而不是在本仓库补写 Mem0 缺失算法。
+该选择仍通过 MEM-01 spike 验证。若锁定版本无法满足本地、删除、过滤或中文检索要求，则停止集成并回到选型门，而不是在本仓库补写 Mem0 缺失算法。
+
+上游参考：
+
+- `https://github.com/mem0ai/mem0`
+- `https://github.com/mem0ai/mem0/blob/main/docs/open-source/configuration.mdx`
+- `https://github.com/mem0ai/mem0/blob/main/docs/open-source/python-quickstart.mdx`
 
 ## 2. 目标
 
-完成后，新对话会形成受控的长期记忆：
+完成后，新对话形成受控长期记忆：
 
 ```text
 用户来信 + canonical reply
@@ -56,7 +62,8 @@ PersonaAssembly
 - 不在本仓库实现新的事实提取、冲突合并、时间推理或向量数据库；
 - 不要求 Mem0 Cloud；
 - 不因记忆失败阻断回信；
-- 不用记忆摘要覆盖原始档案。
+- 不用记忆摘要覆盖原始档案；
+- 不要求用户运行 CLI 管理记忆。
 
 ## 4. 当前实现问题
 
@@ -73,7 +80,7 @@ Assistant completed a reply: ...
 
 ## 5. Port 调整
 
-不直接破坏旧接口。新增窄协议：
+新增窄协议：
 
 ```python
 class ConversationMemoryPort(Protocol):
@@ -98,6 +105,14 @@ class ConversationMemoryPort(Protocol):
     ) -> MemoryWriteResult: ...
 
     def list_memories(self, *, user_id: str) -> tuple[MemoryRecord, ...]: ...
+
+    def add_manual_memory(
+        self,
+        text: str,
+        *,
+        user_id: str,
+        source: str,
+    ) -> MemoryRecord: ...
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool: ...
 
@@ -126,7 +141,7 @@ UnavailableMem0MemoryPort
 NullConversationMemoryPort
 ```
 
-### 6.1 `remember_exchange`
+### 6.1 写入 canonical exchange
 
 传给 Mem0：
 
@@ -156,9 +171,10 @@ memory.add(
 - user 和 assistant 角色不反转；
 - 不传 system prompt、Reviewer payload 或 PrivateWorld；
 - 写入在工作线程执行；
-- 超时或异常只记录隐私安全状态。
+- 超时或异常只记录隐私安全状态；
+- 写入失败不改变正文或媒体状态。
 
-### 6.2 `search_context`
+### 6.2 检索
 
 ```python
 memory.search(
@@ -167,7 +183,7 @@ memory.search(
         "AND": [
             {"user_id": user_id},
             {"agent_id": "linli"},
-            {"domain": "conversation_memory"},
+            {"domain": "conversation_memory"}
         ]
     },
     top_k=12,
@@ -187,13 +203,15 @@ Prompt 最终只选少量高相关记录，并严格限制字符预算。
 
 ### 6.3 管理操作
 
-用户必须可以：
+所有用户操作通过 Companion Control Center：
 
-- 查看记忆；
+- 查看和搜索记忆；
 - 删除单条记忆；
+- 纠正错误记忆；
+- 手工添加明确事实；
 - 清空新对话记忆；
 - 导出新对话记忆；
-- 停用 Mem0 但保留数据；
+- 暂停 Mem0 写入但保留数据；
 - 完整卸载并选择是否删除数据。
 
 删除和清空通过 Mem0 正式 API，不直接操作 Qdrant 内部文件。
@@ -240,13 +258,13 @@ model_kwargs.device: cpu
 - 体积和 CPU 成本适合 Windows 单机；
 - 不与 MiniMax、TTS 和视频链争用 GPU。
 
-可选高质量档：
+高质量候选：
 
 ```text
 BAAI/bge-m3
 ```
 
-但只有专项检索评测证明收益足以覆盖下载、内存和启动成本时才成为默认。
+只有专项检索评测证明收益足以覆盖下载、内存和启动成本时才成为默认。
 
 Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；服务启动不得悄悄联网下载。
 
@@ -258,25 +276,9 @@ Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；
 <OLIVIA_LOCAL_DATA_ROOT>/memory/mem0/qdrant
 ```
 
-配置：
-
-```json
-{
-  "provider": "qdrant",
-  "config": {
-    "path": "...",
-    "collection_name": "olivia_conversation_memory_v1",
-    "embedding_model_dims": 512,
-    "on_disk": true
-  }
-}
-```
-
-无需 Docker 或独立 Qdrant 服务。历史数据库和 Mem0 其他状态放在同一 `memory/mem0/` 根下，但 Archive SQLite 保持独立目录。
+无需 Docker 或独立 Qdrant 服务。Archive SQLite 保持独立目录。
 
 ## 8. 配置文件
-
-新增本地配置示例：
 
 ```json
 {
@@ -329,7 +331,7 @@ Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；
 - 原始旧信全库；
 - 用户仅作为假设、小说、测试样本或引用文本提到的内容。
 
-Mem0 仍可能提取错误事实，因此必须提供用户可见管理和删除，而不能把框架输出当作绝对真相。
+Mem0 仍可能提取错误事实，因此必须提供可见管理和纠正，不能把框架输出当作绝对真相。
 
 ## 10. Archive 与检索编排
 
@@ -340,7 +342,7 @@ Conversation Memory（Mem0）
 Archive（只读旧信）
 ```
 
-但输出分区明确：
+输出分区：
 
 ```xml
 <memory_context>
@@ -352,20 +354,25 @@ Archive（只读旧信）
 规则：
 
 - Archive 原文优先于 Mem0 摘要；
-- Mem0 记忆与 Archive 冲突时，不自动断言任何一方为真；
+- Mem0 和记忆 Archive 冲突时，不自动断言任何一方为真；
 - Prompt 中保留 source_id；
 - 记忆缺失不等于事件没发生；
 - 无证据时禁止使用“上次”“你以前总是”等补史表达。
 
-## 11. 迁移现有 SQLite conversation memory
+## 11. 现有 SQLite conversation memory 迁移
 
 不自动迁移。
 
-提供显式工具：
+Control Center 提供：
 
 ```text
-python -m memory_admin migrate-sqlite-to-mem0 --dry-run
-python -m memory_admin migrate-sqlite-to-mem0 --yes
+扫描旧 conversation memory
+  -> 预览条数、来源和潜在重复
+  -> Dry Run
+  -> 用户确认
+  -> 分批重放到 Mem0
+  -> 显示成功、重复和失败
+  -> 保留旧数据库
 ```
 
 迁移流程：
@@ -377,21 +384,49 @@ python -m memory_admin migrate-sqlite-to-mem0 --yes
 5. 不删除旧数据库；
 6. 用户确认后才允许归档旧 conversation table。
 
-旧信 Archive 永不通过此工具迁移。
+旧信 Archive 永不通过此流程迁移。
 
-## 12. PR 拆分与顺序
+底层可保留内部迁移函数供 CI 和恢复测试调用，但不要求用户使用命令行。
+
+## 12. Control Center 记忆页面
+
+详见 `P03_03A_COMPANION_CONTROL_CENTER.md`。
+
+最低功能：
+
+- 搜索和分页；
+- 查看记忆正文、来源和时间；
+- 删除；
+- 纠正；
+- 手工添加；
+- 暂停/恢复写入；
+- 导出；
+- 清空；
+- SQLite -> Mem0 迁移预览；
+- 区分 Archive、Mem0 和 PrivateWorld；
+- 所有 destructive 操作二次确认。
+
+“纠正”不是直接篡改 Qdrant：
+
+```text
+删除错误 memory
+  + 写入 local_user_correction 来源的新 memory
+  + 保存审计映射
+```
+
+## 13. PR 拆分与顺序
 
 ### MEM-01：Mem0 OSS 可行性 Spike
 
-独立实验分支，验证：
+验证：
 
 - 锁定版本可安装到 Python 3.12；
-- OpenAI-compatible LLM 可用；
-- Hugging Face embedding 可用；
-- Qdrant local path 持久化；
+- OpenAI-compatible LLM；
+- Hugging Face embedding；
+- Qdrant local path；
 - 中文 add/search；
 - delete/clear/export；
-- 重启后恢复；
+- 重启恢复；
 - 无 provider 时明确失败。
 
 只提交测试和结论，不接生产链。
@@ -410,37 +445,39 @@ Mem0 依赖放入可选 extra：
 pip install .[memory-mem0]
 ```
 
-核心安装无 Mem0 时仍可启动。
-
 ### MEM-04：检索接入 PersonaAssembly
 
-修改 `MemoryPromptBuilder`，将 Mem0 和记忆 Archive 分区、排序和限长。
+将 Mem0 与 Archive 分区、排序和限长。
 
 ### MEM-05：canonical exchange 写入
 
-在正文保存后异步调用 `remember_exchange`。证明：
+证明：
 
 - Reviewer 前候选不写入；
 - 重写前文本不写入；
 - 相同 revision 不重复；
 - 写入失败不影响正文和媒体。
 
-### MEM-06：管理 CLI 与迁移工具
+### MEM-06：管理 Service 与 Control Center API
 
-增加 list/delete/clear/export/migrate/status。
+提供 list/search/add/correct/delete/clear/export/migrate/status，不复制 Mem0 算法。
 
-### MEM-07：默认启用决策
+### MEM-07：Control Center 记忆页面
 
-在真实回归集验收后，将 Mem0 从可选 provider 改为默认新对话记忆层。未达到门槛时保持 opt-in，不伪造完成。
+实现普通用户管理和迁移流程，不要求终端。
 
-## 13. 评测
+### MEM-08：默认启用决策
+
+真实回归集达标后，将 Mem0 改为默认新对话记忆层。未达到门槛时保持 opt-in。
+
+## 14. 评测
 
 使用完全合成的多轮书信集，至少覆盖：
 
 - 姓名、工作地点和稳定偏好；
 - 临时计划与已完成事件；
-- 同一事实的更新；
-- 相互矛盾的陈述；
+- 同一事实更新；
+- 相互矛盾陈述；
 - 假设、玩笑和引用文本；
 - 用户纠正错误记忆；
 - 中英文混合；
@@ -452,50 +489,44 @@ pip install .[memory-mem0]
 | 指标 | 目标 |
 | --- | --- |
 | 相关事实召回率 | >= 0.85 |
-| 无关记忆进入 Prompt 的比例 | <= 0.15 |
+| 无关记忆进入 Prompt 比例 | <= 0.15 |
 | 明显错误事实写入率 | <= 0.05 |
 | PrivateWorld/control 泄漏 | 0 |
-| 重启后记忆恢复率 | 1.00 |
+| 重启后恢复率 | 1.00 |
 | 单条删除成功率 | 1.00 |
-| 记忆 provider 失败时正文成功率 | 1.00 |
+| provider 失败时正文成功率 | 1.00 |
 
-这些指标只针对固定测试集；不得把 Mem0 Cloud 的公开 benchmark 当作本地配置的实测成绩。
+不得把 Mem0 Cloud 的公开 benchmark 当作本地配置实测成绩。
 
-## 14. 隐私与日志
+## 15. 隐私与日志
 
 - 默认完全本地 Qdrant；
 - 只有配置的 LLM endpoint 接收当前 exchange；
 - embedding 默认本地；
 - 日志不包含消息正文、记忆正文、向量、API key 或本地路径；
 - health 只返回 provider、状态、计数和错误码；
-- 导出文件由用户显式指定；
+- 导出文件由用户在 Control Center 显式选择；
 - 删除操作需要确认；
-- 卸载默认保留数据，只有明确选项才删除。
+- 卸载默认保留数据。
 
-## 15. 回滚
+## 16. 回滚
 
 - `OLIVIA_MEMORY_PROVIDER=sqlite|none` 可关闭 Mem0；
 - 回滚代码不删除 Qdrant path；
 - Archive 始终可独立工作；
 - Mem0 失败时回到无长期记忆或旧 SQLite 降级；
-- 不允许在回滚中把 Mem0 内容反向覆盖 Archive。
+- 不允许在回滚中把 Mem0 内容反向覆盖 Archive；
+- Control Center 不可用时回信仍正常运行。
 
-## 16. 完成条件
+## 17. 完成条件
 
 - Mem0 OSS 版本已锁定并通过 spike；
 - 本仓库没有复制 Mem0 内部算法；
 - 新对话通过结构化 exchange 写入；
-- 中文检索、重启、删除、导出和清空可用；
+- 中文检索、重启、删除、纠正、导出和清空可用；
 - Archive、Mem0、PrivateWorld 三域隔离；
 - PrivateWorld 和系统信息泄漏为零；
 - provider 失败不影响 canonical text；
-- 用户可管理错误记忆；
+- 用户可在 Control Center 管理错误记忆，不需要终端；
 - 固定回归集达到门槛；
 - `public-smoke`、可选依赖安装和专项测试通过。
-
-## 17. 上游参考
-
-- `mem0ai/mem0`：Apache-2.0；
-- Mem0 OSS Python Library；
-- Mem0 自定义 LLM、Hugging Face embedder 和 Qdrant local path 配置；
-- Mem0 官方文档明确区分 Library、Self-hosted Server 和 Cloud，本项目只使用 Library。
