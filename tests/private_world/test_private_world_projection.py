@@ -1,6 +1,7 @@
 from private_world_port import (
     ContinuationAwareness,
     HomeAccess,
+    LocalContinuationFact,
     PrivateWorldSnapshot,
 )
 from private_world_projection import project_private_world
@@ -32,16 +33,63 @@ def test_projection_converts_hidden_scores_to_finite_behavior_levels() -> None:
         assert raw not in serialized
 
 
-def test_only_current_authorized_nicknames_enter_projection() -> None:
+def test_current_unicode_nicknames_and_home_permission_enter_finite_projection() -> None:
     projected = project_private_world(
-        PrivateWorldSnapshot(nickname_permissions=("linli", "friend"))
+        PrivateWorldSnapshot(
+            nickname_permissions=("小河豚", "旅行者"),
+            home_access=HomeAccess.VISIT_ACCESS,
+        )
     )
 
-    assert projected.authorized_nicknames == ("linli", "friend")
-    assert projected.to_dict()["authorized_nicknames"] == ["linli", "friend"]
+    assert projected.authorized_nicknames == ("小河豚", "旅行者")
+    assert projected.to_dict()["authorized_nicknames"] == ["小河豚", "旅行者"]
+    assert projected.behavior.nickname_permission.value == "allowed"
+    assert projected.behavior.home_access.value == "visit_access"
+    assert projected.may_acknowledge_home_history is True
 
 
-def test_control_only_and_pending_continuation_never_enter_character_payload() -> None:
+def test_control_only_and_pending_continuation_facts_never_enter_model_payload() -> None:
+    projected = project_private_world(
+        PrivateWorldSnapshot(
+            continuation_facts=(
+                LocalContinuationFact(
+                    "known.class",
+                    "她已经知道下周课程会调整。",
+                    ContinuationAwareness.CHARACTER_KNOWN,
+                ),
+                LocalContinuationFact(
+                    "pending.trip",
+                    "角色尚未知道的旅行安排。",
+                    ContinuationAwareness.PENDING,
+                ),
+                LocalContinuationFact(
+                    "control.plan",
+                    "仅控制层可见的未来计划。",
+                    ContinuationAwareness.CONTROL_ONLY,
+                ),
+            )
+        )
+    )
+    payload = projected.to_dict()
+
+    assert projected.continuation_known is True
+    assert payload["known_continuations"] == [
+        {
+            "fact_id": "known.class",
+            "statement": "她已经知道下周课程会调整。",
+        }
+    ]
+    assert payload["behavior"]["known_continuations"] == payload["known_continuations"]
+    serialized = repr(payload)
+    assert "pending.trip" not in serialized
+    assert "control.plan" not in serialized
+    assert "旅行安排" not in serialized
+    assert "未来计划" not in serialized
+    assert "pending" not in serialized
+    assert "control_only" not in serialized
+
+
+def test_legacy_global_awareness_projects_only_a_boolean_not_control_label() -> None:
     for awareness in (
         ContinuationAwareness.CONTROL_ONLY,
         ContinuationAwareness.PENDING,
@@ -59,20 +107,7 @@ def test_control_only_and_pending_continuation_never_enter_character_payload() -
         )
     )
     assert known.continuation_known is True
-
-
-def test_home_access_only_grants_history_acknowledgement() -> None:
-    no_access = project_private_world(PrivateWorldSnapshot())
-    visit_access = project_private_world(
-        PrivateWorldSnapshot(home_access=HomeAccess.VISIT_ACCESS)
-    )
-
-    assert no_access.may_acknowledge_home_history is False
-    assert visit_access.may_acknowledge_home_history is True
-    assert "may_acknowledge_home_history" not in visit_access.to_dict()
-    assert visit_access.behavior.home_access.value == "no_access"
-    assert "mention" not in repr(visit_access.to_dict()).lower()
-    assert "describe" not in repr(visit_access.to_dict()).lower()
+    assert known.known_continuation_facts == ()
 
 
 def test_unknown_relationship_stage_fails_closed_to_unknown() -> None:

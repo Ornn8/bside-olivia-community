@@ -5,6 +5,11 @@ SQLite file. `apply_once` atomically appends one typed event and its caller-
 provided snapshot. Both `event_id` and `delivery_id` are unique, so a delivery
 retry cannot apply the same relationship change twice.
 
+Snapshots include Unicode nickname permissions and typed Local Continuation
+facts. Older databases that predate the continuation-fact field load with an
+empty fact list; no history rewrite or destructive migration is required.
+
 The ledger does not reduce events, infer relationship changes, call a model, or
 join the ordinary memory database. P02-12 owns the pure reducer. Public health
-contains only status and row counts; it never exposes a path or private value.
+contains only status and row counts; it never exposes a path, score, nickname,
+continuation statement, or other private value.

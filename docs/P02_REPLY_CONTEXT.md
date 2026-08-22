@@ -1,24 +1,27 @@
 # P02-04 ReplyContext contract
 
-`reply_context.py` defines the immutable, provider-free input passed between
-future reply-pipeline stages. It does not call a provider, render media, load a
-persona, review a reply, or commit private state. The matching JSON Schema is
+`reply_context.py` defines the immutable, provider-free input shared by reply
+pipeline stages. It does not call a provider, render media, load a persona,
+review a reply, or commit private state. The matching JSON Schema is
 `contracts/reply_context.schema.json` with id `p02.reply-context.v1`.
 
 ## Public API
 
 - `ReplyContext.create(...)` accepts a `ReplyMode`, timezone-aware
-  `TrustedTime`, identified `TrustedWorldFact` values, a finite
+  `TrustedTime`, identified `TrustedWorldFact` values, a bounded
   `PrivateBehaviorView`, and explicit `OutputConstraints`.
+- `PrivateBehaviorView` contains only finite relationship/home enums plus
+  typed `KnownContinuationFact` values already marked character-known. It
+  rejects raw scores, control awareness, arbitrary dictionaries, duplicates,
+  and unbounded statements.
 - `ReplyModeAdapter` preserves the legacy wire values: `text` maps to
   `text_letter`, while `video` maps to `spoken_video`. Both spoken and musical
   video serialize back to `video`.
 - `future_im` has no legacy wire value and is rejected unless application
   state explicitly passes `future_im_enabled=True`.
 
-Private behavior crosses this boundary only as finite enums. Raw scores,
-private history, letters, prompts, local paths, credentials, and provider state
-are not accepted by the contract.
+Private history, letters, prompts, local paths, credentials, provider state,
+pending plans, and control-only facts are not accepted by the contract.
 
 ## Output invariants
 
