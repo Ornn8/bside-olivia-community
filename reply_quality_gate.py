@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from reply_context import ReplyContext
 from reply_policy import scan_reply
@@ -52,10 +52,18 @@ def run_reply_quality_gate(
     *,
     reviewer: ReviewerPort,
     rewriter: RewriterPort,
+    generation_messages: Sequence[Mapping[str, Any]] = (),
 ) -> QualityGateResult:
     deterministic = scan_reply(candidate, context)
-    review = reviewer.review(candidate, context)
-    deterministic_codes = tuple(item.code.value for item in deterministic.violations)
+    review = _review_candidate(
+        reviewer,
+        candidate,
+        context,
+        generation_messages,
+    )
+    deterministic_codes = tuple(
+        item.code.value for item in deterministic.violations
+    )
     review_codes = tuple(item.code for item in review.violations)
     if deterministic.passed and review.verdict is ReviewVerdict.UNAVAILABLE:
         return QualityGateResult(
@@ -81,10 +89,12 @@ def run_reply_quality_gate(
             rewrite_calls=0,
         )
     try:
-        rewritten = rewriter.rewrite(
+        rewritten = _rewrite_candidate(
+            rewriter,
             candidate,
             context,
             deterministic_codes + review_codes,
+            generation_messages,
         )
     except Exception:
         return QualityGateResult(
@@ -107,16 +117,26 @@ def run_reply_quality_gate(
             error_code="REWRITE_FAILED",
         )
     final_deterministic = scan_reply(rewritten, context)
-    final_review = reviewer.review(rewritten, context)
-    final_codes = tuple(item.code.value for item in final_deterministic.violations) + tuple(
-        item.code for item in final_review.violations
+    final_review = _review_candidate(
+        reviewer,
+        rewritten,
+        context,
+        generation_messages,
     )
-    if not final_deterministic.passed or final_review.verdict is ReviewVerdict.BLOCK:
+    final_codes = tuple(
+        item.code.value for item in final_deterministic.violations
+    ) + tuple(item.code for item in final_review.violations)
+    if (
+        not final_deterministic.passed
+        or final_review.verdict is ReviewVerdict.BLOCK
+    ):
         status = QualityGateStatus.BLOCKED
     elif final_review.verdict is ReviewVerdict.UNAVAILABLE:
         status = QualityGateStatus.ACCEPTED_DEGRADED
     elif final_review.verdict is ReviewVerdict.REWRITE:
-        has_hard_review = any(item.severity == "hard" for item in final_review.violations)
+        has_hard_review = any(
+            item.severity == "hard" for item in final_review.violations
+        )
         status = (
             QualityGateStatus.BLOCKED
             if has_hard_review
@@ -133,3 +153,33 @@ def run_reply_quality_gate(
         rewrite_calls=1,
         error_code=final_review.error_code,
     )
+
+
+def _review_candidate(
+    reviewer: ReviewerPort,
+    candidate: str,
+    context: ReplyContext,
+    generation_messages: Sequence[Mapping[str, Any]],
+) -> ReviewResult:
+    extended = getattr(reviewer, "review_with_messages", None)
+    if callable(extended):
+        return extended(candidate, context, generation_messages)
+    return reviewer.review(candidate, context)
+
+
+def _rewrite_candidate(
+    rewriter: RewriterPort,
+    candidate: str,
+    context: ReplyContext,
+    violation_codes: tuple[str, ...],
+    generation_messages: Sequence[Mapping[str, Any]],
+) -> str:
+    extended = getattr(rewriter, "rewrite_with_messages", None)
+    if callable(extended):
+        return extended(
+            candidate,
+            context,
+            violation_codes,
+            generation_messages,
+        )
+    return rewriter.rewrite(candidate, context, violation_codes)
