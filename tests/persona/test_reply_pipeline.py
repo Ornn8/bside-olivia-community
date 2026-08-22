@@ -174,7 +174,10 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
     memory = NullMemoryPort()
     provider = RecordingProvider()
     adapter = SimpleNamespace(
-        config=SimpleNamespace(persona_v2_enabled=True),
+        config=SimpleNamespace(
+            persona_v2_enabled=True,
+            provider="synthetic",
+        ),
         persona_v2_path=ROOT / "linli_character" / "persona_release_v2.json",
         memory_prompt_builder=MemoryPromptBuilder(memory),
         memory_port=memory,

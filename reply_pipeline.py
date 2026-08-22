@@ -108,7 +108,12 @@ def _prepare_generation_request(
     bridge = getattr(orchestrator, "gateway", None)
     adapter = getattr(bridge, "adapter", None)
     config = getattr(adapter, "config", None)
-    if adapter is None or not getattr(config, "persona_v2_enabled", False):
+    provider_name = str(getattr(config, "provider", "none")).strip().lower()
+    if (
+        adapter is None
+        or not getattr(config, "persona_v2_enabled", False)
+        or provider_name in {"", "none", "disabled", "unconfigured"}
+    ):
         return request
 
     persona_path = getattr(adapter, "persona_v2_path", None)
