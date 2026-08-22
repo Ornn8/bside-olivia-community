@@ -39,6 +39,7 @@ py-modules = [
     "private_world_projection",
     "reply_context",
     "reply_policy",
+    "reply_pipeline",
     "reply_quality_gate",
     "reply_reviewer",
 ]

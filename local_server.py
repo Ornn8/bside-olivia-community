@@ -61,6 +61,8 @@ from reply_context import (
     TrustedWorldFact,
     WorldFactKind,
 )
+from reply_pipeline import ReplyPipeline, UnavailableRewriter
+from reply_reviewer import NullReviewer
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
@@ -241,6 +243,28 @@ class LetterAdapter:
     ) -> tuple[dict[str, str], ...]:
         user_content = content + ("\n\n" + context if context else "")
         loaded = load_persona(self.persona_v2_path)
+        reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
+        memory_context = self.memory_prompt_builder.build(
+            content,
+            max_chars=min(
+                self.config.max_input_chars,
+                int(getattr(self.memory_port, "context_max_chars", 2400)),
+            ),
+        )
+        history = (
+            (UntrustedFragment("memory.references", memory_context.text),)
+            if memory_context.text
+            else ()
+        )
+        return assemble_persona(
+            loaded.snapshot,
+            reply_context,
+            user_input=user_content,
+            max_units=self.config.max_input_chars,
+            history=history,
+        ).to_messages()
+
+    def build_reply_context(self, mode: ReplyMode) -> ReplyContext:
         try:
             private_snapshot = self.private_world_port.snapshot()
             if not isinstance(private_snapshot, PrivateWorldSnapshot):
@@ -266,31 +290,12 @@ class LetterAdapter:
                     kind=WorldFactKind.TRUSTED_RUNTIME,
                 ),
             )
-        reply_context = ReplyContext.create(
-            ReplyMode.TEXT_LETTER,
+        return ReplyContext.create(
+            mode,
             trusted_time=TrustedTime(self._now()),
             world_facts=facts,
             private_behavior=projected.behavior,
         )
-        memory_context = self.memory_prompt_builder.build(
-            content,
-            max_chars=min(
-                self.config.max_input_chars,
-                int(getattr(self.memory_port, "context_max_chars", 2400)),
-            ),
-        )
-        history = (
-            (UntrustedFragment("memory.references", memory_context.text),)
-            if memory_context.text
-            else ()
-        )
-        return assemble_persona(
-            loaded.snapshot,
-            reply_context,
-            user_input=user_content,
-            max_units=self.config.max_input_chars,
-            history=history,
-        ).to_messages()
 
     def remember_conversation(self, content: str, reply: str) -> None:
         """Write new-chat memory only when the opt-in profile is enabled."""
@@ -413,6 +418,11 @@ music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
     timeout_seconds=LLM_CONFIG.timeout_seconds,
+)
+reply_pipeline = ReplyPipeline(
+    reply_engine,
+    reviewer=NullReviewer(),
+    rewriter=UnavailableRewriter(),
 )
 
 # ---------------------------------------------------------------------------
@@ -953,6 +963,8 @@ def _letter_list_payload(scope: str) -> dict:
 
 
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
+    if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
+        return "REPLY_QUALITY_BLOCKED", False
     if code in {"LLM_TIMEOUT", "PROVIDER_TIMEOUT"}:
         return "LLM_TIMEOUT", True
     if code in {"LLM_PROVIDER_REJECTED", "PROVIDER_REJECTED"}:
@@ -1432,8 +1444,13 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             idempotency_key=idempotency_key,
             max_input_chars=LLM_CONFIG.max_input_chars,
         )
+        gate_mode = (
+            ReplyMode.MUSICAL_VIDEO
+            if triage.reply_mode == "video"
+            else ReplyMode.TEXT_LETTER
+        )
         result = await asyncio.wait_for(
-            reply_engine.run(request),
+            reply_pipeline.run(request, letters_adapter.build_reply_context(gate_mode)),
             timeout=LLM_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
@@ -1452,6 +1469,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
         return False
 
+    if result.quality_status is not None:
+        letter["quality_status"] = result.quality_status
+        letter["quality_violation_codes"] = list(result.violation_codes)
     if result.state is not ReplyState.COMPLETED:
         public_code, _retryable = _public_llm_error(result.error_code)
         letter["letter_status"] = "FAILED"
