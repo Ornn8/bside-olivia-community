@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime
 import json
 from pathlib import Path
 import re
 import sqlite3
+from typing import Iterator
 
 from private_world_port import (
     ContinuationAwareness,
@@ -71,13 +73,18 @@ class SQLitePrivateWorldLedger:
         self._database_path = path
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._database_path, timeout=5)
         connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS private_world_events (
@@ -102,7 +109,7 @@ class SQLitePrivateWorldLedger:
         ):
             raise TypeError("apply_once requires a typed event and snapshot")
         try:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 duplicate = connection.execute(
                     """SELECT 1 FROM private_world_events
                        WHERE event_id = ? OR delivery_id = ? LIMIT 1""",
@@ -136,7 +143,7 @@ class SQLitePrivateWorldLedger:
         return True
 
     def events(self) -> tuple[LedgerEvent, ...]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """SELECT event_id, delivery_id, event_type, payload_json, occurred_at
                    FROM private_world_events ORDER BY rowid"""
@@ -147,7 +154,7 @@ class SQLitePrivateWorldLedger:
         )
 
     def snapshot(self) -> PrivateWorldSnapshot:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """SELECT payload_json FROM private_world_snapshots
                    ORDER BY version DESC LIMIT 1"""
@@ -177,7 +184,7 @@ class SQLitePrivateWorldLedger:
         return self.snapshot().character_view()
 
     def health(self) -> dict[str, int | str]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             event_count = connection.execute(
                 "SELECT COUNT(*) FROM private_world_events"
             ).fetchone()[0]
@@ -189,4 +196,3 @@ class SQLitePrivateWorldLedger:
             "event_count": event_count,
             "snapshot_count": snapshot_count,
         }
-
