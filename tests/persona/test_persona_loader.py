@@ -6,6 +6,7 @@ from pathlib import Path
 from persona_loader import (
     PersonaDeclaration,
     PersonaLoadErrorCode,
+    PersonaProfile,
     PersonaSnapshot,
     load_persona,
 )
@@ -14,25 +15,93 @@ from persona_loader import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _declaration(
+    declaration_id: str,
+    *,
+    tier: str,
+    facet: str,
+    mode: str | None = None,
+    rights_status: str = "SUMMARY_ONLY",
+    allowed_public_release: bool = True,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "declaration_id": declaration_id,
+        "source_id": "source.synthetic",
+        "tier": tier,
+        "facet": facet,
+        "confidence": "HIGH",
+        "rights_status": rights_status,
+        "allowed_public_release": allowed_public_release,
+        "statement": "Synthetic contract rule.",
+    }
+    if mode is not None:
+        row["mode"] = mode
+    return row
+
+
 def _valid_registry() -> dict[str, object]:
+    required_facets = [
+        "IDENTITY",
+        "BACKGROUND",
+        "CORE_TRAIT",
+        "AUTONOMY",
+        "KNOWLEDGE_BOUNDARY",
+        "EXPRESSION_STYLE",
+        "RELATIONSHIP_STYLE",
+        "MEMORY_CONTINUITY",
+        "UNCERTAINTY",
+    ]
+    declarations = [
+        _declaration("identity.synthetic", tier="PUBLIC_CANON", facet="IDENTITY"),
+        *(
+            _declaration(
+                f"facet.synthetic.{facet.lower()}",
+                tier="CONSTITUTION",
+                facet=facet,
+            )
+            for facet in required_facets
+            if facet != "IDENTITY"
+        ),
+        _declaration(
+            "mode.synthetic.text",
+            tier="MODE_STYLE",
+            facet="MODE_STYLE",
+            mode="text_letter",
+        ),
+        _declaration(
+            "mode.synthetic.spoken",
+            tier="MODE_STYLE",
+            facet="MODE_STYLE",
+            mode="spoken_video",
+        ),
+        _declaration(
+            "mode.synthetic.musical",
+            tier="MODE_STYLE",
+            facet="MODE_STYLE",
+            mode="musical_video",
+        ),
+    ]
     return {
         "schema_version": "p02.persona.v2",
         "persona_id": "synthetic.persona",
-        "declarations": [
-            {
-                "declaration_id": "declaration.synthetic",
-                "source_id": "source.synthetic",
-                "tier": "CONSTITUTION",
-                "confidence": "HIGH",
-                "rights_status": "REDISTRIBUTABLE",
-                "allowed_public_release": True,
-                "statement": "Synthetic contract rule.",
-            }
-        ],
+        "profile": {
+            "display_name": "Synthetic Character",
+            "locale": "en-US",
+            "summary": "A complete synthetic character profile.",
+            "required_facets": required_facets,
+            "required_modes": [
+                "text_letter",
+                "spoken_video",
+                "musical_video",
+            ],
+        },
+        "declarations": declarations,
     }
 
 
-def test_valid_registry_returns_a_typed_persona_snapshot(tmp_path: Path) -> None:
+def test_valid_registry_returns_a_complete_typed_persona_snapshot(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "persona.json"
     config_path.write_text(json.dumps(_valid_registry()), encoding="utf-8")
 
@@ -40,22 +109,90 @@ def test_valid_registry_returns_a_typed_persona_snapshot(tmp_path: Path) -> None
 
     assert result.error_code is None
     assert result.fallback is False
+    assert result.ready is True
     assert isinstance(result.snapshot, PersonaSnapshot)
     assert result.snapshot.status == "READY"
     assert result.snapshot.source == "persona_v2"
     assert result.snapshot.persona_id == "synthetic.persona"
-    assert result.snapshot.declarations == (
-        PersonaDeclaration(
-            declaration_id="declaration.synthetic",
-            source_id="source.synthetic",
-            tier="CONSTITUTION",
-            confidence="HIGH",
-            rights_status="REDISTRIBUTABLE",
-            allowed_public_release=True,
-            statement="Synthetic contract rule.",
-            mode=None,
+    assert result.snapshot.profile == PersonaProfile(
+        display_name="Synthetic Character",
+        locale="en-US",
+        summary="A complete synthetic character profile.",
+        required_facets=(
+            "IDENTITY",
+            "BACKGROUND",
+            "CORE_TRAIT",
+            "AUTONOMY",
+            "KNOWLEDGE_BOUNDARY",
+            "EXPRESSION_STYLE",
+            "RELATIONSHIP_STYLE",
+            "MEMORY_CONTINUITY",
+            "UNCERTAINTY",
         ),
+        required_modes=("text_letter", "spoken_video", "musical_video"),
     )
+    assert result.snapshot.declarations[0] == PersonaDeclaration(
+        declaration_id="identity.synthetic",
+        source_id="source.synthetic",
+        tier="PUBLIC_CANON",
+        confidence="HIGH",
+        rights_status="SUMMARY_ONLY",
+        allowed_public_release=True,
+        statement="Synthetic contract rule.",
+        mode=None,
+        facet="IDENTITY",
+    )
+
+
+def test_policy_only_registry_is_not_misreported_as_ready(tmp_path: Path) -> None:
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p02.persona.v2",
+                "persona_id": "synthetic.policy",
+                "declarations": [
+                    _declaration(
+                        "constitution.synthetic",
+                        tier="CONSTITUTION",
+                        facet="POLICY",
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_persona(policy_path)
+
+    assert result.fallback is False
+    assert result.policy_only is True
+    assert result.snapshot.status == "POLICY_ONLY"
+    assert result.error_code == PersonaLoadErrorCode.INCOMPLETE
+    assert result.readiness_gaps == ("profile",)
+    assert result.snapshot.declarations
+
+
+def test_missing_required_facet_or_mode_reports_sanitized_gaps(tmp_path: Path) -> None:
+    payload = _valid_registry()
+    payload["declarations"] = [
+        row
+        for row in payload["declarations"]
+        if row.get("facet") != "KNOWLEDGE_BOUNDARY"
+        and row.get("mode") != "musical_video"
+    ]
+    path = tmp_path / "incomplete.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.snapshot.status == "POLICY_ONLY"
+    assert result.error_code == PersonaLoadErrorCode.INCOMPLETE
+    assert result.readiness_gaps == (
+        "facet:KNOWLEDGE_BOUNDARY",
+        "mode:musical_video",
+    )
+    assert str(tmp_path) not in repr(result)
 
 
 def test_missing_registry_returns_an_empty_sanitized_draft(tmp_path: Path) -> None:
@@ -69,10 +206,13 @@ def test_missing_registry_returns_an_empty_sanitized_draft(tmp_path: Path) -> No
     assert result.snapshot.source == "draft"
     assert result.snapshot.persona_id is None
     assert result.snapshot.declarations == ()
+    assert result.snapshot.profile is None
     assert str(missing_path) not in repr(result)
 
 
-def test_invalid_registry_inputs_fail_closed_with_stable_codes(tmp_path: Path) -> None:
+def test_invalid_registry_inputs_fail_closed_with_stable_codes(
+    tmp_path: Path,
+) -> None:
     schema_path = ROOT / "contracts" / "persona_v2.schema.json"
 
     malformed = tmp_path / "malformed.json"
@@ -97,7 +237,10 @@ def test_invalid_registry_inputs_fail_closed_with_stable_codes(tmp_path: Path) -
     assert malformed_result.error_code == PersonaLoadErrorCode.JSON_INVALID
     assert unreadable_result.error_code == PersonaLoadErrorCode.READ_FAILED
     assert schema_invalid_result.error_code == PersonaLoadErrorCode.SCHEMA_INVALID
-    assert unavailable_schema_result.error_code == PersonaLoadErrorCode.SCHEMA_UNAVAILABLE
+    assert (
+        unavailable_schema_result.error_code
+        == PersonaLoadErrorCode.SCHEMA_UNAVAILABLE
+    )
     for result in (
         malformed_result,
         unreadable_result,
@@ -109,13 +252,13 @@ def test_invalid_registry_inputs_fail_closed_with_stable_codes(tmp_path: Path) -
         assert str(tmp_path) not in repr(result)
 
 
-def test_release_rights_allow_summary_but_block_private_declarations(tmp_path: Path) -> None:
+def test_release_rights_allow_summary_but_block_private_declarations(
+    tmp_path: Path,
+) -> None:
     schema_path = ROOT / "contracts" / "persona_v2.schema.json"
 
     summary_path = tmp_path / "summary.json"
-    summary_registry = _valid_registry()
-    summary_registry["declarations"][0]["rights_status"] = "SUMMARY_ONLY"
-    summary_path.write_text(json.dumps(summary_registry), encoding="utf-8")
+    summary_path.write_text(json.dumps(_valid_registry()), encoding="utf-8")
 
     private_path = tmp_path / "private.json"
     private_registry = _valid_registry()
@@ -126,7 +269,7 @@ def test_release_rights_allow_summary_but_block_private_declarations(tmp_path: P
     summary_result = load_persona(summary_path, schema_path=schema_path)
     private_result = load_persona(private_path, schema_path=schema_path)
 
-    assert summary_result.fallback is False
+    assert summary_result.ready is True
     assert summary_result.snapshot.declarations[0].rights_status == "SUMMARY_ONLY"
     assert private_result.fallback is True
     assert private_result.error_code == PersonaLoadErrorCode.RIGHTS_BLOCKED
