@@ -30,6 +30,7 @@ py-modules = [
     "memory",
     "patch_feapp",
     "persona_loader",
+    "reply_context",
 ]
 
 [tool.setuptools.packages.find]
@@ -37,6 +38,7 @@ include = ["asr*", "contracts*", "installer*", "linli_character*", "media_state*
 
 [tool.pytest.ini_options]
 testpaths = [
+    "tests/persona",
     "tests/http",
     "tests/installer",
     "tests/media",
