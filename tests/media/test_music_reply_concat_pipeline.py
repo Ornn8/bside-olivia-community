@@ -72,6 +72,7 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     frames = {normal: 100, song: 200}
     commands: list[tuple[list[str], str]] = []
 
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
@@ -104,7 +105,7 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     assert "anullsrc=r=44100:cl=stereo" in filters
     assert "trim=start=41.000000:end=43.000000" in filters
     assert assembly[:8] == [
-        music_reply._ffmpeg(),
+        "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
@@ -131,6 +132,7 @@ def test_concat_videos_without_transition_preserves_two_segment_order(
     frames = {normal: 125, song: 250}
     commands: list[list[str]] = []
 
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
