@@ -4,7 +4,7 @@
   "title": "B03 local LLM gateway configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["provider", "api_key_env", "api_style", "timeout_seconds", "max_retries", "stream", "max_input_chars", "persona_file", "persona_config", "persona_evidence_file", "feature_enabled"],
+  "required": ["provider", "api_key_env", "api_style", "timeout_seconds", "max_retries", "stream", "max_input_chars", "persona_file", "persona_config", "persona_evidence_file", "persona_v2_file", "persona_v2_enabled", "feature_enabled"],
   "properties": {
     "provider": {"type": "string", "minLength": 1},
     "base_url": {"type": "string"},

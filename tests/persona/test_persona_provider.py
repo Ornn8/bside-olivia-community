@@ -151,6 +151,7 @@ def test_letter_adapter_wires_candidate_provider_without_mixing_memory_domains(t
             persona_file=str(ROOT / "linli_character" / "system_prompt.md"),
             persona_config=str(config_path),
             persona_evidence_file=str(ROOT / "linli_character" / "provenance.json"),
+            persona_v2_enabled=False,
         ),
         memory_port=NullMemoryPort(),
     )

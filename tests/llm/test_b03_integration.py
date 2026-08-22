@@ -101,7 +101,7 @@ def test_send_idempotency_and_conflict_do_not_duplicate_current_letters(monkeypa
     assert len(local_server.store.letters) == 1
 
 
-def test_health_exposes_llm_profile_and_draft_persona_without_network_probe() -> None:
+def test_health_exposes_enabled_persona_v2_without_network_probe() -> None:
     import local_server
 
     health = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "llm"}))
@@ -109,5 +109,9 @@ def test_health_exposes_llm_profile_and_draft_persona_without_network_probe() ->
     assert health["code"] == 0
     assert data["status"] in {"HEALTHY", "DEGRADED", "UNAVAILABLE"}
     assert data["providers"]["llm_gateway"]["network_called"] is False
-    assert data["providers"]["llm_gateway"]["persona"]["status"] == "DRAFT"
+    assert data["providers"]["llm_gateway"]["persona"] == {
+        "status": "READY",
+        "source": "persona_v2",
+        "error_code": None,
+    }
     assert "llm.gateway" in data["capabilities"]

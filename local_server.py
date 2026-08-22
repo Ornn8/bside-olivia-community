@@ -211,6 +211,21 @@ class LetterAdapter:
     def get_system_prompt(self) -> str:
         return self.persona_provider.snapshot().system_prompt
 
+    def public_persona_status(self) -> dict[str, str | None]:
+        if self.config.persona_v2_enabled:
+            loaded = load_persona(self.persona_v2_path)
+            return {
+                "status": loaded.snapshot.status,
+                "source": loaded.snapshot.source,
+                "error_code": loaded.error_code.value if loaded.error_code else None,
+            }
+        legacy = persona_status(self.persona_provider)
+        return {
+            "status": str(legacy.get("status", "DRAFT")),
+            "source": str(legacy.get("source", "file")),
+            "error_code": None,
+        }
+
     def get_initial_messages(self) -> list[dict[str, str]]:
         # No legacy letter samples or hidden few-shot material are loaded.
         return []
@@ -840,7 +855,7 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                 "llm_gateway": {
                     "status": llm_status,
                     "config": LLM_CONFIG.public_dict(api_key_configured=llm_key_present),
-                    "persona": persona_status(letters_adapter.persona_provider),
+                    "persona": letters_adapter.public_persona_status(),
                     "probe": "not-run",
                     "network_called": False,
                 },

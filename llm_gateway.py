@@ -92,8 +92,8 @@ class GatewayConfig:
     persona_file: str = "linli_character/system_prompt.md"
     persona_config: str = "linli_character/persona_config.json"
     persona_evidence_file: str = "linli_character/provenance.json"
-    persona_v2_file: str = "linli_character/persona_v2.json"
-    persona_v2_enabled: bool = False
+    persona_v2_file: str = "linli_character/persona_release_v2.json"
+    persona_v2_enabled: bool = True
     feature_enabled: bool = True
     requires_api_key: bool = False
     provider_options: Mapping[str, Any] = field(default_factory=dict)
@@ -152,9 +152,9 @@ class GatewayConfig:
                 data.get("persona_evidence_file", "linli_character/provenance.json") or ""
             ),
             persona_v2_file=str(
-                data.get("persona_v2_file", "linli_character/persona_v2.json") or ""
+                data.get("persona_v2_file", "linli_character/persona_release_v2.json") or ""
             ),
-            persona_v2_enabled=_as_bool(data.get("persona_v2_enabled", False)),
+            persona_v2_enabled=_as_bool(data.get("persona_v2_enabled", True), True),
             feature_enabled=_as_bool(data.get("feature_enabled", True), True),
             requires_api_key=_as_bool(data.get("requires_api_key", options.get("requires_api_key", False))),
             provider_options=dict(options),
