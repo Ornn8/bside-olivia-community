@@ -18,13 +18,16 @@ The model reviewer receives only:
 - candidate reply text;
 - current mode and output constraints;
 - trusted world facts already allowed in `ReplyContext`;
+- character-known Local Continuation facts already filtered by
+  `PrivateWorld` projection;
 - the public Persona profile and a bounded set of current-mode/personality
   rules;
 - at most 600 characters of the current user message as an identified excerpt.
 
-It does not receive PrivateWorld numeric values, control views, database
-contents, filesystem paths, provider configuration, the complete archive, or
-stored reviewer prompts. Review prompts and responses are not persisted.
+It does not receive PrivateWorld numeric values, raw home-access records,
+pending/control-only continuation facts, databases, filesystem paths, provider
+configuration, or the complete archive. Review prompts and responses are not
+persisted.
 
 ## Runtime controls
 
@@ -35,7 +38,7 @@ stored reviewer prompts. Review prompts and responses are not persisted.
 - `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` sets a bounded 0.1-120 second timeout;
   the default is the smaller of 12 seconds and the configured Provider timeout.
 
-Provider absence, timeout, transport errors, non-JSON output, and schema-invalid
-output become sanitized `REVIEWER_UNAVAILABLE` or
+Provider absence, timeout, transport errors, non-JSON output, and
+schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or
 `REVIEWER_RESPONSE_INVALID` results. A clean deterministic reply may then pass
 as `accepted_degraded`; a hard violation cannot bypass the single-rewrite gate.

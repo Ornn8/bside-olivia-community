@@ -4,27 +4,68 @@
   "title": "P02 ReplyContext contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["mode", "wire_mode", "trusted_time", "world_facts", "private_behavior", "output_constraints"],
+  "required": [
+    "mode",
+    "wire_mode",
+    "trusted_time",
+    "world_facts",
+    "private_behavior",
+    "output_constraints"
+  ],
   "properties": {
-    "mode": {"enum": ["text_letter", "spoken_video", "musical_video", "future_im"]},
-    "wire_mode": {"type": ["string", "null"], "enum": ["text", "video", null]},
+    "mode": {
+      "enum": [
+        "text_letter",
+        "spoken_video",
+        "musical_video",
+        "future_im"
+      ]
+    },
+    "wire_mode": {
+      "type": ["string", "null"],
+      "enum": ["text", "video", null]
+    },
     "trusted_time": {"$ref": "#/$defs/trusted_time"},
-    "world_facts": {"type": "array", "items": {"$ref": "#/$defs/world_fact"}},
-    "private_behavior": {"$ref": "#/$defs/private_behavior"},
-    "output_constraints": {"$ref": "#/$defs/output_constraints"}
+    "world_facts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/world_fact"}
+    },
+    "private_behavior": {
+      "$ref": "#/$defs/private_behavior"
+    },
+    "output_constraints": {
+      "$ref": "#/$defs/output_constraints"
+    }
   },
   "allOf": [
     {
-      "if": {"properties": {"mode": {"const": "text_letter"}}},
+      "if": {
+        "properties": {
+          "mode": {"const": "text_letter"}
+        }
+      },
       "then": {
         "properties": {
           "wire_mode": {"const": "text"},
-          "output_constraints": {"properties": {"channel": {"const": "letter"}}}
+          "output_constraints": {
+            "properties": {
+              "channel": {"const": "letter"}
+            }
+          }
         }
       }
     },
     {
-      "if": {"properties": {"mode": {"enum": ["spoken_video", "musical_video"]}}},
+      "if": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "spoken_video",
+              "musical_video"
+            ]
+          }
+        }
+      },
       "then": {
         "properties": {
           "wire_mode": {"const": "video"},
@@ -38,61 +79,190 @@
       }
     },
     {
-      "if": {"properties": {"mode": {"const": "future_im"}}},
+      "if": {
+        "properties": {
+          "mode": {"const": "future_im"}
+        }
+      },
       "then": {
         "properties": {
           "wire_mode": {"const": null},
-          "output_constraints": {"properties": {"channel": {"const": "instant_message"}}}
+          "output_constraints": {
+            "properties": {
+              "channel": {"const": "instant_message"}
+            }
+          }
         }
       }
     }
   ],
   "$defs": {
-    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+    },
     "trusted_time": {
       "type": "object",
       "additionalProperties": false,
       "required": ["instant", "source"],
       "properties": {
-        "instant": {"type": "string", "format": "date-time"},
+        "instant": {
+          "type": "string",
+          "format": "date-time"
+        },
         "source": {"$ref": "#/$defs/identifier"}
       }
     },
     "world_fact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fact_id", "source_id", "statement", "kind"],
+      "required": [
+        "fact_id",
+        "source_id",
+        "statement",
+        "kind"
+      ],
       "properties": {
         "fact_id": {"$ref": "#/$defs/identifier"},
         "source_id": {"$ref": "#/$defs/identifier"},
-        "statement": {"type": "string", "minLength": 1, "maxLength": 600},
-        "kind": {"enum": ["public_canon", "trusted_runtime"]}
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "kind": {
+          "enum": [
+            "public_canon",
+            "trusted_runtime"
+          ]
+        }
+      }
+    },
+    "known_continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact_id", "statement"],
+      "properties": {
+        "fact_id": {"$ref": "#/$defs/identifier"},
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        }
       }
     },
     "private_behavior": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["familiarity", "trust", "comfort", "closeness", "tension", "relationship_stage", "nickname_permission", "home_access"],
+      "required": [
+        "familiarity",
+        "trust",
+        "comfort",
+        "closeness",
+        "tension",
+        "relationship_stage",
+        "nickname_permission",
+        "home_access",
+        "known_continuations"
+      ],
       "properties": {
-        "familiarity": {"enum": ["unknown", "low", "medium", "high"]},
-        "trust": {"enum": ["unknown", "low", "medium", "high"]},
-        "comfort": {"enum": ["unknown", "low", "medium", "high"]},
-        "closeness": {"enum": ["unknown", "low", "medium", "high"]},
-        "tension": {"enum": ["unknown", "low", "medium", "high"]},
-        "relationship_stage": {"enum": ["unknown", "acquaintance", "familiar", "close"]},
-        "nickname_permission": {"enum": ["not_allowed", "allowed"]},
-        "home_access": {"enum": ["no_access", "visit_access", "errand_access", "domestic_access"]}
+        "familiarity": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "trust": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "comfort": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "closeness": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "tension": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "relationship_stage": {
+          "enum": [
+            "unknown",
+            "acquaintance",
+            "familiar",
+            "close"
+          ]
+        },
+        "nickname_permission": {
+          "enum": [
+            "not_allowed",
+            "allowed"
+          ]
+        },
+        "home_access": {
+          "enum": [
+            "no_access",
+            "visit_access",
+            "errand_access",
+            "domestic_access"
+          ]
+        },
+        "known_continuations": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/known_continuation"
+          }
+        }
       }
     },
     "output_constraints": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["channel", "max_characters", "plain_text_only", "allow_stage_directions", "allow_control_markup"],
+      "required": [
+        "channel",
+        "max_characters",
+        "plain_text_only",
+        "allow_stage_directions",
+        "allow_control_markup"
+      ],
       "properties": {
-        "channel": {"enum": ["letter", "spoken_text", "instant_message"]},
-        "max_characters": {"type": "integer", "minimum": 1},
+        "channel": {
+          "enum": [
+            "letter",
+            "spoken_text",
+            "instant_message"
+          ]
+        },
+        "max_characters": {
+          "type": "integer",
+          "minimum": 1
+        },
         "plain_text_only": {"const": true},
-        "allow_stage_directions": {"type": "boolean"},
+        "allow_stage_directions": {
+          "type": "boolean"
+        },
         "allow_control_markup": {"const": false}
       }
     }

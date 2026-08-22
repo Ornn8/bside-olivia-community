@@ -15,7 +15,9 @@ from reply_context import ReplyContext
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "reply_review.schema.json"
-_VALIDATOR = Draft202012Validator(json.loads(_SCHEMA_PATH.read_text(encoding="utf-8")))
+_VALIDATOR = Draft202012Validator(
+    json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+)
 
 
 class ReviewStatus(StrEnum):
@@ -55,19 +57,28 @@ class ReviewReference:
 
     def __post_init__(self) -> None:
         if not isinstance(self.reference_id, str) or not re.fullmatch(
-            r"[A-Za-z0-9._:-]{1,96}", self.reference_id
+            r"[A-Za-z0-9._:-]{1,96}",
+            self.reference_id,
         ):
-            raise ValueError("reference_id must be a stable identifier")
+            raise ValueError(
+                "reference_id must be a stable identifier"
+            )
         if (
             not isinstance(self.summary, str)
             or not self.summary.strip()
             or len(self.summary) > 600
-            or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", self.summary)
+            or re.search(
+                r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]",
+                self.summary,
+            )
         ):
             raise ValueError("reference summary is invalid")
 
     def to_dict(self) -> dict[str, str]:
-        return {"reference_id": self.reference_id, "summary": self.summary.strip()}
+        return {
+            "reference_id": self.reference_id,
+            "summary": self.summary.strip(),
+        }
 
 
 @dataclass(frozen=True)
@@ -87,13 +98,23 @@ class ReviewerConfig:
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not re.fullmatch(
-            r"[A-Za-z0-9._:-]{1,96}", self.model
+            r"[A-Za-z0-9._:-]{1,96}",
+            self.model,
         ):
-            raise ValueError("reviewer model must be a stable identifier")
-        if not isinstance(self.timeout_seconds, (int, float)) or self.timeout_seconds <= 0:
-            raise ValueError("reviewer timeout must be positive")
+            raise ValueError(
+                "reviewer model must be a stable identifier"
+            )
+        if (
+            not isinstance(self.timeout_seconds, (int, float))
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "reviewer timeout must be positive"
+            )
         if type(self.enabled) is not bool:
-            raise ValueError("reviewer enabled must be boolean")
+            raise ValueError(
+                "reviewer enabled must be boolean"
+            )
 
 
 class ReviewTransport(Protocol):
@@ -114,11 +135,18 @@ class NullReviewer:
         *,
         references: tuple[ReviewReference, ...] = (),
     ) -> ReviewResult:
-        return _failure(ReviewStatus.DISABLED, "REVIEWER_DISABLED")
+        return _failure(
+            ReviewStatus.DISABLED,
+            "REVIEWER_DISABLED",
+        )
 
 
 class JsonReviewerAdapter:
-    def __init__(self, transport: ReviewTransport, config: ReviewerConfig) -> None:
+    def __init__(
+        self,
+        transport: ReviewTransport,
+        config: ReviewerConfig,
+    ) -> None:
         self.transport = transport
         self.config = config
 
@@ -134,24 +162,52 @@ class JsonReviewerAdapter:
         if not isinstance(context, ReplyContext):
             raise TypeError("context must be ReplyContext")
         if not self.config.enabled:
-            return _failure(ReviewStatus.DISABLED, "REVIEWER_DISABLED")
+            return _failure(
+                ReviewStatus.DISABLED,
+                "REVIEWER_DISABLED",
+            )
         request: dict[str, object] = {
             "candidate": candidate,
             "mode": context.mode.value,
-            "output_constraints": context.output_constraints.to_dict(),
-            "world_facts": [fact.to_dict() for fact in context.world_facts],
-            "references": [reference.to_dict() for reference in references],
+            "output_constraints": (
+                context.output_constraints.to_dict()
+            ),
+            "world_facts": [
+                fact.to_dict()
+                for fact in context.world_facts
+            ],
+            "known_continuations": [
+                fact.to_dict()
+                for fact in (
+                    context.private_behavior.known_continuations
+                )
+            ],
+            "references": [
+                reference.to_dict()
+                for reference in references
+            ],
         }
         try:
             response = self.transport.review_json(
                 request,
                 model=self.config.model,
-                timeout_seconds=float(self.config.timeout_seconds),
+                timeout_seconds=float(
+                    self.config.timeout_seconds
+                ),
             )
         except Exception:
-            return _failure(ReviewStatus.UNAVAILABLE, "REVIEWER_UNAVAILABLE")
-        if not isinstance(response, Mapping) or list(_VALIDATOR.iter_errors(response)):
-            return _failure(ReviewStatus.INVALID_RESPONSE, "REVIEWER_RESPONSE_INVALID")
+            return _failure(
+                ReviewStatus.UNAVAILABLE,
+                "REVIEWER_UNAVAILABLE",
+            )
+        if (
+            not isinstance(response, Mapping)
+            or list(_VALIDATOR.iter_errors(response))
+        ):
+            return _failure(
+                ReviewStatus.INVALID_RESPONSE,
+                "REVIEWER_RESPONSE_INVALID",
+            )
         try:
             scores = response["scores"]
             violations = tuple(
@@ -163,11 +219,22 @@ class JsonReviewerAdapter:
                 )
                 for item in response["violations"]
             )
-            if any(item.end <= item.start or item.end > len(candidate) for item in violations):
-                return _failure(ReviewStatus.INVALID_RESPONSE, "REVIEWER_RESPONSE_INVALID")
+            if any(
+                item.end <= item.start
+                or item.end > len(candidate)
+                for item in violations
+            ):
+                return _failure(
+                    ReviewStatus.INVALID_RESPONSE,
+                    "REVIEWER_RESPONSE_INVALID",
+                )
             return ReviewResult(
-                status=ReviewStatus(str(response["status"])),
-                verdict=ReviewVerdict(str(response["verdict"])),
+                status=ReviewStatus(
+                    str(response["status"])
+                ),
+                verdict=ReviewVerdict(
+                    str(response["verdict"])
+                ),
                 violations=violations,
                 scores=ReviewerScores(
                     int(scores["persona_consistency"]),
@@ -177,10 +244,16 @@ class JsonReviewerAdapter:
                 ),
             )
         except (KeyError, TypeError, ValueError):
-            return _failure(ReviewStatus.INVALID_RESPONSE, "REVIEWER_RESPONSE_INVALID")
+            return _failure(
+                ReviewStatus.INVALID_RESPONSE,
+                "REVIEWER_RESPONSE_INVALID",
+            )
 
 
-def _failure(status: ReviewStatus, error_code: str) -> ReviewResult:
+def _failure(
+    status: ReviewStatus,
+    error_code: str,
+) -> ReviewResult:
     return ReviewResult(
         status=status,
         verdict=ReviewVerdict.UNAVAILABLE,

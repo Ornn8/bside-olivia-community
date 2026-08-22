@@ -8,57 +8,193 @@
     {"$ref": "#/$defs/character"}
   ],
   "$defs": {
-    "token": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$"},
-    "score": {"type": "integer", "minimum": 0, "maximum": 100},
-    "home_access": {"enum": ["no_access", "visit_access", "errand_access", "domestic_access"]},
-    "awareness": {"enum": ["control_only", "character_known", "pending"]},
-    "shared": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+    },
+    "nickname": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]{1,32}$"
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "home_access": {
+      "enum": [
+        "no_access",
+        "visit_access",
+        "errand_access",
+        "domestic_access"
+      ]
+    },
+    "awareness": {
+      "enum": [
+        "control_only",
+        "character_known",
+        "pending"
+      ]
+    },
+    "continuation_fact": {
       "type": "object",
-      "required": ["relationship_stage", "nickname_permissions", "home_access", "continuation_awareness"],
+      "additionalProperties": false,
+      "required": [
+        "fact_id",
+        "statement",
+        "awareness"
+      ],
       "properties": {
-        "relationship_stage": {"$ref": "#/$defs/token"},
-        "nickname_permissions": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/token"}},
-        "home_access": {"$ref": "#/$defs/home_access"},
-        "continuation_awareness": {"$ref": "#/$defs/awareness"}
+        "fact_id": {"$ref": "#/$defs/identifier"},
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "awareness": {"$ref": "#/$defs/awareness"}
       }
     },
-    "hidden": {
+    "character_fact": {
       "type": "object",
-      "required": ["familiarity", "trust", "comfort", "closeness", "tension"],
+      "additionalProperties": false,
+      "required": [
+        "fact_id",
+        "statement",
+        "awareness"
+      ],
       "properties": {
+        "fact_id": {"$ref": "#/$defs/identifier"},
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "awareness": {"const": "character_known"}
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "familiarity",
+        "trust",
+        "comfort",
+        "closeness",
+        "tension",
+        "relationship_stage",
+        "nickname_permissions",
+        "home_access",
+        "continuation_awareness",
+        "continuation_facts"
+      ],
+      "properties": {
+        "view": {"const": "control"},
         "familiarity": {"$ref": "#/$defs/score"},
         "trust": {"$ref": "#/$defs/score"},
         "comfort": {"$ref": "#/$defs/score"},
         "closeness": {"$ref": "#/$defs/score"},
-        "tension": {"$ref": "#/$defs/score"}
+        "tension": {"$ref": "#/$defs/score"},
+        "relationship_stage": {
+          "$ref": "#/$defs/identifier"
+        },
+        "nickname_permissions": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nickname"}
+        },
+        "home_access": {"$ref": "#/$defs/home_access"},
+        "continuation_awareness": {
+          "$ref": "#/$defs/awareness"
+        },
+        "continuation_facts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"$ref": "#/$defs/continuation_fact"}
+        }
       }
     },
-    "control": {
-      "allOf": [
-        {"$ref": "#/$defs/shared"}, {"$ref": "#/$defs/hidden"},
-        {"type": "object", "additionalProperties": false, "required": ["view"], "properties": {
-          "view": {"const": "control"}, "familiarity": {}, "trust": {}, "comfort": {}, "closeness": {}, "tension": {},
-          "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
-        }}
-      ]
-    },
     "character": {
-      "allOf": [
-        {"$ref": "#/$defs/shared"},
-        {"type": "object", "additionalProperties": false, "required": ["view"], "properties": {
-          "view": {"const": "character"}, "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
-        }}
-      ]
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "relationship_stage",
+        "nickname_permissions",
+        "home_history_allowed",
+        "continuation_known",
+        "continuation_facts"
+      ],
+      "properties": {
+        "view": {"const": "character"},
+        "relationship_stage": {
+          "$ref": "#/$defs/identifier"
+        },
+        "nickname_permissions": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nickname"}
+        },
+        "home_history_allowed": {"type": "boolean"},
+        "continuation_known": {"type": "boolean"},
+        "continuation_facts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"$ref": "#/$defs/character_fact"}
+        }
+      }
     },
     "snapshot": {
-      "allOf": [
-        {"$ref": "#/$defs/shared"}, {"$ref": "#/$defs/hidden"},
-        {"type": "object", "additionalProperties": false, "required": ["view", "version"], "properties": {
-          "view": {"const": "snapshot"}, "version": {"type": "integer", "minimum": 1},
-          "familiarity": {}, "trust": {}, "comfort": {}, "closeness": {}, "tension": {},
-          "relationship_stage": {}, "nickname_permissions": {}, "home_access": {}, "continuation_awareness": {}
-        }}
-      ]
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "version",
+        "familiarity",
+        "trust",
+        "comfort",
+        "closeness",
+        "tension",
+        "relationship_stage",
+        "nickname_permissions",
+        "home_access",
+        "continuation_awareness",
+        "continuation_facts"
+      ],
+      "properties": {
+        "view": {"const": "snapshot"},
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "familiarity": {"$ref": "#/$defs/score"},
+        "trust": {"$ref": "#/$defs/score"},
+        "comfort": {"$ref": "#/$defs/score"},
+        "closeness": {"$ref": "#/$defs/score"},
+        "tension": {"$ref": "#/$defs/score"},
+        "relationship_stage": {
+          "$ref": "#/$defs/identifier"
+        },
+        "nickname_permissions": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nickname"}
+        },
+        "home_access": {"$ref": "#/$defs/home_access"},
+        "continuation_awareness": {
+          "$ref": "#/$defs/awareness"
+        },
+        "continuation_facts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"$ref": "#/$defs/continuation_fact"}
+        }
+      }
     }
   }
 }
