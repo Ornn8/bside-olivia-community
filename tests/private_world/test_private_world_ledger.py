@@ -54,15 +54,27 @@ def test_apply_once_deduplicates_event_and_delivery_ids(tmp_path: Path) -> None:
     }
 
 
-def test_event_insert_rolls_back_when_snapshot_version_conflicts(tmp_path: Path) -> None:
+def test_event_insert_rolls_back_when_snapshot_version_skips_ahead(tmp_path: Path) -> None:
     ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
     ledger.apply_once(_event(1), PrivateWorldSnapshot(version=1))
 
     with pytest.raises(LedgerWriteError):
-        ledger.apply_once(_event(2), PrivateWorldSnapshot(version=1))
+        ledger.apply_once(_event(2), PrivateWorldSnapshot(version=3))
 
     assert ledger.events() == (_event(1),)
     assert ledger.health()["event_count"] == 1
+
+
+def test_no_effect_event_can_share_latest_snapshot_version(tmp_path: Path) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    ledger.apply_once(_event(1), PrivateWorldSnapshot(version=1))
+
+    assert ledger.apply_once(_event(2), PrivateWorldSnapshot(version=1)) is True
+    assert ledger.health() == {
+        "status": "READY",
+        "event_count": 2,
+        "snapshot_count": 1,
+    }
 
 
 def test_health_never_exposes_database_path_or_private_values(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ class ReducerInputError(ValueError):
 
 
 class ReducerEventKind(str, Enum):
+    CANONICAL_REPLY_DELIVERED = "canonical_reply_delivered"
     BOUNDARY_RESPECTED = "boundary_respected"
     CONFLICT = "conflict"
     REPAIR = "repair"
@@ -30,6 +31,7 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _STAGE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _DEDUPLICATION_WINDOW = timedelta(hours=24)
 _NO_EFFECT_KINDS = {
+    ReducerEventKind.CANONICAL_REPLY_DELIVERED,
     ReducerEventKind.HIGH_FREQUENCY_MESSAGE,
     ReducerEventKind.GIFT,
     ReducerEventKind.REPEATED_PHRASE,
@@ -167,4 +169,3 @@ def reduce_private_world(
         next_snapshot,
         ReducerDelta(True, event.kind.value.upper(), changes),
     )
-

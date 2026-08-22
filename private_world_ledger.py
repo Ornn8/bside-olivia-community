@@ -117,6 +117,27 @@ class SQLitePrivateWorldLedger:
                 ).fetchone()
                 if duplicate:
                     return False
+                latest = connection.execute(
+                    """SELECT version, payload_json FROM private_world_snapshots
+                       ORDER BY version DESC LIMIT 1"""
+                ).fetchone()
+                snapshot_json = json.dumps(
+                    snapshot.to_dict(), sort_keys=True, separators=(",", ":")
+                )
+                if latest is None:
+                    write_snapshot = snapshot.version in {1, 2}
+                elif snapshot.version == latest[0]:
+                    if snapshot_json != latest[1]:
+                        raise LedgerWriteError(
+                            "unchanged snapshot version must preserve state"
+                        )
+                    write_snapshot = False
+                else:
+                    write_snapshot = snapshot.version == latest[0] + 1
+                if not write_snapshot and (
+                    latest is None or snapshot.version != latest[0]
+                ):
+                    raise LedgerWriteError("snapshot version is not contiguous")
                 connection.execute(
                     """INSERT INTO private_world_events
                        (event_id, delivery_id, event_type, payload_json, occurred_at)
@@ -129,15 +150,12 @@ class SQLitePrivateWorldLedger:
                         event.occurred_at,
                     ),
                 )
-                connection.execute(
-                    """INSERT INTO private_world_snapshots
-                       (version, payload_json, event_id) VALUES (?, ?, ?)""",
-                    (
-                        snapshot.version,
-                        json.dumps(snapshot.to_dict(), sort_keys=True, separators=(",", ":")),
-                        event.event_id,
-                    ),
-                )
+                if write_snapshot:
+                    connection.execute(
+                        """INSERT INTO private_world_snapshots
+                           (version, payload_json, event_id) VALUES (?, ?, ?)""",
+                        (snapshot.version, snapshot_json, event.event_id),
+                    )
         except sqlite3.Error as exc:
             raise LedgerWriteError("private world transaction failed") from exc
         return True
