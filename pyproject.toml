@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9,<4",
+    "jsonschema>=4.26,<5",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,7 @@ py-modules = [
     "local_server",
     "memory",
     "patch_feapp",
+    "persona_loader",
 ]
 
 [tool.setuptools.packages.find]
