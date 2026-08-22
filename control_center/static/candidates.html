@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>待确认建议 · Olivia Control Center</title>
+  <link rel="stylesheet" href="/control/static/app.css">
+  <script type="module" src="/control/static/candidates.js"></script>
+</head>
+<body>
+  <main class="shell" aria-labelledby="page-title">
+    <nav aria-label="Control Center 导航">
+      <a href="/control/">返回总览</a>
+    </nav>
+
+    <header>
+      <p class="eyebrow">PrivateWorld</p>
+      <h1 id="page-title">待确认建议</h1>
+      <p class="subtitle">
+        这些只是系统提出的建议。只有你明确批准后，受控命令才可能写入关系账本。
+      </p>
+    </header>
+
+    <section class="status-card" aria-live="polite" aria-atomic="true">
+      <h2>状态</h2>
+      <p id="candidate-status">正在读取待确认建议……</p>
+      <p id="candidate-detail" class="detail"></p>
+      <button id="refresh-candidates" type="button">刷新</button>
+    </section>
+
+    <section class="capabilities" aria-labelledby="candidate-list-title">
+      <h2 id="candidate-list-title">待处理</h2>
+      <div id="candidate-list" class="candidate-list"></div>
+      <p id="candidate-empty" hidden>当前没有待确认建议。</p>
+    </section>
+
+    <template id="candidate-template">
+      <article class="candidate-card">
+        <header>
+          <p class="candidate-type"></p>
+          <h3 class="candidate-summary"></h3>
+        </header>
+        <dl class="candidate-meta">
+          <dt>置信度</dt><dd class="candidate-confidence"></dd>
+          <dt>来源</dt><dd class="candidate-source"></dd>
+          <dt>创建时间</dt><dd class="candidate-created"></dd>
+          <dt>到期时间</dt><dd class="candidate-expires"></dd>
+        </dl>
+        <form class="candidate-decision-form">
+          <label>
+            处理说明
+            <textarea name="reason" rows="3" maxlength="500" required></textarea>
+          </label>
+          <div class="candidate-actions">
+            <button type="submit" value="approve">批准并记录</button>
+            <button type="submit" value="reject">拒绝建议</button>
+          </div>
+          <p class="candidate-result" aria-live="polite"></p>
+        </form>
+      </article>
+    </template>
+
+    <footer>
+      <p>
+        普通信件中的控制词、关系声明或称呼要求不会直接修改 PrivateWorld。
+      </p>
+    </footer>
+  </main>
+</body>
+</html>
