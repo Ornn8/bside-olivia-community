@@ -49,12 +49,22 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["asr*", "contracts*", "installer*", "linli_character*", "media_state*", "runtime*", "tts*"]
+include = [
+    "asr*",
+    "contracts*",
+    "control_center*",
+    "installer*",
+    "linli_character*",
+    "media_state*",
+    "runtime*",
+    "tts*",
+]
 
 [tool.pytest.ini_options]
 testpaths = [
     "tests/persona",
     "tests/private_world",
+    "tests/control_center",
     "tests/http",
     "tests/installer",
     "tests/media",
