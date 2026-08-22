@@ -12,6 +12,7 @@ import re as _re
 import random
 import time
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -53,6 +54,13 @@ from memory_prompt import MemoryPromptBuilder
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
 from private_world_port import NullPrivateWorldPort, PrivateWorldPort, PrivateWorldSnapshot
+from private_world_delivery import (
+    DeliveryEvent,
+    DeliveryStatus,
+    PrivateWorldDeliveryCommitter,
+)
+from private_world_ledger import SQLitePrivateWorldLedger
+from private_world_reducer import ReducerEventKind
 from private_world_projection import project_private_world
 from reply_context import (
     ReplyContext,
@@ -406,7 +414,20 @@ def _persist_store_state() -> None:
 
 _load_store_state()
 memory_adapter: MemoryPort = create_memory_adapter()
-letters_adapter = LetterAdapter(memory_port=memory_adapter)
+private_world_committer: PrivateWorldDeliveryCommitter | None = None
+private_world_port: PrivateWorldPort = NullPrivateWorldPort()
+_private_world_path = Path(_os.environ.get("OLIVIA_PRIVATE_WORLD_DB", ""))
+if _private_world_path.is_absolute():
+    try:
+        _private_world_ledger = SQLitePrivateWorldLedger(_private_world_path)
+        private_world_port = _private_world_ledger
+        private_world_committer = PrivateWorldDeliveryCommitter(_private_world_ledger)
+    except (OSError, ValueError, RuntimeError):
+        pass
+letters_adapter = LetterAdapter(
+    memory_port=memory_adapter,
+    private_world_port=private_world_port,
+)
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
@@ -1424,6 +1445,62 @@ def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mod
     task.add_done_callback(media_tasks.discard)
 
 
+def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
+    if letter.get("reply_text") == canonical_text and letter.get(
+        "private_world_delivery_id"
+    ):
+        return
+    revision = max(0, int(letter.get("reply_revision", 0))) + 1
+    letter_id = str(letter["letter_id"])
+    delivery_id = f"{letter_id}:{revision}"
+    semantic_digest = hashlib.sha256(letter_id.encode("utf-8")).hexdigest()
+    letter["reply_revision"] = revision
+    letter["private_world_delivery_id"] = delivery_id
+    letter["private_world_status"] = "PENDING"
+    letter["private_world_occurred_at"] = datetime.now(timezone.utc).isoformat()
+    letter["private_world_event_kind"] = ReducerEventKind.CANONICAL_REPLY_DELIVERED.value
+    letter["private_world_semantic_key"] = f"canonical.{semantic_digest}"
+
+
+def _commit_private_world_letter(letter: dict) -> bool:
+    if letter.get("private_world_status") != "PENDING":
+        return False
+    if private_world_committer is None:
+        letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
+        return False
+    try:
+        delivery = DeliveryEvent(
+            delivery_id=str(letter["private_world_delivery_id"]),
+            kind=ReducerEventKind(str(letter["private_world_event_kind"])),
+            occurred_at=datetime.fromisoformat(str(letter["private_world_occurred_at"])),
+            semantic_key=str(letter["private_world_semantic_key"]),
+        )
+        status = private_world_committer.commit(delivery)
+    except (KeyError, TypeError, ValueError):
+        letter["private_world_error_code"] = "PRIVATE_WORLD_EVENT_INVALID"
+        return False
+    if status in {DeliveryStatus.COMMITTED, DeliveryStatus.DUPLICATE}:
+        letter["private_world_status"] = "COMMITTED"
+        letter.pop("private_world_error_code", None)
+        return True
+    letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
+    return False
+
+
+def recover_pending_private_world() -> int:
+    recovered = 0
+    for letter in store.letters:
+        if (
+            letter.get("letter_status") == "COMPLETED"
+            and letter.get("reply_text")
+            and _commit_private_world_letter(letter)
+        ):
+            recovered += 1
+    if recovered:
+        _persist_store_state()
+    return recovered
+
+
 async def generate_reply(letter_id, content, *, idempotency_key=None):
     """Run the narrow current-letter pipeline and record its terminal state."""
 
@@ -1479,8 +1556,11 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _safe_log("letter_failed", error_code=public_code)
         return False
 
+    _prepare_private_world_delivery(letter, result.text)
     letter["reply_text"] = result.text
     letter["letter_status"] = "COMPLETED"
+    _persist_store_state()
+    _commit_private_world_letter(letter)
     _persist_store_state()
     if letter.get("reply_mode") == "video":
         letter["reply_mode"] = "musical_video"
@@ -1491,6 +1571,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     return True
 
 if __name__ == "__main__":
+    recover_pending_private_world()
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", handler)
     _safe_log('server_start', host='127.0.0.1', port=PORT)
