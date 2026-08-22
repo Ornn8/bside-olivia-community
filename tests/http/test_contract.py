@@ -95,7 +95,9 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     assert sent["code"] == 0
     assert sent["data"]["letterId"] == letter_id
     assert listed["data"]["list"][0]["letter_id"] == letter_id
+    assert listed["data"]["list"][0]["letter_status"] == 4
     assert detail["data"]["content"] == "synthetic input"
+    assert detail["data"]["letter_status"] == 4
     assert detail["data"]["reply_text"] == "synthetic reply"
     assert detail["data"]["reply_content"] == "synthetic reply"
     assert detail["data"]["read_only"] is False

@@ -507,12 +507,30 @@ def fake_jwt():
     # 本地伪造 token（客户端不校验，服务器自己验证）
     return "toy__local." + uuid.uuid4().hex
 
+
+CLIENT_LETTER_STATUS = {
+    "PENDING": 1,
+    "AUDITING": 2,
+    "LLM_PROCESSING": 3,
+    "COMPLETED": 4,
+    "REPLIED": 4,
+    "FAILED": 5,
+    "CANCELED": 5,
+}
+
+
+def client_letter_status(value) -> int:
+    if isinstance(value, int) and value in range(1, 6):
+        return value
+    return CLIENT_LETTER_STATUS.get(str(value).upper(), 5)
+
+
 def letter_to_out(l):
     published = l.get("reply_not_before", 0.0) <= time.time()
     return {
         "letter_id": l["letter_id"],
         "summary": (l.get("reply_text") or l.get("content") or "")[:50],
-        "letter_status": l.get("letter_status", 4) if published else "PENDING",
+        "letter_status": client_letter_status(l.get("letter_status", 4)) if published else 1,
         "audit_status": l.get("audit_status", 2),
         "reply_type": 1 if published and l.get("reply_text") else 0,
         "reply_mode": l.get("reply_mode", "text") if published else "text",
@@ -1154,7 +1172,7 @@ async def route(method, path, body, query):
         reply_text = l.get("reply_text", "") if reply_published else ""
         return ok({
             "letter_id": l["letter_id"],
-            "letter_status": l.get("letter_status", 4),
+            "letter_status": client_letter_status(l.get("letter_status", 4)) if reply_published else 1,
             "audit_status": l.get("audit_status", 2),
             "content": l.get("content", ""),
             "material": l.get("material", {}),
