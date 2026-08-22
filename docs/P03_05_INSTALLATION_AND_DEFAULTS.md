@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-让普通维护者在一台干净 Windows 机器上完成安装和配置后，不需要手工拼接大量环境变量，就能启动稳定的文字书信陪伴系统；已安装本机媒体组件时，可继续使用说话视频和音乐视频。
+让普通用户在一台干净 Windows 机器上完成安装和配置后，不需要打开 CMD、PowerShell、Python 或手工拼接环境变量，就能启动稳定的文字书信陪伴系统；已安装本机媒体组件时，可继续使用说话视频和音乐视频。
 
 安装器必须区分：
 
@@ -11,11 +11,35 @@
 - 可选长期记忆；
 - 可选说话视频；
 - 可选音乐视频；
+- 本地 Companion Control Center；
 - 实验模块。
 
 任何可选组件缺失都不能伪造 READY，也不能阻止核心文字回复。
 
-## 2. 现有问题
+## 2. 用户体验决策
+
+正式用户流程全部图形化：
+
+```text
+双击 INSTALL.cmd
+  -> 安装核心文件
+  -> 启动本地 Setup Wizard
+  -> 浏览器打开本地界面
+  -> 配置主模型、记忆和媒体
+  -> 运行检查
+  -> 创建 Windows 快捷方式
+```
+
+用户日常只需要：
+
+- `Start Olivia`；
+- `Olivia Control Center`；
+- `Olivia Diagnostics`；
+- `Uninstall Olivia`。
+
+不得把 CLI、JSON 文件或环境变量作为普通用户的完成路径。`--non-interactive` 等参数只保留给 CI、自动安装和维护测试。
+
+## 3. 现有问题
 
 当前 `installer/start_local.py`：
 
@@ -23,14 +47,13 @@
 - 会设置本地 HTTP、模型和回复延迟；
 - 默认配置较多依赖进程环境；
 - 没有默认设置 PrivateWorld DB；
-- 没有 Mem0 组件安装和模型缓存流程；
+- 没有 Mem0 安装和模型缓存流程；
 - 媒体配置主要依赖外部环境变量；
 - core health 只证明 HTTP 基线，不证明真实模型、记忆和媒体可运行；
-- 配置向导主要处理单个 DeepSeek key 和参考文件。
+- 配置向导主要处理单个 DeepSeek key 和参考文件；
+- 配置过程仍偏命令行，不适合最终用户。
 
-## 3. 默认目录布局
-
-安装后使用：
+## 4. 默认目录布局
 
 ```text
 <install-root>/
@@ -55,26 +78,31 @@
    │  ├─ runtime.json
    │  ├─ memory.json
    │  ├─ media.json
+   │  ├─ control-center.json
    │  └─ secrets/
+   ├─ control/
+   │  ├─ sessions/
+   │  └─ calibration/
+   ├─ acceptance/
    ├─ logs/
    ├─ third-party/
    └─ exports/
 ```
 
-旧版本使用 `data/state.json` 和 `data/memory` 时，首次启动执行无损迁移。迁移前保留备份。
+旧版本使用 `data/state.json` 和旧 memory SQLite 时，首次启动执行无损迁移。迁移前保留备份。
 
-## 4. 配置优先级
+## 5. 配置优先级
 
 ```text
-显式命令行参数
-    > 环境变量
+自动化显式参数
+    > 环境变量覆盖
     > data/config/*.json
     > 安全默认值
 ```
 
-配置文件不保存明文 API key。凭据使用 Windows DPAPI，运行时只在当前进程内解密。
+普通用户通过 Setup Wizard 和 Control Center 编辑配置。配置文件不保存明文 API key；凭据使用 Windows DPAPI，运行时只在当前进程内解密。
 
-## 5. 核心配置
+## 6. 核心配置
 
 `runtime.json` 示例：
 
@@ -82,6 +110,7 @@
 {
   "schema_version": 1,
   "port": 8899,
+  "control_port": 8900,
   "reply_delay": {
     "enabled": true,
     "minimum_minutes": 5,
@@ -98,15 +127,16 @@
   },
   "persona_v2_enabled": true,
   "private_world_enabled": true,
-  "memory_enabled": true
+  "memory_enabled": true,
+  "control_center_enabled": true
 }
 ```
 
-安装器不应永久写死一个可能变化的模型名称。首次配置向导提供默认建议，但最终保存用户选择。
+安装器不永久写死可能变化的模型名称。Setup Wizard 可以提供建议值，但最终保存用户选择。
 
-## 6. 安装模式
+## 7. 安装模式
 
-### 6.1 Core
+### 7.1 Core
 
 必需：
 
@@ -117,11 +147,12 @@
 - Persona 文件；
 - 当前信件持久化；
 - PrivateWorld SQLite；
+- Companion Control Center 静态资源；
 - health、start、uninstall。
 
 Core 不下载大型模型。
 
-### 6.2 Memory
+### 7.2 Memory
 
 可选安装 extra：
 
@@ -132,16 +163,16 @@ sentence-transformers
 锁定的 embedding 模型
 ```
 
-安装器必须：
+Setup Wizard 必须：
 
-- 显式展示下载内容和预计体积；
+- 展示下载内容和预计体积；
 - 下载到 `data/memory/model-cache`；
 - 固定 revision 或校验哈希；
 - 允许跳过；
 - 下载失败时保持 Core 可用；
 - 不在服务首次启动时隐式联网下载。
 
-### 6.3 Spoken Video
+### 7.3 Spoken Video
 
 检测：
 
@@ -155,49 +186,67 @@ sentence-transformers
 
 只有全部满足才报告 `spoken_video=available`。
 
-### 6.4 Musical Video
+### 7.4 Musical Video
 
 在 Spoken Video 基础上额外检测：
 
 - MiniMax Music 3 ComfyUI runtime；
 - MiniMax worker；
 - MiniMax model 文件；
+- 已选择的 Caption/CFG/seed profile；
 - RoFormer executable；
 - performance base video；
 - 可选官方转场；
-- 音频实验已经选择生产参数。
+- `concat_videos()` 拼接链依赖。
+
+完整能力定义为：
+
+```text
+说话视频
+  + MiniMax 音频
+  + RoFormer vocals
+  + 演唱视频 LatentSync
+  + 可选静音转场
+  + FFmpeg 顺序拼接
+```
 
 只有完整链可运行才报告 `musical_video=available`。
 
-## 7. 首次配置向导
+## 8. 图形化 Setup Wizard
 
-扩展 `installer/configure.py`，使用分阶段向导：
+Setup Wizard 运行在本地 Control Center 的 setup 模式，不连接外部 UI 服务。
+
+页面顺序：
 
 ```text
-1. 选择并验证主模型 endpoint
-2. 安全保存 API key
-3. 检查 Persona READY
-4. 创建 PrivateWorld DB
-5. 选择是否安装 Mem0
-6. 检查或配置 embedding
-7. 检查说话视频组件
-8. 检查音乐视频组件
-9. 写入配置文件
-10. 运行无外部调用的静态验证
-11. 可选运行真实 provider probe
+1. 欢迎与数据目录
+2. 主模型 endpoint、模型和 API key
+3. Persona READY 检查
+4. PrivateWorld 数据库创建
+5. Mem0 与 embedding 安装选择
+6. 说话视频组件检查
+7. MiniMax / RoFormer / 演唱视频组件检查
+8. 音乐校准状态
+9. 数据和隐私摘要
+10. 静态验证
+11. 可选真实 provider probe
+12. 完成与快捷方式
 ```
 
 要求：
 
-- 输入 key 不回显；
+- API key 输入不回显；
 - probe 不输出 provider 原始响应；
-- 所有文件路径在保存前验证；
+- 所有文件路径通过文件选择器指定并验证；
 - 不自动扫描整个磁盘、Steam 目录或用户文档；
 - 只复制用户显式选择的第三方参考文件；
-- 重新运行向导时保留未修改项；
-- 提供 `--non-interactive --config <file>` 供自动化验收。
+- 重新运行时保留未修改项；
+- 每一步可返回修改；
+- 可选组件可跳过；
+- 页面明确解释“可用、降级、未配置”的区别；
+- 自动化保留 `--non-interactive --config <file>`，但不暴露给普通用户。
 
-## 8. 启动器
+## 9. 启动器
 
 `installer/start_local.py` 调整：
 
@@ -206,15 +255,43 @@ sentence-transformers
 3. 设置进程级环境；
 4. 解密凭据；
 5. 执行轻量 migration；
-6. 启动本地后端；
+6. 启动兼容 API 和 Control Center 管理站点；
 7. 等待 `/health?profile=core`；
 8. 可选检查 `/health?profile=companion`；
 9. 启动隔离客户端；
-10. 客户端退出后不误杀仍在处理的媒体任务，提供明确停止命令。
+10. 客户端退出后不误杀仍在处理的媒体任务；
+11. 提供图形化“安全停止”操作。
 
-需要 PID/lock 文件防止同一数据目录启动两个后端实例。
+使用 PID/lock 文件防止同一数据目录启动两个后端实例。
 
-## 9. 健康检查分层
+## 10. Windows 快捷方式
+
+安装后创建开始菜单项：
+
+### Start Olivia
+
+- 使用无控制台窗口启动；
+- 启动后端和原版客户端；
+- 不自动打开 Control Center。
+
+### Olivia Control Center
+
+- 检查后端；
+- 创建一次性管理 bootstrap token；
+- 打开本地管理页面；
+- 不显示终端窗口。
+
+### Olivia Diagnostics
+
+- 打开 Control Center 的诊断页；
+- 不直接弹出日志文件或命令行。
+
+### Uninstall Olivia
+
+- 图形化选择保留或删除哪些数据域；
+- 默认保留 `data/`。
+
+## 11. 健康检查分层
 
 ### `profile=core`
 
@@ -223,6 +300,7 @@ sentence-transformers
 - HTTP 服务；
 - store 可读写；
 - Persona 文件可加载；
+- Control Center shell 可加载；
 - 不调用外部网络。
 
 ### `profile=llm`
@@ -248,13 +326,23 @@ sentence-transformers
 - snapshot 可读取；
 - 不输出隐藏值。
 
+### `profile=control-center`
+
+验证：
+
+- 独立 loopback listener；
+- 静态资源完整；
+- session store 可用；
+- 不创建真实管理 session；
+- 不输出 token。
+
 ### `profile=spoken-video`
 
-只做本地文件和 executable 检查。真实生成属于 acceptance，不属于普通 health。
+只做本地文件和 executable 检查。真实生成属于 acceptance。
 
 ### `profile=musical-video`
 
-只检查本地依赖和生产参数配置；不在 health 中启动大型模型。
+检查 MiniMax、RoFormer、performance base、转场和拼接 profile；不在 health 中启动大型模型。
 
 ### `profile=companion`
 
@@ -266,6 +354,7 @@ llm
 persona
 memory
 private-world
+control-center
 spoken-video
 musical-video
 ```
@@ -281,7 +370,7 @@ musical-video
 }
 ```
 
-## 10. 数据迁移
+## 12. 数据迁移
 
 首次启动按版本迁移：
 
@@ -292,37 +381,38 @@ musical-video
 - 配置文件写入 schema version；
 - 每次迁移创建时间戳备份；
 - 迁移失败时不删除原文件；
-- 不自动把旧 conversation memory 灌入 Mem0。
+- 不自动把旧 conversation memory 灌入 Mem0；
+- Control Center 提供迁移预览和确认。
 
-## 11. 卸载与数据保留
+## 13. 卸载与数据保留
 
 默认卸载：
 
 - 删除 runtime 和隔离客户端；
 - 保留 `data/`；
-- 输出保留路径。
+- 在图形界面显示保留路径和数据域。
 
-可选：
+可选择删除：
 
 ```text
---delete-current-letters
---delete-archive
---delete-memory
---delete-private-world
---delete-media
---delete-secrets
---delete-all-data
+当前信件
+Archive
+长期记忆
+PrivateWorld
+媒体
+凭据
+全部本地数据
 ```
 
-每个 destructive 选项都需要确认。删除 PrivateWorld 和 memory 时使用其正式管理入口，清理 SQLite/Qdrant 附属文件。
+每个 destructive 选项都需要确认。删除 PrivateWorld 和 memory 时使用正式 Service/API，清理 SQLite/Qdrant 附属文件。
 
-## 12. PR 拆分与顺序
+## 14. PR 拆分与顺序
 
 ### INSTALL-01：配置 schema 与目录布局
 
 新增纯配置模型和迁移计划，不改启动行为。
 
-### INSTALL-02：首次配置向导
+### INSTALL-02：Setup Wizard 后端与 UI
 
 扩展 key、LLM、PrivateWorld、Memory 和 Media 配置。
 
@@ -330,27 +420,32 @@ musical-video
 
 接入配置读取、默认路径、migration 和 PID lock。
 
-### INSTALL-04：健康检查分层
+### INSTALL-04：Control Center 快捷方式与无控制台启动
+
+完成 Windows 用户入口。
+
+### INSTALL-05：健康检查分层
 
 更新 HTTP contract、health 和测试。
 
-### INSTALL-05：可选 Mem0 安装
+### INSTALL-06：可选 Mem0 安装
 
 增加 optional extra、模型下载和离线启动验证。
 
-### INSTALL-06：媒体能力检测
+### INSTALL-07：媒体能力检测
 
-只检测并报告，不修改已经调好的渲染参数。
+检测两种视频和音乐拼接链，不修改渲染参数。
 
-### INSTALL-07：卸载和数据保留
+### INSTALL-08：图形化卸载和数据保留
 
 按域删除、确认和回归测试。
 
-## 13. 测试矩阵
+## 15. 测试矩阵
 
 - Windows 路径包含空格和中文；
 - 无管理员权限安装到用户目录；
 - 首次安装、重复安装和升级；
+- Setup Wizard 全流程；
 - DPAPI key 保存与读取；
 - 无 key 启动；
 - 错误 base URL、模型和超时；
@@ -358,31 +453,36 @@ musical-video
 - Mem0 已安装但 embedding 缺失；
 - 无媒体；
 - 只有说话视频；
-- 完整音乐视频；
+- 完整音乐视频拼接；
 - 旧目录迁移；
 - 损坏 config 和 state；
 - 双实例启动；
+- 开始菜单快捷方式；
+- 启动时不出现终端窗口；
 - 默认卸载保留数据；
 - 分域删除；
 - 仓库外 wheel 安装和导入。
 
-## 14. 回滚
+## 16. 回滚
 
 - 配置和数据迁移都有 schema version；
 - 新启动器失败时可使用旧配置兼容读取；
 - 回滚代码不得删除新数据目录；
 - optional components 可单独禁用；
+- Control Center 不可用时原版客户端和文字回复继续；
 - 媒体检测错误不影响 core；
 - 安装器失败时恢复 patch 前客户端副本。
 
-## 15. 完成条件
+## 17. 完成条件
 
 - clean Windows 用户可以完成 Core 安装；
+- 用户不需要终端、JSON 或环境变量；
+- Setup Wizard、Start Olivia 和 Control Center 快捷方式可用；
 - 默认数据目录、当前信件和 PrivateWorld 可持久化；
-- Mem0 可通过明确步骤安装，且服务启动不隐式下载；
-- 配置不依赖手工拼接几十个环境变量；
-- health 能准确区分 Core、LLM、Memory、PrivateWorld 和两种视频；
+- Mem0 可通过图形化步骤安装，服务启动不隐式下载；
+- health 准确区分 Core、LLM、Memory、PrivateWorld、Control Center 和两种视频；
+- musical-video health 覆盖说话＋演唱＋转场＋拼接完整链；
 - 可选 provider 缺失不阻断文字回复；
 - 升级和卸载不丢用户数据；
-- 所有凭据使用 DPAPI 或环境变量，不进入仓库和日志；
+- 所有凭据使用 DPAPI 或进程环境，不进入仓库和日志；
 - Windows 安装测试、`public-smoke` 和 hardening scan 通过。
