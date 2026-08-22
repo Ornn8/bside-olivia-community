@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -136,9 +136,11 @@ class SQLitePrivateWorldLedger:
         ):
             return 0
         try:
-            with sqlite3.connect(
-                self._database_path,
-                timeout=5,
+            with closing(
+                sqlite3.connect(
+                    self._database_path,
+                    timeout=5,
+                )
             ) as connection:
                 rows = connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -179,14 +181,19 @@ class SQLitePrivateWorldLedger:
             f"{self._database_path.name}.pre-v2-{stamp}.bak"
         )
         try:
-            with sqlite3.connect(
-                self._database_path,
-                timeout=5,
-            ) as source, sqlite3.connect(
-                backup,
-                timeout=5,
+            with closing(
+                sqlite3.connect(
+                    self._database_path,
+                    timeout=5,
+                )
+            ) as source, closing(
+                sqlite3.connect(
+                    backup,
+                    timeout=5,
+                )
             ) as destination:
                 source.backup(destination)
+                destination.commit()
         except sqlite3.Error as exc:
             backup.unlink(missing_ok=True)
             raise LedgerWriteError(
