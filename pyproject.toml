@@ -34,6 +34,7 @@ py-modules = [
     "prompt_budget",
     "reply_context",
     "reply_policy",
+    "reply_quality_gate",
     "reply_reviewer",
 ]
 
