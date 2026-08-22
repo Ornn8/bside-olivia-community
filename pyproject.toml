@@ -34,6 +34,7 @@ py-modules = [
     "prompt_budget",
     "private_world_port",
     "private_world_commands",
+    "private_world_service",
     "private_world_reducer",
     "private_world_ledger",
     "private_world_admin",
