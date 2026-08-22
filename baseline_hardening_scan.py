@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import re
 import subprocess
 import sys
@@ -30,7 +31,31 @@ MODES = (
     "sensitive-paths",
     "large-files",
     "evidence-ignore",
+    "persona-release",
 )
+
+PERSONA_RELEASE_PATTERNS = (
+    "private_reference_path",
+    "private_state_path",
+    "private_communication_path",
+    "control_view_instance",
+    "continuation_instance",
+    "private_nickname_instance",
+    "blocked_release_record",
+    "long_source_copy",
+    "invalid_release_asset",
+)
+PERSONA_RELEASE_ROOTS = {"linli_character", "persona", "personas", "content"}
+PERSONA_RELEASE_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".md"}
+PERSONA_RELEASE_TEXT_KEYS = {
+    "content",
+    "original_text",
+    "source_text",
+    "statement",
+    "summary",
+    "text",
+}
+MAX_PERSONA_RELEASE_TEXT_CHARS = 1_200
 
 
 COMMENT_PATTERNS = (
@@ -314,6 +339,133 @@ def scan_evidence_ignore(root: Path) -> tuple[list[str], list[str]]:
     return not_ignored, checked
 
 
+def _persona_release_files(root: Path, files: list[Path]) -> list[Path]:
+    selected: list[Path] = []
+    for path in files:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if (
+            not parts
+            or parts[0] not in PERSONA_RELEASE_ROOTS
+            or path.suffix.lower() not in PERSONA_RELEASE_SUFFIXES
+            or "provenance" in path.stem.lower()
+        ):
+            continue
+        selected.append(path)
+    return selected
+
+
+def _append_persona_finding(findings: list[str], name: str, label: str) -> None:
+    finding = f"{name}:{label}"
+    if finding not in findings:
+        findings.append(finding)
+
+
+def _scan_persona_json(
+    value: object,
+    name: str,
+    findings: list[str],
+    *,
+    enforce_release_flags: bool,
+) -> None:
+    if isinstance(value, list):
+        for item in value:
+            _scan_persona_json(
+                item,
+                name,
+                findings,
+                enforce_release_flags=enforce_release_flags,
+            )
+        return
+    if not isinstance(value, dict):
+        return
+
+    allowed = value.get("allowed_public_release")
+    rights = value.get("rights_status")
+    if enforce_release_flags and (
+        allowed is False
+        or (
+            isinstance(rights, str)
+            and any(marker in rights.upper() for marker in ("UNKNOWN", "BLOCK"))
+        )
+    ):
+        _append_persona_finding(findings, name, "blocked_release_record")
+    if value.get("view") == "control":
+        _append_persona_finding(findings, name, "control_view_instance")
+    if value.get("continuation_awareness") in {"control_only", "pending"}:
+        _append_persona_finding(findings, name, "continuation_instance")
+    if value.get("nickname_permissions"):
+        _append_persona_finding(findings, name, "private_nickname_instance")
+
+    for key, item in value.items():
+        if (
+            key in PERSONA_RELEASE_TEXT_KEYS
+            and isinstance(item, str)
+            and len(item) > MAX_PERSONA_RELEASE_TEXT_CHARS
+        ):
+            _append_persona_finding(findings, name, "long_source_copy")
+        _scan_persona_json(
+            item,
+            name,
+            findings,
+            enforce_release_flags=enforce_release_flags,
+        )
+
+
+def _scan_persona_text(text: str, name: str, findings: list[str]) -> None:
+    checks = (
+        (r"(?i)allowed_public_release\s*[:=]\s*false", "blocked_release_record"),
+        (r"(?i)rights_status\s*[:=]\s*[^\r\n]*(?:unknown|block)", "blocked_release_record"),
+        (r"(?i)(?:^|[,{\s])view\s*[:=]\s*[\"']?control\b", "control_view_instance"),
+        (
+            r"(?i)continuation_awareness\s*[:=]\s*[\"']?(?:control_only|pending)\b",
+            "continuation_instance",
+        ),
+        (r"(?i)nickname_permissions\s*[:=]\s*\[[^\]\s]", "private_nickname_instance"),
+    )
+    for pattern, label in checks:
+        if re.search(pattern, text):
+            _append_persona_finding(findings, name, label)
+    if any(len(line) > MAX_PERSONA_RELEASE_TEXT_CHARS for line in text.splitlines()):
+        _append_persona_finding(findings, name, "long_source_copy")
+
+
+def scan_persona_release(
+    root: Path, files: list[Path]
+) -> tuple[list[str], list[str], int]:
+    findings: list[str] = []
+    selected = _persona_release_files(root, files)
+    for path in selected:
+        name = relative(path, root)
+        lower_name = name.lower()
+        if re.search(r"(?:^|/)(?:private|reference)[^/]*\.(?:md|txt|docx?|pdf)$", lower_name):
+            _append_persona_finding(findings, name, "private_reference_path")
+        if re.search(r"(?:^|/)(?:private_world|relationship|world)[^/]*state[^/]*\.", lower_name):
+            _append_persona_finding(findings, name, "private_state_path")
+        if re.search(
+            r"(?:^|/)(?:chat|letter|message|transcript|communication)[^/]*\.",
+            lower_name,
+        ):
+            _append_persona_finding(findings, name, "private_communication_path")
+
+        try:
+            text = path.read_text(encoding="utf-8")
+            if path.suffix.lower() == ".json":
+                _scan_persona_json(
+                    json.loads(text),
+                    name,
+                    findings,
+                    enforce_release_flags=path.name != "persona_v2.json",
+                )
+            else:
+                _scan_persona_text(text, name, findings)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            _append_persona_finding(findings, name, "invalid_release_asset")
+    return findings, list(PERSONA_RELEASE_PATTERNS), len(selected)
+
+
 def emit_section(name: str, patterns: list[str], findings: list[str]) -> None:
     print(f"[{name}]")
     print(f"patterns={','.join(patterns)}")
@@ -373,6 +525,11 @@ def main(argv: list[str] | None = None) -> int:
             emit_section("evidence_ignore_boundary", [".evidence/**"], findings)
             print(f"evidence_probe_count={len(probes)}")
             print(f"evidence_probes_checked={len(probes) - len(findings)}")
+            all_findings.extend(findings)
+        if "persona-release" in selected:
+            findings, patterns, checked = scan_persona_release(root, files)
+            emit_section("persona_public_release_boundary", patterns, findings)
+            print(f"persona_release_files_checked={checked}")
             all_findings.extend(findings)
     except (OSError, UnicodeError, subprocess.SubprocessError, tokenize.TokenError, SyntaxError) as exc:
         print(f"status=ERROR:{type(exc).__name__}")

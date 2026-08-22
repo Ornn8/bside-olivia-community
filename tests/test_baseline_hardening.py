@@ -239,6 +239,113 @@ def test_b00_scanner_allows_pinned_cors_metadata_but_rejects_forwarding(
     ]
 
 
+def test_persona_release_scan_allows_contracts_code_and_public_declarations(
+    tmp_path: Path,
+) -> None:
+    import json
+    import baseline_hardening_scan as scanner
+
+    contract = tmp_path / "contracts" / "private_world.schema.json"
+    runtime = tmp_path / "private_world_port.py"
+    persona = tmp_path / "linli_character" / "persona_v2.json"
+    contract.parent.mkdir()
+    persona.parent.mkdir()
+    contract.write_text('{"properties":{"view":{"const":"control"}}}', encoding="utf-8")
+    runtime.write_text('CONTROL_VIEW = "control_only"\n', encoding="utf-8")
+    persona.write_text(
+        json.dumps(
+            {
+                    "declarations": [
+                        {
+                            "allowed_public_release": True,
+                            "rights_status": "REDISTRIBUTABLE",
+                            "statement": "Synthetic public rule.",
+                        },
+                        {
+                            "allowed_public_release": False,
+                            "rights_status": "UNKNOWN_BLOCK_RELEASE",
+                            "statement": "Synthetic quarantined registry record.",
+                        }
+                    ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    findings, _, checked = scanner.scan_persona_release(
+        tmp_path, [contract, runtime, persona]
+    )
+
+    assert findings == []
+    assert checked == 1
+
+
+def test_persona_release_scan_rejects_private_instances_and_communications(
+    tmp_path: Path,
+) -> None:
+    import json
+    import baseline_hardening_scan as scanner
+
+    state = tmp_path / "linli_character" / "private_world_state.json"
+    chat = tmp_path / "linli_character" / "chat_export.json"
+    state.parent.mkdir()
+    state.write_text(
+        json.dumps(
+            {
+                "view": "control",
+                "continuation_awareness": "pending",
+                "nickname_permissions": ["synthetic_private_nickname"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    chat.write_text('{"messages":["synthetic private communication"]}', encoding="utf-8")
+
+    findings, _, _ = scanner.scan_persona_release(tmp_path, [state, chat])
+
+    assert {finding.rsplit(":", 1)[-1] for finding in findings} >= {
+        "private_state_path",
+        "control_view_instance",
+        "continuation_instance",
+        "private_nickname_instance",
+        "private_communication_path",
+    }
+    assert "synthetic_private_nickname" not in "\n".join(findings)
+    assert "synthetic private communication" not in "\n".join(findings)
+
+
+def test_persona_release_scan_fails_closed_on_blocked_rights_and_source_copy(
+    tmp_path: Path,
+) -> None:
+    import json
+    import baseline_hardening_scan as scanner
+
+    asset = tmp_path / "linli_character" / "persona_extra.json"
+    asset.parent.mkdir()
+    asset.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "allowed_public_release": False,
+                        "rights_status": "UNKNOWN_BLOCK_RELEASE",
+                        "statement": "x" * 1300,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    findings, _, _ = scanner.scan_persona_release(tmp_path, [asset])
+
+    assert {finding.rsplit(":", 1)[-1] for finding in findings} == {
+        "blocked_release_record",
+        "long_source_copy",
+    }
+    assert "x" * 20 not in "\n".join(findings)
+
+
 def test_b00_scanner_process_exit_codes_and_sanitized_findings(tmp_path: Path) -> None:
     repo = tmp_path / "synthetic-repo"
     repo.mkdir()
