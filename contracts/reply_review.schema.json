@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p02.reply-review.v1",
+  "title": "P02 reply reviewer response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "verdict", "violations", "scores"],
+  "properties": {
+    "schema_version": {"const": "p02.reply-review.v1"},
+    "status": {"const": "completed"},
+    "verdict": {"enum": ["pass", "rewrite", "block"]},
+    "violations": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/violation"}
+    },
+    "scores": {"$ref": "#/$defs/scores"}
+  },
+  "$defs": {
+    "violation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "evidence"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+        "severity": {"enum": ["hard", "soft"]},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["persona_consistency", "factual_consistency", "relationship_boundary", "mode_compliance"],
+      "properties": {
+        "persona_consistency": {"type": "integer", "minimum": 0, "maximum": 100},
+        "factual_consistency": {"type": "integer", "minimum": 0, "maximum": 100},
+        "relationship_boundary": {"type": "integer", "minimum": 0, "maximum": 100},
+        "mode_compliance": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    }
+  }
+}
