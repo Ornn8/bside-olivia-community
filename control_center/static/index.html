@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Olivia Control Center</title>
+  <link rel="stylesheet" href="/control/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">本地陪伴系统</p>
+      <h1>Olivia Control Center</h1>
+    </div>
+    <div class="session-actions">
+      <span id="session-status" role="status">正在建立本地会话</span>
+      <button id="logout-button" type="button">退出管理</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="管理功能">
+      <a href="#private-world" aria-current="page">私有世界</a>
+      <span aria-disabled="true">长期记忆（后续）</span>
+      <span aria-disabled="true">音乐校准（后续）</span>
+      <span aria-disabled="true">诊断（后续）</span>
+    </nav>
+
+    <main id="private-world" tabindex="-1">
+      <section aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PrivateWorld</p>
+            <h2 id="overview-title">关系与私人世界概览</h2>
+          </div>
+          <button id="refresh-button" type="button">刷新</button>
+        </div>
+        <p class="hint">这里显示的是定性状态。系统不会把隐藏数值做成可刷取的亲密度游戏。</p>
+        <dl class="status-grid">
+          <div><dt>关系阶段</dt><dd id="relationship-stage">—</dd></div>
+          <div><dt>熟悉度</dt><dd id="level-familiarity">—</dd></div>
+          <div><dt>信任</dt><dd id="level-trust">—</dd></div>
+          <div><dt>舒适度</dt><dd id="level-comfort">—</dd></div>
+          <div><dt>亲近度</dt><dd id="level-closeness">—</dd></div>
+          <div><dt>紧张度</dt><dd id="level-tension">—</dd></div>
+          <div><dt>住所权限</dt><dd id="home-access">—</dd></div>
+          <div><dt>已授权称呼</dt><dd id="nickname-summary">—</dd></div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="event-title">
+        <h2 id="event-title">记录关系事件</h2>
+        <p class="hint">成功回信不会自动增加关系。只有你明确提交的事件才会改变状态。</p>
+        <form id="relationship-event-form">
+          <fieldset>
+            <legend>事件类型</legend>
+            <label><input type="radio" name="event-type" value="boundary_respected" required> 边界被尊重</label>
+            <label><input type="radio" name="event-type" value="conflict"> 冲突</label>
+            <label><input type="radio" name="event-type" value="repair"> 修复</label>
+          </fieldset>
+          <label for="relationship-reason">确认依据</label>
+          <textarea id="relationship-reason" maxlength="280" required></textarea>
+          <button type="submit">记录事件</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="stage-title">
+        <h2 id="stage-title">确认关系阶段</h2>
+        <p class="hint">必须从下方时间线选择已有的关系事件作为依据。</p>
+        <form id="stage-form">
+          <label for="stage-select">目标阶段</label>
+          <select id="stage-select" required>
+            <option value="unknown">未知</option>
+            <option value="acquaintance">相识</option>
+            <option value="familiar">熟悉</option>
+            <option value="close">亲近</option>
+          </select>
+          <label for="stage-reason">确认说明</label>
+          <textarea id="stage-reason" maxlength="280" required></textarea>
+          <fieldset>
+            <legend>依据事件</legend>
+            <div id="stage-basis-list" class="choice-list"></div>
+          </fieldset>
+          <button type="submit">确认阶段</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="nickname-title">
+        <h2 id="nickname-title">私人称呼</h2>
+        <ul id="nickname-list" class="tag-list"></ul>
+        <form id="nickname-form">
+          <label for="nickname-action">操作</label>
+          <select id="nickname-action">
+            <option value="grant">授权</option>
+            <option value="revoke">撤销</option>
+          </select>
+          <label for="nickname-value">称呼</label>
+          <input id="nickname-value" maxlength="32" autocomplete="off" required>
+          <label for="nickname-reason">说明</label>
+          <input id="nickname-reason" maxlength="280" required>
+          <button type="submit">提交称呼变更</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="home-title">
+        <h2 id="home-title">住所边界</h2>
+        <form id="home-form">
+          <label for="home-select">权限</label>
+          <select id="home-select">
+            <option value="no_access">无访问权限</option>
+            <option value="visit_access">拜访权限</option>
+            <option value="errand_access">代办权限</option>
+            <option value="domestic_access">共同生活权限</option>
+          </select>
+          <label for="home-reason">说明</label>
+          <textarea id="home-reason" maxlength="280" required></textarea>
+          <button type="submit">更新住所权限</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="continuation-title">
+        <h2 id="continuation-title">私人世界线</h2>
+        <p class="hint">「系统知道」与「林离知道」是两回事。切换为角色已知前会再次确认。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>事实 ID</th><th>内容</th><th>知情状态</th></tr></thead>
+            <tbody id="continuation-list"></tbody>
+          </table>
+        </div>
+        <form id="continuation-form">
+          <label for="continuation-action">操作</label>
+          <select id="continuation-action">
+            <option value="upsert">新增或更新</option>
+            <option value="set_awareness">只调整知情状态</option>
+            <option value="delete">删除</option>
+          </select>
+          <label for="continuation-id">事实 ID</label>
+          <input id="continuation-id" maxlength="64" pattern="[A-Za-z0-9._:-]+" required>
+          <label for="continuation-statement">事实内容</label>
+          <textarea id="continuation-statement" maxlength="600"></textarea>
+          <label for="continuation-awareness">知情状态</label>
+          <select id="continuation-awareness">
+            <option value="control_only">仅系统知道</option>
+            <option value="pending">待确认</option>
+            <option value="character_known">林离已知</option>
+          </select>
+          <label for="continuation-reason">说明</label>
+          <textarea id="continuation-reason" maxlength="280" required></textarea>
+          <button type="submit">提交世界线变更</button>
+        </form>
+      </section>
+
+      <section aria-labelledby="timeline-title">
+        <h2 id="timeline-title">事件时间线</h2>
+        <ol id="event-list" class="timeline"></ol>
+      </section>
+
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </main>
+  </div>
+
+  <script type="module" src="/control/static/app.js"></script>
+</body>
+</html>
