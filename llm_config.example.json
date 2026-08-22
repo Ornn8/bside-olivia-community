@@ -14,6 +14,8 @@
   "persona_file": "linli_character/system_prompt.md",
   "persona_config": "linli_character/persona_config.json",
   "persona_evidence_file": "linli_character/provenance.json",
+  "persona_v2_file": "linli_character/persona_v2.json",
+  "persona_v2_enabled": false,
   "feature_enabled": true,
   "requires_api_key": true
 }

@@ -92,6 +92,8 @@ class GatewayConfig:
     persona_file: str = "linli_character/system_prompt.md"
     persona_config: str = "linli_character/persona_config.json"
     persona_evidence_file: str = "linli_character/provenance.json"
+    persona_v2_file: str = "linli_character/persona_v2.json"
+    persona_v2_enabled: bool = False
     feature_enabled: bool = True
     requires_api_key: bool = False
     provider_options: Mapping[str, Any] = field(default_factory=dict)
@@ -149,6 +151,10 @@ class GatewayConfig:
             persona_evidence_file=str(
                 data.get("persona_evidence_file", "linli_character/provenance.json") or ""
             ),
+            persona_v2_file=str(
+                data.get("persona_v2_file", "linli_character/persona_v2.json") or ""
+            ),
+            persona_v2_enabled=_as_bool(data.get("persona_v2_enabled", False)),
             feature_enabled=_as_bool(data.get("feature_enabled", True), True),
             requires_api_key=_as_bool(data.get("requires_api_key", options.get("requires_api_key", False))),
             provider_options=dict(options),
@@ -171,6 +177,7 @@ class GatewayConfig:
             "feature_enabled": self.feature_enabled,
             "persona_configured": bool(self.persona_config),
             "persona_evidence_configured": bool(self.persona_evidence_file),
+            "persona_v2_enabled": self.persona_v2_enabled,
         }
         if api_key_configured is not None:
             result["api_key_configured"] = api_key_configured
@@ -247,6 +254,8 @@ def _env_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
         "OLIVIA_PERSONA_FILE": "persona_file",
         "OLIVIA_PERSONA_CONFIG": "persona_config",
         "OLIVIA_PERSONA_EVIDENCE_FILE": "persona_evidence_file",
+        "OLIVIA_PERSONA_V2_FILE": "persona_v2_file",
+        "OLIVIA_PERSONA_V2_ENABLED": "persona_v2_enabled",
         "OLIVIA_LLM_FEATURE_ENABLED": "feature_enabled",
         "OLIVIA_LLM_REQUIRES_API_KEY": "requires_api_key",
     }

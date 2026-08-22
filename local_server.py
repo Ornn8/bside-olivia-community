@@ -12,7 +12,9 @@ import re as _re
 import random
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from aiohttp import web
 
@@ -48,6 +50,17 @@ from reply_media import ReplyMediaError, render_reply_video
 from local_memory import create_memory_adapter
 from memory_port import LegacyLetter, MemoryPort, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
+from persona_assembly import UntrustedFragment, assemble_persona
+from persona_loader import load_persona
+from private_world_port import NullPrivateWorldPort, PrivateWorldPort, PrivateWorldSnapshot
+from private_world_projection import project_private_world
+from reply_context import (
+    ReplyContext,
+    ReplyMode,
+    TrustedTime,
+    TrustedWorldFact,
+    WorldFactKind,
+)
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
@@ -148,6 +161,8 @@ class LetterAdapter:
         config: GatewayConfig | None = None,
         *,
         memory_port: MemoryPort | None = None,
+        private_world_port: PrivateWorldPort | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config or LLM_CONFIG
         try:
@@ -155,6 +170,10 @@ class LetterAdapter:
         except GatewayError:
             self.gateway = UnconfiguredAdapter()
         self.memory_port: MemoryPort = memory_port or NullMemoryPort()
+        self.private_world_port: PrivateWorldPort = (
+            private_world_port or NullPrivateWorldPort()
+        )
+        self._now = now or (lambda: datetime.now(timezone.utc))
         persona_path = Path(self.config.persona_file)
         if not persona_path.is_absolute():
             persona_path = Path(__file__).resolve().parent / persona_path
@@ -164,6 +183,10 @@ class LetterAdapter:
         persona_evidence_path = Path(self.config.persona_evidence_file)
         if not persona_evidence_path.is_absolute():
             persona_evidence_path = Path(__file__).resolve().parent / persona_evidence_path
+        persona_v2_path = Path(self.config.persona_v2_file)
+        if not persona_v2_path.is_absolute():
+            persona_v2_path = Path(__file__).resolve().parent / persona_v2_path
+        self.persona_v2_path = persona_v2_path
         self.persona_provider = ConfigPersonaProvider(
             persona_config_path,
             draft_path=persona_path,
@@ -183,6 +206,13 @@ class LetterAdapter:
         return []
 
     def _messages(self, content: str, context: str = "") -> tuple[dict[str, str], ...]:
+        if self.config.persona_v2_enabled:
+            return self._persona_v2_messages(content, context)
+        return self._legacy_messages(content, context)
+
+    def _legacy_messages(
+        self, content: str, context: str = ""
+    ) -> tuple[dict[str, str], ...]:
         user_content = content
         if context:
             user_content = content + "\n\n" + context
@@ -205,6 +235,62 @@ class LetterAdapter:
             user_content,
             max_chars=self.config.max_input_chars,
         )
+
+    def _persona_v2_messages(
+        self, content: str, context: str = ""
+    ) -> tuple[dict[str, str], ...]:
+        user_content = content + ("\n\n" + context if context else "")
+        loaded = load_persona(self.persona_v2_path)
+        try:
+            private_snapshot = self.private_world_port.snapshot()
+            if not isinstance(private_snapshot, PrivateWorldSnapshot):
+                private_snapshot = PrivateWorldSnapshot()
+        except Exception:
+            private_snapshot = PrivateWorldSnapshot()
+        projected = project_private_world(private_snapshot)
+        facts = tuple(
+            TrustedWorldFact(
+                fact_id=f"private.nickname.{index}",
+                source_id="private_world.character_view",
+                statement=f"Currently authorized nickname: {nickname}",
+                kind=WorldFactKind.TRUSTED_RUNTIME,
+            )
+            for index, nickname in enumerate(projected.authorized_nicknames)
+        )
+        if projected.continuation_known:
+            facts += (
+                TrustedWorldFact(
+                    fact_id="private.continuation.known",
+                    source_id="private_world.character_view",
+                    statement="Local continuation is known to the character.",
+                    kind=WorldFactKind.TRUSTED_RUNTIME,
+                ),
+            )
+        reply_context = ReplyContext.create(
+            ReplyMode.TEXT_LETTER,
+            trusted_time=TrustedTime(self._now()),
+            world_facts=facts,
+            private_behavior=projected.behavior,
+        )
+        memory_context = self.memory_prompt_builder.build(
+            content,
+            max_chars=min(
+                self.config.max_input_chars,
+                int(getattr(self.memory_port, "context_max_chars", 2400)),
+            ),
+        )
+        history = (
+            (UntrustedFragment("memory.references", memory_context.text),)
+            if memory_context.text
+            else ()
+        )
+        return assemble_persona(
+            loaded.snapshot,
+            reply_context,
+            user_input=user_content,
+            max_units=self.config.max_input_chars,
+            history=history,
+        ).to_messages()
 
     def remember_conversation(self, content: str, reply: str) -> None:
         """Write new-chat memory only when the opt-in profile is enabled."""
