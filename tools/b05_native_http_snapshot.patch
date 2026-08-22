@@ -1,0 +1,138 @@
+diff --git a/src/core/engine_registry.h b/src/core/engine_registry.h
+index 0000000..0000000 100644
+--- a/src/core/engine_registry.h
++++ b/src/core/engine_registry.h
+@@ -34,5 +34,19 @@ struct EngineRegistryConfig {
+     bool nmt = false;
+ };
+-
++
++// Consistent read-only view for HTTP inventory and health surfaces.  Keeping
++// the registry lock across the snapshot avoids a request acquiring the same
++// mutex through several independent getters while the registry is changing.
++struct EngineSnapshot {
++    std::string device_label;
++    std::vector<std::string> capabilities;
++#if defined(NEMO_SPEECH_REGISTRY_ASR)
++    std::shared_ptr<asr::Recognizer> asr;
++#endif
++#if defined(NEMO_SPEECH_REGISTRY_DIAR)
++    std::shared_ptr<asr::Diarizer> diarization;
++#endif
++};
++
+ class EngineRegistry {
+    public:
+@@ -60,5 +76,6 @@ class EngineRegistry {
+ #endif
+-
++
+     void warmup(const WarmupOptions& options = {});
++    EngineSnapshot snapshot() const;
+     void set_device_label(std::string label);
+     std::string device_label() const;
+diff --git a/src/core/engine_registry.cpp b/src/core/engine_registry.cpp
+--- a/src/core/engine_registry.cpp
++++ b/src/core/engine_registry.cpp
+@@ -137,5 +137,38 @@ EngineRegistry::warmup(const WarmupOptions& options) {
+ #endif
+ }
+-
++
++EngineSnapshot
++EngineRegistry::snapshot() const {
++    std::lock_guard<std::mutex> lock(mutex_);
++    EngineSnapshot result;
++    result.device_label = device_label_;
++#if defined(NEMO_SPEECH_REGISTRY_ASR)
++    result.asr = asr_;
++    if (asr_)
++        result.capabilities.emplace_back("asr");
++#endif
++#if defined(NEMO_SPEECH_REGISTRY_DIAR)
++    result.diarization = diar_;
++    if (diar_)
++        result.capabilities.emplace_back("diarization");
++#endif
++#if defined(NEMO_SPEECH_REGISTRY_TTS)
++    if (tts_)
++        result.capabilities.emplace_back("tts");
++#endif
++#if defined(NEMO_SPEECH_REGISTRY_NMT)
++    if (nmt_)
++        result.capabilities.emplace_back("translation");
++#endif
++#if defined(NEMO_SPEECH_REGISTRY_SPEECH)
++    if (speech_) {
++        result.capabilities.emplace_back("speech-translation");
++        if (speech_->can_synthesize())
++            result.capabilities.emplace_back("speech-to-speech");
++    }
++#endif
++    return result;
++}
++
+ void
+ EngineRegistry::set_device_label(std::string label) {
+diff --git a/server/http/http_server.cpp b/server/http/http_server.cpp
+--- a/server/http/http_server.cpp
++++ b/server/http/http_server.cpp
+@@ -466,13 +466,23 @@ struct Server::Impl {
+             root["object"] = "list";
+             Value::Array data;
++            EngineSnapshot snapshot;
++            try {
++                snapshot = this->models.snapshot();
++            }
++            catch (const std::exception& error) {
++                fail(response, 500, error.what(), "server_error");
++                return;
++            }
+ #if defined(NEMO_SPEECH_REGISTRY_ASR)
+             try {
+-                auto model = this->models.asr();
++                auto model = snapshot.asr;
++                if (!model)
++                    throw std::runtime_error("ASR is not loaded");
+                 Value item(Value::Object{});
+                 item["id"] = model->model_name();
+                 item["object"] = "model";
+                 item["owned_by"] = "local";
+                 item["capability"] = "transcription";
+-                item["device"] = this->models.device_label();
++                item["device"] = snapshot.device_label;
+                 data.emplace_back(std::move(item));
+             }
+@@ -476,12 +487,13 @@ struct Server::Impl {
+ #endif
+ #if defined(NEMO_SPEECH_REGISTRY_DIAR)
+             try {
+-                (void)this->models.diarization();
++                if (!snapshot.diarization)
++                    throw std::runtime_error("diarization is not loaded");
+                 Value item(Value::Object{});
+                 item["id"] = "diarization";
+                 item["object"] = "model";
+                 item["owned_by"] = "local";
+                 item["capability"] = "diarization";
+-                item["device"] = this->models.device_label();
++                item["device"] = snapshot.device_label;
+                 data.emplace_back(std::move(item));
+             }
+@@ -526,6 +538,6 @@ struct Server::Impl {
+             }
+ #endif
+-            const auto capabilities = this->models.capabilities();
++            const auto& capabilities = snapshot.capabilities;
+             const auto add_composition = [&](const char* name, const char* capability) {
+                 if (std::find(capabilities.begin(), capabilities.end(), name) == capabilities.end())
+                     return;
+@@ -535,7 +547,7 @@ struct Server::Impl {
+                 item["id"] = name;
+                 item["object"] = "model";
+                 item["owned_by"] = "local";
+                 item["capability"] = capability;
+-                item["device"] = this->models.device_label();
++                item["device"] = snapshot.device_label;
+                 data.emplace_back(std::move(item));
+             };

@@ -1,0 +1,3 @@
+# Core local HTTP prototype dependency.
+# Model runtimes and official assets are intentionally external to this file.
+aiohttp>=3.9,<4

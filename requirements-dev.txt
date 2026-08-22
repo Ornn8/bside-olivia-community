@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Public contract and boundary tests.
+jsonschema>=4.26,<5
+pytest>=8,<9
+numpy>=1.26,<3
+
+# Optional image/visual tests. The code reports UNAVAILABLE when OpenCV is absent.
+opencv-python-headless>=4.9,<5

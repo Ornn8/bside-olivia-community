@@ -1,0 +1,130 @@
+{
+  "schema_version": "p02.persona.v2",
+  "registry_version": "p02.persona.v2",
+  "sources": [
+    {
+      "source_id": "P02.CONSTITUTION",
+      "title": "Persona 2.0 project-authored constitution",
+      "source_url": "https://github.com/Ornn8/bside-olivia-local/blob/a91dc0309d2bbe0a004ba4a84f55fa93713b15ce/linli_character/persona_v2.json",
+      "content_source": {
+        "repository": "Ornn8/bside-olivia-local",
+        "path": "linli_character/persona_v2.json",
+        "revision": "a91dc0309d2bbe0a004ba4a84f55fa93713b15ce",
+        "sha256": "880ddc5fe31f31ce0f366000c94eeceb92a578cead53ad248173b98581a602e2"
+      },
+      "publisher": "bside-olivia-local maintainers",
+      "published_at": "2026-08-22",
+      "accessed_at": "2026-08-22",
+      "source_type": "project_authored_public_policy",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "REDISTRIBUTABLE",
+      "rights_basis": {
+        "basis_type": "repository_license",
+        "source_url": "https://github.com/Ornn8/bside-olivia-local/blob/27d001ccd6ed17e8a39c776e03d8946631858133/LICENSE",
+        "revision": "27d001ccd6ed17e8a39c776e03d8946631858133",
+        "status": "CONFIRMED"
+      },
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "constitution.source_hierarchy",
+        "constitution.no_invention",
+        "constitution.unknown_is_not_event",
+        "constitution.public_canon_rights",
+        "constitution.control_character_views",
+        "constitution.local_continuation_awareness",
+        "constitution.nickname_permission",
+        "constitution.access_boundary",
+        "constitution.low_bandwidth",
+        "constitution.no_private_claims",
+        "constitution.no_hidden_fields",
+        "constitution.no_long_source_copy",
+        "constitution.respectful_relationship",
+        "constitution.no_professional_claims",
+        "constitution.no_real_person_claim",
+        "constitution.crisis_safety",
+        "constitution.no_exploitative_content",
+        "constitution.acknowledge_first",
+        "constitution.concise_concrete",
+        "constitution.language_match"
+      ],
+      "exclusion_reason": ""
+    },
+    {
+      "source_id": "S001",
+      "title": "BSide: Olivia Lin on Steam",
+      "source_url": "https://store.steampowered.com/app/4532590/BSide_Olivia_Lin/",
+      "publisher": "Steam store",
+      "published_at": "2026-07-13",
+      "accessed_at": "2026-08-13",
+      "source_type": "first_party_product_page",
+      "access_status": "UNAVAILABLE_IN_CURRENT_REGION",
+      "rights_status": "UNKNOWN_BLOCK_RELEASE",
+      "privacy_risk": "LOW",
+      "declaration_ids": [],
+      "exclusion_reason": "Current fetch returned regional unavailability; no claim is taken from this page."
+    },
+    {
+      "source_id": "S002",
+      "title": "BSide: Olivia Lin 停止运营公告",
+      "source_url": "https://steamcommunity.com/app/4532590/",
+      "publisher": "Steam community page",
+      "published_at": "2026-08-11",
+      "accessed_at": "2026-08-13",
+      "source_type": "first_party_operational_announcement",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "UNKNOWN_BLOCK_RELEASE",
+      "privacy_risk": "LOW",
+      "declaration_ids": ["fact.public_name.s002", "fact.letter_music_context"],
+      "exclusion_reason": "Rights were not confirmed; declarations remain release-blocked summaries."
+    },
+    {
+      "source_id": "S004",
+      "title": "Secret | 快一点，时间会听见",
+      "source_url": "https://www.bilibili.com/video/BV13vyEB7Esn/",
+      "publisher": "林离Olivia public account",
+      "published_at": "2025-11-20T12:00:00+08:00",
+      "accessed_at": "2026-08-13",
+      "source_type": "public_media_metadata_and_abstract",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "UNKNOWN_BLOCK_RELEASE",
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "fact.public_name.s004",
+        "fact.public_music_context",
+        "inference.music_time_imagery",
+        "inference.concise_gentle_invitation"
+      ],
+      "exclusion_reason": "Rights were not confirmed; declarations remain release-blocked summaries."
+    },
+    {
+      "source_id": "S003",
+      "title": "读信 / 回信 / 弹琴",
+      "source_url": "https://www.bilibili.com/video/BV11BXnBaEK/",
+      "publisher": "林离Olivia public account",
+      "published_at": "2026-03-27",
+      "accessed_at": "2026-08-13",
+      "source_type": "public_media_metadata",
+      "access_status": "NOT_RETRIEVED",
+      "rights_status": "UNKNOWN_BLOCK_RELEASE",
+      "privacy_risk": "LOW",
+      "declaration_ids": [],
+      "exclusion_reason": "Live retrieval was unavailable; no transcript, caption, or media was copied."
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "S002.summary",
+      "source_id": "S002",
+      "kind": "public_source_summary",
+      "summary": "公开公告描述产品名称、写信与音乐语境，并列出离线版本和在线服务停止时间；只作为时间敏感的产品背景。",
+      "reference": "community-page metadata and announcement section"
+    },
+    {
+      "evidence_id": "S004.summary",
+      "source_id": "S004",
+      "kind": "public_source_summary",
+      "summary": "公开账号页面展示钢琴演奏视频标题、发布时间和围绕时间的短简介；未保存歌词、字幕或音频。",
+      "reference": "video metadata and short abstract"
+    }
+  ]
+}

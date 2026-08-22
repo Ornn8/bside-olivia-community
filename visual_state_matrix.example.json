@@ -1,0 +1,102 @@
+{
+  "matrix_kind": "visual_state_matrix",
+  "schema_version": 1,
+  "source_selection": "SYNTHETIC_EXAMPLE",
+  "state_units": [
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "day",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "dusk",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "night",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "idle",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "piano_performance",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "letter_reply",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "letter_reading",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "live",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 3,
+      "state_id": "outfit_variants",
+      "status": "UNVERIFIED"
+    },
+    {
+      "candidate_asset_ids": [],
+      "evidence_count": 0,
+      "evidence_frame_ids": [],
+      "notes_code": "SYNTHETIC_UNVERIFIED",
+      "required_shots": 1,
+      "state_id": "scene_transitions",
+      "status": "UNVERIFIED"
+    }
+  ],
+  "verification_boundary": {
+    "candidate_media_generated": false,
+    "path_name_inference_can_verify": false,
+    "thresholds": "UNFROZEN"
+  }
+}

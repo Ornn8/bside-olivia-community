@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "b02_sanitized_legacy_letters",
+  "mode": "read_only",
+  "letters": [
+    {
+      "letter_id": "legacy-fixture-letter-001",
+      "source_record_id": "fixture-record-001",
+      "content": "Synthetic legacy fixture body; sanitized placeholder only.",
+      "reply_text": "Synthetic legacy fixture reply; sanitized placeholder only.",
+      "material": {"stamp_id": "fixture-stamp-001"},
+      "is_read": 0,
+      "read_only": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

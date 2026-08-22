@@ -1,0 +1,188 @@
+{
+  "acceptance_status": "UNVERIFIED",
+  "metric_status_counts": {
+    "MEASURED": 5,
+    "UNAVAILABLE": 3,
+    "UNVERIFIED": 5
+  },
+  "metrics": [
+    {
+      "metric": "dimensions_alpha",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": {"same_dimensions": true, "same_channels": true}
+    },
+    {
+      "metric": "exact_pixel_diff",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": {
+        "changed_fraction": 0.0,
+        "changed_pixels": 0,
+        "total_pixels": 1
+      }
+    },
+    {
+      "metric": "psnr",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "ssim",
+      "status": "UNAVAILABLE",
+      "reason": "dependency_missing:skimage",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "lpips",
+      "status": "UNAVAILABLE",
+      "reason": "provider_not_configured",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "color_difference",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "sharpness",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "identity_consistency",
+      "status": "UNVERIFIED",
+      "reason": "manual_identity_review_required",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "background_drift",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "temporal_flicker",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "frame_rate",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "region_integrity",
+      "status": "UNVERIFIED",
+      "reason": "region_masks_not_committed",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    {
+      "metric": "av_sync",
+      "status": "UNAVAILABLE",
+      "reason": "b05_b06_runtime_unavailable",
+      "source": "b05_b06_contract",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    }
+  ],
+  "report_kind": "b07_visual_driver_evidence",
+  "required_metrics": {
+    "av_sync": {
+      "metric": "av_sync",
+      "status": "UNAVAILABLE",
+      "reason": "b05_b06_runtime_unavailable",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "background_drift": {
+      "metric": "background_drift",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "color": {
+      "metric": "color_difference",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "flicker": {
+      "metric": "temporal_flicker",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "fps": {
+      "metric": "frame_rate",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "identity": {
+      "metric": "identity_consistency",
+      "status": "UNVERIFIED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "lpips": {
+      "metric": "lpips",
+      "status": "UNAVAILABLE",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "pixel": {
+      "metric": "exact_pixel_diff",
+      "status": "MEASURED",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "ssim": {
+      "metric": "ssim",
+      "status": "UNAVAILABLE",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    }
+  },
+  "schema_version": 1,
+  "state_coverage": [
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "day", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "dusk", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "night", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "idle", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "piano_performance", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "letter_reply", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "letter_reading", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "live", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "outfit_variants", "status": "FALLBACK_ONLY"},
+    {"fallback_source": "original_frame", "media_written": false, "state_id": "scene_transitions", "status": "FALLBACK_ONLY"}
+  ],
+  "thresholds": "UNFROZEN",
+  "verification_boundary": {
+    "av_sync": {
+      "metric": "av_sync",
+      "reason": "b05_b06_runtime_unavailable",
+      "source": "b05_b06_contract",
+      "status": "UNAVAILABLE",
+      "threshold_status": "UNFROZEN",
+      "value": null
+    },
+    "identity_requires_manual_review_without_provider": true,
+    "manual_total_control_view_required": true,
+    "original_visual_input_only": true,
+    "replacement_media_committed": false,
+    "replacement_media_generated": false,
+    "source_kind": "b01_private_manifest_reference",
+    "source_paths_in_report": false,
+    "thresholds": "UNFROZEN"
+  }
+}

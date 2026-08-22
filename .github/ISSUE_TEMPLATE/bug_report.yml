@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible problem in the public baseline
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要在 issue 中粘贴密钥、官方抓包、真实用户数据、模型权重或本机绝对路径。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 简要说明实际行为与预期行为。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 提供最小命令、合成输入或 fixture。
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      description: Python、Windows、提交 SHA；不要填写用户名或真实路径。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 删除密钥、令牌、请求正文、用户数据和绝对路径后再粘贴。
+      render: text

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "llm_config.schema.json",
+  "title": "B03 local LLM gateway configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider", "api_key_env", "api_style", "timeout_seconds", "max_retries", "stream", "max_input_chars", "persona_file", "persona_config", "persona_evidence_file", "feature_enabled"],
+  "properties": {
+    "provider": {"type": "string", "minLength": 1},
+    "base_url": {"type": "string"},
+    "model": {"type": "string"},
+    "api_key_env": {"type": "string"},
+    "api_style": {"enum": ["chat_completions", "responses"]},
+    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
+    "max_retries": {"type": "integer", "minimum": 0, "maximum": 8},
+    "retry_backoff_seconds": {"type": "number", "minimum": 0, "maximum": 30},
+    "stream": {"type": "boolean"},
+    "max_input_chars": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "max_output_chars": {"type": "integer", "minimum": 1, "maximum": 100000},
+    "fallback_provider": {"type": "string"},
+    "persona_file": {"type": "string", "minLength": 1},
+    "persona_config": {"type": "string", "minLength": 1},
+    "persona_evidence_file": {"type": "string", "minLength": 1},
+    "feature_enabled": {"type": "boolean"},
+    "requires_api_key": {"type": "boolean"},
+    "provider_options": {"type": "object"}
+  }
+}

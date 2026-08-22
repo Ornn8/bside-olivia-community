@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .full_patch import PatchInstallError, discover_steam_install, install_full_patch, load_manifest, uninstall_full_patch, validate_official_source
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="olivia-full-patch")
+    sub = parser.add_subparsers(dest="command", required=True)
+    doctor = sub.add_parser("doctor")
+    doctor.add_argument("--official-root", type=Path)
+    install = sub.add_parser("install")
+    install.add_argument("--official-root", type=Path)
+    install.add_argument("--destination", type=Path, required=True)
+    install.add_argument("--payload", type=Path, required=True)
+    install.add_argument("--manifest", type=Path, default=Path(__file__).with_name("full-patch-manifest.json"))
+    install.add_argument("--port", type=int, default=8899)
+    remove = sub.add_parser("uninstall")
+    remove.add_argument("--installation", type=Path, required=True)
+    remove.add_argument("--apply", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "doctor":
+            source = (args.official_root or discover_steam_install()).resolve()
+            manifest = load_manifest(Path(__file__).with_name("full-patch-manifest.json"))
+            version, feapp = validate_official_source(source, manifest)
+            result = {"status": "SUPPORTED", "official_root": str(source), "client_version": version, "feapp": str(feapp), "live_status": manifest["live_status"], "media_status": manifest["media_status"]}
+        elif args.command == "install":
+            source = (args.official_root or discover_steam_install()).resolve()
+            result = install_full_patch(source, args.destination, args.payload, args.manifest, port=args.port)
+        else:
+            result = uninstall_full_patch(args.installation, apply=args.apply)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    except PatchInstallError as exc:
+        print(json.dumps({"status": "ERROR", "code": str(exc)}, ensure_ascii=False))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

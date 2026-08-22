@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "b05.asr.config.v1",
+  "title": "B05 local ASR configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "provider": {"enum": ["text-fallback", "nemotron-speech-cpp"]},
+    "server_url": {"pattern": "^wss?://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:[0-9]+)?$"},
+    "language": {"type": "string", "minLength": 1},
+    "sample_rate": {"type": "integer", "minimum": 1},
+    "chunk_ms": {"enum": [80, 160, 320, 560, 1120]},
+    "max_queue_chunks": {"type": "integer", "minimum": 1},
+    "backpressure_timeout_ms": {"type": "integer", "minimum": 0},
+    "final_timeout_ms": {"type": "integer", "minimum": 1},
+    "silence_rms": {"type": "number", "minimum": 0, "maximum": 1},
+    "endpointing_ms": {"type": "integer", "minimum": 0},
+    "word_timestamps": {"type": "boolean"},
+    "connect_timeout_ms": {"type": "integer", "minimum": 1},
+    "runtime_root": {"type": "string"},
+    "model_root": {"type": "string"},
+    "cache_root": {"type": "string"},
+    "runtime_executable": {"type": ["string", "null"]},
+    "model_path": {"type": ["string", "null"]},
+    "strict_storage": {"type": "boolean"},
+    "model_repo": {"const": "nvidia/nemotron-3.5-asr-streaming-0.6b"},
+    "model_revision": {"const": "1c8deaecc64b91f034d73e08dd8b64625eb3395d"},
+    "runtime_repo": {"const": "https://github.com/NVIDIA/NeMo-Speech.cpp.git"},
+    "runtime_revision": {"const": "1118951337094db3b362fbf1b27e871696f10590"}
+  }
+}

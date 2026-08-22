@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "b05.asr.events.v1",
+  "title": "B05 normalized local streaming ASR event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "sequence", "timestamp_ms", "audio_ms", "text", "provider", "metadata"],
+  "properties": {
+    "type": {
+      "enum": ["session", "ready", "partial", "final", "silence", "committed", "cleared", "canceled", "disconnected", "error", "closed", "text_final"]
+    },
+    "session_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 0},
+    "timestamp_ms": {"type": "number", "minimum": 0},
+    "audio_ms": {"type": "number", "minimum": 0},
+    "text": {"type": "string"},
+    "language": {"type": ["string", "null"]},
+    "provider": {"type": "string", "minLength": 1},
+    "code": {"type": ["string", "null"]},
+    "reason": {"type": ["string", "null"]},
+    "metadata": {"type": "object"}
+  }
+}

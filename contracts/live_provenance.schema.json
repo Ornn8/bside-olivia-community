@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "b08.live.provenance.v1",
+  "title": "B08 composition provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "composition", "upstreams", "privacy_boundary"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "composition": {"const": "B08"},
+    "upstreams": {
+      "type": "array",
+      "minItems": 5,
+      "items": {"$ref": "#/$defs/upstream"}
+    },
+    "privacy_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "private_assets_in_repo",
+        "user_data_in_trace",
+        "raw_media_in_trace",
+        "credentials_in_repo",
+        "generated_media_in_repo"
+      ],
+      "properties": {
+        "private_assets_in_repo": {"const": false},
+        "user_data_in_trace": {"const": false},
+        "raw_media_in_trace": {"const": false},
+        "credentials_in_repo": {"const": false},
+        "generated_media_in_repo": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "source_repo",
+        "fixed_ref",
+        "license",
+        "license_spdx",
+        "license_evidence",
+        "replacement_boundary",
+        "uninstall_boundary"
+      ],
+      "properties": {
+        "component": {"type": "string", "minLength": 1},
+        "source_repo": {"type": "string", "format": "uri", "minLength": 1},
+        "fixed_ref": {"type": "string", "minLength": 1},
+        "license": {"type": "string", "minLength": 1},
+        "license_spdx": {"type": "string", "minLength": 1},
+        "license_evidence": {"type": "string", "minLength": 1},
+        "replacement_boundary": {"type": "string", "minLength": 1},
+        "uninstall_boundary": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

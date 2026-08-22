@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bside-olivia-local"
+version = "0.1.0.dev0"
+description = "Local HTTP and media-state prototype for BSide Olivia Lin"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jsonschema>=4.26,<5",
+    "pytest>=8,<9",
+    "numpy>=1.26,<3",
+    "opencv-python-headless>=4.9,<5",
+]
+
+[tool.setuptools]
+py-modules = [
+    "baseline_hardening_scan",
+    "extract_player",
+    "http_contract",
+    "local_server",
+    "memory",
+    "patch_feapp",
+]
+
+[tool.setuptools.packages.find]
+include = ["asr*", "contracts*", "installer*", "linli_character*", "media_state*", "runtime*", "tts*"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests/http",
+    "tests/installer",
+    "tests/media",
+    "tests/test_asset_manifest.py",
+    "tests/test_third_party_download.py",
+    "tests/test_baseline_hardening.py",
+    "tests/test_visual_baseline.py",
+    "tests/test_visual_compare.py",
+]
+addopts = ["--basetemp=.evidence", "-m", "not experimental"]
+markers = [
+    "experimental: excluded from the public baseline gate; run explicitly by path",
+]

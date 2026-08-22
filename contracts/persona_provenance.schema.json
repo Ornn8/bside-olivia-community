@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "persona_provenance.schema.json",
+  "title": "Persona source provenance registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["registry_version", "accessed_at", "sources", "evidence"],
+  "properties": {
+    "registry_version": {"type": "string", "minLength": 1},
+    "accessed_at": {"type": "string", "format": "date"},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+    "evidence": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/evidence"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "title",
+        "source_url",
+        "publisher",
+        "published_at",
+        "accessed_at",
+        "source_type",
+        "access_status",
+        "rights_status",
+        "privacy_risk",
+        "claim_ids",
+        "exclusion_reason"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "source_url": {"type": "string", "format": "uri"},
+        "publisher": {"type": "string", "minLength": 1, "maxLength": 120},
+        "published_at": {"type": "string", "minLength": 1, "maxLength": 40},
+        "accessed_at": {"type": "string", "format": "date"},
+        "source_type": {"type": "string", "minLength": 1, "maxLength": 80},
+        "access_status": {"enum": ["ACCESSIBLE", "UNAVAILABLE_IN_CURRENT_REGION", "NOT_RETRIEVED"]},
+        "rights_status": {"enum": ["UNKNOWN", "USER_CONFIRMED", "PUBLIC_METADATA_ONLY"]},
+        "privacy_risk": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+        "claim_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "exclusion_reason": {"type": "string", "maxLength": 240}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "source_id", "kind", "summary", "reference"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 80},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+        "reference": {"type": "string", "maxLength": 160}
+      }
+    }
+  }
+}

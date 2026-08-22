@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "persona_style_features.schema.json",
+  "title": "Candidate persona style features",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "status", "features", "selection_boundary"],
+  "properties": {
+    "version": {"type": "string", "minLength": 1},
+    "status": {"const": "CANDIDATE_NOT_FINAL"},
+    "features": {"type": "object", "minProperties": 1},
+    "selection_boundary": {"type": "string", "minLength": 1}
+  }
+}

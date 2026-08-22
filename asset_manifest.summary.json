@@ -1,0 +1,28 @@
+{
+  "counts": {
+    "by_alias": {
+      "original": 183
+    },
+    "by_category": {
+      "audio": 22,
+      "other": 125,
+      "video": 36
+    },
+    "by_extension": {
+      ".bin": 1,
+      ".dat": 5,
+      ".dll": 55,
+      ".exe": 4,
+      ".json": 1,
+      ".mp3": 22,
+      ".mp4": 36,
+      ".orig": 1,
+      ".pak": 58
+    },
+    "by_probe_status": {
+      "not_applicable": 125,
+      "unavailable": 58
+    }
+  },
+  "schema_version": 1
+}

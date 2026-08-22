@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "b08.live.event.v1",
+  "title": "B08 redacted live event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "sequence",
+    "timestamp_ms",
+    "event",
+    "state",
+    "turn_id",
+    "component",
+    "status",
+    "error_code",
+    "metadata",
+    "text_present"
+  ],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 0},
+    "timestamp_ms": {"type": "number", "minimum": 0},
+    "event": {"type": "string", "minLength": 1},
+    "state": {
+      "enum": ["created", "listening", "thinking", "speaking", "reconnecting", "canceled", "failed", "closed"]
+    },
+    "turn_id": {"type": ["string", "null"]},
+    "component": {"type": ["string", "null"]},
+    "status": {"type": ["string", "null"]},
+    "error_code": {"type": ["string", "null"]},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 0},
+        "chunk_index": {"type": "integer", "minimum": 0},
+        "dropped_events": {"type": "integer", "minimum": 0},
+        "fallback_reason": {"type": "string", "minLength": 1},
+        "media_written": {"type": "boolean"},
+        "model_generated": {"type": "boolean"},
+        "provider": {"type": "string", "minLength": 1},
+        "sample_count": {"type": "integer", "minimum": 0},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "sentence_index": {"type": "integer", "minimum": 0},
+        "source": {"type": "string", "minLength": 1}
+      }
+    },
+    "text_present": {"type": "boolean"}
+  }
+}

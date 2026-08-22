@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "B10B module manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "bundle", "extension_api", "provider_slots", "provenance", "modules"],
+  "properties": {
+    "$schema": {"type": "string", "minLength": 1},
+    "schema_version": {"const": "b10b.modules.v1"},
+    "bundle": {"$ref": "#/$defs/bundle"},
+    "extension_api": {"$ref": "#/$defs/extension_api"},
+    "provider_slots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asr", "visual", "tts"],
+      "properties": {
+        "asr": {"$ref": "#/$defs/provider_slot"},
+        "visual": {"$ref": "#/$defs/provider_slot"},
+        "tts": {"$ref": "#/$defs/provider_slot"}
+      }
+    },
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/module"}
+    }
+  },
+  "$defs": {
+    "nonempty_string": {"type": "string", "minLength": 1},
+    "string_list": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonempty_string"},
+      "uniqueItems": true
+    },
+    "relative_path_list": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonempty_string"},
+      "uniqueItems": true
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "batch", "status", "policy"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty_string"},
+        "version": {"$ref": "#/$defs/nonempty_string"},
+        "batch": {"$ref": "#/$defs/nonempty_string"},
+        "status": {"$ref": "#/$defs/nonempty_string"},
+        "policy": {"$ref": "#/$defs/nonempty_string"}
+      }
+    },
+    "extension_api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "api_version", "registration", "health_method"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty_string"},
+        "api_version": {"const": "b10b.provider.v1"},
+        "registration": {"$ref": "#/$defs/nonempty_string"},
+        "health_method": {"$ref": "#/$defs/nonempty_string"}
+      }
+    },
+    "provider_slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "status_source"],
+      "properties": {
+        "implementation": {"$ref": "#/$defs/nonempty_string"},
+        "status_source": {"$ref": "#/$defs/nonempty_string"},
+        "status": {"$ref": "#/$defs/nonempty_string"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "upstreams"],
+      "properties": {
+        "policy": {"const": "assembly-only"},
+        "upstreams": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/upstream"}
+        }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "source", "version", "revision", "license", "status", "adapter_boundary", "uninstall_path"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty_string"},
+        "kind": {"enum": ["runtime", "model", "visual-runtime"]},
+        "source": {"type": "string", "pattern": "^https://(github\\.com|huggingface\\.co)/.+"},
+        "version": {"$ref": "#/$defs/nonempty_string"},
+        "revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+        "license": {"$ref": "#/$defs/nonempty_string"},
+        "status": {"enum": ["composed", "not_composed"]},
+        "adapter_boundary": {"$ref": "#/$defs/nonempty_string"},
+        "uninstall_path": {"$ref": "#/$defs/nonempty_string"}
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "availability", "implementation_batch", "dependencies", "optional_dependencies", "capabilities", "health", "customizable", "external_references", "ownership"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$"},
+        "version": {"$ref": "#/$defs/nonempty_string"},
+        "availability": {"enum": ["available", "pending", "unavailable"]},
+        "implementation_batch": {"$ref": "#/$defs/nonempty_string"},
+        "reason": {"$ref": "#/$defs/nonempty_string"},
+        "dependencies": {"$ref": "#/$defs/string_list"},
+        "optional_dependencies": {"$ref": "#/$defs/string_list"},
+        "capabilities": {"$ref": "#/$defs/string_list"},
+        "health": {"$ref": "#/$defs/health"},
+        "customizable": {"$ref": "#/$defs/string_list"},
+        "external_references": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/external_reference"}
+        },
+        "extension": {"$ref": "#/$defs/module_extension"},
+        "ownership": {"$ref": "#/$defs/ownership"}
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "adapter", "required_files"],
+      "properties": {
+        "kind": {"enum": ["project_files", "python_contract", "provider", "extension", "pending"]},
+        "adapter": {"$ref": "#/$defs/nonempty_string"},
+        "required_files": {"$ref": "#/$defs/relative_path_list"}
+      }
+    },
+    "external_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "copy_policy"],
+      "properties": {
+        "name": {"$ref": "#/$defs/nonempty_string"},
+        "kind": {"$ref": "#/$defs/nonempty_string"},
+        "copy_policy": {"const": "reference-only"},
+        "preserve": {"type": "boolean"},
+        "drive_policy": {"const": "D-or-F"},
+        "path_policy": {"const": "logical-or-external"}
+      }
+    },
+    "module_extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api_version", "provider_id"],
+      "properties": {
+        "api_version": {"const": "b10b.provider.v1"},
+        "provider_id": {"$ref": "#/$defs/nonempty_string"}
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owned_paths", "preserved_boundaries", "processes"],
+      "properties": {
+        "owned_paths": {"$ref": "#/$defs/relative_path_list"},
+        "preserved_boundaries": {"$ref": "#/$defs/string_list"},
+        "processes": {"$ref": "#/$defs/string_list"}
+      }
+    }
+  }
+}

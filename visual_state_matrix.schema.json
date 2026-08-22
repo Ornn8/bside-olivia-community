@@ -1,0 +1,253 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "visual_state_matrix.schema.json",
+  "title": "Private visual baseline state matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "matrix_kind",
+    "source_selection",
+    "verification_boundary",
+    "state_units"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "matrix_kind": {
+      "const": "visual_state_matrix"
+    },
+    "source_selection": {
+      "type": "string"
+    },
+    "verification_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path_name_inference_can_verify",
+        "thresholds",
+        "candidate_media_generated"
+      ],
+      "properties": {
+        "path_name_inference_can_verify": {
+          "const": false
+        },
+        "thresholds": {
+          "const": "UNFROZEN"
+        },
+        "candidate_media_generated": {
+          "const": false
+        }
+      }
+    },
+    "state_units": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state_id",
+          "status",
+          "evidence_count",
+          "required_shots",
+          "notes_code"
+        ],
+        "properties": {
+          "state_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]+$"
+          },
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "CANDIDATE",
+              "UNVERIFIED",
+              "VERIFIED"
+            ]
+          },
+          "evidence_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "required_shots": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "notes_code": {
+            "type": "string",
+            "pattern": "^[A-Z0-9_]+$"
+          },
+          "inference_basis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "candidate_asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^asset_[0-9a-f]{32}$"
+            }
+          },
+          "evidence_frame_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "verification_method": {
+            "enum": [
+              "manual_review"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "day"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "dusk"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "night"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "idle"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "piano_performance"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "letter_reply"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "letter_reading"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "live"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "outfit_variants"
+          }
+        }
+      },
+      "minContains": 1
+    },
+    {
+      "contains": {
+        "type": "object",
+        "required": [
+          "state_id"
+        ],
+        "properties": {
+          "state_id": {
+            "const": "scene_transitions"
+          }
+        }
+      },
+      "minContains": 1
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "../schemas/b10a.config.schema.json",
+  "schema_version": "b10a.config.v1",
+  "profile": "skeleton",
+  "providers": {
+    "llm-api": {
+      "type": "openai-compatible",
+      "base_url_env": "B10A_LLM_API_BASE_URL",
+      "api_key_env": "B10A_LLM_API_KEY",
+      "model_env": "B10A_LLM_MODEL"
+    },
+    "memory-local": {"type": "local", "root": "memory"},
+    "asr-local": {"type": "local", "root": "asr"},
+    "tts-local": {"type": "local", "root": "tts"},
+    "visual-driver": {"type": "local", "root": "visual"},
+    "media-original": {"type": "path-reference-only", "root": "original-reference"}
+  },
+  "logging": {"level": "info", "redact_secrets": true}
+}

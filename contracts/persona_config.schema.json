@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "persona_config.schema.json",
+  "title": "Candidate persona configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "release",
+    "observed_facts",
+    "inferred_traits",
+    "uncertainties",
+    "forbidden_claims",
+    "style_rules",
+    "relationship_boundaries"
+  ],
+  "properties": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "status", "feature_flags", "template_file", "provenance_file"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "status": {"const": "CANDIDATE_NOT_FINAL"},
+        "feature_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "persona_package_enabled",
+            "observed_facts",
+            "inferred_traits",
+            "uncertainties",
+            "style_rules",
+            "relationship_boundaries"
+          ],
+          "properties": {
+            "persona_package_enabled": {"type": "boolean"},
+            "observed_facts": {"type": "boolean"},
+            "inferred_traits": {"type": "boolean"},
+            "uncertainties": {"type": "boolean"},
+            "style_rules": {"type": "boolean"},
+            "relationship_boundaries": {"type": "boolean"}
+          }
+        },
+        "template_file": {"type": "string", "minLength": 1},
+        "provenance_file": {"type": "string", "minLength": 1},
+        "holdout_isolation": {"const": true}
+      }
+    },
+    "observed_facts": {"$ref": "#/$defs/observed_claims"},
+    "inferred_traits": {"$ref": "#/$defs/inferred_claims"},
+    "uncertainties": {"$ref": "#/$defs/uncertainty_claims"},
+    "forbidden_claims": {"$ref": "#/$defs/rules"},
+    "style_rules": {"$ref": "#/$defs/rules"},
+    "relationship_boundaries": {"$ref": "#/$defs/rules"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+    "source_ids": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$"}
+    },
+    "observed_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "status", "statement", "source_ids", "confidence"],
+        "properties": {
+          "claim_id": {"$ref": "#/$defs/id"},
+          "status": {"const": "FACT_VERIFIED"},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 360},
+          "source_ids": {"$ref": "#/$defs/source_ids"},
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+          "allowed_in_persona": {"type": "boolean"},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    },
+    "inferred_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "status", "statement", "basis_claim_ids", "confidence"],
+        "properties": {
+          "claim_id": {"$ref": "#/$defs/id"},
+          "status": {"const": "INFERENCE"},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 360},
+          "basis_claim_ids": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/id"}},
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+          "expiry": {"type": "string", "minLength": 1},
+          "allowed_in_persona": {"type": "boolean"},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    },
+    "uncertainty_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "status", "statement"],
+        "properties": {
+          "claim_id": {"$ref": "#/$defs/id"},
+          "status": {"const": "UNKNOWN"},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 420},
+          "source_ids": {"$ref": "#/$defs/source_ids"},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "statement"],
+        "properties": {
+          "rule_id": {"$ref": "#/$defs/id"},
+          "boundary_id": {"$ref": "#/$defs/id"},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 420},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,300 @@
+name: Required CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  required-ci:
+    name: required-ci
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12.10"
+          check-latest: false
+
+      - name: Install CI dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --disable-pip-version-check --no-input --only-binary=:all: --require-hashes --requirement requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prepare isolated basetemp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $path = Join-Path $env:GITHUB_WORKSPACE ".evidence\ci\$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          New-Item -ItemType Directory -Force -Path $path | Out-Null
+          "CI_BASETEMP=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $publicExact = @(
+            ".gitattributes", ".gitignore", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+            "CONTRIBUTING.md", "LICENSE", "README.md", "SECURITY.md",
+            "THIRD_PARTY_NOTICES.md", "pyproject.toml", "pytest.ini",
+            "requirements.txt", "requirements-dev.txt",
+            ".github/PULL_REQUEST_TEMPLATE.md", ".github/workflows/public-smoke.yml",
+            ".github/workflows/required-ci.yml",
+            "tests/http/test_contract.py", "tests/media/test_media_state.py",
+            "tests/test_asset_manifest.py", "tests/test_baseline_hardening.py",
+            "tests/test_visual_baseline.py", "tests/test_visual_compare.py",
+            "tests/test_third_party_download.py", "third_party_manifest.example.json",
+            "third_party_manifest.schema.json", "tools/Install-ThirdParty.ps1",
+            "tools/download_third_party.py"
+          )
+          $changed = @(git diff --name-only $env:DIFF_BASE $env:GITHUB_SHA)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $publicOnly = $true
+          foreach ($relativePath in $changed) {
+            $allowed = ($publicExact -contains $relativePath) -or
+              $relativePath -like "docs/*" -or
+              $relativePath -like ".github/ISSUE_TEMPLATE/*"
+            if (-not $allowed) { $publicOnly = $false; break }
+          }
+          "PUBLIC_ONLY_CHANGE=$($publicOnly.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "PUBLIC_ONLY_CHANGE=$($publicOnly.ToString().ToLowerInvariant())"
+
+          $installerExact = @(
+            "INSTALL.cmd", "START.cmd", "UNINSTALL.cmd", "docs/WINDOWS_FULL_PATCH.md"
+          )
+          $installerOnly = ($changed.Count -gt 0)
+          foreach ($relativePath in $changed) {
+            $allowed = ($installerExact -contains $relativePath) -or
+              $relativePath -like "installer/*" -or
+              $relativePath -like "tests/installer/*"
+            if (-not $allowed) { $installerOnly = $false; break }
+          }
+          "INSTALLER_ONLY_CHANGE=$($installerOnly.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "INSTALLER_ONLY_CHANGE=$($installerOnly.ToString().ToLowerInvariant())"
+
+          & python tools/verify_b10b_scope.py --verified-ancestor-rollback --base $env:DIFF_BASE --head $env:GITHUB_SHA --target-ancestor 27d001ccd6ed17e8a39c776e03d8946631858133 --polluted-commit e4281e9068d73ec14934c208b85775337a5a751b
+          $rollbackExit = $LASTEXITCODE
+          if ($rollbackExit -notin @(0, 1)) { exit $rollbackExit }
+          $verifiedRollback = ($rollbackExit -eq 0)
+          "VERIFIED_ANCESTOR_ROLLBACK=$($verifiedRollback.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "VERIFIED_ANCESTOR_ROLLBACK=$($verifiedRollback.ToString().ToLowerInvariant())"
+          exit 0
+
+      - name: Public-only baseline gate
+        if: env.PUBLIC_ONLY_CHANGE == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python baseline_hardening_scan.py --mode all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check $env:DIFF_BASE $env:GITHUB_SHA --
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installer-only fast gate
+        if: env.INSTALLER_ONLY_CHANGE == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = Join-Path $env:CI_BASETEMP "installer"
+          $report = Join-Path $env:CI_BASETEMP "installer.junit.xml"
+          & python -m pytest -vv --durations=20 --timeout=300 --timeout-method=thread -p no:cacheprovider --basetemp $base --junitxml $report tests/installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$xml = Get-Content -Raw $report
+          $suites = if ($xml.testsuites) { @($xml.testsuites.testsuite) } else { @($xml.testsuite) }
+          $tests = [int](($suites | ForEach-Object { [int]$_.tests } | Measure-Object -Sum).Sum)
+          $failures = [int](($suites | ForEach-Object { [int]$_.failures } | Measure-Object -Sum).Sum)
+          $errors = [int](($suites | ForEach-Object { [int]$_.errors } | Measure-Object -Sum).Sum)
+          $skipped = [int](($suites | ForEach-Object { [int]$_.skipped } | Measure-Object -Sum).Sum)
+          if ($tests -le 0) { throw "installer collected no tests; CI requires a positive test count." }
+          if ($failures -ne 0 -or $errors -ne 0 -or $skipped -ne 0) {
+            throw "installer has failures=$failures errors=$errors skipped=$skipped; CI requires zero."
+          }
+          $compile = @(
+            (Get-ChildItem -LiteralPath "installer" -Filter "*.py" -File | ForEach-Object FullName)
+            (Get-ChildItem -LiteralPath "." -Filter "*.py" -File | ForEach-Object FullName)
+          )
+          & python -m py_compile @compile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python baseline_hardening_scan.py --root . --mode all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check $env:DIFF_BASE $env:GITHUB_SHA --
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Targeted pytest (zero skips)
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-PytestNoSkip {
+            param([string]$Name, [string[]]$Tests)
+            $base = Join-Path $env:CI_BASETEMP $Name
+            $report = Join-Path $env:CI_BASETEMP "$Name.junit.xml"
+            $arguments = @(
+              "-m", "pytest", "-vv", "--durations=20", "--timeout=300", "--timeout-method=thread",
+              "-p", "no:cacheprovider",
+              "--basetemp", $base, "--junitxml", $report
+            ) + $Tests
+            & python @arguments
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            [xml]$xml = Get-Content -Raw $report
+            $suites = if ($xml.testsuites) { @($xml.testsuites.testsuite) } else { @($xml.testsuite) }
+            $tests = [int](($suites | ForEach-Object { [int]$_.tests } | Measure-Object -Sum).Sum)
+            $failures = [int](($suites | ForEach-Object { [int]$_.failures } | Measure-Object -Sum).Sum)
+            $errors = [int](($suites | ForEach-Object { [int]$_.errors } | Measure-Object -Sum).Sum)
+            $skipped = [int](($suites | ForEach-Object { [int]$_.skipped } | Measure-Object -Sum).Sum)
+            if ($tests -le 0) { throw "$Name collected no tests; CI requires a positive test count." }
+            if ($failures -ne 0 -or $errors -ne 0 -or $skipped -ne 0) {
+              throw "$Name has failures=$failures errors=$errors skipped=$skipped; CI requires zero."
+            }
+          }
+          Invoke-PytestNoSkip -Name targeted -Tests @(
+            "tests/asr", "tests/governance", "tests/http", "tests/live", "tests/packaging", "tests/persona", "tests/tts", "tests/test_baseline_hardening.py"
+          )
+
+      - name: Full pytest (zero skips)
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = Join-Path $env:CI_BASETEMP "full"
+          $report = Join-Path $env:CI_BASETEMP "full.junit.xml"
+          & python -m pytest -vv --durations=20 --timeout=300 --timeout-method=thread -p no:cacheprovider --basetemp $base --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$xml = Get-Content -Raw $report
+          $suites = if ($xml.testsuites) { @($xml.testsuites.testsuite) } else { @($xml.testsuite) }
+          $tests = [int](($suites | ForEach-Object { [int]$_.tests } | Measure-Object -Sum).Sum)
+          $failures = [int](($suites | ForEach-Object { [int]$_.failures } | Measure-Object -Sum).Sum)
+          $errors = [int](($suites | ForEach-Object { [int]$_.errors } | Measure-Object -Sum).Sum)
+          $skipped = [int](($suites | ForEach-Object { [int]$_.skipped } | Measure-Object -Sum).Sum)
+          if ($tests -le 0) { throw "full collected no tests; CI requires a positive test count." }
+          if ($failures -ne 0 -or $errors -ne 0 -or $skipped -ne 0) {
+            throw "full has failures=$failures errors=$errors skipped=$skipped; CI requires zero."
+          }
+
+      - name: Pytest collection
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = @(& python -m pytest --collect-only -q -p no:cacheprovider --basetemp (Join-Path $env:CI_BASETEMP "collect") 2>&1)
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) { exit $exitCode }
+          $summary = $output | Select-String -Pattern "(\d+) tests? collected"
+          if (-not $summary) { throw "pytest collection produced no count." }
+          $collected = [int]$summary.Matches[0].Groups[1].Value
+          if ($collected -le 0) { throw "pytest collection count must be positive." }
+
+      - name: Compile all Python
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python -m compileall -q .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Baseline scanner (all and every mode)
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $modes = @("all", "comments", "runtime-dependencies", "secrets", "sensitive-paths", "large-files", "evidence-ignore")
+          foreach ($mode in $modes) {
+            & python baseline_hardening_scan.py --root . --mode $mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Independent GOV, historical tranche, and governance scope
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true' && env.VERIFIED_ANCESTOR_ROLLBACK != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python tools/verify_b10b_scope.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/verify_current_main_scope.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/verify_b08_scope.py --current
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/verify_b08_scope.py --composed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Experimental advisory audits (fixed historical/standalone duplicates)
+          # remain available locally; current-main and composed scope above stay blocking.
+          & python tools/verify_project_status.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verified ancestor rollback scope
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true' && env.VERIFIED_ANCESTOR_ROLLBACK == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python tools/verify_b10b_scope.py --verified-ancestor-rollback --base $env:DIFF_BASE --head $env:GITHUB_SHA --target-ancestor 27d001ccd6ed17e8a39c776e03d8946631858133 --polluted-commit e4281e9068d73ec14934c208b85775337a5a751b
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check $env:DIFF_BASE $env:GITHUB_SHA --
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: B10B real reversible lifecycle evidence
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = & python tools/b10b_lifecycle_evidence.py --project-root .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = $output | ConvertFrom-Json
+          if ($report.status -ne "PASS" -or $report.fail_count -ne 0 -or $report.error_count -ne 0 -or $report.skip_count -ne 0) {
+            throw "B10B lifecycle evidence is not a zero-failure, zero-skip PASS."
+          }
+          if ($report.missing_provider.code -ne "MODULE_PROVIDER_MISSING" -or $report.missing_provider.module_status -ne "NOT_INSTALLED" -or $report.missing_provider.data_root_created) {
+            throw "B10B missing-provider evidence is not fail-closed."
+          }
+
+      - name: Core health
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python -m runtime.packaging.b10b --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python -m runtime.packaging.b10b health
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/healthcheck.py --profile core
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/healthcheck.py --profile asr
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/asr_healthcheck.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python tools/live_healthcheck.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Diff whitespace gate
+        if: env.PUBLIC_ONLY_CHANGE != 'true' && env.INSTALLER_ONLY_CHANGE != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = $env:DIFF_BASE
+          if ([string]::IsNullOrWhiteSpace($base) -or $base -match "^0+$") {
+            $base = (git rev-parse HEAD^).Trim()
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          git diff --check $base $env:GITHUB_SHA --
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

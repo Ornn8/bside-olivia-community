@@ -1,0 +1,253 @@
+{
+  "$schema": "../schemas/b10b.modules.schema.json",
+  "schema_version": "b10b.modules.v1",
+  "bundle": {
+    "id": "bside-local",
+    "version": "1.0.0",
+    "batch": "B10B",
+    "status": "lifecycle",
+    "policy": "Only B10B-owned metadata is written; external models, private assets and user data remain outside ownership."
+  },
+  "extension_api": {
+    "id": "b10b-provider",
+    "api_version": "b10b.provider.v1",
+    "registration": "runtime.packaging.b10b.extensions",
+    "health_method": "health(context) -> {status, reason, ...}"
+  },
+  "provider_slots": {
+    "asr": {"implementation": "B05", "status_source": "asr.provider.create_provider"},
+    "visual": {"implementation": "B07+B11", "status_source": "visual_driver.VisualDriver; runtime.visual.livetalking"},
+    "tts": {"implementation": "B06", "status_source": "tts.service.TTSService.health", "status": "composed through tts.service.TTSService; external profile assets remain reference-only"}
+  },
+  "provenance": {
+    "policy": "assembly-only",
+    "upstreams": [
+      {
+        "id": "b05-nemotron-runtime",
+        "kind": "runtime",
+        "source": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+        "version": "NeMo-Speech.cpp",
+        "revision": "1118951337094db3b362fbf1b27e871696f10590",
+        "license": "Apache-2.0",
+        "status": "composed",
+        "adapter_boundary": "B10B routes the existing asr.provider.create_provider contract; it does not implement ASR inference.",
+        "uninstall_path": "B10B uninstall removes only modules/asr_local metadata; runtime binaries and model assets remain external."
+      },
+      {
+        "id": "b05-nemotron-model",
+        "kind": "model",
+        "source": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
+        "version": "nemotron-3.5-asr-streaming-0.6b",
+        "revision": "1c8deaecc64b91f034d73e08dd8b64625eb3395d",
+        "license": "OpenMDW-1.1",
+        "status": "composed",
+        "adapter_boundary": "B10B stores only a validated D:/ or F:/ reference and delegates inference to B05.",
+        "uninstall_path": "B10B uninstall never copies or deletes the referenced model, cache, or acceptance evidence."
+      },
+      {
+        "id": "b06-cosyvoice-runtime",
+        "kind": "runtime",
+        "source": "https://github.com/FunAudioLLM/CosyVoice",
+        "version": "CosyVoice3 runtime",
+        "revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
+        "license": "Apache-2.0",
+        "status": "composed",
+        "adapter_boundary": "B10B calls the existing tts.service.TTSService public health contract; it does not reimplement synthesis.",
+        "uninstall_path": "B10B uninstall removes only modules/tts_local metadata; CosyVoice runtime and weights remain external."
+      },
+      {
+        "id": "b06-cosyvoice-model",
+        "kind": "model",
+        "source": "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "version": "Fun-CosyVoice3-0.5B-2512",
+        "revision": "29e01c4e8d000f4bcd70751be16fa94bf3d85a18",
+        "license": "Apache-2.0",
+        "status": "composed",
+        "adapter_boundary": "B10B accepts only external model and reference-audio paths and delegates synthesis to B06.",
+        "uninstall_path": "B10B uninstall never copies or deletes the referenced model, reference audio, or generated audio."
+      },
+      {
+        "id": "b07-livetalking-candidate",
+        "kind": "visual-runtime",
+        "source": "https://github.com/lipku/LiveTalking",
+        "version": "LiveTalking main snapshot",
+        "revision": "a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+        "license": "Apache-2.0",
+        "status": "not_composed",
+        "adapter_boundary": "B10B exposes only the existing visual_driver.VisualDriver contract; no LiveTalking engine or media is embedded.",
+        "uninstall_path": "B10B uninstall removes only modules/visual_driver metadata and never touches candidate media or runtime files."
+      },
+      {
+        "id": "b07-musetalk-candidate",
+        "kind": "visual-runtime",
+        "source": "https://github.com/TMElyralab/MuseTalk",
+        "version": "MuseTalk main snapshot",
+        "revision": "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
+        "license": "MIT",
+        "status": "not_composed",
+        "adapter_boundary": "B10B records MuseTalk as a replaceable candidate only; visual_driver remains the thin contract adapter and preserves original media.",
+        "uninstall_path": "B10B uninstall removes only modules/visual_driver metadata and never touches candidate weights or original visuals."
+      },
+      {
+        "id": "b11-livetalking-runtime",
+        "kind": "visual-runtime",
+        "source": "https://github.com/lipku/LiveTalking",
+        "version": "LiveTalking fixed B11 assembly",
+        "revision": "a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+        "license": "Apache-2.0",
+        "status": "not_composed",
+        "adapter_boundary": "B11 validates external provenance and delegates frame generation to the fixed LiveTalking upstream; it does not implement a renderer, face model, lip model or training path.",
+        "uninstall_path": "B10B uninstall removes module metadata and only exact SHA-256-verified managed destination copies; it retains F:/ download sources, external runtime, avatar payload, original reference and evidence."
+      }
+    ]
+  },
+  "modules": [
+    {
+      "id": "core/http",
+      "version": "b02.v1",
+      "availability": "available",
+      "implementation_batch": "B02",
+      "dependencies": [],
+      "optional_dependencies": [],
+      "capabilities": ["http-contract", "health-aggregate", "routing"],
+      "health": {
+        "kind": "project_files",
+        "adapter": "core",
+        "required_files": ["local_server.py", "http_contract.py"]
+      },
+      "customizable": ["route_policy"],
+      "external_references": [],
+      "ownership": {
+        "owned_paths": ["modules/core_http/marker.json", "modules/core_http/config.json"],
+        "preserved_boundaries": ["project source and tests", "original client and media", "user data and legacy letters"],
+        "processes": []
+      }
+    },
+    {
+      "id": "memory-local",
+      "version": "b04.v1",
+      "availability": "available",
+      "implementation_batch": "B04",
+      "dependencies": ["core/http"],
+      "optional_dependencies": [],
+      "capabilities": ["memory-port", "read-only-legacy-letters"],
+      "health": {"kind": "python_contract", "adapter": "memory", "required_files": []},
+      "customizable": ["database_path"],
+      "external_references": [
+        {"name": "database_path", "kind": "sqlite", "copy_policy": "reference-only", "preserve": true}
+      ],
+      "ownership": {
+        "owned_paths": ["modules/memory_local/marker.json", "modules/memory_local/config.json"],
+        "preserved_boundaries": ["legacy_letters read-only database", "imported letters", "conversation memory and user data"],
+        "processes": []
+      }
+    },
+    {
+      "id": "asr-local",
+      "version": "b05.v1",
+      "availability": "available",
+      "implementation_batch": "B05",
+      "dependencies": ["core/http"],
+      "optional_dependencies": [],
+      "capabilities": ["native.asr", "text.input.fallback", "partial-final-events"],
+      "health": {"kind": "provider", "adapter": "asr", "required_files": []},
+      "customizable": ["provider", "server_url", "runtime_root", "runtime_executable", "model_root", "model_path", "cache_root", "language", "upstream_source", "upstream_revision", "upstream_license", "runtime_sha256", "model_source", "model_revision", "model_license", "model_sha256", "acceptance_sha256"],
+      "external_references": [
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "runtime_executable", "kind": "runtime-executable", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "model_root", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "model_path", "kind": "model-file", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "cache_root", "kind": "cache", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "acceptance_manifest", "kind": "evidence", "copy_policy": "reference-only", "drive_policy": "D-or-F"}
+      ],
+      "ownership": {
+        "owned_paths": ["modules/asr_local/marker.json", "modules/asr_local/config.json"],
+        "preserved_boundaries": ["microphone and authorized audio", "external model weights and caches", "ASR evidence"],
+        "processes": []
+      }
+    },
+    {
+      "id": "visual-driver",
+      "version": "b07.v1",
+      "availability": "available",
+      "implementation_batch": "B07",
+      "dependencies": ["core/http"],
+      "optional_dependencies": [],
+      "capabilities": ["visual-driver", "original-visual-preserve", "in-memory-output"],
+      "health": {"kind": "python_contract", "adapter": "visual", "required_files": []},
+      "customizable": ["asset_manifest_reference", "backend_name"],
+      "external_references": [
+        {"name": "asset_manifest_reference", "kind": "private-manifest", "copy_policy": "reference-only", "path_policy": "logical-or-external"},
+        {"name": "original_visual_assets", "kind": "private-media", "copy_policy": "reference-only", "preserve": true}
+      ],
+      "ownership": {
+        "owned_paths": ["modules/visual_driver/marker.json", "modules/visual_driver/config.json"],
+        "preserved_boundaries": ["B01 private visual manifest", "original visual assets and evidence media", "generated media"],
+        "processes": []
+      }
+    },
+    {
+      "id": "visual-livetalking",
+      "version": "b11.v1",
+      "availability": "available",
+      "implementation_batch": "B11",
+      "dependencies": ["core/http", "visual-driver"],
+      "optional_dependencies": [],
+      "capabilities": ["visual-runtime", "livetalking-upstream", "external-only", "candidate-frame-capture"],
+      "health": {"kind": "python_contract", "adapter": "visual-livetalking", "required_files": []},
+        "customizable": ["runtime_root", "python_executable", "checkpoint_path", "checkpoint_sha256", "checkpoint_url", "checkpoint_revision", "checkpoint_license", "avatar_payload", "avatar_id", "original_reference", "work_root", "upstream_source", "upstream_revision", "upstream_license", "backend_name", "managed_external_copies"],
+      "external_references": [
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "python_executable", "kind": "runtime-python", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "checkpoint_path", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "avatar_payload", "kind": "avatar-payload", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true},
+        {"name": "original_reference", "kind": "private-visual-reference", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true},
+        {"name": "work_root", "kind": "evidence-cache", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true}
+      ],
+      "ownership": {
+        "owned_paths": ["modules/visual_livetalking/marker.json", "modules/visual_livetalking/config.json"],
+        "preserved_boundaries": ["fixed LiveTalking upstream runtime", "official checkpoint and avatar payload", "original Olivia reference and background", "external evidence and generated frames", "F:/ download sources for managed copies", "user data and legacy letters"],
+        "processes": ["delegated LiveTalking worker"]
+      }
+    },
+    {
+      "id": "tts-local",
+      "version": "b06-extension.v1",
+      "availability": "available",
+      "implementation_batch": "B06",
+      "dependencies": ["core/http"],
+      "optional_dependencies": ["asr-local"],
+      "capabilities": ["tts-provider-extension", "timestamped-audio", "fallback-boundary"],
+      "health": {"kind": "extension", "adapter": "tts", "required_files": []},
+      "customizable": ["provider", "runtime_root", "model_dir", "reference_audio", "reference_text", "fallback", "fp16", "upstream_source", "upstream_revision", "upstream_license", "model_source", "model_revision", "model_license", "model_hashes", "reference_audio_sha256"],
+      "external_references": [
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "model_dir", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "reference_audio", "kind": "private-reference-audio", "copy_policy": "reference-only", "preserve": true}
+      ],
+      "extension": {"api_version": "b10b.provider.v1", "provider_id": "tts"},
+      "ownership": {
+        "owned_paths": ["modules/tts_local/marker.json", "modules/tts_local/config.json"],
+        "preserved_boundaries": ["reference audio", "model weights and caches", "generated audio"],
+        "processes": []
+      }
+    },
+    {
+      "id": "live-orchestration",
+      "version": "b08-bridge.v1",
+      "availability": "available",
+      "implementation_batch": "B08",
+      "dependencies": ["core/http", "asr-local", "visual-driver", "tts-local"],
+      "optional_dependencies": ["memory-local", "visual-livetalking"],
+      "capabilities": ["live-session", "cancellation", "fallback-matrix"],
+      "health": {"kind": "provider", "adapter": "live", "required_files": []},
+      "customizable": [],
+      "external_references": [],
+      "ownership": {
+        "owned_paths": ["modules/live_orchestration/marker.json", "modules/live_orchestration/config.json"],
+        "preserved_boundaries": ["all provider data", "original media", "user data and generated output", "external LLM credentials"],
+        "processes": []
+      }
+    }
+  ]
+}

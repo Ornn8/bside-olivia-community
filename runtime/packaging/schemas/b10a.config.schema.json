@@ -1,0 +1,41 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "https://example.invalid/endpoint",
+  "title": "B10A layered local configuration",
+  "type": "object",
+  "required": ["schema_version", "profile", "providers", "logging"],
+  "properties": {
+    "schema_version": {"const": "b10a.config.v1"},
+    "profile": {"type": "string", "minLength": 1},
+    "providers": {"type": "object", "additionalProperties": {"$ref": "#/$defs/provider"}},
+    "logging": {
+      "type": "object",
+      "properties": {
+        "level": {"enum": ["debug", "info", "warning", "error"]},
+        "redact_secrets": {"const": true}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string"},
+        "base_url": {"type": "string"},
+        "base_url_env": {"type": "string"},
+        "api_key_env": {"type": "string"},
+        "model": {"type": "string"},
+        "model_env": {"type": "string"},
+        "root": {"type": "string"},
+        "enabled": {"type": "boolean"},
+        "options": {"type": "object"},
+        "api_key": {"type": "string", "description": "Allowed only in ignored local config; prefer the environment."},
+        "token": {"type": "string", "description": "Allowed only in ignored local config; prefer the environment."},
+        "secret": {"type": "string", "description": "Allowed only in ignored local config; prefer the environment."}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

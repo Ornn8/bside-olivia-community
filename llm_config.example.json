@@ -1,0 +1,19 @@
+{
+  "provider": "openai_compatible",
+  "base_url": "https://llm.example.invalid/v1",
+  "model": "REPLACE_WITH_OPENAI_COMPATIBLE_MODEL",
+  "api_key_env": "OLIVIA_LLM_API_KEY",
+  "api_style": "chat_completions",
+  "timeout_seconds": 30,
+  "max_retries": 2,
+  "retry_backoff_seconds": 0.25,
+  "stream": false,
+  "max_input_chars": 10000,
+  "max_output_chars": 10000,
+  "fallback_provider": "none",
+  "persona_file": "linli_character/system_prompt.md",
+  "persona_config": "linli_character/persona_config.json",
+  "persona_evidence_file": "linli_character/provenance.json",
+  "feature_enabled": true,
+  "requires_api_key": true
+}

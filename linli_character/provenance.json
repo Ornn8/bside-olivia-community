@@ -1,0 +1,79 @@
+{
+  "$schema": "../contracts/persona_provenance.schema.json",
+  "registry_version": "candidate-0.1.0",
+  "accessed_at": "2026-08-13",
+  "sources": [
+    {
+      "source_id": "S001",
+      "title": "BSide: Olivia Lin on Steam",
+      "source_url": "https://store.steampowered.com/app/4532590/BSide_Olivia_Lin/",
+      "publisher": "Steam store",
+      "published_at": "2026-07-13",
+      "accessed_at": "2026-08-13",
+      "source_type": "first_party_product_page",
+      "access_status": "UNAVAILABLE_IN_CURRENT_REGION",
+      "rights_status": "UNKNOWN",
+      "privacy_risk": "LOW",
+      "claim_ids": [],
+      "exclusion_reason": "Current live fetch returned regional unavailability; no new claim is taken from this page."
+    },
+    {
+      "source_id": "S002",
+      "title": "BSide: Olivia Lin 停止运营公告",
+      "source_url": "https://steamcommunity.com/app/4532590/",
+      "publisher": "Steam community page",
+      "published_at": "2026-08-11",
+      "accessed_at": "2026-08-13",
+      "source_type": "first_party_operational_announcement",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "UNKNOWN",
+      "privacy_risk": "LOW",
+      "claim_ids": ["identity.public_name", "product.letter_music_context"],
+      "exclusion_reason": ""
+    },
+    {
+      "source_id": "S003",
+      "title": "读信 / 回信 / 弹琴",
+      "source_url": "https://www.bilibili.com/video/BV11BXnBaEK/",
+      "publisher": "林离Olivia public account",
+      "published_at": "2026-03-27",
+      "accessed_at": "2026-08-13",
+      "source_type": "public_media_metadata",
+      "access_status": "NOT_RETRIEVED",
+      "rights_status": "UNKNOWN",
+      "privacy_risk": "LOW",
+      "claim_ids": [],
+      "exclusion_reason": "Live retrieval was unavailable; no transcript, caption, or media was copied."
+    },
+    {
+      "source_id": "S004",
+      "title": "Secret | 快一点，时间会听见",
+      "source_url": "https://www.bilibili.com/video/BV13vyEB7Esn/",
+      "publisher": "林离Olivia public account",
+      "published_at": "2025-11-20T12:00:00+08:00",
+      "accessed_at": "2026-08-13",
+      "source_type": "public_media_metadata_and_abstract",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "UNKNOWN",
+      "privacy_risk": "LOW",
+      "claim_ids": ["identity.public_name", "public_media.music_context"],
+      "exclusion_reason": ""
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "S002.summary",
+      "source_id": "S002",
+      "kind": "public_source_summary",
+      "summary": "公开公告描述产品名称、写信与音乐语境，并列出离线版本和在线服务停止时间；只作为时间敏感的产品背景。",
+      "reference": "community-page metadata and announcement section"
+    },
+    {
+      "evidence_id": "S004.summary",
+      "source_id": "S004",
+      "kind": "public_source_summary",
+      "summary": "公开账号页面展示钢琴演奏视频标题、发布时间和围绕时间的短简介；未保存歌词、字幕或音频。",
+      "reference": "video metadata and short abstract"
+    }
+  ]
+}

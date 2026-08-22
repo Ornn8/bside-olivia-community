@@ -1,0 +1,388 @@
+"""Run reproducible, repository-only B00 hardening scans.
+
+The scanner emits only relative paths, line numbers, pattern labels, counts,
+and exit status. It never prints matched source text, configuration values,
+request bodies, or file contents.
+
+Exit codes:
+    0: selected scans completed with no findings.
+    1: selected scans completed and found one or more findings.
+    2: invalid arguments or a scanner/environment error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import io
+import re
+import subprocess
+import sys
+import tokenize
+from pathlib import Path
+
+
+MAX_TRACKED_FILE_BYTES = 50_000_000
+MODES = (
+    "comments",
+    "runtime-dependencies",
+    "secrets",
+    "sensitive-paths",
+    "large-files",
+    "evidence-ignore",
+)
+
+
+COMMENT_PATTERNS = (
+    (
+        "official_word",
+        re.compile(
+            r"(?:官方|(?<![A-Za-z])official(?:ly)?(?![A-Za-z])|"
+            r"(?<![A-Za-z])offical(?:ly)?(?![A-Za-z]))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "historical_snapshot_word",
+        re.compile(
+            r"(?:历史|快照|(?<![A-Za-z])histor(?:y|ical)(?![A-Za-z])|"
+            r"(?<![A-Za-z])snap[-_ ]?shot(?![A-Za-z]))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "online_dependency",
+        re.compile(
+            r"(?:在线|联网|外联|远程|(?<![A-Za-z])online(?![A-Za-z])|"
+            r"(?<![A-Za-z])remote(?![A-Za-z])|(?<![A-Za-z])external(?![A-Za-z]))"
+            r".{0,80}"
+            r"(?:依赖|服务|接口|调用|请求|(?<![A-Za-z])dependency(?![A-Za-z])|"
+            r"(?<![A-Za-z])service(?![A-Za-z])|(?<![A-Za-z])endpoint(?![A-Za-z])|"
+            r"(?<![A-Za-z])api(?![A-Za-z])|(?<![A-Za-z])request(?![A-Za-z])|"
+            r"(?<![A-Za-z])provider(?![A-Za-z]))"
+            r"|"
+            r"(?:依赖|服务|接口|调用|请求|(?<![A-Za-z])dependency(?![A-Za-z])|"
+            r"(?<![A-Za-z])service(?![A-Za-z])|(?<![A-Za-z])endpoint(?![A-Za-z])|"
+            r"(?<![A-Za-z])api(?![A-Za-z])|(?<![A-Za-z])request(?![A-Za-z])|"
+            r"(?<![A-Za-z])provider(?![A-Za-z]))"
+            r".{0,80}"
+            r"(?:在线|联网|外联|远程|(?<![A-Za-z])online(?![A-Za-z])|"
+            r"(?<![A-Za-z])remote(?![A-Za-z])|(?<![A-Za-z])external(?![A-Za-z]))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "completed_persona_distillation",
+        re.compile(
+            r"(?:蒸馏|蒸餾|(?<![A-Za-z])distill(?:ed|ation)?(?![A-Za-z]))"
+            r".{0,80}"
+            r"(?:完成|最终|定稿|已完成|(?<![A-Za-z])complete(?:d)?(?![A-Za-z])|"
+            r"(?<![A-Za-z])final(?![A-Za-z])|(?<![A-Za-z])done(?![A-Za-z])|"
+            r"(?<![A-Za-z])finished(?![A-Za-z]))"
+            r"|"
+            r"(?:完成|最终|定稿|已完成|(?<![A-Za-z])complete(?:d)?(?![A-Za-z])|"
+            r"(?<![A-Za-z])final(?![A-Za-z])|(?<![A-Za-z])done(?![A-Za-z])|"
+            r"(?<![A-Za-z])finished(?![A-Za-z]))"
+            r".{0,80}"
+            r"(?:蒸馏|蒸餾|人格|人设|人設|(?<![A-Za-z])distill(?:ed|ation)?(?![A-Za-z])|"
+            r"(?<![A-Za-z])persona(?![A-Za-z]))",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+RUNTIME_DEPENDENCY_PATTERNS = (
+    (
+        "known_official_host",
+        re.compile(
+            r"(?:toy-cnbeta01\.olivia\.miyoushe\.com|"
+            r"(?<![A-Za-z])(?:miyoushe|mihoyo)(?![A-Za-z])|米哈游|"
+            r"(?<![A-Za-z])olivia[-_.]steam(?![A-Za-z]))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "official_request_poll_download_token_marker",
+        re.compile(
+            r"(?:\bofficial[\s_-]*(?:base|request|reply|response|poll|download|token)\b|"
+            r"\b(?:base|request|reply|response|poll|download|token)[\s_-]*official\b|"
+            r"\bcapture[\s_-]*official(?:[\s_-]*(?:reply|response))?\b|"
+            r"\bdownload[\s_-]*reply[\s_-]*video\b|\bx[\s_-]*token\b)",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+SECRET_PATTERNS = (
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"\b(?:gh[pousr]|github_pat|glpat)-[A-Za-z0-9_-]{20,}\b")),
+    (
+        "jwt_like",
+        re.compile(r"\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b"),
+    ),
+    ("bearer_secret", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_./+=-]{24,}")),
+    (
+        "assigned_secret",
+        re.compile(
+            r"(?i)\b(?:api[_-]?key|secret|password|access[_-]?token)\b\s*[:=]\s*"
+            r"[\"'][^\"']{16,}[\"']"
+        ),
+    ),
+)
+
+SENSITIVE_PATH_PATTERN = re.compile(
+    r"(?i)(?:^|/)(?:\.env(?:\.|$)|[^/]*(?:secret|token|credential|password)[^/]*|"
+    r"[^/]+\.(?:pem|key|p12|pfx|crt|sqlite|sqlite3|db)|"
+    r"[^/]+\.(?:safetensors|pth|pt|ckpt|onnx|gguf|bin|wav|flac|mp3|mp4|zip|7z|rar))$"
+)
+
+EVIDENCE_PROBES = (
+    ".evidence/baseline-hardening/run-id/pytest.log",
+    ".evidence/baseline-hardening/run-id/pytest.junit.xml",
+    ".evidence/baseline-hardening/run-id/pytest-collect.log",
+    ".evidence/baseline-hardening/run-id/compile.txt",
+    ".evidence/baseline-hardening/run-id/git-diff-check.txt",
+    ".evidence/baseline-hardening/run-id/scan-commands.txt",
+    ".evidence/baseline-hardening/run-id/manifest.sha256",
+)
+
+
+def relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def tracked_files(root: Path) -> list[Path]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    names = sorted(name for name in result.stdout.decode("utf-8").split("\0") if name)
+    return [root / Path(name) for name in names]
+
+
+def runtime_python_files(root: Path, files: list[Path]) -> list[Path]:
+    scanner = root / Path(__file__).name
+    return [
+        path
+        for path in files
+        if path.suffix.lower() == ".py"
+        and "tests" not in path.relative_to(root).parts
+        and path != scanner
+    ]
+
+
+def line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _pattern_findings(name: str, text: str, start_line: int = 1) -> list[str]:
+    findings: list[str] = []
+    for label, pattern in COMMENT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            findings.append(f"{name}:{start_line + line_number(text, match.start()) - 1}:{label}")
+    return findings
+
+
+def _docstrings(tree: ast.AST) -> list[tuple[int, str]]:
+    nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    result: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, nodes) or not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            result.append((first.lineno, first.value.value))
+    return result
+
+
+def comment_findings(name: str, text: str) -> list[str]:
+    return _pattern_findings(name, text)
+
+
+def _is_pinned_cors_metadata(path: Path, root: Path, lines: list[str], line_no: int) -> bool:
+    """Allow the fixed frontend origin and header name used only by local CORS."""
+
+    if relative(path, root) != "local_server.py":
+        return False
+    line = lines[line_no - 1].strip()
+    context = "".join(lines[max(0, line_no - 17): line_no - 1])
+    return (
+        line == "'https://toy-cnbeta01.olivia.miyoushe.com',"
+        and "TRUSTED_FRONTEND_ORIGINS" in context
+    ) or (
+        line == "'X-Token',"
+        and "ALLOWED_HEADERS" in context
+    )
+
+
+def scan_runtime_comments(root: Path, files: list[Path]) -> tuple[list[str], list[str], int]:
+    findings: list[str] = []
+    runtime = runtime_python_files(root, files)
+    for path in runtime:
+        with tokenize.open(path) as handle:
+            source = handle.read()
+        tree = ast.parse(source, filename=str(path))
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type != tokenize.COMMENT:
+                continue
+            findings.extend(
+                _pattern_findings(relative(path, root), token.string, token.start[0])
+            )
+        for start_line, docstring in _docstrings(tree):
+            findings.extend(
+                _pattern_findings(relative(path, root), docstring, start_line)
+            )
+    return findings, [name for name, _ in COMMENT_PATTERNS], len(runtime)
+
+
+def scan_runtime_dependencies(root: Path, files: list[Path]) -> tuple[list[str], list[str], int]:
+    findings: list[str] = []
+    runtime = runtime_python_files(root, files)
+    for path in runtime:
+        with tokenize.open(path) as handle:
+            lines = handle.readlines()
+        for line_no, line in enumerate(lines, 1):
+            if _is_pinned_cors_metadata(path, root, lines, line_no):
+                continue
+            for label, pattern in RUNTIME_DEPENDENCY_PATTERNS:
+                if pattern.search(line):
+                    findings.append(f"{relative(path, root)}:{line_no}:{label}")
+    return findings, [name for name, _ in RUNTIME_DEPENDENCY_PATTERNS], len(runtime)
+
+
+def _is_binary(path: Path) -> bool:
+    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".flac", ".zip"}:
+        return True
+    with path.open("rb") as handle:
+        return b"\0" in handle.read(4096)
+
+
+def scan_secrets(root: Path, files: list[Path]) -> tuple[list[str], list[str]]:
+    findings: list[str] = []
+    for path in files:
+        if not path.is_file() or _is_binary(path):
+            continue
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_no, line in enumerate(handle, 1):
+                for label, pattern in SECRET_PATTERNS:
+                    if pattern.search(line):
+                        findings.append(f"{relative(path, root)}:{line_no}:{label}")
+    return findings, [name for name, _ in SECRET_PATTERNS]
+
+
+def scan_sensitive_paths(root: Path, files: list[Path]) -> tuple[list[str], list[str]]:
+    findings = [
+        relative(path, root)
+        for path in files
+        if SENSITIVE_PATH_PATTERN.search(relative(path, root))
+    ]
+    return findings, [
+        "secret_token_credential_paths",
+        "private_key_paths",
+        "model_media_archive_paths",
+    ]
+
+
+def scan_large_files(root: Path, files: list[Path]) -> list[str]:
+    findings: list[str] = []
+    for path in files:
+        if path.is_file() and path.stat().st_size > MAX_TRACKED_FILE_BYTES:
+            findings.append(f"{relative(path, root)}:{path.stat().st_size}")
+    return findings
+
+
+def scan_evidence_ignore(root: Path) -> tuple[list[str], list[str]]:
+    not_ignored: list[str] = []
+    checked: list[str] = []
+    for probe in EVIDENCE_PROBES:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--", probe],
+            cwd=root,
+            capture_output=True,
+        )
+        checked.append(probe)
+        if result.returncode != 0:
+            not_ignored.append(probe)
+    return not_ignored, checked
+
+
+def emit_section(name: str, patterns: list[str], findings: list[str]) -> None:
+    print(f"[{name}]")
+    print(f"patterns={','.join(patterns)}")
+    print(f"matches={len(findings)}")
+    for finding in findings:
+        print(f"finding={finding}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--mode",
+        action="append",
+        choices=("all", *MODES),
+        help="select one or more scan modes; default is all modes",
+    )
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    selected = MODES if not args.mode or "all" in args.mode else tuple(dict.fromkeys(args.mode))
+
+    try:
+        files = tracked_files(root)
+        print("baseline_hardening_scan=1")
+        print(f"selected_modes={','.join(selected)}")
+        print(f"tracked_files={len(files)}")
+
+        all_findings: list[str] = []
+        if "comments" in selected:
+            findings, patterns, checked = scan_runtime_comments(root, files)
+            emit_section("misleading_runtime_comments", patterns, findings)
+            print(f"runtime_python_files_checked={checked}")
+            all_findings.extend(findings)
+        if "runtime-dependencies" in selected:
+            findings, patterns, checked = scan_runtime_dependencies(root, files)
+            emit_section("official_runtime_dependency_markers", patterns, findings)
+            print(f"runtime_python_files_checked={checked}")
+            all_findings.extend(findings)
+        if "secrets" in selected:
+            findings, patterns = scan_secrets(root, files)
+            emit_section("tracked_secret_markers", patterns, findings)
+            all_findings.extend(findings)
+        if "sensitive-paths" in selected:
+            findings, patterns = scan_sensitive_paths(root, files)
+            emit_section("tracked_sensitive_paths", patterns, findings)
+            all_findings.extend(findings)
+        if "large-files" in selected:
+            findings = scan_large_files(root, files)
+            print("[tracked_large_files]")
+            print(f"threshold_bytes={MAX_TRACKED_FILE_BYTES}")
+            print(f"matches={len(findings)}")
+            for finding in findings:
+                print(f"finding={finding}")
+            all_findings.extend(findings)
+        if "evidence-ignore" in selected:
+            findings, probes = scan_evidence_ignore(root)
+            emit_section("evidence_ignore_boundary", [".evidence/**"], findings)
+            print(f"evidence_probe_count={len(probes)}")
+            print(f"evidence_probes_checked={len(probes) - len(findings)}")
+            all_findings.extend(findings)
+    except (OSError, UnicodeError, subprocess.SubprocessError, tokenize.TokenError, SyntaxError) as exc:
+        print(f"status=ERROR:{type(exc).__name__}")
+        return 2
+
+    status = "PASS" if not all_findings else "FAIL"
+    print(f"status={status}")
+    print(f"exit_code={0 if not all_findings else 1}")
+    return 0 if not all_findings else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

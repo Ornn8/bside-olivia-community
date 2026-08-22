@@ -1,0 +1,210 @@
+{
+  "$schema": "../schemas/b10a.modules.schema.json",
+  "schema_version": "b10a.modules.v1",
+  "bundle": {
+    "id": "b10a-local-skeleton",
+    "version": "0.1.0",
+    "batch": "B10A",
+    "status": "skeleton",
+    "policy": "LLM API may be remote; all other declared providers are local-only slots."
+  },
+  "provider_slots": {
+    "llm-api": {
+      "transport": "openai-compatible-http",
+      "secret_source": "B10A_LLM_API_KEY environment variable only",
+      "implementation": "pending-B03"
+    },
+    "memory-local": {
+      "transport": "local",
+      "implementation": "pending-B04"
+    },
+    "asr-local": {
+      "transport": "local",
+      "implementation": "pending-B05"
+    },
+    "tts-local": {
+      "transport": "local",
+      "implementation": "pending-B06"
+    },
+    "visual-driver": {
+      "transport": "local",
+      "implementation": "pending-B07"
+    },
+    "media-original": {
+      "transport": "local-path-reference-only",
+      "implementation": "pending-B09"
+    }
+  },
+  "modules": [
+    {
+      "id": "core/http",
+      "version": "b02.v1",
+      "availability": "available",
+      "implementation_batch": "B02",
+      "dependencies": [],
+      "optional_dependencies": [],
+      "capabilities": ["http-contract", "health-aggregate", "mock-process-lifecycle"],
+      "health": {
+        "kind": "project_files",
+        "required_files": ["local_server.py", "http_contract.py"],
+        "description": "Existing B02 local HTTP contract files are present."
+      },
+      "processes": [
+        {
+          "id": "mock-http",
+          "kind": "built-in-mock",
+          "host": "127.0.0.1",
+          "default_port": 8780,
+          "health_path": "/health"
+        }
+      ],
+      "ownership": {
+        "owned_paths": [
+          "modules/core_http/marker.json",
+          "services/mock-http/identity.json",
+          "logs/mock-http.log"
+        ],
+        "preserved_boundaries": [
+          "project source and tests",
+          "original client and original media",
+          "imported letters and user data",
+          "external model weights and caches"
+        ],
+        "processes": ["mock-http"]
+      },
+      "notes": "The marker and mock service are the only B10A-owned payloads; B10A does not install or replace the original client."
+    },
+    {
+      "id": "llm-api",
+      "version": "pending-b03",
+      "availability": "pending",
+      "implementation_batch": "B03",
+      "reason": "LLM gateway implementation is owned by B03.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": ["memory-local"],
+      "capabilities": ["llm-provider-slot", "bounded-timeout", "secret-env-reference"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared contract only; no provider client is installed by B10A."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/llm-api/marker.json"],
+        "preserved_boundaries": ["LLM API credentials, provider data, models and caches"],
+        "processes": []
+      },
+      "notes": "Pending; B10A must return pending rather than claim a usable LLM gateway."
+    },
+    {
+      "id": "memory-local",
+      "version": "pending-b04",
+      "availability": "pending",
+      "implementation_batch": "B04",
+      "reason": "Local memory provider implementation is owned by B04.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": [],
+      "capabilities": ["memory-slot", "delete-boundary"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared local slot only; no memory database is created by B10A."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/memory-local/marker.json"],
+        "preserved_boundaries": ["memory_store.json, imported letters and user data"],
+        "processes": []
+      },
+      "notes": "Pending; B10A never imports, copies or deletes legacy player memory."
+    },
+    {
+      "id": "asr-local",
+      "version": "pending-b05",
+      "availability": "pending",
+      "implementation_batch": "B05",
+      "reason": "Local ASR implementation is owned by B05.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": ["llm-api"],
+      "capabilities": ["asr-slot", "partial-final-events"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared local slot only; ASR weights and devices are not touched."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/asr-local/marker.json"],
+        "preserved_boundaries": ["microphone data, audio fixtures, model weights and caches"],
+        "processes": []
+      },
+      "notes": "Pending; no microphone or model installation is attempted."
+    },
+    {
+      "id": "tts-local",
+      "version": "pending-b06",
+      "availability": "pending",
+      "implementation_batch": "B06",
+      "reason": "Local TTS implementation is owned by B06.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": ["llm-api"],
+      "capabilities": ["tts-slot", "audio-fallback-boundary"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared local slot only; TTS weights and audio devices are not touched."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/tts-local/marker.json"],
+        "preserved_boundaries": ["original audio, generated media, model weights and caches"],
+        "processes": []
+      },
+      "notes": "Pending; no generated audio or reference voice is copied into the package."
+    },
+    {
+      "id": "visual-driver",
+      "version": "pending-b07",
+      "availability": "pending",
+      "implementation_batch": "B07",
+      "reason": "Visual driver implementation is owned by B07.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": ["media-original"],
+      "capabilities": ["visual-driver-slot", "original-visual-preserve"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared slot only; original visual assets remain path references."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/visual-driver/marker.json"],
+        "preserved_boundaries": ["original client, original visual assets and evidence media"],
+        "processes": []
+      },
+      "notes": "Pending; no LiveTalking/MuseTalk clone, weights or visual assets are installed."
+    },
+    {
+      "id": "media-original",
+      "version": "pending-b09",
+      "availability": "pending",
+      "implementation_batch": "B09",
+      "reason": "Original media composition implementation is owned by B09.",
+      "dependencies": ["core/http"],
+      "optional_dependencies": [],
+      "capabilities": ["original-media-reference", "music-fallback-boundary"],
+      "health": {
+        "kind": "pending",
+        "required_files": [],
+        "description": "Declared path-reference slot only; original media is never copied."
+      },
+      "processes": [],
+      "ownership": {
+        "owned_paths": ["modules/media-original/marker.json"],
+        "preserved_boundaries": ["original client, original media, imported letters and generated output"],
+        "processes": []
+      },
+      "notes": "Pending; B10A does not package or delete original media."
+    }
+  ]
+}

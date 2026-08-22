@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p02.persona.v2.provenance",
+  "title": "Persona 2.0 provenance registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "registry_version", "sources", "evidence"],
+  "properties": {
+    "schema_version": {"const": "p02.persona.v2"},
+    "registry_version": {"const": "p02.persona.v2"},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/evidence"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "title",
+        "source_url",
+        "publisher",
+        "published_at",
+        "accessed_at",
+        "source_type",
+        "access_status",
+        "rights_status",
+        "privacy_risk",
+        "declaration_ids",
+        "exclusion_reason"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "source_url": {"type": "string", "format": "uri"},
+        "content_source": {"$ref": "#/$defs/content_source"},
+        "publisher": {"type": "string", "minLength": 1, "maxLength": 120},
+        "published_at": {"type": "string", "minLength": 1, "maxLength": 40},
+        "accessed_at": {"type": "string", "format": "date"},
+        "source_type": {"type": "string", "minLength": 1, "maxLength": 80},
+        "access_status": {
+          "enum": ["ACCESSIBLE", "UNAVAILABLE_IN_CURRENT_REGION", "NOT_RETRIEVED"]
+        },
+        "rights_status": {
+          "enum": [
+            "REDISTRIBUTABLE",
+            "SUMMARY_ONLY",
+            "LOCAL_PRIVATE_ONLY",
+            "UNKNOWN_BLOCK_RELEASE"
+          ]
+        },
+        "rights_basis": {"$ref": "#/$defs/rights_basis"},
+        "privacy_risk": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+        "declaration_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/id"}
+        },
+        "exclusion_reason": {"type": "string", "maxLength": 240}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"rights_status": {"const": "REDISTRIBUTABLE"}}
+          },
+          "then": {
+            "required": ["content_source", "rights_basis"],
+            "properties": {
+              "rights_basis": {
+                "properties": {"status": {"const": "CONFIRMED"}}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "content_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "path", "revision", "sha256"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 200
+        },
+        "path": {"type": "string", "minLength": 1, "maxLength": 240},
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "rights_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis_type", "source_url", "revision", "status"],
+      "properties": {
+        "basis_type": {"enum": ["repository_license"]},
+        "source_url": {"type": "string", "format": "uri"},
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "status": {"enum": ["CONFIRMED", "NOT_CONFIRMED"]}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "source_id", "kind", "summary", "reference"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "source_id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 80},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+        "reference": {"type": "string", "maxLength": 160}
+      }
+    }
+  }
+}

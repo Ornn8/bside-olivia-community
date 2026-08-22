@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "contract_version": "b09.v1",
+  "asset_source": "b01.private_asset_manifest",
+  "actions": ["play", "pause", "stop", "seek", "switch_track", "switch_state", "recover"],
+  "playback_states": ["stopped", "playing", "paused", "error"],
+  "scene": {
+    "time_of_day": ["day", "dusk", "night"],
+    "performance": ["idle", "piano_performance"]
+  },
+  "operation_states": ["PENDING", "RUNNING", "COMPLETED", "NOOP", "FAILED", "CANCELED"],
+  "fallback_policies": ["error", "use_declared_fallback", "silent"],
+  "error_codes": [
+    "INVALID_COMMAND",
+    "INVALID_TRACK_ID",
+    "TRACK_REQUIRED",
+    "TRACK_NOT_FOUND",
+    "SEEK_OUT_OF_RANGE",
+    "ASSET_RESOLVER_UNAVAILABLE",
+    "ASSET_NOT_FOUND",
+    "ASSET_CATEGORY_MISMATCH",
+    "ASSET_MISSING",
+    "ASSET_HASH_MISMATCH",
+    "ASSET_INVALID_MEDIA",
+    "ASSET_FALLBACK_UNAVAILABLE",
+    "PLAYBACK_PROVIDER_UNAVAILABLE",
+    "PROVIDER_ERROR",
+    "REQUEST_ID_REUSED",
+    "RETRY_NOT_AVAILABLE"
+  ],
+  "privacy": {
+    "source_paths_in_events": false,
+    "asset_references_in_events": false,
+    "original_media_in_repository": false,
+    "network_fallback": false
+  },
+  "cancellation": {
+    "state_commit": "after_provider_success",
+    "provider_requirement": "operations_must_be_cancellation_safe"
+  }
+}

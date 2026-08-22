@@ -1,0 +1,108 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "visual_driver.schema.json",
+  "title": "B07 original visual driver evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_kind",
+    "acceptance_status",
+    "thresholds",
+    "state_coverage",
+    "metrics",
+    "required_metrics",
+    "metric_status_counts",
+    "verification_boundary"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_kind": {"const": "b07_visual_driver_evidence"},
+    "acceptance_status": {"const": "UNVERIFIED"},
+    "thresholds": {"const": "UNFROZEN"},
+    "state_id": {"type": ["string", "null"]},
+    "state_coverage": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/stateUnit"}
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 13,
+      "items": {"$ref": "#/$defs/metric"}
+    },
+    "required_metrics": {
+      "type": "object",
+      "required": [
+        "pixel",
+        "ssim",
+        "lpips",
+        "identity",
+        "flicker",
+        "background_drift",
+        "color",
+        "fps",
+        "av_sync"
+      ],
+      "additionalProperties": {"$ref": "#/$defs/metric"}
+    },
+    "metric_status_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "verification_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "original_visual_input_only",
+        "source_kind",
+        "source_paths_in_report",
+        "replacement_media_generated",
+        "replacement_media_committed",
+        "manual_total_control_view_required",
+        "identity_requires_manual_review_without_provider",
+        "thresholds",
+        "av_sync"
+      ],
+      "properties": {
+        "original_visual_input_only": {"const": true},
+        "source_kind": {"const": "b01_private_manifest_reference"},
+        "source_paths_in_report": {"const": false},
+        "replacement_media_generated": {"const": false},
+        "replacement_media_committed": {"const": false},
+        "manual_total_control_view_required": {"const": true},
+        "identity_requires_manual_review_without_provider": {"const": true},
+        "thresholds": {"const": "UNFROZEN"},
+        "av_sync": {"$ref": "#/$defs/metric"}
+      }
+    }
+  },
+  "$defs": {
+    "stateUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_id", "status", "fallback_source", "media_written"],
+      "properties": {
+        "state_id": {"type": "string"},
+        "status": {"enum": ["ORIGINAL_INPUT", "FALLBACK_ONLY"]},
+        "fallback_source": {"const": "original_frame"},
+        "media_written": {"const": false}
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": ["metric", "status", "value", "threshold_status"],
+      "properties": {
+        "metric": {"type": "string"},
+        "status": {"enum": ["MEASURED", "UNAVAILABLE", "UNVERIFIED"]},
+        "value": {},
+        "threshold_status": {"const": "UNFROZEN"},
+        "reason": {"type": ["string", "null"]},
+        "details": {"type": "object"},
+        "status_counts": {"type": "object"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

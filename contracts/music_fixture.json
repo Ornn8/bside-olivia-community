@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "b02_sanitized_music_catalog",
+  "music_type": {
+    "performance_modes": [
+      {
+        "type": "Solo",
+        "display_name": "Synthetic solo",
+        "display_short_name": "Solo",
+        "picture_url": ""
+      }
+    ],
+    "music_styles": [
+      {
+        "type": "Classical",
+        "display_name": "Synthetic classical"
+      }
+    ],
+    "source": "fixture"
+  },
+  "songs": [
+    {
+      "id": "fixture-song-001",
+      "name": "Synthetic study",
+      "name_key": "fixture_synthetic_study",
+      "performance_type": "Solo",
+      "performance_type_display_name": "Synthetic solo",
+      "performance_type_display_short_name": "Solo",
+      "style_type": "Classical",
+      "style_type_display_name": "Synthetic classical",
+      "cover_url": "",
+      "video_url": "",
+      "duration": 60
+    }
+  ]
+}

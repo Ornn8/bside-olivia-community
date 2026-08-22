@@ -1,0 +1,9 @@
+{
+  "schema_version": "olivia.full-patch.v2",
+  "steam_app_id": "4532590",
+  "client_version": "0.0.9.615",
+  "feapp_sha256": "53babcf288c7679a57eb4a2647397d951ec450d5fdaea634498286b2ebb8136e",
+  "patch_mode": "isolated-copy",
+  "live_status": "UNAVAILABLE_PAUSED",
+  "media_status": "VIDEO_AND_MUSIC_REPLY_BOUNDARIES_PRESENT_PROVIDER_DOWNLOAD_REQUIRED"
+}

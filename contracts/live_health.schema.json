@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "b08.live.health.v1",
+  "title": "B08 truthful live health",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "ready", "components", "network_called"],
+  "properties": {
+    "status": {"enum": ["READY", "DEGRADED", "UNAVAILABLE"]},
+    "ready": {"type": "boolean"},
+    "network_called": {"const": false},
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["llm", "memory", "asr", "tts", "visual"],
+      "properties": {
+        "llm": {"$ref": "#/$defs/component"},
+        "memory": {"$ref": "#/$defs/component"},
+        "asr": {"$ref": "#/$defs/component"},
+        "tts": {"$ref": "#/$defs/component"},
+        "visual": {"$ref": "#/$defs/component"}
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "ready", "provider", "fallback", "reason_code"],
+      "properties": {
+        "status": {"type": "string", "minLength": 1},
+        "ready": {"type": "boolean"},
+        "provider": {"type": "string", "minLength": 1},
+        "fallback": {"type": "string", "minLength": 1},
+        "reason_code": {"type": ["string", "null"]},
+        "network_called": {"const": false},
+        "source": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

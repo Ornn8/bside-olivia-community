@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory_config.schema.json",
+  "title": "Opt-in local memory profile",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {"type": "boolean", "default": false},
+    "provider": {"type": "string", "enum": ["sqlite", "mem0"], "default": "sqlite"},
+    "data_root": {"type": "string", "minLength": 1},
+    "ttl_seconds": {"type": ["integer", "null"], "minimum": 1},
+    "context_max_chars": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "persona_evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string", "minLength": 1},
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reference"],
+            "properties": {
+              "reference": {"type": "string", "minLength": 1},
+              "version": {"type": "string", "minLength": 1}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

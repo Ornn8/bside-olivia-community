@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "provider": "sqlite",
+  "data_root": ".olivia_data/memory",
+  "ttl_seconds": 2592000,
+  "context_max_chars": 2400,
+  "persona_evidence": [
+    {"reference": "linli_character/system_prompt.md", "version": "draft-file-v1"}
+  ]
+}

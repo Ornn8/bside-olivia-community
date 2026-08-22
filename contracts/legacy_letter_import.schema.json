@@ -1,0 +1,39 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "legacy_letter_import.schema.json",
+  "title": "B02 read-only legacy letter import boundary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "fixture_kind", "mode", "letters"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fixture_kind": {"const": "b02_sanitized_legacy_letters"},
+    "mode": {"const": "read_only"},
+    "letters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "letter_id",
+          "source_record_id",
+          "content",
+          "reply_text",
+          "material",
+          "is_read",
+          "read_only"
+        ],
+        "properties": {
+          "letter_id": {"type": "string", "pattern": "^legacy-fixture-[a-z0-9-]+$"},
+          "source_record_id": {"type": "string", "pattern": "^fixture-record-[a-z0-9-]+$"},
+          "content": {"type": "string", "minLength": 1},
+          "reply_text": {"type": "string"},
+          "material": {"type": "object"},
+          "is_read": {"type": "integer", "enum": [0, 1]},
+          "read_only": {"const": true},
+          "created_at": {"type": ["integer", "string"]}
+        }
+      }
+    }
+  }
+}

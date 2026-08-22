@@ -1,0 +1,78 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "http_contract.schema.json",
+  "title": "B02 local HTTP contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "privacy"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "contract_version": {"const": "b02.v1"},
+    "base_path": {"const": "/toy"},
+    "routes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/route"
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status", "provider"],
+        "properties": {
+          "status": {"enum": ["available", "unavailable", "degraded", "not_implemented"]},
+          "provider": {"type": "string"},
+          "reason_code": {"type": "string"},
+          "probe": {"type": "string"},
+          "required_for": {"type": "array", "items": {"type": "string"}},
+          "empty_data_is_valid": {"type": "boolean"},
+          "mode": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["required_capabilities", "optional_capabilities"],
+        "properties": {
+          "required_capabilities": {"type": "array", "items": {"type": "string"}},
+          "optional_capabilities": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logs_include_request_body", "logs_include_query_values", "legacy_import_mode", "original_assets_in_response"],
+      "properties": {
+        "logs_include_request_body": {"const": false},
+        "logs_include_query_values": {"const": false},
+        "legacy_import_mode": {"const": "read-only-atomic-import"},
+        "original_assets_in_response": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods", "capability", "state", "read_only", "error_code", "evidence"],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"enum": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}
+        },
+        "capability": {"type": "string"},
+        "state": {"enum": ["available", "unavailable", "not_implemented", "degraded"]},
+        "read_only": {"type": "boolean"},
+        "error_code": {"type": ["string", "null"]},
+        "evidence": {"enum": ["protocol", "local", "local-extension"]}
+      }
+    }
+  }
+}

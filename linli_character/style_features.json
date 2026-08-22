@@ -1,0 +1,15 @@
+{
+  "$schema": "../contracts/persona_style_features.schema.json",
+  "version": "candidate-0.1.0",
+  "status": "CANDIDATE_NOT_FINAL",
+  "features": {
+    "response_length": {"min_chars": 20, "max_chars": 520, "unit": "characters"},
+    "paragraph_count": {"min": 1, "max": 3},
+    "question_count": {"min": 0, "max": 1},
+    "specific_imagery": {"preferred": true, "require_private_claims": false},
+    "emoji": {"max": 0},
+    "diagnosis": {"allowed": false},
+    "unbounded_intimacy": {"allowed": false}
+  },
+  "selection_boundary": "These are soft candidate constraints; safety, truthfulness, user language, and uncertainty take priority."
+}

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "media_state.schema.json",
+  "title": "B09 local original-media state contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "asset_source",
+    "actions",
+    "playback_states",
+    "scene",
+    "operation_states",
+    "fallback_policies",
+    "error_codes",
+    "privacy",
+    "cancellation"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "contract_version": {"const": "b09.v1"},
+    "asset_source": {"const": "b01.private_asset_manifest"},
+    "actions": {
+      "type": "array",
+      "items": {
+        "enum": ["play", "pause", "stop", "seek", "switch_track", "switch_state", "recover"]
+      }
+    },
+    "playback_states": {
+      "type": "array",
+      "items": {"enum": ["stopped", "playing", "paused", "error"]}
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_of_day", "performance"],
+      "properties": {
+        "time_of_day": {"type": "array", "items": {"enum": ["day", "dusk", "night"]}},
+        "performance": {"type": "array", "items": {"enum": ["idle", "piano_performance"]}}
+      }
+    },
+    "operation_states": {
+      "type": "array",
+      "items": {"enum": ["PENDING", "RUNNING", "COMPLETED", "NOOP", "FAILED", "CANCELED"]}
+    },
+    "fallback_policies": {
+      "type": "array",
+      "items": {"enum": ["error", "use_declared_fallback", "silent"]}
+    },
+    "error_codes": {"type": "array", "items": {"type": "string"}},
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_paths_in_events",
+        "asset_references_in_events",
+        "original_media_in_repository",
+        "network_fallback"
+      ],
+      "properties": {
+        "source_paths_in_events": {"const": false},
+        "asset_references_in_events": {"const": false},
+        "original_media_in_repository": {"const": false},
+        "network_fallback": {"const": false}
+      }
+    },
+    "cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_commit", "provider_requirement"],
+      "properties": {
+        "state_commit": {"const": "after_provider_success"},
+        "provider_requirement": {"const": "operations_must_be_cancellation_safe"}
+      }
+    }
+  },
+  "$defs": {
+    "asset_reference": {"type": "string", "pattern": "^asset_[0-9a-f]{32}$"},
+    "track_id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+    "scene_key": {"type": "string", "pattern": "^(day|dusk|night)/(idle|piano_performance)$"}
+  }
+}

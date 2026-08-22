@@ -1,0 +1,3 @@
+# Review routing only. Main branch enforcement is configured separately by the controller.
+* @Ornn8
+.github/workflows/required-ci.yml @Ornn8

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "contract_version": "b02.v1",
+  "base_path": "/toy",
+  "routes": {
+    "/health": {
+      "methods": ["GET"],
+      "capability": "core.health",
+      "state": "available",
+      "read_only": true,
+      "error_code": null,
+      "evidence": "local"
+    },
+    "/toy/letter/legacy/import": {
+      "methods": ["POST"],
+      "capability": "letters.legacy_import",
+      "state": "available",
+      "read_only": false,
+      "error_code": null,
+      "evidence": "local-extension"
+    }
+  },
+  "capabilities": {
+    "core.health": {
+      "status": "available",
+      "provider": "local-http",
+      "required_for": ["core"]
+    },
+    "llm.gateway": {
+      "status": "degraded",
+      "provider": "configured-llm-adapter",
+      "probe": "not-run"
+    },
+    "llm.streaming": {
+      "status": "unavailable",
+      "provider": "none",
+      "probe": "internal-events-only"
+    },
+    "letters.legacy_import": {
+      "status": "available",
+      "provider": "sqlite",
+      "probe": "in-process",
+      "mode": "read-only-atomic-import"
+    }
+  },
+  "profiles": {
+    "core": {
+      "required_capabilities": ["core.health"],
+      "optional_capabilities": []
+    },
+    "llm": {
+      "required_capabilities": [],
+      "optional_capabilities": ["llm.gateway", "llm.streaming"]
+    }
+  },
+  "privacy": {
+    "logs_include_request_body": false,
+    "logs_include_query_values": false,
+    "legacy_import_mode": "read-only-atomic-import",
+    "original_assets_in_response": false
+  }
+}

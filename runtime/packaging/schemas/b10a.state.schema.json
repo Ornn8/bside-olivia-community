@@ -1,0 +1,47 @@
+{
+  "$schema": "https://example.invalid/endpoint",
+  "$id": "https://example.invalid/endpoint",
+  "title": "B10A local manager state",
+  "type": "object",
+  "required": ["schema_version", "project_root", "modules", "processes", "last_transactions"],
+  "properties": {
+    "schema_version": {"const": "b10a.state.v1"},
+    "project_root": {"type": "string"},
+    "modules": {"type": "object", "additionalProperties": {"$ref": "#/$defs/moduleRecord"}},
+    "processes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/processRecord"}},
+    "last_transactions": {"type": "object", "additionalProperties": {"type": "string"}},
+    "process_history": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {
+    "moduleRecord": {
+      "type": "object",
+      "required": ["module_id", "version", "availability", "marker_path", "installed_at"],
+      "properties": {
+        "module_id": {"type": "string"},
+        "version": {"type": "string"},
+        "availability": {"enum": ["available", "pending", "unavailable"]},
+        "marker_path": {"type": "string"},
+        "installed_at": {"type": "string"},
+        "upgraded_at": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "processRecord": {
+      "type": "object",
+      "required": ["service_id", "module_id", "pid", "nonce", "host", "port", "identity_path", "log_path"],
+      "properties": {
+        "service_id": {"type": "string"},
+        "module_id": {"type": "string"},
+        "pid": {"type": "integer", "minimum": 1},
+        "nonce": {"type": "string", "minLength": 1},
+        "host": {"const": "127.0.0.1"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "identity_path": {"type": "string"},
+        "log_path": {"type": "string"},
+        "started_at": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

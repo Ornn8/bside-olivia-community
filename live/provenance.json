@@ -1,0 +1,64 @@
+{
+  "$schema": "../contracts/live_provenance.schema.json",
+  "schema_version": 1,
+  "composition": "B08",
+  "upstreams": [
+    {
+      "component": "B03-llm",
+      "source_repo": "https://github.com/Ornn8/bside-olivia-local",
+      "fixed_ref": "283b3d2c28997526e3bae4276f4a29180a1d5990",
+      "license": "NOASSERTION; no LICENSE, NOTICE, or COPYING file exists at the fixed ref",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "git ls-tree -r --name-only 283b3d2c28997526e3bae4276f4a29180a1d5990 contains no LICENSE, NOTICE, or COPYING file; B08 does not redistribute this source",
+      "replacement_boundary": "Gateway interface only; UnconfiguredAdapter and safe static output remain the failure path",
+      "uninstall_boundary": "Remove only the B08 composition registration; preserve gateway configuration, persona data, original assets, and user data"
+    },
+    {
+      "component": "B04-memory-persona",
+      "source_repo": "https://github.com/Ornn8/bside-olivia-local",
+      "fixed_ref": "074776b65b19a833305469a5e687db543d8ebbbf",
+      "license": "NOASSERTION; no LICENSE, NOTICE, or COPYING file exists at the fixed ref",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "git ls-tree -r --name-only 074776b65b19a833305469a5e687db543d8ebbbf contains no LICENSE, NOTICE, or COPYING file; B08 does not redistribute this source",
+      "replacement_boundary": "MemoryPort and persona snapshot are optional; unavailable memory becomes session-only and never blocks LLM",
+      "uninstall_boundary": "Do not delete legacy or conversation data; remove only an optional B08 adapter registration"
+    },
+    {
+      "component": "B05-streaming-asr",
+      "source_repo": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+      "fixed_ref": "1118951337094db3b362fbf1b27e871696f10590",
+      "license": "Apache-2.0 runtime; OpenMDW-1.1 model as recorded by B05",
+      "license_spdx": "Apache-2.0 AND LicenseRef-OpenMDW-1.1",
+      "license_evidence": "docs/B05_STREAMING_ASR.md records the pinned runtime Apache-2.0 license and LicenseRef-OpenMDW-1.1 model boundary",
+      "replacement_boundary": "Native ASR is consumed through open_session/events; missing or unverified native readiness becomes text-input fallback",
+      "uninstall_boundary": "B08 owns no runtime/model files; remove only the adapter registration and preserve external B05 roots"
+    },
+    {
+      "component": "B06-tts",
+      "source_repo": "https://github.com/FunAudioLLM/CosyVoice",
+      "fixed_ref": "Fun-CosyVoice3-0.5B-2512",
+      "license": "Apache-2.0 as recorded by B06",
+      "license_spdx": "Apache-2.0",
+      "license_evidence": "docs/B06_LOCAL_TTS_ACCEPTANCE.md records the pinned CosyVoice runtime Apache license boundary",
+      "replacement_boundary": "TTSService start/events/wait is the only boundary; disabled, unavailable, or canceled synthesis becomes truthful text output",
+      "uninstall_boundary": "B08 writes no audio or model files; remove only the service composition and preserve external profile/model roots"
+    },
+    {
+      "component": "B07-visual-driver",
+      "source_repo": "https://github.com/Ornn8/bside-olivia-local",
+      "fixed_ref": "1bed58d37e775061c5a6a1ec4256487b47fb7f78",
+      "license": "NOASSERTION; no LICENSE, NOTICE, or COPYING file exists at the fixed ref",
+      "license_spdx": "NOASSERTION",
+      "license_evidence": "git ls-tree -r --name-only 1bed58d37e775061c5a6a1ec4256487b47fb7f78 contains no LICENSE, NOTICE, or COPYING file; B08 does not redistribute this source",
+      "replacement_boundary": "VisualDriver receives only the original-frame request and returns in-memory driven metadata or original static/clip fallback",
+      "uninstall_boundary": "Remove only the B08 driver registration; never delete or rewrite original visual assets or manifests"
+    }
+  ],
+  "privacy_boundary": {
+    "private_assets_in_repo": false,
+    "user_data_in_trace": false,
+    "raw_media_in_trace": false,
+    "credentials_in_repo": false,
+    "generated_media_in_repo": false
+  }
+}

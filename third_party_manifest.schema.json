@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/third_party_manifest.schema.json",
+  "title": "BSide Olivia Local third-party download manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "items"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_url", "license", "target_path", "sha256"],
+      "anyOf": [
+        { "required": ["version"] },
+        { "required": ["revision"] }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$" },
+        "source_url": { "type": "string", "format": "uri", "pattern": "^https?://[^\\s?#]+$" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "license": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "target_path": { "type": "string", "pattern": "^[^\\x00]+$", "maxLength": 512 },
+        "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

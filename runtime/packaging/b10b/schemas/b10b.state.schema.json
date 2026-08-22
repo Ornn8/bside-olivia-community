@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "B10B lifecycle state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project_root", "modules", "last_transactions", "transaction_history"],
+  "properties": {
+    "schema_version": {"const": "b10b.state.v1"},
+    "project_root": {"type": "string", "minLength": 1},
+    "modules": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/module_record"}
+    },
+    "last_transactions": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^transactions/.+\\.json$"}
+    },
+    "transaction_history": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/history_entry"}
+    }
+  },
+  "$defs": {
+    "module_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_id", "version", "availability", "marker_path", "config_path", "enabled", "lifecycle", "installed_at"],
+      "properties": {
+        "module_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "availability": {"enum": ["available", "pending", "unavailable"]},
+        "marker_path": {"type": "string", "minLength": 1},
+        "config_path": {"type": ["string", "null"]},
+        "enabled": {"type": "boolean"},
+        "lifecycle": {"enum": ["installed", "enabled"]},
+        "installed_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "history_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "operation", "transaction", "at"],
+      "properties": {
+        "module": {"type": "string", "minLength": 1},
+        "operation": {"enum": ["install", "enable", "disable", "customize", "uninstall", "rollback"]},
+        "transaction": {"type": "string", "pattern": "^transactions/.+\\.json$"},
+        "at": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

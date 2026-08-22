@@ -1,0 +1,145 @@
+{
+  "$id": "asset-manifest.schema.json",
+  "$schema": "https://example.invalid/endpoint",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "audio",
+              "image",
+              "other",
+              "video"
+            ]
+          },
+          "extension": {
+            "pattern": "^(|\\.[a-z0-9][a-z0-9._+-]*)$",
+            "type": "string"
+          },
+          "logical_id": {
+            "pattern": "^asset_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "media_metadata": {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "additionalProperties": true,
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "image": {
+                "additionalProperties": true,
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "video": {
+                "additionalProperties": true,
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "audio",
+              "image",
+              "video"
+            ],
+            "type": "object"
+          },
+          "probe_status": {
+            "enum": [
+              "error",
+              "not_applicable",
+              "ok",
+              "unavailable"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relative_path": {
+            "pattern": "^(?!/)(?!\\\\)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$",
+            "type": "string"
+          },
+          "root_alias": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "category",
+          "extension",
+          "logical_id",
+          "media_metadata",
+          "probe_status",
+          "reason",
+          "relative_path",
+          "root_alias",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "manifest_kind": {
+      "const": "private_asset_manifest"
+    },
+    "roots": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+            "type": "string"
+          },
+          "item_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alias",
+          "item_count"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "tool_version": {
+      "const": "1"
+    }
+  },
+  "required": [
+    "items",
+    "manifest_kind",
+    "roots",
+    "schema_version",
+    "tool_version"
+  ],
+  "title": "Private local asset manifest",
+  "type": "object"
+}

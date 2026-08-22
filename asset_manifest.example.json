@@ -1,0 +1,22 @@
+{
+  "counts": {
+    "by_alias": {
+      "fixture_a": 3
+    },
+    "by_category": {
+      "audio": 1,
+      "image": 1,
+      "other": 1
+    },
+    "by_extension": {
+      ".bin": 1,
+      ".png": 1,
+      ".wav": 1
+    },
+    "by_probe_status": {
+      "error": 1,
+      "ok": 2
+    }
+  },
+  "schema_version": 1
+}
