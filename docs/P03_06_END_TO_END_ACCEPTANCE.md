@@ -18,6 +18,7 @@ P03 关闭前必须验证：
   -> 文字 / 说话视频 / 音乐视频
   -> Mem0 写入
   -> PrivateWorld 交付或受控事件
+  -> Companion Control Center 管理
   -> 重启恢复
   -> 原版客户端正确展示
 ```
@@ -47,7 +48,8 @@ GitHub Actions：
 - 已配置 MiniMax Music 3；
 - 已配置 RoFormer；
 - 官方场景、演奏和转场素材；
-- FFmpeg。
+- FFmpeg；
+- Companion Control Center。
 
 私有模型、声音、视频和通信内容只保留在本机。
 
@@ -69,7 +71,8 @@ GitHub Actions：
 - 稳定错误码；
 - 输出文件哈希、时长和大小；
 - 人工评分表；
-- 重启前后状态摘要。
+- 重启前后状态摘要；
+- Control Center 操作结果摘要。
 
 不得进入公开仓库：
 
@@ -81,7 +84,8 @@ GitHub Actions：
 - 记忆正文；
 - API key；
 - 绝对路径；
-- 模型权重。
+- 模型权重；
+- Control Center session token。
 
 公开仓库只保存合成验收工具、schema 和不含私人内容的 PASS/FAIL 摘要。
 
@@ -91,12 +95,12 @@ GitHub Actions：
 
 - Persona schema 和来源覆盖；
 - 配置 schema；
-- 所有环境变量和 secret 名称；
 - 数据目录和迁移规则；
 - 受限枚举；
 - Caption 正向模板；
 - PrivateWorld Command；
 - Mem0 Adapter 不导入云 SDK；
+- Control Center 静态资源不引用外部域；
 - 日志字段白名单。
 
 ### 4.2 Unit
@@ -107,6 +111,7 @@ GitHub Actions：
 - Reviewer/Rewriter；
 - Memory Adapter mapping；
 - PrivateWorld reducer/service；
+- Control Center auth、CSRF 和 API schema；
 - public status mapping；
 - installer config；
 - health profiles。
@@ -121,6 +126,7 @@ GitHub Actions：
 - canonical exchange -> Memory Adapter；
 - PrivateWorld delivery；
 - media scheduling；
+- Control Center 管理 mutation；
 - restart recovery；
 - API list/detail；
 - original-client wire fields。
@@ -130,8 +136,9 @@ GitHub Actions：
 - wheel build；
 - 安装到仓库外 venv；
 - 模块导入；
-- CLI；
 - installer；
+- Control Center 静态资源；
+- Windows 快捷方式；
 - uninstaller；
 - 不从源码工作树偷读文件。
 
@@ -148,7 +155,7 @@ GitHub Actions：
 7. 陌生技术问题；
 8. 涉及已有记忆的连续来信。
 
-每条记录：
+记录：
 
 - router mode 和 reason；
 - Persona status；
@@ -181,7 +188,7 @@ GitHub Actions：
 - 明确但克制的不同意；
 - 复杂情绪的陪伴。
 
-验证：
+流程：
 
 ```text
 spoken_video ReplyContext
@@ -222,9 +229,33 @@ spoken_video ReplyContext
 - 平均分不低于 1.5；
 - 任一严重口型或音频错误不得被平均分掩盖。
 
-## 7. 音乐视频真实验收
+## 7. MiniMax 音频验收
 
-先完成 P03-01C 音频盲听，再进入视频。
+必须先完成 P03-01C 的 Phase A / B / C。
+
+通过 Companion Control Center 音乐校准页完成：
+
+- 固定合成样本；
+- Caption 版本对照；
+- CFG 1.5/1.5 与官方 1.7/1.7 对照；
+- seed 池对照；
+- 盲听评分；
+- 生产 profile 选择。
+
+硬失败：
+
+- 歌词明显未唱完；
+- 结尾突然截断；
+- 明显 R&B / Soul / groove 偏移；
+- 大量额外乐器；
+- 普通话无法理解；
+- 音频文件损坏。
+
+不得通过视频参数掩盖不合格音频。
+
+## 8. 音乐视频真实验收
+
+音乐视频是“说话视频＋可选转场＋演唱视频”的顺序拼接，不是单独的演唱视频。
 
 固定至少三条：
 
@@ -232,43 +263,56 @@ spoken_video ReplyContext
 - 克制的失落；
 - 真正形成旋律表达的内容。
 
-流程：
+仓库现有流程必须原样贯通：
 
 ```text
 musical_video ReplyContext
-  -> canonical spoken intro
+  -> canonical reply
+  -> render_reply_video(...)
+     生成 normal_video_path（说话视频）
   -> SongSemanticPlan
-  -> 正向固定 Caption
+  -> 程序固定正向 Caption
   -> MiniMax Music 3
-  -> RoFormer vocals
-  -> 演奏视频 LatentSync
-  -> 可选官方转场
-  -> spoken + transition + performance MP4
+     生成完整歌曲
+  -> RoFormer
+     分离 vocals
+  -> render_latentsync_video(...)
+     vocals + performance base
+     生成 song_video_path（演唱视频）
+  -> concat_videos(...)
+     normal_video_path
+     + 可选 official transition（旧音频静音）
+     + song_video_path
+  -> 最终 MP4
 ```
 
 自动检查：
 
 - SongSemanticPlan 合法；
 - Caption 只来自程序模板；
-- 音频时长符合 90/118 秒；
-- 音频和 vocals 非空；
-- spoken video 和 song video 均生成；
-- transition 无旧音频泄漏；
+- 音频时长符合 90/118 秒配置；
+- 歌曲和 vocals 非空；
+- normal video 与 song video 均生成；
+- 拼接顺序为 spoken -> optional transition -> performance；
+- transition 音轨已替换为静音；
+- 各分段帧数与最终帧数一致；
 - 最终视频可解码；
 - 最终时长与分段总和一致；
-- media status 正确。
+- media status 正确；
+- canonical reply 在媒体失败时仍存在。
 
-人工评分同时包含：
+人工评分：
 
-- P03-01C 音乐风格评分；
+- P03-01C 音乐风格；
+- 说话视频自然度；
 - 演唱口型；
 - 演奏动作与声音合理性；
-- 说话到演唱的转场；
-- 总体是否像一次完整回信，而非两个无关视频拼接。
+- 说话到转场；
+- 转场到演唱；
+- 总体是否像一次完整回信；
+- 是否出现两个无关视频简单拼接的割裂感。
 
-未通过音频风格门槛时，不继续调整视频参数来掩盖音频问题。
-
-## 8. 记忆验收
+## 9. 记忆验收
 
 使用 12–20 轮合成对话：
 
@@ -278,37 +322,40 @@ musical_video ReplyContext
 - 冲突事实；
 - 假设和引用文本；
 - 删除错误记忆；
+- Control Center 中纠正记忆；
 - 重启；
 - 导出；
 - 清空；
 - provider 暂时不可用。
 
-通过条件沿用 P03-03 指标，并额外要求：
+通过条件：
 
-- 旧信 Archive 没有进入 Mem0；
+- Archive 没有进入 Mem0；
 - PrivateWorld 没有进入 Mem0；
 - Memory failure 不影响正文；
-- 用户删除后下一轮不再检索该记忆；
-- 导出和删除不会影响 Archive。
+- 删除后下一轮不再检索；
+- 纠正后使用新事实且保留审计来源；
+- 导出和删除不会影响 Archive；
+- 用户不需要终端完成管理。
 
-## 9. PrivateWorld 验收
+## 10. PrivateWorld 验收
 
-流程：
+全部操作通过 Control Center：
 
 1. 正常回信，确认 hidden score 不变；
 2. 创建 conflict candidate；
 3. 不批准，确认状态不变；
-4. 批准，确认 reducer 只执行一次；
+4. 在 UI 批准，确认 reducer 只执行一次；
 5. 记录 repair；
 6. grant nickname；
-7. 下一封回复可自然使用，但不机械复读；
+7. 下一封回复可自然使用但不机械复读；
 8. upsert control-only continuation；
 9. 确认角色不知道；
-10. 切换 character-known；
+10. UI 二次确认切换 character-known；
 11. 确认角色可以使用；
 12. 重启并恢复；
-13. export；
-14. reset 测试副本。
+13. 导出；
+14. 在测试副本中 reset。
 
 通过条件：
 
@@ -317,9 +364,27 @@ musical_video ReplyContext
 - hidden score 不进入模型输入和日志；
 - 候选与提交严格分离；
 - canonical reply 不自动增加关系值；
-- control-only 内容零泄漏。
+- control-only 内容零泄漏；
+- 原版客户端无法调用管理 mutation。
 
-## 10. 故障注入
+## 11. Control Center 验收
+
+必须验证：
+
+- 开始菜单可打开；
+- 不出现终端窗口；
+- bootstrap token 一次性使用；
+- session cookie 和 CSRF 生效；
+- 未登录页面不返回私人数据；
+- 原版客户端 origin 被拒绝；
+- PrivateWorld、Memory、音乐校准和数据管理页可用；
+- 高风险操作二次确认；
+- 所有页面不引用外部 CDN；
+- 键盘可完成主要操作；
+- 日志不含 token 和私人正文；
+- 后端重启后可重新建立会话。
+
+## 12. 故障注入
 
 必须逐项模拟：
 
@@ -332,6 +397,7 @@ musical_video ReplyContext
 - embedding 缺失；
 - Qdrant path 锁定；
 - PrivateWorld DB 锁定；
+- Control Center session store 损坏；
 - TTS 失败；
 - LatentSync 失败；
 - MiniMax 失败；
@@ -346,7 +412,7 @@ musical_video ReplyContext
 一旦 canonical reply 已持久化，后续可选阶段失败不得删除或改写正文。
 ```
 
-## 11. 重启与恢复
+## 13. 重启与恢复
 
 在以下节点强制终止并重启：
 
@@ -355,6 +421,9 @@ musical_video ReplyContext
 - memory write pending；
 - media queued；
 - media processing；
+- MiniMax 已完成、RoFormer 未完成；
+- normal video 已完成、song video 未完成；
+- 两段视频完成、拼接未完成；
 - media completed、API 尚未读取。
 
 每个节点必须定义：
@@ -365,46 +434,49 @@ musical_video ReplyContext
 - 幂等键如何复用；
 - 不得重复写入什么。
 
-## 12. 性能记录
+## 14. 性能记录
 
-模型费用不是当前约束，但仍记录：
+费用不是当前约束，但仍记录：
 
-- Router latency；
-- generation latency；
-- reviewer latency；
-- rewrite latency；
-- memory search/write latency；
-- PrivateWorld latency；
+- Router；
+- generation；
+- reviewer；
+- rewrite；
+- memory search/write；
+- PrivateWorld；
 - TTS；
 - MiniMax；
 - RoFormer；
 - LatentSync；
+- concat；
 - 完整媒体时间；
 - GPU 最大显存；
 - 峰值磁盘临时空间。
 
-不设置过早的成本优化门槛，但防止死循环、无上限重试和资源泄漏。
+不设置过早成本优化门槛，但防止死循环、无上限重试和资源泄漏。
 
-## 13. 发布候选流程
+## 15. 发布候选流程
 
 ```text
 RC branch from protected main
   -> automated public-smoke
   -> package install
+  -> Setup Wizard
   -> static acceptance
   -> real text acceptance
   -> memory/private-world acceptance
+  -> Control Center acceptance
   -> spoken-video acceptance
-  -> music audio acceptance
-  -> musical-video acceptance
+  -> MiniMax audio acceptance
+  -> musical-video concat acceptance
   -> restart/failure matrix
   -> sanitized report
   -> release tag
 ```
 
-任何手工跳过项必须在报告中标记 `NOT_RUN`，不能写成 PASS。
+任何手工跳过项必须标记 `NOT_RUN`，不能写成 PASS。
 
-## 14. PR 拆分与顺序
+## 16. PR 拆分与顺序
 
 ### ACCEPT-01：统一验收 schema 和 runner
 
@@ -412,45 +484,55 @@ RC branch from protected main
 
 ### ACCEPT-02：文字、Memory、PrivateWorld 自动验收
 
-可在 CI 使用 mock，在本机使用真实 provider。
+CI 使用 mock，本机使用真实 provider。
 
-### ACCEPT-03：说话视频验收工具
+### ACCEPT-03：Control Center 验收工具
+
+覆盖 auth、UI 主流程和 Windows 快捷方式。
+
+### ACCEPT-04：说话视频验收工具
 
 只采集技术指标和人工评分，不提交媒体。
 
-### ACCEPT-04：音乐音频和音乐视频验收工具
+### ACCEPT-05：MiniMax 音频验收
 
-复用 P03-01C 评分表。
+复用 P03-01C 评分表和 Control Center 校准页。
 
-### ACCEPT-05：重启与故障注入
+### ACCEPT-06：音乐视频拼接验收
+
+明确验证 normal + transition + performance 顺序、静音转场和帧数。
+
+### ACCEPT-07：重启与故障注入
 
 覆盖所有关键边界。
 
-### ACCEPT-06：RC 报告和发布收口
+### ACCEPT-08：RC 报告和发布收口
 
-只有前五个工作包完成后创建。
+只有前七个工作包完成后创建。
 
-## 15. 发布门槛
+## 17. 发布门槛
 
 - `public-smoke` 通过；
-- clean install 通过；
+- clean install 与 Setup Wizard 通过；
 - Persona acceptance 通过；
 - 真实文字链全部通过；
 - Memory 和 PrivateWorld 达标；
+- Control Center 可用且不需终端；
 - 原版客户端终态正确；
 - 已配置媒体时说话视频通过；
-- MiniMax 音频风格达标后，音乐视频通过；
+- MiniMax 音频风格达标；
+- 音乐视频按说话＋可选转场＋演唱顺序拼接并通过；
 - 故障注入不丢 canonical text；
 - 重启恢复通过；
 - 日志、报告和导出无秘密或私人内容泄漏；
 - 所有未运行项明确标记；
 - 用户确认本机最终媒体观感可接受。
 
-## 16. P03 完成定义
+## 18. P03 完成定义
 
 P03 完成后，系统应准确描述为：
 
-> 一个可在 Windows 本地长期运行、具备稳定林离人格、三种书信表达方式、成熟长期记忆、受控私人世界状态、可恢复持久化和诚实媒体降级的书信陪伴系统。
+> 一个可在 Windows 本地长期运行、具备稳定林离人格、三种书信表达方式、成熟长期记忆、受控私人世界状态、图形化本地管理、可恢复持久化和诚实媒体降级的书信陪伴系统。
 
 不得提前描述为：
 
