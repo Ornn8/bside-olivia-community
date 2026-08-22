@@ -60,6 +60,9 @@ include = [
     "tts*",
 ]
 
+[tool.setuptools.package-data]
+control_center = ["static/*.html", "static/*.css", "static/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = [
     "tests/persona",
