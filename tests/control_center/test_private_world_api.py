@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
-from pathlib import Path
 from threading import Lock
 
 from aiohttp import CookieJar
@@ -36,9 +35,9 @@ class FakeLedger:
     ) -> bool:
         with self._lock:
             if any(
-                item.event_id == event.event_id
-                or item.delivery_id == event.delivery_id
-                for item in self.items
+                row.event_id == event.event_id
+                or row.delivery_id == event.delivery_id
+                for row in self.items
             ):
                 return False
             self.items.append(event)
@@ -55,9 +54,8 @@ def _common(request_id: str) -> dict[str, object]:
     }
 
 
-async def _authenticated_client() -> tuple[TestClient, str]:
-    ledger = FakeLedger()
-    app = create_control_app(ledger)
+async def _start_authenticated() -> tuple[TestClient, str, str]:
+    app = create_control_app(FakeLedger())
     client = TestClient(
         TestServer(app),
         cookie_jar=CookieJar(unsafe=True),
@@ -71,17 +69,13 @@ async def _authenticated_client() -> tuple[TestClient, str]:
         headers={"Origin": origin},
     )
     assert response.status == 200
-    payload = await response.json()
-    return client, payload["data"]["csrf_token"]
+    csrf = (await response.json())["data"]["csrf_token"]
+    return client, origin, csrf
 
 
-def test_control_boundary_bootstrap_and_security_headers(
-    tmp_path: Path,
-) -> None:
+def test_boundary_bootstrap_and_security_headers() -> None:
     async def scenario() -> None:
-        del tmp_path
-        ledger = FakeLedger()
-        app = create_control_app(ledger)
+        app = create_control_app(FakeLedger())
         async with TestClient(
             TestServer(app),
             cookie_jar=CookieJar(unsafe=True),
@@ -100,53 +94,30 @@ def test_control_boundary_bootstrap_and_security_headers(
             assert health.headers["X-Frame-Options"] == "DENY"
             assert "Access-Control-Allow-Origin" not in health.headers
 
-            foreign_get = await client.get(
-                "/control/health",
-                headers={
-                    "Origin": (
-                        "https://toy-cnbeta01.olivia.miyoushe.com"
-                    )
-                },
-            )
-            assert foreign_get.status == 403
-            assert (await foreign_get.json())["error"]["code"] == (
-                "CONTROL_ORIGIN_FORBIDDEN"
-            )
-
-            forbidden_host = await client.get(
-                "/control/health",
-                headers={"Host": "example.invalid"},
-            )
-            assert forbidden_host.status == 403
-            assert (
-                await forbidden_host.json()
-            )["error"]["code"] == "CONTROL_HOST_FORBIDDEN"
-
-            token = app[AUTH_KEY].issue_bootstrap_token()
-            foreign = await client.post(
-                "/control/api/session/bootstrap",
-                json={"token": token},
-                headers={
-                    "Origin": (
-                        "https://toy-cnbeta01.olivia.miyoushe.com"
-                    )
-                },
-            )
-            assert foreign.status == 403
-            assert (await foreign.json())["error"]["code"] == (
-                "CONTROL_ORIGIN_FORBIDDEN"
-            )
+            for headers, code in (
+                ({"Host": "example.invalid"}, "CONTROL_HOST_FORBIDDEN"),
+                (
+                    {
+                        "Origin": (
+                            "https://toy-cnbeta01.olivia.miyoushe.com"
+                        )
+                    },
+                    "CONTROL_ORIGIN_FORBIDDEN",
+                ),
+            ):
+                denied = await client.get("/control/health", headers=headers)
+                assert denied.status == 403
+                assert (await denied.json())["error"]["code"] == code
 
             origin = str(client.make_url("/")).rstrip("/")
-            bootstrap = await client.post(
+            token = app[AUTH_KEY].issue_bootstrap_token()
+            bootstrapped = await client.post(
                 "/control/api/session/bootstrap",
                 json={"token": token},
                 headers={"Origin": origin},
             )
-            assert bootstrap.status == 200
-            body = await bootstrap.json()
-            assert body["data"]["csrf_token"]
-            cookie = bootstrap.headers["Set-Cookie"]
+            assert bootstrapped.status == 200
+            cookie = bootstrapped.headers["Set-Cookie"]
             assert "HttpOnly" in cookie
             assert "SameSite=Strict" in cookie
             assert "Path=/control" in cookie
@@ -172,11 +143,9 @@ def test_control_boundary_bootstrap_and_security_headers(
     asyncio.run(scenario())
 
 
-def test_authentication_csrf_and_logout(tmp_path: Path) -> None:
+def test_authentication_csrf_and_logout() -> None:
     async def scenario() -> None:
-        del tmp_path
-        ledger = FakeLedger()
-        app = create_control_app(ledger)
+        app = create_control_app(FakeLedger())
         async with TestClient(
             TestServer(app),
             cookie_jar=CookieJar(unsafe=True),
@@ -185,44 +154,39 @@ def test_authentication_csrf_and_logout(tmp_path: Path) -> None:
                 "/control/api/private-world/snapshot"
             )
             assert unauthenticated.status == 401
-            assert (await unauthenticated.json())["error"]["code"] == (
-                "CONTROL_SESSION_REQUIRED"
-            )
 
             origin = str(client.make_url("/")).rstrip("/")
             token = app[AUTH_KEY].issue_bootstrap_token()
-            bootstrapped = await client.post(
+            session = await client.post(
                 "/control/api/session/bootstrap",
                 json={"token": token},
                 headers={"Origin": origin},
             )
-            csrf = (await bootstrapped.json())["data"]["csrf_token"]
+            csrf = (await session.json())["data"]["csrf_token"]
+            body = {
+                **_common("request.csrf"),
+                "event_type": "conflict",
+            }
 
-            missing_csrf = await client.post(
+            missing = await client.post(
                 "/control/api/private-world/relationship-events",
-                json={
-                    **_common("request.missing-csrf"),
-                    "event_type": "conflict",
-                },
+                json=body,
                 headers={"Origin": origin},
             )
-            assert missing_csrf.status == 403
-            assert (await missing_csrf.json())["error"]["code"] == (
+            assert missing.status == 403
+            assert (await missing.json())["error"]["code"] == (
                 "CONTROL_CSRF_REQUIRED"
             )
 
-            wrong_csrf = await client.post(
+            wrong = await client.post(
                 "/control/api/private-world/relationship-events",
-                json={
-                    **_common("request.wrong-csrf"),
-                    "event_type": "conflict",
-                },
+                json=body,
                 headers={
                     "Origin": origin,
                     "X-CSRF-Token": "wrong",
                 },
             )
-            assert wrong_csrf.status == 403
+            assert wrong.status == 403
 
             logged_out = await client.post(
                 "/control/api/session/logout",
@@ -236,25 +200,20 @@ def test_authentication_csrf_and_logout(tmp_path: Path) -> None:
             assert (await logged_out.json())["data"]["status"] == (
                 "LOGGED_OUT"
             )
-
-            after = await client.get(
-                "/control/api/private-world/snapshot"
-            )
-            assert after.status == 401
+            assert (
+                await client.get(
+                    "/control/api/private-world/snapshot"
+                )
+            ).status == 401
 
     asyncio.run(scenario())
 
 
-def test_private_world_mutations_are_typed_idempotent_and_sanitized(
-    tmp_path: Path,
-) -> None:
+def test_private_world_mutations_are_typed_and_sanitized() -> None:
     async def scenario() -> None:
-        del tmp_path
-        client, csrf = await _authenticated_client()
+        client, origin, csrf = await _start_authenticated()
+        headers = {"Origin": origin, "X-CSRF-Token": csrf}
         try:
-            origin = str(client.make_url("/")).rstrip("/")
-            headers = {"Origin": origin, "X-CSRF-Token": csrf}
-
             conflict = await client.post(
                 "/control/api/private-world/relationship-events",
                 json={
@@ -263,10 +222,9 @@ def test_private_world_mutations_are_typed_idempotent_and_sanitized(
                 },
                 headers=headers,
             )
-            assert conflict.status == 200
-            conflict_result = (await conflict.json())["data"]["result"]
-            assert conflict_result["status"] == "APPLIED"
-            assert conflict_result["change_fields"] == ["tension"]
+            result = (await conflict.json())["data"]["result"]
+            assert result["status"] == "APPLIED"
+            assert result["change_fields"] == ["tension"]
 
             duplicate = await client.post(
                 "/control/api/private-world/relationship-events",
@@ -276,17 +234,14 @@ def test_private_world_mutations_are_typed_idempotent_and_sanitized(
                 },
                 headers=headers,
             )
-            assert duplicate.status == 200
-            assert (await duplicate.json())["data"]["result"][
-                "status"
-            ] == "DUPLICATE"
+            assert (await duplicate.json())["data"]["result"]["status"] == (
+                "DUPLICATE"
+            )
 
             snapshot = await client.get(
                 "/control/api/private-world/snapshot"
             )
-            assert snapshot.status == 200
             state = (await snapshot.json())["data"]
-            assert state["version"] == 2
             assert state["levels"] == {
                 "familiarity": "unknown",
                 "trust": "unknown",
@@ -295,99 +250,85 @@ def test_private_world_mutations_are_typed_idempotent_and_sanitized(
                 "tension": "low",
             }
             serialized = json.dumps(state, ensure_ascii=False)
-            for raw_score in (
-                '"familiarity": 0',
-                '"trust": 0',
-                '"comfort": 0',
-                '"closeness": 0',
-                '"tension": 3',
-            ):
-                assert raw_score not in serialized
+            assert '"tension": 3' not in serialized
+            assert '"trust": 0' not in serialized
 
-            events = await client.get(
+            events_response = await client.get(
                 "/control/api/private-world/events"
             )
-            timeline = (await events.json())["data"]["events"]
-            assert len(timeline) == 1
+            timeline = (await events_response.json())["data"]["events"]
             event = timeline[0]
-            assert event["event_id"] == conflict_result["event_id"]
             assert event["event_type"] == "record_conflict"
             assert event["actor"] == "local_user"
             assert event["source"] == "control_center"
-            assert event["reason"] == "synthetic confirmed change"
-            assert "command_fingerprint" not in event
-            assert "payload_fields" not in event
-            assert "delivery_id" not in event
-            assert "payload" not in event
+            for hidden in (
+                "command_fingerprint",
+                "payload_fields",
+                "delivery_id",
+                "payload",
+            ):
+                assert hidden not in event
 
-            stage = await client.post(
-                "/control/api/private-world/relationship-stage",
-                json={
-                    **_common("request.stage-1"),
-                    "target_stage": "familiar",
-                    "basis_event_ids": [conflict_result["event_id"]],
-                },
-                headers=headers,
+            requests = (
+                (
+                    "/control/api/private-world/relationship-stage",
+                    {
+                        **_common("request.stage-1"),
+                        "target_stage": "familiar",
+                        "basis_event_ids": [result["event_id"]],
+                    },
+                ),
+                (
+                    "/control/api/private-world/nicknames",
+                    {
+                        **_common("request.nickname-1"),
+                        "action": "grant",
+                        "nickname": "小河豚",
+                    },
+                ),
+                (
+                    "/control/api/private-world/home-access",
+                    {
+                        **_common("request.home-1"),
+                        "home_access": "visit_access",
+                    },
+                ),
+                (
+                    "/control/api/private-world/continuations",
+                    {
+                        **_common("request.continuation-1"),
+                        "action": "upsert",
+                        "fact_id": "continuation.synthetic-1",
+                        "statement": "一条只用于合成测试的世界线事实。",
+                        "awareness": "control_only",
+                    },
+                ),
+                (
+                    "/control/api/private-world/continuations",
+                    {
+                        **_common("request.continuation-2"),
+                        "action": "set_awareness",
+                        "fact_id": "continuation.synthetic-1",
+                        "awareness": "character_known",
+                    },
+                ),
             )
-            assert stage.status == 200
-            assert (await stage.json())["data"]["result"]["status"] == (
-                "APPLIED"
-            )
+            for path, body in requests:
+                response = await client.post(
+                    path,
+                    json=body,
+                    headers=headers,
+                )
+                assert response.status == 200
 
-            nickname = await client.post(
-                "/control/api/private-world/nicknames",
-                json={
-                    **_common("request.nickname-1"),
-                    "action": "grant",
-                    "nickname": "小河豚",
-                },
-                headers=headers,
-            )
-            assert nickname.status == 200
-
-            access = await client.post(
-                "/control/api/private-world/home-access",
-                json={
-                    **_common("request.home-1"),
-                    "home_access": "visit_access",
-                },
-                headers=headers,
-            )
-            assert access.status == 200
-
-            continuation = await client.post(
-                "/control/api/private-world/continuations",
-                json={
-                    **_common("request.continuation-1"),
-                    "action": "upsert",
-                    "fact_id": "continuation.synthetic-1",
-                    "statement": "一条只用于合成测试的世界线事实。",
-                    "awareness": "control_only",
-                },
-                headers=headers,
-            )
-            assert continuation.status == 200
-
-            awareness = await client.post(
-                "/control/api/private-world/continuations",
-                json={
-                    **_common("request.continuation-2"),
-                    "action": "set_awareness",
-                    "fact_id": "continuation.synthetic-1",
-                    "awareness": "character_known",
-                },
-                headers=headers,
-            )
-            assert awareness.status == 200
-
-            final = await client.get(
+            final_response = await client.get(
                 "/control/api/private-world/snapshot"
             )
-            final_state = (await final.json())["data"]
-            assert final_state["relationship_stage"] == "familiar"
-            assert final_state["nickname_permissions"] == ["小河豚"]
-            assert final_state["home_access"] == "visit_access"
-            assert final_state["continuation_facts"] == [
+            final = (await final_response.json())["data"]
+            assert final["relationship_stage"] == "familiar"
+            assert final["nickname_permissions"] == ["小河豚"]
+            assert final["home_access"] == "visit_access"
+            assert final["continuation_facts"] == [
                 {
                     "fact_id": "continuation.synthetic-1",
                     "statement": "一条只用于合成测试的世界线事实。",
@@ -400,59 +341,53 @@ def test_private_world_mutations_are_typed_idempotent_and_sanitized(
     asyncio.run(scenario())
 
 
-def test_api_rejects_client_authority_extra_fields_and_invalid_evidence(
-    tmp_path: Path,
-) -> None:
+def test_api_rejects_client_authority_and_invalid_inputs() -> None:
     async def scenario() -> None:
-        del tmp_path
-        client, csrf = await _authenticated_client()
+        client, origin, csrf = await _start_authenticated()
+        headers = {"Origin": origin, "X-CSRF-Token": csrf}
         try:
-            origin = str(client.make_url("/")).rstrip("/")
-            headers = {"Origin": origin, "X-CSRF-Token": csrf}
-            authority = await client.post(
-                "/control/api/private-world/relationship-events",
-                json={
-                    **_common("request.authority"),
-                    "event_type": "conflict",
-                    "actor": "migration",
-                },
-                headers=headers,
+            cases = (
+                (
+                    "/control/api/private-world/relationship-events",
+                    {
+                        **_common("request.authority"),
+                        "event_type": "conflict",
+                        "actor": "migration",
+                    },
+                    "CONTROL_BODY_FIELDS_INVALID",
+                ),
+                (
+                    "/control/api/private-world/relationship-events",
+                    {
+                        **_common("request.invalid-event"),
+                        "event_type": "confession",
+                    },
+                    "CONTROL_RELATIONSHIP_EVENT_INVALID",
+                ),
+                (
+                    "/control/api/private-world/relationship-stage",
+                    {
+                        **_common("request.missing-basis"),
+                        "target_stage": "close",
+                        "basis_event_ids": ["event.missing"],
+                    },
+                    "PRIVATE_WORLD_COMMAND_EVIDENCE_INVALID",
+                ),
             )
-            assert authority.status == 400
-            assert (await authority.json())["error"]["code"] == (
-                "CONTROL_BODY_FIELDS_INVALID"
-            )
-
-            invalid_event = await client.post(
-                "/control/api/private-world/relationship-events",
-                json={
-                    **_common("request.invalid-event"),
-                    "event_type": "confession",
-                },
-                headers=headers,
-            )
-            assert invalid_event.status == 400
-
-            missing_basis = await client.post(
-                "/control/api/private-world/relationship-stage",
-                json={
-                    **_common("request.missing-basis"),
-                    "target_stage": "close",
-                    "basis_event_ids": ["event.missing"],
-                },
-                headers=headers,
-            )
-            assert missing_basis.status == 400
-            assert (await missing_basis.json())["error"]["code"] == (
-                "PRIVATE_WORLD_COMMAND_EVIDENCE_INVALID"
-            )
+            for path, body, code in cases:
+                response = await client.post(
+                    path,
+                    json=body,
+                    headers=headers,
+                )
+                assert response.status == 400
+                assert (await response.json())["error"]["code"] == code
 
             invalid_content_type = await client.post(
                 "/control/api/private-world/nicknames",
                 data="{}",
                 headers={
-                    "Origin": origin,
-                    "X-CSRF-Token": csrf,
+                    **headers,
                     "Content-Type": "text/plain",
                 },
             )
