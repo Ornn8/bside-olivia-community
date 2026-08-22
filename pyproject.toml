@@ -30,6 +30,7 @@ py-modules = [
     "memory",
     "patch_feapp",
     "persona_loader",
+    "prompt_budget",
     "reply_context",
 ]
 
