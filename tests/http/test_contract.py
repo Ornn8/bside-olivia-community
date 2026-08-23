@@ -77,10 +77,45 @@ def test_empty_letter_and_music_paths_are_explicitly_empty() -> None:
     assert songs["data"]["source"] == "empty"
 
 
+def test_letter_gateway_preserves_durable_request_id_to_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    seen_request_ids: list[str | None] = []
+
+    class CapturingGateway:
+        async def complete(self, _messages, *, request_id=None):
+            seen_request_ids.append(request_id)
+            return local_server.GatewayResponse(
+                text="synthetic reply",
+                request_id=request_id or "provider-generated-id",
+                provider="mock",
+                model="mock-model",
+            )
+
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", CapturingGateway())
+    durable_request_id = "letter-reply:synthetic-letter-id"
+
+    response = asyncio.run(
+        local_server._LetterGateway(local_server.letters_adapter).complete(
+            [{"role": "user", "content": "synthetic input"}],
+            request_id=durable_request_id,
+        )
+    )
+
+    assert response.request_id == durable_request_id
+    assert seen_request_ids == [durable_request_id]
+
+
 def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     import local_server
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply",
+    )
     sent = asyncio.run(
         local_server.route(
             "POST",
@@ -115,7 +150,7 @@ def test_http_send_acknowledges_before_slow_reply_finishes(
     reply_started = threading.Event()
     allow_reply = threading.Event()
 
-    def slow_reply(*_args) -> str:
+    def slow_reply(*_args, **_kwargs) -> str:
         reply_started.set()
         allow_reply.wait(timeout=2.0)
         return "synthetic delayed reply"
@@ -175,7 +210,7 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     generated_contents: list[str] = []
 
-    def recovered_reply(content: str, *_args) -> str:
+    def recovered_reply(content: str, *_args, **_kwargs) -> str:
         generated_contents.append(content)
         return "synthetic recovered reply"
 
@@ -243,7 +278,7 @@ def test_failed_idempotent_request_can_retry_with_same_key(
 
     allow_success = False
 
-    def reply(*_args):
+    def reply(*_args, **_kwargs):
         if not allow_success:
             raise local_server.LLMError("LLM_TIMEOUT")
         return "synthetic recovered reply"
@@ -401,7 +436,7 @@ def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
 ) -> None:
     import local_server
 
-    def fail(_content, _context=""):
+    def fail(_content, _context="", **_kwargs):
         raise local_server.LLMError("LLM_TIMEOUT")
 
     monkeypatch.setattr(local_server.letters_adapter, "reply", fail)
@@ -829,7 +864,11 @@ def test_request_and_reply_values_never_enter_runtime_logs(
 
     import local_server
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply secret")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply secret",
+    )
     capsys.readouterr()
 
     async def exercise():

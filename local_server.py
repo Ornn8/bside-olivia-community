@@ -150,7 +150,12 @@ class _LetterGateway(Gateway):
             "",
         )
         try:
-            text = await asyncio.to_thread(self.adapter.reply, content, "")
+            text = await asyncio.to_thread(
+                self.adapter.reply,
+                content,
+                "",
+                request_id=request_id,
+            )
         except LLMError as exc:
             if exc.code == "LLM_TIMEOUT":
                 raise ProviderTimeout() from None
@@ -355,10 +360,18 @@ class LetterAdapter:
         except Exception:
             _safe_log("memory_write_skipped", reason="optional_backend_unavailable")
 
-    def reply(self, content: str, context: str = "") -> str:
+    def reply(
+        self,
+        content: str,
+        context: str = "",
+        *,
+        request_id: str | None = None,
+    ) -> str:
         try:
             messages = self._messages(content, context)
-            return asyncio.run(self.gateway.complete(messages)).text
+            return asyncio.run(
+                self.gateway.complete(messages, request_id=request_id)
+            ).text
         except GatewayError as exc:
             code = "LLM_TIMEOUT" if isinstance(exc, ProviderTimeout) else "LLM_UNAVAILABLE"
             if exc.code == "PROVIDER_REJECTED":
