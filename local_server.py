@@ -472,6 +472,7 @@ emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
+reply_jobs: dict[str, asyncio.Task] = {}
 
 
 def _persist_media_state() -> None:
@@ -1365,12 +1366,16 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 None,
             )
             if previous is not None:
-                if previous.get("content") != content:
+                if (
+                    previous.get("content") != content
+                    or previous.get("material", {}) != material
+                ):
                     return err(409, "IDEMPOTENCY_CONFLICT", {
                         "status": "FAILED",
                         "error_code": "IDEMPOTENCY_CONFLICT",
                     })
-                return _send_result_for_letter(previous)
+                if previous.get("letter_status") not in {"FAILED", "CANCELED"}:
+                    return _send_result_for_letter(previous)
         else:
             previous = _recent_active_duplicate(content, material)
             if previous is not None:
@@ -1390,9 +1395,9 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             "music_duration_seconds": duration,
         }
         store.letters.insert(0, letter)
-        _persist_store_state()
         if idempotency_key is not None:
             store.request_keys[idempotency_key] = lid
+        _persist_store_state()
         if defer_reply:
             _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
             return _send_result_for_letter(letter)
@@ -1616,6 +1621,9 @@ def _schedule_reply_job(
     *,
     idempotency_key: str | None,
 ) -> None:
+    active = reply_jobs.get(letter_id)
+    if active is not None and not active.done():
+        return
     task = asyncio.create_task(
         _run_reply_job(
             letter_id,
@@ -1624,7 +1632,64 @@ def _schedule_reply_job(
         )
     )
     reply_tasks.add(task)
-    task.add_done_callback(reply_tasks.discard)
+    reply_jobs[letter_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        reply_tasks.discard(completed)
+        if reply_jobs.get(letter_id) is completed:
+            reply_jobs.pop(letter_id, None)
+
+    task.add_done_callback(discard)
+
+
+def _idempotency_key_for_letter(letter_id: str) -> str | None:
+    return next(
+        (
+            key
+            for key, mapped_letter_id in store.request_keys.items()
+            if mapped_letter_id == letter_id
+        ),
+        None,
+    )
+
+
+def _schedule_pending_reply_jobs() -> int:
+    scheduled = 0
+    for letter in tuple(store.letters):
+        if letter.get("letter_status") != "PENDING":
+            continue
+        letter_id = str(letter.get("letter_id", ""))
+        content = letter.get("content")
+        if not letter_id or not isinstance(content, str) or not content.strip():
+            continue
+        if letter_id in reply_jobs and not reply_jobs[letter_id].done():
+            continue
+        _schedule_reply_job(
+            letter_id,
+            content,
+            idempotency_key=_idempotency_key_for_letter(letter_id),
+        )
+        scheduled += 1
+    return scheduled
+
+
+async def _start_reply_tasks(_app: web.Application) -> None:
+    _schedule_pending_reply_jobs()
+
+
+async def _stop_reply_tasks(_app: web.Application) -> None:
+    tasks = tuple(reply_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def install_reply_task_lifecycle(app: web.Application) -> None:
+    """Resume durable pending replies and stop owned tasks with the HTTP app."""
+
+    app.on_startup.append(_start_reply_tasks)
+    app.on_cleanup.append(_stop_reply_tasks)
 
 
 def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
@@ -1709,7 +1774,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         request = ReplyRequest(
             content=content,
             request_id=letter_id,
-            idempotency_key=idempotency_key,
+            idempotency_key=(
+                f"{idempotency_key}:{letter_id}" if idempotency_key else None
+            ),
             max_input_chars=LLM_CONFIG.max_input_chars,
         )
         result = await asyncio.wait_for(
@@ -1720,18 +1787,21 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             timeout=LLM_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
-        letter["letter_status"] = "CANCELED"
-        letter["error_code"] = "LLM_CANCELLED"
+        letter["letter_status"] = "PENDING"
+        letter.pop("error_code", None)
+        _persist_store_state()
         _safe_log("letter_cancelled")
-        return False
+        raise
     except asyncio.TimeoutError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_TIMEOUT"
+        _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_TIMEOUT")
         return False
     except (ValueError, RuntimeError):
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_UNAVAILABLE"
+        _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
         return False
 
@@ -1742,6 +1812,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         public_code, _retryable = _public_llm_error(result.error_code)
         letter["letter_status"] = "FAILED"
         letter["error_code"] = public_code
+        _persist_store_state()
         _safe_log("letter_failed", error_code=public_code)
         return False
 
@@ -1767,5 +1838,6 @@ if __name__ == "__main__":
     recover_pending_private_world()
     app = web.Application()
     app.router.add_route("*", "/{tail:.*}", handler)
+    install_reply_task_lifecycle(app)
     _safe_log('server_start', host='127.0.0.1', port=PORT)
     web.run_app(app, host="127.0.0.1", port=PORT, access_log=None)

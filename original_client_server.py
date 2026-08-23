@@ -480,7 +480,7 @@ def create_configured_original_client_server_runtime(
         values,
     )
     collection = getattr(server_module, "_letter_collection", None)
-    return create_original_client_server_runtime(
+    runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
         private_world=private_world,
@@ -489,6 +489,14 @@ def create_configured_original_client_server_runtime(
         letter_collection=collection if callable(collection) else None,
         trusted_origins=origins,
     )
+    install_reply_task_lifecycle = getattr(
+        server_module,
+        "install_reply_task_lifecycle",
+        None,
+    )
+    if callable(install_reply_task_lifecycle):
+        install_reply_task_lifecycle(runtime.app)
+    return runtime
 
 
 def main() -> int:

@@ -212,12 +212,14 @@ def test_configured_runtime_reuses_existing_memory_and_private_world_storage(
             conversation_memory=NullConversationMemoryPort(),
             conversation_memory_user_id="local-user",
         )
+        lifecycle_apps = []
         server = SimpleNamespace(
             handler=_fallback,
             letters_adapter=SimpleNamespace(memory_prompt_builder=builder),
             private_world_port=ledger,
             private_world_committer=object(),
             TRUSTED_FRONTEND_ORIGINS=frozenset({TRUSTED_ORIGIN}),
+            install_reply_task_lifecycle=lifecycle_apps.append,
         )
         runtime = create_configured_original_client_server_runtime(
             server_module=server,
@@ -229,6 +231,7 @@ def test_configured_runtime_reuses_existing_memory_and_private_world_storage(
         )
 
         assert runtime.memory_admin is not None
+        assert lifecycle_apps == [runtime.app]
         assert runtime.private_world_read is not None
         assert runtime.candidate_store is not None
         assert (root / "memory" / "memory_admin_audit.sqlite3").is_file()
