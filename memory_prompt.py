@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from conversation_memory_port import ConversationMemoryPort
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, MemoryPort, MemoryRecord
 
 
@@ -22,6 +24,7 @@ _ESCAPES = {
     "_": r"\u005F",
 }
 _UNESCAPE_RE = re.compile(r"\\u(003C|003E|005B|005C|005D|005F)")
+_AUTO_CONVERSATION_MEMORY = object()
 
 
 @dataclass(frozen=True)
@@ -86,11 +89,20 @@ class MemoryPromptBuilder:
         max_results: int = 8,
         legacy_budget: int = 1200,
         conversation_budget: int = 1200,
+        conversation_memory: ConversationMemoryPort | None | object = _AUTO_CONVERSATION_MEMORY,
+        conversation_memory_user_id: str | None = None,
     ) -> None:
         self.memory = memory
         self.max_results = max(1, min(32, int(max_results)))
         self.legacy_budget = max(0, int(legacy_budget))
         self.conversation_budget = max(0, int(conversation_budget))
+        if conversation_memory is _AUTO_CONVERSATION_MEMORY:
+            conversation_memory = _default_conversation_memory()
+        self.conversation_memory = conversation_memory
+        self.conversation_memory_user_id = _conversation_user_id(
+            conversation_memory,
+            conversation_memory_user_id,
+        )
 
     def build(self, query: str, *, max_chars: int | None = None) -> MemoryPrompt:
         budget = max(
@@ -99,6 +111,23 @@ class MemoryPromptBuilder:
         )
         if budget <= 0 or not isinstance(query, str) or not query.strip():
             return MemoryPrompt(status="disabled")
+
+        if self.conversation_memory is not None and _conversation_status(
+            self.conversation_memory
+        ) != "disabled":
+            from companion_memory_context import CompanionMemoryPromptBuilder
+
+            return CompanionMemoryPromptBuilder(
+                self.memory,
+                self.conversation_memory,
+                user_id=self.conversation_memory_user_id,
+                max_results=self.max_results,
+                current_share=_current_share(
+                    self.conversation_budget,
+                    self.legacy_budget,
+                ),
+            ).build(query, max_chars=budget)
+
         try:
             records = self.memory.search(
                 query,
@@ -176,6 +205,45 @@ class MemoryPromptBuilder:
             truncated=truncated,
             domains=tuple(used_domains),
         )
+
+
+def _default_conversation_memory() -> ConversationMemoryPort | None:
+    """Load the optional adapter lazily; disabled Core installs remain dependency-free."""
+
+    try:
+        from mem0_memory import create_mem0_adapter
+
+        return create_mem0_adapter()
+    except Exception:
+        return None
+
+
+def _conversation_status(memory: object) -> str:
+    try:
+        status = memory.status().status  # type: ignore[union-attr]
+    except Exception:
+        return "unavailable"
+    return status if status in {"available", "degraded", "unavailable", "disabled"} else "unavailable"
+
+
+def _conversation_user_id(memory: object, explicit: str | None) -> str:
+    candidates = (
+        explicit,
+        getattr(getattr(memory, "config", None), "user_id", None),
+        os.environ.get("OLIVIA_MEMORY_USER_ID"),
+        "local-user",
+    )
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "local-user"
+
+
+def _current_share(conversation_budget: int, legacy_budget: int) -> float:
+    total = max(0, conversation_budget) + max(0, legacy_budget)
+    if total <= 0:
+        return 0.6
+    return min(0.8, max(0.2, conversation_budget / total))
 
 
 def _provenance(value: Mapping[str, Any]) -> str:
