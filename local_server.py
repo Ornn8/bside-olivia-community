@@ -74,6 +74,7 @@ from reply_reviewer import NullReviewer
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
+LETTER_RETRY_DEDUP_SECONDS = 60
 
 
 def _exact_reply_mode(value: object) -> str:
@@ -470,6 +471,7 @@ letters_adapter = LetterAdapter(
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
+reply_tasks: set[asyncio.Task] = set()
 
 
 def _persist_media_state() -> None:
@@ -655,7 +657,13 @@ async def handler(request: web.Request):
         result = body_error
     else:
         try:
-            result = await route(method, path, body, query)
+            result = await route(
+                method,
+                path,
+                body,
+                query,
+                defer_reply=(method == "POST" and path.rstrip("/") == "/toy/letter/send"),
+            )
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
             _safe_log('route_failure', method=method, path=path, error_code=code)
@@ -1062,6 +1070,14 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
 
 
 def _send_result_for_letter(letter: dict) -> dict:
+    if letter.get("letter_status") == "PENDING":
+        return ok(
+            {
+                "letter_id": letter["letter_id"],
+                "letterId": letter["letter_id"],
+                "status": "PENDING",
+            }
+        )
     if letter.get("reply_not_before", 0.0) > time.time():
         return ok({"letter_id": letter["letter_id"], "letterId": letter["letter_id"], "status": "PENDING", "reply_not_before": letter["reply_not_before"]})
     if letter.get("letter_status") == "COMPLETED" and letter.get("reply_text"):
@@ -1085,7 +1101,28 @@ def _send_result_for_letter(letter: dict) -> dict:
     )
 
 
-async def route(method, path, body, query):
+def _recent_active_duplicate(
+    content: str,
+    material: dict,
+    *,
+    now: float | None = None,
+) -> dict | None:
+    current_time = time.time() if now is None else now
+    for letter in store.letters:
+        created_at = letter.get("created_at")
+        if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+            continue
+        age = current_time - float(created_at)
+        if age < 0 or age > LETTER_RETRY_DEDUP_SECONDS:
+            continue
+        if letter.get("letter_status") not in {"PENDING", "PROCESSING", "COMPLETED"}:
+            continue
+        if letter.get("content") == content and letter.get("material", {}) == material:
+            return letter
+    return None
+
+
+async def route(method, path, body, query, *, defer_reply: bool = False):
     p = path.rstrip("/")
 
     spec = contract.route_spec(p)
@@ -1295,6 +1332,10 @@ async def route(method, path, body, query):
                         "error_code": "IDEMPOTENCY_CONFLICT",
                     })
                 return _send_result_for_letter(previous)
+        else:
+            previous = _recent_active_duplicate(content, material)
+            if previous is not None:
+                return _send_result_for_letter(previous)
         lid = str(uuid.uuid4())
         letter = {
             "letter_id": lid,
@@ -1313,6 +1354,9 @@ async def route(method, path, body, query):
         _persist_store_state()
         if idempotency_key is not None:
             store.request_keys[idempotency_key] = lid
+        if defer_reply:
+            _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
+            return _send_result_for_letter(letter)
         completed = await generate_reply(lid, content, idempotency_key=idempotency_key)
         if not completed:
             return _send_result_for_letter(letter)
@@ -1500,6 +1544,48 @@ def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mod
     task = asyncio.create_task(_render_media_job(letter_id, content, reply_text, reply_mode))
     media_tasks.add(task)
     task.add_done_callback(media_tasks.discard)
+
+
+async def _run_reply_job(
+    letter_id: str,
+    content: str,
+    *,
+    idempotency_key: str | None,
+) -> bool:
+    try:
+        return await generate_reply(
+            letter_id,
+            content,
+            idempotency_key=idempotency_key,
+        )
+    except Exception:
+        letter = next(
+            (item for item in store.letters if item["letter_id"] == letter_id),
+            None,
+        )
+        if letter is not None and letter.get("letter_status") == "PENDING":
+            letter["letter_status"] = "FAILED"
+            letter["error_code"] = "LLM_UNAVAILABLE"
+            _persist_store_state()
+        _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
+        return False
+
+
+def _schedule_reply_job(
+    letter_id: str,
+    content: str,
+    *,
+    idempotency_key: str | None,
+) -> None:
+    task = asyncio.create_task(
+        _run_reply_job(
+            letter_id,
+            content,
+            idempotency_key=idempotency_key,
+        )
+    )
+    reply_tasks.add(task)
+    task.add_done_callback(reply_tasks.discard)
 
 
 def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
