@@ -23,10 +23,12 @@ def reset_local_store():
     local_server.store.letters.clear()
     local_server.store.legacy_letters.clear()
     local_server.store.midi_jobs.clear()
+    local_server.store.request_keys.clear()
     yield
     local_server.store.letters.clear()
     local_server.store.legacy_letters.clear()
     local_server.store.midi_jobs.clear()
+    local_server.store.request_keys.clear()
 
 
 def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities() -> None:
@@ -159,6 +161,93 @@ def test_http_send_acknowledges_before_slow_reply_finishes(
     assert len(local_server.store.letters) == 1
     assert detail["data"]["letter_status"] == "COMPLETED"
     assert detail["data"]["reply_text"] == "synthetic delayed reply"
+
+
+def test_persisted_pending_reply_resumes_when_http_runtime_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args: "synthetic recovered reply",
+    )
+    pending = {
+        "letter_id": "letter-restart-pending",
+        "content": "synthetic persisted input",
+        "material": {},
+        "letter_status": "PENDING",
+        "audit_status": 2,
+        "is_read": 1,
+        "created_at": 100,
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "triage": {"status": "pending"},
+        "music_duration_seconds": 118,
+    }
+    local_server.store.letters.append(pending)
+    local_server.store.request_keys["restart-key"] = pending["letter_id"]
+    local_server._persist_store_state()
+    local_server.store.letters.clear()
+    local_server.store.request_keys.clear()
+    local_server._load_store_state()
+
+    async def exercise() -> dict:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        local_server.install_reply_task_lifecycle(app)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": pending["letter_id"]},
+            )
+            return await response.json()
+
+    detail = asyncio.run(exercise())
+    persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+
+    assert detail["data"]["letter_status"] == "COMPLETED"
+    assert detail["data"]["reply_text"] == "synthetic recovered reply"
+    assert persisted["letters"][0]["letter_status"] == "COMPLETED"
+    assert persisted["request_keys"]["restart-key"] == pending["letter_id"]
+
+
+def test_failed_idempotent_request_can_retry_with_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    allow_success = False
+
+    def reply(*_args):
+        if not allow_success:
+            raise local_server.LLMError("LLM_TIMEOUT")
+        return "synthetic recovered reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    body = {
+        "content": "synthetic idempotent retry",
+        "material": {"stamp_id": "stamp-a"},
+        "idempotency_key": "retry-key",
+    }
+
+    first = asyncio.run(local_server.route("POST", "/toy/letter/send", body, {}))
+    assert local_server.store.letters[0]["letter_status"] == "FAILED"
+    allow_success = True
+    second = asyncio.run(local_server.route("POST", "/toy/letter/send", body, {}))
+
+    assert first["code"] == 503
+    assert second["code"] == 0
+    assert second["data"]["status"] == "COMPLETED"
+    assert second["data"]["letter_id"] != first["data"]["letter_id"]
+    assert local_server.store.request_keys["retry-key"] == second["data"]["letter_id"]
 
 
 def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None:

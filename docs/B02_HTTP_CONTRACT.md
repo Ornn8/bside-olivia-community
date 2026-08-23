@@ -16,7 +16,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 错误响应：`{"code":<HTTP 状态>,"message":"<error_code>","data":{"status":"FAILED","error_code":"<error_code>"}}`
 - 真正未实现能力：HTTP `501`，`data.status=NOT_IMPLEMENTED`。
 - 已知但不可用的可选能力：HTTP `501`，`data.status=UNAVAILABLE`，并带 `capability`；不会返回 200 假成功。
-- LLM 超时/不可用：HTTP `503`，信件保留 `FAILED` 终态并带 `retryable=true`。
+- HTTP 发信先返回 `200`/`PENDING`；LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。进程重启会继续持久化的 `PENDING` 任务。
 
 机器可读定义：
 
@@ -31,7 +31,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | core | `/health?profile=core` | available | 进程内 core 健康检查；不探测外部 provider |
 | session | `/toy/signIn`, `/toy/getUserInfo` | available | local-memory/session fixture |
 | 信件只读 | `/toy/letter/list`, `/toy/letter/detail`, `/toy/letter/unread_count` | available | `scope=current` 默认；`scope=legacy` 只读隔离视图 |
-| 发信 | `/toy/letter/send` | available/degraded | 调用配置的 LLM adapter；失败返回 503，不生成占位回信 |
+| 发信 | `/toy/letter/send` | available/degraded | 先确认 `PENDING`，后台调用 LLM adapter；失败写入 detail，不生成占位回信 |
 | 回信重发/分享 | `/toy/letter/resend`, `/toy/letter/share` | unavailable | 501 稳定错误；未实现不伪造写入 |
 | 音乐目录 | `/toy/getMusicTypeInfo`, `/toy/searchSongs`, `/toy/searchPlaylist`, `/toy/searchUserSongs`, `/toy/searchPerformances`, `/toy/getSongStats` | available | 只返回脱敏 fixture 或显式空数据 |
 | 音乐写操作 | `/toy/addPerformance` 等 | unavailable | 501 `MUSIC_WRITE_NOT_IMPLEMENTED` |
@@ -47,7 +47,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - legacy import 的 body、`mode` 或 `letters` 不合法：400 `INVALID_BODY`；SQLite 存储不可用：503 `MEMORY_UNAVAILABLE`。两类错误都不回显旧信正文、路径或密钥。
 - 找不到信件或 MIDI job：404，不返回空的成功对象。
 - 空信箱、无匹配歌曲、空 playlist：200，但 `source=local-memory|empty`、列表和计数明确为空。
-- LLM timeout/error：503；新信件标记 `FAILED`，不得写入 `reply_text` 占位符。
+- LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。
 - `/letter/resend` 当前未实现；重复请求返回相同 501，不改变信件内容或状态。
 - `scope=legacy` 的 list/detail 只读，detail 不改变 `is_read`；send 对 legacy scope 返回 403 `READ_ONLY_SCOPE`。
 

@@ -21,10 +21,10 @@
 | 501 | `MIDI_*_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | MIDI 上传/生成/导入未实现 |
 | 501 | `WEBSOCKET_UNAVAILABLE` / `ASR_UNAVAILABLE` / `TTS_UNAVAILABLE` / `LIVE_UNAVAILABLE` | UNAVAILABLE | 否 | 原生实时能力不可用 |
 | 501 | `ROUTE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 未登记 route |
-| 503 | `LLM_TIMEOUT` / `LLM_UNAVAILABLE` | FAILED | 是 | provider 超时/不可用；信件终态为 FAILED |
+| 200 detail | `LLM_TIMEOUT` / `LLM_UNAVAILABLE` | FAILED | 是 | 发信先确认 PENDING；provider 超时/不可用后 detail 显示 FAILED |
 | 503 | `MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | legacy import 的 SQLite 存储不可用；不回显正文、路径或密钥 |
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |
 | 409 | `IDEMPOTENCY_CONFLICT` | FAILED | 否 | 同一幂等键重复提交了不同正文 |
-| 503 | `LLM_PROVIDER_REJECTED` / `LLM_PROTOCOL_ERROR` | FAILED | 否 | 上游非重试 4xx、坏 JSON 或空响应；不回显 provider body |
+| 200 detail | `LLM_PROVIDER_REJECTED` / `LLM_PROTOCOL_ERROR` | FAILED | 否 | 上游非重试 4xx、坏 JSON 或空响应；不回显 provider body |
 
 源实现和机器可读映射在 `http_contract.py`；新增错误码必须同时更新映射、schema、测试和本表。
