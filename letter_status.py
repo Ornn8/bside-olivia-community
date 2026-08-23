@@ -30,10 +30,12 @@ def original_letter_status(value: object) -> int:
     """Return the exact numeric status expected by the original frontend.
 
     Existing imported records may already contain one of the public numeric
-    values.  Unknown strings, booleans, and arbitrary numbers are rejected so
-    callers cannot silently publish a misleading terminal state.
+    values. Unknown strings, booleans, arbitrary integers, and unrelated enum
+    types are rejected so callers cannot silently publish a misleading state.
     """
 
+    if isinstance(value, OriginalLetterStatus):
+        return int(value)
     if type(value) is int:
         try:
             return int(OriginalLetterStatus(value))
