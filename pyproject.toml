@@ -41,6 +41,7 @@ py-modules = [
     "mem0_memory",
     "memory",
     "original_client_letter_contract",
+    "original_client_media_http",
     "patch_feapp",
     "persona_loader",
     "persona_assembly",
