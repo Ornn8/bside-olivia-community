@@ -27,6 +27,10 @@ jobs:
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management')
         run: python tools/fix_private_world_preparer_compat.py
 
+      - name: Preserve original public status contract
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management')
+        run: python tools/fix_private_world_preparer_public_status.py
+
       - name: Apply bounded PrivateWorld direct-management slice
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management')
         run: python tools/prepare_original_private_world_direct_management.py
