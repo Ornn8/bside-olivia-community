@@ -1,0 +1,122 @@
+.candidate-intro {
+  max-width: 70ch;
+  margin: 0.75rem 0 0;
+  line-height: 1.6;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid currentColor;
+  border-radius: 0.45rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.button-link:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 3px;
+}
+
+.candidate-page {
+  width: min(62rem, calc(100% - 2rem));
+  margin: 2rem auto 4rem;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.candidate-card {
+  padding: 1.25rem;
+  border: 1px solid var(--border, #c8c8c4);
+  border-radius: 0.8rem;
+  background: var(--surface, #fff);
+}
+
+.candidate-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.candidate-type {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.candidate-summary {
+  margin: 0;
+  max-width: 48rem;
+  line-height: 1.5;
+}
+
+.candidate-confidence {
+  flex: 0 0 auto;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.candidate-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.candidate-metadata div {
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-soft, #e1e1dd);
+}
+
+.candidate-metadata dt {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.candidate-metadata dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.candidate-reason {
+  width: 100%;
+  min-height: 5.5rem;
+  margin-top: 0.4rem;
+}
+
+.candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.candidate-actions .secondary {
+  opacity: 0.9;
+}
+
+.candidate-empty {
+  padding: 2rem;
+  border: 1px dashed var(--border, #c8c8c4);
+  border-radius: 0.8rem;
+  text-align: center;
+}
+
+@media (max-width: 44rem) {
+  .candidate-heading {
+    display: block;
+  }
+
+  .candidate-confidence {
+    display: inline-block;
+    margin-top: 0.65rem;
+  }
+}
