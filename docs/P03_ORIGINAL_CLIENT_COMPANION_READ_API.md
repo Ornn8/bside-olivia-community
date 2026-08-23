@@ -71,9 +71,9 @@ Origin: 原版 Olivia 前端 Origin
 
 ```text
 available
- degraded
- unavailable
- disabled
+degraded
+unavailable
+disabled
 ```
 
 未配置或故障不能伪造成 `available`。
@@ -107,7 +107,7 @@ score（可选）
 - relationship stage；
 - familiarity / trust / comfort / closeness / tension 的 `unknown / low / medium / high`；
 - 已授权私人称呼；
--住所权限；
+- 住所权限；
 - Local Continuation statement 与 awareness。
 
 不返回 0–100 隐藏分数、数据库路径、command payload、拒绝审计或管理凭据。
