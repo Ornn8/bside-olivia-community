@@ -184,12 +184,24 @@ class ConversationMemoryDeliveryCommitter:
             MemoryWriteStatus.SKIPPED: CanonicalMemoryDeliveryStatus.SKIPPED,
             MemoryWriteStatus.UNAVAILABLE: CanonicalMemoryDeliveryStatus.UNAVAILABLE,
         }
-        status = mapping[result.status]
-        error_code = result.error_code if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE else None
+        try:
+            status = mapping[result.status]
+            memory_count = len(result.memory_ids)
+            error_code = (
+                result.error_code
+                if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
+                else None
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return CanonicalMemoryDeliveryResult(
+                CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+                delivery.source_id,
+                error_code="MEM0_WRITE_RESULT_INVALID",
+            )
         return CanonicalMemoryDeliveryResult(
             status,
             delivery.source_id,
-            memory_count=len(result.memory_ids),
+            memory_count=memory_count,
             error_code=error_code or (
                 "MEM0_WRITE_FAILED"
                 if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
