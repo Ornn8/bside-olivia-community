@@ -29,6 +29,7 @@ memory-mem0 = [
 py-modules = [
     "baseline_hardening_scan",
     "companion_memory_context",
+    "conversation_memory_delivery",
     "conversation_memory_port",
     "extract_player",
     "http_contract",
