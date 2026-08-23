@@ -135,6 +135,7 @@ class CompanionMemoryPromptBuilder:
         self._fallback = MemoryPromptBuilder(
             archive_memory,
             max_results=self.max_results,
+            conversation_memory=None,
         )
 
     def build(self, query: str, *, max_chars: int | None = None) -> MemoryPrompt:
@@ -142,7 +143,8 @@ class CompanionMemoryPromptBuilder:
         if budget <= 0 or not isinstance(query, str) or not query.strip():
             return MemoryPrompt(status="disabled")
 
-        if not bool(getattr(self.conversation_memory, "enabled", False)):
+        conversation_status = _port_status(self.conversation_memory)
+        if conversation_status == "disabled":
             return self._fallback.build(query, max_chars=budget)
 
         current_budget = max(0, int(budget * self.current_share))
@@ -155,12 +157,14 @@ class CompanionMemoryPromptBuilder:
             max_results=self.max_results,
             legacy_budget=0,
             conversation_budget=current_budget,
+            conversation_memory=None,
         ).build(query, max_chars=current_budget)
         archive = MemoryPromptBuilder(
             _LegacyArchiveView(self.archive_memory),
             max_results=self.max_results,
             legacy_budget=archive_budget,
             conversation_budget=0,
+            conversation_memory=None,
         ).build(query, max_chars=archive_budget)
 
         parts = tuple(prompt.text for prompt in (current, archive) if prompt.text)
@@ -173,6 +177,14 @@ class CompanionMemoryPromptBuilder:
             truncated=current.truncated or archive.truncated,
             domains=domains,
         )
+
+
+def _port_status(memory: ConversationMemoryPort) -> str:
+    try:
+        status = memory.status().status
+    except Exception:
+        return "unavailable"
+    return status if status in {"available", "degraded", "unavailable", "disabled"} else "unavailable"
 
 
 def _epoch(value: datetime | None) -> int:
