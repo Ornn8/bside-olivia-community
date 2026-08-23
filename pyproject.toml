@@ -45,6 +45,7 @@ py-modules = [
     "original_client_letter_contract",
     "original_client_media_http",
     "original_client_server",
+    "original_client_settings_ui",
     "patch_companion_settings",
     "patch_feapp",
     "persona_loader",
