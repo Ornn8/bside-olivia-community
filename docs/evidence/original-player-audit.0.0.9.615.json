@@ -1,0 +1,220 @@
+{
+  "comparison": {
+    "shared_html_members": [
+      "index.html"
+    ],
+    "shared_local_api_paths": [],
+    "shared_query_keys": []
+  },
+  "limitations": [
+    "A marker count proves only that the token exists, not how the player uses it.",
+    "The report contains no HTML or JavaScript source and no arbitrary string dump.",
+    "Exact letter-detail wiring still requires review of original-client behavior and bounded patch anchors."
+  ],
+  "players": {
+    "feplayer": {
+      "archive": {
+        "compressed_bytes": 1362,
+        "direct_media_counts": {},
+        "extension_counts": {
+          ".html": 1
+        },
+        "member_count": 1,
+        "uncompressed_bytes": 5012
+      },
+      "archive_sha256": "0289b883a62c391f0f1d24b6088a7fb07d592a98c5b0f6eff3ab931561be0848",
+      "binding_evidence": {
+        "action_names": [],
+        "external_origin_hosts": [],
+        "field_counts": {
+          "audioUrl": 0,
+          "audio_url": 0,
+          "autoplay": 2,
+          "controls": 0,
+          "currentTime": 1,
+          "duration": 10,
+          "loop": 0,
+          "mediaUrl": 0,
+          "media_url": 0,
+          "muted": 1,
+          "poster": 0,
+          "replyVideoUrl": 0,
+          "reply_video_url": 0,
+          "videoUrl": 0,
+          "video_url": 0
+        },
+        "local_api_paths": [],
+        "media_text_marker_counts": {
+          ".flac": 0,
+          ".m3u8": 0,
+          ".mp3": 0,
+          ".mp4": 0,
+          ".ogg": 0,
+          ".wav": 0,
+          ".webm": 0
+        },
+        "player_marker_counts": {
+          "<video": 1,
+          "Artplayer": 0,
+          "DPlayer": 0,
+          "HTMLVideoElement": 0,
+          "Hls": 0,
+          "Howler": 0,
+          "Plyr": 0,
+          "Video.js": 0,
+          "dashjs": 0,
+          "document.createElement(\"video\")": 0,
+          "document.createElement('video')": 0,
+          "flv.js": 0,
+          "hls.js": 0,
+          "mpegts": 0,
+          "videojs": 0
+        },
+        "query_keys": [],
+        "transport_marker_counts": {
+          "URLSearchParams": 1,
+          "addEventListener(\"message\"": 0,
+          "addEventListener('message'": 0,
+          "localStorage": 0,
+          "location.hash": 0,
+          "location.search": 1,
+          "onmessage": 0,
+          "postMessage": 0,
+          "sessionStorage": 0,
+          "window.name": 0
+        }
+      },
+      "entrypoints": {
+        "html_members": [
+          "index.html"
+        ],
+        "javascript_bundles": [],
+        "relative_js_css_assets": []
+      },
+      "name": "feplayer.dat"
+    },
+    "webplayer": {
+      "archive": {
+        "compressed_bytes": 122473,
+        "direct_media_counts": {},
+        "extension_counts": {
+          ".css": 2,
+          ".html": 1,
+          ".js": 4
+        },
+        "member_count": 7,
+        "uncompressed_bytes": 596546
+      },
+      "archive_sha256": "504b59876af2f04c4902f8c8e6811018d36a2da4394e20cf74f22d13d394b636",
+      "binding_evidence": {
+        "action_names": [],
+        "external_origin_hosts": [
+          "localhost",
+          "vuejs.org",
+          "www.w3.org"
+        ],
+        "field_counts": {
+          "audioUrl": 0,
+          "audio_url": 0,
+          "autoplay": 1,
+          "controls": 0,
+          "currentTime": 4,
+          "duration": 16,
+          "loop": 8,
+          "mediaUrl": 0,
+          "media_url": 0,
+          "muted": 9,
+          "poster": 0,
+          "replyVideoUrl": 0,
+          "reply_video_url": 0,
+          "videoUrl": 0,
+          "video_url": 0
+        },
+        "local_api_paths": [],
+        "media_text_marker_counts": {
+          ".flac": 0,
+          ".m3u8": 0,
+          ".mp3": 0,
+          ".mp4": 0,
+          ".ogg": 0,
+          ".wav": 0,
+          ".webm": 0
+        },
+        "player_marker_counts": {
+          "<video": 0,
+          "Artplayer": 0,
+          "DPlayer": 0,
+          "HTMLVideoElement": 0,
+          "Hls": 0,
+          "Howler": 0,
+          "Plyr": 0,
+          "Video.js": 0,
+          "dashjs": 0,
+          "document.createElement(\"video\")": 0,
+          "document.createElement('video')": 0,
+          "flv.js": 0,
+          "hls.js": 0,
+          "mpegts": 0,
+          "videojs": 0
+        },
+        "query_keys": [],
+        "transport_marker_counts": {
+          "URLSearchParams": 2,
+          "addEventListener(\"message\"": 0,
+          "addEventListener('message'": 0,
+          "localStorage": 0,
+          "location.hash": 0,
+          "location.search": 3,
+          "onmessage": 0,
+          "postMessage": 0,
+          "sessionStorage": 0,
+          "window.name": 0
+        }
+      },
+      "entrypoints": {
+        "html_members": [
+          "index.html"
+        ],
+        "javascript_bundles": [
+          {
+            "bytes": 12837,
+            "member": "assets/main-752b9fc4.js",
+            "sha256": "ef4a71b22251dff74eb622fb699e8bf98f5e90b107f1e181fda8b32b39ddcedd"
+          },
+          {
+            "bytes": 112052,
+            "member": "assets/vendor-f724cb1c.js",
+            "sha256": "101e0227cc76ed70ba23db284c8e9360b57965e590b538290e920006cef1733a"
+          },
+          {
+            "bytes": 23464,
+            "member": "assets/vendor-vue-832b0c73.js",
+            "sha256": "6be009be2f68ca917f8c21e631f4de31f72c2b63ae9a1941d87bd7731b4de8ef"
+          },
+          {
+            "bytes": 33301,
+            "member": "assets/zh-cn-deff0b22.js",
+            "sha256": "d1c5624149ac1f6a5e3ca0dfa11a8c93687711a75ab3446fd4b516a028bc2115"
+          }
+        ],
+        "relative_js_css_assets": [
+          "./assets/index-d7322f11.css",
+          "./assets/main-752b9fc4.js",
+          "./assets/vendor-element-7c8f0743.css",
+          "./assets/vendor-f724cb1c.js",
+          "./assets/vendor-vue-832b0c73.js"
+        ]
+      },
+      "name": "webplayer.dat"
+    }
+  },
+  "schema_version": "p03.original-player-audit.v1",
+  "source": {
+    "archive_names": [
+      "feplayer.dat",
+      "webplayer.dat"
+    ],
+    "client_version_hint": "0.0.9.615"
+  },
+  "status": "AUDITED"
+}
