@@ -28,6 +28,7 @@ memory-mem0 = [
 [tool.setuptools]
 py-modules = [
     "baseline_hardening_scan",
+    "companion_memory_context",
     "conversation_memory_port",
     "extract_player",
     "http_contract",
