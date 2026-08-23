@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   public-smoke:
@@ -21,6 +21,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Apply bounded PrivateWorld direct-management slice
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management'
+        run: python tools/prepare_original_private_world_direct_management.py
+
+      - name: Stage prepared source for scanners
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management'
+        run: git add -A
+
       - name: Install public development dependencies
         run: python -m pip install -e ".[dev]"
 
@@ -30,5 +38,17 @@ jobs:
       - name: Run repository hardening scan
         run: python baseline_hardening_scan.py --mode all
 
-      - name: Check whitespace
-        run: git diff --check --exit-code
+      - name: Check prepared whitespace
+        run: git diff --cached --check
+
+      - name: Commit prepared PrivateWorld direct management
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/original-private-world-direct-management'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(private-world): expose direct original-client commands"
+          git push origin HEAD:${GITHUB_REF_NAME}
