@@ -49,7 +49,7 @@ class OriginalClientServerError(RuntimeError):
 
 
 class PrivateWorldControlReadAdapter:
-    """Project one typed snapshot into the qualitative original-settings view."""
+    """Project typed PrivateWorld state into the qualitative settings view."""
 
     def __init__(self, port: PrivateWorldPort) -> None:
         if not isinstance(port, PrivateWorldPort):
