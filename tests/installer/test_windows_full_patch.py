@@ -55,6 +55,32 @@ def test_install_entrypoint_is_parseable_by_windows_powershell() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_install_entrypoint_prioritizes_selected_payload() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = (repo_root / "installer" / "Install.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "sys.path.insert(0,sys.argv.pop(1))" in script
+    assert 'runpy.run_module("installer",run_name="__main__")' in script
+
+
+def test_managed_runtime_installs_all_server_dependencies() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = (repo_root / "installer" / "Install.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+    requirements = (
+        repo_root / "installer" / "runtime-requirements.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "import aiohttp,jsonschema" in script
+    assert "jsonschema==4.26.0" in requirements
+    assert "jsonschema-specifications==2025.9.1" in requirements
+    assert "referencing==0.37.0" in requirements
+    assert "rpds-py==2026.6.3" in requirements
+
+
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
     repo_root = Path(__file__).parents[2]
     for relative in (
@@ -227,6 +253,7 @@ def _make_payload(repo_root: Path, root: Path) -> Path:
     root.mkdir()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
         shutil.copy2(repo_root / name, root / name)
+    shutil.copytree(repo_root / "control_center", root / "control_center")
     shutil.copytree(repo_root / "installer", root / "installer")
     return root
 
@@ -253,9 +280,27 @@ def test_copy_payload_excludes_non_runtime_project_files(
     )
     (source / "__pycache__").mkdir()
     (source / "__pycache__" / "fixture.pyc").write_bytes(b"pyc")
+    (source / "control_center").mkdir()
+    for name in (
+        "__init__.py",
+        "app.py",
+        "auth.py",
+        "memory_api.py",
+        "private_world_api.py",
+        "private_world_candidate_api.py",
+        "private_world_candidate_backend.py",
+        "private_world_candidate_ui.py",
+        "runtime.py",
+    ):
+        (source / "control_center" / name).write_text(
+            "# runtime fixture",
+            encoding="utf-8",
+        )
 
     copied = copy_project_payload(source, destination)
 
+    assert "control_center/" in copied
+    assert (destination / "control_center" / "runtime.py").is_file()
     assert "dynamic_renderer.py" in copied
     assert (destination / "dynamic_renderer.py").is_file()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
@@ -280,6 +325,27 @@ def test_copy_payload_rejects_missing_original_client_runtime(
     source.mkdir()
     for name in PAYLOAD_REQUIRED_ROOT_FILES - {"original_client_server.py"}:
         (source / name).write_text("# fixture", encoding="utf-8")
+
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_INCOMPLETE"):
+        copy_project_payload(source, tmp_path / "destination")
+
+
+def test_copy_payload_rejects_missing_control_center(tmp_path: Path) -> None:
+    source = tmp_path / "payload"
+    source.mkdir()
+    for name in PAYLOAD_REQUIRED_ROOT_FILES:
+        (source / name).write_text("# fixture", encoding="utf-8")
+
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_INCOMPLETE"):
+        copy_project_payload(source, tmp_path / "destination")
+
+
+def test_copy_payload_rejects_incomplete_control_center(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    source = _make_payload(repo_root, tmp_path / "payload")
+    (source / "control_center" / "app.py").unlink()
 
     with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_INCOMPLETE"):
         copy_project_payload(source, tmp_path / "destination")

@@ -45,10 +45,10 @@ if ($runner.File -eq $runtimeExe) {
             if ($pthLines -notcontains $entry) { Add-Content -LiteralPath $pth.FullName -Value $entry }
         }
     }
-    & $runner.File '-c' 'import aiohttp' 2>$null
+    & $runner.File '-c' 'import aiohttp,jsonschema' 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'The local server needs aiohttp and its fixed Windows/Python 3.12 dependency closure.'
-        Write-Host 'Licenses: aiohttp Apache-2.0; transitive packages retain their upstream licenses.'
+        Write-Host 'The local server needs aiohttp, jsonschema, and their fixed Windows/Python 3.12 dependency closure.'
+        Write-Host 'Licenses: aiohttp Apache-2.0; jsonschema MIT; transitive packages retain their upstream licenses.'
         $answer = Read-Host 'Accept these licenses and download the pinned wheels? [Y/N]'
         if ($answer -notmatch '^(y|yes)$') { throw 'AIOHTTP_LICENSE_NOT_ACCEPTED' }
         $pipScript = Join-Path $env:TEMP 'get-pip.py'
@@ -64,7 +64,7 @@ if ($runner.File -eq $runtimeExe) {
     }
 }
 
-$arguments = @('-m', 'installer', 'install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', (Join-Path $PayloadRoot 'installer\full-patch-manifest.json'), '--port', $Port)
+$arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', (Join-Path $PayloadRoot 'installer\full-patch-manifest.json'), '--port', $Port)
 $selectedOfficial = $OfficialRoot
 if (-not $selectedOfficial) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
@@ -72,5 +72,6 @@ if (-not $selectedOfficial) {
 if ($selectedOfficial) { $arguments += @('--official-root', $selectedOfficial) }
 $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
-& $runner.File @($runner.Args + $arguments)
+$bootstrap = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("installer",run_name="__main__")'
+& $runner.File @($runner.Args + @('-c', $bootstrap, $PayloadRoot) + $arguments)
 exit $LASTEXITCODE
