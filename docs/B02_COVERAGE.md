@@ -12,6 +12,7 @@
 | malformed HTTP JSON/method | `test_handler_rejects_malformed_json_and_wrong_methods` | 400 `INVALID_JSON`、405 `METHOD_NOT_ALLOWED` |
 | provider failure/retry | `test_handler_acknowledges_before_background_llm_failure` | send 200/PENDING；detail `FAILED` + retryable |
 | pending restart recovery | `test_persisted_pending_reply_resumes_when_http_runtime_starts` | 重启后恢复任务并持久化终态 |
+| failed retry supersession | `test_successful_retry_replaces_recent_failed_copy_in_current_mailbox` | FAILED 审计记录保留；current list 隐藏；旧 ID 返回 410 tombstone |
 | legacy isolation/read-only | `test_legacy_scope_is_read_only_and_isolated_from_new_chat` | current/legacy 分离；legacy detail 不改读状态；禁止写入 |
 | true unimplemented capability | `test_unimplemented_routes_and_native_capabilities_are_not_fake_successes` | 501 `NOT_IMPLEMENTED`；health 不伪装 native capability |
 | schema/fixture privacy | `test_contract_and_fixture_artifacts_are_versioned_and_sanitized` | 版本、read-only schema、无原文/私密标识 |

@@ -1248,6 +1248,22 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 "error_code": "INVALID_SCOPE",
                 "allowed_scopes": ["current", "legacy"],
             })
+        if scope == "current":
+            _mark_superseded_failed_retries()
+            superseded = next(
+                (
+                    item
+                    for item in store.letters
+                    if item.get("letter_id") == lid and item.get("superseded_by")
+                ),
+                None,
+            )
+            if superseded is not None:
+                return err(410, "LETTER_SUPERSEDED", {
+                    "status": "SUPERSEDED",
+                    "error_code": "LETTER_SUPERSEDED",
+                    "replacement_letter_id": superseded["superseded_by"],
+                })
         letters = _letter_collection(scope)
         l = next((x for x in letters if x["letter_id"] == lid), None)
         if not l:
@@ -1819,6 +1835,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _prepare_private_world_delivery(letter, result.text)
     letter["reply_text"] = result.text
     letter["letter_status"] = "COMPLETED"
+    _mark_superseded_failed_retries()
     _persist_store_state()
     _commit_private_world_letter(letter)
     _persist_store_state()

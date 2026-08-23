@@ -374,10 +374,12 @@ def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
 
 
 def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import local_server
 
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     outcomes: list[str | Exception] = [
         local_server.LLMError("LLM_TIMEOUT"),
         "synthetic successful retry",
@@ -398,6 +400,7 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
             {},
         )
     )
+    failed_state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     retried = asyncio.run(
         local_server.route(
             "POST",
@@ -406,6 +409,9 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
             {},
         )
     )
+    persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    local_server.store.letters.clear()
+    local_server._load_store_state()
     listed = asyncio.run(
         local_server.route("GET", "/toy/letter/list", {}, {"scope": "current"})
     )
@@ -419,12 +425,25 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
     )
 
     assert failed["code"] == 503
+    assert failed_state["letters"][0]["letter_status"] == "FAILED"
     assert retried["code"] == 0
     assert listed["data"]["total"] == 1
     assert [item["letter_id"] for item in listed["data"]["list"]] == [
         retried["data"]["letter_id"]
     ]
-    assert old_detail["code"] == 404
+    failed_record = next(
+        item
+        for item in persisted["letters"]
+        if item["letter_id"] == failed["data"]["letter_id"]
+    )
+    assert failed_record["letter_status"] == "FAILED"
+    assert failed_record["superseded_by"] == retried["data"]["letter_id"]
+    assert old_detail["code"] == 410
+    assert old_detail["data"] == {
+        "status": "SUPERSEDED",
+        "error_code": "LETTER_SUPERSEDED",
+        "replacement_letter_id": retried["data"]["letter_id"],
+    }
 
 
 def test_legacy_scope_is_read_only_and_isolated_from_new_chat() -> None:

@@ -48,6 +48,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 找不到信件或 MIDI job：404，不返回空的成功对象。
 - 空信箱、无匹配歌曲、空 playlist：200，但 `source=local-memory|empty`、列表和计数明确为空。
 - LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。
+- 相同正文和素材在短窗口内失败后重试成功时，旧 FAILED 记录保留在本地审计状态，但从 current list 隐藏；直接查询旧 ID 返回 410 `LETTER_SUPERSEDED` 和替代信件 ID，不回显旧正文。
 - `/letter/resend` 当前未实现；重复请求返回相同 501，不改变信件内容或状态。
 - `scope=legacy` 的 list/detail 只读，detail 不改变 `is_read`；send 对 legacy scope 返回 403 `READ_ONLY_SCOPE`。
 
