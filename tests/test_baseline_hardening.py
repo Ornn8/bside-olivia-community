@@ -518,7 +518,7 @@ def test_handler_cors_allows_pinned_official_frontend_preflight() -> None:
     )
 
 
-def test_handler_returns_http_503_for_llm_failure(monkeypatch) -> None:
+def test_handler_acknowledges_before_background_llm_failure(monkeypatch) -> None:
     import asyncio
 
     from aiohttp import web
@@ -535,17 +535,33 @@ def test_handler_returns_http_503_for_llm_failure(monkeypatch) -> None:
         app = web.Application()
         app.router.add_route("*", "/{tail:.*}", local_server.handler)
         async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
+            send_response = await client.post(
                 "/toy/letter/send",
                 json={"content": "synthetic HTTP status input", "material": {}},
             )
-            return response.status, await response.json()
+            send_payload = await send_response.json()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            detail_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": send_payload["data"]["letter_id"]},
+            )
+            return (
+                send_response.status,
+                send_payload,
+                detail_response.status,
+                await detail_response.json(),
+            )
 
-    status, payload = asyncio.run(exercise())
+    send_status, send_payload, detail_status, detail_payload = asyncio.run(exercise())
 
-    assert status == 503
-    assert payload["code"] == 503
-    assert payload["data"]["status"] == "FAILED"
+    assert send_status == 200
+    assert send_payload["code"] == 0
+    assert send_payload["data"]["status"] == "PENDING"
+    assert detail_status == 200
+    assert detail_payload["code"] == 0
+    assert detail_payload["data"]["letter_status"] == "FAILED"
+    assert detail_payload["data"]["error_code"] == "LLM_TIMEOUT"
+    assert detail_payload["data"]["retryable"] is True
 
 
 def test_handler_returns_http_501_404_and_200_for_terminal_route_results() -> None:
