@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>待确认建议 · Olivia Control Center</title>
+  <link rel="stylesheet" href="/control/static/app.css">
+  <link rel="stylesheet" href="/control/static/candidates.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">本地陪伴系统</p>
+      <h1>待确认建议</h1>
+      <p class="candidate-intro">这些只是系统提出的关系事件建议。批准前不会改变任何关系状态，拒绝也不会产生负面影响。</p>
+    </div>
+    <div class="session-actions">
+      <a class="button-link" href="/control/">返回私有世界</a>
+      <button id="refresh-button" type="button">刷新</button>
+      <button id="logout-button" type="button">退出管理</button>
+    </div>
+  </header>
+
+  <main class="candidate-page" tabindex="-1">
+    <section aria-labelledby="pending-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PrivateWorld Candidates</p>
+          <h2 id="pending-title">等待你的判断</h2>
+        </div>
+        <span id="candidate-count" role="status">正在加载</span>
+      </div>
+      <p class="hint">只会出现「边界被尊重」「冲突」「修复」三种建议。关系阶段、私人称呼、住所权限和私人世界线不会由模型自动提出或提交。</p>
+      <div id="candidate-list" class="candidate-list" aria-live="polite"></div>
+    </section>
+
+    <p id="notice" class="notice" role="status" aria-live="polite"></p>
+  </main>
+
+  <template id="candidate-template">
+    <article class="candidate-card">
+      <div class="candidate-heading">
+        <div>
+          <p class="candidate-type"></p>
+          <h3 class="candidate-summary"></h3>
+        </div>
+        <span class="candidate-confidence"></span>
+      </div>
+      <dl class="candidate-metadata">
+        <div><dt>来源</dt><dd class="candidate-source"></dd></div>
+        <div><dt>建立时间</dt><dd class="candidate-created"></dd></div>
+        <div><dt>到期时间</dt><dd class="candidate-expires"></dd></div>
+      </dl>
+      <label>
+        你的确认说明
+        <textarea class="candidate-reason" maxlength="280" required></textarea>
+      </label>
+      <div class="candidate-actions">
+        <button class="candidate-approve" type="button">批准并记录</button>
+        <button class="candidate-reject secondary" type="button">拒绝建议</button>
+      </div>
+    </article>
+  </template>
+
+  <script type="module" src="/control/static/candidates.js"></script>
+</body>
+</html>
