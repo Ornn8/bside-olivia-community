@@ -55,6 +55,79 @@ def test_install_entrypoint_is_parseable_by_windows_powershell() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_installer_shortcut_starts_selected_install_entrypoint(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows shortcuts are only available on Windows")
+
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "installer" / "Create-Shortcut.ps1"
+    install_root = tmp_path / "selected install with spaces"
+    client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
+    start = install_root / "START.cmd"
+    shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
+    client.parent.mkdir(parents=True)
+    client.write_bytes(b"synthetic client")
+    start.write_text("@exit /b 0\n", encoding="utf-8")
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"client_version": "0.0.9.615"}),
+        encoding="utf-8",
+    )
+
+    powershell = str(
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-InstallRoot",
+            str(install_root),
+            "-ShortcutPath",
+            str(shortcut),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    inspect = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "[pscustomobject]@{target=$s.TargetPath;working=$s.WorkingDirectory;"
+                "icon=$s.IconLocation}|ConvertTo-Json -Compress"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    metadata = json.loads(inspect.stdout)
+    assert Path(metadata["target"]) == start
+    assert Path(metadata["working"]) == install_root
+    assert metadata["icon"] == f"{client},0"
+
+
 def test_install_entrypoint_prioritizes_selected_payload() -> None:
     repo_root = Path(__file__).parents[2]
     script = (repo_root / "installer" / "Install.ps1").read_text(
@@ -85,6 +158,7 @@ def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
     repo_root = Path(__file__).parents[2]
     for relative in (
         Path("installer") / "Install.ps1",
+        Path("installer") / "Create-Shortcut.ps1",
         Path("tools") / "Install-ThirdParty.ps1",
     ):
         raw = (repo_root / relative).read_bytes()
