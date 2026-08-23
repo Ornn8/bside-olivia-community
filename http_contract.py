@@ -35,6 +35,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "MIDI_JOB_NOT_FOUND": {"http_status": 404, "retryable": False},
     "METHOD_NOT_ALLOWED": {"http_status": 405, "retryable": False},
     "IDEMPOTENCY_CONFLICT": {"http_status": 409, "retryable": False},
+    "LETTER_SUPERSEDED": {"http_status": 410, "retryable": False},
     "INTERNAL_ERROR": {"http_status": 500, "retryable": False},
     "LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "LLM_TIMEOUT": {"http_status": 503, "retryable": True},

@@ -424,6 +424,24 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
         )
     )
 
+    async def fetch_http_tombstone() -> tuple[int, dict]:
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.get(
+                "/toy/letter/detail",
+                params={
+                    "scope": "current",
+                    "letter_id": failed["data"]["letter_id"],
+                },
+            )
+            return response.status, await response.json()
+
+    tombstone_status, tombstone_payload = asyncio.run(fetch_http_tombstone())
+
     assert failed["code"] == 503
     assert failed_state["letters"][0]["letter_status"] == "FAILED"
     assert retried["code"] == 0
@@ -444,6 +462,8 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
         "error_code": "LETTER_SUPERSEDED",
         "replacement_letter_id": retried["data"]["letter_id"],
     }
+    assert tombstone_status == 410
+    assert tombstone_payload == old_detail
 
 
 def test_legacy_scope_is_read_only_and_isolated_from_new_chat() -> None:
