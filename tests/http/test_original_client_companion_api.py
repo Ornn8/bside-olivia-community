@@ -4,10 +4,12 @@ import asyncio
 import json
 
 from aiohttp import web
+
+
+TRUSTED_ORIGIN = "https://client.example"
 from aiohttp.test_utils import TestClient, TestServer
 
 from original_client_companion_api import (
-    TRUSTED_CLIENT_ORIGIN,
     CompanionCandidateSummary,
     CompanionCapability,
     CompanionContinuationSummary,
@@ -79,7 +81,9 @@ class FixtureBackend:
 
 async def _client(backend: object) -> TestClient:
     app = web.Application()
-    mount_original_companion_read_api(app, backend)  # type: ignore[arg-type]
+    mount_original_companion_read_api(
+        app, backend, trusted_origins=(TRUSTED_ORIGIN,)
+    )  # type: ignore[arg-type]
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
@@ -89,7 +93,7 @@ def test_original_settings_read_contract_returns_bounded_payloads() -> None:
     async def scenario() -> None:
         backend = FixtureBackend()
         client = await _client(backend)
-        headers = {"Origin": TRUSTED_CLIENT_ORIGIN}
+        headers = {"Origin": TRUSTED_ORIGIN}
         try:
             status = await client.get("/toy/companion/status", headers=headers)
             assert status.status == 200
@@ -99,7 +103,7 @@ def test_original_settings_read_contract_returns_bounded_payloads() -> None:
                 "state": "available",
                 "count": 1,
             }
-            assert status.headers["Access-Control-Allow-Origin"] == TRUSTED_CLIENT_ORIGIN
+            assert status.headers["Access-Control-Allow-Origin"] == TRUSTED_ORIGIN
             assert status.headers["Cache-Control"] == "no-store"
 
             memory = await client.get(
@@ -157,7 +161,7 @@ def test_read_contract_requires_original_or_loopback_origin_and_loopback_host() 
 
             invalid_host = await client.get(
                 "/toy/companion/status",
-                headers={"Origin": TRUSTED_CLIENT_ORIGIN, "Host": "example.invalid"},
+                headers={"Origin": TRUSTED_ORIGIN, "Host": "example.invalid"},
             )
             assert invalid_host.status == 403
             assert (await invalid_host.json())["error_code"] == "COMPANION_HOST_FORBIDDEN"
@@ -178,7 +182,7 @@ def test_query_and_limit_validation_do_not_call_backend() -> None:
     async def scenario() -> None:
         backend = FixtureBackend()
         client = await _client(backend)
-        headers = {"Origin": TRUSTED_CLIENT_ORIGIN}
+        headers = {"Origin": TRUSTED_ORIGIN}
         try:
             for path in (
                 "/toy/companion/memory?limit=0",
@@ -216,7 +220,7 @@ def test_backend_failures_and_invalid_results_are_sanitized() -> None:
 
     async def scenario() -> None:
         client = await _client(FailingBackend())
-        headers = {"Origin": TRUSTED_CLIENT_ORIGIN}
+        headers = {"Origin": TRUSTED_ORIGIN}
         try:
             status = await client.get("/toy/companion/status", headers=headers)
             assert status.status == 503
@@ -236,14 +240,28 @@ def test_backend_failures_and_invalid_results_are_sanitized() -> None:
 def test_mount_requires_typed_backend_and_is_single_use() -> None:
     app = web.Application()
     backend = FixtureBackend()
-    mount_original_companion_read_api(app, backend)
+    mount_original_companion_read_api(
+        app, backend, trusted_origins=(TRUSTED_ORIGIN,)
+    )
 
     try:
-        mount_original_companion_read_api(app, backend)
+        mount_original_companion_read_api(
+        app, backend, trusted_origins=(TRUSTED_ORIGIN,)
+    )
     except RuntimeError as exc:
         assert str(exc) == "COMPANION_READ_ALREADY_MOUNTED"
     else:
         raise AssertionError("duplicate mount must fail")
+
+    invalid_origin_app = web.Application()
+    try:
+        mount_original_companion_read_api(
+            invalid_origin_app, backend, trusted_origins=("http://client.example",)
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-HTTPS trusted origin must fail")
 
     other = web.Application()
     try:

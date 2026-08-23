@@ -22,8 +22,8 @@ STATUS_PATH = "/toy/companion/status"
 MEMORY_PATH = "/toy/companion/memory"
 PRIVATE_WORLD_PATH = "/toy/companion/private-world"
 CANDIDATES_PATH = "/toy/companion/private-world/candidates"
-TRUSTED_CLIENT_ORIGIN = "https://toy-cnbeta01.olivia.miyoushe.com"
 _BACKEND_KEY = web.AppKey("original_companion_read_backend", object)
+_TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_trusted_origins", frozenset)
 _MAX_QUERY_CHARS = 500
 _MAX_MEMORY_LIMIT = 100
 _MAX_CANDIDATE_LIMIT = 100
@@ -284,8 +284,8 @@ def _host_is_loopback(request: web.Request) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def _origin_allowed(origin: str) -> bool:
-    if origin == TRUSTED_CLIENT_ORIGIN:
+def _origin_allowed(request: web.Request, origin: str) -> bool:
+    if origin in request.app.get(_TRUSTED_ORIGINS_KEY, frozenset()):
         return True
     if not _LOCAL_ORIGIN_RE.fullmatch(origin):
         return False
@@ -327,7 +327,7 @@ def _authorize(request: web.Request) -> str:
     if not _host_is_loopback(request):
         raise OriginalClientCompanionAPIError("COMPANION_HOST_FORBIDDEN", status=403)
     origin = request.headers.get("Origin", "")
-    if not _origin_allowed(origin):
+    if not _origin_allowed(request, origin):
         raise OriginalClientCompanionAPIError("COMPANION_ORIGIN_FORBIDDEN", status=403)
     return origin
 
@@ -448,17 +448,43 @@ async def _candidates(request: web.Request) -> web.Response:
         return _error("COMPANION_READ_UNAVAILABLE", 503, origin=origin)
 
 
+def _trusted_origin(value: object) -> str:
+    if not isinstance(value, str) or len(value) > 240:
+        raise ValueError("trusted companion origin is invalid")
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise ValueError("trusted companion origin is invalid") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("trusted companion origin is invalid")
+    return f"https://{parsed.netloc}"
+
+
 def mount_original_companion_read_api(
     app: web.Application,
     backend: OriginalClientCompanionReadBackend,
+    *,
+    trusted_origins: Sequence[str] = (),
 ) -> None:
     """Mount the read contract once on the existing local application."""
 
     if not isinstance(backend, OriginalClientCompanionReadBackend):
         raise TypeError("an original companion read backend is required")
+    if len(trusted_origins) > 8:
+        raise ValueError("too many trusted companion origins")
+    origins = frozenset(_trusted_origin(value) for value in trusted_origins)
     if _BACKEND_KEY in app:
         raise RuntimeError("COMPANION_READ_ALREADY_MOUNTED")
     app[_BACKEND_KEY] = backend
+    app[_TRUSTED_ORIGINS_KEY] = origins
     app.router.add_get(STATUS_PATH, _status)
     app.router.add_get(MEMORY_PATH, _memory)
     app.router.add_get(PRIVATE_WORLD_PATH, _private_world)
@@ -471,7 +497,6 @@ __all__ = [
     "MEMORY_PATH",
     "PRIVATE_WORLD_PATH",
     "STATUS_PATH",
-    "TRUSTED_CLIENT_ORIGIN",
     "CompanionCandidateSummary",
     "CompanionCapability",
     "CompanionContinuationSummary",
