@@ -58,7 +58,7 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_patch_adds_read_only_settings_data_and_preserves_existing_assets(
+def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     tmp_path: Path,
 ) -> None:
     path = _archive(tmp_path / "feapp.dat")
@@ -92,6 +92,8 @@ def test_patch_adds_read_only_settings_data_and_preserves_existing_assets(
         "/toy/companion/memory",
         "/toy/companion/private-world",
         "/toy/companion/private-world/candidates",
+        "/toy/companion/memory/correct",
+        "/toy/companion/memory/delete",
     ):
         assert path_value in bootstrap
     for visible_text in (
@@ -100,15 +102,23 @@ def test_patch_adds_read_only_settings_data_and_preserves_existing_assets(
         "待确认的关系建议",
         "搜索长期记忆",
         "本地世界线",
+        "保存更正",
+        "删除",
+        "批准",
+        "拒绝",
     ):
         assert visible_text in bootstrap
     assert "MutationObserver" in bootstrap
     assert "replaceChildren" in bootstrap
     assert 'method: "GET"' in bootstrap
+    assert 'method: "POST"' in bootstrap
+    assert "X-Olivia-Companion-Action" in bootstrap
+    assert "window.confirm" in bootstrap
+    assert "crypto.randomUUID" in bootstrap
+    assert "encodeURIComponent" in bootstrap
     assert "<iframe" not in bootstrap.casefold()
     assert "window.open" not in bootstrap
     assert "innerHTML" not in bootstrap
-    assert 'method: "POST"' not in bootstrap
     assert 'method: "PUT"' not in bootstrap
     assert 'method: "DELETE"' not in bootstrap
     assert "http://" not in bootstrap
