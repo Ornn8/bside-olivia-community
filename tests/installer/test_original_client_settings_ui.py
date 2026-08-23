@@ -13,13 +13,13 @@ from original_client_settings_ui import (
 
 def test_original_settings_read_ui_has_fixed_bounded_contract() -> None:
     assert SETTINGS_UI_VERSION == "p03.original-settings-read.v1"
-    for path in (
-        "/toy/companion/status",
-        "/toy/companion/memory",
-        "/toy/companion/private-world",
-        "/toy/companion/private-world/candidates",
+    for declaration in (
+        'const STATUS_PATH = "/toy/companion/status";',
+        'const MEMORY_PATH = "/toy/companion/memory";',
+        'const PRIVATE_WORLD_PATH = "/toy/companion/private-world";',
+        'const CANDIDATES_PATH = "/toy/companion/private-world/candidates";',
     ):
-        assert BOOTSTRAP_JAVASCRIPT.count(path) == 1
+        assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert 'method: "GET"' in BOOTSTRAP_JAVASCRIPT
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
@@ -63,10 +63,10 @@ def test_original_settings_read_ui_javascript_is_parseable() -> None:
         pytest.skip("Node.js is not installed")
     result = subprocess.run(
         [node, "--check", "-"],
-        input=BOOTSTRAP_JAVASCRIPT,
-        text=True,
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
         capture_output=True,
         timeout=20,
         check=False,
     )
-    assert result.returncode == 0, result.stderr or result.stdout
+    output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+    assert result.returncode == 0, output
