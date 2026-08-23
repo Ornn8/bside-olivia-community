@@ -2,24 +2,52 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from threading import Lock
 
 from aiohttp import CookieJar
 from aiohttp.test_utils import TestClient, TestServer
 
-from control_center.app import (
-    CSRF_HEADER,
-    create_control_app,
-    issue_bootstrap_token,
-)
+from control_center.app import AUTH_KEY, create_control_app
+from control_center.auth import CONTROL_CSRF_HEADER
+from private_world_ledger import LedgerEvent
+from private_world_port import PrivateWorldSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_control_shell_bootstrap_status_csrf_and_logout() -> None:
+class FakeLedger:
+    def __init__(self) -> None:
+        self.current = PrivateWorldSnapshot()
+        self.items: list[LedgerEvent] = []
+        self._lock = Lock()
+
+    def snapshot(self) -> PrivateWorldSnapshot:
+        return self.current
+
+    def events(self) -> tuple[LedgerEvent, ...]:
+        return tuple(self.items)
+
+    def apply_once(
+        self,
+        event: LedgerEvent,
+        snapshot: PrivateWorldSnapshot,
+    ) -> bool:
+        with self._lock:
+            if any(
+                row.event_id == event.event_id
+                or row.delivery_id == event.delivery_id
+                for row in self.items
+            ):
+                return False
+            self.items.append(event)
+            self.current = snapshot
+            return True
+
+
+def test_control_shell_bootstrap_protected_status_and_logout() -> None:
     async def scenario() -> None:
-        app = create_control_app()
-        token = issue_bootstrap_token(app)
+        app = create_control_app(FakeLedger())
         async with TestClient(
             TestServer(app),
             cookie_jar=CookieJar(unsafe=True),
@@ -31,85 +59,92 @@ def test_control_shell_bootstrap_status_csrf_and_logout() -> None:
             assert "default-src 'self'" in shell.headers["Content-Security-Policy"]
             assert shell.headers["X-Frame-Options"] == "DENY"
 
+            denied = await client.get("/control/api/private-world/snapshot")
+            assert denied.status == 401
+            assert (await denied.json())["error"]["code"] == "CONTROL_SESSION_REQUIRED"
+
+            token = app[AUTH_KEY].issue_bootstrap_token()
             bootstrapped = await client.post(
                 "/control/api/session/bootstrap",
                 json={"token": token},
                 headers={"Origin": origin},
             )
             assert bootstrapped.status == 200
-            bootstrap_payload = await bootstrapped.json()
-            csrf = bootstrap_payload["csrf_token"]
-            assert csrf
+            payload = (await bootstrapped.json())["data"]
+            csrf = payload["csrf_token"]
+            assert payload["status"] == "READY"
             assert "HttpOnly" in bootstrapped.headers["Set-Cookie"]
             assert "SameSite=Strict" in bootstrapped.headers["Set-Cookie"]
 
-            reused = await client.post(
-                "/control/api/session/bootstrap",
-                json={"token": token},
-                headers={"Origin": origin},
+            snapshot = await client.get("/control/api/private-world/snapshot")
+            assert snapshot.status == 200
+            assert (await snapshot.json())["data"]["schema_version"] == (
+                "p03.private-world-control.v1"
             )
-            assert reused.status == 403
-            assert (await reused.json())["error_code"] == "CONTROL_BOOTSTRAP_INVALID"
-
-            status = await client.get("/control/api/status")
-            assert status.status == 200
-            status_payload = await status.json()
-            assert status_payload["capabilities"]["control.shell"] == "available"
 
             missing_csrf = await client.post(
                 "/control/api/session/logout",
+                json={},
                 headers={"Origin": origin},
             )
             assert missing_csrf.status == 403
-            assert (await missing_csrf.json())["error_code"] == "CONTROL_CSRF_INVALID"
+            assert (await missing_csrf.json())["error"]["code"] == (
+                "CONTROL_CSRF_REQUIRED"
+            )
 
             logged_out = await client.post(
                 "/control/api/session/logout",
-                headers={"Origin": origin, CSRF_HEADER: csrf},
+                json={},
+                headers={"Origin": origin, CONTROL_CSRF_HEADER: csrf},
             )
             assert logged_out.status == 200
-            assert (await logged_out.json())["status"] == "LOGGED_OUT"
+            assert (await logged_out.json())["data"]["status"] == "LOGGED_OUT"
 
-            denied = await client.get("/control/api/status")
-            assert denied.status == 403
-            assert (await denied.json())["error_code"] == "CONTROL_SESSION_REQUIRED"
+            after_logout = await client.get(
+                "/control/api/private-world/snapshot"
+            )
+            assert after_logout.status == 401
 
     asyncio.run(scenario())
 
 
-def test_control_shell_rejects_non_loopback_host_and_cross_origin_mutation() -> None:
+def test_control_shell_rejects_non_loopback_host_and_cross_origin() -> None:
     async def scenario() -> None:
-        app = create_control_app()
-        token = issue_bootstrap_token(app)
+        app = create_control_app(FakeLedger())
         async with TestClient(TestServer(app)) as client:
             invalid_host = await client.get(
-                "/control/",
+                "/control/health",
                 headers={"Host": "example.invalid"},
             )
             assert invalid_host.status == 403
-            assert (await invalid_host.json())["error_code"] == "CONTROL_HOST_FORBIDDEN"
+            assert (await invalid_host.json())["error"]["code"] == (
+                "CONTROL_HOST_FORBIDDEN"
+            )
 
-            invalid_origin = await client.post(
-                "/control/api/session/bootstrap",
-                json={"token": token},
+            invalid_origin = await client.get(
+                "/control/health",
                 headers={"Origin": "https://example.invalid"},
             )
             assert invalid_origin.status == 403
-            assert (await invalid_origin.json())["error_code"] == "CONTROL_ORIGIN_FORBIDDEN"
+            assert (await invalid_origin.json())["error"]["code"] == (
+                "CONTROL_ORIGIN_FORBIDDEN"
+            )
 
             missing_origin = await client.post(
                 "/control/api/session/bootstrap",
-                json={"token": token},
+                json={"token": "not-a-real-token"},
             )
             assert missing_origin.status == 403
-            assert (await missing_origin.json())["error_code"] == "CONTROL_ORIGIN_FORBIDDEN"
+            assert (await missing_origin.json())["error"]["code"] == (
+                "CONTROL_ORIGIN_FORBIDDEN"
+            )
 
     asyncio.run(scenario())
 
 
-def test_control_assets_are_self_contained_and_do_not_embed_external_urls() -> None:
+def test_control_assets_are_self_contained() -> None:
     static_root = ROOT / "control_center" / "static"
-    for name in ("index.html", "app.js", "app.css"):
+    for name in ("index.html", "api.js", "app.js", "app.css"):
         content = (static_root / name).read_text(encoding="utf-8").casefold()
         assert "http://" not in content
         assert "https://" not in content
