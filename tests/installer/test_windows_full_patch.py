@@ -358,7 +358,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
         main = archive.read("assets/main-917d29fc.js").decode("utf-8")
     assert "assets/olivia-companion-settings.js" in names
     assert "data-olivia-companion-settings" in index
-    assert "data-ui-version=\"p03.original-settings-read.v1\"" in index
+    assert "data-ui-version=\"p03.original-settings-manage.v1\"" in index
     assert "toyApiUrl" in main
     assert "await t.replace({name:ye.Collection})" in main
 
