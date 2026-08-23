@@ -1258,9 +1258,12 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             l["is_read"] = 1
         reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
+        error_code, retryable = _public_llm_error(l.get("error_code"))
         return ok({
             "letter_id": l["letter_id"],
             "letter_status": l.get("letter_status", 4),
+            "error_code": error_code if l.get("letter_status") == "FAILED" else None,
+            "retryable": retryable if l.get("letter_status") == "FAILED" else False,
             "audit_status": l.get("audit_status", 2),
             "content": l.get("content", ""),
             "material": l.get("material", {}),
