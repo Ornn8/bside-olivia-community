@@ -284,6 +284,60 @@ def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
     assert len(local_server.store.letters) == 1
 
 
+def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    outcomes: list[str | Exception] = [
+        local_server.LLMError("LLM_TIMEOUT"),
+        "synthetic successful retry",
+    ]
+
+    def reply(_content, _context=""):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    failed = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic retried letter"},
+            {},
+        )
+    )
+    retried = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic retried letter"},
+            {},
+        )
+    )
+    listed = asyncio.run(
+        local_server.route("GET", "/toy/letter/list", {}, {"scope": "current"})
+    )
+    old_detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"scope": "current", "letter_id": failed["data"]["letter_id"]},
+        )
+    )
+
+    assert failed["code"] == 503
+    assert retried["code"] == 0
+    assert listed["data"]["total"] == 1
+    assert [item["letter_id"] for item in listed["data"]["list"]] == [
+        retried["data"]["letter_id"]
+    ]
+    assert old_detail["code"] == 404
+
+
 def test_legacy_scope_is_read_only_and_isolated_from_new_chat() -> None:
     import local_server
 

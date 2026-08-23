@@ -967,6 +967,41 @@ def _invalid_field_type(field: str, expected: str) -> dict:
     )
 
 
+def _mark_superseded_failed_retries() -> None:
+    completed = tuple(
+        letter
+        for letter in store.letters
+        if letter.get("letter_status") == "COMPLETED" and letter.get("reply_text")
+    )
+    changed = False
+    for failed in store.letters:
+        if failed.get("letter_status") != "FAILED" or failed.get("superseded_by"):
+            continue
+        failed_at = failed.get("created_at")
+        if isinstance(failed_at, bool) or not isinstance(failed_at, (int, float)):
+            continue
+        replacements = []
+        for candidate in completed:
+            candidate_at = candidate.get("created_at")
+            if isinstance(candidate_at, bool) or not isinstance(candidate_at, (int, float)):
+                continue
+            retry_delay = float(candidate_at) - float(failed_at)
+            if retry_delay < 0 or retry_delay > LETTER_RETRY_DEDUP_SECONDS:
+                continue
+            if candidate.get("content") != failed.get("content"):
+                continue
+            if candidate.get("material", {}) != failed.get("material", {}):
+                continue
+            replacements.append(candidate)
+        if not replacements:
+            continue
+        replacement = min(replacements, key=lambda item: float(item["created_at"]))
+        failed["superseded_by"] = replacement["letter_id"]
+        changed = True
+    if changed:
+        _persist_store_state()
+
+
 def _letter_collection(scope: str):
     if scope == "legacy":
         if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
@@ -975,7 +1010,8 @@ def _letter_collection(scope: str):
             except Exception:
                 _safe_log("memory_read_skipped", domain="legacy_letters")
         return store.legacy_letters
-    return store.letters
+    _mark_superseded_failed_retries()
+    return [letter for letter in store.letters if not letter.get("superseded_by")]
 
 
 def _bind_memory_adapter(adapter: MemoryPort) -> None:
