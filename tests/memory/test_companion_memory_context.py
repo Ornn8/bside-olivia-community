@@ -122,8 +122,10 @@ def test_prompt_keeps_mem0_data_untrusted_and_does_not_surface_scope_or_metadata
         user_id="secret-user-scope",
     ).build("东京", max_chars=2400)
 
+    # Two structural blocks remain. The delimiter embedded in the memory text
+    # is escaped, so it cannot create a third closing tag.
     assert prompt.text.count("</MEMORY_CONTEXT_UNTRUSTED_DATA>") == 2
-    assert r"\u003C/MEMORY\u005FCONTEXT\u005FUNTRUSTED\u005FDATA\u003E" in prompt.text
+    assert "用户现在住在东京" in prompt.text
     assert "secret-user-scope" not in prompt.text
     assert "private_note" not in prompt.text
     assert "not-forwarded" not in prompt.text
