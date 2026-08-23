@@ -84,7 +84,6 @@ def main() -> None:
     patch_source()
     patch_test()
     restore_workflow()
-    Path(__file__).unlink()
 
 
 if __name__ == "__main__":
