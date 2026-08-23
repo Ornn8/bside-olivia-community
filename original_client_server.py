@@ -1,8 +1,9 @@
 """Run the original Olivia local backend with its in-client companion settings.
 
 The original client remains the only user-facing shell.  This module mounts the
-bounded Memory / PrivateWorld read API before the existing catch-all toy API
-handler, then launches both surfaces in one loopback-only aiohttp process.
+bounded Memory / PrivateWorld read and explicit-mutation APIs before the
+existing catch-all toy API handler, then launches every surface in one
+loopback-only aiohttp process.
 """
 
 from __future__ import annotations
@@ -16,6 +17,10 @@ from typing import Any
 
 from aiohttp import web
 
+from control_center.private_world_candidate_api import CandidateReviewBackend
+from control_center.private_world_candidate_backend import (
+    SQLiteCandidateReviewBackend,
+)
 from conversation_memory_admin import (
     ConversationMemoryAdminError,
     ConversationMemoryAdminService,
@@ -25,14 +30,22 @@ from original_client_companion_api import mount_original_companion_read_api
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
 )
+from original_client_companion_mutation_api import (
+    mount_original_client_companion_mutation_api,
+)
+from original_client_companion_mutation_backend import (
+    DirectOriginalClientCompanionMutationBackend,
+    MemoryAdminMutationService,
+)
 from private_world_candidates import (
     PrivateWorldCandidateError,
     SQLitePrivateWorldCandidateStore,
 )
-from private_world_ledger import LedgerWriteError
+from private_world_ledger import LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldPort, PrivateWorldSnapshot
 from private_world_projection import project_private_world
 from private_world_runtime import resolve_private_world_database
+from private_world_service import PrivateWorldCommandService
 
 
 FallbackHandler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -97,6 +110,8 @@ class OriginalClientServerRuntime:
     memory_admin: ConversationMemoryAdminService | None
     private_world_read: PrivateWorldControlReadAdapter | None
     candidate_store: SQLitePrivateWorldCandidateStore | None
+    candidate_decisions: CandidateReviewBackend | None
+    mutation_backend: DirectOriginalClientCompanionMutationBackend
 
     def public_status(self) -> dict[str, object]:
         """Return component presence only; never paths, content, or hidden scores."""
@@ -117,9 +132,10 @@ def create_original_client_server_runtime(
     memory_admin: ConversationMemoryAdminService | None = None,
     private_world: PrivateWorldPort | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
+    candidate_decisions: CandidateReviewBackend | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
-    """Mount companion reads before the existing catch-all toy API handler."""
+    """Mount companion reads and explicit mutations before the toy catch-all."""
 
     if not callable(fallback_handler):
         raise TypeError("a fallback request handler is required")
@@ -133,11 +149,26 @@ def create_original_client_server_runtime(
         private_world=private_read,
         candidates=candidates,
     )
+    mutation_memory = (
+        memory_admin
+        if isinstance(memory_admin, MemoryAdminMutationService)
+        else None
+    )
+    mutation_backend = DirectOriginalClientCompanionMutationBackend(
+        memory_admin=mutation_memory,
+        candidate_decisions=candidate_decisions,
+    )
     app = web.Application()
+    origins = tuple(trusted_origins)
     mount_original_companion_read_api(
         app,
         backend,
-        trusted_origins=tuple(trusted_origins),
+        trusted_origins=origins,
+    )
+    mount_original_client_companion_mutation_api(
+        app,
+        mutation_backend,
+        trusted_origins=origins,
     )
     # Keep this last.  The original server intentionally owns a catch-all route.
     app.router.add_route("*", "/{tail:.*}", fallback_handler)
@@ -147,6 +178,8 @@ def create_original_client_server_runtime(
         memory_admin,
         private_read,
         candidates,
+        candidate_decisions,
+        mutation_backend,
     )
     app[_RUNTIME_KEY] = runtime
     return runtime
@@ -195,16 +228,21 @@ def _configured_memory_admin(
 def _configured_private_world(
     server_module: ModuleType | Any,
     environ: Mapping[str, str],
-) -> tuple[PrivateWorldPort | None, SQLitePrivateWorldCandidateStore | None]:
-    if getattr(server_module, "private_world_committer", None) is None:
-        return None, None
+) -> tuple[
+    PrivateWorldPort | None,
+    SQLitePrivateWorldCandidateStore | None,
+    CandidateReviewBackend | None,
+]:
+    committer = getattr(server_module, "private_world_committer", None)
+    if committer is None:
+        return None, None, None
     port = getattr(server_module, "private_world_port", None)
     if not isinstance(port, PrivateWorldPort):
-        return None, None
+        return None, None, None
 
     path, _reason, enabled = resolve_private_world_database(environ)
     if not enabled or path is None or not path.is_file():
-        return port, None
+        return port, None, None
     try:
         candidates = SQLitePrivateWorldCandidateStore(path)
     except (
@@ -215,8 +253,26 @@ def _configured_private_world(
         TypeError,
         ValueError,
     ):
-        candidates = None
-    return port, candidates
+        return port, None, None
+
+    candidate_decisions: CandidateReviewBackend | None = None
+    ledger = getattr(committer, "ledger", None)
+    if isinstance(ledger, SQLitePrivateWorldLedger):
+        try:
+            candidate_decisions = SQLiteCandidateReviewBackend(
+                candidates,
+                PrivateWorldCommandService(ledger),
+            )
+        except (
+            PrivateWorldCandidateError,
+            LedgerWriteError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            candidate_decisions = None
+    return port, candidates, candidate_decisions
 
 
 def create_configured_original_client_server_runtime(
@@ -235,7 +291,7 @@ def create_configured_original_client_server_runtime(
         getattr(server_module, "TRUSTED_FRONTEND_ORIGINS", ())
     )
     memory_admin = _configured_memory_admin(server_module, values)
-    private_world, candidates = _configured_private_world(
+    private_world, candidates, candidate_decisions = _configured_private_world(
         server_module,
         values,
     )
@@ -244,12 +300,13 @@ def create_configured_original_client_server_runtime(
         memory_admin=memory_admin,
         private_world=private_world,
         candidates=candidates,
+        candidate_decisions=candidate_decisions,
         trusted_origins=origins,
     )
 
 
 def main() -> int:
-    """Launch one loopback process for the original client and companion reads."""
+    """Launch one loopback process for the original client and companion APIs."""
 
     import local_server
 
