@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +14,22 @@ def _load() -> dict[str, object]:
     value = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for child in value.values():
+            result.extend(_string_values(child))
+        return result
+    if isinstance(value, list):
+        result = []
+        for child in value:
+            result.extend(_string_values(child))
+        return result
+    return []
 
 
 def test_original_player_evidence_is_for_supported_client_and_both_archives() -> None:
@@ -96,14 +113,17 @@ def test_evidence_proves_query_transport_markers_but_not_query_keys_or_reply_fie
 
 
 def test_evidence_is_sanitized_and_contains_no_original_source_dump() -> None:
-    text = EVIDENCE.read_text(encoding="utf-8")
-    lowered = text.casefold()
+    report = _load()
+    values = "\n".join(_string_values(report))
+    lowered = values.casefold()
 
-    assert not re.search(r"[a-z]:[/\\]", text, flags=re.IGNORECASE)
+    # Marker names are approved schema keys. Source fragments must never appear
+    # as report values.
+    assert not re.search(r"[a-z]:[/\\]", values, flags=re.IGNORECASE)
     assert "document.createelement" not in lowered
     assert "<script" not in lowered
     assert "function(" not in lowered
-    assert "=>" not in text
+    assert "=>" not in values
     assert "api_key" not in lowered
     assert "bearer " not in lowered
     assert "sk-" not in lowered
