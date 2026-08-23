@@ -78,6 +78,12 @@ def _backend_executable() -> Path:
     return candidate if candidate.is_file() else Path(sys.executable)
 
 
+def _backend_entrypoint(backend: Path) -> Path:
+    """Use the one process that mounts toy API and original in-client settings."""
+
+    return backend / "original_client_server.py"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -86,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.install_root.expanduser().resolve()
     backend = root / "local_backend"
-    if not (backend / "local_server.py").is_file():
+    entrypoint = _backend_entrypoint(backend)
+    if not (backend / "local_server.py").is_file() or not entrypoint.is_file():
         print("PATCH_PAYLOAD_INCOMPLETE")
         return 2
     if args.health_only:
@@ -128,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     if not _health(args.port):
         detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        server = subprocess.Popen([str(_backend_executable()), str(backend / "local_server.py")], cwd=backend, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=detached)
+        server = subprocess.Popen([str(_backend_executable()), str(entrypoint)], cwd=backend, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=detached)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and server.poll() is None:
             if _health(args.port):
