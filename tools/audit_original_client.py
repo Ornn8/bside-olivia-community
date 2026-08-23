@@ -274,6 +274,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -287,10 +288,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             temporary = Path(stream.name)
         os.replace(temporary, path)
     except OSError as exc:
-        try:
-            temporary.unlink(missing_ok=True)  # type: ignore[possibly-undefined]
-        except OSError:
-            pass
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise OriginalClientAuditError("CLIENT_AUDIT_OUTPUT_FAILED") from exc
 
 
