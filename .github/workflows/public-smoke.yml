@@ -32,3 +32,14 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check --exit-code
+
+      - name: Export checked-out source for local patch preparation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-export-${{ github.sha }}
+          path: |
+            .
+            !.git/**
+            !.evidence/**
+          retention-days: 1
