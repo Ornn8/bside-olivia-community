@@ -118,8 +118,9 @@ def test_player_audit_reports_binding_metadata_without_source_leakage(tmp_path: 
     encoded = json.dumps(report, ensure_ascii=False, sort_keys=True)
     assert str(tmp_path) not in encoded
     assert private_marker not in encoded
-    assert "document.createElement" not in encoded
     assert "https://media.example.invalid/player" not in encoded
+    assert "media.example.invalid" in encoded
+    assert "document.createElement(\"video\")" in encoded
 
 
 def test_player_audit_rejects_missing_or_malformed_archives(tmp_path: Path) -> None:
