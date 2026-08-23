@@ -129,10 +129,37 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
     assert response.text == "mock reply"
     assert response.request_id == "request-1"
     assert seen["auth"] == "Bearer TEST"
-    assert seen["idempotency_key"] == "request-1"
+    assert seen["idempotency_key"] is None
     assert seen["request_id"] == "request-1"
     assert seen["body"]["model"] == "synthetic-model"
     assert seen["body"]["messages"] == list(ROOT_MESSAGES)
+
+
+def test_provider_idempotency_header_is_reserved_for_durable_letter_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> list[str | None]:
+        seen: list[str | None] = []
+
+        async def handler(request: web.Request) -> web.Response:
+            seen.append(request.headers.get("Idempotency-Key"))
+            return web.json_response(
+                {"choices": [{"message": {"content": "mock reply"}}]}
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            await adapter.complete(ROOT_MESSAGES, request_id="letter-reply-mode-router")
+            await adapter.complete(
+                ROOT_MESSAGES,
+                request_id="letter-reply:synthetic-letter-id",
+            )
+        return seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    assert run(exercise()) == [None, "letter-reply:synthetic-letter-id"]
 
 
 def test_responses_style_and_sse_stream_are_supported(monkeypatch: pytest.MonkeyPatch) -> None:

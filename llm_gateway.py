@@ -482,7 +482,8 @@ class OpenAICompatibleAdapter(Gateway):
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if key:
             headers["Authorization"] = "Bearer " + key
-        headers["Idempotency-Key"] = request_id
+        if request_id.startswith("letter-reply:"):
+            headers["Idempotency-Key"] = request_id
         headers["X-Request-ID"] = request_id
         return headers
 
