@@ -105,6 +105,12 @@ def test_player_audit_reports_binding_metadata_without_source_leakage(tmp_path: 
     assert feplayer["binding_evidence"]["field_counts"]["videoUrl"] == 1
     assert feplayer["binding_evidence"]["transport_marker_counts"]["postMessage"] == 1
     assert feplayer["binding_evidence"]["player_marker_counts"]["Hls"] == 1
+    assert (
+        feplayer["binding_evidence"]["player_marker_counts"][
+            'document.createElement("video")'
+        ]
+        == 1
+    )
     assert feplayer["binding_evidence"]["external_origin_hosts"] == [
         "media.example.invalid"
     ]
@@ -120,7 +126,6 @@ def test_player_audit_reports_binding_metadata_without_source_leakage(tmp_path: 
     assert private_marker not in encoded
     assert "https://media.example.invalid/player" not in encoded
     assert "media.example.invalid" in encoded
-    assert "document.createElement(\"video\")" in encoded
 
 
 def test_player_audit_rejects_missing_or_malformed_archives(tmp_path: Path) -> None:
