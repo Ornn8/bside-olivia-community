@@ -535,6 +535,7 @@ HTTP_STATUS_BY_CODE = {
     404: 404,
     405: 405,
     409: 409,
+    410: 410,
     415: 415,
     500: 500,
     501: 501,
@@ -985,6 +986,41 @@ def _invalid_field_type(field: str, expected: str) -> dict:
     )
 
 
+def _mark_superseded_failed_retries() -> None:
+    completed = tuple(
+        letter
+        for letter in store.letters
+        if letter.get("letter_status") == "COMPLETED" and letter.get("reply_text")
+    )
+    changed = False
+    for failed in store.letters:
+        if failed.get("letter_status") != "FAILED" or failed.get("superseded_by"):
+            continue
+        failed_at = failed.get("created_at")
+        if isinstance(failed_at, bool) or not isinstance(failed_at, (int, float)):
+            continue
+        replacements = []
+        for candidate in completed:
+            candidate_at = candidate.get("created_at")
+            if isinstance(candidate_at, bool) or not isinstance(candidate_at, (int, float)):
+                continue
+            retry_delay = float(candidate_at) - float(failed_at)
+            if retry_delay < 0 or retry_delay > LETTER_RETRY_DEDUP_SECONDS:
+                continue
+            if candidate.get("content") != failed.get("content"):
+                continue
+            if candidate.get("material", {}) != failed.get("material", {}):
+                continue
+            replacements.append(candidate)
+        if not replacements:
+            continue
+        replacement = min(replacements, key=lambda item: float(item["created_at"]))
+        failed["superseded_by"] = replacement["letter_id"]
+        changed = True
+    if changed:
+        _persist_store_state()
+
+
 def _letter_collection(scope: str):
     if scope == "legacy":
         if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
@@ -993,7 +1029,8 @@ def _letter_collection(scope: str):
             except Exception:
                 _safe_log("memory_read_skipped", domain="legacy_letters")
         return store.legacy_letters
-    return store.letters
+    _mark_superseded_failed_retries()
+    return [letter for letter in store.letters if not letter.get("superseded_by")]
 
 
 def _bind_memory_adapter(adapter: MemoryPort) -> None:
@@ -1231,6 +1268,22 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 "error_code": "INVALID_SCOPE",
                 "allowed_scopes": ["current", "legacy"],
             })
+        if scope == "current":
+            _mark_superseded_failed_retries()
+            superseded = next(
+                (
+                    item
+                    for item in store.letters
+                    if item.get("letter_id") == lid and item.get("superseded_by")
+                ),
+                None,
+            )
+            if superseded is not None:
+                return err(410, "LETTER_SUPERSEDED", {
+                    "status": "SUPERSEDED",
+                    "error_code": "LETTER_SUPERSEDED",
+                    "replacement_letter_id": superseded["superseded_by"],
+                })
         letters = _letter_collection(scope)
         l = next((x for x in letters if x["letter_id"] == lid), None)
         if not l:
@@ -1807,6 +1860,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _prepare_private_world_delivery(letter, result.text)
     letter["reply_text"] = result.text
     letter["letter_status"] = "COMPLETED"
+    _mark_superseded_failed_retries()
     _persist_store_state()
     _commit_private_world_letter(letter)
     _persist_store_state()

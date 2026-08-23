@@ -461,6 +461,99 @@ def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
     assert len(local_server.store.letters) == 1
 
 
+def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    outcomes: list[str | Exception] = [
+        local_server.LLMError("LLM_TIMEOUT"),
+        "synthetic successful retry",
+    ]
+
+    def reply(_content, _context="", **_kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    failed = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic retried letter"},
+            {},
+        )
+    )
+    failed_state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    retried = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic retried letter"},
+            {},
+        )
+    )
+    persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    local_server.store.letters.clear()
+    local_server._load_store_state()
+    listed = asyncio.run(
+        local_server.route("GET", "/toy/letter/list", {}, {"scope": "current"})
+    )
+    old_detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"scope": "current", "letter_id": failed["data"]["letter_id"]},
+        )
+    )
+
+    async def fetch_http_tombstone() -> tuple[int, dict]:
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.get(
+                "/toy/letter/detail",
+                params={
+                    "scope": "current",
+                    "letter_id": failed["data"]["letter_id"],
+                },
+            )
+            return response.status, await response.json()
+
+    tombstone_status, tombstone_payload = asyncio.run(fetch_http_tombstone())
+
+    assert failed["code"] == 503
+    assert failed_state["letters"][0]["letter_status"] == "FAILED"
+    assert retried["code"] == 0
+    assert listed["data"]["total"] == 1
+    assert [item["letter_id"] for item in listed["data"]["list"]] == [
+        retried["data"]["letter_id"]
+    ]
+    failed_record = next(
+        item
+        for item in persisted["letters"]
+        if item["letter_id"] == failed["data"]["letter_id"]
+    )
+    assert failed_record["letter_status"] == "FAILED"
+    assert failed_record["superseded_by"] == retried["data"]["letter_id"]
+    assert old_detail["code"] == 410
+    assert old_detail["data"] == {
+        "status": "SUPERSEDED",
+        "error_code": "LETTER_SUPERSEDED",
+        "replacement_letter_id": retried["data"]["letter_id"],
+    }
+    assert tombstone_status == 410
+    assert tombstone_payload == old_detail
+
+
 def test_legacy_scope_is_read_only_and_isolated_from_new_chat() -> None:
     import local_server
 
