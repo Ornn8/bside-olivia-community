@@ -149,7 +149,8 @@ def test_candidate_assets_are_packaged_self_contained_and_non_gamified() -> None
     assert "document.write" not in script
     assert "eval(" not in script
     assert "sessionStorage" in script
-    assert "crypto.randomUUID" in script
+    assert "randomUUID" in script
+    assert "getRandomValues" in script
     assert "request_id" in script
     assert "decided_at" in script
     assert "/control/api/private-world/candidates/" in script
