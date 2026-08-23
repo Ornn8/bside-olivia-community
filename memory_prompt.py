@@ -103,6 +103,10 @@ class MemoryPromptBuilder:
             conversation_memory,
             conversation_memory_user_id,
         )
+        self.conversation_runtime_status = _ensure_conversation_runtime(
+            memory,
+            conversation_memory,
+        )
 
     def build(self, query: str, *, max_chars: int | None = None) -> MemoryPrompt:
         budget = max(
@@ -216,6 +220,34 @@ def _default_conversation_memory() -> ConversationMemoryPort | None:
         return create_mem0_adapter()
     except Exception:
         return None
+
+
+def _ensure_conversation_runtime(
+    archive_memory: MemoryPort,
+    conversation_memory: object,
+) -> dict[str, object] | None:
+    if conversation_memory is None:
+        return None
+    try:
+        from conversation_memory_runtime import ensure_conversation_memory_runtime
+
+        return ensure_conversation_memory_runtime(
+            archive_memory,
+            conversation_memory,  # type: ignore[arg-type]
+        ).to_dict()
+    except Exception:
+        # Prompt retrieval remains independently degradable when the outbox
+        # cannot be started.  No message content is logged or returned here.
+        return {
+            "status": "unavailable",
+            "enabled": False,
+            "provider": "mem0-outbox",
+            "worker_running": False,
+            "terminal_count": 0,
+            "pending_count": 0,
+            "attempt_count": 0,
+            "reason_code": "MEMORY_OUTBOX_INITIALIZATION_FAILED",
+        }
 
 
 def _conversation_status(memory: object) -> str:
