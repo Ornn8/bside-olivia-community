@@ -473,7 +473,7 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
         "synthetic successful retry",
     ]
 
-    def reply(_content, _context=""):
+    def reply(_content, _context="", **_kwargs):
         outcome = outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
