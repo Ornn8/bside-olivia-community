@@ -271,11 +271,14 @@ def audit_original_client(
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path = path.expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     temporary: Path | None = None
     try:
+        path = path.expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = (
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
