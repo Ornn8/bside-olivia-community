@@ -84,6 +84,15 @@ def _backend_entrypoint(backend: Path) -> Path:
     return backend / "original_client_server.py"
 
 
+_BACKEND_BOOTSTRAP = (
+    "import runpy,sys; "
+    "backend,entrypoint,*args=sys.argv[1:]; "
+    "sys.path.insert(0, backend); "
+    "sys.argv=[entrypoint,*args]; "
+    "runpy.run_path(entrypoint,run_name='__main__')"
+)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -135,7 +144,20 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     if not _health(args.port):
         detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        server = subprocess.Popen([str(_backend_executable()), str(entrypoint)], cwd=backend, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=detached)
+        server = subprocess.Popen(
+            [
+                str(_backend_executable()),
+                "-c",
+                _BACKEND_BOOTSTRAP,
+                str(backend),
+                str(entrypoint),
+            ],
+            cwd=backend,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=detached,
+        )
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and server.poll() is None:
             if _health(args.port):

@@ -28,6 +28,7 @@ OWNED_PATHS = (
 PRESERVED_PATHS = ("data", "logs", "third-party")
 PAYLOAD_DIRS = (
     "asr",
+    "control_center",
     "contracts",
     "installer",
     "media_state",
@@ -62,6 +63,17 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "patch_companion_settings.py",
     "patch_feapp.py",
     "patch_webplayer.py",
+}
+PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "control_center/__init__.py",
+    "control_center/app.py",
+    "control_center/auth.py",
+    "control_center/memory_api.py",
+    "control_center/private_world_api.py",
+    "control_center/private_world_candidate_api.py",
+    "control_center/private_world_candidate_backend.py",
+    "control_center/private_world_candidate_ui.py",
+    "control_center/runtime.py",
 }
 PAYLOAD_EXCLUDED_ROOT_FILES = {
     "letter_pairs.json",
@@ -310,6 +322,9 @@ def copy_project_payload(
     if any(
         not (destination / name).is_file()
         for name in PAYLOAD_REQUIRED_ROOT_FILES
+    ) or any(
+        not (destination / Path(*relative.split("/"))).is_file()
+        for relative in PAYLOAD_REQUIRED_RELATIVE_FILES
     ):
         raise PatchInstallError("PATCH_PAYLOAD_INCOMPLETE")
     return sorted(copied)

@@ -60,14 +60,16 @@ def test_launcher_starts_combined_server_before_original_client(
     result = start_local.main(["--install-root", str(root), "--port", "8899"])
 
     assert result == 0
-    assert commands == [
-        [
-            "pythonw-fixture.exe",
-            str(root / "local_backend" / "original_client_server.py"),
-        ]
+    assert len(commands) == 1
+    backend_command = commands[0]
+    assert backend_command[:2] == ["pythonw-fixture.exe", "-c"]
+    assert "sys.path.insert(0, backend)" in backend_command[2]
+    assert backend_command[3:] == [
+        str(root / "local_backend"),
+        str(root / "local_backend" / "original_client_server.py"),
     ]
     assert client_commands[0][0].endswith("Olivia.exe")
-    assert not commands[0][1].endswith("local_server.py")
+    assert not backend_command[-1].endswith("local_server.py")
 
 
 def test_launcher_refuses_payload_without_combined_entrypoint(
