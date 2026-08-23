@@ -20,13 +20,20 @@ dev = [
     "numpy>=1.26,<3",
     "opencv-python-headless>=4.9,<5",
 ]
+memory-mem0 = [
+    "mem0ai==2.0.18",
+    "sentence-transformers>=5.2,<6",
+]
 
 [tool.setuptools]
 py-modules = [
     "baseline_hardening_scan",
+    "conversation_memory_port",
     "extract_player",
     "http_contract",
+    "letter_status",
     "local_server",
+    "mem0_memory",
     "memory",
     "patch_feapp",
     "persona_loader",
@@ -72,6 +79,7 @@ testpaths = [
     "tests/http",
     "tests/installer",
     "tests/media",
+    "tests/memory",
     "tests/test_asset_manifest.py",
     "tests/test_third_party_download.py",
     "tests/test_baseline_hardening.py",
