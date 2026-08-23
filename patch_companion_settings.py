@@ -195,6 +195,17 @@ def _read_text(path: Path, code: str) -> str:
         raise CompanionSettingsPatchError(code) from exc
 
 
+def _normalize_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _write_utf8(path: Path, value: str) -> None:
+    try:
+        path.write_bytes(value.encode("utf-8"))
+    except OSError as exc:
+        raise CompanionSettingsPatchError("COMPANION_PATCH_WRITE_FAILED") from exc
+
+
 def _managed_tag(api_base: str) -> str:
     return (
         '<script src="./assets/olivia-companion-settings.js" '
@@ -225,7 +236,8 @@ def _patch_existing(
     )
     ui_match = _UI_VERSION_RE.search(tag.group(0))
     if (
-        current_script == BOOTSTRAP_JAVASCRIPT
+        _normalize_newlines(current_script)
+        == _normalize_newlines(BOOTSTRAP_JAVASCRIPT)
         and ui_match
         and html.unescape(ui_match.group("value")) == SETTINGS_UI_VERSION
     ):
@@ -233,14 +245,9 @@ def _patch_existing(
 
     managed = _managed_tag(api_base)
     updated = source[: tag.start()] + managed + source[tag.end() :]
-    try:
-        (bootstrap.parent.parent / INDEX_MEMBER).write_text(
-            updated,
-            encoding="utf-8",
-        )
-        bootstrap.write_text(BOOTSTRAP_JAVASCRIPT, encoding="utf-8")
-    except OSError as exc:
-        raise CompanionSettingsPatchError("COMPANION_PATCH_WRITE_FAILED") from exc
+    index = bootstrap.parent.parent / INDEX_MEMBER
+    _write_utf8(index, updated)
+    _write_utf8(bootstrap, BOOTSTRAP_JAVASCRIPT)
     return "PATCHED"
 
 
@@ -273,11 +280,8 @@ def _patch_index(root: Path, api_base: str) -> str:
     if patched.count(PATCH_MARKER) != 1:
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
     bootstrap.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        index.write_text(patched, encoding="utf-8")
-        bootstrap.write_text(BOOTSTRAP_JAVASCRIPT, encoding="utf-8")
-    except OSError as exc:
-        raise CompanionSettingsPatchError("COMPANION_PATCH_WRITE_FAILED") from exc
+    _write_utf8(index, patched)
+    _write_utf8(bootstrap, BOOTSTRAP_JAVASCRIPT)
     return "PATCHED"
 
 
@@ -352,7 +356,8 @@ def _verify_archive(
         any(value not in index for value in required)
         or any(value not in bootstrap for value in bootstrap_required)
         or any(value in bootstrap for value in forbidden)
-        or bootstrap != BOOTSTRAP_JAVASCRIPT
+        or _normalize_newlines(bootstrap)
+        != _normalize_newlines(BOOTSTRAP_JAVASCRIPT)
     ):
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
 
