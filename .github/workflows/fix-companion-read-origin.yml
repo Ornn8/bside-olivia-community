@@ -1,0 +1,200 @@
+name: fix-companion-read-origin
+
+on:
+  push:
+    branches:
+      - codex/p03-client-settings-02-read-api
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply trusted-origin correction
+        shell: python
+        run: |
+          from pathlib import Path
+
+          module_path = Path("original_client_companion_api.py")
+          source = module_path.read_text(encoding="utf-8")
+
+          old_constants = '''CANDIDATES_PATH = "/toy/companion/private-world/candidates"
+          TRUSTED_CLIENT_ORIGIN = "https://toy-cnbeta01.olivia.miyoushe.com"
+          _BACKEND_KEY = web.AppKey("original_companion_read_backend", object)
+          '''
+          new_constants = '''CANDIDATES_PATH = "/toy/companion/private-world/candidates"
+          _BACKEND_KEY = web.AppKey("original_companion_read_backend", object)
+          _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_trusted_origins", frozenset)
+          '''
+          if source.count(old_constants) != 1:
+              raise SystemExit("unexpected companion constants anchor")
+          source = source.replace(old_constants, new_constants)
+
+          old_origin = '''def _origin_allowed(origin: str) -> bool:
+              if origin == TRUSTED_CLIENT_ORIGIN:
+                  return True
+              if not _LOCAL_ORIGIN_RE.fullmatch(origin):
+                  return False
+              try:
+                  port = urlsplit(origin).port
+              except ValueError:
+                  return False
+              return port is not None and 1 <= port <= 65535
+          '''
+          new_origin = '''def _origin_allowed(request: web.Request, origin: str) -> bool:
+              if origin in request.app.get(_TRUSTED_ORIGINS_KEY, frozenset()):
+                  return True
+              if not _LOCAL_ORIGIN_RE.fullmatch(origin):
+                  return False
+              try:
+                  port = urlsplit(origin).port
+              except ValueError:
+                  return False
+              return port is not None and 1 <= port <= 65535
+          '''
+          if source.count(old_origin) != 1:
+              raise SystemExit("unexpected origin function anchor")
+          source = source.replace(old_origin, new_origin)
+
+          old_authorize = '''    if not _origin_allowed(origin):
+          '''
+          new_authorize = '''    if not _origin_allowed(request, origin):
+          '''
+          if source.count(old_authorize) != 1:
+              raise SystemExit("unexpected authorize anchor")
+          source = source.replace(old_authorize, new_authorize)
+
+          old_mount = '''def mount_original_companion_read_api(
+              app: web.Application,
+              backend: OriginalClientCompanionReadBackend,
+          ) -> None:
+              """Mount the read contract once on the existing local application."""
+
+              if not isinstance(backend, OriginalClientCompanionReadBackend):
+                  raise TypeError("an original companion read backend is required")
+              if _BACKEND_KEY in app:
+                  raise RuntimeError("COMPANION_READ_ALREADY_MOUNTED")
+              app[_BACKEND_KEY] = backend
+              app.router.add_get(STATUS_PATH, _status)
+              app.router.add_get(MEMORY_PATH, _memory)
+              app.router.add_get(PRIVATE_WORLD_PATH, _private_world)
+              app.router.add_get(CANDIDATES_PATH, _candidates)
+          '''
+          new_mount = '''def _trusted_origin(value: object) -> str:
+              if not isinstance(value, str) or len(value) > 240:
+                  raise ValueError("trusted companion origin is invalid")
+              try:
+                  parsed = urlsplit(value)
+              except ValueError as exc:
+                  raise ValueError("trusted companion origin is invalid") from exc
+              if (
+                  parsed.scheme != "https"
+                  or not parsed.hostname
+                  or parsed.username
+                  or parsed.password
+                  or parsed.path not in {"", "/"}
+                  or parsed.query
+                  or parsed.fragment
+              ):
+                  raise ValueError("trusted companion origin is invalid")
+              return f"https://{parsed.netloc}"
+
+
+          def mount_original_companion_read_api(
+              app: web.Application,
+              backend: OriginalClientCompanionReadBackend,
+              *,
+              trusted_origins: Sequence[str] = (),
+          ) -> None:
+              """Mount the read contract once on the existing local application."""
+
+              if not isinstance(backend, OriginalClientCompanionReadBackend):
+                  raise TypeError("an original companion read backend is required")
+              if len(trusted_origins) > 8:
+                  raise ValueError("too many trusted companion origins")
+              origins = frozenset(_trusted_origin(value) for value in trusted_origins)
+              if _BACKEND_KEY in app:
+                  raise RuntimeError("COMPANION_READ_ALREADY_MOUNTED")
+              app[_BACKEND_KEY] = backend
+              app[_TRUSTED_ORIGINS_KEY] = origins
+              app.router.add_get(STATUS_PATH, _status)
+              app.router.add_get(MEMORY_PATH, _memory)
+              app.router.add_get(PRIVATE_WORLD_PATH, _private_world)
+              app.router.add_get(CANDIDATES_PATH, _candidates)
+          '''
+          if source.count(old_mount) != 1:
+              raise SystemExit("unexpected mount anchor")
+          source = source.replace(old_mount, new_mount)
+
+          exported = '    "TRUSTED_CLIENT_ORIGIN",\n'
+          if source.count(exported) != 1:
+              raise SystemExit("unexpected exported-origin anchor")
+          source = source.replace(exported, "")
+          module_path.write_text(source, encoding="utf-8")
+
+          test_path = Path("tests/http/test_original_client_companion_api.py")
+          test = test_path.read_text(encoding="utf-8")
+          import_line = "    TRUSTED_CLIENT_ORIGIN,\n"
+          if test.count(import_line) != 1:
+              raise SystemExit("unexpected test import anchor")
+          test = test.replace(import_line, "")
+          aiohttp_anchor = "from aiohttp import CookieJar\n"
+          if aiohttp_anchor not in test:
+              aiohttp_anchor = "from aiohttp import web\n"
+          if test.count(aiohttp_anchor) != 1:
+              raise SystemExit("unexpected aiohttp test anchor")
+          if "TRUSTED_ORIGIN =" not in test:
+              test = test.replace(
+                  aiohttp_anchor,
+                  aiohttp_anchor + '\n\nTRUSTED_ORIGIN = "https://client.example"\n',
+              )
+          test = test.replace("TRUSTED_CLIENT_ORIGIN", "TRUSTED_ORIGIN")
+          mount_call = "mount_original_companion_read_api(app, backend)"
+          if test.count(mount_call) < 2:
+              raise SystemExit("unexpected test mount anchors")
+          test = test.replace(
+              mount_call,
+              "mount_original_companion_read_api(\n        app, backend, trusted_origins=(TRUSTED_ORIGIN,)\n    )",
+          )
+          insertion = '''    other = web.Application()
+          '''
+          replacement = '''    invalid_origin_app = web.Application()
+              try:
+                  mount_original_companion_read_api(
+                      invalid_origin_app, backend, trusted_origins=("http://client.example",)
+                  )
+              except ValueError:
+                  pass
+              else:
+                  raise AssertionError("non-HTTPS trusted origin must fail")
+
+              other = web.Application()
+          '''
+          if test.count(insertion) != 1:
+              raise SystemExit("unexpected invalid-origin insertion anchor")
+          test = test.replace(insertion, replacement)
+          test_path.write_text(test, encoding="utf-8")
+
+      - name: Validate focused change
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest -q tests/http/test_original_client_companion_api.py
+          python baseline_hardening_scan.py --mode all
+
+      - name: Commit corrected branch and remove helper
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-companion-read-origin.yml
+          git add original_client_companion_api.py tests/http/test_original_client_companion_api.py
+          git commit -m "fix(client): inject trusted original origins at runtime"
+          git push origin HEAD:${GITHUB_REF_NAME}
