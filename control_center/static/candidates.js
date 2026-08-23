@@ -34,12 +34,21 @@ function formatDate(value) {
   }).format(parsed);
 }
 
-function randomRequestId() {
-  const random = globalThis.crypto?.randomUUID?.()
-    || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)))
+function randomToken() {
+  const cryptoObject = globalThis.crypto;
+  if (typeof cryptoObject?.randomUUID === "function") {
+    return cryptoObject.randomUUID();
+  }
+  if (typeof cryptoObject?.getRandomValues === "function") {
+    return Array.from(cryptoObject.getRandomValues(new Uint8Array(16)))
       .map((value) => value.toString(16).padStart(2, "0"))
       .join("");
-  return `candidate-review.${random}`;
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function randomRequestId() {
+  return `candidate-review.${randomToken()}`;
 }
 
 function pendingStorageKey(candidateId, decision) {
@@ -180,7 +189,7 @@ function bindActions() {
   byId("refresh-button").addEventListener("click", async () => {
     try {
       await refresh();
-      showNotice("建议列表已刷新。")
+      showNotice("建议列表已刷新。");
     } catch (error) {
       showNotice(`刷新失败：${errorCode(error)}`, true);
     }
