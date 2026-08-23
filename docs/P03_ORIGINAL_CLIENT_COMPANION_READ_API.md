@@ -45,6 +45,8 @@ Origin: 原版 Olivia 前端 Origin
         或显式 loopback 开发 Origin
 ```
 
+原版前端 Origin 由生产运行时在挂载接口时注入，传输模块不硬编码远端主机，也不会主动访问该 Origin。注入值必须是无凭据、无路径、无查询参数的 HTTPS Origin，最多允许 8 个。
+
 缺少 Origin、外部 Origin 或非 loopback Host 均返回 `403`。成功响应只对通过验证的 Origin 设置 `Access-Control-Allow-Origin`。
 
 所有响应：
