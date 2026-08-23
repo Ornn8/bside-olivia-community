@@ -1,15 +1,16 @@
 """Run the original Olivia local backend with its in-client companion settings.
 
 The original client remains the only user-facing shell.  This module mounts the
-bounded Memory / PrivateWorld read and explicit-mutation APIs before the
-existing catch-all toy API handler, then launches every surface in one
-loopback-only aiohttp process.
+bounded Memory / PrivateWorld read and explicit-mutation APIs plus the original
+Collection wire adapter before the existing catch-all toy API handler, then
+launches every surface in one loopback-only aiohttp process.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from types import ModuleType
@@ -37,6 +38,13 @@ from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
     MemoryAdminMutationService,
 )
+from original_client_letter_contract import (
+    OriginalClientContractError,
+    serialize_letter_detail,
+    serialize_letter_list,
+    serialize_letter_summary,
+    serialize_unread_count,
+)
 from private_world_candidates import (
     PrivateWorldCandidateError,
     SQLitePrivateWorldCandidateStore,
@@ -49,7 +57,9 @@ from private_world_service import PrivateWorldCommandService
 
 
 FallbackHandler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+LetterCollection = Callable[[str], Sequence[Mapping[str, object]]]
 _RUNTIME_KEY = web.AppKey("original_client.server_runtime", object)
+_MAILBOX_MOUNTED_KEY = web.AppKey("original_client.mailbox_wire_mounted", bool)
 _MEMORY_ADMIN_FILENAME = "memory_admin_audit.sqlite3"
 
 
@@ -103,6 +113,173 @@ class PrivateWorldControlReadAdapter:
         }
 
 
+def _response_payload(response: web.StreamResponse) -> dict[str, object] | None:
+    if not isinstance(response, web.Response):
+        return None
+    body = response.body
+    if isinstance(body, str):
+        raw = body.encode("utf-8")
+    elif isinstance(body, (bytes, bytearray, memoryview)):
+        raw = bytes(body)
+    else:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _replace_response_payload(
+    response: web.Response,
+    payload: Mapping[str, object],
+    *,
+    status: int | None = None,
+) -> web.Response:
+    encoded = json.dumps(
+        dict(payload),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    response.headers.pop("Content-Length", None)
+    response.body = encoded
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    if status is not None:
+        response.set_status(status)
+    return response
+
+
+def _mailbox_failure(response: web.Response) -> web.Response:
+    return _replace_response_payload(
+        response,
+        {
+            "code": 503,
+            "message": "ORIGINAL_CLIENT_MAILBOX_UNAVAILABLE",
+            "data": {
+                "status": "UNAVAILABLE",
+                "error_code": "ORIGINAL_CLIENT_MAILBOX_UNAVAILABLE",
+            },
+        },
+        status=503,
+    )
+
+
+def _find_letter(
+    values: Sequence[Mapping[str, object]],
+    letter_id: object,
+) -> Mapping[str, object] | None:
+    if not isinstance(letter_id, str) or not letter_id:
+        return None
+    for value in values:
+        if value.get("letter_id", value.get("letterId")) == letter_id:
+            return value
+    return None
+
+
+def _non_negative_int(value: object, *, default: int) -> int:
+    return value if type(value) is int and value >= 0 else default
+
+
+def _adapt_mailbox_payload(
+    request: web.Request,
+    payload: dict[str, object],
+    letter_collection: LetterCollection,
+) -> dict[str, object]:
+    path = request.path.rstrip("/")
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return payload
+    scope = request.query.get("scope", "current")
+
+    if path == "/toy/letter/list" and payload.get("code") == 0:
+        letters = tuple(letter_collection(scope))
+        remaining = _non_negative_int(
+            data.get("remaining_today", data.get("remainingToday")),
+            default=99 if scope == "current" else 0,
+        )
+        payload["data"] = serialize_letter_list(
+            letters,
+            remaining_today=remaining,
+            scope=scope,
+            include_legacy_aliases=True,
+        )
+        return payload
+
+    if path == "/toy/letter/unread_count" and payload.get("code") == 0:
+        letters = tuple(letter_collection(scope))
+        unread = sum(1 for letter in letters if not letter.get("is_read", 1))
+        payload["data"] = serialize_unread_count(
+            unread,
+            scope=scope,
+            include_legacy_aliases=True,
+        )
+        return payload
+
+    if path == "/toy/letter/detail" and payload.get("code") == 0:
+        letter_id = data.get("letter_id", data.get("letterId"))
+        letter = _find_letter(tuple(letter_collection(scope)), letter_id)
+        if letter is None:
+            return payload
+        payload["data"] = serialize_letter_detail(
+            letter,
+            scope=scope,
+            include_legacy_aliases=True,
+        )
+        return payload
+
+    if path == "/toy/letter/send":
+        letter_id = data.get("letter_id", data.get("letterId"))
+        letter = _find_letter(tuple(letter_collection("current")), letter_id)
+        if letter is None:
+            return payload
+        original = serialize_letter_summary(
+            letter,
+            include_legacy_aliases=True,
+        )
+        merged = dict(data)
+        merged.update(original)
+        payload["data"] = merged
+    return payload
+
+
+def mount_original_mailbox_wire_adapter(
+    app: web.Application,
+    fallback_handler: FallbackHandler,
+    letter_collection: LetterCollection,
+) -> None:
+    """Expose the existing letter runtime through the audited Collection schema."""
+
+    if not isinstance(app, web.Application):
+        raise TypeError("an aiohttp application is required")
+    if not callable(fallback_handler) or not callable(letter_collection):
+        raise TypeError("mailbox fallback and letter collection are required")
+    if app.get(_MAILBOX_MOUNTED_KEY, False):
+        raise RuntimeError("ORIGINAL_CLIENT_MAILBOX_ALREADY_MOUNTED")
+
+    async def adapted(request: web.Request) -> web.StreamResponse:
+        response = await fallback_handler(request)
+        if not isinstance(response, web.Response):
+            return response
+        payload = _response_payload(response)
+        if payload is None:
+            return response
+        try:
+            adapted_payload = _adapt_mailbox_payload(
+                request,
+                payload,
+                letter_collection,
+            )
+        except (OriginalClientContractError, OSError, RuntimeError, TypeError, ValueError):
+            return _mailbox_failure(response)
+        return _replace_response_payload(response, adapted_payload)
+
+    app[_MAILBOX_MOUNTED_KEY] = True
+    app.router.add_get("/toy/letter/list", adapted)
+    app.router.add_get("/toy/letter/unread_count", adapted)
+    app.router.add_get("/toy/letter/detail", adapted)
+    app.router.add_post("/toy/letter/send", adapted)
+
+
 @dataclass(frozen=True)
 class OriginalClientServerRuntime:
     app: web.Application
@@ -133,9 +310,10 @@ def create_original_client_server_runtime(
     private_world: PrivateWorldPort | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
     candidate_decisions: CandidateReviewBackend | None = None,
+    letter_collection: LetterCollection | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
-    """Mount companion reads and explicit mutations before the toy catch-all."""
+    """Mount original-client adapters before the toy catch-all."""
 
     if not callable(fallback_handler):
         raise TypeError("a fallback request handler is required")
@@ -170,6 +348,12 @@ def create_original_client_server_runtime(
         mutation_backend,
         trusted_origins=origins,
     )
+    if letter_collection is not None:
+        mount_original_mailbox_wire_adapter(
+            app,
+            fallback_handler,
+            letter_collection,
+        )
     # Keep this last.  The original server intentionally owns a catch-all route.
     app.router.add_route("*", "/{tail:.*}", fallback_handler)
     runtime = OriginalClientServerRuntime(
@@ -295,12 +479,14 @@ def create_configured_original_client_server_runtime(
         server_module,
         values,
     )
+    collection = getattr(server_module, "_letter_collection", None)
     return create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
         private_world=private_world,
         candidates=candidates,
         candidate_decisions=candidate_decisions,
+        letter_collection=collection if callable(collection) else None,
         trusted_origins=origins,
     )
 
@@ -340,4 +526,5 @@ __all__ = [
     "create_configured_original_client_server_runtime",
     "create_original_client_server_runtime",
     "main",
+    "mount_original_mailbox_wire_adapter",
 ]
