@@ -34,8 +34,8 @@ jobs:
       - name: Run repository hardening scan
         run: python baseline_hardening_scan.py --mode all
 
-      - name: Check whitespace
-        run: git diff --check --exit-code
+      - name: Check prepared whitespace
+        run: git diff --check
 
       - name: Commit prepared clickability fix
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/fix/original-settings-clickability')
