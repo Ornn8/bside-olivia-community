@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-read.v1"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v1"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -16,6 +16,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_PATH = "/toy/companion/memory";
   const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
   const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
+  const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
+  const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
+  const CONFIRM_HEADER = "X-Olivia-Companion-Action";
+  const CONFIRM_VALUE = "confirmed";
 
   const parseApiBase = (value) => {
     let url;
@@ -63,6 +67,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return element;
   };
 
+  const setButtonsBusy = (buttons, busy) => {
+    for (const item of buttons) {
+      item.disabled = busy;
+      item.style.opacity = busy ? "0.55" : "1";
+      item.style.cursor = busy ? "default" : "pointer";
+    }
+  };
+
   const card = () => {
     const element = document.createElement("article");
     element.style.padding = "14px";
@@ -77,6 +89,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const element = document.createElement("div");
     element.style.display = "grid";
     element.style.gap = "10px";
+    return element;
+  };
+
+  const actions = () => {
+    const element = document.createElement("div");
+    element.style.display = "flex";
+    element.style.flexWrap = "wrap";
+    element.style.gap = "8px";
+    element.style.alignItems = "center";
     return element;
   };
 
@@ -152,6 +173,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return Object.hasOwn(stateLabels, state) ? state : "unavailable";
   };
 
+  const requestId = (prefix) => {
+    let token = "";
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      token = window.crypto.randomUUID();
+    } else {
+      token = `${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}`;
+    }
+    return `${prefix}.${token}`
+      .replace(/[^A-Za-z0-9._:-]/g, ".")
+      .slice(0, 160);
+  };
+
   const requestJson = async (path, params = {}) => {
     const endpoint = new URL(path, apiBase);
     for (const [key, value] of Object.entries(params)) {
@@ -179,6 +212,58 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  const requestMutation = async (path, body) => {
+    const endpoint = new URL(path, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          [CONFIRM_HEADER]: CONFIRM_VALUE,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = null;
+      }
+      if (!response.ok || !payload || typeof payload.status !== "string") {
+        const error = new Error("mutation-unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          ? payload.error_code
+          : "COMPANION_MUTATION_UNAVAILABLE";
+        throw error;
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const mutationMessage = (payload, appliedText) => {
+    if (!payload || typeof payload.status !== "string") {
+      return "操作结果无法确认。";
+    }
+    if (payload.status === "APPLIED") {
+      return appliedText;
+    }
+    if (payload.status === "DUPLICATE") {
+      return "该操作已经完成。";
+    }
+    if (payload.status === "NOOP") {
+      return "没有需要修改的内容。";
+    }
+    return "操作未执行，请刷新后重试。";
+  };
+
   const renderUnavailable = (panel, state, label) => {
     panel.replaceChildren(
       text("h3", label, "text-text-title text-title-m"),
@@ -190,7 +275,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     );
   };
 
-  const renderMemories = (list, memories) => {
+  const renderMemories = (list, memories, reload, resultState) => {
     list.replaceChildren();
     if (!Array.isArray(memories) || memories.length === 0) {
       list.append(
@@ -203,12 +288,108 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         continue;
       }
       const item = card();
-      item.append(text("p", memory.text, "text-text-body text-body-m font-regular"));
+      const memoryText = text(
+        "p",
+        memory.text,
+        "text-text-body text-body-m font-regular"
+      );
+      item.append(memoryText);
       const created = formatTime(memory.created_at);
       if (created) {
         item.append(
           text("p", created, "text-text-secondary text-caption-m font-regular")
         );
+      }
+
+      if (typeof memory.memory_id === "string" && memory.memory_id) {
+        const controls = actions();
+        let editor = null;
+        const correct = button("纠正", () => {
+          if (editor) {
+            editor.querySelector("textarea")?.focus();
+            return;
+          }
+          editor = stack();
+          const input = document.createElement("textarea");
+          input.value = memory.text;
+          input.maxLength = 2000;
+          input.rows = 4;
+          input.setAttribute("aria-label", "正确的长期记忆内容");
+          input.className = "w-full rounded-3 border border-grey-5 bg-transparent px-4 py-3 text-text-body text-body-m";
+
+          const editorActions = actions();
+          const save = button("保存更正", async () => {
+            const replacement = input.value.trim();
+            if (!replacement) {
+              resultState.textContent = "正确内容不能为空。";
+              input.focus();
+              return;
+            }
+            if (replacement === memory.text.trim()) {
+              resultState.textContent = "内容没有变化。";
+              return;
+            }
+            if (!window.confirm("确认用新内容替换这条长期记忆？")) {
+              return;
+            }
+            setButtonsBusy([save, cancel, correct, remove], true);
+            resultState.textContent = "正在更正长期记忆……";
+            try {
+              const payload = await requestMutation(MEMORY_CORRECT_PATH, {
+                memory_id: memory.memory_id,
+                replacement_text: replacement,
+                request_id: requestId("memory.correct"),
+                reason: "用户在原版 Olivia 设置中明确纠正长期记忆。",
+              });
+              await reload();
+              resultState.textContent = mutationMessage(payload, "长期记忆已更正。");
+            } catch (_error) {
+              resultState.textContent = "长期记忆更正失败，原记录保持不变。";
+            } finally {
+              setButtonsBusy([save, cancel, correct, remove], false);
+            }
+          });
+          const cancel = button("取消", () => {
+            editor?.remove();
+            editor = null;
+            correct.focus();
+          });
+          editorActions.append(save, cancel);
+          editor.append(
+            text(
+              "p",
+              "先写入正确事实，确认成功后再删除旧事实。",
+              "text-text-secondary text-caption-m font-regular"
+            ),
+            input,
+            editorActions
+          );
+          item.append(editor);
+          input.focus();
+        });
+
+        const remove = button("删除", async () => {
+          if (!window.confirm("确认删除这条长期记忆？原始信件不会被删除。")) {
+            return;
+          }
+          setButtonsBusy([correct, remove], true);
+          resultState.textContent = "正在删除长期记忆……";
+          try {
+            const payload = await requestMutation(MEMORY_DELETE_PATH, {
+              memory_id: memory.memory_id,
+              request_id: requestId("memory.delete"),
+              reason: "用户在原版 Olivia 设置中明确删除长期记忆。",
+            });
+            await reload();
+            resultState.textContent = mutationMessage(payload, "长期记忆已删除。");
+          } catch (_error) {
+            resultState.textContent = "长期记忆删除失败，原记录保持不变。";
+          } finally {
+            setButtonsBusy([correct, remove], false);
+          }
+        });
+        controls.append(correct, remove);
+        item.append(controls);
       }
       list.append(item);
     }
@@ -260,7 +441,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           query: input.value.trim(),
           limit: 50,
         });
-        renderMemories(list, payload.memories);
+        renderMemories(list, payload.memories, load, resultState);
         resultState.textContent = input.value.trim()
           ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
@@ -335,7 +516,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     container.append(factList);
   };
 
-  const renderCandidateList = (container, payload, capability) => {
+  const renderCandidateList = (
+    container,
+    payload,
+    capability,
+    reload,
+    resultState
+  ) => {
     const state = capabilityState(capability);
     const title = text(
       "h4",
@@ -383,6 +570,44 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           text("p", created, "text-text-secondary text-caption-m font-regular")
         );
       }
+
+      if (typeof candidate.candidate_id === "string" && candidate.candidate_id) {
+        const controls = actions();
+        const decide = async (decision, approve, reject) => {
+          const actionLabel = decision === "approve" ? "批准" : "拒绝";
+          const explanation = decision === "approve"
+            ? "批准后，这条建议会通过现有 PrivateWorld 命令服务写入关系记录。"
+            : "拒绝后，关系状态不会发生变化。";
+          if (!window.confirm(`${explanation}\n\n确认${actionLabel}这条建议？`)) {
+            return;
+          }
+          setButtonsBusy([approve, reject], true);
+          resultState.textContent = `正在${actionLabel}关系建议……`;
+          const path = `${CANDIDATES_PATH}/${encodeURIComponent(candidate.candidate_id)}/${decision}`;
+          try {
+            const mutation = await requestMutation(path, {
+              request_id: requestId(`candidate.${decision}`),
+              reason: decision === "approve"
+                ? "用户在原版 Olivia 设置中明确批准关系建议。"
+                : "用户在原版 Olivia 设置中明确拒绝关系建议。",
+              decided_at: new Date().toISOString(),
+            });
+            await reload();
+            resultState.textContent = mutationMessage(
+              mutation,
+              decision === "approve" ? "关系建议已批准。" : "关系建议已拒绝。"
+            );
+          } catch (_error) {
+            resultState.textContent = "关系建议处理失败，关系状态保持不变。";
+          } finally {
+            setButtonsBusy([approve, reject], false);
+          }
+        };
+        const approve = button("批准", () => decide("approve", approve, reject));
+        const reject = button("拒绝", () => decide("reject", approve, reject));
+        controls.append(approve, reject);
+        item.append(controls);
+      }
       list.append(item);
     }
     container.append(list);
@@ -396,39 +621,57 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       `状态：${stateLabels[privateState]}`,
       "text-text-secondary text-body-m font-regular"
     );
+    const resultState = text(
+      "p",
+      "正在读取私人世界……",
+      "text-text-secondary text-body-m font-regular"
+    );
+    resultState.setAttribute("aria-live", "polite");
     const content = stack();
-    panel.replaceChildren(heading, summary, content);
+    panel.replaceChildren(heading, summary, resultState, content);
 
-    let privatePayload = null;
-    if (privateState !== "disabled" && privateState !== "unavailable") {
-      try {
-        privatePayload = await requestJson(PRIVATE_WORLD_PATH);
-        renderPrivateSummary(content, privatePayload);
-      } catch (_error) {
+    const load = async () => {
+      content.replaceChildren();
+      resultState.textContent = "正在读取私人世界……";
+      if (privateState !== "disabled" && privateState !== "unavailable") {
+        try {
+          const privatePayload = await requestJson(PRIVATE_WORLD_PATH);
+          renderPrivateSummary(content, privatePayload);
+        } catch (_error) {
+          content.append(
+            text("p", "私人世界暂时无法读取。", "text-text-secondary text-body-m font-regular")
+          );
+        }
+      } else {
         content.append(
-          text("p", "私人世界暂时无法读取。", "text-text-secondary text-body-m font-regular")
+          text(
+            "p",
+            `私人世界${privateState === "disabled" ? "未启用。" : "暂时不可用。"}`,
+            "text-text-secondary text-body-m font-regular"
+          )
         );
       }
-    } else {
-      content.append(
-        text(
-          "p",
-          `私人世界${privateState === "disabled" ? "未启用。" : "暂时不可用。"}`,
-          "text-text-secondary text-body-m font-regular"
-        )
-      );
-    }
 
-    let candidatePayload = null;
-    const candidateState = capabilityState(candidateCapability);
-    if (candidateState !== "disabled" && candidateState !== "unavailable") {
-      try {
-        candidatePayload = await requestJson(CANDIDATES_PATH, { limit: 50 });
-      } catch (_error) {
-        candidatePayload = null;
+      let candidatePayload = null;
+      const candidateState = capabilityState(candidateCapability);
+      if (candidateState !== "disabled" && candidateState !== "unavailable") {
+        try {
+          candidatePayload = await requestJson(CANDIDATES_PATH, { limit: 50 });
+        } catch (_error) {
+          candidatePayload = null;
+        }
       }
-    }
-    renderCandidateList(content, candidatePayload, candidateCapability);
+      renderCandidateList(
+        content,
+        candidatePayload,
+        candidateCapability,
+        load,
+        resultState
+      );
+      resultState.textContent = "已读取本机私人世界。";
+    };
+
+    await load();
   };
 
   const loadDialogData = async (statusNode, panels) => {
@@ -615,7 +858,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       text("div", "记忆与私人世界", "text-text-body text-label-l"),
       text(
         "div",
-        "在 Olivia 客户端内查看本地连续性。",
+        "在 Olivia 客户端内查看并管理本地连续性。",
         "text-text-secondary text-body-m font-regular"
       )
     );
