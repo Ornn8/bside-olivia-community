@@ -526,7 +526,7 @@ def test_handler_acknowledges_before_background_llm_failure(monkeypatch) -> None
 
     import local_server
 
-    def fail(_content, _context=""):
+    def fail(_content, _context="", **_kwargs):
         raise local_server.LLMError("LLM_TIMEOUT")
 
     monkeypatch.setattr(local_server.letters_adapter, "reply", fail)
@@ -642,7 +642,7 @@ def test_llm_failure_is_explicit_failed_without_placeholder_text(monkeypatch) ->
 
     local_server.store.letters.clear()
 
-    def fail(_content, _context=""):
+    def fail(_content, _context="", **_kwargs):
         raise local_server.LLMError("LLM_TIMEOUT")
 
     monkeypatch.setattr(local_server.letters_adapter, "reply", fail)
@@ -777,7 +777,7 @@ def test_slow_llm_does_not_block_loop_and_times_out_as_failed(monkeypatch) -> No
     started = threading.Event()
     finished = threading.Event()
 
-    def slow_reply(_content, _context=""):
+    def slow_reply(_content, _context="", **_kwargs):
         started.set()
         time.sleep(0.25)
         finished.set()
@@ -863,7 +863,11 @@ def test_request_logging_does_not_emit_letter_content(monkeypatch, capsys) -> No
     import local_server
 
     local_server.store.letters.clear()
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply",
+    )
     result = asyncio.run(
         local_server.route(
             "POST",
@@ -889,7 +893,11 @@ def test_handler_logs_exclude_body_reply_token_and_full_query(monkeypatch, capsy
     import local_server
 
     local_server.store.letters.clear()
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply secret")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply secret",
+    )
     capsys.readouterr()
 
     async def exercise():
@@ -933,7 +941,11 @@ def test_aiohttp_app_access_logging_never_leaks_sensitive_query(monkeypatch, cap
     import local_server
 
     local_server.store.letters.clear()
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic access reply")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic access reply",
+    )
     capsys.readouterr()
 
     async def exercise():
