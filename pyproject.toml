@@ -70,23 +70,3 @@ include = [
 
 [tool.setuptools.package-data]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
-
-[tool.pytest.ini_options]
-testpaths = [
-    "tests/persona",
-    "tests/private_world",
-    "tests/control_center",
-    "tests/http",
-    "tests/installer",
-    "tests/media",
-    "tests/memory",
-    "tests/test_asset_manifest.py",
-    "tests/test_third_party_download.py",
-    "tests/test_baseline_hardening.py",
-    "tests/test_visual_baseline.py",
-    "tests/test_visual_compare.py",
-]
-addopts = ["--basetemp=.evidence", "-m", "not experimental"]
-markers = [
-    "experimental: excluded from the public baseline gate; run explicitly by path",
-]
