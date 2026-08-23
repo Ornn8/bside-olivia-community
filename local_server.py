@@ -1630,7 +1630,10 @@ async def _run_reply_job(
             (item for item in store.letters if item["letter_id"] == letter_id),
             None,
         )
-        if letter is not None and letter.get("letter_status") == "PENDING":
+        if letter is not None and letter.get("letter_status") in {
+            "PENDING",
+            "PROCESSING",
+        }:
             letter["letter_status"] = "FAILED"
             letter["error_code"] = "LLM_UNAVAILABLE"
             _persist_store_state()
@@ -1798,7 +1801,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     try:
         request = ReplyRequest(
             content=content,
-            request_id=letter_id,
+            request_id=f"letter-reply:{letter_id}",
             idempotency_key=(
                 f"{idempotency_key}:{letter_id}" if idempotency_key else None
             ),

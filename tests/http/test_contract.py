@@ -267,6 +267,42 @@ def test_failed_idempotent_request_can_retry_with_same_key(
     assert local_server.store.request_keys["retry-key"] == second["data"]["letter_id"]
 
 
+def test_unexpected_background_failure_cannot_leave_processing_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    async def crash(*_args, **_kwargs):
+        raise KeyError("synthetic private provider failure")
+
+    monkeypatch.setattr(local_server.reply_pipeline, "run", crash)
+
+    async def exercise() -> tuple[dict, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            sent_response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic unexpected failure"},
+            )
+            sent = await sent_response.json()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            detail_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": sent["data"]["letter_id"]},
+            )
+            return sent, await detail_response.json()
+
+    sent, detail = asyncio.run(exercise())
+
+    assert sent["data"]["status"] == "PENDING"
+    assert detail["data"]["letter_status"] == "FAILED"
+    assert detail["data"]["error_code"] == "LLM_UNAVAILABLE"
+
+
 def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None:
     import local_server
 
