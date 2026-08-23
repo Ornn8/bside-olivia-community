@@ -173,11 +173,13 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
-    monkeypatch.setattr(
-        local_server.letters_adapter,
-        "reply",
-        lambda *_args: "synthetic recovered reply",
-    )
+    generated_contents: list[str] = []
+
+    def recovered_reply(content: str, *_args) -> str:
+        generated_contents.append(content)
+        return "synthetic recovered reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", recovered_reply)
     pending = {
         "letter_id": "letter-restart-pending",
         "content": "synthetic persisted input",
@@ -192,6 +194,12 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
         "music_duration_seconds": 118,
     }
     local_server.store.letters.append(pending)
+    local_server.store.letters.append({
+        **pending,
+        "letter_id": "letter-restart-uncertain",
+        "content": "synthetic uncertain provider input",
+        "letter_status": "PROCESSING",
+    })
     local_server.store.request_keys["restart-key"] = pending["letter_id"]
     local_server._persist_store_state()
     local_server.store.letters.clear()
@@ -208,14 +216,23 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
                 "/toy/letter/detail",
                 params={"letter_id": pending["letter_id"]},
             )
-            return await response.json()
+            interrupted_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": "letter-restart-uncertain"},
+            )
+            return await response.json(), await interrupted_response.json()
 
-    detail = asyncio.run(exercise())
+    detail, interrupted = asyncio.run(exercise())
     persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
 
     assert detail["data"]["letter_status"] == "COMPLETED"
     assert detail["data"]["reply_text"] == "synthetic recovered reply"
-    assert persisted["letters"][0]["letter_status"] == "COMPLETED"
+    assert interrupted["data"]["letter_status"] == "FAILED"
+    assert interrupted["data"]["error_code"] == "LLM_INTERRUPTED"
+    assert generated_contents == ["synthetic persisted input"]
+    persisted_by_id = {item["letter_id"]: item for item in persisted["letters"]}
+    assert persisted_by_id[pending["letter_id"]]["letter_status"] == "COMPLETED"
+    assert persisted_by_id["letter-restart-uncertain"]["letter_status"] == "FAILED"
     assert persisted["request_keys"]["restart-key"] == pending["letter_id"]
 
 

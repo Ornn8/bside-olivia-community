@@ -22,6 +22,7 @@
 | 501 | `WEBSOCKET_UNAVAILABLE` / `ASR_UNAVAILABLE` / `TTS_UNAVAILABLE` / `LIVE_UNAVAILABLE` | UNAVAILABLE | 否 | 原生实时能力不可用 |
 | 501 | `ROUTE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 未登记 route |
 | 200 detail | `LLM_TIMEOUT` / `LLM_UNAVAILABLE` | FAILED | 是 | 发信先确认 PENDING；provider 超时/不可用后 detail 显示 FAILED |
+| 200 detail | `LLM_INTERRUPTED` | FAILED | 是 | 进程在 provider 调用终态落盘前中断；不自动重复生成 |
 | 503 | `MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | legacy import 的 SQLite 存储不可用；不回显正文、路径或密钥 |
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |
 | 409 | `IDEMPOTENCY_CONFLICT` | FAILED | 否 | 同一幂等键重复提交了不同正文 |

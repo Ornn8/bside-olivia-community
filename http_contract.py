@@ -39,6 +39,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "INTERNAL_ERROR": {"http_status": 500, "retryable": False},
     "LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "LLM_TIMEOUT": {"http_status": 503, "retryable": True},
+    "LLM_INTERRUPTED": {"http_status": 503, "retryable": True},
     "LLM_PROVIDER_REJECTED": {"http_status": 503, "retryable": False},
     "LLM_PROTOCOL_ERROR": {"http_status": 503, "retryable": False},
     "LETTER_RESEND_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
