@@ -31,6 +31,17 @@ MEMORY_ADMIN_KEY = web.AppKey(
     object,
 )
 _MAX_LIST_LIMIT = 500
+_EXPORT_RECORD_FIELDS = frozenset(
+    {
+        "memory_id",
+        "text",
+        "source_id",
+        "domain",
+        "score",
+        "occurred_at",
+        "created_at",
+    }
+)
 
 
 class MemoryAPIError(PrivateWorldAPIError):
@@ -353,9 +364,34 @@ async def clear_memories(request: web.Request) -> web.Response:
 
 
 async def export_memories(request: web.Request) -> web.Response:
-    del request
     payload = _call(_backend(request).export)
     if not isinstance(payload, Mapping):
+        raise MemoryAPIError(
+            "MEMORY_CONTROL_EXPORT_INVALID",
+            http_status=503,
+        )
+    records = payload.get("records", ())
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
+        raise MemoryAPIError(
+            "MEMORY_CONTROL_EXPORT_INVALID",
+            http_status=503,
+        )
+    sanitized: list[dict[str, object]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise MemoryAPIError(
+                "MEMORY_CONTROL_EXPORT_INVALID",
+                http_status=503,
+            )
+        sanitized.append(
+            {
+                key: value
+                for key, value in record.items()
+                if isinstance(key, str) and key in _EXPORT_RECORD_FIELDS
+            }
+        )
+    provider = payload.get("provider", "mem0")
+    if not isinstance(provider, str) or not provider or len(provider) > 64:
         raise MemoryAPIError(
             "MEMORY_CONTROL_EXPORT_INVALID",
             http_status=503,
@@ -364,7 +400,11 @@ async def export_memories(request: web.Request) -> web.Response:
         {
             "schema_version": MEMORY_CONTROL_SCHEMA,
             "status": "READY",
-            "export": dict(payload),
+            "export": {
+                "schema_version": "p03.conversation-memory-export.v1",
+                "provider": provider,
+                "records": sanitized,
+            },
         }
     )
 
