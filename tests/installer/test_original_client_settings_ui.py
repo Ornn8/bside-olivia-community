@@ -11,6 +11,7 @@ from original_client_settings_ui import (
 )
 
 
+# The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v1"
     for declaration in (
