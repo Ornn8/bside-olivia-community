@@ -3,7 +3,8 @@
   "steam_app_id": "4532590",
   "client_version": "0.0.9.615",
   "feapp_sha256": "53babcf288c7679a57eb4a2647397d951ec450d5fdaea634498286b2ebb8136e",
+  "webplayer_sha256": "504b59876af2f04c4902f8c8e6811018d36a2da4394e20cf74f22d13d394b636",
   "patch_mode": "isolated-copy",
   "live_status": "UNAVAILABLE_PAUSED",
-  "media_status": "VIDEO_AND_MUSIC_REPLY_BOUNDARIES_PRESENT_PROVIDER_DOWNLOAD_REQUIRED"
+  "media_status": "ORIGINAL_WEBPLAYER_LOCAL_VIDEO_AND_MUSIC_REPLY_BOUNDARIES_PRESENT_PROVIDER_DOWNLOAD_REQUIRED"
 }

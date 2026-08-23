@@ -7,7 +7,13 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "docs" / "evidence" / "original-player-audit.0.0.9.615.json"
+EVIDENCE = (
+    ROOT
+    / "docs"
+    / "evidence"
+    / "original-player-audit.0.0.9.615.json"
+)
+MANIFEST = ROOT / "installer" / "full-patch-manifest.json"
 
 
 def _load() -> dict[str, object]:
@@ -49,6 +55,16 @@ def test_original_player_evidence_is_for_supported_client_and_both_archives() ->
     )
     assert players["webplayer"]["archive_sha256"] == (
         "504b59876af2f04c4902f8c8e6811018d36a2da4394e20cf74f22d13d394b636"
+    )
+
+
+def test_installer_pins_the_audited_supported_webplayer() -> None:
+    report = _load()
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+    assert manifest["client_version"] == report["source"]["client_version_hint"]
+    assert manifest["webplayer_sha256"] == (
+        report["players"]["webplayer"]["archive_sha256"]
     )
 
 
