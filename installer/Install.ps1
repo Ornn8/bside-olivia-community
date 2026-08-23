@@ -74,4 +74,8 @@ $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
 $bootstrap = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("installer",run_name="__main__")'
 & $runner.File @($runner.Args + @('-c', $bootstrap, $PayloadRoot) + $arguments)
+$installExitCode = $LASTEXITCODE
+if ($installExitCode -ne 0) { exit $installExitCode }
+
+& (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
 exit $LASTEXITCODE
