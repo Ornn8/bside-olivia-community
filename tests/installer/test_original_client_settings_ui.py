@@ -11,6 +11,7 @@ from original_client_settings_ui import (
 )
 
 
+# The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v1"
     for declaration in (
@@ -32,6 +33,13 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
     assert "encodeURIComponent" in BOOTSTRAP_JAVASCRIPT
+    assert 'element.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
+    assert 'element.style.webkitAppRegion = "no-drag";' in BOOTSTRAP_JAVASCRIPT
+    assert 'backdrop.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
+    assert 'dialog.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
+    assert 'panel.style.display = active ? "grid" : "none";' in BOOTSTRAP_JAVASCRIPT
+    assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
+    assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
