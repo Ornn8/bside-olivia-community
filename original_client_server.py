@@ -35,6 +35,7 @@ from original_client_companion_mutation_api import (
 )
 from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
+    MemoryAdminMutationService,
 )
 from private_world_candidates import (
     PrivateWorldCandidateError,
@@ -148,8 +149,13 @@ def create_original_client_server_runtime(
         private_world=private_read,
         candidates=candidates,
     )
+    mutation_memory = (
+        memory_admin
+        if isinstance(memory_admin, MemoryAdminMutationService)
+        else None
+    )
     mutation_backend = DirectOriginalClientCompanionMutationBackend(
-        memory_admin=memory_admin,
+        memory_admin=mutation_memory,
         candidate_decisions=candidate_decisions,
     )
     app = web.Application()
