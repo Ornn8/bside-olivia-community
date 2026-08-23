@@ -424,6 +424,10 @@ def _load_store_state() -> None:
                     item["reply_mode"] = _exact_reply_mode(
                         item.get("reply_mode", ReplyMode.TEXT_LETTER.value)
                     )
+                    if item.get("letter_status") == "PROCESSING":
+                        item["letter_status"] = "FAILED"
+                        item["error_code"] = "LLM_INTERRUPTED"
+                        needs_persist = True
                     if item.get("media_status") == "PROCESSING":
                         item["media_status"] = "QUEUED"
                         needs_persist = True
@@ -1041,6 +1045,8 @@ def _public_llm_error(code: str | None) -> tuple[str, bool]:
         return "REPLY_QUALITY_BLOCKED", False
     if code in {"LLM_TIMEOUT", "PROVIDER_TIMEOUT"}:
         return "LLM_TIMEOUT", True
+    if code == "LLM_INTERRUPTED":
+        return "LLM_INTERRUPTED", True
     if code in {"LLM_PROVIDER_REJECTED", "PROVIDER_REJECTED"}:
         return "LLM_PROVIDER_REJECTED", False
     if code in {"LLM_PROTOCOL_ERROR", "PROVIDER_PROTOCOL"}:
@@ -1071,7 +1077,7 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
 
 
 def _send_result_for_letter(letter: dict) -> dict:
-    if letter.get("letter_status") == "PENDING":
+    if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
         return ok(
             {
                 "letter_id": letter["letter_id"],
@@ -1722,6 +1728,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if letter is None:
         return False
 
+    letter["letter_status"] = "PROCESSING"
+    _persist_store_state()
     decision = await emotion_triage.classify(content)
     exact_mode = _exact_reply_mode(decision.reply_mode)
     letter["triage"] = decision.to_dict()
@@ -1751,8 +1759,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             timeout=LLM_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError:
-        letter["letter_status"] = "PENDING"
-        letter.pop("error_code", None)
+        letter["letter_status"] = "FAILED"
+        letter["error_code"] = "LLM_INTERRUPTED"
         _persist_store_state()
         _safe_log("letter_cancelled")
         raise

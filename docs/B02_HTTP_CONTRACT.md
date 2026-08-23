@@ -16,7 +16,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 错误响应：`{"code":<HTTP 状态>,"message":"<error_code>","data":{"status":"FAILED","error_code":"<error_code>"}}`
 - 真正未实现能力：HTTP `501`，`data.status=NOT_IMPLEMENTED`。
 - 已知但不可用的可选能力：HTTP `501`，`data.status=UNAVAILABLE`，并带 `capability`；不会返回 200 假成功。
-- HTTP 发信先返回 `200`/`PENDING`；LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。进程重启会继续持久化的 `PENDING` 任务。
+- HTTP 发信先返回 `200`/`PENDING`；LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。重启只恢复尚未派发的 `PENDING`；不确定是否已到达 provider 的 `PROCESSING` 会 fail closed 为 `LLM_INTERRUPTED`，不自动重复生成。
 
 机器可读定义：
 
