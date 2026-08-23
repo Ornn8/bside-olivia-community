@@ -63,6 +63,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     element.type = "button";
     element.textContent = label;
     element.className = "px-6 py-2.5 rounded-full border border-grey-5 text-text-body text-label-m font-medium cursor-pointer hover:bg-surface-1 transition-colors";
+    element.style.pointerEvents = "auto";
+    element.style.webkitAppRegion = "no-drag";
     element.addEventListener("click", onClick);
     return element;
   };
@@ -79,7 +81,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const element = document.createElement("article");
     element.style.padding = "14px";
     element.style.borderRadius = "10px";
-    element.style.background = "rgba(255,255,255,0.06)";
+    element.style.background = "var(--el-fill-color-light, rgba(0,0,0,0.035))";
     element.style.display = "grid";
     element.style.gap = "8px";
     return element;
@@ -721,6 +723,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     backdrop.style.placeItems = "center";
     backdrop.style.padding = "40px";
     backdrop.style.background = "rgba(0, 0, 0, 0.62)";
+    backdrop.style.pointerEvents = "auto";
+    backdrop.style.webkitAppRegion = "no-drag";
 
     const dialog = document.createElement("section");
     dialog.setAttribute("role", "dialog");
@@ -731,8 +735,32 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     dialog.style.overflow = "auto";
     dialog.style.borderRadius = "16px";
     dialog.style.padding = "28px";
-    dialog.style.background = "var(--el-bg-color, #202124)";
+    dialog.style.background = "var(--el-bg-color-overlay, var(--el-bg-color, #ffffff))";
     dialog.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
+    dialog.style.color = "var(--el-text-color-primary, #303133)";
+    dialog.style.pointerEvents = "auto";
+    dialog.style.webkitAppRegion = "no-drag";
+
+    const theme = document.createElement("style");
+    theme.textContent = `
+      [${DIALOG_ATTR}] [role="dialog"] .text-text-title,
+      [${DIALOG_ATTR}] [role="dialog"] .text-text-body {
+        color: var(--el-text-color-primary, #303133) !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] .text-text-secondary {
+        color: var(--el-text-color-secondary, #606266) !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] button {
+        color: var(--el-text-color-primary, #303133) !important;
+        border-color: var(--el-border-color, #dcdfe6) !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] button,
+      [${DIALOG_ATTR}] [role="dialog"] input,
+      [${DIALOG_ATTR}] [role="dialog"] textarea {
+        -webkit-app-region: no-drag !important;
+        pointer-events: auto !important;
+      }
+    `;
 
     const header = document.createElement("div");
     header.style.display = "flex";
@@ -771,10 +799,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       for (const tab of tabs.querySelectorAll('[role="tab"]')) {
         const active = tab.dataset.panelId === id;
         tab.setAttribute("aria-selected", active ? "true" : "false");
-        tab.style.background = active ? "rgba(255,255,255,0.12)" : "transparent";
+        tab.style.background = active
+          ? "var(--el-fill-color, rgba(0,0,0,0.06))"
+          : "transparent";
       }
       for (const panel of panels.querySelectorAll('[role="tabpanel"]')) {
-        panel.hidden = panel.dataset.panelId !== id;
+        const active = panel.dataset.panelId === id;
+        panel.hidden = !active;
+        panel.style.display = active ? "grid" : "none";
       }
     };
 
@@ -792,7 +824,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panel.setAttribute("role", "tabpanel");
       panel.style.padding = "18px";
       panel.style.borderRadius = "12px";
-      panel.style.background = "rgba(255,255,255,0.06)";
+      panel.style.background = "var(--el-fill-color-light, rgba(0,0,0,0.035))";
       panel.style.display = "grid";
       panel.style.gap = "14px";
       panel.append(
@@ -804,7 +836,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
 
     dialog.append(header, status, tabs, panels);
-    backdrop.append(dialog);
+    backdrop.append(theme, dialog);
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) {
         backdrop.remove();
