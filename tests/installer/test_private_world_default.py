@@ -15,6 +15,10 @@ def test_start_local_configures_private_world_under_install_data(
     backend = root / "local_backend"
     backend.mkdir(parents=True)
     (backend / "local_server.py").write_text("# synthetic", encoding="utf-8")
+    (backend / "original_client_server.py").write_text(
+        "# synthetic",
+        encoding="utf-8",
+    )
     client = root / "app" / "synthetic" / "Olivia.exe"
     client.parent.mkdir(parents=True)
     client.write_bytes(b"synthetic")
