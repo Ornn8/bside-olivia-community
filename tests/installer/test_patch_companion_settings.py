@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+import zipfile
+
+import pytest
+
+from patch_companion_settings import (
+    BOOTSTRAP_MEMBER,
+    CompanionSettingsPatchError,
+    INDEX_MEMBER,
+    MAIN_MODULE_MEMBER,
+    PATCH_MARKER,
+    patch_companion_settings,
+    validate_api_base,
+)
+
+
+INDEX = """<!doctype html>
+<html><head>
+<script type="module" crossorigin src="./assets/main-917d29fc.js"></script>
+<link rel="stylesheet" href="./assets/index.css">
+</head><body><div id="app"></div></body></html>
+"""
+
+
+def _archive(
+    path: Path,
+    *,
+    index: str = INDEX,
+    main: bytes = b"synthetic-main-module",
+    extra: dict[str, bytes] | None = None,
+) -> Path:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(INDEX_MEMBER, index)
+        archive.writestr(MAIN_MODULE_MEMBER, main)
+        archive.writestr("assets/index.css", b"body{display:block}")
+        for name, value in (extra or {}).items():
+            archive.writestr(name, value)
+    return path
+
+
+def _members(path: Path) -> dict[str, bytes]:
+    with zipfile.ZipFile(path) as archive:
+        return {
+            info.filename: archive.read(info)
+            for info in archive.infolist()
+            if not info.is_dir()
+        }
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_patch_adds_one_settings_shell_and_preserves_existing_assets(tmp_path: Path) -> None:
+    path = _archive(tmp_path / "feapp.dat")
+    before = _members(path)
+    source_hash = _sha(path)
+
+    result = patch_companion_settings(path, "http://127.0.0.1:8899", work_root=tmp_path)
+
+    after = _members(path)
+    assert result["status"] == "PATCHED"
+    assert result["source_sha256"] == source_hash
+    assert result["backup_name"] == "feapp.dat.companion.orig"
+    assert _sha(tmp_path / result["backup_name"]) == source_hash
+    assert set(after) == set(before) | {BOOTSTRAP_MEMBER}
+    for name, value in before.items():
+        if name != INDEX_MEMBER:
+            assert after[name] == value
+    index = after[INDEX_MEMBER].decode()
+    bootstrap = after[BOOTSTRAP_MEMBER].decode()
+    assert index.count(PATCH_MARKER) == 1
+    assert 'data-api-base="http://127.0.0.1:8899/"' in index
+    assert "data-olivia-companion-settings-root" in bootstrap
+    assert 'const STATUS_PATH = "/toy/companion/status";' in bootstrap
+    assert "长期记忆" in bootstrap
+    assert "私人世界" in bootstrap
+    assert "MutationObserver" in bootstrap
+    assert "<iframe" not in bootstrap.casefold()
+    assert "window.open" not in bootstrap
+    assert "http://" not in bootstrap
+    assert "https://" not in bootstrap
+
+
+def test_patch_is_idempotent_for_the_same_api_base(tmp_path: Path) -> None:
+    path = _archive(tmp_path / "feapp.dat")
+    first = patch_companion_settings(path, "http://localhost:8899", work_root=tmp_path)
+    first_hash = _sha(path)
+
+    second = patch_companion_settings(path, "http://localhost:8899/", work_root=tmp_path)
+
+    assert first["status"] == "PATCHED"
+    assert second["status"] == "ALREADY_PATCHED"
+    assert _sha(path) == first_hash
+    assert _members(path)[INDEX_MEMBER].decode().count(PATCH_MARKER) == 1
+
+
+def test_repatch_with_a_different_api_base_is_rejected_without_mutation(tmp_path: Path) -> None:
+    path = _archive(tmp_path / "feapp.dat")
+    patch_companion_settings(path, "http://127.0.0.1:8899", work_root=tmp_path)
+    before = path.read_bytes()
+
+    with pytest.raises(CompanionSettingsPatchError) as error:
+        patch_companion_settings(path, "http://127.0.0.1:8900", work_root=tmp_path)
+
+    assert error.value.code == "COMPANION_API_BASE_MISMATCH"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "https://127.0.0.1:8899",
+        "http://example.invalid:8899",
+        "http://127.0.0.1",
+        "http://user@127.0.0.1:8899",
+        "http://127.0.0.1:8899/base",
+        "http://127.0.0.1:8899?token=x",
+        "http://127.0.0.1:8899/#fragment",
+    ],
+)
+def test_api_base_requires_an_explicit_loopback_http_port(value: str | None) -> None:
+    with pytest.raises(CompanionSettingsPatchError):
+        validate_api_base(value)
+
+
+def test_missing_or_duplicate_module_anchor_rolls_back(tmp_path: Path) -> None:
+    cases = (
+        INDEX.replace(
+            '<script type="module" crossorigin src="./assets/main-917d29fc.js"></script>',
+            "",
+        ),
+        INDEX.replace(
+            '<script type="module" crossorigin src="./assets/main-917d29fc.js"></script>',
+            '<script type="module" crossorigin src="./assets/main-917d29fc.js"></script>' * 2,
+        ),
+    )
+    for number, index in enumerate(cases):
+        path = _archive(tmp_path / f"case-{number}.dat", index=index)
+        before = path.read_bytes()
+        with pytest.raises(CompanionSettingsPatchError) as error:
+            patch_companion_settings(path, "http://127.0.0.1:8899", work_root=tmp_path)
+        assert error.value.code == "COMPANION_MODULE_ANCHOR_INVALID"
+        assert path.read_bytes() == before
+
+
+def test_missing_main_module_and_incomplete_patch_are_rejected(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-main.dat"
+    with zipfile.ZipFile(missing, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(INDEX_MEMBER, INDEX)
+    with pytest.raises(CompanionSettingsPatchError) as missing_error:
+        patch_companion_settings(missing, "http://127.0.0.1:8899", work_root=tmp_path)
+    assert missing_error.value.code == "COMPANION_MAIN_MODULE_MISSING"
+
+    incomplete = _archive(
+        tmp_path / "incomplete.dat",
+        index=INDEX.replace(
+            "</head>",
+            '<script data-olivia-companion-settings="p03.original-settings-shell.v1" '
+            'data-api-base="http://127.0.0.1:8899/"></script></head>',
+        ),
+    )
+    with pytest.raises(CompanionSettingsPatchError) as incomplete_error:
+        patch_companion_settings(incomplete, "http://127.0.0.1:8899", work_root=tmp_path)
+    assert incomplete_error.value.code == "COMPANION_PATCH_INCOMPLETE"
+
+
+def test_unsafe_archive_member_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "unsafe.dat"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(INDEX_MEMBER, INDEX)
+        archive.writestr(MAIN_MODULE_MEMBER, b"main")
+        archive.writestr("../outside.js", b"escape")
+
+    with pytest.raises(CompanionSettingsPatchError) as error:
+        patch_companion_settings(path, "http://127.0.0.1:8899", work_root=tmp_path)
+
+    assert error.value.code == "COMPANION_ARCHIVE_UNSAFE"
+
+
+def test_existing_backup_is_never_overwritten(tmp_path: Path) -> None:
+    path = _archive(tmp_path / "feapp.dat")
+    backup = _archive(tmp_path / "feapp.dat.companion.orig", main=b"first-backup")
+    backup_before = backup.read_bytes()
+
+    patch_companion_settings(path, "http://127.0.0.1:8899", work_root=tmp_path)
+
+    assert backup.read_bytes() == backup_before
