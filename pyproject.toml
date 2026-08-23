@@ -40,6 +40,7 @@ py-modules = [
     "local_server",
     "mem0_memory",
     "memory",
+    "original_client_letter_contract",
     "patch_feapp",
     "persona_loader",
     "persona_assembly",
