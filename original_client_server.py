@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
+from control_center.private_world_api import PrivateWorldControlAPI
 from control_center.private_world_candidate_api import CandidateReviewBackend
 from control_center.private_world_candidate_backend import (
     SQLiteCandidateReviewBackend,
@@ -36,6 +37,7 @@ from original_client_companion_mutation_api import (
 )
 from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
+    DirectOriginalClientPrivateWorldMutationBackend,
     MemoryAdminMutationService,
 )
 from original_client_letter_contract import (
@@ -287,8 +289,12 @@ class OriginalClientServerRuntime:
     memory_admin: ConversationMemoryAdminService | None
     private_world_read: PrivateWorldControlReadAdapter | None
     candidate_store: SQLitePrivateWorldCandidateStore | None
+    private_world_commands: PrivateWorldControlAPI | None
     candidate_decisions: CandidateReviewBackend | None
     mutation_backend: DirectOriginalClientCompanionMutationBackend
+    private_world_mutation_backend: (
+        DirectOriginalClientPrivateWorldMutationBackend
+    )
 
     def public_status(self) -> dict[str, object]:
         """Return component presence only; never paths, content, or hidden scores."""
@@ -309,6 +315,7 @@ def create_original_client_server_runtime(
     memory_admin: ConversationMemoryAdminService | None = None,
     private_world: PrivateWorldPort | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
+    private_world_commands: PrivateWorldControlAPI | None = None,
     candidate_decisions: CandidateReviewBackend | None = None,
     letter_collection: LetterCollection | None = None,
     trusted_origins: Sequence[str] = (),
@@ -336,6 +343,11 @@ def create_original_client_server_runtime(
         memory_admin=mutation_memory,
         candidate_decisions=candidate_decisions,
     )
+    private_world_mutation_backend = (
+        DirectOriginalClientPrivateWorldMutationBackend(
+            private_world_commands
+        )
+    )
     app = web.Application()
     origins = tuple(trusted_origins)
     mount_original_companion_read_api(
@@ -346,6 +358,7 @@ def create_original_client_server_runtime(
     mount_original_client_companion_mutation_api(
         app,
         mutation_backend,
+        private_world_backend=private_world_mutation_backend,
         trusted_origins=origins,
     )
     if letter_collection is not None:
@@ -357,13 +370,17 @@ def create_original_client_server_runtime(
     # Keep this last.  The original server intentionally owns a catch-all route.
     app.router.add_route("*", "/{tail:.*}", fallback_handler)
     runtime = OriginalClientServerRuntime(
-        app,
-        backend,
-        memory_admin,
-        private_read,
-        candidates,
-        candidate_decisions,
-        mutation_backend,
+        app=app,
+        backend=backend,
+        memory_admin=memory_admin,
+        private_world_read=private_read,
+        candidate_store=candidates,
+        private_world_commands=private_world_commands,
+        candidate_decisions=candidate_decisions,
+        mutation_backend=mutation_backend,
+        private_world_mutation_backend=(
+            private_world_mutation_backend
+        ),
     )
     app[_RUNTIME_KEY] = runtime
     return runtime
@@ -415,18 +432,19 @@ def _configured_private_world(
 ) -> tuple[
     PrivateWorldPort | None,
     SQLitePrivateWorldCandidateStore | None,
+    PrivateWorldControlAPI | None,
     CandidateReviewBackend | None,
 ]:
     committer = getattr(server_module, "private_world_committer", None)
     if committer is None:
-        return None, None, None
+        return None, None, None, None
     port = getattr(server_module, "private_world_port", None)
     if not isinstance(port, PrivateWorldPort):
-        return None, None, None
+        return None, None, None, None
 
     path, _reason, enabled = resolve_private_world_database(environ)
     if not enabled or path is None or not path.is_file():
-        return port, None, None
+        return port, None, None, None
     try:
         candidates = SQLitePrivateWorldCandidateStore(path)
     except (
@@ -437,26 +455,41 @@ def _configured_private_world(
         TypeError,
         ValueError,
     ):
-        return port, None, None
+        return port, None, None, None
+
+    ledger = getattr(committer, "ledger", None)
+    if not isinstance(ledger, SQLitePrivateWorldLedger):
+        return port, candidates, None, None
+    try:
+        command_service = PrivateWorldCommandService(ledger)
+        private_world_commands = PrivateWorldControlAPI(
+            ledger,
+            command_service,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return port, candidates, None, None
 
     candidate_decisions: CandidateReviewBackend | None = None
-    ledger = getattr(committer, "ledger", None)
-    if isinstance(ledger, SQLitePrivateWorldLedger):
-        try:
-            candidate_decisions = SQLiteCandidateReviewBackend(
-                candidates,
-                PrivateWorldCommandService(ledger),
-            )
-        except (
-            PrivateWorldCandidateError,
-            LedgerWriteError,
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-        ):
-            candidate_decisions = None
-    return port, candidates, candidate_decisions
+    try:
+        candidate_decisions = SQLiteCandidateReviewBackend(
+            candidates,
+            command_service,
+        )
+    except (
+        PrivateWorldCandidateError,
+        LedgerWriteError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ):
+        candidate_decisions = None
+    return (
+        port,
+        candidates,
+        private_world_commands,
+        candidate_decisions,
+    )
 
 
 def create_configured_original_client_server_runtime(
@@ -475,7 +508,12 @@ def create_configured_original_client_server_runtime(
         getattr(server_module, "TRUSTED_FRONTEND_ORIGINS", ())
     )
     memory_admin = _configured_memory_admin(server_module, values)
-    private_world, candidates, candidate_decisions = _configured_private_world(
+    (
+        private_world,
+        candidates,
+        private_world_commands,
+        candidate_decisions,
+    ) = _configured_private_world(
         server_module,
         values,
     )
@@ -485,6 +523,7 @@ def create_configured_original_client_server_runtime(
         memory_admin=memory_admin,
         private_world=private_world,
         candidates=candidates,
+        private_world_commands=private_world_commands,
         candidate_decisions=candidate_decisions,
         letter_collection=collection if callable(collection) else None,
         trusted_origins=origins,

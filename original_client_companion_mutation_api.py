@@ -22,6 +22,9 @@ COMPANION_MUTATION_SCHEMA = "p03.original-companion-mutation.v1"
 MEMORY_CORRECT_PATH = "/toy/companion/memory/correct"
 MEMORY_DELETE_PATH = "/toy/companion/memory/delete"
 CANDIDATE_DECISION_PATH = "/toy/companion/private-world/candidates/{candidate_id}/{decision}"
+PRIVATE_WORLD_NICKNAME_PATH = "/toy/companion/private-world/nickname"
+PRIVATE_WORLD_HOME_ACCESS_PATH = "/toy/companion/private-world/home-access"
+PRIVATE_WORLD_CONTINUATION_PATH = "/toy/companion/private-world/continuation"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
 _MAX_BODY_BYTES = 8_192
@@ -30,9 +33,23 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _BACKEND_KEY = web.AppKey("original_companion_mutation_backend", object)
+_PRIVATE_WORLD_BACKEND_KEY = web.AppKey(
+    "original_private_world_mutation_backend",
+    object,
+)
 _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_mutation_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_companion_mutation_mounted", bool)
 _ALLOWED_DECISIONS = frozenset({"approve", "reject"})
+_ALLOWED_NICKNAME_ACTIONS = frozenset({"grant", "revoke"})
+_ALLOWED_HOME_ACCESS = frozenset(
+    {"no_access", "visit_access", "errand_access", "domestic_access"}
+)
+_ALLOWED_CONTINUATION_ACTIONS = frozenset(
+    {"upsert", "set_awareness", "delete"}
+)
+_ALLOWED_CONTINUATION_AWARENESS = frozenset(
+    {"control_only", "pending", "character_known"}
+)
 
 
 class OriginalClientCompanionMutationError(RuntimeError):
@@ -107,6 +124,19 @@ class OriginalClientCompanionMutationBackend(Protocol):
     ) -> CompanionMutationResult: ...
 
 
+@runtime_checkable
+class OriginalClientPrivateWorldMutationBackend(Protocol):
+    def execute_private_world(
+        self,
+        *,
+        operation: str,
+        payload: Mapping[str, object],
+        request_id: str,
+        reason: str,
+        occurred_at: str,
+    ) -> CompanionMutationResult: ...
+
+
 def _identifier(value: object, *, code: str, request: bool = False) -> str:
     pattern = _REQUEST_ID_RE if request else _ID_RE
     if not isinstance(value, str) or not pattern.fullmatch(value):
@@ -127,19 +157,19 @@ def _text(value: object, *, maximum: int, code: str) -> str:
     return normalized
 
 
-def _timestamp(value: object) -> str:
+def _timestamp(
+    value: object,
+    *,
+    code: str = "COMPANION_DECISION_TIME_INVALID",
+) -> str:
     if not isinstance(value, str):
-        raise OriginalClientCompanionMutationError("COMPANION_DECISION_TIME_INVALID", status=400)
+        raise OriginalClientCompanionMutationError(code, status=400)
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise OriginalClientCompanionMutationError(
-            "COMPANION_DECISION_TIME_INVALID", status=400
-        ) from exc
+        raise OriginalClientCompanionMutationError(code, status=400) from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise OriginalClientCompanionMutationError(
-            "COMPANION_DECISION_TIME_INVALID", status=400
-        )
+        raise OriginalClientCompanionMutationError(code, status=400)
     return value
 
 
@@ -248,7 +278,18 @@ def _backend(request: web.Request) -> OriginalClientCompanionMutationBackend:
     return backend
 
 
-async def _body(request: web.Request, *, fields: frozenset[str]) -> Mapping[str, object]:
+def _private_world_backend(
+    request: web.Request,
+) -> OriginalClientPrivateWorldMutationBackend:
+    backend = request.app.get(_PRIVATE_WORLD_BACKEND_KEY)
+    if not isinstance(backend, OriginalClientPrivateWorldMutationBackend):
+        raise OriginalClientCompanionMutationError(
+            "PRIVATE_WORLD_MUTATION_DISABLED", status=503
+        )
+    return backend
+
+
+async def _json_body(request: web.Request) -> Mapping[str, object]:
     if request.content_length is not None and request.content_length > _MAX_BODY_BYTES:
         raise OriginalClientCompanionMutationError(
             "COMPANION_REQUEST_TOO_LARGE", status=413
@@ -263,7 +304,18 @@ async def _body(request: web.Request, *, fields: frozenset[str]) -> Mapping[str,
         raise OriginalClientCompanionMutationError(
             "COMPANION_JSON_INVALID", status=400
         ) from exc
-    if not isinstance(value, dict) or set(value) != set(fields):
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) for key in value
+    ):
+        raise OriginalClientCompanionMutationError(
+            "COMPANION_FIELDS_INVALID", status=400
+        )
+    return value
+
+
+async def _body(request: web.Request, *, fields: frozenset[str]) -> Mapping[str, object]:
+    value = await _json_body(request)
+    if set(value) != set(fields):
         raise OriginalClientCompanionMutationError(
             "COMPANION_FIELDS_INVALID", status=400
         )
@@ -387,10 +439,254 @@ async def _decide_candidate(request: web.Request) -> web.Response:
         )
 
 
+
+async def _private_world_nickname(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _body(
+            request,
+            fields=frozenset(
+                {"action", "nickname", "request_id", "reason", "occurred_at"}
+            ),
+        )
+        action = _text(
+            value["action"],
+            maximum=16,
+            code="PRIVATE_WORLD_NICKNAME_ACTION_INVALID",
+        )
+        if action not in _ALLOWED_NICKNAME_ACTIONS:
+            raise OriginalClientCompanionMutationError(
+                "PRIVATE_WORLD_NICKNAME_ACTION_INVALID",
+                status=400,
+            )
+        result = await asyncio.to_thread(
+            _private_world_backend(request).execute_private_world,
+            operation="nickname",
+            payload={
+                "action": action,
+                "nickname": _text(
+                    value["nickname"],
+                    maximum=40,
+                    code="PRIVATE_WORLD_NICKNAME_INVALID",
+                ),
+            },
+            request_id=_identifier(
+                value["request_id"],
+                code="COMPANION_REQUEST_ID_INVALID",
+                request=True,
+            ),
+            reason=_text(
+                value["reason"],
+                maximum=500,
+                code="COMPANION_REASON_INVALID",
+            ),
+            occurred_at=_timestamp(
+                value["occurred_at"],
+                code="PRIVATE_WORLD_OCCURRED_AT_INVALID",
+            ),
+        )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_INVALID",
+                status=503,
+            )
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_UNAVAILABLE",
+                status=503,
+            ),
+            origin,
+        )
+
+
+async def _private_world_home_access(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _body(
+            request,
+            fields=frozenset(
+                {"home_access", "request_id", "reason", "occurred_at"}
+            ),
+        )
+        home_access = _text(
+            value["home_access"],
+            maximum=32,
+            code="PRIVATE_WORLD_HOME_ACCESS_INVALID",
+        )
+        if home_access not in _ALLOWED_HOME_ACCESS:
+            raise OriginalClientCompanionMutationError(
+                "PRIVATE_WORLD_HOME_ACCESS_INVALID",
+                status=400,
+            )
+        result = await asyncio.to_thread(
+            _private_world_backend(request).execute_private_world,
+            operation="home_access",
+            payload={"home_access": home_access},
+            request_id=_identifier(
+                value["request_id"],
+                code="COMPANION_REQUEST_ID_INVALID",
+                request=True,
+            ),
+            reason=_text(
+                value["reason"],
+                maximum=500,
+                code="COMPANION_REASON_INVALID",
+            ),
+            occurred_at=_timestamp(
+                value["occurred_at"],
+                code="PRIVATE_WORLD_OCCURRED_AT_INVALID",
+            ),
+        )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_INVALID",
+                status=503,
+            )
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_UNAVAILABLE",
+                status=503,
+            ),
+            origin,
+        )
+
+
+async def _private_world_continuation(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _json_body(request)
+        action = _text(
+            value.get("action"),
+            maximum=32,
+            code="PRIVATE_WORLD_CONTINUATION_ACTION_INVALID",
+        )
+        if action not in _ALLOWED_CONTINUATION_ACTIONS:
+            raise OriginalClientCompanionMutationError(
+                "PRIVATE_WORLD_CONTINUATION_ACTION_INVALID",
+                status=400,
+            )
+        common_fields = {
+            "action",
+            "fact_id",
+            "request_id",
+            "reason",
+            "occurred_at",
+        }
+        payload: dict[str, object] = {
+            "action": action,
+            "fact_id": _identifier(
+                value.get("fact_id"),
+                code="PRIVATE_WORLD_CONTINUATION_ID_INVALID",
+            ),
+        }
+        if action == "upsert":
+            expected = common_fields | {
+                "statement",
+                "awareness",
+                "confirm_character_known",
+            }
+            if set(value) != expected:
+                raise OriginalClientCompanionMutationError(
+                    "COMPANION_FIELDS_INVALID",
+                    status=400,
+                )
+            payload["statement"] = _text(
+                value["statement"],
+                maximum=2_000,
+                code="PRIVATE_WORLD_CONTINUATION_STATEMENT_INVALID",
+            )
+        elif action == "set_awareness":
+            expected = common_fields | {
+                "awareness",
+                "confirm_character_known",
+            }
+            if set(value) != expected:
+                raise OriginalClientCompanionMutationError(
+                    "COMPANION_FIELDS_INVALID",
+                    status=400,
+                )
+        elif set(value) != common_fields:
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_FIELDS_INVALID",
+                status=400,
+            )
+
+        if action in {"upsert", "set_awareness"}:
+            awareness = _text(
+                value["awareness"],
+                maximum=32,
+                code="PRIVATE_WORLD_CONTINUATION_AWARENESS_INVALID",
+            )
+            if awareness not in _ALLOWED_CONTINUATION_AWARENESS:
+                raise OriginalClientCompanionMutationError(
+                    "PRIVATE_WORLD_CONTINUATION_AWARENESS_INVALID",
+                    status=400,
+                )
+            confirmation = value["confirm_character_known"]
+            if type(confirmation) is not bool:
+                raise OriginalClientCompanionMutationError(
+                    "PRIVATE_WORLD_CHARACTER_KNOWN_CONFIRMATION_INVALID",
+                    status=400,
+                )
+            if awareness == "character_known" and confirmation is not True:
+                raise OriginalClientCompanionMutationError(
+                    "PRIVATE_WORLD_CHARACTER_KNOWN_CONFIRMATION_REQUIRED",
+                    status=403,
+                )
+            payload["awareness"] = awareness
+
+        result = await asyncio.to_thread(
+            _private_world_backend(request).execute_private_world,
+            operation="continuation",
+            payload=payload,
+            request_id=_identifier(
+                value["request_id"],
+                code="COMPANION_REQUEST_ID_INVALID",
+                request=True,
+            ),
+            reason=_text(
+                value["reason"],
+                maximum=500,
+                code="COMPANION_REASON_INVALID",
+            ),
+            occurred_at=_timestamp(
+                value["occurred_at"],
+                code="PRIVATE_WORLD_OCCURRED_AT_INVALID",
+            ),
+        )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_INVALID",
+                status=503,
+            )
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_UNAVAILABLE",
+                status=503,
+            ),
+            origin,
+        )
+
 def mount_original_client_companion_mutation_api(
     app: web.Application,
     backend: OriginalClientCompanionMutationBackend,
     *,
+    private_world_backend: OriginalClientPrivateWorldMutationBackend | None = None,
     trusted_origins: tuple[str, ...] = (),
 ) -> None:
     """Mount the bounded mutation contract on an existing local application."""
@@ -399,9 +695,16 @@ def mount_original_client_companion_mutation_api(
         raise TypeError("an aiohttp application is required")
     if not isinstance(backend, OriginalClientCompanionMutationBackend):
         raise TypeError("a typed companion mutation backend is required")
+    if private_world_backend is not None and not isinstance(
+        private_world_backend,
+        OriginalClientPrivateWorldMutationBackend,
+    ):
+        raise TypeError("a typed PrivateWorld mutation backend is required")
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("ORIGINAL_COMPANION_MUTATION_ALREADY_MOUNTED")
     app[_BACKEND_KEY] = backend
+    if private_world_backend is not None:
+        app[_PRIVATE_WORLD_BACKEND_KEY] = private_world_backend
     app[_TRUSTED_ORIGINS_KEY] = _normalize_origins(tuple(trusted_origins))
     app[_MOUNTED_KEY] = True
     app.router.add_post(MEMORY_CORRECT_PATH, _correct_memory)
@@ -410,6 +713,18 @@ def mount_original_client_companion_mutation_api(
     app.router.add_options(MEMORY_DELETE_PATH, _preflight)
     app.router.add_post(CANDIDATE_DECISION_PATH, _decide_candidate)
     app.router.add_options(CANDIDATE_DECISION_PATH, _preflight)
+    app.router.add_post(PRIVATE_WORLD_NICKNAME_PATH, _private_world_nickname)
+    app.router.add_options(PRIVATE_WORLD_NICKNAME_PATH, _preflight)
+    app.router.add_post(
+        PRIVATE_WORLD_HOME_ACCESS_PATH,
+        _private_world_home_access,
+    )
+    app.router.add_options(PRIVATE_WORLD_HOME_ACCESS_PATH, _preflight)
+    app.router.add_post(
+        PRIVATE_WORLD_CONTINUATION_PATH,
+        _private_world_continuation,
+    )
+    app.router.add_options(PRIVATE_WORLD_CONTINUATION_PATH, _preflight)
 
 
 __all__ = [
@@ -420,7 +735,11 @@ __all__ = [
     "CompanionMutationResult",
     "MEMORY_CORRECT_PATH",
     "MEMORY_DELETE_PATH",
+    "PRIVATE_WORLD_CONTINUATION_PATH",
+    "PRIVATE_WORLD_HOME_ACCESS_PATH",
+    "PRIVATE_WORLD_NICKNAME_PATH",
     "OriginalClientCompanionMutationBackend",
+    "OriginalClientPrivateWorldMutationBackend",
     "OriginalClientCompanionMutationError",
     "mount_original_client_companion_mutation_api",
 ]
