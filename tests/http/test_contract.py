@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,12 @@ def reset_local_store():
     local_server.store.letters.clear()
     local_server.store.legacy_letters.clear()
     local_server.store.midi_jobs.clear()
+    local_server.store.request_keys.clear()
     yield
     local_server.store.letters.clear()
     local_server.store.legacy_letters.clear()
     local_server.store.midi_jobs.clear()
+    local_server.store.request_keys.clear()
 
 
 def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities() -> None:
@@ -74,10 +77,45 @@ def test_empty_letter_and_music_paths_are_explicitly_empty() -> None:
     assert songs["data"]["source"] == "empty"
 
 
+def test_letter_gateway_preserves_durable_request_id_to_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    seen_request_ids: list[str | None] = []
+
+    class CapturingGateway:
+        async def complete(self, _messages, *, request_id=None):
+            seen_request_ids.append(request_id)
+            return local_server.GatewayResponse(
+                text="synthetic reply",
+                request_id=request_id or "provider-generated-id",
+                provider="mock",
+                model="mock-model",
+            )
+
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", CapturingGateway())
+    durable_request_id = "letter-reply:synthetic-letter-id"
+
+    response = asyncio.run(
+        local_server._LetterGateway(local_server.letters_adapter).complete(
+            [{"role": "user", "content": "synthetic input"}],
+            request_id=durable_request_id,
+        )
+    )
+
+    assert response.request_id == durable_request_id
+    assert seen_request_ids == [durable_request_id]
+
+
 def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     import local_server
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply",
+    )
     sent = asyncio.run(
         local_server.route(
             "POST",
@@ -99,6 +137,252 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     assert detail["data"]["reply_text"] == "synthetic reply"
     assert detail["data"]["reply_content"] == "synthetic reply"
     assert detail["data"]["read_only"] is False
+
+
+def test_http_send_acknowledges_before_slow_reply_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    reply_started = threading.Event()
+    allow_reply = threading.Event()
+
+    def slow_reply(*_args, **_kwargs) -> str:
+        reply_started.set()
+        allow_reply.wait(timeout=2.0)
+        return "synthetic delayed reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", slow_reply)
+
+    async def exercise() -> tuple[dict, dict, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            pending_response = asyncio.create_task(
+                client.post(
+                    "/toy/letter/send",
+                    json={"content": "synthetic slow input"},
+                )
+            )
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(pending_response),
+                    timeout=0.2,
+                )
+                sent = await response.json()
+                duplicate_response = await client.post(
+                    "/toy/letter/send",
+                    json={"content": "synthetic slow input"},
+                )
+                duplicate = await duplicate_response.json()
+            finally:
+                allow_reply.set()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            detail_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": sent["data"]["letter_id"]},
+            )
+            return sent, duplicate, await detail_response.json()
+
+    sent, duplicate, detail = asyncio.run(exercise())
+
+    assert reply_started.wait(timeout=0.2)
+    assert sent["code"] == 0
+    assert sent["data"]["status"] == "PENDING"
+    assert duplicate["data"]["letter_id"] == sent["data"]["letter_id"]
+    assert len(local_server.store.letters) == 1
+    assert detail["data"]["letter_status"] == "COMPLETED"
+    assert detail["data"]["reply_text"] == "synthetic delayed reply"
+
+
+def test_persisted_pending_reply_resumes_when_http_runtime_starts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    generated_contents: list[str] = []
+
+    def recovered_reply(content: str, *_args, **_kwargs) -> str:
+        generated_contents.append(content)
+        return "synthetic recovered reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", recovered_reply)
+    pending = {
+        "letter_id": "letter-restart-pending",
+        "content": "synthetic persisted input",
+        "material": {},
+        "letter_status": "PENDING",
+        "audit_status": 2,
+        "is_read": 1,
+        "created_at": 100,
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "triage": {"status": "pending"},
+        "music_duration_seconds": 118,
+    }
+    local_server.store.letters.append(pending)
+    local_server.store.letters.append({
+        **pending,
+        "letter_id": "letter-restart-uncertain",
+        "content": "synthetic uncertain provider input",
+        "letter_status": "PROCESSING",
+    })
+    local_server.store.request_keys["restart-key"] = pending["letter_id"]
+    local_server._persist_store_state()
+    local_server.store.letters.clear()
+    local_server.store.request_keys.clear()
+    local_server._load_store_state()
+
+    async def exercise() -> dict:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        local_server.install_reply_task_lifecycle(app)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": pending["letter_id"]},
+            )
+            interrupted_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": "letter-restart-uncertain"},
+            )
+            return await response.json(), await interrupted_response.json()
+
+    detail, interrupted = asyncio.run(exercise())
+    persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+
+    assert detail["data"]["letter_status"] == "COMPLETED"
+    assert detail["data"]["reply_text"] == "synthetic recovered reply"
+    assert interrupted["data"]["letter_status"] == "FAILED"
+    assert interrupted["data"]["error_code"] == "LLM_INTERRUPTED"
+    assert generated_contents == ["synthetic persisted input"]
+    persisted_by_id = {item["letter_id"]: item for item in persisted["letters"]}
+    assert persisted_by_id[pending["letter_id"]]["letter_status"] == "COMPLETED"
+    assert persisted_by_id["letter-restart-uncertain"]["letter_status"] == "FAILED"
+    assert persisted["request_keys"]["restart-key"] == pending["letter_id"]
+
+
+def test_failed_idempotent_request_can_retry_with_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    allow_success = False
+
+    def reply(*_args, **_kwargs):
+        if not allow_success:
+            raise local_server.LLMError("LLM_TIMEOUT")
+        return "synthetic recovered reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    body = {
+        "content": "synthetic idempotent retry",
+        "material": {"stamp_id": "stamp-a"},
+        "idempotency_key": "retry-key",
+    }
+
+    first = asyncio.run(local_server.route("POST", "/toy/letter/send", body, {}))
+    assert local_server.store.letters[0]["letter_status"] == "FAILED"
+    allow_success = True
+    second = asyncio.run(local_server.route("POST", "/toy/letter/send", body, {}))
+
+    assert first["code"] == 503
+    assert second["code"] == 0
+    assert second["data"]["status"] == "COMPLETED"
+    assert second["data"]["letter_id"] != first["data"]["letter_id"]
+    assert local_server.store.request_keys["retry-key"] == second["data"]["letter_id"]
+
+
+def test_unexpected_background_failure_cannot_leave_processing_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    async def crash(*_args, **_kwargs):
+        raise KeyError("synthetic private provider failure")
+
+    monkeypatch.setattr(local_server.reply_pipeline, "run", crash)
+
+    async def exercise() -> tuple[dict, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            sent_response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic unexpected failure"},
+            )
+            sent = await sent_response.json()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            detail_response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": sent["data"]["letter_id"]},
+            )
+            return sent, await detail_response.json()
+
+    sent, detail = asyncio.run(exercise())
+
+    assert sent["data"]["status"] == "PENDING"
+    assert detail["data"]["letter_status"] == "FAILED"
+    assert detail["data"]["error_code"] == "LLM_UNAVAILABLE"
+
+
+def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None:
+    import local_server
+
+    original = {
+        "letter_id": "letter-original",
+        "content": "synthetic input",
+        "material": {"stamp_id": "stamp-a"},
+        "letter_status": "COMPLETED",
+        "created_at": 100,
+    }
+    local_server.store.letters.append(original)
+
+    assert (
+        local_server._recent_active_duplicate(
+            "synthetic input",
+            {"stamp_id": "stamp-a"},
+            now=159,
+        )
+        is original
+    )
+    assert (
+        local_server._recent_active_duplicate(
+            "synthetic input",
+            {"stamp_id": "stamp-b"},
+            now=159,
+        )
+        is None
+    )
+    assert (
+        local_server._recent_active_duplicate(
+            "synthetic input",
+            {"stamp_id": "stamp-a"},
+            now=161,
+        )
+        is None
+    )
+    original["letter_status"] = "FAILED"
+    assert (
+        local_server._recent_active_duplicate(
+            "synthetic input",
+            {"stamp_id": "stamp-a"},
+            now=159,
+        )
+        is None
+    )
 
 
 def test_missing_fields_and_invalid_json_never_become_success() -> None:
@@ -152,7 +436,7 @@ def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
 ) -> None:
     import local_server
 
-    def fail(_content, _context=""):
+    def fail(_content, _context="", **_kwargs):
         raise local_server.LLMError("LLM_TIMEOUT")
 
     monkeypatch.setattr(local_server.letters_adapter, "reply", fail)
@@ -487,7 +771,11 @@ def test_request_and_reply_values_never_enter_runtime_logs(
 
     import local_server
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", lambda *_args: "synthetic reply secret")
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply secret",
+    )
     capsys.readouterr()
 
     async def exercise():

@@ -18,7 +18,7 @@ B11 的可执行验收 ledger 与冻结 reviewer 流程见 [`B11_ACCEPTANCE_STAN
 ## 1. 当前事实（以文件和命令为准）
 
 - 当前只有本地 HTTP 兼容原型，没有可运行的原版 WebSocket、Live、ASR、TTS 或完整降级链路。
-- `local_server.py` 中运行时代码的官方转发路径已移除；LLM 失败返回实际 HTTP 503，MIDI 生成和未实现写操作返回实际 HTTP 501；`NOT_IMPLEMENTED` 是终态。
+- `local_server.py` 中运行时代码的官方转发路径已移除；发信先确认 PENDING，LLM 失败随后写入可查询终态，MIDI 生成和未实现写操作返回实际 HTTP 501；`NOT_IMPLEMENTED` 是终态。
 - 当前 baseline hardening pytest 收集 25 项；这只是本批安全/状态回归，不代表整产品全绿。根目录 `test_cosyvoice3.py` 仍是历史一次性脚本，旧收集曾为 0。
 - 本机目录快照：`0.0.9.615` 为 3,711,516,860 bytes / 183 文件；`CosyVoice` 为 15,484,055,181 / 58,681；`LiveTalking` 为 9,928,926,801 / 67,626；`olivia_assets` 为 5,004,535,016 / 145；`assets_extracted` 为 15,159,776 / 24；`output_audio` 为 112,759,722 / 12。它们均不进入提交。
 - 本机有 5 对 `letter_pairs` 原文，仅作本地审计输入，不跟踪原文；真实配置、记忆、日志、模型、媒体和 `.evidence/` 均被忽略。

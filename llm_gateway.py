@@ -478,10 +478,13 @@ class OpenAICompatibleAdapter(Gateway):
         suffix = "responses" if self.config.api_style == "responses" else "chat/completions"
         return self.config.base_url.rstrip("/") + "/" + suffix
 
-    def _headers(self, key: str | None) -> dict[str, str]:
+    def _headers(self, key: str | None, request_id: str) -> dict[str, str]:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if key:
             headers["Authorization"] = "Bearer " + key
+        if request_id.startswith("letter-reply:"):
+            headers["Idempotency-Key"] = request_id
+        headers["X-Request-ID"] = request_id
         return headers
 
     def _body(self, messages: Sequence[Mapping[str, Any]], *, stream: bool) -> dict[str, Any]:
@@ -506,7 +509,11 @@ class OpenAICompatibleAdapter(Gateway):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
-                    async with session.post(self._url(), json=body, headers=self._headers(key)) as response:
+                    async with session.post(
+                        self._url(),
+                        json=body,
+                        headers=self._headers(key, request_id),
+                    ) as response:
                         status = response.status
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
@@ -556,7 +563,11 @@ class OpenAICompatibleAdapter(Gateway):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
-                    async with session.post(self._url(), json=body, headers=self._headers(key)) as response:
+                    async with session.post(
+                        self._url(),
+                        json=body,
+                        headers=self._headers(key, request),
+                    ) as response:
                         status = response.status
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:

@@ -64,12 +64,12 @@ stream_delta (零个或多个，仅内部事件)
 completed | cancelled | retryable_error | terminal_error
 ```
 
-事件队列有上限，生产者在队列满时等待，形成可测试的背压；消费方不应无限制地缓存正文。编排超时会取消当前 provider task 并发出 `retryable_error/LLM_TIMEOUT`；用户取消只发出 `cancelled`，不会伪造 `completed`。HTTP B02 目前等待非流式终态，不把这个内部接口包装成原生 Live 或 SSE。
+事件队列有上限，生产者在队列满时等待，形成可测试的背压；消费方不应无限制地缓存正文。编排超时会取消当前 provider task 并发出 `retryable_error/LLM_TIMEOUT`；用户取消只发出 `cancelled`，不会伪造 `completed`。HTTP B02 先确认持久化的 `PENDING` 信件，再在后台等待非流式终态；派发前写入 `PROCESSING`，携带稳定请求/幂等标识，崩溃后的不确定调用不会自动重发。它不是原生 Live 或 SSE。
 
 ## B02 响应、错误和降级
 
 - 正常回信仍为 HTTP `200`，并保留 `letter_id`、`letterId`、`status=COMPLETED` 等 B02 字段。
-- 未配置 provider、网络失败、429/5xx 重试耗尽或超时：HTTP `503`，`data.status=FAILED`，不写 `reply_text` 占位文本；默认 `LLM_UNAVAILABLE`/`LLM_TIMEOUT` 为可重试。
+- 未配置 provider、网络失败、429/5xx 重试耗尽或超时：后台将信件置为 `FAILED`，detail 暴露脱敏错误码和 `retryable`，不写 `reply_text` 占位文本；默认 `LLM_UNAVAILABLE`/`LLM_TIMEOUT` 为可重试。
 - provider 非重试 4xx：映射为 `LLM_PROVIDER_REJECTED`，不把上游 body 回显给客户端。
 - provider JSON 损坏或空响应：映射为 `LLM_PROTOCOL_ERROR`，明确失败，不返回 `200`。
 - 输入超长、空消息、非法角色（只允许 `system`、`user`、`assistant`）在 provider 调用前拒绝。
