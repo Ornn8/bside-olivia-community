@@ -65,7 +65,6 @@ if ($runner.File -eq $runtimeExe) {
     }
 }
 
-
 if ($runner.File -eq $runtimeExe) {
     try {
         & $runner.File '-c' 'import mem0,fastembed,qdrant_client,onnxruntime' 2>$null
@@ -111,7 +110,6 @@ $bootstrap = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_mo
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) { exit $installExitCode }
 
-
 if ($memoryDependenciesReady) {
     $memoryManifest = Join-Path $PayloadRoot 'installer\memory-model-manifest.json'
     $memoryTool = Join-Path $PayloadRoot 'tools\provision_memory_model.py'
@@ -134,4 +132,5 @@ if ($memoryDependenciesReady) {
 }
 
 & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
-exit $LASTEXITCODE
+if (-not $?) { exit 2 }
+exit 0
