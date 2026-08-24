@@ -7,16 +7,18 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Mapping
 
 
 class LatentSyncReplyError(RuntimeError):
     """Stable product error for the external LatentSync process."""
 
 
-def resolve_ffmpeg_executable() -> Path:
+def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the same FFmpeg executable used by the LatentSync renderer."""
 
-    configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
+    environment = os.environ if env is None else env
+    configured = str(environment.get("OLIVIA_FFMPEG_EXE", "")).strip()
     if configured:
         configured_path = Path(configured)
         if not configured_path.is_file():
@@ -37,11 +39,11 @@ def resolve_ffmpeg_executable() -> Path:
     return resolved
 
 
-def media_runtime_available() -> bool:
+def media_runtime_available(env: Mapping[str, str] | None = None) -> bool:
     """Check the FFmpeg resolver and frame probe used by complete delivery."""
 
     try:
-        resolve_ffmpeg_executable()
+        resolve_ffmpeg_executable(env)
         import imageio_ffmpeg
 
         return callable(getattr(imageio_ffmpeg, "count_frames_and_secs", None))

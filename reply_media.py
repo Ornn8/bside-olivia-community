@@ -12,6 +12,7 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
@@ -85,6 +86,7 @@ def _tts_config(
     temporary_root: Path,
     *,
     ordinary_video: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> TTSConfig:
     settings = _settings(path)
     runtime_root = Path(str(settings.get("runtime_root", "")))
@@ -95,7 +97,8 @@ def _tts_config(
     else:
         provider_options = dict(provider_options)
     if ordinary_video:
-        configured_reference = os.environ.get("OLIVIA_REPLY_VOICE_REFERENCE")
+        environment = os.environ if env is None else env
+        configured_reference = environment.get("OLIVIA_REPLY_VOICE_REFERENCE")
         if configured_reference is not None:
             official_reference = Path(configured_reference)
             if not official_reference.is_file():
@@ -157,17 +160,18 @@ def assemble_complete_video_delivery(
     visual_config_path: Path,
     worker_path: Path,
     temporary_root: Path,
+    env: Mapping[str, str] | None = None,
 ) -> CompleteVideoDelivery:
     """Pure configuration seam shared by availability and the real renderer."""
 
     try:
-        tts = _tts_config(tts_config_path, temporary_root, ordinary_video=True)
+        tts = _tts_config(tts_config_path, temporary_root, ordinary_video=True, env=env)
         visual = _visual_config(visual_config_path)
         visual.validate()
     except (ReplyMediaError, ValueError, TypeError) as exc:
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE") from exc
     worker = Path(worker_path)
-    if not delivery_configured(tts) or not worker.is_file() or not media_runtime_available():
+    if not delivery_configured(tts) or not worker.is_file() or not media_runtime_available(env):
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE")
     return CompleteVideoDelivery(tts, visual, worker)
 

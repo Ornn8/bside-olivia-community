@@ -87,6 +87,7 @@ def musical_reply_configured(
             configured_path("OLIVIA_VISUAL_CONFIG"),
             configured_path("OLIVIA_LIVETALKING_WORKER"),
             configured_path("OLIVIA_LOCAL_DATA_ROOT"),
+            env,
         )
     except ReplyMediaError:
         return False
