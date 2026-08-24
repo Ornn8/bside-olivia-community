@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -35,6 +36,47 @@ def normalize_music_duration(value: object) -> int:
         return _normalize_music_duration(value)
     except ValueError:
         raise MusicReplyError("MUSIC_DURATION_INVALID") from None
+
+
+def musical_reply_configured(
+    env: Mapping[str, str],
+    *,
+    performance_video_path: Path | None,
+) -> bool:
+    """Return whether the renderer's complete musical delivery closure exists."""
+
+    def configured_path(name: str) -> Path:
+        return Path(str(env.get(name, ""))).expanduser()
+
+    minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
+    latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
+    required = (
+        configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE"),
+        configured_path("OLIVIA_TTS_CONFIG"),
+        configured_path("OLIVIA_VISUAL_CONFIG"),
+        configured_path("OLIVIA_LIVETALKING_WORKER"),
+        configured_path("OLIVIA_ROFORMER_EXE"),
+        configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
+        configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
+        configured_path("OLIVIA_MINIMAX_COMFY_PYTHON"),
+        configured_path("OLIVIA_MINIMAX_WORKER"),
+        minimax_root / "main.py",
+        minimax_root / "comfy_extras" / "nodes_minimax_music.py",
+        minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
+        minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
+        configured_path("OLIVIA_LATENTSYNC_PYTHON"),
+        latentsync_root / "scripts" / "inference.py",
+        latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
+        latentsync_root / "checkpoints" / "latentsync_unet.pt",
+    )
+    return bool(
+        performance_video_path is not None
+        and performance_video_path.is_file()
+        and minimax_root.is_dir()
+        and latentsync_root.is_dir()
+        and all(path.is_file() for path in required)
+    )
 
 
 class MiniMaxMusic3Worker:

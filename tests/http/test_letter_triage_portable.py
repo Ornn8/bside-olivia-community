@@ -249,7 +249,7 @@ def test_router_receives_trusted_context_separately_from_letter():
     assert payload["routing_context"]["musical_video_available"] is True
 
 
-def test_environment_overrides_and_current_work_are_bounded():
+def test_environment_overrides_do_not_claim_video_availability_and_current_work_is_bounded():
     context = routing_context_from_environment(
         {
             "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
@@ -257,8 +257,8 @@ def test_environment_overrides_and_current_work_are_bounded():
             "OLIVIA_CURRENT_MUSIC_WORK": '["作品甲", "作品乙", "作品甲"]',
         }
     )
-    assert context.spoken_video_available is True
-    assert context.musical_video_available is True
+    assert context.spoken_video_available is False
+    assert context.musical_video_available is False
     assert context.current_music_work == ("作品甲", "作品乙")
 
 
@@ -272,6 +272,78 @@ def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
 
     assert context.spoken_video_available is False
     assert context.musical_video_available is False
+
+
+def test_complete_video_readiness_fails_closed_for_every_missing_renderer_dependency(
+    tmp_path,
+):
+    def write(relative: str) -> str:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+        return str(path)
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    scene = write("scenes/spoken.mp4")
+    performance = write("scenes/performance.mp4")
+    minimax_root = tmp_path / "minimax"
+    latentsync_root = tmp_path / "latentsync"
+    env = {
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_TTS_CONFIG": write("config/tts.json"),
+        "OLIVIA_VISUAL_CONFIG": write("config/visual.json"),
+        "OLIVIA_LIVETALKING_WORKER": write("workers/visual.py"),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": write("official/reply.mp4"),
+        "OLIVIA_ROFORMER_EXE": write("roformer/roformer.exe"),
+        "OLIVIA_ROFORMER_MODEL_PATH": write("roformer/model.ckpt"),
+        "OLIVIA_ROFORMER_CONFIG_PATH": write("roformer/config.yaml"),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": write("minimax/python.exe"),
+        "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
+        "OLIVIA_MINIMAX_WORKER": write("workers/minimax.py"),
+        "OLIVIA_LATENTSYNC_PYTHON": write("latentsync/python.exe"),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
+        "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "1",
+        **{
+            f"OLIVIA_SCENE_{tod}": scene
+            for tod in ("MORNING", "DAY", "DUSK", "NIGHT")
+        },
+        **{
+            f"OLIVIA_MUSIC_SCENE_{tod}": performance
+            for tod in ("DAY", "DUSK", "NIGHT")
+        },
+    }
+    required = [
+        tmp_path / "config/tts.json",
+        tmp_path / "config/visual.json",
+        tmp_path / "workers/visual.py",
+        tmp_path / "official/reply.mp4",
+        tmp_path / "roformer/roformer.exe",
+        tmp_path / "roformer/model.ckpt",
+        tmp_path / "roformer/config.yaml",
+        tmp_path / "minimax/python.exe",
+        tmp_path / "workers/minimax.py",
+        minimax_root / "main.py",
+        minimax_root / "comfy_extras/nodes_minimax_music.py",
+        minimax_root / "models/unet/minimax_music3_dit_int8_convrot.safetensors",
+        minimax_root / "models/clip/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        minimax_root / "models/vae/minimax_music3_dav.safetensors",
+        tmp_path / "latentsync/python.exe",
+        latentsync_root / "scripts/inference.py",
+        latentsync_root / "configs/unet/stage2_efficient.yaml",
+        latentsync_root / "checkpoints/latentsync_unet.pt",
+    ]
+    for path in required:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+
+    for missing in required:
+        missing.unlink()
+        assert routing_context_from_environment(env) == RoutingContext(False, False)
+        missing.write_bytes(b"synthetic")
 
 
 def test_invalid_router_output_fails_closed_to_text_letter():

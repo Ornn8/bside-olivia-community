@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from llm_gateway import GatewayError
+from music_reply import musical_reply_configured
 
 
 ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表达方式。
@@ -413,20 +414,9 @@ def routing_context_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> RoutingContext:
     env = environ if environ is not None else os.environ
-    spoken_override = _optional_bool(env.get("OLIVIA_SPOKEN_VIDEO_AVAILABLE"))
-    musical_override = _optional_bool(env.get("OLIVIA_MUSICAL_VIDEO_AVAILABLE"))
-    spoken = (
-        spoken_override
-        if spoken_override is not None
-        else _spoken_video_configured(env)
-    )
+    spoken = _spoken_video_configured(env)
     musical_detected = spoken and _musical_video_configured(env)
-    musical = (
-        musical_override
-        if musical_override is not None
-        else musical_detected
-    )
-    complete_video = spoken and musical
+    complete_video = spoken and musical_detected
     return RoutingContext(
         spoken_video_available=complete_video,
         musical_video_available=complete_video,
@@ -455,24 +445,9 @@ def _spoken_video_configured(env: Mapping[str, str]) -> bool:
 
 
 def _musical_video_configured(env: Mapping[str, str]) -> bool:
-    minimax_python = Path(
-        str(env.get("OLIVIA_MINIMAX_COMFY_PYTHON", ""))
-    ).expanduser()
-    minimax_root = Path(
-        str(env.get("OLIVIA_MINIMAX_COMFY_ROOT", ""))
-    ).expanduser()
-    minimax_worker = Path(
-        str(env.get("OLIVIA_MINIMAX_WORKER", ""))
-    ).expanduser()
-    roformer = Path(str(env.get("OLIVIA_ROFORMER_EXE", ""))).expanduser()
-    performance = _current_music_performance(env)
-    return bool(
-        minimax_python.is_file()
-        and (minimax_root / "main.py").is_file()
-        and minimax_worker.is_file()
-        and roformer.is_file()
-        and performance is not None
-        and performance.is_file()
+    return musical_reply_configured(
+        env,
+        performance_video_path=_current_music_performance(env),
     )
 
 
@@ -513,17 +488,6 @@ def _current_music_performance(
     )
     value = str(env.get(f"OLIVIA_MUSIC_SCENE_{key}", "")).strip()
     return Path(value).expanduser() if value else None
-
-
-def _optional_bool(value: object) -> bool | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
 
 
 def _context_items(value: object) -> tuple[str, ...]:
