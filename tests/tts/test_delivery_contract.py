@@ -23,7 +23,7 @@ from tts.delivery import (
     build_external_delivery_request,
     delivery_tempo_factor,
 )
-from voice_direction import VoicePerformancePlan, VoicePerformanceSegment
+from voice_direction import VoicePerformancePlan
 
 
 def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() -> None:
@@ -65,22 +65,11 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     reply_text = "I hear you. I will stay with you through this."
     plan = VoicePerformancePlan(
         reply_text=reply_text,
-        segments=(
-            VoicePerformanceSegment(
-                text=reply_text,
-                sentence_start=1,
-                sentence_end=2,
-                emotion="restrained empathy becoming steady reassurance",
-                intensity=0.62,
-                speed=1.06,
-                pause_after_seconds=0.0,
-                gain_db=0.1,
-            ),
-        ),
         overall_emotion="restrained empathy becoming steady reassurance",
         global_speed=1.06,
         energy=0.62,
-        emphasize_sentences=(2,),
+        breath_before_sentences=(),
+        emphasize_sentences=(1,),
     )
     config = SimpleNamespace(
         runtime_root="runtime",
