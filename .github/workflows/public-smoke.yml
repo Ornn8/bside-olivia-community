@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   public-smoke:
@@ -152,3 +153,19 @@ jobs:
             $status | Write-Host
             throw 'tests modified the frozen checkout'
           }
+
+      - name: Report exact-head runtime success
+        if: steps.scope.outputs.run == 'true' && success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = @"
+          MEMORY_RUNTIME_CI_PASS
+          HEAD=$env:GITHUB_SHA
+          Mem0/FastEmbed/Qdrant imports: PASS
+          Pinned Chinese model provision + offline reload: PASS
+          Runtime tests with zero skips: PASS
+          Hardening and clean-checkout checks: PASS
+          "@
+          gh api "repos/${{ github.repository }}/issues/105/comments" -f body="$body"
