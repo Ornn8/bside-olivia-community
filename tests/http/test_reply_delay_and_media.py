@@ -10,6 +10,7 @@ from letter_triage import TriageResult
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult
+from voice_direction import VoicePerformancePlan, VoicePerformanceSegment
 
 
 def test_text_delay_records_deadline_without_blocking(monkeypatch):
@@ -71,12 +72,30 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
     observed = {}
 
+    async def voice_plan(_letter, text):
+        return VoicePerformancePlan(
+            reply_text=text,
+            segments=(
+                VoicePerformanceSegment(
+                    text=text,
+                    sentence_start=1,
+                    sentence_end=1,
+                    emotion="steady",
+                    intensity=0.5,
+                    speed=1.06,
+                    pause_after_seconds=0.0,
+                    gain_db=0.0,
+                ),
+            ),
+        )
+
     def render(_content, _reply, output, **kwargs):
         observed.update(kwargs)
         Path(output).write_bytes(b"final-video")
         return {}
 
     monkeypatch.setattr(local_server, "render_musical_reply", render)
+    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
 
     asyncio.run(
         local_server._render_media_job(
@@ -91,6 +110,100 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert "normal_scene_path" not in observed
     assert observed["normal_video_path"].name.endswith("-official-spoken-v1.mp4")
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
+
+
+def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
+    tmp_path: Path,
+    monkeypatch,
+):
+    reply_text = "I hear you, and I am staying with you through this."
+    plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        segments=(
+            VoicePerformanceSegment(
+                text=reply_text,
+                sentence_start=1,
+                sentence_end=1,
+                emotion="restrained empathy becoming steady reassurance",
+                intensity=0.62,
+                speed=1.06,
+                pause_after_seconds=0.0,
+                gain_db=0.1,
+            ),
+        ),
+        overall_emotion="restrained empathy becoming steady reassurance",
+        global_speed=1.06,
+        energy=0.62,
+        emphasize_sentences=(1,),
+    )
+    scene = tmp_path / "scene.mp4"
+    scene.write_bytes(b"scene")
+    official = tmp_path / "official.mp4"
+    official.write_bytes(b"official")
+    letters = [
+        {
+            "letter_id": "spoken-entry",
+            "content": "ordinary video request",
+            "reply_text": reply_text,
+            "reply_mode": "spoken_video",
+        },
+        {
+            "letter_id": "musical-entry",
+            "content": "spoken plus music request",
+            "reply_text": reply_text,
+            "reply_mode": "musical_video",
+            "music_duration_seconds": 60,
+        },
+    ]
+    local_server.store.letters[:] = letters
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(official))
+    for key in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{key}", str(scene))
+        monkeypatch.setenv(f"OLIVIA_MUSIC_SCENE_{key}", str(scene))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    directed_requests = []
+
+    async def direct_frozen_reply(text, gateway, *, request_id=None):
+        assert text == reply_text
+        assert gateway is local_server.letters_adapter.gateway
+        directed_requests.append(request_id)
+        return plan
+
+    received = {}
+
+    def render_spoken(_text, output, **kwargs):
+        received["spoken_video"] = kwargs["voice_performance_plan"]
+        Path(output).write_bytes(b"spoken")
+        return {}
+
+    def render_musical(_content, _text, output, **kwargs):
+        received["musical_video"] = kwargs["voice_performance_plan"]
+        Path(output).write_bytes(b"musical")
+        return {}
+
+    monkeypatch.setattr(local_server, "direct_voice_performance", direct_frozen_reply)
+    monkeypatch.setattr(local_server, "render_reply_video", render_spoken)
+    monkeypatch.setattr(local_server, "render_musical_reply", render_musical)
+
+    async def exercise():
+        await local_server._render_media_job(
+            "spoken-entry", "ordinary video request", reply_text, "spoken_video"
+        )
+        await local_server._render_media_job(
+            "musical-entry", "spoken plus music request", reply_text, "musical_video"
+        )
+
+    asyncio.run(exercise())
+
+    assert received == {"spoken_video": plan, "musical_video": plan}
+    assert directed_requests == [
+        "spoken-entry-voice-direction",
+        "musical-entry-voice-direction",
+    ]
+    assert letters[0]["voice_performance_plan"] == plan.to_dict()
+    assert letters[1]["voice_performance_plan"] == plan.to_dict()
 
 
 def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):

@@ -50,6 +50,11 @@ from music_reply import MusicReplyError, render_musical_reply, select_speaking_s
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
 from reply_delivery import build_ordinary_video_llm_content
+from voice_direction import (
+    VoiceDirectionError,
+    VoicePerformancePlan,
+    direct_voice_performance,
+)
 from local_memory import create_memory_adapter
 from memory_port import LegacyLetter, MemoryPort, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
@@ -496,6 +501,36 @@ reply_jobs: dict[str, asyncio.Task] = {}
 
 def _persist_media_state() -> None:
     _persist_store_state()
+
+
+async def _voice_plan_for_letter(
+    letter: dict,
+    reply_text: str,
+) -> VoicePerformancePlan:
+    """Direct the frozen reply once, then reuse its persisted performance plan."""
+
+    stored = letter.get("voice_performance_plan")
+    if isinstance(stored, dict):
+        try:
+            plan = VoicePerformancePlan.from_dict(stored)
+        except VoiceDirectionError:
+            pass
+        else:
+            if plan.reply_text == reply_text:
+                return plan
+    plan = await asyncio.wait_for(
+        direct_voice_performance(
+            reply_text,
+            letters_adapter.gateway,
+            request_id=f"{letter.get('letter_id', 'reply')}-voice-direction",
+        ),
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
+    if plan.reply_text != reply_text:
+        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
+    letter["voice_performance_plan"] = plan.to_dict()
+    _persist_media_state()
+    return plan
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
@@ -1596,6 +1631,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
+            voice_plan = await _voice_plan_for_letter(letter, reply_text)
             if reply_mode == "musical_video":
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(_os.environ)
@@ -1617,6 +1653,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     worker_path=worker,
                     performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
+                    voice_performance_plan=voice_plan,
                 )
             else:
                 from datetime import datetime
@@ -1637,12 +1674,21 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     latentsync_python_path=Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
                     latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
                     adaptive_delivery=True,
+                    voice_performance_plan=voice_plan,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
             _persist_media_state()
-        except (ReplyMediaError, MusicReplyError, ValueError, OSError) as exc:
+        except (
+            ReplyMediaError,
+            MusicReplyError,
+            VoiceDirectionError,
+            GatewayError,
+            asyncio.TimeoutError,
+            ValueError,
+            OSError,
+        ) as exc:
             letter["media_status"] = "UNAVAILABLE"
             letter["media_error_code"] = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
             _persist_media_state()
