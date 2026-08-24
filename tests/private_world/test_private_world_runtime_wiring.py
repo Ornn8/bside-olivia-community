@@ -95,7 +95,7 @@ print(json.dumps({
     'reply_context': reply_context.to_dict(),
     'gateway_messages': gateway_messages,
     'health': health,
-}, ensure_ascii=False, sort_keys=True))
+}, sort_keys=True))
 """
     environment = os.environ.copy()
     environment["OLIVIA_LOCAL_DATA_ROOT"] = str(data_root)
