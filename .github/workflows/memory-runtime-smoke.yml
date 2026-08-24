@@ -1,5 +1,6 @@
 name: memory-runtime-smoke
 
+# Required gate: installs the pinned runtime and loads the real model offline.
 on:
   push:
     branches:
