@@ -1,7 +1,6 @@
 name: memory-runtime-smoke
 
 on:
-  workflow_call:
   push:
     branches:
       - feat/p03-memory-default-runtime
