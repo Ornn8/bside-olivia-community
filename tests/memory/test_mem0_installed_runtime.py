@@ -23,6 +23,8 @@ def test_installed_mem0_initializes_offline_with_local_qdrant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The dedicated workflow must set the gate explicitly; missing runtime
+    # dependencies are test failures rather than import-based skips.
     assert os.environ["OLIVIA_MEMORY_RUNTIME_TEST"] == "1"
     __import__("mem0")
     __import__("fastembed")
