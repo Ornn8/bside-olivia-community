@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/p03-memory-default-runtime
+  pull_request:
+    types:
+      - reopened
 
 permissions:
   contents: write
@@ -61,5 +64,3 @@ jobs:
           git add -A
           git commit -m "fix(installer): upgrade controlled runtime payloads"
           git push origin HEAD:feat/p03-memory-default-runtime
-
-# Triggered after the one-shot workflow existed on the branch.
