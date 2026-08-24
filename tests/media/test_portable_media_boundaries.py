@@ -144,6 +144,62 @@ def test_official_voice_reference_is_bounded_for_cosyvoice(tmp_path, monkeypatch
         assert original.getnframes() / original.getframerate() == 41
 
 
+def test_explicit_missing_voice_reference_fails_closed(tmp_path, monkeypatch):
+    generic_reference = tmp_path / "generic-reference.wav"
+    with wave.open(str(generic_reference), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16000)
+        target.writeframes(b"\0\0" * 16000)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "runtime_root": str(tmp_path / "runtime"),
+                    "model_dir": str(tmp_path / "model"),
+                    "reference_audio": str(generic_reference),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "OLIVIA_REPLY_VOICE_REFERENCE",
+        str(tmp_path / "missing-official-reference.wav"),
+    )
+
+    with pytest.raises(ReplyMediaError, match="VOICE_REFERENCE_UNAVAILABLE"):
+        _tts_config(config_path, tmp_path / "work", ordinary_video=True)
+
+
+def test_unconfigured_voice_reference_keeps_controlled_default(tmp_path, monkeypatch):
+    generic_reference = tmp_path / "generic-reference.wav"
+    with wave.open(str(generic_reference), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16000)
+        target.writeframes(b"\0\0" * 16000)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "runtime_root": str(tmp_path / "runtime"),
+                    "model_dir": str(tmp_path / "model"),
+                    "reference_audio": str(generic_reference),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OLIVIA_REPLY_VOICE_REFERENCE", raising=False)
+
+    configured = _tts_config(config_path, tmp_path / "work", ordinary_video=True)
+
+    assert Path(configured.reference_audio) == generic_reference
+
+
 def test_delivery_request_excludes_reference_text_and_instruct_controls():
     config = SimpleNamespace(
         runtime_root="runtime",
