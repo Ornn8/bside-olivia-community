@@ -1,4 +1,4 @@
-name: build-memory-default-runtime
+name: finalize-memory-default-runtime
 
 on:
   push:
@@ -8,10 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: finalize-memory-default-runtime
+  cancel-in-progress: true
+
 jobs:
   finalize:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out feature branch
         uses: actions/checkout@v4
@@ -24,37 +28,52 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Apply bounded source changes
-        run: python tools/prepare_memory_default_runtime.py
+      - name: Materialize final product sources
+        run: |
+          python tools/prepare_memory_default_runtime.py
+          python tools/finalize_memory_default_runtime.py
 
-      - name: Remove temporary implementation machinery
+      - name: Verify one-shot machinery is gone
         shell: pwsh
         run: |
-          git checkout origin/main -- memory_prompt.py
-          git rm --ignore-unmatch installed_memory_runtime.py
-          git rm --ignore-unmatch .github/workflows/probe-memory-model.yml
-          git rm --ignore-unmatch .github/workflows/build-memory-default-runtime.yml
-          git rm --ignore-unmatch tools/prepare_memory_default_runtime.py
-          git rm --ignore-unmatch tests/memory/test_installed_memory_runtime.py
-          git rm --ignore-unmatch tests/memory/test_memory_prompt_installed_runtime.py
-          git add -A
+          $forbidden = @(
+            '.github/workflows/build-memory-default-runtime.yml',
+            '.github/workflows/probe-memory-model.yml',
+            'tools/prepare_memory_default_runtime.py',
+            'tools/finalize_memory_default_runtime.py',
+            'installed_memory_runtime.py'
+          )
+          foreach ($path in $forbidden) {
+            if (Test-Path -LiteralPath $path) {
+              throw "one-shot path remains: $path"
+            }
+          }
+          if (-not (Test-Path -LiteralPath '.github/workflows/memory-runtime-smoke.yml')) {
+            throw 'final memory-runtime-smoke workflow is missing'
+          }
 
       - name: Install public test dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Run public suite
+      - name: Run public suite against final tree
         run: python -m pytest -q
 
-      - name: Run hardening scan
+      - name: Run repository hardening scan
         run: python baseline_hardening_scan.py --mode all
 
       - name: Check final whitespace
-        run: git diff --cached --check
+        shell: bash
+        run: |
+          git add -A
+          git diff --cached --check
 
-      - name: Commit final tested source
+      - name: Commit final product sources
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat(memory): enable default installed Mem0 runtime"
-          git push origin HEAD:feat/p03-memory-default-runtime
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(memory): enable committed offline Mem0 runtime"
+          git push origin HEAD:${GITHUB_REF_NAME}
