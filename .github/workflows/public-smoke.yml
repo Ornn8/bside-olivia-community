@@ -16,7 +16,7 @@ jobs:
   public-smoke:
     name: Public smoke (Windows / Python 3.12)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out review branch
         uses: actions/checkout@v4
@@ -29,28 +29,42 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Apply bounded memory runtime source
-        run: python tools/prepare_memory_default_runtime.py
+      - name: Materialize final product sources
+        run: |
+          python tools/prepare_memory_default_runtime.py
+          python tools/finalize_memory_default_runtime.py
 
-      - name: Remove non-workflow implementation machinery
+      - name: Restore the canonical clean-head public workflow
         shell: pwsh
         run: |
-          git checkout origin/main -- memory_prompt.py
-          git rm --ignore-unmatch installed_memory_runtime.py
-          git rm --ignore-unmatch tools/prepare_memory_default_runtime.py
-          git rm --ignore-unmatch tools/finalize_memory_default_runtime.py
-          git rm --ignore-unmatch tests/memory/test_installed_memory_runtime.py
-          git rm --ignore-unmatch tests/memory/test_memory_prompt_installed_runtime.py
+          git checkout origin/main -- .github/workflows/public-smoke.yml
           git add -A
-          $workflowDiff = git diff --cached --name-only -- '.github/workflows'
-          if ($workflowDiff) {
-            throw "workflow change remains in non-workflow finalizer: $workflowDiff"
+
+      - name: Verify one-shot machinery is gone
+        shell: pwsh
+        run: |
+          $forbidden = @(
+            '.github/workflows/build-memory-default-runtime.yml',
+            '.github/workflows/probe-memory-model.yml',
+            'tools/prepare_memory_default_runtime.py',
+            'tools/finalize_memory_default_runtime.py',
+            'installed_memory_runtime.py',
+            'tests/memory/test_installed_memory_runtime.py',
+            'tests/memory/test_memory_prompt_installed_runtime.py'
+          )
+          foreach ($path in $forbidden) {
+            if (Test-Path -LiteralPath $path) {
+              throw "one-shot path remains: $path"
+            }
+          }
+          if (-not (Test-Path -LiteralPath '.github/workflows/memory-runtime-smoke.yml')) {
+            throw 'final memory-runtime-smoke workflow is missing'
           }
 
-      - name: Install public development dependencies
+      - name: Install public test dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Run public smoke tests
+      - name: Run public suite against final tree
         run: python -m pytest -q
 
       - name: Run repository hardening scan
@@ -64,5 +78,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat(memory): enable default installed Mem0 runtime"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(memory): enable committed offline Mem0 runtime"
           git push origin HEAD:feat/p03-memory-default-runtime
