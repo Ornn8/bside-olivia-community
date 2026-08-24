@@ -33,7 +33,21 @@ def _lyrics(duration: int) -> str:
     )
 
 
-def _payload(duration: int = 90) -> dict[str, str]:
+def _short_lyrics(duration: int) -> str:
+    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    return "\n".join(
+        (
+            "[Intro]",
+            "[Verse]",
+            *(f"主歌第{index}句轻轻落下" for index in range(1, verse_count + 1)),
+            "[Chorus]",
+            *(f"副歌第{index}句慢慢收好" for index in range(1, chorus_count + 1)),
+            "[Outro]",
+        )
+    )
+
+
+def _payload(duration: int = 40) -> dict[str, str]:
     return {
         "schema_version": SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
         "emotion_arc": "gentle_reassurance",
@@ -41,11 +55,47 @@ def _payload(duration: int = 90) -> dict[str, str]:
         "vocal_delivery": "clear_legato",
         "dynamic_arc": "soft_gentle_rise_settle",
         "ending": "complete_soft_cadence",
-        "lyrics": _lyrics(duration),
+        "lyrics": _short_lyrics(duration),
     }
 
 
-@pytest.mark.parametrize("duration", [90, 118])
+def test_short_song_keeps_a_full_verse_and_chorus_without_a_second_verse() -> None:
+    payload = {
+        **_payload(),
+        "lyrics": "\n".join(
+            (
+                "[Intro]",
+                "[Verse]",
+                "第一句轻轻落下",
+                "第二句慢慢说完",
+                "第三句留住灯光",
+                "第四句不催答案",
+                "第五句回到此刻",
+                "第六句温柔收好",
+                "[Chorus]",
+                "第七句留住呼吸",
+                "第八句走向副歌",
+                "第九句唱出回答",
+                "第十句接住心事",
+                "第十一句不说永远",
+                "第十二句让琴声渐远",
+                "[Outro]",
+            )
+        ),
+    }
+
+    plan = parse_song_semantic_plan(
+        json.dumps(payload, ensure_ascii=False),
+        40,
+    )
+
+    assert plan.duration_seconds == 40
+    assert plan.lyrics.count("[Verse]") == 1
+    assert plan.lyrics.count("[Chorus]") == 1
+    assert "[Interlude]" not in plan.lyrics
+
+
+@pytest.mark.parametrize("duration", [40, 60])
 def test_parse_song_semantic_plan_accepts_strict_plain_and_fenced_json(
     duration: int,
 ) -> None:
@@ -103,7 +153,7 @@ def test_parse_song_semantic_plan_rejects_invalid_contract(
     mutate(payload)
 
     with pytest.raises(ValueError, match=error_code):
-        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 90)
+        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 40)
 
 
 @pytest.mark.parametrize(
@@ -121,10 +171,10 @@ def test_parse_song_semantic_plan_rejects_missing_or_wrapped_non_json(
     text: str,
 ) -> None:
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_JSON_"):
-        parse_song_semantic_plan(text, 90)
+        parse_song_semantic_plan(text, 40)
 
 
-@pytest.mark.parametrize("duration", [0, 89, 91, 118.0, True])
+@pytest.mark.parametrize("duration", [0, 39, 41, 60.0, True])
 def test_parse_song_semantic_plan_reuses_product_duration_contract(duration) -> None:
     with pytest.raises(ValueError, match="MUSIC_DURATION_INVALID"):
         parse_song_semantic_plan(json.dumps(_payload(), ensure_ascii=False), duration)
@@ -141,23 +191,23 @@ def test_semantic_lyrics_require_exact_empty_nonverse_sections() -> None:
         ValueError,
         match="SONG_SEMANTIC_PLAN_LYRICS_NONVERSE_CONTENT",
     ):
-        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 90)
+        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 40)
 
 
-def test_semantic_lyrics_require_balanced_verse_line_counts() -> None:
+def test_semantic_lyrics_require_balanced_verse_and_chorus_line_counts() -> None:
     payload = _payload()
     lines = payload["lyrics"].splitlines()
-    first_interlude = lines.index("[Interlude]")
-    moved = lines.pop(first_interlude - 1)
-    second_verse = lines.index("[Verse]", 2)
-    lines.insert(second_verse + 1, moved)
+    chorus = lines.index("[Chorus]")
+    moved = lines.pop(chorus - 1)
+    chorus = lines.index("[Chorus]")
+    lines.insert(chorus + 1, moved)
     payload["lyrics"] = "\n".join(lines)
 
     with pytest.raises(
         ValueError,
         match="SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID",
     ):
-        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 90)
+        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 40)
 
 
 @pytest.mark.parametrize(
@@ -175,12 +225,12 @@ def test_semantic_lyrics_reject_invalid_line_content(
 ) -> None:
     payload = _payload()
     payload["lyrics"] = payload["lyrics"].replace(
-        "第一段第1句轻轻落下",
+        "主歌第1句轻轻落下",
         replacement,
     )
 
     with pytest.raises(ValueError, match=error_code):
-        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 90)
+        parse_song_semantic_plan(json.dumps(payload, ensure_ascii=False), 40)
 
 
 def test_song_semantic_plan_is_typed_and_caption_free() -> None:
@@ -190,8 +240,8 @@ def test_song_semantic_plan_is_typed_and_caption_free() -> None:
         vocal_delivery=VocalDelivery.CONTAINED_INTIMATE,
         dynamic_arc=SongDynamicArc.QUIET_GRADUAL_WARMTH,
         ending=SongEnding.LINGERING_PIANO_CADENCE,
-        lyrics=_lyrics(118),
-        duration_seconds=118,
+        lyrics=_short_lyrics(60),
+        duration_seconds=60,
     )
 
     assert "caption" not in plan.to_dict()
@@ -202,6 +252,6 @@ def test_song_semantic_plan_is_typed_and_caption_free() -> None:
             vocal_delivery=VocalDelivery.CONTAINED_INTIMATE,
             dynamic_arc=SongDynamicArc.QUIET_GRADUAL_WARMTH,
             ending=SongEnding.LINGERING_PIANO_CADENCE,
-            lyrics=_lyrics(118),
-            duration_seconds=118,
+            lyrics=_short_lyrics(60),
+            duration_seconds=60,
         )

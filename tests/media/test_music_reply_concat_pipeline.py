@@ -29,8 +29,7 @@ def _semantic_plan() -> SongSemanticPlan:
             "我把声音放得轻一点",
             "今晚先照顾眼前一步",
             "剩下的事明天再想吧",
-            "[Interlude]",
-            "[Verse]",
+            "[Chorus]",
             "你不需要立刻变勇敢",
             "难过也有自己的位置",
             "等呼吸重新变得安稳",
@@ -47,7 +46,7 @@ def _semantic_plan() -> SongSemanticPlan:
         dynamic_arc=SongDynamicArc.SOFT_GENTLE_RISE_SETTLE,
         ending=SongEnding.COMPLETE_SOFT_CADENCE,
         lyrics=lyrics,
-        duration_seconds=90,
+        duration_seconds=40,
     )
 
 
@@ -241,7 +240,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         visual_config_path=tmp_path / "visual.json",
         worker_path=tmp_path / "visual-worker.py",
         performance_video_path=tmp_path / "base-performance.mp4",
-        duration_seconds=90,
+        duration_seconds=40,
     )
 
     assert order == [

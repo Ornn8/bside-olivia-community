@@ -25,9 +25,10 @@ from minimax_profile import (  # noqa: E402
 )
 
 
-_ALLOWED_DURATIONS = frozenset({90, 118})
-_EXPECTED_LYRIC_LINES = {90: 12, 118: 16}
-_SONG_TAGS = ("[Intro]", "[Verse]", "[Interlude]", "[Verse]", "[Outro]")
+_ALLOWED_DURATIONS = frozenset({40, 60})
+_INFERENCE_TIMEOUT_SECONDS = 7200.0
+_EXPECTED_LYRIC_LINES = {40: 12, 60: 16}
+_SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
 _CAPTION_HEADINGS = ("### Global Metadata", "### Vocal Details", "### Arrangement")
 _NEGATIVE_SYNTAX = re.compile(
@@ -236,7 +237,7 @@ def _copy_result(
     output: Path,
     gpu_samples: list[dict[str, float]],
 ) -> None:
-    deadline = time.monotonic() + 3600.0
+    deadline = time.monotonic() + _INFERENCE_TIMEOUT_SECONDS
     next_gpu_sample = 0.0
     while time.monotonic() < deadline:
         now = time.monotonic()

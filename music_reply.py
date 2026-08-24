@@ -20,6 +20,9 @@ from reply_media import render_reply_video
 from song_content import plan_song_content
 
 
+_MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
+
+
 class MusicReplyError(RuntimeError):
     """Stable product error raised when a song stage cannot complete."""
 
@@ -42,7 +45,7 @@ class MiniMaxMusic3Worker:
         python_path: Path,
         worker_path: Path,
         comfy_root: Path,
-        timeout_seconds: float = 3600.0,
+        timeout_seconds: float = _MINIMAX_WORKER_TIMEOUT_SECONDS,
     ) -> None:
         self.python_path = Path(python_path)
         self.worker_path = Path(worker_path)
