@@ -49,6 +49,27 @@ def test_normal_start_enables_confined_offline_memory_by_default(
     assert environment["HF_HUB_DISABLE_TELEMETRY"] == "1"
 
 
+def test_memory_reuses_the_primary_key_variable_that_is_actually_set(
+    tmp_path: Path,
+) -> None:
+    environment = _base()
+    environment["OLIVIA_LLM_API_KEY"] = "fixture-secret"
+    configured = _configure_memory_environment(
+        environment,
+        tmp_path / "data",
+    )
+    assert configured["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == (
+        "OLIVIA_LLM_API_KEY"
+    )
+    assert "fixture-secret" not in repr(
+        {
+            key: value
+            for key, value in configured.items()
+            if key.endswith("_API_KEY_ENV")
+        }
+    )
+
+
 def test_explicit_memory_disable_is_preserved(tmp_path: Path) -> None:
     environment = _base()
     environment["OLIVIA_MEMORY_ENABLED"] = "0"
@@ -83,7 +104,6 @@ def test_windows_installer_keeps_memory_optional_and_verified() -> None:
     assert all("==" in line and "--hash=sha256:" in line for line in package_lines)
     assert any(line.startswith("mem0ai==2.0.18 ") for line in package_lines)
     assert any(line.startswith("fastembed==0.8.0 ") for line in package_lines)
-
 
 
 def test_archive_mem0_and_private_world_keep_distinct_roots(
