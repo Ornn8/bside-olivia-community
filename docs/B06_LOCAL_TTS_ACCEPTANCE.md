@@ -11,6 +11,34 @@ This note is a sanitized acceptance record. Private model directories, reference
 - B05 boundary: no B05 HTTP/event wiring or integrated claim was added.
 - Asset policy: profile install records external references only; `external_assets_copied=false` and lifecycle uninstall dry-run reported `external_assets_deleted=false`.
 
+## Directed ordinary-video compatibility and listening acceptance
+
+The single-pass emotion-directed path remains a thin adapter over the same
+verified external B06 assembly. It requires the pinned CosyVoice runtime
+revision `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`, the pinned
+`Fun-CosyVoice3-0.5B-2512` model revision
+`29e01c4e8d000f4bcd70751be16fa94bf3d85a18`, and Apache-2.0 license evidence
+for both. The worker checks that the pinned runtime exposes callable
+`inference_instruct2`; an incompatible runtime fails closed as
+`COSYVOICE_INSTRUCT2_UNSUPPORTED` before synthesis.
+
+The manifest replacement boundary remains: B10B calls the existing
+tts.service.TTSService public health contract; it does not reimplement
+synthesis. Its uninstall boundary also remains unchanged: B10B uninstall
+removes only modules/tts_local metadata; CosyVoice runtime and weights remain
+external. No runtime, model, voice reference, or generated WAV is copied into
+the repository.
+
+Candidate 1 of the product continuous-delivery listening comparison was
+selected as the baseline by the project owner. The accepted local-only WAV was
+41.28 seconds, 24 kHz mono, with SHA-256
+`863ef5185c448f189c46524fd8e87010bf353bc2bf8e3df9f59bdc0948ec14ce`.
+The listening acceptance covers continuous whole-reply delivery, the intended
+global emotional direction, and absence of an audible control-instruction
+prefix. It does not claim song-voice cloning, visual quality, or general model
+quality beyond that reviewed candidate. The WAV and private voice reference
+remain ignored local evidence.
+
 ## Final real gate
 
 One ordinary PowerShell invocation performed profile install and then one-process real acceptance. The provider used `text_frontend=none`, offline flags, D:-drive TEMP/TMP/Numba cache, and local-only model/reference assets.

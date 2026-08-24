@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 import wave
 from array import array
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -297,3 +299,64 @@ def test_external_worker_runs_one_whole_reply_instruct2_inference(
     ]
     with wave.open(str(output), "rb") as rendered:
         assert rendered.getnframes() == 4200
+
+
+def test_external_worker_rejects_runtime_without_pinned_instruct2_api(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class AutoModel:
+        sample_rate = 100
+
+        def __init__(self, **_kwargs):
+            pass
+
+    cosyvoice = ModuleType("cosyvoice")
+    cli = ModuleType("cosyvoice.cli")
+    module = ModuleType("cosyvoice.cli.cosyvoice")
+    module.AutoModel = AutoModel
+    monkeypatch.setitem(sys.modules, "cosyvoice", cosyvoice)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli", cli)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli.cosyvoice", module)
+
+    with pytest.raises(RuntimeError, match="COSYVOICE_INSTRUCT2_UNSUPPORTED"):
+        external_cosyvoice_worker._synthesize(
+            {
+                "runtime_root": str(tmp_path),
+                "model_dir": str(tmp_path),
+                "reference_audio": str(tmp_path / "reference.wav"),
+                "voice_condition_mode": "instruct2_single_pass",
+                "text": "one complete frozen reply",
+                "instruct_text": "steady reassurance<|endofprompt|>",
+            },
+            tmp_path / "directed.wav",
+        )
+
+
+def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads(
+        (root / "runtime/packaging/manifests/b10b.modules.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    upstreams = {
+        item["id"]: item for item in manifest["provenance"]["upstreams"]
+    }
+    runtime = upstreams["b06-cosyvoice-runtime"]
+    model = upstreams["b06-cosyvoice-model"]
+    acceptance = (root / "docs/B06_LOCAL_TTS_ACCEPTANCE.md").read_text(
+        encoding="utf-8"
+    )
+    normalized_acceptance = " ".join(acceptance.split())
+
+    assert runtime["revision"] == "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
+    assert runtime["license"] == "Apache-2.0"
+    assert runtime["adapter_boundary"] in normalized_acceptance
+    assert runtime["uninstall_path"] in normalized_acceptance
+    assert model["revision"] == "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
+    assert "inference_instruct2" in acceptance
+    assert "41.28 seconds" in acceptance
+    assert "24 kHz mono" in acceptance
+    assert "863ef5185c448f189c46524fd8e87010bf353bc2bf8e3df9f59bdc0948ec14ce" in acceptance
+    assert "Candidate 1" in acceptance
