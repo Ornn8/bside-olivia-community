@@ -1,11 +1,16 @@
 name: public-smoke
 
 on:
-  push:
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
+
+concurrency:
+  group: memory-runtime-finalize
+  cancel-in-progress: true
 
 jobs:
   public-smoke:
@@ -13,9 +18,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - name: Check out source
+      - name: Check out review branch
         uses: actions/checkout@v4
         with:
+          ref: feat/p03-memory-default-runtime
           fetch-depth: 0
 
       - name: Set up Python
@@ -24,11 +30,9 @@ jobs:
           python-version: "3.12"
 
       - name: Apply bounded memory runtime source
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p03-memory-default-runtime'
         run: python tools/prepare_memory_default_runtime.py
 
       - name: Remove temporary implementation machinery
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p03-memory-default-runtime'
         shell: pwsh
         run: |
           git checkout origin/main -- memory_prompt.py
@@ -50,17 +54,10 @@ jobs:
       - name: Run repository hardening scan
         run: python baseline_hardening_scan.py --mode all
 
-      - name: Check whitespace
-        shell: bash
-        run: |
-          if git diff --cached --quiet; then
-            git diff --check --exit-code
-          else
-            git diff --cached --check
-          fi
+      - name: Check final whitespace
+        run: git diff --cached --check
 
       - name: Commit final tested source
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/p03-memory-default-runtime'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
