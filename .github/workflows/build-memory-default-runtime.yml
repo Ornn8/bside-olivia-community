@@ -4,31 +4,40 @@ on:
   push:
     branches:
       - feat/p03-memory-default-runtime
-  pull_request:
-    branches:
-      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  finalize:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - name: Check out feature branch
         uses: actions/checkout@v4
+        with:
+          ref: feat/p03-memory-default-runtime
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Apply bounded source changes in workspace
+      - name: Apply bounded source changes
         run: python tools/prepare_memory_default_runtime.py
 
-      - name: Stage prepared tree
-        run: git add -A
+      - name: Remove temporary implementation machinery
+        shell: pwsh
+        run: |
+          git checkout origin/main -- memory_prompt.py
+          git rm --ignore-unmatch installed_memory_runtime.py
+          git rm --ignore-unmatch .github/workflows/probe-memory-model.yml
+          git rm --ignore-unmatch .github/workflows/build-memory-default-runtime.yml
+          git rm --ignore-unmatch tools/prepare_memory_default_runtime.py
+          git rm --ignore-unmatch tests/memory/test_installed_memory_runtime.py
+          git rm --ignore-unmatch tests/memory/test_memory_prompt_installed_runtime.py
+          git add -A
 
       - name: Install public test dependencies
         run: python -m pip install -e ".[dev]"
@@ -39,39 +48,13 @@ jobs:
       - name: Run hardening scan
         run: python baseline_hardening_scan.py --mode all
 
-      - name: Check prepared whitespace
+      - name: Check final whitespace
         run: git diff --cached --check
 
-      - name: Pack prepared files
-        shell: pwsh
+      - name: Commit final tested source
+        shell: bash
         run: |
-          $paths = @(
-            'mem0_memory.py',
-            'memory_model.py',
-            'THIRD_PARTY_NOTICES.md',
-            'installer/Install.ps1',
-            'installer/start_local.py',
-            'installer/memory-model-manifest.json',
-            'installer/memory-runtime-requirements.txt',
-            'tools/provision_memory_model.py',
-            'tests/memory/test_mem0_memory.py',
-            'tests/memory/test_mem0_installed_runtime.py',
-            'tests/installer/test_memory_model_provisioning.py',
-            'tests/installer/test_memory_default_runtime.py',
-            '.github/workflows/memory-runtime-smoke.yml'
-          )
-          New-Item -ItemType Directory -Force -Path prepared | Out-Null
-          foreach ($path in $paths) {
-            $target = Join-Path 'prepared' $path
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            Copy-Item -LiteralPath $path -Destination $target
-          }
-
-      - name: Upload prepared runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: prepared-memory-runtime
-          path: prepared
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 2
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(memory): enable default installed Mem0 runtime"
+          git push origin HEAD:feat/p03-memory-default-runtime
