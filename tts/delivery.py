@@ -11,6 +11,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
+from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan
 
 from .contracts import TTSConfig
@@ -75,14 +76,9 @@ def _validate_wav(path: Path) -> tuple[int, int]:
 
 
 def _ffmpeg() -> str:
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise DeliveryAudioError("FFMPEG_UNAVAILABLE") from exc
 
 

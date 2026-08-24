@@ -6,6 +6,7 @@ from array import array
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import tts.delivery as delivery
 
 from reply_delivery import (
     build_ordinary_video_llm_content,
@@ -75,6 +76,27 @@ def test_delivery_fit_rejects_audio_over_52_seconds(tmp_path) -> None:
 
     with pytest.raises(DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
         _fit_overlong_wav(path, 53.0)
+
+
+def test_delivery_fit_uses_canonical_explicit_ffmpeg_override(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "overlong.wav"
+    source.write_bytes(b"synthetic")
+    executable = tmp_path / "ffmpeg.exe"
+    executable.write_bytes(b"synthetic")
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(executable))
+    observed = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command[0])
+        fitted = tmp_path / "speech-fitted.wav"
+        with wave.open(str(fitted), "wb") as target:
+            target.setnchannels(1); target.setsampwidth(2); target.setframerate(8000)
+            target.writeframes(array("h", [0] * 8000 * 50).tobytes())
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    _fit_overlong_wav(source, 51.0)
+    assert observed == [str(executable.resolve())]
 
 
 def test_external_worker_renders_blocks_with_one_cross_lingual_model_load(
