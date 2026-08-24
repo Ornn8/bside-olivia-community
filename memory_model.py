@@ -330,17 +330,26 @@ def verify_fastembed_model(
         if not (cache_root / manifest.archive_root / name).is_file():
             raise MemoryModelError("MEMORY_MODEL_FILES_MISSING")
     configure_offline_model_environment(cache_root)
-    try:
-        installed_version = importlib.metadata.version("fastembed")
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise MemoryModelError("MEMORY_MODEL_PROVIDER_UNAVAILABLE") from exc
-    if installed_version != manifest.provider_version:
-        raise MemoryModelError("MEMORY_MODEL_PROVIDER_VERSION_MISMATCH")
-    try:
-        if embedding_factory is None:
+    if embedding_factory is None:
+        try:
+            installed_version = importlib.metadata.version("fastembed")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise MemoryModelError(
+                "MEMORY_MODEL_PROVIDER_UNAVAILABLE"
+            ) from exc
+        if installed_version != manifest.provider_version:
+            raise MemoryModelError(
+                "MEMORY_MODEL_PROVIDER_VERSION_MISMATCH"
+            )
+        try:
             from fastembed import TextEmbedding
 
             embedding_factory = TextEmbedding
+        except ImportError as exc:
+            raise MemoryModelError(
+                "MEMORY_MODEL_PROVIDER_UNAVAILABLE"
+            ) from exc
+    try:
         model = embedding_factory(
             model_name=manifest.model,
             cache_dir=str(cache_root),

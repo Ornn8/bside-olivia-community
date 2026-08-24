@@ -13,6 +13,7 @@ $runtimeExe = Join-Path $runtimeRoot 'python.exe'
 $runtimeZip = Join-Path $env:TEMP 'python-3.12.10-embed-amd64.zip'
 $runtimeUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
 $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+$memoryDependenciesReady = $false
 
 $runner = @{ File = $runtimeExe; Args = @() }
 if (-not (Test-Path -LiteralPath $runtimeExe)) {
@@ -64,6 +65,39 @@ if ($runner.File -eq $runtimeExe) {
     }
 }
 
+
+if ($runner.File -eq $runtimeExe) {
+    try {
+        & $runner.File '-c' 'import mem0,fastembed,qdrant_client,onnxruntime' 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $memoryDependenciesReady = $true
+        }
+        else {
+            Write-Host 'Long-term memory optionally installs Mem0 OSS, FastEmbed, local Qdrant, and their fixed Windows/Python 3.12 dependency closure.'
+            Write-Host 'Licenses: Mem0 / FastEmbed / Qdrant client use their upstream open-source licenses; the Chinese BGE model is MIT.'
+            $answer = Read-Host 'Accept these licenses and download the pinned memory runtime? [Y/N]'
+            if ($answer -match '^(y|yes)$') {
+                $memoryRequirements = Join-Path $PayloadRoot 'installer\memory-runtime-requirements.txt'
+                & $runner.File '-m' 'pip' 'install' '--disable-pip-version-check' '--require-hashes' '--only-binary=:all:' '--upgrade' '--target' $sitePackages '-r' $memoryRequirements
+                if ($LASTEXITCODE -eq 0) {
+                    & $runner.File '-c' 'import mem0,fastembed,qdrant_client,onnxruntime'
+                    $memoryDependenciesReady = $LASTEXITCODE -eq 0
+                }
+                if (-not $memoryDependenciesReady) {
+                    Write-Warning 'MEMORY_DEPENDENCIES_UNAVAILABLE: Olivia will continue without long-term memory.'
+                }
+            }
+            else {
+                Write-Warning 'MEMORY_DEPENDENCIES_NOT_ACCEPTED: Olivia will continue without long-term memory.'
+            }
+        }
+    }
+    catch {
+        $memoryDependenciesReady = $false
+        Write-Warning 'MEMORY_DEPENDENCIES_UNAVAILABLE: Olivia will continue without long-term memory.'
+    }
+}
+
 $arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', (Join-Path $PayloadRoot 'installer\full-patch-manifest.json'), '--port', $Port)
 $selectedOfficial = $OfficialRoot
 if (-not $selectedOfficial) {
@@ -76,6 +110,28 @@ $bootstrap = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_mo
 & $runner.File @($runner.Args + @('-c', $bootstrap, $PayloadRoot) + $arguments)
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) { exit $installExitCode }
+
+
+if ($memoryDependenciesReady) {
+    $memoryManifest = Join-Path $PayloadRoot 'installer\memory-model-manifest.json'
+    $memoryTool = Join-Path $PayloadRoot 'tools\provision_memory_model.py'
+    $memoryCache = Join-Path $Destination 'data\memory\model-cache'
+    & $runner.File $memoryTool '--manifest' $memoryManifest '--cache-root' $memoryCache '--verify-only' *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'Long-term memory uses the pinned BAAI/bge-small-zh-v1.5 Chinese embedding model (MIT license).'
+        Write-Host 'The verified archive is stored only inside this isolated installation data directory.'
+        $answer = Read-Host 'Accept the model license and download it? [Y/N]'
+        if ($answer -match '^(y|yes)$') {
+            & $runner.File $memoryTool '--manifest' $memoryManifest '--cache-root' $memoryCache '--provision'
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning 'MEMORY_MODEL_UNAVAILABLE: Olivia will continue without long-term memory.'
+            }
+        }
+        else {
+            Write-Warning 'MEMORY_MODEL_NOT_ACCEPTED: Olivia will continue without long-term memory.'
+        }
+    }
+}
 
 & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
 exit $LASTEXITCODE

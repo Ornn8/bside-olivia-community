@@ -212,18 +212,9 @@ class MemoryPromptBuilder:
 
 
 def _default_conversation_memory() -> ConversationMemoryPort | None:
-    """Load the optional adapter lazily; Core remains dependency-free."""
+    """Load the optional adapter lazily; disabled Core installs remain dependency-free."""
 
     try:
-        installed = os.environ.get(
-            "OLIVIA_MEMORY_INSTALLED_RUNTIME", ""
-        ).strip().casefold() in {"1", "true", "yes", "on"}
-        if installed:
-            from installed_memory_runtime import (
-                create_installed_mem0_adapter,
-            )
-
-            return create_installed_mem0_adapter()
         from mem0_memory import create_mem0_adapter
 
         return create_mem0_adapter()

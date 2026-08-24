@@ -25,9 +25,20 @@ from conversation_memory_port import (
     NullConversationMemoryPort,
     UnavailableConversationMemoryPort,
 )
+from memory_model import (
+    MemoryModelError,
+    configure_offline_model_environment,
+    load_memory_model_manifest,
+    validate_model_cache,
+)
 
 
 MEM0_OSS_VERSION = "2.0.18"
+_MEMORY_MODEL_MANIFEST = (
+    Path(__file__).resolve().parent
+    / "installer"
+    / "memory-model-manifest.json"
+)
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 
@@ -122,7 +133,7 @@ class Mem0Config:
         self,
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
-        environment = environ or os.environ
+        environment = os.environ if environ is None else environ
         return {
             "vector_store": {
                 "provider": "qdrant",
@@ -143,15 +154,10 @@ class Mem0Config:
                 },
             },
             "embedder": {
-                "provider": "huggingface",
+                "provider": "fastembed",
                 "config": {
                     "model": self.embedding_model,
                     "embedding_dims": self.embedding_dims,
-                    "model_kwargs": {
-                        "device": "cpu",
-                        "cache_folder": str(self.model_cache),
-                        "local_files_only": True,
-                    },
                 },
             },
             "history_db_path": str(self.history_path),
@@ -184,9 +190,12 @@ def load_mem0_config(
     environ: Mapping[str, str] | None = None,
     project_root: Path | None = None,
 ) -> Mem0Config:
-    environment = environ or os.environ
+    environment = os.environ if environ is None else environ
     root = Path(project_root or Path(__file__).resolve().parent)
-    configured_root = environment.get("OLIVIA_MEMORY_ROOT", "").strip()
+    configured_root = environment.get(
+        "OLIVIA_CONVERSATION_MEMORY_ROOT",
+        environment.get("OLIVIA_MEM0_ROOT", ""),
+    ).strip()
     data_root = (
         Path(configured_root).expanduser()
         if configured_root
@@ -574,16 +583,52 @@ def create_mem0_adapter(
     environ: Mapping[str, str] | None = None,
     memory_factory: Callable[[Mapping[str, object]], Mem0Backend] | None = None,
 ) -> ConversationMemoryPort:
-    active = config or load_mem0_config(environ=environ)
+    environment = os.environ if environ is None else environ
+    active = config or load_mem0_config(environ=environment)
     if active.config_error:
         return UnavailableConversationMemoryPort(active.config_error)
     if not active.enabled:
         return NullConversationMemoryPort()
+
+    # Production startup must be fully offline and use the exact model cache
+    # installed under the local data root.  Injected factories remain a pure
+    # test seam and do not require third-party model bytes.
+    if memory_factory is None:
+        if not str(environment.get(active.llm_api_key_env, "")).strip():
+            return UnavailableConversationMemoryPort(
+                "MEM0_LLM_API_KEY_MISSING"
+            )
+        try:
+            manifest = load_memory_model_manifest(
+                _MEMORY_MODEL_MANIFEST
+            )
+        except MemoryModelError as exc:
+            return UnavailableConversationMemoryPort(exc.code)
+        if (
+            manifest.provider != "fastembed"
+            or manifest.model != active.embedding_model
+            or manifest.dimensions != active.embedding_dims
+        ):
+            return UnavailableConversationMemoryPort(
+                "MEMORY_MODEL_CONFIG_MISMATCH"
+            )
+        model_status = validate_model_cache(
+            active.model_cache,
+            manifest,
+        )
+        if not model_status.ready:
+            return UnavailableConversationMemoryPort(
+                model_status.reason_code or "MEMORY_MODEL_NOT_READY"
+            )
+
+    configure_offline_model_environment(active.model_cache)
     try:
         active.qdrant_path.parent.mkdir(parents=True, exist_ok=True)
         active.history_path.parent.mkdir(parents=True, exist_ok=True)
         active.model_cache.mkdir(parents=True, exist_ok=True)
-        backend = (memory_factory or _default_factory)(active.provider_config(environ))
+        backend = (memory_factory or _default_factory)(
+            active.provider_config(environment)
+        )
         return Mem0ConversationMemoryAdapter(backend, active)
     except (ModuleNotFoundError, ImportError):
         return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")

@@ -109,11 +109,12 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
         },
     }
     assert mapping["history_db_path"] == str(config.history_path)
-    assert mapping["embedder"]["provider"] == "huggingface"
-    assert mapping["embedder"]["config"]["model_kwargs"] == {
-        "device": "cpu",
-        "cache_folder": str(config.model_cache),
-        "local_files_only": True,
+    assert mapping["embedder"] == {
+        "provider": "fastembed",
+        "config": {
+            "model": "BAAI/bge-small-zh-v1.5",
+            "embedding_dims": 512,
+        },
     }
     assert mapping["llm"]["config"]["openai_base_url"] == "http://127.0.0.1:9/v1"
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
@@ -124,7 +125,7 @@ def test_load_config_reuses_primary_llm_and_fails_closed(tmp_path: Path) -> None
     config = load_mem0_config(
         environ={
             "OLIVIA_MEMORY_ENABLED": "true",
-            "OLIVIA_MEMORY_ROOT": str(tmp_path / "mem0"),
+            "OLIVIA_CONVERSATION_MEMORY_ROOT": str(tmp_path / "mem0"),
             "OLIVIA_LLM_BASE_URL": "http://127.0.0.1:8000/v1",
             "OLIVIA_LLM_MODEL": "fixture-model",
             "OLIVIA_LLM_API_KEY_ENV": "FIXTURE_KEY",
@@ -140,12 +141,27 @@ def test_load_config_reuses_primary_llm_and_fails_closed(tmp_path: Path) -> None
     incomplete = load_mem0_config(
         environ={
             "OLIVIA_MEMORY_ENABLED": "true",
-            "OLIVIA_MEMORY_ROOT": str(tmp_path / "missing"),
+            "OLIVIA_CONVERSATION_MEMORY_ROOT": str(tmp_path / "missing"),
         },
         project_root=tmp_path,
     )
     assert incomplete.config_error == "MEM0_LLM_CONFIG_INCOMPLETE"
 
+
+
+def test_mem0_root_never_reuses_archive_root(tmp_path: Path) -> None:
+    config = load_mem0_config(
+        environ={
+            "OLIVIA_MEMORY_ENABLED": "1",
+            "OLIVIA_MEMORY_ROOT": str(tmp_path / "archive"),
+            "OLIVIA_CONVERSATION_MEMORY_ROOT": str(tmp_path / "mem0"),
+            "OLIVIA_LLM_BASE_URL": "http://127.0.0.1:9/v1",
+            "OLIVIA_LLM_MODEL": "fixture-model",
+        },
+        project_root=tmp_path,
+    )
+    assert config.data_root == tmp_path / "mem0"
+    assert config.data_root != tmp_path / "archive"
 
 def test_exchange_search_export_delete_and_clear(tmp_path: Path) -> None:
     backend = FakeMem0()

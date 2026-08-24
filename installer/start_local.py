@@ -93,6 +93,48 @@ _BACKEND_BOOTSTRAP = (
 )
 
 
+def _memory_enabled(value: object) -> str:
+    normalized = str(value or "").strip().casefold()
+    return "0" if normalized in {"0", "false", "no", "off"} else "1"
+
+
+def _configure_memory_environment(
+    environment: dict[str, str],
+    data_root: Path,
+) -> dict[str, str]:
+    """Confine the optional Mem0 runtime to install-owned offline paths."""
+
+    enabled = _memory_enabled(environment.get("OLIVIA_MEMORY_ENABLED"))
+    archive_root = data_root / "memory"
+    conversation_root = archive_root / "mem0"
+    model_cache = archive_root / "model-cache"
+    environment.update(
+        {
+            "OLIVIA_MEMORY_ENABLED": enabled,
+            "OLIVIA_MEMORY_ROOT": str(archive_root),
+            "OLIVIA_CONVERSATION_MEMORY_ROOT": str(conversation_root),
+            "OLIVIA_MEMORY_EMBEDDING_MODEL": "BAAI/bge-small-zh-v1.5",
+            "OLIVIA_MEMORY_EMBEDDING_DIMS": "512",
+            "OLIVIA_MEMORY_EMBEDDING_CACHE": str(model_cache),
+            "OLIVIA_MEMORY_LLM_BASE_URL": environment.get(
+                "OLIVIA_LLM_BASE_URL", ""
+            ),
+            "OLIVIA_MEMORY_LLM_MODEL": environment.get(
+                "OLIVIA_LLM_MODEL", ""
+            ),
+            "OLIVIA_MEMORY_LLM_API_KEY_ENV": environment.get(
+                "OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"
+            ),
+            "OLIVIA_MEMORY_OUTBOX_ENABLED": "1",
+            "FASTEMBED_CACHE_PATH": str(model_cache),
+            "HF_HUB_OFFLINE": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "DO_NOT_TRACK": "1",
+        }
+    )
+    return environment
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -139,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             "OLIVIA_PORT": str(args.port),
         }
     )
+    _configure_memory_environment(environment, data_root)
     if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
