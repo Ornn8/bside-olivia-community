@@ -80,8 +80,10 @@ jobs:
             '.github/workflows/build-memory-default-runtime.yml',
             '.github/workflows/probe-memory-model.yml',
             '.github/workflows/memory-runtime-smoke.yml',
+            '.github/workflows/finalize-pr105.yml',
             'tools/prepare_memory_default_runtime.py',
             'tools/finalize_memory_default_runtime.py',
+            'tools/finalize_pr105_review_blockers.py',
             'installed_memory_runtime.py'
           )
           foreach ($path in $forbidden) {
@@ -154,18 +156,23 @@ jobs:
             throw 'tests modified the frozen checkout'
           }
 
-      - name: Report exact-head runtime success
-        if: steps.scope.outputs.run == 'true' && success()
+      - name: Report exact-head runtime result
+        if: always() && steps.scope.outputs.run == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
         run: |
+          $marker = if ($env:JOB_STATUS -eq 'success') {
+            'MEMORY_RUNTIME_CI_PASS'
+          }
+          else {
+            'MEMORY_RUNTIME_CI_FAIL'
+          }
           $body = @"
-          MEMORY_RUNTIME_CI_PASS
+          $marker
           HEAD=$env:GITHUB_SHA
-          Mem0/FastEmbed/Qdrant imports: PASS
-          Pinned Chinese model provision + offline reload: PASS
-          Runtime tests with zero skips: PASS
-          Hardening and clean-checkout checks: PASS
+          EVENT=${{ github.event_name }}
+          JOB_STATUS=$env:JOB_STATUS
           "@
           gh api "repos/${{ github.repository }}/issues/105/comments" -f body="$body"
