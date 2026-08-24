@@ -21,6 +21,7 @@ from song_content import plan_song_content
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
+_MUSIC_STAGE_MANIFEST_VERSION = 2
 
 
 class MusicReplyError(RuntimeError):
@@ -240,6 +241,9 @@ class AceStepClient:
 
 
 def _ffmpeg() -> str:
+    configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
+    if configured and Path(configured).is_file():
+        return configured
     executable = shutil.which("ffmpeg")
     if executable:
         return executable
@@ -251,18 +255,84 @@ def _ffmpeg() -> str:
         raise MusicReplyError("FFMPEG_UNAVAILABLE") from exc
 
 
-def _run(command: list[str], error_code: str, *, timeout: float = 900.0) -> None:
+def _run(
+    command: list[str],
+    error_code: str,
+    *,
+    timeout: float = 900.0,
+    env: dict[str, str] | None = None,
+) -> None:
     try:
-        result = subprocess.run(command, capture_output=True, check=False, timeout=timeout)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            env=env,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise MusicReplyError(error_code) from exc
     if result.returncode != 0:
         raise MusicReplyError(error_code)
 
 
+def prepare_official_spoken_base(reference_path: Path, destination: Path) -> Path:
+    """Create the verified 0-35s speaking-performance base for musical replies."""
+
+    reference_path = Path(reference_path)
+    destination = Path(destination)
+    if not reference_path.is_file():
+        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
+    if _completed_stage(destination):
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(f"{destination.stem}.partial{destination.suffix}")
+    partial.unlink(missing_ok=True)
+    _run(
+        [
+            _ffmpeg(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            "0",
+            "-i",
+            str(reference_path),
+            "-t",
+            "35",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(partial),
+        ],
+        "MUSIC_REPLY_SPOKEN_REFERENCE_FAILED",
+        timeout=900.0,
+    )
+    if not _completed_stage(partial):
+        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_FAILED")
+    partial.replace(destination)
+    return destination
+
+
 def separate_vocals(song_path: Path, vocals_path: Path) -> None:
     executable = os.environ.get("OLIVIA_ROFORMER_EXE", "").strip()
-    if not executable or not Path(executable).is_file():
+    model_path = os.environ.get("OLIVIA_ROFORMER_MODEL_PATH", "").strip()
+    config_path = os.environ.get("OLIVIA_ROFORMER_CONFIG_PATH", "").strip()
+    if any(
+        not value or not Path(value).is_file()
+        for value in (executable, model_path, config_path)
+    ):
         raise MusicReplyError("ROFORMER_UNAVAILABLE")
     with tempfile.TemporaryDirectory(prefix="olivia-roformer-", dir=vocals_path.parent) as temporary:
         root = Path(temporary)
@@ -270,11 +340,39 @@ def separate_vocals(song_path: Path, vocals_path: Path) -> None:
         outputs = root / "outputs"
         inputs.mkdir()
         outputs.mkdir()
-        source = inputs / song_path.name
-        shutil.copyfile(song_path, source)
+        source = inputs / "song.wav"
         _run(
-            [executable, "--input_folder", str(inputs), "--store_dir", str(outputs)],
+            [
+                _ffmpeg(),
+                "-y",
+                "-i",
+                str(song_path),
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                str(source),
+            ],
+            "ROFORMER_INPUT_CONVERSION_FAILED",
+        )
+        _run(
+            [
+                executable,
+                "--input_folder",
+                str(inputs),
+                "--store_dir",
+                str(outputs),
+                "--model_path",
+                model_path,
+                "--config_path",
+                config_path,
+            ],
             "ROFORMER_FAILED",
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            },
         )
         candidates = sorted(outputs.rglob("*vocals*.wav"))
         if not candidates:
@@ -335,8 +433,9 @@ def concat_videos(
     output_path: Path,
     *,
     transition_video_path: Path | None = None,
-    transition_start_seconds: float = 41.0,
+    transition_start_seconds: float = 35.0,
     transition_end_seconds: float = 43.0,
+    end_fade_seconds: float = 2.0,
 ) -> None:
     """Join speech and performance, optionally preserving the reference turn/transition.
 
@@ -351,6 +450,8 @@ def concat_videos(
             raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
         if transition_start_seconds < 0 or transition_end_seconds <= transition_start_seconds:
             raise MusicReplyError("MUSIC_REPLY_TRANSITION_RANGE_INVALID")
+    if end_fade_seconds <= 0:
+        raise MusicReplyError("MUSIC_REPLY_FADE_DURATION_INVALID")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-concat-", dir=output_path.parent) as temporary:
@@ -400,13 +501,27 @@ def concat_videos(
                 ),
             ])
         target_duration = target_frames / 25
+        fade_duration = min(float(end_fade_seconds), target_duration)
+        fade_start = target_duration - fade_duration
+        filters.extend(
+            [
+                (
+                    f"[joined_v]fade=t=out:st={fade_start:.6f}:"
+                    f"d={fade_duration:.6f}[final_v]"
+                ),
+                (
+                    f"[joined_a]afade=t=out:st={fade_start:.6f}:"
+                    f"d={fade_duration:.6f}[final_a]"
+                ),
+            ]
+        )
         assembled = root / "assembled-lossless.mkv"
         _run(
             [
                 _ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
                 *inputs,
                 "-filter_complex", ";".join(filters),
-                "-map", "[joined_v]", "-map", "[joined_a]",
+                "-map", "[final_v]", "-map", "[final_a]",
                 "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0",
                 "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(assembled),
             ],
@@ -436,14 +551,224 @@ def concat_videos(
         result.replace(output_path)
 
 
-def _official_transition_reference() -> Path | None:
+def _official_transition_reference() -> Path:
     configured = os.environ.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", "").strip()
     if not configured:
-        return None
+        raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     reference = Path(configured)
     if not reference.is_file():
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     return reference
+
+
+def _completed_stage(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _file_fingerprint(path: Path | None) -> dict[str, object]:
+    """Return a content-bound fingerprint without retaining local path names."""
+
+    if path is None:
+        return {"status": "not_configured"}
+    path = Path(path)
+    try:
+        if not path.is_file():
+            return {"status": "missing"}
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "status": "present",
+            "size": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        }
+    except OSError:
+        return {"status": "unavailable"}
+
+
+def _optional_path(value: str) -> Path | None:
+    value = str(value).strip()
+    return Path(value) if value else None
+
+
+def _build_music_stage_manifest(
+    content: str,
+    reply_text: str,
+    song_plan: object,
+    duration_seconds: int,
+    *,
+    official_reply_reference_path: Path,
+    transition_reference: Path,
+    performance_video_path: Path,
+    tts_config_path: Path,
+    visual_config_path: Path,
+    worker_path: Path,
+    minimax_worker_path: Path,
+    minimax_root: Path,
+) -> dict[str, object]:
+    """Bind resumable stages to canonical text, inputs, and provider revisions."""
+
+    latentsync_root = _optional_path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", ""))
+    roformer_executable = _optional_path(os.environ.get("OLIVIA_ROFORMER_EXE", ""))
+    roformer_model = _optional_path(os.environ.get("OLIVIA_ROFORMER_MODEL_PATH", ""))
+    roformer_config = _optional_path(os.environ.get("OLIVIA_ROFORMER_CONFIG_PATH", ""))
+    return {
+        "schema_version": _MUSIC_STAGE_MANIFEST_VERSION,
+        "inputs": {
+            "letter_sha256": hashlib.sha256(str(content).encode("utf-8")).hexdigest(),
+            "canonical_reply_sha256": hashlib.sha256(
+                str(reply_text).encode("utf-8")
+            ).hexdigest(),
+            "lyrics_sha256": hashlib.sha256(
+                str(song_plan.lyrics).encode("utf-8")
+            ).hexdigest(),
+            "caption_sha256": hashlib.sha256(
+                str(song_plan.caption).encode("utf-8")
+            ).hexdigest(),
+            "duration_seconds": duration_seconds,
+        },
+        "assets": {
+            "official_reply_reference": _file_fingerprint(official_reply_reference_path),
+            "official_transition_reference": _file_fingerprint(transition_reference),
+            "performance_video": _file_fingerprint(performance_video_path),
+            "tts_config": _file_fingerprint(tts_config_path),
+            "visual_config": _file_fingerprint(visual_config_path),
+            "visual_worker": _file_fingerprint(worker_path),
+        },
+        "providers": {
+            "music": {
+                "name": "MiniMax-Music-3",
+                "python": _file_fingerprint(
+                    _optional_path(os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", ""))
+                ),
+                "worker": _file_fingerprint(minimax_worker_path),
+                "entry": _file_fingerprint(minimax_root / "main.py"),
+                "node_code": _file_fingerprint(
+                    minimax_root / "comfy_extras" / "nodes_minimax_music.py"
+                ),
+                "models": {
+                    "unet": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "unet"
+                        / "minimax_music3_dit_int8_convrot.safetensors"
+                    ),
+                    "text_encoder": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "clip"
+                        / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
+                    ),
+                    "vae": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "vae"
+                        / "minimax_music3_dav.safetensors"
+                    ),
+                },
+            },
+            "vocal_separator": {
+                "name": "MelBand-RoFormer",
+                "executable": _file_fingerprint(roformer_executable),
+                "model": _file_fingerprint(roformer_model),
+                "config": _file_fingerprint(roformer_config),
+            },
+            "face_sync": {
+                "name": "LatentSync-1.5",
+                "python": _file_fingerprint(
+                    _optional_path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", ""))
+                ),
+                "inference": _file_fingerprint(
+                    latentsync_root / "scripts" / "inference.py"
+                    if latentsync_root is not None
+                    else None
+                ),
+                "config": _file_fingerprint(
+                    latentsync_root / "configs" / "unet" / "stage2_efficient.yaml"
+                    if latentsync_root is not None
+                    else None
+                ),
+                "checkpoint": _file_fingerprint(
+                    latentsync_root / "checkpoints" / "latentsync_unet.pt"
+                    if latentsync_root is not None
+                    else None
+                ),
+            },
+        },
+        "artifacts": {},
+    }
+
+
+def _read_compatible_manifest(
+    manifest_path: Path,
+    expected: dict[str, object],
+) -> dict[str, object]:
+    try:
+        loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {**expected, "artifacts": {}}
+    if not isinstance(loaded, dict) or any(
+        loaded.get(key) != expected.get(key)
+        for key in ("schema_version", "inputs", "assets", "providers")
+    ):
+        return {**expected, "artifacts": {}}
+    artifacts = loaded.get("artifacts")
+    return {**expected, "artifacts": artifacts if isinstance(artifacts, dict) else {}}
+
+
+def _write_stage_manifest(manifest_path: Path, manifest: dict[str, object]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = manifest_path.with_name(f"{manifest_path.stem}.partial{manifest_path.suffix}")
+    partial.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    partial.replace(manifest_path)
+
+
+def _stage_reusable(
+    manifest: dict[str, object],
+    artifact_name: str,
+    path: Path,
+    *,
+    upstream: dict[str, Path] | None = None,
+) -> bool:
+    artifacts = manifest.get("artifacts")
+    expected = artifacts.get(artifact_name) if isinstance(artifacts, dict) else None
+    return _completed_stage(path) and expected == _stage_record(path, upstream)
+
+
+def _stage_record(
+    path: Path,
+    upstream: dict[str, Path] | None = None,
+) -> dict[str, object]:
+    return {
+        "fingerprint": _file_fingerprint(path),
+        "upstream": {
+            name: _file_fingerprint(source)
+            for name, source in sorted((upstream or {}).items())
+        },
+    }
+
+
+def _record_stage(
+    manifest: dict[str, object],
+    manifest_path: Path,
+    artifact_name: str,
+    path: Path,
+    *,
+    upstream: dict[str, Path] | None = None,
+) -> None:
+    artifacts = manifest.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        manifest["artifacts"] = artifacts
+    artifacts[artifact_name] = _stage_record(path, upstream)
+    _write_stage_manifest(manifest_path, manifest)
 
 
 def render_musical_reply(
@@ -452,7 +777,7 @@ def render_musical_reply(
     output_path: Path,
     *,
     normal_video_path: Path,
-    normal_scene_path: Path | None = None,
+    official_reply_reference_path: Path,
     song_video_path: Path,
     tts_config_path: Path,
     visual_config_path: Path,
@@ -463,6 +788,7 @@ def render_musical_reply(
     """Render the ordinary reply, append an original-view song performance."""
 
     duration_seconds = normalize_music_duration(duration_seconds)
+    transition_reference = _official_transition_reference()
     minimax_python = os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", "").strip()
     minimax_root = os.environ.get("OLIVIA_MINIMAX_COMFY_ROOT", "").strip()
     minimax_worker = os.environ.get("OLIVIA_MINIMAX_WORKER", "").strip()
@@ -473,20 +799,81 @@ def render_musical_reply(
         song_plan = plan_song_content(content, reply_text, duration_seconds)
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
-    normal_metadata = render_reply_video(
+    stage_root = output_path.parent / (
+        f"{output_path.stem}-music-v2-{duration_seconds}s-stages"
+    )
+    stage_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = stage_root / "manifest.json"
+    expected_manifest = _build_music_stage_manifest(
+        content,
         reply_text,
-        normal_video_path,
+        song_plan,
+        duration_seconds,
+        official_reply_reference_path=official_reply_reference_path,
+        transition_reference=transition_reference,
+        performance_video_path=performance_video_path,
         tts_config_path=tts_config_path,
         visual_config_path=visual_config_path,
         worker_path=worker_path,
-        scene_path=normal_scene_path,
-        latentsync_python_path=Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-        latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+        minimax_worker_path=Path(minimax_worker),
+        minimax_root=Path(minimax_root),
     )
-    with tempfile.TemporaryDirectory(prefix="olivia-song-", dir=output_path.parent) as temporary:
-        root = Path(temporary)
-        song_audio = root / "song.flac"
-        vocals = root / "vocals.wav"
+    try:
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing_manifest = None
+    manifest_compatible = isinstance(existing_manifest, dict) and all(
+        existing_manifest.get(key) == expected_manifest.get(key)
+        for key in ("schema_version", "inputs", "assets", "providers")
+    )
+    manifest = _read_compatible_manifest(manifest_path, expected_manifest)
+    if not manifest_compatible:
+        _write_stage_manifest(manifest_path, manifest)
+
+    spoken_base = stage_root / "official-spoken-000-035s.mp4"
+    if _stage_reusable(
+        manifest,
+        "normal_video",
+        normal_video_path,
+        upstream={"spoken_base": spoken_base},
+    ):
+        normal_metadata = {"spoken_stage": "reused"}
+    else:
+        if not _stage_reusable(manifest, "spoken_base", spoken_base):
+            spoken_base.unlink(missing_ok=True)
+            prepare_official_spoken_base(official_reply_reference_path, spoken_base)
+            _record_stage(manifest, manifest_path, "spoken_base", spoken_base)
+        normal_metadata = render_reply_video(
+            reply_text,
+            normal_video_path,
+            tts_config_path=tts_config_path,
+            visual_config_path=visual_config_path,
+            worker_path=worker_path,
+            scene_path=spoken_base,
+            latentsync_python_path=Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
+            latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+            adaptive_delivery=True,
+        )
+        _record_stage(
+            manifest,
+            manifest_path,
+            "normal_video",
+            normal_video_path,
+            upstream={"spoken_base": spoken_base},
+        )
+
+    song_audio = stage_root / "song.flac"
+    vocals = stage_root / "vocals.wav"
+    if _stage_reusable(manifest, "song_audio", song_audio):
+        song_metadata = {
+            "audio_model": "MiniMax-Music-3",
+            "requested_duration_seconds": duration_seconds,
+            "lyrics_source": "letter_and_reply",
+            "music_stage": "reused",
+        }
+    else:
+        partial_song = stage_root / "song.partial.flac"
+        partial_song.unlink(missing_ok=True)
         song_metadata = MiniMaxMusic3Worker(
             python_path=Path(minimax_python),
             worker_path=Path(minimax_worker),
@@ -494,28 +881,72 @@ def render_musical_reply(
         ).generate(
             content,
             reply_text,
-            song_audio,
+            partial_song,
             duration_seconds=duration_seconds,
             lyrics=song_plan.lyrics,
             caption=song_plan.caption,
         )
-        separate_vocals(song_audio, vocals)
+        partial_song.replace(song_audio)
+        _record_stage(manifest, manifest_path, "song_audio", song_audio)
+
+    if not _stage_reusable(
+        manifest,
+        "vocals",
+        vocals,
+        upstream={"song_audio": song_audio},
+    ):
+        partial_vocals = stage_root / "vocals.partial.wav"
+        partial_vocals.unlink(missing_ok=True)
+        separate_vocals(song_audio, partial_vocals)
+        partial_vocals.replace(vocals)
+        _record_stage(
+            manifest,
+            manifest_path,
+            "vocals",
+            vocals,
+            upstream={"song_audio": song_audio},
+        )
+
+    if _stage_reusable(
+        manifest,
+        "song_video",
+        song_video_path,
+        upstream={"song_audio": song_audio, "vocals": vocals},
+    ):
+        face_metadata = {"performance_stage": "reused"}
+    else:
+        partial_video = song_video_path.with_name(
+            f"{song_video_path.stem}.partial{song_video_path.suffix}"
+        )
+        partial_video.unlink(missing_ok=True)
         face_metadata = render_full_face_performance(
             performance_video_path,
             vocals,
             song_audio,
-            song_video_path,
+            partial_video,
         )
-        transition_reference = _official_transition_reference()
-        if transition_reference is None:
-            concat_videos(normal_video_path, song_video_path, output_path)
-        else:
-            concat_videos(
-                normal_video_path,
-                song_video_path,
-                output_path,
-                transition_video_path=transition_reference,
-            )
+        partial_video.replace(song_video_path)
+        _record_stage(
+            manifest,
+            manifest_path,
+            "song_video",
+            song_video_path,
+            upstream={"song_audio": song_audio, "vocals": vocals},
+        )
+
+    concat_videos(
+        normal_video_path,
+        song_video_path,
+        output_path,
+        transition_video_path=transition_reference,
+    )
+    _record_stage(
+        manifest,
+        manifest_path,
+        "final_output",
+        output_path,
+        upstream={"normal_video": normal_video_path, "song_video": song_video_path},
+    )
     return {
         **normal_metadata,
         **song_metadata,
@@ -526,8 +957,6 @@ def render_musical_reply(
         "song_title": "回信里的歌",
         "reply_structure": (
             "normal_video_then_official_transition_then_song_video"
-            if transition_reference is not None
-            else "normal_video_then_song_video"
         ),
-        "transition_duration_seconds": 2.0 if transition_reference is not None else 0.0,
+        "transition_duration_seconds": 8.0,
     }
