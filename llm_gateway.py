@@ -196,6 +196,12 @@ class GatewayResponse:
 
 
 @dataclass(frozen=True)
+class GatewayToolCall:
+    name: str
+    arguments: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class GatewayDelta:
     text: str
     request_id: str
@@ -349,6 +355,16 @@ class Gateway:
     ) -> GatewayResponse:
         raise NotImplementedError
 
+    async def complete_with_tools(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
+        request_id: str | None = None,
+    ) -> Sequence[GatewayToolCall]:
+        raise ProviderUnavailable()
+
     async def stream(
         self,
         messages: Sequence[Mapping[str, Any]],
@@ -385,6 +401,31 @@ class FallbackAdapter(Gateway):
             if not exc.retryable:
                 raise
             return await self.fallback.complete(messages, request_id=request_id)
+
+    async def complete_with_tools(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
+        request_id: str | None = None,
+    ) -> Sequence[GatewayToolCall]:
+        try:
+            return await self.primary.complete_with_tools(
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                request_id=request_id,
+            )
+        except GatewayError as exc:
+            if not exc.retryable:
+                raise
+            return await self.fallback.complete_with_tools(
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                request_id=request_id,
+            )
 
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
         emitted = False
@@ -553,6 +594,40 @@ class OpenAICompatibleAdapter(Gateway):
             raise InvalidGatewayInput("OUTPUT_TOO_LONG")
         return GatewayResponse(text, request, self.config.provider, self.config.model)
 
+    async def complete_with_tools(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
+        request_id: str | None = None,
+    ) -> Sequence[GatewayToolCall]:
+        request = request_id or uuid.uuid4().hex
+        body = self._body(messages, stream=False)
+        if self.config.api_style == "responses":
+            converted: list[dict[str, object]] = []
+            for tool in tools:
+                function = tool.get("function") if isinstance(tool, Mapping) else None
+                if not isinstance(function, Mapping):
+                    raise InvalidGatewayInput("INVALID_TOOL")
+                converted.append(
+                    {
+                        "type": "function",
+                        "name": function.get("name"),
+                        "description": function.get("description", ""),
+                        "parameters": function.get("parameters", {}),
+                    }
+                )
+            body["tools"] = converted
+        else:
+            body["tools"] = list(tools)
+        body["tool_choice"] = tool_choice
+        data = await self._post_json(body, request)
+        calls = _extract_tool_calls(data)
+        if not calls:
+            raise ProviderProtocolError()
+        return calls
+
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
         request = request_id or uuid.uuid4().hex
         body = self._body(messages, stream=True)
@@ -645,6 +720,44 @@ def _extract_response_text(data: Mapping[str, Any]) -> str:
                 parts.append(content)
         return "".join(parts).strip()
     return ""
+
+
+def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
+    raw_calls: list[Mapping[str, Any]] = []
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, Mapping):
+            message = choice.get("message", choice)
+            if isinstance(message, Mapping) and isinstance(message.get("tool_calls"), list):
+                raw_calls.extend(
+                    item for item in message["tool_calls"] if isinstance(item, Mapping)
+                )
+    output = data.get("output")
+    if isinstance(output, list):
+        raw_calls.extend(
+            item
+            for item in output
+            if isinstance(item, Mapping) and item.get("type") == "function_call"
+        )
+
+    calls: list[GatewayToolCall] = []
+    for raw in raw_calls:
+        function = raw.get("function")
+        source = function if isinstance(function, Mapping) else raw
+        name = source.get("name")
+        arguments = source.get("arguments")
+        if not isinstance(name, str) or not name:
+            raise ProviderProtocolError()
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                raise ProviderProtocolError() from None
+        if not isinstance(arguments, Mapping):
+            raise ProviderProtocolError()
+        calls.append(GatewayToolCall(name=name, arguments=dict(arguments)))
+    return tuple(calls)
 
 
 def _content_to_text(value: Any) -> str:
@@ -750,6 +863,7 @@ __all__ = [
     "GatewayConfig",
     "GatewayDelta",
     "GatewayError",
+    "GatewayToolCall",
     "FallbackAdapter",
     "GatewayResponse",
     "InvalidGatewayInput",
