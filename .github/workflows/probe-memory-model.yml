@@ -1,0 +1,28 @@
+name: probe-memory-model
+
+on:
+  push:
+    branches:
+      - feat/p03-memory-default-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and fingerprint FastEmbed Chinese model
+        shell: pwsh
+        run: |
+          $url = 'https://storage.googleapis.com/qdrant-fastembed/fast-bge-small-zh-v1.5.tar.gz'
+          $archive = Join-Path $env:RUNNER_TEMP 'fast-bge-small-zh-v1.5.tar.gz'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $item = Get-Item -LiteralPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          Write-Host "MODEL_ARCHIVE_URL=$url"
+          Write-Host "MODEL_ARCHIVE_BYTES=$($item.Length)"
+          Write-Host "MODEL_ARCHIVE_SHA256=$hash"
+          tar -tzf $archive | Select-Object -First 30
