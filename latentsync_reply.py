@@ -15,8 +15,13 @@ class LatentSyncReplyError(RuntimeError):
 
 def _environment_with_ffmpeg(shim_root: Path, cache_root: Path) -> dict[str, str]:
     configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
-    executable = configured if configured and Path(configured).is_file() else None
-    executable = executable or shutil.which("ffmpeg")
+    if configured:
+        configured_path = Path(configured)
+        if not configured_path.is_file():
+            raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        executable = str(configured_path)
+    else:
+        executable = shutil.which("ffmpeg")
     if executable is None:
         try:
             import imageio_ffmpeg

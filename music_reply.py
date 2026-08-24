@@ -21,7 +21,7 @@ from song_content import plan_song_content
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
-_MUSIC_STAGE_MANIFEST_VERSION = 1
+_MUSIC_STAGE_MANIFEST_VERSION = 2
 
 
 class MusicReplyError(RuntimeError):
@@ -642,8 +642,34 @@ def _build_music_stage_manifest(
         "providers": {
             "music": {
                 "name": "MiniMax-Music-3",
+                "python": _file_fingerprint(
+                    _optional_path(os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", ""))
+                ),
                 "worker": _file_fingerprint(minimax_worker_path),
-                "comfy_main": _file_fingerprint(minimax_root / "main.py"),
+                "entry": _file_fingerprint(minimax_root / "main.py"),
+                "node_code": _file_fingerprint(
+                    minimax_root / "comfy_extras" / "nodes_minimax_music.py"
+                ),
+                "models": {
+                    "unet": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "unet"
+                        / "minimax_music3_dit_int8_convrot.safetensors"
+                    ),
+                    "text_encoder": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "clip"
+                        / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
+                    ),
+                    "vae": _file_fingerprint(
+                        minimax_root
+                        / "models"
+                        / "vae"
+                        / "minimax_music3_dav.safetensors"
+                    ),
+                },
             },
             "vocal_separator": {
                 "name": "MelBand-RoFormer",
@@ -663,6 +689,11 @@ def _build_music_stage_manifest(
                 ),
                 "config": _file_fingerprint(
                     latentsync_root / "configs" / "unet" / "stage2_efficient.yaml"
+                    if latentsync_root is not None
+                    else None
+                ),
+                "checkpoint": _file_fingerprint(
+                    latentsync_root / "checkpoints" / "latentsync_unet.pt"
                     if latentsync_root is not None
                     else None
                 ),
@@ -703,14 +734,25 @@ def _stage_reusable(
     manifest: dict[str, object],
     artifact_name: str,
     path: Path,
+    *,
+    upstream: dict[str, Path] | None = None,
 ) -> bool:
     artifacts = manifest.get("artifacts")
     expected = artifacts.get(artifact_name) if isinstance(artifacts, dict) else None
-    return (
-        _completed_stage(path)
-        and isinstance(expected, dict)
-        and expected == _file_fingerprint(path)
-    )
+    return _completed_stage(path) and expected == _stage_record(path, upstream)
+
+
+def _stage_record(
+    path: Path,
+    upstream: dict[str, Path] | None = None,
+) -> dict[str, object]:
+    return {
+        "fingerprint": _file_fingerprint(path),
+        "upstream": {
+            name: _file_fingerprint(source)
+            for name, source in sorted((upstream or {}).items())
+        },
+    }
 
 
 def _record_stage(
@@ -718,12 +760,14 @@ def _record_stage(
     manifest_path: Path,
     artifact_name: str,
     path: Path,
+    *,
+    upstream: dict[str, Path] | None = None,
 ) -> None:
     artifacts = manifest.setdefault("artifacts", {})
     if not isinstance(artifacts, dict):
         artifacts = {}
         manifest["artifacts"] = artifacts
-    artifacts[artifact_name] = _file_fingerprint(path)
+    artifacts[artifact_name] = _stage_record(path, upstream)
     _write_stage_manifest(manifest_path, manifest)
 
 
@@ -787,7 +831,12 @@ def render_musical_reply(
         _write_stage_manifest(manifest_path, manifest)
 
     spoken_base = stage_root / "official-spoken-000-035s.mp4"
-    if _stage_reusable(manifest, "normal_video", normal_video_path):
+    if _stage_reusable(
+        manifest,
+        "normal_video",
+        normal_video_path,
+        upstream={"spoken_base": spoken_base},
+    ):
         normal_metadata = {"spoken_stage": "reused"}
     else:
         if not _stage_reusable(manifest, "spoken_base", spoken_base):
@@ -805,7 +854,13 @@ def render_musical_reply(
             latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
             adaptive_delivery=True,
         )
-        _record_stage(manifest, manifest_path, "normal_video", normal_video_path)
+        _record_stage(
+            manifest,
+            manifest_path,
+            "normal_video",
+            normal_video_path,
+            upstream={"spoken_base": spoken_base},
+        )
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"
@@ -834,14 +889,30 @@ def render_musical_reply(
         partial_song.replace(song_audio)
         _record_stage(manifest, manifest_path, "song_audio", song_audio)
 
-    if not _stage_reusable(manifest, "vocals", vocals):
+    if not _stage_reusable(
+        manifest,
+        "vocals",
+        vocals,
+        upstream={"song_audio": song_audio},
+    ):
         partial_vocals = stage_root / "vocals.partial.wav"
         partial_vocals.unlink(missing_ok=True)
         separate_vocals(song_audio, partial_vocals)
         partial_vocals.replace(vocals)
-        _record_stage(manifest, manifest_path, "vocals", vocals)
+        _record_stage(
+            manifest,
+            manifest_path,
+            "vocals",
+            vocals,
+            upstream={"song_audio": song_audio},
+        )
 
-    if _stage_reusable(manifest, "song_video", song_video_path):
+    if _stage_reusable(
+        manifest,
+        "song_video",
+        song_video_path,
+        upstream={"song_audio": song_audio, "vocals": vocals},
+    ):
         face_metadata = {"performance_stage": "reused"}
     else:
         partial_video = song_video_path.with_name(
@@ -855,7 +926,13 @@ def render_musical_reply(
             partial_video,
         )
         partial_video.replace(song_video_path)
-        _record_stage(manifest, manifest_path, "song_video", song_video_path)
+        _record_stage(
+            manifest,
+            manifest_path,
+            "song_video",
+            song_video_path,
+            upstream={"song_audio": song_audio, "vocals": vocals},
+        )
 
     concat_videos(
         normal_video_path,
@@ -863,7 +940,13 @@ def render_musical_reply(
         output_path,
         transition_video_path=transition_reference,
     )
-    _record_stage(manifest, manifest_path, "final_output", output_path)
+    _record_stage(
+        manifest,
+        manifest_path,
+        "final_output",
+        output_path,
+        upstream={"normal_video": normal_video_path, "song_video": song_video_path},
+    )
     return {
         **normal_metadata,
         **song_metadata,
