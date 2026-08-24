@@ -66,9 +66,9 @@ from private_world_delivery import (
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,
 )
-from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_reducer import ReducerEventKind
 from private_world_projection import project_private_world
+from private_world_runtime import PrivateWorldRuntime, create_private_world_runtime
 from reply_context import (
     ReplyContext,
     ReplyMode,
@@ -478,16 +478,11 @@ def _persist_store_state() -> None:
 
 _load_store_state()
 memory_adapter: MemoryPort = create_memory_adapter()
-private_world_committer: PrivateWorldDeliveryCommitter | None = None
-private_world_port: PrivateWorldPort = NullPrivateWorldPort()
-_private_world_path = Path(_os.environ.get("OLIVIA_PRIVATE_WORLD_DB", ""))
-if _private_world_path.is_absolute():
-    try:
-        _private_world_ledger = SQLitePrivateWorldLedger(_private_world_path)
-        private_world_port = _private_world_ledger
-        private_world_committer = PrivateWorldDeliveryCommitter(_private_world_ledger)
-    except (OSError, ValueError, RuntimeError):
-        pass
+private_world_runtime: PrivateWorldRuntime = create_private_world_runtime()
+private_world_port: PrivateWorldPort = private_world_runtime.port
+private_world_committer: PrivateWorldDeliveryCommitter | None = (
+    private_world_runtime.committer
+)
 letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     private_world_port=private_world_port,
@@ -969,6 +964,7 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                     "network_called": False,
                 },
                 "memory": memory_info,
+                "private_world": private_world_runtime.public_status(),
                 "music_catalog": {
                     "status": "available",
                     "provider": "sanitized-local-fixture",

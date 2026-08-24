@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import sqlite3
 from typing import Mapping
 
 from private_world_delivery import PrivateWorldDeliveryCommitter
@@ -46,9 +47,18 @@ class PrivateWorldRuntime:
         ):
             try:
                 counts = self.port.health()
+                self.port.snapshot()
                 event_count = int(counts["event_count"])
                 snapshot_count = int(counts["snapshot_count"])
-            except (OSError, RuntimeError, ValueError):
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                sqlite3.Error,
+            ):
                 status = "unavailable"
                 reason_code = "PRIVATE_WORLD_STORAGE_UNAVAILABLE"
         return {
@@ -110,7 +120,17 @@ def create_private_world_runtime(
 ) -> PrivateWorldRuntime:
     """Create the optional local ledger without blocking the reply runtime."""
 
-    path, reason, enabled = resolve_private_world_database(environ)
+    try:
+        path, reason, enabled = resolve_private_world_database(environ)
+    except (OSError, ValueError, RuntimeError, sqlite3.Error):
+        return PrivateWorldRuntime(
+            NullPrivateWorldPort(),
+            None,
+            "unavailable",
+            "none",
+            "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
+            True,
+        )
     if not enabled:
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
@@ -145,7 +165,7 @@ def create_private_world_runtime(
             event_count=int(counts["event_count"]),
             snapshot_count=int(counts["snapshot_count"]),
         )
-    except (OSError, ValueError, RuntimeError, LedgerWriteError):
+    except (OSError, ValueError, RuntimeError, sqlite3.Error, LedgerWriteError):
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
             None,

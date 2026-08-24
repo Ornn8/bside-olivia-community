@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P02 PrivateWorld runtime health",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "provider",
+    "reason_code",
+    "enabled",
+    "schema_version",
+    "migration_status",
+    "event_count",
+    "snapshot_count",
+    "probe",
+    "network_called"
+  ],
+  "properties": {
+    "status": {"enum": ["available", "unavailable", "disabled"]},
+    "provider": {"enum": ["sqlite", "none"]},
+    "reason_code": {"type": ["string", "null"]},
+    "enabled": {"type": "boolean"},
+    "schema_version": {"type": ["integer", "null"]},
+    "migration_status": {"type": ["string", "null"]},
+    "event_count": {"type": "integer", "minimum": 0},
+    "snapshot_count": {"type": "integer", "minimum": 0},
+    "probe": {"enum": ["in-process", "not-run"]},
+    "network_called": {"const": false}
+  },
+  "$defs": {
+    "current_schema": {"const": 2},
+    "migration": {
+      "enum": ["created_v2", "current_v2", "migrated_v1_to_v2"]
+    },
+    "unavailable_reason": {
+      "enum": [
+        "PRIVATE_WORLD_DATA_ROOT_NOT_CONFIGURED",
+        "PRIVATE_WORLD_DB_MUST_BE_ABSOLUTE",
+        "PRIVATE_WORLD_STORAGE_UNAVAILABLE"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "title": "available SQLite ledger",
+      "properties": {
+        "status": {"const": "available"},
+        "provider": {"const": "sqlite"},
+        "reason_code": {"const": null},
+        "enabled": {"const": true},
+        "schema_version": {"$ref": "#/$defs/current_schema"},
+        "migration_status": {"$ref": "#/$defs/migration"},
+        "probe": {"const": "in-process"}
+      }
+    },
+    {
+      "title": "unavailable local storage",
+      "allOf": [
+        {
+          "properties": {
+            "status": {"const": "unavailable"},
+            "provider": {"const": "none"},
+            "reason_code": {"$ref": "#/$defs/unavailable_reason"},
+            "enabled": {"const": true},
+            "probe": {"const": "not-run"}
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "schema_version": {"type": "null"},
+                "migration_status": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "schema_version": {"$ref": "#/$defs/current_schema"},
+                "migration_status": {"$ref": "#/$defs/migration"}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "disabled or invalid local configuration",
+      "properties": {
+        "status": {"const": "disabled"},
+        "provider": {"const": "none"},
+        "reason_code": {
+          "enum": [
+            "PRIVATE_WORLD_DISABLED",
+            "PRIVATE_WORLD_ENABLED_INVALID"
+          ]
+        },
+        "enabled": {"const": false},
+        "schema_version": {"type": "null"},
+        "migration_status": {"type": "null"},
+        "event_count": {"const": 0},
+        "snapshot_count": {"const": 0},
+        "probe": {"const": "not-run"}
+      }
+    }
+  ]
+}

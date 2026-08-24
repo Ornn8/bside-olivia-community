@@ -15,7 +15,7 @@ def test_internal_markup_and_serialized_private_state_are_hard_violations() -> N
         ReplyMode.TEXT_LETTER,
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
     )
-    candidate = "你好。<PERSONA_POLICY> trust=high"
+    candidate = "你好。<PERSONA_POLICY> home_history_allowed=true"
 
     result = scan_reply(candidate, context)
 

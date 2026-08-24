@@ -26,3 +26,18 @@ home-history permission and character-known facts.
 This module does not persist and does not call a provider. It also does not
 infer events, render prompts, or update relationship values. P02-11 owns
 persistence and P02-13 owns the model-facing projection.
+
+## Runtime health projection
+
+`/health?profile=core` exposes the optional local runtime as
+`providers.private_world`. Its public payload is validated by
+`contracts/private_world_runtime_health.schema.json` and contains only
+availability, provider kind, a stable reason code, schema/migration markers,
+aggregate counts, probe state, and `network_called=false`. It never exposes a
+database path, snapshot text, nicknames, relationship scores, raw home-access
+levels, continuation data, or reply text.
+
+The runtime reports `available/sqlite` only after the current snapshot can be
+read and parsed. Storage, JSON, schema, or snapshot semantic failures report
+`unavailable/none` with `PRIVATE_WORLD_STORAGE_UNAVAILABLE`; normal reply
+delivery stays pending for later recovery.

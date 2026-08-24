@@ -6,6 +6,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -26,6 +27,22 @@ _METADATA_KEY = "schema_version"
 _LEGACY_TABLES = frozenset(
     {"private_world_events", "private_world_snapshots"}
 )
+_V1_PAYLOAD_FIELDS = frozenset(
+    {
+        "version",
+        "view",
+        "familiarity",
+        "trust",
+        "comfort",
+        "closeness",
+        "tension",
+        "relationship_stage",
+        "nickname_permissions",
+        "home_access",
+        "continuation_awareness",
+    }
+)
+_V2_PAYLOAD_FIELDS = _V1_PAYLOAD_FIELDS | {"continuation_facts"}
 
 
 class LedgerWriteError(RuntimeError):
@@ -129,127 +146,127 @@ class SQLitePrivateWorldLedger:
         finally:
             connection.close()
 
-    def _existing_schema_version(self) -> int:
-        if (
-            not self._database_path.is_file()
-            or self._database_path.stat().st_size == 0
-        ):
+    @staticmethod
+    def _existing_schema_version(connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        tables = {str(row[0]) for row in rows}
+        if not tables:
             return 0
-        try:
-            with closing(
-                sqlite3.connect(
-                    self._database_path,
-                    timeout=5,
-                )
-            ) as connection:
-                rows = connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                ).fetchall()
-                tables = {str(row[0]) for row in rows}
-                if not tables:
-                    return 0
-                if "private_world_metadata" in tables:
-                    row = connection.execute(
-                        "SELECT value FROM private_world_metadata WHERE key = ?",
-                        (_METADATA_KEY,),
-                    ).fetchone()
-                    if row is None:
-                        raise LedgerWriteError(
-                            "private world schema metadata is incomplete"
-                        )
-                    try:
-                        return int(row[0])
-                    except (TypeError, ValueError) as exc:
-                        raise LedgerWriteError(
-                            "private world schema metadata is invalid"
-                        ) from exc
-                if _LEGACY_TABLES.issubset(tables):
-                    return 1
+        if "private_world_metadata" in tables:
+            row = connection.execute(
+                "SELECT value FROM private_world_metadata WHERE key = ?",
+                (_METADATA_KEY,),
+            ).fetchone()
+            if row is None:
                 raise LedgerWriteError(
-                    "private world schema is unrecognized"
+                    "private world schema metadata is incomplete"
                 )
-        except sqlite3.Error as exc:
-            raise LedgerWriteError(
-                "private world schema inspection failed"
-            ) from exc
+            try:
+                return int(row[0])
+            except (TypeError, ValueError) as exc:
+                raise LedgerWriteError(
+                    "private world schema metadata is invalid"
+                ) from exc
+        if _LEGACY_TABLES.issubset(tables):
+            return 1
+        raise LedgerWriteError("private world schema is unrecognized")
 
-    def _backup_legacy_database(self) -> None:
+    def _backup_legacy_database(self, source: sqlite3.Connection) -> None:
         stamp = datetime.now(timezone.utc).strftime(
             "%Y%m%dT%H%M%S%fZ"
         )
         backup = self._database_path.with_name(
             f"{self._database_path.name}.pre-v2-{stamp}.bak"
         )
+        created = False
         try:
-            with closing(
-                sqlite3.connect(
-                    self._database_path,
-                    timeout=5,
-                )
-            ) as source, closing(
-                sqlite3.connect(
-                    backup,
-                    timeout=5,
-                )
-            ) as destination:
-                source.backup(destination)
-                destination.commit()
-        except sqlite3.Error as exc:
-            backup.unlink(missing_ok=True)
+            image = source.serialize()
+            with backup.open("xb") as stream:
+                created = True
+                stream.write(image)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError, sqlite3.Error) as exc:
+            if created:
+                backup.unlink(missing_ok=True)
             raise LedgerWriteError(
                 "private world migration backup failed"
             ) from exc
 
     def _initialize(self) -> None:
-        previous = self._existing_schema_version()
-        if previous > PRIVATE_WORLD_LEDGER_SCHEMA_VERSION:
-            raise LedgerWriteError(
-                "private world schema is newer than this runtime"
-            )
-        if previous == 1:
-            self._backup_legacy_database()
-            self._migration_status = "migrated_v1_to_v2"
-        elif previous == 0:
-            self._migration_status = "created_v2"
-        else:
-            self._migration_status = "current_v2"
-
         try:
-            with self._connection() as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS private_world_events (
+            with closing(
+                sqlite3.connect(self._database_path, timeout=5)
+            ) as connection:
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    previous = self._existing_schema_version(connection)
+                    if previous > PRIVATE_WORLD_LEDGER_SCHEMA_VERSION:
+                        raise LedgerWriteError(
+                            "private world schema is newer than this runtime"
+                        )
+                    migrated_rows: tuple[tuple[int, str], ...] = ()
+                    if previous == 1:
+                        migrated_rows = self._validated_v1_rows(connection)
+                        self._backup_legacy_database(connection)
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS private_world_events (
                         event_id TEXT PRIMARY KEY,
                         delivery_id TEXT NOT NULL UNIQUE,
                         event_type TEXT NOT NULL,
                         payload_json TEXT NOT NULL,
                         occurred_at TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS private_world_snapshots (
+                        )"""
+                    )
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS private_world_snapshots (
                         version INTEGER PRIMARY KEY,
                         payload_json TEXT NOT NULL,
                         event_id TEXT NOT NULL UNIQUE,
                         FOREIGN KEY(event_id) REFERENCES private_world_events(event_id)
-                    );
-                    CREATE TABLE IF NOT EXISTS private_world_metadata (
+                        )"""
+                    )
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS private_world_metadata (
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL
-                    );
-                    """
-                )
-                connection.execute(
-                    """INSERT INTO private_world_metadata (key, value)
+                        )"""
+                    )
+                    if migrated_rows:
+                        connection.executemany(
+                            """UPDATE private_world_snapshots
+                           SET payload_json = ? WHERE version = ?""",
+                            (
+                                (payload_json, version)
+                                for version, payload_json in migrated_rows
+                            ),
+                        )
+                    connection.execute(
+                        """INSERT INTO private_world_metadata (key, value)
                        VALUES (?, ?)
                        ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
-                    (
-                        _METADATA_KEY,
-                        str(PRIVATE_WORLD_LEDGER_SCHEMA_VERSION),
-                    ),
-                )
+                        (
+                            _METADATA_KEY,
+                            str(PRIVATE_WORLD_LEDGER_SCHEMA_VERSION),
+                        ),
+                    )
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
         except sqlite3.Error as exc:
             raise LedgerWriteError(
                 "private world schema initialization failed"
             ) from exc
+        if previous == 1:
+            self._migration_status = "migrated_v1_to_v2"
+        elif previous == 0:
+            self._migration_status = "created_v2"
+        else:
+            self._migration_status = "current_v2"
 
     def apply_once(
         self,
@@ -279,12 +296,9 @@ class SQLitePrivateWorldLedger:
                     """SELECT version, payload_json FROM private_world_snapshots
                        ORDER BY version DESC LIMIT 1"""
                 ).fetchone()
-                snapshot_json = json.dumps(
-                    snapshot.to_dict(),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
+                if latest is not None:
+                    self._strict_stored_snapshot(latest[0], latest[1])
+                snapshot_json = self._snapshot_json(snapshot)
                 if latest is None:
                     write_snapshot = snapshot.version in {1, 2}
                 elif snapshot.version == latest[0]:
@@ -349,28 +363,43 @@ class SQLitePrivateWorldLedger:
             for row in rows
         )
 
-    def snapshot(self) -> PrivateWorldSnapshot:
-        with self._connection() as connection:
-            row = connection.execute(
-                """SELECT payload_json FROM private_world_snapshots
-                   ORDER BY version DESC LIMIT 1"""
-            ).fetchone()
-        if row is None:
-            return PrivateWorldSnapshot()
-        payload = json.loads(row[0])
-        continuation_facts = tuple(
-            LocalContinuationFact(
-                fact_id=item["fact_id"],
-                statement=item["statement"],
-                awareness=ContinuationAwareness(
-                    item["awareness"]
-                ),
-            )
-            for item in payload.get(
-                "continuation_facts",
-                (),
-            )
+    @staticmethod
+    def _snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
+        return json.dumps(
+            snapshot.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
+
+    @staticmethod
+    def _v1_snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
+        payload = snapshot.to_dict()
+        payload.pop("continuation_facts")
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _payload_object(payload_json: object) -> dict[str, object]:
+        if not isinstance(payload_json, str):
+            raise LedgerWriteError("stored state payload is invalid")
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            raise LedgerWriteError("stored state payload is invalid") from exc
+        if not isinstance(payload, dict):
+            raise LedgerWriteError("stored state must be an object")
+        return payload
+
+    @staticmethod
+    def _snapshot_from_payload(
+        payload: dict[str, object],
+        facts: tuple[LocalContinuationFact, ...],
+    ) -> PrivateWorldSnapshot:
         return PrivateWorldSnapshot(
             version=payload["version"],
             familiarity=payload["familiarity"],
@@ -378,20 +407,116 @@ class SQLitePrivateWorldLedger:
             comfort=payload["comfort"],
             closeness=payload["closeness"],
             tension=payload["tension"],
-            relationship_stage=payload[
-                "relationship_stage"
-            ],
-            nickname_permissions=tuple(
-                payload["nickname_permissions"]
-            ),
-            home_access=HomeAccess(
-                payload["home_access"]
-            ),
+            relationship_stage=payload["relationship_stage"],
+            nickname_permissions=tuple(payload["nickname_permissions"]),
+            home_access=HomeAccess(payload["home_access"]),
             continuation_awareness=ContinuationAwareness(
                 payload["continuation_awareness"]
             ),
-            continuation_facts=continuation_facts,
+            continuation_facts=facts,
         )
+
+    def _strict_v1_stored_snapshot(
+        self,
+        stored_version: object,
+        payload_json: object,
+    ) -> PrivateWorldSnapshot:
+        if type(stored_version) is not int or stored_version < 1:
+            raise LedgerWriteError("stored v1 row version is invalid")
+        try:
+            payload = self._payload_object(payload_json)
+            fields = set(payload)
+            if fields not in {_V1_PAYLOAD_FIELDS, _V2_PAYLOAD_FIELDS}:
+                raise ValueError("stored v1 fields are invalid")
+            if payload["view"] != "snapshot":
+                raise ValueError("stored v1 view is invalid")
+            facts = payload.get("continuation_facts", [])
+            if fields == _V2_PAYLOAD_FIELDS and not isinstance(facts, list):
+                raise ValueError("stored v1 continuation facts must be a list")
+            snapshot = self._snapshot_from_payload(
+                payload,
+                tuple(
+                    LocalContinuationFact(
+                        fact_id=item["fact_id"],
+                        statement=item["statement"],
+                        awareness=ContinuationAwareness(item["awareness"]),
+                    )
+                    for item in facts
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerWriteError("stored v1 state is invalid") from exc
+        if snapshot.version != stored_version:
+            raise LedgerWriteError("stored v1 version does not match row")
+        expected_payload = (
+            self._snapshot_json(snapshot)
+            if fields == _V2_PAYLOAD_FIELDS
+            else self._v1_snapshot_json(snapshot)
+        )
+        if expected_payload != payload_json:
+            raise LedgerWriteError("stored v1 state is not canonical")
+        return snapshot
+
+    def _validated_v1_rows(
+        self,
+        connection: sqlite3.Connection,
+    ) -> tuple[tuple[int, str], ...]:
+        rows = connection.execute(
+            """SELECT version, payload_json FROM private_world_snapshots
+               ORDER BY version"""
+        ).fetchall()
+        migrated: list[tuple[int, str]] = []
+        for stored_version, payload_json in rows:
+            snapshot = self._strict_v1_stored_snapshot(stored_version, payload_json)
+            migrated.append((stored_version, self._snapshot_json(snapshot)))
+        return tuple(migrated)
+
+    def _strict_stored_snapshot(
+        self,
+        stored_version: object,
+        payload_json: object,
+    ) -> PrivateWorldSnapshot:
+        """Load only a canonical stored-state row that round-trips without loss."""
+
+        if type(stored_version) is not int or stored_version < 1:
+            raise LedgerWriteError("stored snapshot row version is invalid")
+        try:
+            payload = self._payload_object(payload_json)
+            if set(payload) != _V2_PAYLOAD_FIELDS:
+                raise ValueError("stored state fields are invalid")
+            if payload["view"] != "snapshot":
+                raise ValueError("stored state view is invalid")
+            facts = payload["continuation_facts"]
+            if not isinstance(facts, list):
+                raise ValueError("stored continuation facts must be a list")
+            snapshot = self._snapshot_from_payload(
+                payload,
+                tuple(
+                    LocalContinuationFact(
+                        fact_id=item["fact_id"],
+                        statement=item["statement"],
+                        awareness=ContinuationAwareness(item["awareness"]),
+                    )
+                    for item in facts
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerWriteError("stored snapshot is invalid") from exc
+        if snapshot.version != stored_version:
+            raise LedgerWriteError("stored snapshot version does not match row")
+        if self._snapshot_json(snapshot) != payload_json:
+            raise LedgerWriteError("stored snapshot is not canonical")
+        return snapshot
+
+    def snapshot(self) -> PrivateWorldSnapshot:
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT version, payload_json FROM private_world_snapshots
+                   ORDER BY version DESC LIMIT 1"""
+            ).fetchone()
+        if row is None:
+            return PrivateWorldSnapshot()
+        return self._strict_stored_snapshot(row[0], row[1])
 
     def control_view(self) -> PrivateWorldControlView:
         return self.snapshot().control_view()
@@ -407,6 +532,12 @@ class SQLitePrivateWorldLedger:
             snapshot_count = connection.execute(
                 "SELECT COUNT(*) FROM private_world_snapshots"
             ).fetchone()[0]
+            latest = connection.execute(
+                """SELECT version, payload_json FROM private_world_snapshots
+                   ORDER BY version DESC LIMIT 1"""
+            ).fetchone()
+        if latest is not None:
+            self._strict_stored_snapshot(latest[0], latest[1])
         return {
             "status": "READY",
             "event_count": event_count,
