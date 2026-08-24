@@ -34,21 +34,16 @@ jobs:
           python tools/prepare_memory_default_runtime.py
           python tools/finalize_memory_default_runtime.py
 
-      - name: Stage final product tree
+      - name: Keep workflow files unchanged for the GitHub App push
         shell: pwsh
         run: |
+          git checkout origin/feat/p03-memory-default-runtime -- .github/workflows
           git add -A
-          $workflowDiff = git diff --cached --name-only -- '.github/workflows'
-          if ($workflowDiff) {
-            throw "workflow mutation remains in product commit: $workflowDiff"
-          }
 
-      - name: Verify one-shot machinery is gone
+      - name: Verify non-workflow one-shot machinery is gone
         shell: pwsh
         run: |
           $forbidden = @(
-            '.github/workflows/build-memory-default-runtime.yml',
-            '.github/workflows/probe-memory-model.yml',
             'tools/prepare_memory_default_runtime.py',
             'tools/finalize_memory_default_runtime.py',
             'installed_memory_runtime.py',
@@ -59,9 +54,6 @@ jobs:
             if (Test-Path -LiteralPath $path) {
               throw "one-shot path remains: $path"
             }
-          }
-          if (-not (Test-Path -LiteralPath '.github/workflows/memory-runtime-smoke.yml')) {
-            throw 'final memory-runtime-smoke workflow is missing'
           }
 
       - name: Install public test dependencies
@@ -76,10 +68,13 @@ jobs:
       - name: Check final whitespace
         run: git diff --cached --check
 
-      - name: Commit final tested source
+      - name: Commit final tested non-workflow source
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat(memory): enable committed offline Mem0 runtime"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "feat(memory): commit offline Mem0 runtime sources"
           git push origin HEAD:feat/p03-memory-default-runtime
