@@ -17,11 +17,14 @@ from urllib.request import Request, urlopen
 
 from latentsync_reply import (
     LatentSyncReplyError,
-    media_runtime_available,
     render_latentsync_video,
 )
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
-from reply_media import render_reply_video
+from reply_media import (
+    ReplyMediaError,
+    assemble_complete_video_delivery,
+    render_reply_video,
+)
 from song_content import plan_song_content
 
 
@@ -54,11 +57,17 @@ def musical_reply_configured(
 
     minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
     latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
+    try:
+        assemble_complete_video_delivery(
+            configured_path("OLIVIA_TTS_CONFIG"),
+            configured_path("OLIVIA_VISUAL_CONFIG"),
+            configured_path("OLIVIA_LIVETALKING_WORKER"),
+            configured_path("OLIVIA_LOCAL_DATA_ROOT"),
+        )
+    except ReplyMediaError:
+        return False
     required = (
         configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE"),
-        configured_path("OLIVIA_TTS_CONFIG"),
-        configured_path("OLIVIA_VISUAL_CONFIG"),
-        configured_path("OLIVIA_LIVETALKING_WORKER"),
         configured_path("OLIVIA_ROFORMER_EXE"),
         configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
         configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
@@ -79,7 +88,6 @@ def musical_reply_configured(
         and performance_video_path.is_file()
         and minimax_root.is_dir()
         and latentsync_root.is_dir()
-        and media_runtime_available()
         and all(path.is_file() for path in required)
     )
 

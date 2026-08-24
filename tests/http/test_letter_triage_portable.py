@@ -342,6 +342,34 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"synthetic")
 
+    tts_runtime = tmp_path / "tts-runtime"
+    (tts_runtime / "venv/Scripts").mkdir(parents=True)
+    (tts_runtime / "venv/Scripts/python.exe").write_bytes(b"synthetic")
+    tts_model = tmp_path / "tts-model"
+    tts_model.mkdir()
+    tts_reference = write("tts/reference.wav")
+    Path(env["OLIVIA_TTS_CONFIG"]).write_text(json.dumps({"settings": {
+        "runtime_root": str(tts_runtime), "model_dir": str(tts_model),
+        "reference_audio": tts_reference,
+    }}), encoding="utf-8")
+    visual_runtime = tmp_path / "visual-runtime"
+    visual_runtime.mkdir()
+    visual_checkpoint = write("visual/checkpoint.pt")
+    visual_avatar = visual_runtime / "data/avatars/b11_olivia"
+    visual_avatar.mkdir(parents=True)
+    visual_work = tmp_path / "visual-work"
+    visual_work.mkdir()
+    Path(env["OLIVIA_VISUAL_CONFIG"]).write_text(json.dumps({"settings": {
+        "runtime_root": str(visual_runtime), "checkpoint_path": visual_checkpoint,
+        "checkpoint_sha256": "0" * 64, "avatar_payload": str(visual_avatar),
+        "original_reference": env["OLIVIA_OFFICIAL_REPLY_REFERENCE"], "work_root": str(visual_work),
+        "avatar_id": "b11_olivia", "checkpoint_url": "https://example.test/checkpoint",
+        "checkpoint_revision": "v1", "checkpoint_license": "Apache-2.0",
+        "upstream_source": "https://github.com/lipku/LiveTalking",
+        "upstream_revision": "a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+        "upstream_license": "Apache-2.0",
+    }}), encoding="utf-8")
+
     assert routing_context_from_environment(env) == RoutingContext(True, True)
 
     for missing in required:
