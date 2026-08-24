@@ -92,13 +92,11 @@ def _tts_config(
     else:
         provider_options = dict(provider_options)
     if ordinary_video:
-        official_reference = Path(
-            os.environ.get(
-                "OLIVIA_REPLY_VOICE_REFERENCE",
-                "",
-            )
-        )
-        if official_reference.is_file():
+        configured_reference = os.environ.get("OLIVIA_REPLY_VOICE_REFERENCE")
+        if configured_reference is not None:
+            official_reference = Path(configured_reference)
+            if not official_reference.is_file():
+                raise ReplyMediaError("VOICE_REFERENCE_UNAVAILABLE")
             settings["reference_audio"] = str(
                 _bounded_voice_reference(official_reference, temporary_root)
             )
