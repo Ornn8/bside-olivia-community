@@ -29,6 +29,7 @@ def test_installed_mem0_initializes_offline_with_local_qdrant(
     __import__("mem0")
     __import__("fastembed")
     cache = Path(os.environ["OLIVIA_TEST_MODEL_CACHE"]).resolve()
+    assert (cache / ".olivia-memory-model.json").is_file()
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-key")
     config = Mem0Config(
         enabled=True,
