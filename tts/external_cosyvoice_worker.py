@@ -17,6 +17,9 @@ from array import array
 from pathlib import Path
 
 
+_END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+
+
 def _write_wav(path: Path, sample_rate: int, samples: list[float]) -> None:
     pcm = array("h", (max(-32768, min(32767, round(value * 32767.0))) for value in samples))
     if sys.byteorder != "little":
@@ -68,8 +71,10 @@ def _synthesize_instruct2_single_pass(model, request: dict[str, object], output:
     instruction = str(request.get("instruct_text", "")).strip()
     if not text.strip() or not instruction:
         raise RuntimeError("single-pass text or instruction missing")
-    instruction = instruction.replace("<|endofprompt|>", "").rstrip()
-    instruction += "<|endofprompt|>"
+    if _END_OF_PROMPT_TOKEN in text:
+        raise RuntimeError("TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN")
+    instruction = instruction.replace(_END_OF_PROMPT_TOKEN, "").rstrip()
+    instruction += _END_OF_PROMPT_TOKEN
     speed = max(0.96, min(1.15, float(request.get("speed", 1.0))))
     gain_db = max(-0.75, min(0.75, float(request.get("gain_db", 0.0))))
     gain = 10.0 ** (gain_db / 20.0)
