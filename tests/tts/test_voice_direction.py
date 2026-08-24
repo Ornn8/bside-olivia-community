@@ -41,6 +41,7 @@ def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> 
 
     assert plan.spoken_text == reply
     assert len(plan.speech_units()) == 1
+    assert plan.speech_units()[0].text == reply
     assert plan.cues[0].text == reply
     assert plan.cues[0].emotion == plan.overall_emotion
     assert plan.cues[0].intensity == plan.energy
