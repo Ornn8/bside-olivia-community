@@ -785,6 +785,7 @@ def test_slow_llm_does_not_block_loop_and_times_out_as_failed(monkeypatch) -> No
 
     monkeypatch.setattr(local_server.letters_adapter, "reply", slow_reply)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(local_server.reply_engine, "timeout_seconds", 0.03)
 
     async def exercise():
         heartbeat_ticks = 0

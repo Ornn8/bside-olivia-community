@@ -28,7 +28,7 @@ class ReplyMediaError(RuntimeError):
 
 
 def _bounded_voice_reference(source: Path, temporary_root: Path) -> Path:
-    """Use only the reviewed 4.85-second clean official voice prompt."""
+    """Use only the reviewed clean 4.85-second voice prompt."""
 
     try:
         with wave.open(str(source), "rb") as reference:

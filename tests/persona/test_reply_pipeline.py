@@ -133,7 +133,7 @@ class RecordingProvider:
     ) -> GatewayResponse:
         self.messages = tuple(dict(message) for message in messages)  # type: ignore[arg-type]
         return GatewayResponse(
-            text="我听见了。先不用急着给自己一个结论。",
+            text="我听见了。" + "林" * 185,
             request_id=request_id or "generated",
             provider="synthetic",
             model="synthetic",
