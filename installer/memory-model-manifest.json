@@ -1,0 +1,21 @@
+{
+  "schema_version": "olivia.memory-model.v1",
+  "provider": "fastembed",
+  "provider_version": "0.8.0",
+  "model": "BAAI/bge-small-zh-v1.5",
+  "dimensions": 512,
+  "license": "mit",
+  "archive_url": "https://storage.googleapis.com/qdrant-fastembed/fast-bge-small-zh-v1.5.tar.gz",
+  "archive_size": 54584282,
+  "archive_sha256": "bf023219b6029148fddf764d248808816c0ca1f107f058231bb1ae0fa526f83f",
+  "archive_root": "fast-bge-small-zh-v1.5",
+  "required_files": [
+    "config.json",
+    "model_optimized.onnx",
+    "ort_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt"
+  ]
+}
