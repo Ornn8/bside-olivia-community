@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 40
     env:
       OLIVIA_MEMORY_RUNTIME_TEST: "1"
-      OLIVIA_TEST_MODEL_CACHE: ${{ runner.temp }}\olivia-memory-model
+      OLIVIA_TEST_MODEL_CACHE: ${{ runner.temp }}/olivia-memory-model
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Check out frozen source
