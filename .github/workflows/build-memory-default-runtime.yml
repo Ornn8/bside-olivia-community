@@ -27,6 +27,9 @@ jobs:
       - name: Apply bounded source changes in workspace
         run: python tools/prepare_memory_default_runtime.py
 
+      - name: Stage prepared tree
+        run: git add -A
+
       - name: Install public test dependencies
         run: python -m pip install -e ".[dev]"
 
@@ -37,7 +40,7 @@ jobs:
         run: python baseline_hardening_scan.py --mode all
 
       - name: Check prepared whitespace
-        run: git diff --check --exit-code
+        run: git diff --cached --check
 
       - name: Pack prepared files
         shell: pwsh
