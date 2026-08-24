@@ -32,3 +32,6 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check --exit-code
+
+  memory-runtime-smoke:
+    uses: ./.github/workflows/memory-runtime-smoke.yml
