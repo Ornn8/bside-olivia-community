@@ -27,6 +27,7 @@ from reply_media import (
     render_reply_video,
 )
 from song_content import plan_song_content
+from voice_direction import VoicePerformancePlan
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
@@ -680,6 +681,7 @@ def _build_music_stage_manifest(
     worker_path: Path,
     minimax_worker_path: Path,
     minimax_root: Path,
+    voice_performance_plan: VoicePerformancePlan | None,
 ) -> dict[str, object]:
     """Bind resumable stages to canonical text, inputs, and provider revisions."""
 
@@ -701,6 +703,13 @@ def _build_music_stage_manifest(
                 str(song_plan.caption).encode("utf-8")
             ).hexdigest(),
             "duration_seconds": duration_seconds,
+            "voice_performance_sha256": hashlib.sha256(
+                json.dumps(
+                    voice_performance_plan.to_dict() if voice_performance_plan else None,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
         },
         "assets": {
             "official_reply_reference": _file_fingerprint(official_reply_reference_path),
@@ -855,6 +864,7 @@ def render_musical_reply(
     worker_path: Path,
     performance_video_path: Path,
     duration_seconds: int,
+    voice_performance_plan: VoicePerformancePlan | None = None,
 ) -> dict[str, object]:
     """Render the ordinary reply, append an original-view song performance."""
 
@@ -888,6 +898,7 @@ def render_musical_reply(
         worker_path=worker_path,
         minimax_worker_path=Path(minimax_worker),
         minimax_root=Path(minimax_root),
+        voice_performance_plan=voice_performance_plan,
     )
     try:
         existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -924,6 +935,7 @@ def render_musical_reply(
             latentsync_python_path=Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
             latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
             adaptive_delivery=True,
+            voice_performance_plan=voice_performance_plan,
         )
         _record_stage(
             manifest,

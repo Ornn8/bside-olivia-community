@@ -16,6 +16,7 @@ from typing import Mapping
 
 from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
+from voice_direction import VoicePerformancePlan
 try:
     from runtime.visual.livetalking import LiveTalkingConfig, capture_candidate_frames
 except ImportError:  # Optional visual provider is not part of the portable patch.
@@ -228,6 +229,7 @@ def render_reply_video(
     latentsync_python_path: Path | None = None,
     latentsync_root: Path | None = None,
     adaptive_delivery: bool = False,
+    voice_performance_plan: VoicePerformancePlan | None = None,
 ) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
@@ -237,9 +239,11 @@ def render_reply_video(
         )
         audio_path = root / "reply.wav"
         frames = root / "frames"
-        delivery_plan: ReplyDeliveryPlan | None = None
+        delivery_plan: ReplyDeliveryPlan | VoicePerformancePlan | None = None
         if adaptive_delivery:
-            delivery_plan = plan_reply_delivery(text)
+            delivery_plan = voice_performance_plan or plan_reply_delivery(text)
+            if delivery_plan.spoken_text != text:
+                raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
             try:
                 delivery_result = render_delivery_wav(
                     delivery.tts,
@@ -269,8 +273,14 @@ def render_reply_video(
         delivery_metadata = (
             {
                 "delivery_plan": delivery_plan.to_dict(),
-                "delivery_block_grouping_applied_to_audio": True,
-                "delivery_cue_controls_applied_to_audio": False,
+                "delivery_plan_applied_to_audio": True,
+                "delivery_audio_mode": "single_pass_continuous",
+                "per_segment_audio_controls_applied": False,
+                "voice_emotion_control": (
+                    "llm_global_instruct2"
+                    if isinstance(delivery_plan, VoicePerformancePlan)
+                    else "legacy_global_pace"
+                ),
                 # LatentSync derives the face performance from the paced audio
                 # while the accepted original-motion video keeps body/scene motion.
                 "visual_cues_backend_control": False,

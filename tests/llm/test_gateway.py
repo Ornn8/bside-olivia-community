@@ -231,10 +231,18 @@ def test_provider_idempotency_header_is_reserved_for_durable_letter_calls(
                 ROOT_MESSAGES,
                 request_id="letter-reply:synthetic-letter-id",
             )
+            await adapter.complete(
+                ROOT_MESSAGES,
+                request_id="letter-reply:synthetic-letter-id:voice-direction",
+            )
         return seen
 
     monkeypatch.setenv("B03_TEST_KEY", "TEST")
-    assert run(exercise()) == [None, "letter-reply:synthetic-letter-id"]
+    assert run(exercise()) == [
+        None,
+        "letter-reply:synthetic-letter-id",
+        "letter-reply:synthetic-letter-id:voice-direction",
+    ]
 
 
 def test_responses_style_and_sse_stream_are_supported(monkeypatch: pytest.MonkeyPatch) -> None:

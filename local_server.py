@@ -50,6 +50,11 @@ from music_reply import MusicReplyError, render_musical_reply, select_speaking_s
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
 from reply_delivery import build_ordinary_video_llm_content
+from voice_direction import (
+    VoiceDirectionError,
+    VoicePerformancePlan,
+    direct_voice_performance,
+)
 from local_memory import create_memory_adapter
 from memory_port import LegacyLetter, MemoryPort, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
@@ -492,10 +497,56 @@ media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
 reply_jobs: dict[str, asyncio.Task] = {}
+media_jobs: dict[str, asyncio.Task] = {}
 
 
 def _persist_media_state() -> None:
     _persist_store_state()
+
+
+async def _voice_plan_for_letter(
+    letter: dict,
+    reply_text: str,
+) -> VoicePerformancePlan:
+    """Direct the frozen reply once, then reuse its persisted performance plan."""
+
+    if "voice_performance_plan" in letter:
+        stored = letter.get("voice_performance_plan")
+        if not isinstance(stored, dict):
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
+        try:
+            plan = VoicePerformancePlan.from_dict(stored)
+        except VoiceDirectionError:
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
+        if plan.reply_text != reply_text:
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
+        return plan
+
+    letter_id = str(letter.get("letter_id", "")).strip()
+    if not letter_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    request_id = f"letter-reply:{letter_id}:voice-direction"
+    persisted_request_id = letter.get("voice_direction_request_id")
+    if persisted_request_id is not None and persisted_request_id != request_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    if persisted_request_id is None:
+        # Commit the provider idempotency key before issuing the paid call, so a
+        # restart in the provider-success/persistence window uses the same key.
+        letter["voice_direction_request_id"] = request_id
+        _persist_media_state()
+    plan = await asyncio.wait_for(
+        direct_voice_performance(
+            reply_text,
+            letters_adapter.gateway,
+            request_id=request_id,
+        ),
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
+    if plan.reply_text != reply_text:
+        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
+    letter["voice_performance_plan"] = plan.to_dict()
+    _persist_media_state()
+    return plan
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
@@ -1596,6 +1647,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
+            voice_plan = await _voice_plan_for_letter(letter, reply_text)
             if reply_mode == "musical_video":
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(_os.environ)
@@ -1617,6 +1669,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     worker_path=worker,
                     performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
+                    voice_performance_plan=voice_plan,
                 )
             else:
                 from datetime import datetime
@@ -1637,21 +1690,40 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     latentsync_python_path=Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
                     latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
                     adaptive_delivery=True,
+                    voice_performance_plan=voice_plan,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
             _persist_media_state()
-        except (ReplyMediaError, MusicReplyError, ValueError, OSError) as exc:
+        except (
+            ReplyMediaError,
+            MusicReplyError,
+            VoiceDirectionError,
+            GatewayError,
+            asyncio.TimeoutError,
+            ValueError,
+            OSError,
+        ) as exc:
             letter["media_status"] = "UNAVAILABLE"
             letter["media_error_code"] = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
             _persist_media_state()
 
 
 def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
+    active = media_jobs.get(letter_id)
+    if active is not None and not active.done():
+        return
     task = asyncio.create_task(_render_media_job(letter_id, content, reply_text, reply_mode))
     media_tasks.add(task)
-    task.add_done_callback(media_tasks.discard)
+    media_jobs[letter_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        media_tasks.discard(completed)
+        if media_jobs.get(letter_id) is completed:
+            media_jobs.pop(letter_id, None)
+
+    task.add_done_callback(discard)
 
 
 async def _run_reply_job(
@@ -1740,16 +1812,51 @@ def _schedule_pending_reply_jobs() -> int:
     return scheduled
 
 
+def _schedule_pending_media_jobs() -> int:
+    """Resume only durable completed replies whose media render was interrupted."""
+
+    scheduled = 0
+    for letter in tuple(store.letters):
+        if letter.get("media_status") not in {"PENDING", "QUEUED"}:
+            continue
+        if letter.get("letter_status") != "COMPLETED":
+            continue
+        letter_id = str(letter.get("letter_id", "")).strip()
+        content = letter.get("content")
+        reply_text = letter.get("reply_text")
+        reply_mode = _exact_reply_mode(letter.get("reply_mode"))
+        if (
+            not letter_id
+            or not isinstance(content, str)
+            or not content.strip()
+            or not isinstance(reply_text, str)
+            or not reply_text.strip()
+            or reply_mode not in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+        ):
+            continue
+        active = media_jobs.get(letter_id)
+        if active is not None and not active.done():
+            continue
+        _schedule_media_job(letter_id, content, reply_text, reply_mode)
+        scheduled += 1
+    return scheduled
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
     _schedule_pending_reply_jobs()
+    _schedule_pending_media_jobs()
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    tasks = tuple(reply_tasks)
+    tasks = tuple(reply_tasks | media_tasks)
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    reply_tasks.clear()
+    media_tasks.clear()
+    reply_jobs.clear()
+    media_jobs.clear()
 
 
 def install_reply_task_lifecycle(app: web.Application) -> None:
@@ -1829,12 +1936,6 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     decision = await emotion_triage.classify(content)
     exact_mode = _exact_reply_mode(decision.reply_mode)
-    if exact_mode == ReplyMode.SPOKEN_VIDEO.value:
-        # A product video reply is one complete letter: spoken response,
-        # original transition, then the generated performance.  The router may
-        # still express that voice is the reason video is warranted, but there
-        # is no standalone spoken-only delivery surface.
-        exact_mode = ReplyMode.MUSICAL_VIDEO.value
     letter["triage"] = decision.to_dict()
     letter["reply_mode"] = exact_mode
     if exact_mode in {
@@ -1910,6 +2011,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.MUSICAL_VIDEO.value,
     }:
         letter["media_status"] = "PENDING"
+        _persist_media_state()
         _schedule_media_job(letter_id, content, result.text, exact_mode)
 
     letters_adapter.remember_conversation(content, result.text)
