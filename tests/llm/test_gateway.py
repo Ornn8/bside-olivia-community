@@ -135,6 +135,81 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
     assert seen["body"]["messages"] == list(ROOT_MESSAGES)
 
 
+def test_openai_compatible_adapter_returns_required_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise():
+        seen = {}
+
+        async def handler(request: web.Request) -> web.Response:
+            seen["request_id"] = request.headers.get("X-Request-ID")
+            seen["body"] = await request.json()
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "apply_voice_performance",
+                                            "arguments": '{"overall_emotion":"steady reassurance"}',
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            calls = await adapter.complete_with_tools(
+                messages=ROOT_MESSAGES,
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "apply_voice_performance",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                tool_choice="required",
+                request_id="voice-direction:fixture",
+            )
+        return calls, seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    calls, seen = run(exercise())
+
+    assert [(call.name, call.arguments) for call in calls] == [
+        ("apply_voice_performance", {"overall_emotion": "steady reassurance"})
+    ]
+    assert seen["request_id"] == "voice-direction:fixture"
+    assert seen["body"]["tool_choice"] == "required"
+    assert seen["body"]["tools"][0]["function"]["name"] == "apply_voice_performance"
+
+
+def test_tool_completion_rejects_non_required_choice_before_provider_call() -> None:
+    async def exercise() -> InvalidGatewayInput:
+        adapter = OpenAICompatibleAdapter(
+            GatewayConfig(provider="openai_compatible", base_url="", model="")
+        )
+        with pytest.raises(InvalidGatewayInput) as error:
+            await adapter.complete_with_tools(
+                messages=ROOT_MESSAGES,
+                tools=[{"type": "function", "function": {"name": "apply_voice_performance"}}],
+                tool_choice="auto",
+            )
+        return error.value
+
+    assert run(exercise()).code == "REQUIRED_TOOL_CHOICE"
+
+
 def test_provider_idempotency_header_is_reserved_for_durable_letter_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
