@@ -318,6 +318,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
             for tod in ("DAY", "DUSK", "NIGHT")
         },
     }
+    ffmpeg = tmp_path / "runtime" / "ffmpeg.exe"
+    ffmpeg.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg.write_bytes(b"synthetic")
+    env["OLIVIA_FFMPEG_EXE"] = str(ffmpeg)
     required = [
         tmp_path / "config/tts.json",
         tmp_path / "config/visual.json",
