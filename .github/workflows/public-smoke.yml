@@ -32,18 +32,20 @@ jobs:
       - name: Apply bounded memory runtime source
         run: python tools/prepare_memory_default_runtime.py
 
-      - name: Remove temporary implementation machinery
+      - name: Remove non-workflow implementation machinery
         shell: pwsh
         run: |
           git checkout origin/main -- memory_prompt.py
-          git checkout origin/main -- .github/workflows/public-smoke.yml
           git rm --ignore-unmatch installed_memory_runtime.py
-          git rm --ignore-unmatch .github/workflows/probe-memory-model.yml
-          git rm --ignore-unmatch .github/workflows/build-memory-default-runtime.yml
           git rm --ignore-unmatch tools/prepare_memory_default_runtime.py
+          git rm --ignore-unmatch tools/finalize_memory_default_runtime.py
           git rm --ignore-unmatch tests/memory/test_installed_memory_runtime.py
           git rm --ignore-unmatch tests/memory/test_memory_prompt_installed_runtime.py
           git add -A
+          $workflowDiff = git diff --cached --name-only -- '.github/workflows'
+          if ($workflowDiff) {
+            throw "workflow change remains in non-workflow finalizer: $workflowDiff"
+          }
 
       - name: Install public development dependencies
         run: python -m pip install -e ".[dev]"
