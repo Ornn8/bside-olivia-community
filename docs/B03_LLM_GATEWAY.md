@@ -50,6 +50,43 @@ rtk python tools/healthcheck.py --profile llm
 
 代码可通过 `llm_gateway.register_provider("name", factory)` 注册 provider。factory 接收 `GatewayConfig`，返回实现 `Gateway.complete()` 与可选 `Gateway.stream()` 的对象；异常只能使用 `GatewayError` 的稳定 code/retryable 分类，不能把响应 body、header、key 或 prompt 放入异常文本。
 
+### 必需 function call 契约
+
+`GatewayToolCall` 是公开的不可变返回值，只有 `name: str` 与
+`arguments: Mapping[str, Any]` 两个字段。需要结构化、非自由文本结果的
+调用方使用：
+
+```python
+calls = await gateway.complete_with_tools(
+    messages=messages,
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "apply_voice_performance",
+            "parameters": {"type": "object"},
+        },
+    }],
+    tool_choice="required",
+    request_id="opaque-request-id",
+)
+```
+
+- 该窄接口只接受 `tool_choice="required"`，并始终以
+  `stream=false` 发起一次请求；它不会回退到自由文本。
+- `api_style="chat_completions"` 发送 OpenAI Chat Completions 的
+  `tools`/`tool_choice` 形状，并读取
+  `choices[0].message.tool_calls[*].function`。
+- `api_style="responses"` 将同一输入函数 schema 转为 Responses 的
+  `type/name/description/parameters` 形状，并读取
+  `output[*]` 中 `type="function_call"` 的 `name` 和 `arguments`。
+- 缺少调用、无效 name、非对象 arguments 或不能解析的 arguments JSON 都是
+  非重试的 `PROVIDER_PROTOCOL`；不支持该能力或 provider 不可用仍为可重试的
+  `PROVIDER_UNAVAILABLE`。调用方不得把这些错误转换成占位成功。
+- 自定义 provider 若声明支持此公开能力，必须覆写
+  `Gateway.complete_with_tools()` 并返回 `Sequence[GatewayToolCall]`；若不支持，
+  保持基类的 `PROVIDER_UNAVAILABLE` 失败边界。自定义实现也必须保留 request ID、
+  不记录提示词/响应正文，并使用稳定的 `GatewayError` 分类。
+
 ## 回信事件与并发语义
 
 `reply_orchestrator.py` 提供 `ReplyRequest`、`ReplyOrchestrator.start()`、`ReplyRun.events()` 和 `ReplyRun.cancel()`。每个 request 具有 request ID；给出相同 `idempotency_key` 且输入一致时复用同一个结果，输入不一致返回 `IDEMPOTENCY_CONFLICT`。
