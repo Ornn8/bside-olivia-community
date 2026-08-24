@@ -81,7 +81,7 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     request = build_external_delivery_request(config, plan)
 
     assert request["voice_condition_mode"] == "instruct2_single_pass"
-    assert plan.render_text != reply_text
+    assert plan.render_text == reply_text
     assert request["text"] == reply_text
     assert "[breath]" not in str(request["text"])
     assert "<strong>" not in str(request["text"])
