@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/p03-memory-default-runtime
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
