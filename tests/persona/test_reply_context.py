@@ -124,6 +124,14 @@ def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:
     invalid_private["private_behavior"]["raw_score"] = 0.9
     assert list(validator.iter_errors(invalid_private))
 
+    invalid_home_access = {
+        **valid,
+        "private_behavior": {**valid["private_behavior"]},
+    }
+    invalid_home_access["private_behavior"].pop("home_history_allowed")
+    invalid_home_access["private_behavior"]["home_access"] = "visit_access"
+    assert list(validator.iter_errors(invalid_home_access))
+
 
 def test_public_contract_documentation_names_api_errors_and_scope_boundary() -> None:
     documentation = (ROOT / "docs" / "P02_REPLY_CONTEXT.md").read_text(

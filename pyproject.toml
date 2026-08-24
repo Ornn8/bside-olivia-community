@@ -38,10 +38,19 @@ py-modules = [
     "conversation_memory_runtime",
     "extract_player",
     "http_contract",
+    "letter_triage",
+    "llm_gateway",
     "letter_status",
+    "local_memory",
     "local_server",
+    "latentsync_reply",
     "mem0_memory",
     "memory",
+    "memory_port",
+    "memory_prompt",
+    "music_caption",
+    "music_duration",
+    "music_reply",
     "original_client_companion_api",
     "original_client_companion_backend",
     "original_client_companion_mutation_api",
@@ -55,6 +64,7 @@ py-modules = [
     "persona_loader",
     "persona_assembly",
     "prompt_budget",
+    "persona_provider",
     "private_world_port",
     "private_world_candidates",
     "private_world_commands",
@@ -64,12 +74,17 @@ py-modules = [
     "private_world_admin",
     "private_world_delivery",
     "private_world_projection",
+    "private_world_runtime",
     "reply_context",
+    "reply_delivery",
+    "reply_media",
+    "reply_orchestrator",
     "reply_policy",
     "reply_model_quality",
     "reply_pipeline",
     "reply_quality_gate",
     "reply_reviewer",
+    "song_content",
     "voice_direction",
 ]
 
@@ -88,3 +103,7 @@ include = [
 [tool.setuptools.package-data]
 contracts = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
+linli_character = [
+    "persona_release_v2.json",
+    "persona_release_provenance_v2.json",
+]

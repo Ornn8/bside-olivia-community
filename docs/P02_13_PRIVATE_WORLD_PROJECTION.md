@@ -4,10 +4,10 @@
 numeric state into the finite `PrivateBehaviorView` enums accepted by
 `ReplyContext`; raw scores and the complete snapshot never enter the prompt.
 
-Current nickname permissions are returned as bounded labels. Home access is
-projected only as the finite permission enum used to decide whether already
-retrieved home history may be acknowledged; it does not create or describe a
-home scene.
+Current nickname permissions are returned as bounded labels. The model receives
+only the boolean `home_history_allowed`, which decides whether already retrieved
+home history may be acknowledged; raw home-access levels never enter the
+projection and it does not create or describe a home scene.
 
 Local Continuation is filtered per fact. `control_only` and `pending`
 statements, identifiers, and awareness labels never enter the model payload.

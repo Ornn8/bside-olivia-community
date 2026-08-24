@@ -44,7 +44,7 @@ def test_current_unicode_nicknames_and_home_permission_enter_finite_projection()
     assert projected.authorized_nicknames == ("小河豚", "旅行者")
     assert projected.to_dict()["authorized_nicknames"] == ["小河豚", "旅行者"]
     assert projected.behavior.nickname_permission.value == "allowed"
-    assert projected.behavior.home_access.value == "visit_access"
+    assert projected.behavior.home_history_allowed is True
     assert projected.may_acknowledge_home_history is True
 
 

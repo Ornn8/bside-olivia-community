@@ -53,13 +53,6 @@ class NicknamePermission(str, Enum):
     ALLOWED = "allowed"
 
 
-class HomeAccess(str, Enum):
-    NO_ACCESS = "no_access"
-    VISIT_ACCESS = "visit_access"
-    ERRAND_ACCESS = "errand_access"
-    DOMESTIC_ACCESS = "domestic_access"
-
-
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -157,7 +150,7 @@ class PrivateBehaviorView:
     tension: BehaviorLevel = BehaviorLevel.UNKNOWN
     relationship_stage: RelationshipStage = RelationshipStage.UNKNOWN
     nickname_permission: NicknamePermission = NicknamePermission.NOT_ALLOWED
-    home_access: HomeAccess = HomeAccess.NO_ACCESS
+    home_history_allowed: bool = False
     known_continuations: tuple[KnownContinuationFact, ...] = ()
 
     def __post_init__(self) -> None:
@@ -169,7 +162,6 @@ class PrivateBehaviorView:
             (self.tension, BehaviorLevel),
             (self.relationship_stage, RelationshipStage),
             (self.nickname_permission, NicknamePermission),
-            (self.home_access, HomeAccess),
         )
         if any(
             not isinstance(value, expected)
@@ -177,6 +169,10 @@ class PrivateBehaviorView:
         ):
             raise ReplyContextError(
                 "private behavior is outside the bounded view"
+            )
+        if type(self.home_history_allowed) is not bool:
+            raise ReplyContextError(
+                "home history permission must be boolean"
             )
         if isinstance(self.known_continuations, (str, bytes)):
             raise ReplyContextError(
@@ -205,7 +201,7 @@ class PrivateBehaviorView:
             "tension": self.tension.value,
             "relationship_stage": self.relationship_stage.value,
             "nickname_permission": self.nickname_permission.value,
-            "home_access": self.home_access.value,
+            "home_history_allowed": self.home_history_allowed,
             "known_continuations": [
                 fact.to_dict() for fact in self.known_continuations
             ],

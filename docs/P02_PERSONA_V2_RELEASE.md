@@ -88,6 +88,9 @@ truncated.
 PrivateWorld scores and control state never enter the model. Only the bounded
 behavior projection and currently authorized nicknames may enter character
 context. Pending and control-only continuation events remain hidden.
+The model-facing projection represents home-history permission only as a
+boolean; raw `no_access`/`visit_access`/`errand_access`/`domestic_access`
+levels remain PrivateWorld control state.
 
 ## Release checklist
 

@@ -9,3 +9,9 @@ Startup recovery retries pending records without changing or deleting canonical
 text. An unavailable backend leaves the reply intact and records only a stable
 error code. Generation failure, quality block, request retry, TTS/video/music
 failure, and media rerender never call the commit path.
+
+SQLite read/write errors and semantic snapshot failures (including malformed
+JSON, missing required fields, or invalid bounded values) are backend failures,
+not invalid delivery events. They leave the canonical reply as
+`private_world_status=PENDING` with `PRIVATE_WORLD_UNAVAILABLE`, so a later
+startup recovery may safely retry the same delivery id.

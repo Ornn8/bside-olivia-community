@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 import hashlib
 import re
+import sqlite3
 
 from private_world_ledger import LedgerEvent, LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private_world
@@ -62,7 +63,19 @@ class PrivateWorldDeliveryCommitter:
             delivery.basis_event_ids,
         )
         try:
-            reduced = reduce_private_world(self.ledger.snapshot(), event)
+            snapshot = self.ledger.snapshot()
+        except (
+            AttributeError,
+            KeyError,
+            LedgerWriteError,
+            OSError,
+            sqlite3.Error,
+            TypeError,
+            ValueError,
+        ):
+            return DeliveryStatus.UNAVAILABLE
+        try:
+            reduced = reduce_private_world(snapshot, event)
             digest = hashlib.sha256(delivery.delivery_id.encode("utf-8")).hexdigest()
             applied = self.ledger.apply_once(
                 LedgerEvent(
@@ -80,7 +93,6 @@ class PrivateWorldDeliveryCommitter:
                 ),
                 reduced.snapshot,
             )
-        except (LedgerWriteError, OSError):
+        except (LedgerWriteError, OSError, sqlite3.Error):
             return DeliveryStatus.UNAVAILABLE
         return DeliveryStatus.COMMITTED if applied else DeliveryStatus.DUPLICATE
-
