@@ -57,6 +57,7 @@ from voice_direction import (
     direct_voice_performance,
 )
 from conversation_memory_port import ConversationMemoryPort
+from conversation_memory_runtime import conversation_memory_runtime_status
 from local_memory import (
     create_conversation_memory_adapter,
     create_memory_adapter,
@@ -939,6 +940,24 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
         "conversation_runtime_status",
         None,
     )
+    if conversation_info.get("status") != "disabled":
+        try:
+            live_runtime_info = conversation_memory_runtime_status().to_dict()
+        except Exception:
+            live_runtime_info = None
+        if isinstance(live_runtime_info, dict):
+            live_status = live_runtime_info.get("status")
+            startup_status = (
+                runtime_info.get("status") if isinstance(runtime_info, dict) else None
+            )
+            if live_status != "disabled" or startup_status in {"available", "disabled"}:
+                runtime_info = live_runtime_info
+            if live_status == "disabled" and startup_status == "available":
+                runtime_info = {
+                    **live_runtime_info,
+                    "status": "unavailable",
+                    "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE",
+                }
     if conversation_info.get("status") != "disabled" and isinstance(runtime_info, dict):
         runtime_status = str(runtime_info.get("status", "unavailable"))
         if runtime_status not in {"available", "degraded", "unavailable", "disabled"}:
@@ -1195,7 +1214,11 @@ def _bind_memory_adapter(adapter: MemoryPort) -> None:
 
 
 def _legacy_import_adapter() -> MemoryPort:
-    if getattr(memory_adapter, "enabled", False):
+    if getattr(memory_adapter, "enabled", False) and not getattr(
+        memory_adapter,
+        "read_only",
+        False,
+    ):
         return memory_adapter
     archive_config = load_memory_config()
     if archive_config.provider == "mem0":

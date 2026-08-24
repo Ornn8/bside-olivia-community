@@ -87,6 +87,31 @@ def test_explicit_mem0_config_reuses_normal_letter_llm_file_settings(
     assert configured["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == "SYNTHETIC_API_KEY"
 
 
+def test_unexpected_mem0_initialization_failure_degrades_without_blocking_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_mem0_initialization(**_kwargs: object) -> object:
+        raise LookupError("synthetic provider failure")
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fail_mem0_initialization)
+
+    adapter = create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+        ),
+        environ={
+            "OLIVIA_MEMORY_LLM_BASE_URL": "http://127.0.0.1:8000/v1",
+            "OLIVIA_MEMORY_LLM_MODEL": "synthetic-model",
+        },
+    )
+
+    status = adapter.status()
+    assert status.status == "unavailable"
+    assert status.reason_code == "MEM0_INITIALIZATION_FAILED"
+
+
 def test_metadata_long_value_round_trips_as_valid_json_without_truncation(tmp_path: Path) -> None:
     metadata = {
         "provenance": {

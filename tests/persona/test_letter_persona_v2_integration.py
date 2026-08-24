@@ -113,7 +113,7 @@ def test_disabled_conversation_port_preserves_sqlite_canonical_write(
             "synthetic",
             domains=(CONVERSATION_MEMORY,),
         )
-        assert [record.text for record in records] == [
+        assert sorted(record.text for record in records) == [
             "Assistant completed a reply: synthetic canonical reply",
             "User sent a new letter: synthetic user letter",
         ]

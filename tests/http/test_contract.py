@@ -137,6 +137,7 @@ def test_memory_health_reflects_degraded_canonical_delivery_runtime(
 ) -> None:
     import local_server
     from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
 
     class ReadOnlyArchive:
         def status(self):
@@ -165,12 +166,25 @@ def test_memory_health_reflects_degraded_canonical_delivery_runtime(
         local_server.letters_adapter.memory_prompt_builder,
         "conversation_runtime_status",
         {
-            "status": "degraded",
+            "status": "available",
             "enabled": True,
-            "provider": "mem0",
-            "worker_running": False,
-            "reason_code": "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED",
+            "provider": "mem0-outbox",
+            "worker_running": True,
         },
+    )
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_runtime_status",
+        lambda: ConversationMemoryRuntimeStatus(
+            "degraded",
+            True,
+            "mem0-outbox",
+            False,
+            reason_code="MEMORY_OUTBOX_DELIVERY_FAILED",
+            pending_count=1,
+            attempt_count=1,
+        ),
+        raising=False,
     )
 
     result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
@@ -178,8 +192,9 @@ def test_memory_health_reflects_degraded_canonical_delivery_runtime(
     assert result["data"]["status"] == "UNAVAILABLE"
     conversation = result["data"]["providers"]["memory"]["conversation"]
     assert conversation["status"] == "degraded"
-    assert conversation["reason_code"] == "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED"
+    assert conversation["reason_code"] == "MEMORY_OUTBOX_DELIVERY_FAILED"
     assert conversation["runtime"]["worker_running"] is False
+    assert conversation["runtime"]["pending_count"] == 1
     capability = result["data"]["capabilities"]["memory.conversation"]
     assert capability["status"] == "degraded"
     assert capability["provider"] == "mem0"
@@ -847,6 +862,59 @@ def test_legacy_import_validation_and_storage_errors_do_not_echo_request_values(
     serialized = json.dumps(unavailable)
     assert private_body not in serialized
     assert credential_marker not in serialized
+
+
+def test_mem0_mode_can_incrementally_import_archive_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from local_memory import LocalMemoryAdapter, MemoryConfig, create_memory_adapter
+    from memory_port import LegacyLetter
+
+    memory_root = tmp_path / "memory"
+    with LocalMemoryAdapter(
+        memory_root / "memory.sqlite3",
+        conversation_enabled=False,
+    ) as initial_archive:
+        initial_archive.import_legacy_records(
+            [LegacyLetter("first archived letter", "archive-1", "synthetic")]
+        )
+    restarted_archive = create_memory_adapter(
+        MemoryConfig(
+            enabled=False,
+            provider="sqlite",
+            data_root=memory_root,
+        )
+    )
+    monkeypatch.setattr(local_server, "memory_adapter", restarted_archive)
+    monkeypatch.setenv("OLIVIA_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("OLIVIA_MEMORY_PROVIDER", "mem0")
+    monkeypatch.setenv("OLIVIA_MEMORY_ROOT", str(memory_root))
+
+    result = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/import",
+            {
+                "mode": "read_only",
+                "letters": [
+                    {
+                        "source_record_id": "archive-2",
+                        "source": "synthetic",
+                        "content": "second archived letter",
+                    }
+                ],
+            },
+            {},
+        )
+    )
+
+    assert result["code"] == 0
+    assert result["data"]["inserted"] == 1
+    assert sorted(
+        record["source_record_id"] for record in local_server.memory_adapter.list_legacy()
+    ) == ["archive-1", "archive-2"]
 
 
 def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:

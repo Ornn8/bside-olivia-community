@@ -1108,7 +1108,10 @@ def create_conversation_memory_adapter(
         value = fallback.get(field_name, "")
         if isinstance(value, str) and value.strip():
             mem0_environment[memory_name] = value.strip()
-    return create_mem0_adapter(environ=mem0_environment)
+    try:
+        return create_mem0_adapter(environ=mem0_environment)
+    except Exception:
+        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
 
 
 __all__ = [
