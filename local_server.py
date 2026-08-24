@@ -13,6 +13,7 @@ import random
 import time
 import uuid
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -55,7 +56,12 @@ from voice_direction import (
     VoicePerformancePlan,
     direct_voice_performance,
 )
-from local_memory import create_memory_adapter
+from conversation_memory_port import ConversationMemoryPort
+from local_memory import (
+    create_conversation_memory_adapter,
+    create_memory_adapter,
+    load_memory_config,
+)
 from memory_port import LegacyLetter, MemoryPort, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from persona_assembly import UntrustedFragment, assemble_persona
@@ -205,6 +211,7 @@ class LetterAdapter:
         config: GatewayConfig | None = None,
         *,
         memory_port: MemoryPort | None = None,
+        conversation_memory: ConversationMemoryPort | None = None,
         private_world_port: PrivateWorldPort | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -214,6 +221,7 @@ class LetterAdapter:
         except GatewayError:
             self.gateway = UnconfiguredAdapter()
         self.memory_port: MemoryPort = memory_port or NullMemoryPort()
+        self.conversation_memory = conversation_memory
         self.private_world_port: PrivateWorldPort = (
             private_world_port or NullPrivateWorldPort()
         )
@@ -240,7 +248,14 @@ class LetterAdapter:
             ),
             feature_enabled=self.config.feature_enabled,
         )
-        self.memory_prompt_builder = MemoryPromptBuilder(self.memory_port)
+        self.memory_prompt_builder = (
+            MemoryPromptBuilder(self.memory_port)
+            if conversation_memory is None
+            else MemoryPromptBuilder(
+                self.memory_port,
+                conversation_memory=conversation_memory,
+            )
+        )
 
     def get_system_prompt(self) -> str:
         return self.persona_provider.snapshot().system_prompt
@@ -357,6 +372,15 @@ class LetterAdapter:
     def remember_conversation(self, content: str, reply: str) -> None:
         """Write new-chat memory only when the opt-in profile is enabled."""
 
+        if self.conversation_memory is not None:
+            try:
+                conversation_status = self.conversation_memory.status().status
+            except Exception:
+                conversation_status = "unavailable"
+            if conversation_status != "disabled":
+                # Canonical Mem0 delivery is owned by the durable outbox started
+                # by MemoryPromptBuilder; never add a second direct write here.
+                return
         if not getattr(self.memory_port, "conversation_enabled", False):
             return
         try:
@@ -477,7 +501,28 @@ def _persist_store_state() -> None:
 
 
 _load_store_state()
-memory_adapter: MemoryPort = create_memory_adapter()
+_memory_config = load_memory_config()
+_archive_memory_config = (
+    replace(
+        _memory_config,
+        enabled=False,
+        provider="sqlite",
+        config_error=None,
+    )
+    if _memory_config.provider == "mem0"
+    else _memory_config
+)
+memory_adapter: MemoryPort = create_memory_adapter(_archive_memory_config)
+conversation_memory_adapter: ConversationMemoryPort = (
+    create_conversation_memory_adapter(
+        _memory_config,
+        llm_fallback={
+            "base_url": LLM_CONFIG.base_url,
+            "model": LLM_CONFIG.model,
+            "api_key_env": LLM_CONFIG.api_key_env,
+        },
+    )
+)
 private_world_committer: PrivateWorldDeliveryCommitter | None = None
 private_world_port: PrivateWorldPort = NullPrivateWorldPort()
 _private_world_path = Path(_os.environ.get("OLIVIA_PRIVATE_WORLD_DB", ""))
@@ -490,6 +535,7 @@ if _private_world_path.is_absolute():
         pass
 letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
+    conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
 )
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
@@ -878,16 +924,61 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
             "storage": "none",
             "network_called": False,
         }
-    memory_status = str(memory_info.get("status", "unavailable"))
-    memory_capability_status = "available" if memory_status == "available" else "unavailable"
-    for capability in ("memory.local", "memory.legacy", "memory.conversation"):
+    try:
+        conversation_info = conversation_memory_adapter.status().to_dict()
+    except Exception:
+        conversation_info = {
+            "status": "unavailable",
+            "enabled": False,
+            "provider": "none",
+            "storage": "none",
+            "reason_code": "MEM0_STATUS_FAILED",
+        }
+    runtime_info = getattr(
+        letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        None,
+    )
+    if conversation_info.get("status") != "disabled" and isinstance(runtime_info, dict):
+        runtime_status = str(runtime_info.get("status", "unavailable"))
+        if runtime_status not in {"available", "degraded", "unavailable", "disabled"}:
+            runtime_status = "unavailable"
+        conversation_info["runtime"] = dict(runtime_info)
+        if runtime_status != "available":
+            conversation_info["status"] = (
+                "unavailable" if runtime_status == "disabled" else runtime_status
+            )
+            runtime_reason = runtime_info.get("reason_code")
+            if isinstance(runtime_reason, str):
+                conversation_info["reason_code"] = runtime_reason
+    conversation_selected = conversation_info.get("status") != "disabled"
+    if (
+        conversation_info.get("status") == "disabled"
+        and memory_info.get("conversation_enabled") is True
+    ):
+        # SQLite remains the conversation owner when Mem0 is not selected.
+        conversation_info = dict(memory_info)
+    memory_info["conversation"] = conversation_info
+    archive_status = str(memory_info.get("status", "unavailable"))
+    conversation_status = str(conversation_info.get("status", "unavailable"))
+    memory_status = conversation_status if conversation_selected else archive_status
+    capability_specs = {
+        "memory.local": (memory_status, "local"),
+        "memory.legacy": (archive_status, "archive"),
+        "memory.conversation": (conversation_status, "conversation"),
+    }
+    for capability, (status, _domain) in capability_specs.items():
         document["capabilities"][capability].update(
             {
-                "status": memory_capability_status,
-                "provider": memory_info.get("provider", "none")
-                if memory_status == "available"
+                "status": status,
+                "provider": (
+                    conversation_info.get("provider", "none")
+                    if capability == "memory.conversation"
+                    else memory_info.get("provider", "none")
+                )
+                if status in {"available", "degraded"}
                 else "none",
-                "probe": "in-process" if memory_status == "available" else "not-run",
+                "probe": "in-process" if status in {"available", "degraded"} else "not-run",
             }
         )
     llm_ready = (
@@ -1092,13 +1183,32 @@ def _bind_memory_adapter(adapter: MemoryPort) -> None:
     global memory_adapter
     memory_adapter = adapter
     letters_adapter.memory_port = adapter
-    letters_adapter.memory_prompt_builder = MemoryPromptBuilder(adapter)
+    conversation_memory = letters_adapter.conversation_memory
+    letters_adapter.memory_prompt_builder = (
+        MemoryPromptBuilder(adapter)
+        if conversation_memory is None
+        else MemoryPromptBuilder(
+            adapter,
+            conversation_memory=conversation_memory,
+        )
+    )
 
 
 def _legacy_import_adapter() -> MemoryPort:
     if getattr(memory_adapter, "enabled", False):
         return memory_adapter
-    adapter = create_memory_adapter(allow_legacy_create=True)
+    archive_config = load_memory_config()
+    if archive_config.provider == "mem0":
+        archive_config = replace(
+            archive_config,
+            enabled=False,
+            provider="sqlite",
+            config_error=None,
+        )
+    adapter = create_memory_adapter(
+        archive_config,
+        allow_legacy_create=True,
+    )
     if getattr(adapter, "enabled", False):
         _bind_memory_adapter(adapter)
     return adapter

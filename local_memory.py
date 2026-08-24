@@ -22,6 +22,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from conversation_memory_port import (
+    ConversationMemoryPort,
+    NullConversationMemoryPort,
+    UnavailableConversationMemoryPort,
+)
+from mem0_memory import create_mem0_adapter
 from memory_port import (
     CONVERSATION_MEMORY,
     LEGACY_LETTERS,
@@ -1066,10 +1072,50 @@ def create_memory_adapter(
         return UnavailableMemoryPort("sqlite adapter unavailable", provider="sqlite")
 
 
+def create_conversation_memory_adapter(
+    config: MemoryConfig | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    llm_fallback: Mapping[str, str] | None = None,
+) -> ConversationMemoryPort:
+    """Select the optional conversation-memory provider without crossing Archive.
+
+    ``create_memory_adapter`` remains the SQLite/Archive factory.  Mem0 gets
+    its own narrow port and a sibling data root so a configured provider never
+    turns legacy Archive records into conversation-memory records.
+    """
+
+    active = config or load_memory_config(environ=environ)
+    if active.config_error:
+        return UnavailableConversationMemoryPort(active.config_error)
+    if not active.enabled or active.provider != "mem0":
+        return NullConversationMemoryPort()
+
+    mem0_environment = dict(environ or os.environ)
+    mem0_environment["OLIVIA_MEMORY_ENABLED"] = "true"
+    mem0_environment["OLIVIA_MEMORY_ROOT"] = str(active.data_root / "mem0")
+    mem0_environment["OLIVIA_MEMORY_CONTEXT_MAX_CHARS"] = str(
+        active.context_max_chars
+    )
+    fallback = llm_fallback or {}
+    for memory_name, gateway_name, field_name in (
+        ("OLIVIA_MEMORY_LLM_BASE_URL", "OLIVIA_LLM_BASE_URL", "base_url"),
+        ("OLIVIA_MEMORY_LLM_MODEL", "OLIVIA_LLM_MODEL", "model"),
+        ("OLIVIA_MEMORY_LLM_API_KEY_ENV", "OLIVIA_LLM_API_KEY_ENV", "api_key_env"),
+    ):
+        if mem0_environment.get(memory_name) or mem0_environment.get(gateway_name):
+            continue
+        value = fallback.get(field_name, "")
+        if isinstance(value, str) and value.strip():
+            mem0_environment[memory_name] = value.strip()
+    return create_mem0_adapter(environ=mem0_environment)
+
+
 __all__ = [
     "LocalMemoryAdapter",
     "MemoryConfig",
     "UnavailableMemoryPort",
+    "create_conversation_memory_adapter",
     "create_memory_adapter",
     "load_memory_config",
 ]

@@ -11,7 +11,9 @@ import pytest
 import local_memory
 from local_memory import (
     LocalMemoryAdapter,
+    MemoryConfig,
     UnavailableMemoryPort,
+    create_conversation_memory_adapter,
     create_memory_adapter,
 )
 from memory_import import ImportOptions, LegacyLetterImporter
@@ -21,6 +23,68 @@ from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPrompt
 
 def make_adapter(tmp_path: Path, **kwargs) -> LocalMemoryAdapter:
     return LocalMemoryAdapter(tmp_path / "memory.sqlite3", **kwargs)
+
+
+def test_explicit_mem0_config_selects_conversation_adapter_without_archive_crossing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+
+    adapter = create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+            context_max_chars=1800,
+        ),
+        environ={"OLIVIA_MEMORY_LLM_BASE_URL": "http://127.0.0.1:8000/v1"},
+    )
+
+    assert adapter is sentinel
+    configured = captured["environ"]
+    assert isinstance(configured, dict)
+    assert configured["OLIVIA_MEMORY_ENABLED"] == "true"
+    assert configured["OLIVIA_MEMORY_ROOT"] == str(tmp_path / "memory" / "mem0")
+    assert configured["OLIVIA_MEMORY_CONTEXT_MAX_CHARS"] == "1800"
+
+
+def test_explicit_mem0_config_reuses_normal_letter_llm_file_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+
+    create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+        ),
+        environ={},
+        llm_fallback={
+            "base_url": "http://127.0.0.1:8000/v1",
+            "model": "synthetic-chat-model",
+            "api_key_env": "SYNTHETIC_API_KEY",
+        },
+    )
+
+    configured = captured["environ"]
+    assert isinstance(configured, dict)
+    assert configured["OLIVIA_MEMORY_LLM_BASE_URL"] == "http://127.0.0.1:8000/v1"
+    assert configured["OLIVIA_MEMORY_LLM_MODEL"] == "synthetic-chat-model"
+    assert configured["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == "SYNTHETIC_API_KEY"
 
 
 def test_metadata_long_value_round_trips_as_valid_json_without_truncation(tmp_path: Path) -> None:

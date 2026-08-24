@@ -59,6 +59,132 @@ def test_invalid_health_profile_is_a_stable_client_error() -> None:
     }
 
 
+def test_sqlite_memory_health_is_json_serializable_and_keeps_domain_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import NullConversationMemoryPort
+
+    class SQLiteArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": True,
+                "network_called": False,
+            }
+
+    monkeypatch.setattr(local_server, "memory_adapter", SQLiteArchive())
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        NullConversationMemoryPort(),
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    json.dumps(result)
+    memory = result["data"]["providers"]["memory"]
+    assert memory["conversation"] == {
+        "status": "available",
+        "enabled": True,
+        "provider": "sqlite",
+        "storage": "sqlite",
+        "conversation_enabled": True,
+        "network_called": False,
+    }
+    assert result["data"]["capabilities"]["memory.legacy"]["status"] == "available"
+    assert result["data"]["capabilities"]["memory.conversation"]["status"] == "available"
+
+
+def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import UnavailableConversationMemoryPort
+
+    class ReadOnlyArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": False,
+                "network_called": False,
+            }
+
+    monkeypatch.setattr(local_server, "memory_adapter", ReadOnlyArchive())
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED"),
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    assert result["data"]["status"] == "UNAVAILABLE"
+    assert result["data"]["capabilities"]["memory.legacy"]["status"] == "available"
+    conversation = result["data"]["capabilities"]["memory.conversation"]
+    assert conversation["status"] == "unavailable"
+    assert conversation["provider"] == "none"
+
+
+def test_memory_health_reflects_degraded_canonical_delivery_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+
+    class ReadOnlyArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": False,
+                "network_called": False,
+            }
+
+    class AvailableMem0:
+        def status(self):
+            return ConversationMemoryStatus(
+                "available",
+                True,
+                "mem0",
+                "qdrant-local",
+                memory_count=0,
+            )
+
+    monkeypatch.setattr(local_server, "memory_adapter", ReadOnlyArchive())
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", AvailableMem0())
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {
+            "status": "degraded",
+            "enabled": True,
+            "provider": "mem0",
+            "worker_running": False,
+            "reason_code": "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED",
+        },
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    assert result["data"]["status"] == "UNAVAILABLE"
+    conversation = result["data"]["providers"]["memory"]["conversation"]
+    assert conversation["status"] == "degraded"
+    assert conversation["reason_code"] == "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED"
+    assert conversation["runtime"]["worker_running"] is False
+    capability = result["data"]["capabilities"]["memory.conversation"]
+    assert capability["status"] == "degraded"
+    assert capability["provider"] == "mem0"
+
+
 def test_empty_letter_and_music_paths_are_explicitly_empty() -> None:
     import local_server
 
