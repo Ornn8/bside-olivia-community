@@ -602,6 +602,8 @@ class OpenAICompatibleAdapter(Gateway):
         tool_choice: str,
         request_id: str | None = None,
     ) -> Sequence[GatewayToolCall]:
+        if tool_choice != "required":
+            raise InvalidGatewayInput("REQUIRED_TOOL_CHOICE")
         request = request_id or uuid.uuid4().hex
         body = self._body(messages, stream=False)
         if self.config.api_style == "responses":

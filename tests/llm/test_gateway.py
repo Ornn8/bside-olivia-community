@@ -194,6 +194,22 @@ def test_openai_compatible_adapter_returns_required_tool_calls(
     assert seen["body"]["tools"][0]["function"]["name"] == "apply_voice_performance"
 
 
+def test_tool_completion_rejects_non_required_choice_before_provider_call() -> None:
+    async def exercise() -> InvalidGatewayInput:
+        adapter = OpenAICompatibleAdapter(
+            GatewayConfig(provider="openai_compatible", base_url="", model="")
+        )
+        with pytest.raises(InvalidGatewayInput) as error:
+            await adapter.complete_with_tools(
+                messages=ROOT_MESSAGES,
+                tools=[{"type": "function", "function": {"name": "apply_voice_performance"}}],
+                tool_choice="auto",
+            )
+        return error.value
+
+    assert run(exercise()).code == "REQUIRED_TOOL_CHOICE"
+
+
 def test_provider_idempotency_header_is_reserved_for_durable_letter_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
