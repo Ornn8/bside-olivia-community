@@ -45,7 +45,7 @@ from persona_provider import (
     persona_status,
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
-from letter_triage import LetterEmotionTriage
+from letter_triage import LetterEmotionTriage, _current_music_performance
 from music_reply import MusicReplyError, render_musical_reply
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
@@ -1598,6 +1598,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
             if reply_mode == "musical_video":
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
+                performance_scene = _current_music_performance(_os.environ)
+                if performance_scene is None or not performance_scene.is_file():
+                    raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 await asyncio.to_thread(render_musical_reply,
                     content,
                     reply_text,
@@ -1612,7 +1615,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     tts_config_path=tts_config,
                     visual_config_path=visual_config,
                     worker_path=worker,
-                    performance_video_path=Path(_os.environ.get("OLIVIA_MUSIC_PERFORMANCE_BASE", "")),
+                    performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
                 )
             else:

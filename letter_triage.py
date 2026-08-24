@@ -462,14 +462,13 @@ def _musical_video_configured(env: Mapping[str, str]) -> bool:
         str(env.get("OLIVIA_MINIMAX_WORKER", ""))
     ).expanduser()
     roformer = Path(str(env.get("OLIVIA_ROFORMER_EXE", ""))).expanduser()
-    performance = Path(
-        str(env.get("OLIVIA_MUSIC_PERFORMANCE_BASE", ""))
-    ).expanduser()
+    performance = _current_music_performance(env)
     return bool(
         minimax_python.is_file()
         and (minimax_root / "main.py").is_file()
         and minimax_worker.is_file()
         and roformer.is_file()
+        and performance is not None
         and performance.is_file()
     )
 
@@ -486,6 +485,30 @@ def _current_scene(env: Mapping[str, str]) -> Path | None:
         else "NIGHT"
     )
     value = str(env.get(f"OLIVIA_SCENE_{key}", "")).strip()
+    return Path(value).expanduser() if value else None
+
+
+def _current_music_performance(
+    env: Mapping[str, str],
+    *,
+    hour: int | None = None,
+) -> Path | None:
+    """Choose the evidenced piano scene from host local time.
+
+    No separate morning asset has been verified, so 05:00-09:00 explicitly
+    falls back to the day scene.  A single generic performance path is not
+    accepted because it would silently bypass the time-of-day contract.
+    """
+
+    local_hour = datetime.now().hour if hour is None else int(hour)
+    key = (
+        "DAY"
+        if 5 <= local_hour < 16
+        else "DUSK"
+        if 16 <= local_hour < 19
+        else "NIGHT"
+    )
+    value = str(env.get(f"OLIVIA_MUSIC_SCENE_{key}", "")).strip()
     return Path(value).expanduser() if value else None
 
 

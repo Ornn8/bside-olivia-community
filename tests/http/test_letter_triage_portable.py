@@ -6,6 +6,7 @@ import json
 from letter_triage import (
     LetterReplyRouter,
     RoutingContext,
+    _current_music_performance,
     routing_context_from_environment,
 )
 
@@ -32,6 +33,28 @@ def test_router_timeout_uses_portable_environment_configuration():
     )
 
     assert router.timeout_seconds == 90.0
+
+
+def test_music_performance_uses_system_tod_with_day_morning_fallback(tmp_path):
+    day = tmp_path / "TOD1200.mp4"
+    dusk = tmp_path / "TOD1730.mp4"
+    night = tmp_path / "TOD2000.mp4"
+    for path in (day, dusk, night):
+        path.write_bytes(b"scene")
+    environ = {
+        "OLIVIA_MUSIC_SCENE_DAY": str(day),
+        "OLIVIA_MUSIC_SCENE_DUSK": str(dusk),
+        "OLIVIA_MUSIC_SCENE_NIGHT": str(night),
+    }
+
+    assert _current_music_performance(environ, hour=5) == day
+    assert _current_music_performance(environ, hour=8) == day
+    assert _current_music_performance(environ, hour=9) == day
+    assert _current_music_performance(environ, hour=15) == day
+    assert _current_music_performance(environ, hour=16) == dusk
+    assert _current_music_performance(environ, hour=18) == dusk
+    assert _current_music_performance(environ, hour=19) == night
+    assert _current_music_performance(environ, hour=4) == night
 
 
 def _route(*, context=None, **overrides):

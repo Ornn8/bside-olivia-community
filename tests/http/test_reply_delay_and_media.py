@@ -64,6 +64,9 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     local_server.store.letters[:] = [letter]
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("OLIVIA_SCENE_DAY", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_DAY", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_DUSK", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_NIGHT", str(scene))
     monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(official_reference))
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
     observed = {}
@@ -84,6 +87,7 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert letter["media_status"] == "COMPLETED"
     assert letter["media_error_code"] is None
     assert observed["official_reply_reference_path"] == official_reference
+    assert observed["performance_video_path"] == scene
     assert "normal_scene_path" not in observed
     assert observed["normal_video_path"].name.endswith("-official-spoken-v1.mp4")
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
