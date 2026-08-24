@@ -11,7 +11,7 @@ from letter_triage import TriageResult
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult
-from voice_direction import VoiceDirectionError, VoicePerformancePlan, VoicePerformanceSegment
+from voice_direction import VoiceDirectionError, VoicePerformancePlan
 
 
 def test_text_delay_records_deadline_without_blocking(monkeypatch):
@@ -76,18 +76,11 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     async def voice_plan(_letter, text):
         return VoicePerformancePlan(
             reply_text=text,
-            segments=(
-                VoicePerformanceSegment(
-                    text=text,
-                    sentence_start=1,
-                    sentence_end=1,
-                    emotion="steady",
-                    intensity=0.5,
-                    speed=1.06,
-                    pause_after_seconds=0.0,
-                    gain_db=0.0,
-                ),
-            ),
+            overall_emotion="steady",
+            global_speed=1.06,
+            energy=0.5,
+            breath_before_sentences=(),
+            emphasize_sentences=(),
         )
 
     def render(_content, _reply, output, **kwargs):
@@ -120,21 +113,10 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
     reply_text = "I hear you, and I am staying with you through this."
     plan = VoicePerformancePlan(
         reply_text=reply_text,
-        segments=(
-            VoicePerformanceSegment(
-                text=reply_text,
-                sentence_start=1,
-                sentence_end=1,
-                emotion="restrained empathy becoming steady reassurance",
-                intensity=0.62,
-                speed=1.06,
-                pause_after_seconds=0.0,
-                gain_db=0.1,
-            ),
-        ),
         overall_emotion="restrained empathy becoming steady reassurance",
         global_speed=1.06,
         energy=0.62,
+        breath_before_sentences=(),
         emphasize_sentences=(1,),
     )
     scene = tmp_path / "scene.mp4"
@@ -234,18 +216,11 @@ def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monke
     persisted_request_ids = []
     plan = VoicePerformancePlan(
         reply_text=reply_text,
-        segments=(
-            VoicePerformanceSegment(
-                text=reply_text,
-                sentence_start=1,
-                sentence_end=1,
-                emotion="steady reassurance",
-                intensity=0.5,
-                speed=1.06,
-                pause_after_seconds=0.0,
-                gain_db=0.0,
-            ),
-        ),
+        overall_emotion="steady reassurance",
+        global_speed=1.06,
+        energy=0.5,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
     )
 
     def persist():
