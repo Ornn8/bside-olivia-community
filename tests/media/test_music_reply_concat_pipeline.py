@@ -467,3 +467,204 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
     assert calls == {"spoken": 3, "minimax": 3, "separate": 4}
+
+
+def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebuilt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "letter.mp4"
+    normal = tmp_path / "letter-spoken.mp4"
+    song_video = tmp_path / "letter-song.mp4"
+    stage_root = tmp_path / "letter-music-v2-40s-stages"
+    minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
+    calls = {"minimax": 0, "separate": 0, "performance": 0}
+
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="gentle_reassurance",
+            lyrics="[Verse]\\nStay here",
+            caption="gentle piano ballad",
+            duration_seconds=40,
+        ),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "render_reply_video",
+        lambda _text, destination, **_kwargs: (
+            _write(Path(destination), b"spoken") and {"spoken_stage": "completed"}
+        ),
+    )
+
+    def fake_generate(self, _content, _reply_text, destination, **_kwargs):
+        del self
+        calls["minimax"] += 1
+        _write(Path(destination), f"song-{calls['minimax']}".encode())
+        return {"music_stage": "completed"}
+
+    def fake_separate(_source, destination):
+        calls["separate"] += 1
+        _write(Path(destination), f"vocals-{calls['separate']}".encode())
+
+    def fake_face(_base, _vocals, _song, destination):
+        calls["performance"] += 1
+        _write(Path(destination), f"performance-{calls['performance']}".encode())
+        return {"performance_stage": "completed"}
+
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
+    monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
+    monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
+    transition = _write(tmp_path / "official-transition.mp4")
+    monkeypatch.setattr(
+        music_reply, "_official_transition_reference", lambda: transition
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "concat_videos",
+        lambda _normal, _song, destination, **_kwargs: _write(
+            Path(destination), b"final"
+        ),
+    )
+    kwargs = {
+        "normal_video_path": normal,
+        "official_reply_reference_path": _write(tmp_path / "official.mp4"),
+        "song_video_path": song_video,
+        "tts_config_path": tmp_path / "tts.json",
+        "visual_config_path": tmp_path / "visual.json",
+        "worker_path": tmp_path / "visual-worker.py",
+        "performance_video_path": tmp_path / "base-performance.mp4",
+        "duration_seconds": 40,
+    }
+
+    music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+    (stage_root / "song.flac").unlink()
+    music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    assert calls == {"minimax": 2, "separate": 2, "performance": 2}
+
+
+def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "letter.mp4"
+    normal = tmp_path / "letter-spoken.mp4"
+    song_video = tmp_path / "letter-song.mp4"
+    minimax_python = _write(tmp_path / "minimax-python.exe", b"python-v1")
+    minimax_worker = _write(tmp_path / "minimax-worker.py", b"worker-v1")
+    minimax_root = tmp_path / "minimax-root"
+    minimax_entry = _write(minimax_root / "main.py", b"entry-v1")
+    minimax_node = _write(
+        minimax_root / "comfy_extras" / "nodes_minimax_music.py", b"node-v1"
+    )
+    minimax_models = [
+        _write(
+            minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
+            b"unet-v1",
+        ),
+        _write(
+            minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+            b"text-v1",
+        ),
+        _write(
+            minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
+            b"vae-v1",
+        ),
+    ]
+    latentsync_root = tmp_path / "latentsync-root"
+    latentsync_checkpoint = _write(
+        latentsync_root / "checkpoints" / "latentsync_unet.pt", b"checkpoint-v1"
+    )
+    calls = {"minimax": 0, "separate": 0, "performance": 0}
+
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(minimax_python))
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", str(minimax_root))
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", str(latentsync_root))
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="gentle_reassurance",
+            lyrics="[Verse]\\nStay here",
+            caption="gentle piano ballad",
+            duration_seconds=40,
+        ),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "render_reply_video",
+        lambda _text, destination, **_kwargs: (
+            _write(Path(destination), b"spoken") and {"spoken_stage": "completed"}
+        ),
+    )
+
+    def fake_generate(self, _content, _reply_text, destination, **_kwargs):
+        del self
+        calls["minimax"] += 1
+        _write(Path(destination), f"song-{calls['minimax']}".encode())
+        return {"music_stage": "completed"}
+
+    def fake_separate(_source, destination):
+        calls["separate"] += 1
+        _write(Path(destination), f"vocals-{calls['separate']}".encode())
+
+    def fake_face(_base, _vocals, _song, destination):
+        calls["performance"] += 1
+        _write(Path(destination), f"performance-{calls['performance']}".encode())
+        return {"performance_stage": "completed"}
+
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
+    monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
+    monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
+    transition = _write(tmp_path / "official-transition.mp4")
+    monkeypatch.setattr(
+        music_reply, "_official_transition_reference", lambda: transition
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "concat_videos",
+        lambda _normal, _song, destination, **_kwargs: _write(
+            Path(destination), b"final"
+        ),
+    )
+    kwargs = {
+        "normal_video_path": normal,
+        "official_reply_reference_path": _write(tmp_path / "official.mp4"),
+        "song_video_path": song_video,
+        "tts_config_path": tmp_path / "tts.json",
+        "visual_config_path": tmp_path / "visual.json",
+        "worker_path": tmp_path / "visual-worker.py",
+        "performance_video_path": tmp_path / "base-performance.mp4",
+        "duration_seconds": 40,
+    }
+
+    music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    for index, asset in enumerate(
+        [minimax_python, minimax_entry, minimax_node, *minimax_models, latentsync_checkpoint],
+        start=2,
+    ):
+        asset.write_bytes(f"provider-v{index}".encode())
+        music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+        assert calls == {"minimax": index, "separate": index, "performance": index}
+
+    minimax_node.unlink()
+    music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    assert calls == {"minimax": 9, "separate": 9, "performance": 9}
