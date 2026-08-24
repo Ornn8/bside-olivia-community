@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from music_reply import MiniMaxMusic3Worker
 from minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     MINIMAX_INFERENCE_PROFILE_SCHEMA_VERSION,
@@ -41,8 +42,22 @@ def _lyrics(duration: int) -> str:
     )
 
 
+def _short_lyrics(duration: int) -> str:
+    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    return "\n".join(
+        (
+            "[Intro]",
+            "[Verse]",
+            *(f"主歌第{index}句轻轻落下" for index in range(1, verse_count + 1)),
+            "[Chorus]",
+            *(f"副歌第{index}句温柔收好" for index in range(1, chorus_count + 1)),
+            "[Outro]",
+        )
+    )
+
+
 def _request(
-    duration: int = 90,
+    duration: int = 40,
     profile: MiniMaxInferenceProfile | None = None,
 ) -> dict[str, object]:
     plan = SongSemanticPlan(
@@ -51,7 +66,7 @@ def _request(
         vocal_delivery=VocalDelivery.CLEAR_LEGATO,
         dynamic_arc=SongDynamicArc.SOFT_GENTLE_RISE_SETTLE,
         ending=SongEnding.COMPLETE_SOFT_CADENCE,
-        lyrics=_lyrics(duration),
+        lyrics=_short_lyrics(duration),
         duration_seconds=duration,
     )
     request: dict[str, object] = {
@@ -188,3 +203,14 @@ def test_worker_source_contains_no_music_fallback() -> None:
     assert "soft strings gradually enter" not in source
     assert "subtle cello" not in source
     assert "sparse percussion" not in source
+
+
+def test_118_second_generation_timeouts_cover_both_model_phases() -> None:
+    adapter = MiniMaxMusic3Worker(
+        python_path=Path("python.exe"),
+        worker_path=Path("worker.py"),
+        comfy_root=Path("comfy"),
+    )
+
+    assert worker._INFERENCE_TIMEOUT_SECONDS >= 7200.0
+    assert adapter.timeout_seconds >= worker._INFERENCE_TIMEOUT_SECONDS + 300.0

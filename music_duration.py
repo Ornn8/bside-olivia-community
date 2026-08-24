@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-MUSIC_DURATION_OPTIONS = (90, 118)
+MUSIC_DURATION_OPTIONS = (40, 60)
 
 
 def normalize_music_duration(value: object) -> int:

@@ -117,15 +117,13 @@ _ENDING = {
 }
 
 _TIMELINE = {
-    90: (
-        "0-8 seconds piano opening; 8-38 seconds first verse; 38-44 seconds "
-        "piano interlude; 44-78 seconds second verse; 78-90 seconds closing "
-        "cadence."
+    40: (
+        "0-4 seconds piano opening; 4-25 seconds one verse and one chorus "
+        "from 25-35 seconds; 35-40 seconds closing cadence."
     ),
-    118: (
-        "0-8 seconds piano opening; 8-50 seconds first verse; 50-56 seconds "
-        "piano interlude; 56-104 seconds second verse; 104-118 seconds closing "
-        "cadence."
+    60: (
+        "0-5 seconds piano opening; 5-36 seconds one verse and one chorus "
+        "from 36-52 seconds; 52-60 seconds closing cadence."
     ),
 }
 
@@ -185,10 +183,10 @@ def render_minimax_caption(plan: SongSemanticPlan) -> str:
     if not isinstance(plan, SongSemanticPlan):
         raise TypeError("MINIMAX_CAPTION_PLAN_TYPE_INVALID")
     caption = f"""### Global Metadata
-An intimate Mandarin vocal-and-acoustic-grand-piano lyrical song lasting {plan.duration_seconds} seconds at 68 BPM in B-flat major, straight 4/4. {_EMOTION[plan.emotion_arc]} The recording presents close, natural small-room acoustics, a transparent tonal balance, and a complete long-form shape.
+An intimate Mandarin vocal-and-acoustic-grand-piano lyrical song lasting {plan.duration_seconds} seconds at 68 BPM in B-flat major, straight 4/4. {_EMOTION[plan.emotion_arc]} The recording presents close, natural small-room acoustics, a transparent tonal balance, and a complete compact shape.
 
 ### Vocal Details
-{_VOCAL[plan.vocal_delivery]} The melodic delivery remains personal, restrained, and consistent across both verses.
+{_VOCAL[plan.vocal_delivery]} The melodic delivery remains personal, restrained, and consistent across one verse and one chorus.
 
 ### Arrangement
 The complete instrumental arrangement is performed by one acoustic grand piano from the opening through the final cadence. {_PIANO_TEXTURE[plan.piano_texture]} {_DYNAMIC[plan.dynamic_arc]} Section timing: {_TIMELINE[plan.duration_seconds]} {_ENDING[plan.ending]}"""

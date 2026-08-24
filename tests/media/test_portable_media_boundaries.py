@@ -12,9 +12,9 @@ def test_delivery_plan_preserves_spoken_text_and_duration_options():
     plan = plan_reply_delivery("我听见了。慢慢来，好吗？")
     assert plan.spoken_text == "我听见了。慢慢来，好吗？"
     assert plan.duration_target_seconds == (40.0, 50.0)
-    assert MUSIC_DURATION_OPTIONS == (90, 118)
-    assert normalize_music_duration(90) == 90
-    assert normalize_music_duration(118) == 118
+    assert MUSIC_DURATION_OPTIONS == (40, 60)
+    assert normalize_music_duration(40) == 40
+    assert normalize_music_duration(60) == 60
 
 
 def test_media_workers_fail_closed_without_external_provider(tmp_path):
@@ -31,5 +31,5 @@ def test_media_workers_fail_closed_without_external_provider(tmp_path):
             visual_config_path=tmp_path / "missing.json",
             worker_path=tmp_path / "missing.py",
             performance_video_path=tmp_path / "performance.mp4",
-            duration_seconds=90,
+            duration_seconds=40,
         )

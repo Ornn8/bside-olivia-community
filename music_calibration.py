@@ -52,8 +52,7 @@ def _lyrics(first: Sequence[str], second: Sequence[str]) -> str:
             "[Intro]",
             "[Verse]",
             *first,
-            "[Interlude]",
-            "[Verse]",
+            "[Chorus]",
             *second,
             "[Outro]",
         )
@@ -72,7 +71,7 @@ def _case(
     first: Sequence[str],
     second: Sequence[str],
 ) -> MusicCalibrationCase:
-    duration = 90 if len(first) == 6 and len(second) == 6 else 118
+    duration = 40 if len(first) == 6 and len(second) == 6 else 60
     return MusicCalibrationCase(
         case_id=case_id,
         category=category,
