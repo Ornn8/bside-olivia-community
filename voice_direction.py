@@ -94,13 +94,9 @@ class VoicePerformancePlan:
 
     @property
     def render_text(self) -> str:
-        rendered: list[str] = []
-        for sentence_id, sentence in enumerate(_sentences(self.reply_text), 1):
-            prefix = "[breath]" if sentence_id in self.breath_before_sentences else ""
-            rendered.append(
-                prefix + (f"<strong>{sentence}</strong>" if sentence_id in self.emphasize_sentences else sentence)
-            )
-        return "".join(rendered)
+        """Compatibility text channel; sparse marks remain structured controls."""
+
+        return self.reply_text
 
     @property
     def cues(self) -> tuple[VoicePerformanceSegment, ...]:

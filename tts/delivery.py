@@ -21,6 +21,9 @@ class DeliveryAudioError(RuntimeError):
     """Stable ordinary-reply audio rendering failure."""
 
 
+_END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+
+
 @dataclass(frozen=True)
 class DeliveryAudioResult:
     duration_seconds: float
@@ -46,6 +49,29 @@ def validate_delivery_duration(duration_seconds: float) -> None:
         raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
 
 
+def _normalized_instruct_text(value: str) -> str:
+    """Leave the model control token exclusively at the instruction tail."""
+
+    return value.replace(_END_OF_PROMPT_TOKEN, "").rstrip() + _END_OF_PROMPT_TOKEN
+
+
+def _directed_instruct_text(plan: object, *, emotion: str, speed: float, energy: float) -> str:
+    """Express optional sparse direction in CosyVoice's non-spoken channel."""
+
+    parts = [
+        "You are a helpful assistant.",
+        f"Deliver this complete reply with {emotion}.",
+        f"Keep one continuous performance at energy {energy:.2f} and pace {speed:.2f}.",
+    ]
+    breaths = tuple(getattr(plan, "breath_before_sentences", ()) or ())
+    emphasis = tuple(getattr(plan, "emphasize_sentences", ()) or ())
+    if breaths:
+        parts.append("Take a natural silent breath before sentence " + ", ".join(map(str, breaths)) + ".")
+    if emphasis:
+        parts.append("Gently emphasize sentence " + ", ".join(map(str, emphasis)) + ".")
+    return _normalized_instruct_text(" ".join(parts))
+
+
 def build_external_delivery_request(
     config: TTSConfig,
     plan: ReplyDeliveryPlan | object,
@@ -54,7 +80,8 @@ def build_external_delivery_request(
 
     units = tuple(plan.speech_units())
     spoken_text = str(getattr(plan, "spoken_text", "") or "".join(unit.text for unit in units))
-    render_text = str(getattr(plan, "render_text", "") or spoken_text)
+    if _END_OF_PROMPT_TOKEN in spoken_text:
+        raise DeliveryAudioError("TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN")
     if len(units) == 1:
         speed = float(units[0].speed)
         gain_db = float(getattr(units[0], "gain_db", 0.0))
@@ -75,11 +102,12 @@ def build_external_delivery_request(
         return {
             **common,
             "voice_condition_mode": "instruct2_single_pass",
-            "text": render_text,
-            "instruct_text": (
-                "You are a helpful assistant. 请用"
-                + overall_emotion
-                + "表达这段回信。<|endofprompt|>"
+            "text": spoken_text,
+            "instruct_text": _directed_instruct_text(
+                plan,
+                emotion=overall_emotion,
+                speed=max(1.02, min(1.08, speed)),
+                energy=float(getattr(plan, "energy", 0.0)),
             ),
             "speed": max(1.02, min(1.08, speed)),
             "gain_db": max(-0.75, min(0.75, gain_db)),
@@ -92,7 +120,7 @@ def build_external_delivery_request(
     return {
         **common,
         "voice_condition_mode": "contextual_long_form",
-        "blocks": [render_text],
+        "blocks": [spoken_text],
         "block_controls": [
             {
                 "speed": max(0.96, min(1.15, speed)),

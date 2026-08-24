@@ -62,13 +62,13 @@ def test_delivery_request_uses_one_contextual_long_form_payload() -> None:
 
 
 def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
-    reply_text = "I hear you. I will stay with you through this."
+    reply_text = "First sentence。Second sentence。"
     plan = VoicePerformancePlan(
         reply_text=reply_text,
         overall_emotion="restrained empathy becoming steady reassurance",
         global_speed=1.06,
         energy=0.62,
-        breath_before_sentences=(),
+        breath_before_sentences=(2,),
         emphasize_sentences=(1,),
     )
     config = SimpleNamespace(
@@ -81,8 +81,13 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     request = build_external_delivery_request(config, plan)
 
     assert request["voice_condition_mode"] == "instruct2_single_pass"
-    assert request["text"] == plan.render_text
+    assert plan.render_text == reply_text
+    assert request["text"] == reply_text
+    assert "[breath]" not in str(request["text"])
+    assert "<strong>" not in str(request["text"])
     assert request["instruct_text"].count("<|endofprompt|>") == 1
+    assert "natural silent breath before sentence 2" in str(request["instruct_text"])
+    assert "Gently emphasize sentence 1" in str(request["instruct_text"])
     assert request["performance_control_mode"] == "single_pass_llm_instruct"
     assert request["duration_target_seconds"] == [40.0, 50.0]
     assert request["max_attempts"] == 3
@@ -263,7 +268,7 @@ def test_external_worker_runs_one_whole_reply_instruct2_inference(
             "reference_audio": str(tmp_path / "reference.wav"),
             "voice_condition_mode": "instruct2_single_pass",
             "text": "one complete frozen reply",
-            "instruct_text": "steady reassurance<|endofprompt|>",
+            "instruct_text": "steady<|endofprompt|> reassurance<|endofprompt|>",
             "speed": 1.06,
             "duration_target_seconds": [40.0, 50.0],
             "max_attempts": 3,
@@ -320,6 +325,50 @@ def test_external_worker_rejects_runtime_without_pinned_instruct2_api(
             },
             tmp_path / "directed.wav",
         )
+
+
+def test_external_worker_rejects_frozen_text_with_model_control_token(tmp_path) -> None:
+    calls: list[object] = []
+
+    class Model:
+        sample_rate = 100
+
+        def inference_instruct2(self, *_args, **_kwargs):
+            calls.append("called")
+            return ()
+
+    with pytest.raises(RuntimeError, match="TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN"):
+        external_cosyvoice_worker._synthesize_instruct2_single_pass(
+            Model(),
+            {
+                "reference_audio": str(tmp_path / "reference.wav"),
+                "text": "frozen reply <|endofprompt|>",
+                "instruct_text": "steady reassurance<|endofprompt|>",
+            },
+            tmp_path / "directed.wav",
+        )
+
+    assert calls == []
+
+
+def test_directed_request_rejects_frozen_text_with_model_control_token() -> None:
+    plan = VoicePerformancePlan(
+        reply_text="frozen reply <|endofprompt|>",
+        overall_emotion="steady reassurance",
+        global_speed=1.06,
+        energy=0.62,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+    )
+    config = SimpleNamespace(
+        runtime_root="runtime",
+        model_dir="model",
+        reference_audio="reference.wav",
+        fp16=True,
+    )
+
+    with pytest.raises(DeliveryAudioError, match="TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN"):
+        build_external_delivery_request(config, plan)
 
 
 def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() -> None:
