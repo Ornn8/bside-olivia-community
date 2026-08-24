@@ -1,0 +1,70 @@
+name: build-memory-default-runtime
+
+on:
+  push:
+    branches:
+      - feat/p03-memory-default-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply bounded source changes in workspace
+        run: python tools/prepare_memory_default_runtime.py
+
+      - name: Install public test dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run public suite
+        run: python -m pytest -q
+
+      - name: Run hardening scan
+        run: python baseline_hardening_scan.py --mode all
+
+      - name: Check prepared whitespace
+        run: git diff --check --exit-code
+
+      - name: Pack prepared files
+        shell: pwsh
+        run: |
+          $paths = @(
+            'mem0_memory.py',
+            'memory_model.py',
+            'THIRD_PARTY_NOTICES.md',
+            'installer/Install.ps1',
+            'installer/start_local.py',
+            'installer/memory-model-manifest.json',
+            'installer/memory-runtime-requirements.txt',
+            'tools/provision_memory_model.py',
+            'tests/memory/test_mem0_memory.py',
+            'tests/memory/test_mem0_installed_runtime.py',
+            'tests/installer/test_memory_model_provisioning.py',
+            'tests/installer/test_memory_default_runtime.py',
+            '.github/workflows/memory-runtime-smoke.yml'
+          )
+          New-Item -ItemType Directory -Force -Path prepared | Out-Null
+          foreach ($path in $paths) {
+            $target = Join-Path 'prepared' $path
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Copy-Item -LiteralPath $path -Destination $target
+          }
+
+      - name: Upload prepared runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepared-memory-runtime
+          path: prepared
+          if-no-files-found: error
+          retention-days: 1
