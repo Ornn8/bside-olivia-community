@@ -203,6 +203,14 @@ complete, quiet piano cadence.
 - 生成后检查标签顺序、行数、空段和总字符范围；
 - 本机验收检查歌词是否唱完，不能只依赖目标时长。
 
+### 4.5 校准 provenance
+
+40/60 秒主歌加副歌契约是独立于旧长歌证据的 v2 校准批次。每次盲听运行的
+`manifest.json` 必须记录 `caseset_version: p03.music-cases.v2` 和
+`caption_version: p03.minimax-caption.v2`；私有映射文件重复这两个版本，方便在
+脱敏评分与私有音频之间核对。缺少这两个版本，或仍标记为 v1 的运行，不得与新
+契约的结果混合、回填或宣称可比。
+
 ## 5. 目标代码结构
 
 ```text

@@ -21,6 +21,7 @@ from song_content import plan_song_content
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
+_MUSIC_STAGE_MANIFEST_VERSION = 1
 
 
 class MusicReplyError(RuntimeError):
@@ -550,10 +551,10 @@ def concat_videos(
         result.replace(output_path)
 
 
-def _official_transition_reference() -> Path | None:
+def _official_transition_reference() -> Path:
     configured = os.environ.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", "").strip()
     if not configured:
-        return None
+        raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     reference = Path(configured)
     if not reference.is_file():
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
@@ -565,6 +566,165 @@ def _completed_stage(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _file_fingerprint(path: Path | None) -> dict[str, object]:
+    """Return a content-bound fingerprint without retaining local path names."""
+
+    if path is None:
+        return {"status": "not_configured"}
+    path = Path(path)
+    try:
+        if not path.is_file():
+            return {"status": "missing"}
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "status": "present",
+            "size": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        }
+    except OSError:
+        return {"status": "unavailable"}
+
+
+def _optional_path(value: str) -> Path | None:
+    value = str(value).strip()
+    return Path(value) if value else None
+
+
+def _build_music_stage_manifest(
+    content: str,
+    reply_text: str,
+    song_plan: object,
+    duration_seconds: int,
+    *,
+    official_reply_reference_path: Path,
+    transition_reference: Path,
+    performance_video_path: Path,
+    tts_config_path: Path,
+    visual_config_path: Path,
+    worker_path: Path,
+    minimax_worker_path: Path,
+    minimax_root: Path,
+) -> dict[str, object]:
+    """Bind resumable stages to canonical text, inputs, and provider revisions."""
+
+    latentsync_root = _optional_path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", ""))
+    roformer_executable = _optional_path(os.environ.get("OLIVIA_ROFORMER_EXE", ""))
+    roformer_model = _optional_path(os.environ.get("OLIVIA_ROFORMER_MODEL_PATH", ""))
+    roformer_config = _optional_path(os.environ.get("OLIVIA_ROFORMER_CONFIG_PATH", ""))
+    return {
+        "schema_version": _MUSIC_STAGE_MANIFEST_VERSION,
+        "inputs": {
+            "letter_sha256": hashlib.sha256(str(content).encode("utf-8")).hexdigest(),
+            "canonical_reply_sha256": hashlib.sha256(
+                str(reply_text).encode("utf-8")
+            ).hexdigest(),
+            "lyrics_sha256": hashlib.sha256(
+                str(song_plan.lyrics).encode("utf-8")
+            ).hexdigest(),
+            "caption_sha256": hashlib.sha256(
+                str(song_plan.caption).encode("utf-8")
+            ).hexdigest(),
+            "duration_seconds": duration_seconds,
+        },
+        "assets": {
+            "official_reply_reference": _file_fingerprint(official_reply_reference_path),
+            "official_transition_reference": _file_fingerprint(transition_reference),
+            "performance_video": _file_fingerprint(performance_video_path),
+            "tts_config": _file_fingerprint(tts_config_path),
+            "visual_config": _file_fingerprint(visual_config_path),
+            "visual_worker": _file_fingerprint(worker_path),
+        },
+        "providers": {
+            "music": {
+                "name": "MiniMax-Music-3",
+                "worker": _file_fingerprint(minimax_worker_path),
+                "comfy_main": _file_fingerprint(minimax_root / "main.py"),
+            },
+            "vocal_separator": {
+                "name": "MelBand-RoFormer",
+                "executable": _file_fingerprint(roformer_executable),
+                "model": _file_fingerprint(roformer_model),
+                "config": _file_fingerprint(roformer_config),
+            },
+            "face_sync": {
+                "name": "LatentSync-1.5",
+                "python": _file_fingerprint(
+                    _optional_path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", ""))
+                ),
+                "inference": _file_fingerprint(
+                    latentsync_root / "scripts" / "inference.py"
+                    if latentsync_root is not None
+                    else None
+                ),
+                "config": _file_fingerprint(
+                    latentsync_root / "configs" / "unet" / "stage2_efficient.yaml"
+                    if latentsync_root is not None
+                    else None
+                ),
+            },
+        },
+        "artifacts": {},
+    }
+
+
+def _read_compatible_manifest(
+    manifest_path: Path,
+    expected: dict[str, object],
+) -> dict[str, object]:
+    try:
+        loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {**expected, "artifacts": {}}
+    if not isinstance(loaded, dict) or any(
+        loaded.get(key) != expected.get(key)
+        for key in ("schema_version", "inputs", "assets", "providers")
+    ):
+        return {**expected, "artifacts": {}}
+    artifacts = loaded.get("artifacts")
+    return {**expected, "artifacts": artifacts if isinstance(artifacts, dict) else {}}
+
+
+def _write_stage_manifest(manifest_path: Path, manifest: dict[str, object]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = manifest_path.with_name(f"{manifest_path.stem}.partial{manifest_path.suffix}")
+    partial.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    partial.replace(manifest_path)
+
+
+def _stage_reusable(
+    manifest: dict[str, object],
+    artifact_name: str,
+    path: Path,
+) -> bool:
+    artifacts = manifest.get("artifacts")
+    expected = artifacts.get(artifact_name) if isinstance(artifacts, dict) else None
+    return (
+        _completed_stage(path)
+        and isinstance(expected, dict)
+        and expected == _file_fingerprint(path)
+    )
+
+
+def _record_stage(
+    manifest: dict[str, object],
+    manifest_path: Path,
+    artifact_name: str,
+    path: Path,
+) -> None:
+    artifacts = manifest.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        manifest["artifacts"] = artifacts
+    artifacts[artifact_name] = _file_fingerprint(path)
+    _write_stage_manifest(manifest_path, manifest)
 
 
 def render_musical_reply(
@@ -584,6 +744,7 @@ def render_musical_reply(
     """Render the ordinary reply, append an original-view song performance."""
 
     duration_seconds = normalize_music_duration(duration_seconds)
+    transition_reference = _official_transition_reference()
     minimax_python = os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", "").strip()
     minimax_root = os.environ.get("OLIVIA_MINIMAX_COMFY_ROOT", "").strip()
     minimax_worker = os.environ.get("OLIVIA_MINIMAX_WORKER", "").strip()
@@ -598,13 +759,41 @@ def render_musical_reply(
         f"{output_path.stem}-music-v2-{duration_seconds}s-stages"
     )
     stage_root.mkdir(parents=True, exist_ok=True)
-    if _completed_stage(normal_video_path):
+    manifest_path = stage_root / "manifest.json"
+    expected_manifest = _build_music_stage_manifest(
+        content,
+        reply_text,
+        song_plan,
+        duration_seconds,
+        official_reply_reference_path=official_reply_reference_path,
+        transition_reference=transition_reference,
+        performance_video_path=performance_video_path,
+        tts_config_path=tts_config_path,
+        visual_config_path=visual_config_path,
+        worker_path=worker_path,
+        minimax_worker_path=Path(minimax_worker),
+        minimax_root=Path(minimax_root),
+    )
+    try:
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing_manifest = None
+    manifest_compatible = isinstance(existing_manifest, dict) and all(
+        existing_manifest.get(key) == expected_manifest.get(key)
+        for key in ("schema_version", "inputs", "assets", "providers")
+    )
+    manifest = _read_compatible_manifest(manifest_path, expected_manifest)
+    if not manifest_compatible:
+        _write_stage_manifest(manifest_path, manifest)
+
+    spoken_base = stage_root / "official-spoken-000-035s.mp4"
+    if _stage_reusable(manifest, "normal_video", normal_video_path):
         normal_metadata = {"spoken_stage": "reused"}
     else:
-        spoken_base = prepare_official_spoken_base(
-            official_reply_reference_path,
-            stage_root / "official-spoken-000-035s.mp4",
-        )
+        if not _stage_reusable(manifest, "spoken_base", spoken_base):
+            spoken_base.unlink(missing_ok=True)
+            prepare_official_spoken_base(official_reply_reference_path, spoken_base)
+            _record_stage(manifest, manifest_path, "spoken_base", spoken_base)
         normal_metadata = render_reply_video(
             reply_text,
             normal_video_path,
@@ -616,10 +805,11 @@ def render_musical_reply(
             latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
             adaptive_delivery=True,
         )
+        _record_stage(manifest, manifest_path, "normal_video", normal_video_path)
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"
-    if _completed_stage(song_audio):
+    if _stage_reusable(manifest, "song_audio", song_audio):
         song_metadata = {
             "audio_model": "MiniMax-Music-3",
             "requested_duration_seconds": duration_seconds,
@@ -642,14 +832,16 @@ def render_musical_reply(
             caption=song_plan.caption,
         )
         partial_song.replace(song_audio)
+        _record_stage(manifest, manifest_path, "song_audio", song_audio)
 
-    if not _completed_stage(vocals):
+    if not _stage_reusable(manifest, "vocals", vocals):
         partial_vocals = stage_root / "vocals.partial.wav"
         partial_vocals.unlink(missing_ok=True)
         separate_vocals(song_audio, partial_vocals)
         partial_vocals.replace(vocals)
+        _record_stage(manifest, manifest_path, "vocals", vocals)
 
-    if _completed_stage(song_video_path):
+    if _stage_reusable(manifest, "song_video", song_video_path):
         face_metadata = {"performance_stage": "reused"}
     else:
         partial_video = song_video_path.with_name(
@@ -663,17 +855,15 @@ def render_musical_reply(
             partial_video,
         )
         partial_video.replace(song_video_path)
+        _record_stage(manifest, manifest_path, "song_video", song_video_path)
 
-    transition_reference = _official_transition_reference()
-    if transition_reference is None:
-        concat_videos(normal_video_path, song_video_path, output_path)
-    else:
-        concat_videos(
-            normal_video_path,
-            song_video_path,
-            output_path,
-            transition_video_path=transition_reference,
-        )
+    concat_videos(
+        normal_video_path,
+        song_video_path,
+        output_path,
+        transition_video_path=transition_reference,
+    )
+    _record_stage(manifest, manifest_path, "final_output", output_path)
     return {
         **normal_metadata,
         **song_metadata,
@@ -684,8 +874,6 @@ def render_musical_reply(
         "song_title": "回信里的歌",
         "reply_structure": (
             "normal_video_then_official_transition_then_song_video"
-            if transition_reference is not None
-            else "normal_video_then_song_video"
         ),
-        "transition_duration_seconds": 8.0 if transition_reference is not None else 0.0,
+        "transition_duration_seconds": 8.0,
     }

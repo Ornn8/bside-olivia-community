@@ -68,7 +68,8 @@ def _plan(
 
 
 def test_caption_version_is_explicit() -> None:
-    assert MINIMAX_CAPTION_VERSION == "p03.minimax-caption.v1"
+    assert MINIMAX_CAPTION_VERSION == "p03.minimax-caption.v2"
+    assert MINIMAX_CAPTION_VERSION != "p03.minimax-caption.v1"
 
 
 def test_short_caption_describes_one_full_verse_chorus_and_fade_ready_ending() -> None:

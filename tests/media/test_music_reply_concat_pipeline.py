@@ -325,6 +325,42 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert result["performance_stage"] == "completed"
 
 
+def test_render_musical_reply_fails_closed_without_official_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="gentle_reassurance",
+            lyrics="[Verse]\nStay here",
+            caption="gentle piano ballad",
+            duration_seconds=40,
+        ),
+    )
+    monkeypatch.delenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", raising=False)
+    official_reference = _write(tmp_path / "official.mp4")
+
+    with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_TRANSITION_UNAVAILABLE"):
+        music_reply.render_musical_reply(
+            "letter",
+            "reply",
+            tmp_path / "final.mp4",
+            normal_video_path=tmp_path / "spoken.mp4",
+            official_reply_reference_path=official_reference,
+            song_video_path=tmp_path / "performance.mp4",
+            tts_config_path=tmp_path / "tts.json",
+            visual_config_path=tmp_path / "visual.json",
+            worker_path=tmp_path / "worker.py",
+            performance_video_path=tmp_path / "base-performance.mp4",
+            duration_seconds=40,
+        )
+
+
 def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -335,11 +371,12 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     old_stage_root = tmp_path / "letter-stages"
     stage_root = tmp_path / "letter-music-v2-40s-stages"
     _write(old_stage_root / "song.flac", b"stale-118-second-song")
+    minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"spoken": 0, "minimax": 0, "separate": 0}
 
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
-    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -379,7 +416,10 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
             and {"performance_stage": "completed"}
         ),
     )
-    monkeypatch.setattr(music_reply, "_official_transition_reference", lambda: None)
+    transition = _write(tmp_path / "official-transition.mp4")
+    monkeypatch.setattr(
+        music_reply, "_official_transition_reference", lambda: transition
+    )
     monkeypatch.setattr(
         music_reply,
         "concat_videos",
@@ -417,3 +457,13 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     assert calls == {"spoken": 1, "minimax": 1, "separate": 2}
     assert result["spoken_stage"] == "reused"
     assert result["music_stage"] == "reused"
+    assert (stage_root / "manifest.json").is_file()
+
+    music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
+
+    assert calls == {"spoken": 2, "minimax": 2, "separate": 3}
+
+    minimax_worker.write_bytes(b"provider-v2")
+    music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
+
+    assert calls == {"spoken": 3, "minimax": 3, "separate": 4}
