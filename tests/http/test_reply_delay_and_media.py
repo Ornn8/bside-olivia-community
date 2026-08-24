@@ -4,13 +4,14 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 import local_server
 from letter_triage import TriageResult
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult
-from voice_direction import VoicePerformancePlan, VoicePerformanceSegment
+from voice_direction import VoiceDirectionError, VoicePerformancePlan, VoicePerformanceSegment
 
 
 def test_text_delay_records_deadline_without_blocking(monkeypatch):
@@ -199,11 +200,148 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
 
     assert received == {"spoken_video": plan, "musical_video": plan}
     assert directed_requests == [
-        "spoken-entry-voice-direction",
-        "musical-entry-voice-direction",
+        "letter-reply:spoken-entry:voice-direction",
+        "letter-reply:musical-entry:voice-direction",
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
     assert letters[1]["voice_performance_plan"] == plan.to_dict()
+
+
+def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypatch):
+    letter = {
+        "letter_id": "corrupt-plan",
+        "voice_performance_plan": {"reply_text": "frozen reply"},
+    }
+    provider_calls = []
+
+    async def direct(_text, _gateway, *, request_id=None):
+        provider_calls.append(request_id)
+        raise AssertionError("corrupt state must not call the voice provider")
+
+    monkeypatch.setattr(local_server, "direct_voice_performance", direct)
+
+    with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_PERSISTED_PLAN_INVALID"):
+        asyncio.run(local_server._voice_plan_for_letter(letter, "frozen reply"))
+
+    assert provider_calls == []
+
+
+def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monkeypatch):
+    reply_text = "This reply is frozen before voice direction."
+    request_id = "letter-reply:durable-direction:voice-direction"
+    letter = {"letter_id": "durable-direction"}
+    provider_calls = []
+    persisted_request_ids = []
+    plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        segments=(
+            VoicePerformanceSegment(
+                text=reply_text,
+                sentence_start=1,
+                sentence_end=1,
+                emotion="steady reassurance",
+                intensity=0.5,
+                speed=1.06,
+                pause_after_seconds=0.0,
+                gain_db=0.0,
+            ),
+        ),
+    )
+
+    def persist():
+        persisted_request_ids.append(letter.get("voice_direction_request_id"))
+
+    async def direct(_text, _gateway, *, request_id=None):
+        provider_calls.append(request_id)
+        assert letter["voice_direction_request_id"] == request_id
+        if len(provider_calls) == 1:
+            raise asyncio.CancelledError()
+        return plan
+
+    monkeypatch.setattr(local_server, "_persist_media_state", persist)
+    monkeypatch.setattr(local_server, "direct_voice_performance", direct)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(local_server._voice_plan_for_letter(letter, reply_text))
+    assert persisted_request_ids == [request_id]
+    assert provider_calls == [request_id]
+
+    assert asyncio.run(local_server._voice_plan_for_letter(letter, reply_text)) == plan
+    assert asyncio.run(local_server._voice_plan_for_letter(letter, reply_text)) == plan
+    assert provider_calls == [request_id, request_id]
+    assert letter["voice_performance_plan"] == plan.to_dict()
+
+
+def test_startup_resumes_only_valid_pending_or_interrupted_media_jobs(monkeypatch):
+    local_server.store.letters[:] = [
+        {
+            "letter_id": "resume-spoken",
+            "content": "saved letter",
+            "reply_text": "saved reply",
+            "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+            "letter_status": "COMPLETED",
+            "media_status": "PENDING",
+        },
+        {
+            "letter_id": "resume-musical",
+            "content": "saved musical letter",
+            "reply_text": "saved musical reply",
+            "reply_mode": ReplyMode.MUSICAL_VIDEO.value,
+            "letter_status": "COMPLETED",
+            "media_status": "QUEUED",
+        },
+        {
+            "letter_id": "not-video",
+            "content": "saved text letter",
+            "reply_text": "saved text reply",
+            "reply_mode": ReplyMode.TEXT_LETTER.value,
+            "letter_status": "COMPLETED",
+            "media_status": "PENDING",
+        },
+        {
+            "letter_id": "not-complete",
+            "content": "incomplete letter",
+            "reply_text": "",
+            "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+            "letter_status": "PENDING",
+            "media_status": "QUEUED",
+        },
+    ]
+    scheduled = []
+    monkeypatch.setattr(local_server, "_schedule_pending_reply_jobs", lambda: 0)
+    monkeypatch.setattr(
+        local_server,
+        "_schedule_media_job",
+        lambda letter_id, content, reply_text, mode: scheduled.append(
+            (letter_id, content, reply_text, mode)
+        ),
+    )
+
+    asyncio.run(local_server._start_reply_tasks(web.Application()))
+
+    assert scheduled == [
+        ("resume-spoken", "saved letter", "saved reply", ReplyMode.SPOKEN_VIDEO.value),
+        ("resume-musical", "saved musical letter", "saved musical reply", ReplyMode.MUSICAL_VIDEO.value),
+    ]
+
+
+def test_shutdown_cancels_and_releases_owned_media_jobs():
+    async def exercise() -> bool:
+        waiting = asyncio.Event()
+
+        async def media_job():
+            await waiting.wait()
+
+        task = asyncio.create_task(media_job())
+        local_server.media_tasks.add(task)
+        local_server.media_jobs["cleanup-media"] = task
+        await asyncio.sleep(0)
+        await local_server._stop_reply_tasks(web.Application())
+        return task.cancelled()
+
+    assert asyncio.run(exercise())
+    assert local_server.media_tasks == set()
+    assert local_server.media_jobs == {}
 
 
 def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
@@ -242,8 +380,8 @@ def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
                 direct_response_sufficient=True,
                 voice_materially_better=True,
             ),
-            ReplyMode.MUSICAL_VIDEO.value,
-            (ReplyMode.MUSICAL_VIDEO.value,),
+            ReplyMode.SPOKEN_VIDEO.value,
+            (ReplyMode.SPOKEN_VIDEO.value,),
         ),
         (
             ReplyMode.MUSICAL_VIDEO.value,
@@ -264,7 +402,7 @@ def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
         ),
     ),
 )
-def test_generate_reply_delivers_every_video_route_as_spoken_transition_and_music(
+def test_generate_reply_preserves_the_router_selected_video_route(
     monkeypatch,
     routed_mode,
     decision,
