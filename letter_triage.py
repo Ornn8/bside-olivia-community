@@ -27,8 +27,11 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 
 可选模式只有：
 - text_letter：文字信；
-- spoken_video：直接说话的视频；
-- musical_video：音乐本身构成这次回应的一部分。
+- spoken_video：因为声音陪伴更合适而选择完整视频回信；
+- musical_video：因为音乐本身构成回应而选择完整视频回信。
+
+spoken_video 和 musical_video 只区分路由理由，不是两种成品。两者的交付物都必须是
+“说话视频 + 官方无声转场 + 音乐演唱视频”；任一视频阶段不可用时只能 text_letter。
 
 总原则：能直接说的话，优先直接说。高情绪、提到音乐、讨论音乐、请求演奏、
 唱歌或改编，都不能单独触发 musical_video。林离可以拒绝、推迟、只讨论，
@@ -66,8 +69,9 @@ current_work_relevance 只能引用 routing_context.current_music_work 中存在
 melody_idea 只能与 spontaneous_motif + compose 同时出现，不能因为用户写了“音乐”
 就声称林离突然想到旋律。
 
-spoken_video 只有在 routing_context.spoken_video_available=true、直接表达仍足够，
-但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择 text_letter。
+spoken_video 只有在完整视频链可用、routing_context.spoken_video_available=true、
+直接表达仍足够，但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择
+text_letter。
 普通日常默认 text_letter。不要为了证明人格而音乐化。
 
 只输出一个 JSON 对象，不要 Markdown 或解释：
@@ -422,11 +426,10 @@ def routing_context_from_environment(
         if musical_override is not None
         else musical_detected
     )
-    if musical and not spoken:
-        musical = False
+    complete_video = spoken and musical
     return RoutingContext(
-        spoken_video_available=spoken,
-        musical_video_available=musical,
+        spoken_video_available=complete_video,
+        musical_video_available=complete_video,
         current_music_work=_context_items(env.get("OLIVIA_CURRENT_MUSIC_WORK", "")),
     )
 

@@ -15,7 +15,7 @@ P03 关闭前必须验证：
   -> 必要时一次修复
   -> canonical reply
   -> 持久化
-  -> 文字 / 说话视频 / 音乐视频
+  -> 文字回信 / 完整视频回信
   -> Mem0 写入
   -> PrivateWorld 交付或受控事件
   -> Companion Control Center 管理
@@ -180,7 +180,11 @@ GitHub Actions：
 - 输出可辨认为林离，而非通用助手；
 - 不凭空补史、不泄露内部字段。
 
-## 6. 说话视频真实验收
+## 6. 完整视频回信的说话阶段验收
+
+`spoken_video` 与 `musical_video` 是两种路由理由，不是两种用户成品。只要选择
+视频回信，最终交付都必须继续完成第 8 节的官方无声转场和音乐演唱阶段；完整音乐
+链不可用时不得只交付 spoken-only 视频。
 
 固定三条输入：
 
@@ -191,8 +195,8 @@ GitHub Actions：
 流程：
 
 ```text
-spoken_video ReplyContext
-  -> 160–180 字可朗读正文
+spoken_video / musical_video ReplyContext
+  -> 180–200 字可朗读正文
   -> DeliveryPlan
   -> CosyVoice
   -> 官方动作场景
@@ -255,7 +259,8 @@ spoken_video ReplyContext
 
 ## 8. 音乐视频真实验收
 
-音乐视频是“说话视频＋可选转场＋演唱视频”的顺序拼接，不是单独的演唱视频。
+完整视频回信是“说话视频＋官方无声转场＋演唱视频”的顺序拼接，不存在独立的
+spoken-only 成品，也不是单独的演唱视频。
 
 固定至少三条：
 
@@ -266,7 +271,7 @@ spoken_video ReplyContext
 仓库现有流程必须原样贯通：
 
 ```text
-musical_video ReplyContext
+spoken_video / musical_video ReplyContext
   -> canonical reply
   -> render_reply_video(...)
      生成 normal_video_path（说话视频）
@@ -522,7 +527,7 @@ CI 使用 mock，本机使用真实 provider。
 - 原版客户端终态正确；
 - 已配置媒体时说话视频通过；
 - MiniMax 音频风格达标；
-- 音乐视频按说话＋可选转场＋演唱顺序拼接并通过；
+- 视频回信按说话＋官方无声转场＋演唱顺序拼接并通过；
 - 故障注入不丢 canonical text；
 - 重启恢复通过；
 - 日志、报告和导出无秘密或私人内容泄漏；
@@ -533,7 +538,7 @@ CI 使用 mock，本机使用真实 provider。
 
 P03 完成后，系统应准确描述为：
 
-> 一个可在 Windows 本地长期运行、具备稳定林离人格、三种书信表达方式、成熟长期记忆、受控私人世界状态、图形化本地管理、可恢复持久化和诚实媒体降级的书信陪伴系统。
+> 一个可在 Windows 本地长期运行、具备稳定林离人格、文字与完整视频两种书信表达方式、成熟长期记忆、受控私人世界状态、图形化本地管理、可恢复持久化和诚实媒体降级的书信陪伴系统。
 
 不得提前描述为：
 

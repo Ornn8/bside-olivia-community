@@ -262,6 +262,18 @@ def test_environment_overrides_and_current_work_are_bounded():
     assert context.current_music_work == ("作品甲", "作品乙")
 
 
+def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
+    context = routing_context_from_environment(
+        {
+            "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
+            "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "0",
+        }
+    )
+
+    assert context.spoken_video_available is False
+    assert context.musical_video_available is False
+
+
 def test_invalid_router_output_fails_closed_to_text_letter():
     result = asyncio.run(
         LetterReplyRouter(
