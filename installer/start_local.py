@@ -98,6 +98,22 @@ def _memory_enabled(value: object) -> str:
     return "0" if normalized in {"0", "false", "no", "off"} else "1"
 
 
+def _memory_api_key_env(environment: dict[str, str]) -> str:
+    configured = str(
+        environment.get("OLIVIA_LLM_API_KEY_ENV", "")
+    ).strip()
+    candidates = (
+        configured,
+        "OLIVIA_LLM_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    for name in candidates:
+        if name and str(environment.get(name, "")).strip():
+            return name
+    return configured or "DEEPSEEK_API_KEY"
+
+
 def _configure_memory_environment(
     environment: dict[str, str],
     data_root: Path,
@@ -122,8 +138,8 @@ def _configure_memory_environment(
             "OLIVIA_MEMORY_LLM_MODEL": environment.get(
                 "OLIVIA_LLM_MODEL", ""
             ),
-            "OLIVIA_MEMORY_LLM_API_KEY_ENV": environment.get(
-                "OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"
+            "OLIVIA_MEMORY_LLM_API_KEY_ENV": _memory_api_key_env(
+                environment
             ),
             "OLIVIA_MEMORY_OUTBOX_ENABLED": "1",
             "FASTEMBED_CACHE_PATH": str(model_cache),
@@ -157,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     configured_key = _load_dpapi_key(data_root / "config" / "deepseek_api_key.dpapi")
     if configured_key and not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         environment["DEEPSEEK_API_KEY"] = configured_key
+    primary_key_env = environment.get(
+        "OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"
+    )
     environment.update(
         {
             "OLIVIA_INSTALL_ROOT": str(root),
@@ -173,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             "OLIVIA_LLM_PROVIDER": "openai_compatible",
             "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
             "OLIVIA_LLM_MODEL": "deepseek-v4-flash",
-            "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
+            "OLIVIA_LLM_API_KEY_ENV": primary_key_env,
             "OLIVIA_LLM_API_STYLE": "chat_completions",
             "OLIVIA_LLM_STREAM": "true",
             "OLIVIA_LLM_TIMEOUT_SECONDS": "25",
