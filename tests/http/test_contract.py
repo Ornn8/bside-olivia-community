@@ -139,6 +139,46 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     assert detail["data"]["read_only"] is False
 
 
+def test_send_accepts_only_the_short_music_duration_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "reply",
+        lambda *_args, **_kwargs: "synthetic reply",
+    )
+
+    rejected = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic input", "material": {"music_duration_seconds": 118}},
+            {},
+        )
+    )
+    accepted = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic input", "material": {"music_duration_seconds": 60}},
+            {},
+        )
+    )
+
+    assert rejected == {
+        "code": 400,
+        "message": "MUSIC_DURATION_INVALID",
+        "data": {
+            "status": "FAILED",
+            "error_code": "MUSIC_DURATION_INVALID",
+            "allowed": [40, 60],
+        },
+    }
+    assert accepted["code"] == 0
+
+
 def test_http_send_acknowledges_before_slow_reply_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -226,7 +266,7 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
         "reply_text": "",
         "reply_mode": "text_letter",
         "triage": {"status": "pending"},
-        "music_duration_seconds": 118,
+        "music_duration_seconds": 60,
     }
     local_server.store.letters.append(pending)
     local_server.store.letters.append({

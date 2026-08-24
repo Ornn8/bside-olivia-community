@@ -45,9 +45,11 @@ from persona_provider import (
     persona_status,
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
-from letter_triage import LetterEmotionTriage
-from music_reply import MusicReplyError, render_musical_reply
+from letter_triage import LetterEmotionTriage, _current_music_performance
+from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
+from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
+from reply_delivery import build_ordinary_video_llm_content
 from local_memory import create_memory_adapter
 from memory_port import LegacyLetter, MemoryPort, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
@@ -1126,6 +1128,23 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
     letter["reply_not_before"] = time.time() + delay * 60.0
 
 
+def _reply_pipeline_timeout_seconds() -> float:
+    """Cover generation plus review, one rewrite, and the final recheck."""
+
+    default_quality_timeout = min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    try:
+        quality_timeout = float(
+            _os.environ.get(
+                "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
+                str(default_quality_timeout),
+            )
+        )
+    except (TypeError, ValueError):
+        quality_timeout = default_quality_timeout
+    quality_timeout = max(1.0, min(quality_timeout, 300.0))
+    return float(LLM_TIMEOUT_SECONDS) + 3.0 * quality_timeout + 5.0
+
+
 def _send_result_for_letter(letter: dict) -> dict:
     if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
         return ok(
@@ -1373,9 +1392,9 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             return _invalid_field_type("material", "object")
         if not isinstance(content, str) or not content.strip():
             return err(400, 'INVALID_CONTENT', {'status': 'FAILED', 'error_code': 'INVALID_CONTENT'})
-        duration = material.get("music_duration_seconds", 118)
-        if isinstance(duration, bool) or duration not in {90, 118}:
-            return err(400, "MUSIC_DURATION_INVALID", {"status": "FAILED", "error_code": "MUSIC_DURATION_INVALID", "allowed": [90, 118]})
+        duration = material.get("music_duration_seconds", 60)
+        if isinstance(duration, bool) or duration not in MUSIC_DURATION_OPTIONS:
+            return err(400, "MUSIC_DURATION_INVALID", {"status": "FAILED", "error_code": "MUSIC_DURATION_INVALID", "allowed": list(MUSIC_DURATION_OPTIONS)})
         if len(content) > 10000:
             return err(400, 'CONTENT_TOO_LONG', {
                 'status': 'FAILED',
@@ -1574,32 +1593,40 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{letter_id}.mp4"
         try:
-            from datetime import datetime
-
-            hour = datetime.now().hour
-            scene_key = "morning" if 5 <= hour < 10 else "day" if 10 <= hour < 17 else "dusk" if 17 <= hour < 20 else "night"
-            normal_scene_value = _os.environ.get(f"OLIVIA_SCENE_{scene_key.upper()}", "")
-            normal_scene = Path(normal_scene_value).expanduser() if normal_scene_value else None
-            if normal_scene is None or not normal_scene.is_file():
-                raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
             if reply_mode == "musical_video":
+                music_duration_seconds = int(letter.get("music_duration_seconds", 60))
+                performance_scene = _current_music_performance(_os.environ)
+                if performance_scene is None or not performance_scene.is_file():
+                    raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 await asyncio.to_thread(render_musical_reply,
                     content,
                     reply_text,
                     output_path,
-                    normal_video_path=output_dir / f"{letter_id}-spoken.mp4",
-                    song_video_path=output_dir / f"{letter_id}-song.mp4",
-                    normal_scene_path=normal_scene,
+                    normal_video_path=output_dir / f"{letter_id}-official-spoken-v1.mp4",
+                    song_video_path=output_dir / (
+                        f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
+                    ),
+                    official_reply_reference_path=select_speaking_scene(
+                        speaking_scene_candidates(_os.environ)
+                    ) or Path(),
                     tts_config_path=tts_config,
                     visual_config_path=visual_config,
                     worker_path=worker,
-                    performance_video_path=Path(_os.environ.get("OLIVIA_MUSIC_PERFORMANCE_BASE", "")),
-                    duration_seconds=int(letter.get("music_duration_seconds", 118)),
+                    performance_video_path=performance_scene,
+                    duration_seconds=music_duration_seconds,
                 )
             else:
+                from datetime import datetime
+
+                hour = datetime.now().hour
+                scene_key = "morning" if 5 <= hour < 10 else "day" if 10 <= hour < 17 else "dusk" if 17 <= hour < 20 else "night"
+                normal_scene_value = _os.environ.get(f"OLIVIA_SCENE_{scene_key.upper()}", "")
+                normal_scene = Path(normal_scene_value).expanduser() if normal_scene_value else None
+                if normal_scene is None or not normal_scene.is_file():
+                    raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
                 await asyncio.to_thread(render_reply_video,
                     reply_text,
                     output_path,
@@ -1613,6 +1640,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
+            letter["media_error_code"] = None
             _persist_media_state()
         except (ReplyMediaError, MusicReplyError, ValueError, OSError) as exc:
             letter["media_status"] = "UNAVAILABLE"
@@ -1801,6 +1829,12 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     decision = await emotion_triage.classify(content)
     exact_mode = _exact_reply_mode(decision.reply_mode)
+    if exact_mode == ReplyMode.SPOKEN_VIDEO.value:
+        # A product video reply is one complete letter: spoken response,
+        # original transition, then the generated performance.  The router may
+        # still express that voice is the reason video is warranted, but there
+        # is no standalone spoken-only delivery surface.
+        exact_mode = ReplyMode.MUSICAL_VIDEO.value
     letter["triage"] = decision.to_dict()
     letter["reply_mode"] = exact_mode
     if exact_mode in {
@@ -1812,8 +1846,14 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
 
     try:
+        reply_input = (
+            build_ordinary_video_llm_content(content)
+            if exact_mode
+            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+            else content
+        )
         request = ReplyRequest(
-            content=content,
+            content=reply_input,
             request_id=f"letter-reply:{letter_id}",
             idempotency_key=(
                 f"{idempotency_key}:{letter_id}" if idempotency_key else None
@@ -1825,7 +1865,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
                 request,
                 letters_adapter.build_reply_context(ReplyMode(exact_mode)),
             ),
-            timeout=LLM_TIMEOUT_SECONDS,
+            timeout=_reply_pipeline_timeout_seconds(),
         )
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
@@ -1875,6 +1915,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     letters_adapter.remember_conversation(content, result.text)
     _safe_log("letter_completed", reply_mode=exact_mode)
     return True
+
+
 
 if __name__ == "__main__":
     recover_pending_private_world()

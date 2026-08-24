@@ -14,6 +14,7 @@ import pytest
 
 import latentsync_reply
 import music_reply
+import reply_media
 from latentsync_reply import render_latentsync_video
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration
 from music_reply import MusicReplyError, render_musical_reply
@@ -437,3 +438,24 @@ def test_latentsync_rejects_missing_explicit_ffmpeg_without_fallback(
             python_path=python,
             latentsync_root=root,
         )
+
+def test_all_video_paths_share_explicit_ffmpeg_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "ffmpeg.exe"
+    executable.write_bytes(b"synthetic")
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(executable))
+
+    assert latentsync_reply.resolve_ffmpeg_executable() == executable.resolve()
+    assert music_reply._ffmpeg() == str(executable.resolve())
+    assert reply_media._ffmpeg() == str(executable.resolve())
+
+
+def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Path) -> None:
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    env = {"OLIVIA_SPOKEN_SCENE_CANDIDATES": os.pathsep.join((str(first), str(second), str(first)))}
+    candidates = music_reply.speaking_scene_candidates(env)
+    assert candidates == (first, second)
+    assert music_reply.select_speaking_scene(candidates) == first
+    assert music_reply.speaking_scene_candidates({"OLIVIA_OFFICIAL_REPLY_REFERENCE": str(second)}) == (second,)

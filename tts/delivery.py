@@ -11,6 +11,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
+from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan
 
 from .contracts import TTSConfig
@@ -75,14 +76,9 @@ def _validate_wav(path: Path) -> tuple[int, int]:
 
 
 def _ffmpeg() -> str:
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise DeliveryAudioError("FFMPEG_UNAVAILABLE") from exc
 
 
@@ -130,6 +126,18 @@ def _fit_overlong_wav(path: Path, duration_seconds: float) -> tuple[int, int]:
     return sample_rate, frame_count
 
 
+def delivery_configured(config: TTSConfig) -> bool:
+    """Read-only closure check shared by delivery preflight and rendering."""
+
+    return all((
+        Path(str(config.provider_options.get("external_python", "") or "")).is_file(),
+        Path(__file__).with_name("external_cosyvoice_worker.py").is_file(),
+        Path(config.runtime_root).is_dir(),
+        Path(config.model_dir).is_dir(),
+        Path(config.reference_audio).is_file(),
+    ))
+
+
 def render_delivery_wav(
     config: TTSConfig,
     plan: ReplyDeliveryPlan,
@@ -139,18 +147,10 @@ def render_delivery_wav(
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""
 
+    if not delivery_configured(config) or not plan.cues:
+        raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     executable = Path(str(config.provider_options.get("external_python", "") or ""))
     worker = Path(__file__).with_name("external_cosyvoice_worker.py")
-    required = (
-        executable.is_file(),
-        worker.is_file(),
-        Path(config.runtime_root).is_dir(),
-        Path(config.model_dir).is_dir(),
-        Path(config.reference_audio).is_file(),
-        bool(plan.cues),
-    )
-    if not all(required):
-        raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_parent = str(config.provider_options.get("temp_root", "") or "").strip()

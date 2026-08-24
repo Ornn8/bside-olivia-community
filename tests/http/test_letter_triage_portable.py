@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 
+import latentsync_reply
 from letter_triage import (
     LetterReplyRouter,
     RoutingContext,
+    _current_music_performance,
     routing_context_from_environment,
 )
 
@@ -23,6 +27,37 @@ class _Gateway:
     async def complete(self, messages, *, request_id=None):
         self.messages = messages
         return _Response(self.response)
+
+
+def test_router_timeout_uses_portable_environment_configuration():
+    router = LetterReplyRouter(
+        _Gateway("{}"),
+        environ={"OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS": "90"},
+    )
+
+    assert router.timeout_seconds == 90.0
+
+
+def test_music_performance_uses_system_tod_with_day_morning_fallback(tmp_path):
+    day = tmp_path / "TOD1200.mp4"
+    dusk = tmp_path / "TOD1730.mp4"
+    night = tmp_path / "TOD2000.mp4"
+    for path in (day, dusk, night):
+        path.write_bytes(b"scene")
+    environ = {
+        "OLIVIA_MUSIC_SCENE_DAY": str(day),
+        "OLIVIA_MUSIC_SCENE_DUSK": str(dusk),
+        "OLIVIA_MUSIC_SCENE_NIGHT": str(night),
+    }
+
+    assert _current_music_performance(environ, hour=5) == day
+    assert _current_music_performance(environ, hour=8) == day
+    assert _current_music_performance(environ, hour=9) == day
+    assert _current_music_performance(environ, hour=15) == day
+    assert _current_music_performance(environ, hour=16) == dusk
+    assert _current_music_performance(environ, hour=18) == dusk
+    assert _current_music_performance(environ, hour=19) == night
+    assert _current_music_performance(environ, hour=4) == night
 
 
 def _route(*, context=None, **overrides):
@@ -217,7 +252,7 @@ def test_router_receives_trusted_context_separately_from_letter():
     assert payload["routing_context"]["musical_video_available"] is True
 
 
-def test_environment_overrides_and_current_work_are_bounded():
+def test_environment_overrides_do_not_claim_video_availability_and_current_work_is_bounded():
     context = routing_context_from_environment(
         {
             "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
@@ -225,9 +260,141 @@ def test_environment_overrides_and_current_work_are_bounded():
             "OLIVIA_CURRENT_MUSIC_WORK": '["作品甲", "作品乙", "作品甲"]',
         }
     )
-    assert context.spoken_video_available is True
-    assert context.musical_video_available is True
+    assert context.spoken_video_available is False
+    assert context.musical_video_available is False
     assert context.current_music_work == ("作品甲", "作品乙")
+
+
+def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
+    context = routing_context_from_environment(
+        {
+            "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
+            "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "0",
+        }
+    )
+
+    assert context.spoken_video_available is False
+    assert context.musical_video_available is False
+
+
+def test_complete_video_readiness_fails_closed_for_every_missing_renderer_dependency(
+    tmp_path,
+    monkeypatch,
+):
+    def write(relative: str) -> str:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+        return str(path)
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    scene = write("scenes/spoken.mp4")
+    performance = write("scenes/performance.mp4")
+    minimax_root = tmp_path / "minimax"
+    latentsync_root = tmp_path / "latentsync"
+    env = {
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_TTS_CONFIG": write("config/tts.json"),
+        "OLIVIA_VISUAL_CONFIG": write("config/visual.json"),
+        "OLIVIA_LIVETALKING_WORKER": write("workers/visual.py"),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": write("official/reply.mp4"),
+        "OLIVIA_ROFORMER_EXE": write("roformer/roformer.exe"),
+        "OLIVIA_ROFORMER_MODEL_PATH": write("roformer/model.ckpt"),
+        "OLIVIA_ROFORMER_CONFIG_PATH": write("roformer/config.yaml"),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": write("minimax/python.exe"),
+        "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
+        "OLIVIA_MINIMAX_WORKER": write("workers/minimax.py"),
+        "OLIVIA_LATENTSYNC_PYTHON": write("latentsync/python.exe"),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
+        "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "1",
+        **{
+            f"OLIVIA_SCENE_{tod}": scene
+            for tod in ("MORNING", "DAY", "DUSK", "NIGHT")
+        },
+        **{
+            f"OLIVIA_MUSIC_SCENE_{tod}": performance
+            for tod in ("DAY", "DUSK", "NIGHT")
+        },
+    }
+    ffmpeg = tmp_path / "runtime" / "ffmpeg.exe"
+    ffmpeg.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg.write_bytes(b"synthetic")
+    env["OLIVIA_FFMPEG_EXE"] = str(ffmpeg)
+    required = [
+        tmp_path / "config/tts.json",
+        tmp_path / "config/visual.json",
+        tmp_path / "workers/visual.py",
+        tmp_path / "official/reply.mp4",
+        tmp_path / "roformer/roformer.exe",
+        tmp_path / "roformer/model.ckpt",
+        tmp_path / "roformer/config.yaml",
+        tmp_path / "minimax/python.exe",
+        tmp_path / "workers/minimax.py",
+        minimax_root / "main.py",
+        minimax_root / "comfy_extras/nodes_minimax_music.py",
+        minimax_root / "models/unet/minimax_music3_dit_int8_convrot.safetensors",
+        minimax_root / "models/clip/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        minimax_root / "models/vae/minimax_music3_dav.safetensors",
+        tmp_path / "latentsync/python.exe",
+        latentsync_root / "scripts/inference.py",
+        latentsync_root / "configs/unet/stage2_efficient.yaml",
+        latentsync_root / "checkpoints/latentsync_unet.pt",
+    ]
+    for path in required:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+
+    tts_runtime = tmp_path / "tts-runtime"
+    (tts_runtime / "venv/Scripts").mkdir(parents=True)
+    (tts_runtime / "venv/Scripts/python.exe").write_bytes(b"synthetic")
+    tts_model = tmp_path / "tts-model"
+    tts_model.mkdir()
+    tts_reference = write("tts/reference.wav")
+    Path(env["OLIVIA_TTS_CONFIG"]).write_text(json.dumps({"settings": {
+        "runtime_root": str(tts_runtime), "model_dir": str(tts_model),
+        "reference_audio": tts_reference,
+    }}), encoding="utf-8")
+    visual_runtime = tmp_path / "visual-runtime"
+    visual_runtime.mkdir()
+    visual_checkpoint = write("visual/checkpoint.pt")
+    visual_avatar = visual_runtime / "data/avatars/b11_olivia"
+    visual_avatar.mkdir(parents=True)
+    visual_work = tmp_path / "visual-work"
+    visual_work.mkdir()
+    Path(env["OLIVIA_VISUAL_CONFIG"]).write_text(json.dumps({"settings": {
+        "runtime_root": str(visual_runtime), "checkpoint_path": visual_checkpoint,
+        "checkpoint_sha256": "0" * 64, "avatar_payload": str(visual_avatar),
+        "original_reference": env["OLIVIA_OFFICIAL_REPLY_REFERENCE"], "work_root": str(visual_work),
+        "avatar_id": "b11_olivia", "checkpoint_url": "https://example.test/checkpoint",
+        "checkpoint_revision": "v1", "checkpoint_license": "Apache-2.0",
+        "upstream_source": "https://github.com/lipku/LiveTalking",
+        "upstream_revision": "a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+        "upstream_license": "Apache-2.0",
+    }}), encoding="utf-8")
+
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+
+    for missing in required:
+        missing.unlink()
+        assert routing_context_from_environment(env) == RoutingContext(False, False)
+        missing.write_bytes(b"synthetic")
+
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    for resolved_ffmpeg in (None, write("runtime/ffmpeg.exe")):
+        monkeypatch.setattr(
+            latentsync_reply.shutil,
+            "which",
+            lambda _name: resolved_ffmpeg,
+        )
+        assert routing_context_from_environment(env) == RoutingContext(False, False)
+
+    acceptance_document = Path("docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "optional transition" not in acceptance_document
+    assert "mandatory official silent turn/black transition" in acceptance_document
 
 
 def test_invalid_router_output_fails_closed_to_text_letter():

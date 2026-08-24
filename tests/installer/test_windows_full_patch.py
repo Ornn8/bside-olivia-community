@@ -140,6 +140,7 @@ def test_install_entrypoint_prioritizes_selected_payload() -> None:
 
 def test_managed_runtime_installs_all_server_dependencies() -> None:
     repo_root = Path(__file__).parents[2]
+    project = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     script = (repo_root / "installer" / "Install.ps1").read_text(
         encoding="utf-8-sig"
     )
@@ -148,6 +149,7 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
     ).read_text(encoding="utf-8")
 
     assert "import aiohttp,jsonschema" in script
+    assert '"imageio-ffmpeg>=0.6,<1"' in project
     assert "jsonschema==4.26.0" in requirements
     assert "jsonschema-specifications==2025.9.1" in requirements
     assert "referencing==0.37.0" in requirements

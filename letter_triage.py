@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from llm_gateway import GatewayError
+from music_reply import musical_reply_configured
 
 
 ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表达方式。
@@ -27,8 +28,11 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 
 可选模式只有：
 - text_letter：文字信；
-- spoken_video：直接说话的视频；
-- musical_video：音乐本身构成这次回应的一部分。
+- spoken_video：因为声音陪伴更合适而选择完整视频回信；
+- musical_video：因为音乐本身构成回应而选择完整视频回信。
+
+spoken_video 和 musical_video 只区分路由理由，不是两种成品。两者的交付物都必须是
+“说话视频 + 官方无声转场 + 音乐演唱视频”；任一视频阶段不可用时只能 text_letter。
 
 总原则：能直接说的话，优先直接说。高情绪、提到音乐、讨论音乐、请求演奏、
 唱歌或改编，都不能单独触发 musical_video。林离可以拒绝、推迟、只讨论，
@@ -66,8 +70,9 @@ current_work_relevance 只能引用 routing_context.current_music_work 中存在
 melody_idea 只能与 spontaneous_motif + compose 同时出现，不能因为用户写了“音乐”
 就声称林离突然想到旋律。
 
-spoken_video 只有在 routing_context.spoken_video_available=true、直接表达仍足够，
-但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择 text_letter。
+spoken_video 只有在完整视频链可用、routing_context.spoken_video_available=true、
+直接表达仍足够，但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择
+text_letter。
 普通日常默认 text_letter。不要为了证明人格而音乐化。
 
 只输出一个 JSON 对象，不要 Markdown 或解释：
@@ -339,12 +344,22 @@ class LetterReplyRouter:
         self,
         gateway: RouterGateway,
         *,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float | None = None,
         routing_context: RoutingContext | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self.gateway = gateway
-        self.timeout_seconds = max(0.05, float(timeout_seconds))
+        if timeout_seconds is None:
+            raw_timeout = (environ or os.environ).get(
+                "OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS", "60"
+            )
+            try:
+                configured_timeout = float(raw_timeout)
+            except (TypeError, ValueError):
+                configured_timeout = 60.0
+            self.timeout_seconds = min(300.0, max(5.0, configured_timeout))
+        else:
+            self.timeout_seconds = max(0.05, float(timeout_seconds))
         self.routing_context = routing_context
         self.environ = environ
 
@@ -399,24 +414,12 @@ def routing_context_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> RoutingContext:
     env = environ if environ is not None else os.environ
-    spoken_override = _optional_bool(env.get("OLIVIA_SPOKEN_VIDEO_AVAILABLE"))
-    musical_override = _optional_bool(env.get("OLIVIA_MUSICAL_VIDEO_AVAILABLE"))
-    spoken = (
-        spoken_override
-        if spoken_override is not None
-        else _spoken_video_configured(env)
-    )
+    spoken = _spoken_video_configured(env)
     musical_detected = spoken and _musical_video_configured(env)
-    musical = (
-        musical_override
-        if musical_override is not None
-        else musical_detected
-    )
-    if musical and not spoken:
-        musical = False
+    complete_video = spoken and musical_detected
     return RoutingContext(
-        spoken_video_available=spoken,
-        musical_video_available=musical,
+        spoken_video_available=complete_video,
+        musical_video_available=complete_video,
         current_music_work=_context_items(env.get("OLIVIA_CURRENT_MUSIC_WORK", "")),
     )
 
@@ -442,25 +445,9 @@ def _spoken_video_configured(env: Mapping[str, str]) -> bool:
 
 
 def _musical_video_configured(env: Mapping[str, str]) -> bool:
-    minimax_python = Path(
-        str(env.get("OLIVIA_MINIMAX_COMFY_PYTHON", ""))
-    ).expanduser()
-    minimax_root = Path(
-        str(env.get("OLIVIA_MINIMAX_COMFY_ROOT", ""))
-    ).expanduser()
-    minimax_worker = Path(
-        str(env.get("OLIVIA_MINIMAX_WORKER", ""))
-    ).expanduser()
-    roformer = Path(str(env.get("OLIVIA_ROFORMER_EXE", ""))).expanduser()
-    performance = Path(
-        str(env.get("OLIVIA_MUSIC_PERFORMANCE_BASE", ""))
-    ).expanduser()
-    return bool(
-        minimax_python.is_file()
-        and (minimax_root / "main.py").is_file()
-        and minimax_worker.is_file()
-        and roformer.is_file()
-        and performance.is_file()
+    return musical_reply_configured(
+        env,
+        performance_video_path=_current_music_performance(env),
     )
 
 
@@ -479,15 +466,28 @@ def _current_scene(env: Mapping[str, str]) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
-def _optional_bool(value: object) -> bool | None:
-    if value is None:
-        return None
-    normalized = str(value).strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
+def _current_music_performance(
+    env: Mapping[str, str],
+    *,
+    hour: int | None = None,
+) -> Path | None:
+    """Choose the evidenced piano scene from host local time.
+
+    No separate morning asset has been verified, so 05:00-09:00 explicitly
+    falls back to the day scene.  A single generic performance path is not
+    accepted because it would silently bypass the time-of-day contract.
+    """
+
+    local_hour = datetime.now().hour if hour is None else int(hour)
+    key = (
+        "DAY"
+        if 5 <= local_hour < 16
+        else "DUSK"
+        if 16 <= local_hour < 19
+        else "NIGHT"
+    )
+    value = str(env.get(f"OLIVIA_MUSIC_SCENE_{key}", "")).strip()
+    return Path(value).expanduser() if value else None
 
 
 def _context_items(value: object) -> tuple[str, ...]:

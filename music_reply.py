@@ -10,13 +10,22 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-from latentsync_reply import LatentSyncReplyError, render_latentsync_video
+from latentsync_reply import (
+    LatentSyncReplyError,
+    render_latentsync_video,
+    resolve_ffmpeg_executable,
+)
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
-from reply_media import render_reply_video
+from reply_media import (
+    ReplyMediaError,
+    assemble_complete_video_delivery,
+    render_reply_video,
+)
 from song_content import plan_song_content
 
 
@@ -35,6 +44,77 @@ def normalize_music_duration(value: object) -> int:
         return _normalize_music_duration(value)
     except ValueError:
         raise MusicReplyError("MUSIC_DURATION_INVALID") from None
+
+
+def speaking_scene_candidates(env: Mapping[str, str]) -> tuple[Path, ...]:
+    """Return configured speaking-scene candidates; legacy singleton is a fallback."""
+
+    raw = str(env.get("OLIVIA_SPOKEN_SCENE_CANDIDATES", ""))
+    values = raw.split(os.pathsep) if raw else [str(env.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", ""))]
+    result: list[Path] = []
+    for value in values:
+        candidate = Path(value.strip()).expanduser() if value.strip() else None
+        if candidate is not None and candidate not in result:
+            result.append(candidate)
+    return tuple(result)
+
+
+def select_speaking_scene(
+    candidates: tuple[Path, ...], *, expression: str | None = None
+) -> Path | None:
+    """Stable default seam; future expression/lip-sync selection can replace this."""
+
+    del expression
+    return candidates[0] if candidates else None
+
+
+def musical_reply_configured(
+    env: Mapping[str, str],
+    *,
+    performance_video_path: Path | None,
+) -> bool:
+    """Return whether the renderer's complete musical delivery closure exists."""
+
+    def configured_path(name: str) -> Path:
+        return Path(str(env.get(name, ""))).expanduser()
+
+    minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
+    latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
+    speaking_scene = select_speaking_scene(speaking_scene_candidates(env))
+    try:
+        assemble_complete_video_delivery(
+            configured_path("OLIVIA_TTS_CONFIG"),
+            configured_path("OLIVIA_VISUAL_CONFIG"),
+            configured_path("OLIVIA_LIVETALKING_WORKER"),
+            configured_path("OLIVIA_LOCAL_DATA_ROOT"),
+            env,
+        )
+    except ReplyMediaError:
+        return False
+    required = (
+        speaking_scene or Path(""),
+        configured_path("OLIVIA_ROFORMER_EXE"),
+        configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
+        configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
+        configured_path("OLIVIA_MINIMAX_COMFY_PYTHON"),
+        configured_path("OLIVIA_MINIMAX_WORKER"),
+        minimax_root / "main.py",
+        minimax_root / "comfy_extras" / "nodes_minimax_music.py",
+        minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
+        minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
+        configured_path("OLIVIA_LATENTSYNC_PYTHON"),
+        latentsync_root / "scripts" / "inference.py",
+        latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
+        latentsync_root / "checkpoints" / "latentsync_unet.pt",
+    )
+    return bool(
+        performance_video_path is not None
+        and performance_video_path.is_file()
+        and minimax_root.is_dir()
+        and latentsync_root.is_dir()
+        and all(path.is_file() for path in required)
+    )
 
 
 class MiniMaxMusic3Worker:
@@ -241,17 +321,9 @@ class AceStepClient:
 
 
 def _ffmpeg() -> str:
-    configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
-    if configured and Path(configured).is_file():
-        return configured
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise MusicReplyError("FFMPEG_UNAVAILABLE") from exc
 
 
@@ -552,10 +624,9 @@ def concat_videos(
 
 
 def _official_transition_reference() -> Path:
-    configured = os.environ.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", "").strip()
-    if not configured:
+    reference = select_speaking_scene(speaking_scene_candidates(os.environ))
+    if reference is None:
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
-    reference = Path(configured)
     if not reference.is_file():
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     return reference

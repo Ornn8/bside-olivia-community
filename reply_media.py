@@ -10,9 +10,11 @@ import shutil
 import subprocess
 import tempfile
 import wave
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
-from latentsync_reply import LatentSyncReplyError, render_latentsync_video
+from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
 try:
     from runtime.visual.livetalking import LiveTalkingConfig, capture_candidate_frames
@@ -20,11 +22,18 @@ except ImportError:  # Optional visual provider is not part of the portable patc
     LiveTalkingConfig = object  # type: ignore[misc,assignment]
     capture_candidate_frames = None
 from tts import TTSConfig, TTSRequest, TTSService
-from tts.delivery import DeliveryAudioError, render_delivery_wav
+from tts.delivery import DeliveryAudioError, delivery_configured, render_delivery_wav
 
 
 class ReplyMediaError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CompleteVideoDelivery:
+    tts: TTSConfig
+    visual: LiveTalkingConfig
+    worker: Path
 
 
 def _bounded_voice_reference(source: Path, temporary_root: Path) -> Path:
@@ -66,14 +75,9 @@ def _settings(path: Path) -> dict:
 
 
 def _ffmpeg() -> str:
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise ReplyMediaError("FFMPEG_UNAVAILABLE") from exc
 
 
@@ -82,6 +86,7 @@ def _tts_config(
     temporary_root: Path,
     *,
     ordinary_video: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> TTSConfig:
     settings = _settings(path)
     runtime_root = Path(str(settings.get("runtime_root", "")))
@@ -92,7 +97,8 @@ def _tts_config(
     else:
         provider_options = dict(provider_options)
     if ordinary_video:
-        configured_reference = os.environ.get("OLIVIA_REPLY_VOICE_REFERENCE")
+        environment = os.environ if env is None else env
+        configured_reference = environment.get("OLIVIA_REPLY_VOICE_REFERENCE")
         if configured_reference is not None:
             official_reference = Path(configured_reference)
             if not official_reference.is_file():
@@ -147,6 +153,27 @@ def _visual_config(path: Path) -> LiveTalkingConfig:
         "upstream_license",
     }
     return LiveTalkingConfig(**{key: value for key, value in settings.items() if key in fields})
+
+
+def assemble_complete_video_delivery(
+    tts_config_path: Path,
+    visual_config_path: Path,
+    worker_path: Path,
+    temporary_root: Path,
+    env: Mapping[str, str] | None = None,
+) -> CompleteVideoDelivery:
+    """Pure configuration seam shared by availability and the real renderer."""
+
+    try:
+        tts = _tts_config(tts_config_path, temporary_root, ordinary_video=True, env=env)
+        visual = _visual_config(visual_config_path)
+        visual.validate()
+    except (ReplyMediaError, ValueError, TypeError) as exc:
+        raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE") from exc
+    worker = Path(worker_path)
+    if not delivery_configured(tts) or not worker.is_file() or not media_runtime_available(env):
+        raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE")
+    return CompleteVideoDelivery(tts, visual, worker)
 
 
 def _encode_frames(frames: Path, audio: Path, output: Path, duration: float) -> None:
@@ -205,6 +232,9 @@ def render_reply_video(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
         root = Path(temporary)
+        delivery = assemble_complete_video_delivery(
+            tts_config_path, visual_config_path, worker_path, root
+        )
         audio_path = root / "reply.wav"
         frames = root / "frames"
         delivery_plan: ReplyDeliveryPlan | None = None
@@ -212,7 +242,7 @@ def render_reply_video(
             delivery_plan = plan_reply_delivery(text)
             try:
                 delivery_result = render_delivery_wav(
-                    _tts_config(tts_config_path, root, ordinary_video=True),
+                    delivery.tts,
                     delivery_plan,
                     audio_path,
                 )
@@ -220,7 +250,7 @@ def render_reply_video(
                 raise ReplyMediaError(str(exc)) from exc
             duration = float(delivery_result.duration_seconds)
         else:
-            service = TTSService(_tts_config(tts_config_path, root))
+            service = TTSService(delivery.tts)
             try:
                 result = asyncio.run(
                     service.synthesize(
@@ -271,11 +301,11 @@ def render_reply_video(
         if capture_candidate_frames is None:
             raise ReplyMediaError("THIRD_PARTY_VISUAL_NOT_INSTALLED")
         capture_candidate_frames(
-            _visual_config(visual_config_path),
+            delivery.visual,
             audio_path=audio_path,
             output_dir=frames,
             frame_indices=tuple(range(frame_count)),
-            worker_path=worker_path,
+            worker_path=delivery.worker,
         )
         _encode_frames(frames, audio_path, output_path, duration)
     return {
