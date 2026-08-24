@@ -73,4 +73,5 @@ jobs:
           name: prepared-memory-runtime
           path: prepared
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 2
