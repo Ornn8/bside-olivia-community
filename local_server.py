@@ -46,7 +46,7 @@ from persona_provider import (
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from letter_triage import LetterEmotionTriage, _current_music_performance
-from music_reply import MusicReplyError, render_musical_reply
+from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
 from reply_delivery import build_ordinary_video_llm_content
@@ -1609,9 +1609,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     song_video_path=output_dir / (
                         f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
                     ),
-                    official_reply_reference_path=Path(
-                        _os.environ.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", "")
-                    ),
+                    official_reply_reference_path=select_speaking_scene(
+                        speaking_scene_candidates(_os.environ)
+                    ) or Path(),
                     tts_config_path=tts_config,
                     visual_config_path=visual_config,
                     worker_path=worker,

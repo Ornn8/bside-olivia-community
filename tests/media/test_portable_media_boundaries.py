@@ -449,3 +449,13 @@ def test_all_video_paths_share_explicit_ffmpeg_override(
     assert latentsync_reply.resolve_ffmpeg_executable() == executable.resolve()
     assert music_reply._ffmpeg() == str(executable.resolve())
     assert reply_media._ffmpeg() == str(executable.resolve())
+
+
+def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Path) -> None:
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    env = {"OLIVIA_SPOKEN_SCENE_CANDIDATES": os.pathsep.join((str(first), str(second), str(first)))}
+    candidates = music_reply.speaking_scene_candidates(env)
+    assert candidates == (first, second)
+    assert music_reply.select_speaking_scene(candidates) == first
+    assert music_reply.speaking_scene_candidates({"OLIVIA_OFFICIAL_REPLY_REFERENCE": str(second)}) == (second,)

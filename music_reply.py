@@ -46,6 +46,28 @@ def normalize_music_duration(value: object) -> int:
         raise MusicReplyError("MUSIC_DURATION_INVALID") from None
 
 
+def speaking_scene_candidates(env: Mapping[str, str]) -> tuple[Path, ...]:
+    """Return configured speaking-scene candidates; legacy singleton is a fallback."""
+
+    raw = str(env.get("OLIVIA_SPOKEN_SCENE_CANDIDATES", ""))
+    values = raw.split(os.pathsep) if raw else [str(env.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", ""))]
+    result: list[Path] = []
+    for value in values:
+        candidate = Path(value.strip()).expanduser() if value.strip() else None
+        if candidate is not None and candidate not in result:
+            result.append(candidate)
+    return tuple(result)
+
+
+def select_speaking_scene(
+    candidates: tuple[Path, ...], *, expression: str | None = None
+) -> Path | None:
+    """Stable default seam; future expression/lip-sync selection can replace this."""
+
+    del expression
+    return candidates[0] if candidates else None
+
+
 def musical_reply_configured(
     env: Mapping[str, str],
     *,
@@ -58,6 +80,7 @@ def musical_reply_configured(
 
     minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
     latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
+    speaking_scene = select_speaking_scene(speaking_scene_candidates(env))
     try:
         assemble_complete_video_delivery(
             configured_path("OLIVIA_TTS_CONFIG"),
@@ -68,7 +91,7 @@ def musical_reply_configured(
     except ReplyMediaError:
         return False
     required = (
-        configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE"),
+        speaking_scene or Path(""),
         configured_path("OLIVIA_ROFORMER_EXE"),
         configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
         configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
@@ -600,10 +623,9 @@ def concat_videos(
 
 
 def _official_transition_reference() -> Path:
-    configured = os.environ.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", "").strip()
-    if not configured:
+    reference = select_speaking_scene(speaking_scene_candidates(os.environ))
+    if reference is None:
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
-    reference = Path(configured)
     if not reference.is_file():
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     return reference
