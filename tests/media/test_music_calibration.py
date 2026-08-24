@@ -25,7 +25,7 @@ def test_calibration_cases_are_synthetic_typed_and_cover_six_scenarios() -> None
         "spontaneous_motif",
     ]
     assert all(isinstance(case.plan, SongSemanticPlan) for case in cases)
-    assert {case.plan.duration_seconds for case in cases} == {90, 118}
+    assert {case.plan.duration_seconds for case in cases} == {40, 60}
     assert len(music_calibration.calibration_cases("quick")) == 2
 
 

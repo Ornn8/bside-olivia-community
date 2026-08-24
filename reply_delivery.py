@@ -150,7 +150,7 @@ def _semantic_blocks(sentences: tuple[str, ...]) -> tuple[tuple[int, str], ...]:
 _ORDINARY_VIDEO_CONSTRAINT = (
     "请生成一封可直接朗读的普通视频回信。只输出完整回信正文，不要标题、列表、括号说明、"
     "情绪标签、舞台提示或任何生成说明。按自然偏利落的普通话语速控制在40到50秒，"
-    "正文严格为160到180个汉字。内容应先回应对方当下的感受，再给出清晰判断，最后自然收束；"
+    "正文严格为180到200个汉字，目标为190字。内容应先回应对方当下的感受，再给出清晰判断，最后自然收束；"
     "让语义本身有共情、坚定和希望的缓慢变化，不要复述整封来信。"
     "写成面对熟人说话的口语，使用六到七个完整句子，每句只表达一个意思；"
     "保留来信中的人物、地点和事实关系，不要把具体场景改写成不存在的画面。"
@@ -173,7 +173,7 @@ def build_ordinary_video_llm_content(letter_content: str) -> str:
 
 def ordinary_video_reply_length_ok(reply_text: str) -> bool:
     compact_length = len("".join(str(reply_text).split()))
-    return 160 <= compact_length <= 180
+    return 180 <= compact_length <= 200
 
 
 def build_ordinary_video_repair_content(reply_text: str) -> str:
@@ -181,7 +181,7 @@ def build_ordinary_video_repair_content(reply_text: str) -> str:
 
     return (
         "请将下面这封由你生成的回信改写为可直接朗读的完整正文。"
-        "保留原意与林离口吻，严格控制在160到180个汉字，只输出正文；"
+        "保留原意与林离口吻，严格控制在180到200个汉字，目标为190字，只输出正文；"
         "使用自然口语和六到七个完整句子，不要改变来信事实，不要生造比喻、金句或画面；"
         "不要标题、解释、括号说明、情绪标签或舞台提示。\n\n"
         + str(reply_text).strip()

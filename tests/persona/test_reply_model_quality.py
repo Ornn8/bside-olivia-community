@@ -9,12 +9,13 @@ from typing import Any, Mapping, Sequence
 
 import pytest
 
-from llm_gateway import Gateway, GatewayResponse
+from llm_gateway import Gateway, GatewayDelta, GatewayResponse
 from memory_port import NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from reply_context import ReplyContext, ReplyMode, TrustedTime
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from reply_pipeline import ReplyPipeline, UnavailableRewriter
+from reply_model_quality import GatewayPersonaRewriter, create_model_quality_ports
 from reply_reviewer import NullReviewer
 
 
@@ -99,6 +100,18 @@ class CompatibilityBridge(Gateway):
         )
 
 
+class StreamingOnlyGateway(Gateway):
+    stream_enabled = True
+
+    async def complete(self, messages, *, request_id=None):
+        raise AssertionError("stream-enabled quality calls must not use complete")
+
+    async def stream(self, messages, *, request_id=None):
+        yield GatewayDelta("林" * 95, request_id or "stream", index=0)
+        yield GatewayDelta("林" * 95, request_id or "stream", index=1)
+        yield GatewayDelta("", request_id or "stream", index=2, finish_reason="stop")
+
+
 def _pipeline(
     gateway: Gateway,
     monkeypatch: pytest.MonkeyPatch,
@@ -130,9 +143,9 @@ def _pipeline(
     )
 
 
-def _context() -> ReplyContext:
+def _context(mode: ReplyMode = ReplyMode.TEXT_LETTER) -> ReplyContext:
     return ReplyContext.create(
-        ReplyMode.TEXT_LETTER,
+        mode,
         trusted_time=TrustedTime(
             datetime(2026, 8, 22, tzinfo=timezone.utc)
         ),
@@ -210,6 +223,49 @@ def test_deterministic_violation_uses_original_model_for_one_rewrite(
     assert rewrite["persona"]["display_name"] == "林离 Olivia"
 
 
+def test_video_length_rewrite_receives_the_exact_delivery_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = SequencedQualityGateway(
+        candidate="太短。",
+        reviews=[_review_payload(), _review_payload()],
+        rewritten="林" * 190,
+    )
+    pipeline = _pipeline(gateway, monkeypatch)
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(content="请认真回我。", request_id="video-length"),
+            _context(ReplyMode.MUSICAL_VIDEO),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.rewrite_calls == 1
+    rewrite = gateway.rewrite_requests[0]
+    assert rewrite["violation_codes"] == ["VIDEO_REPLY_LENGTH_OUT_OF_RANGE"]
+    assert rewrite["delivery_length_contract"] == {
+        "compact_characters_min": 180,
+        "compact_characters_max": 200,
+        "target_compact_characters": 190,
+        "priority": "required_over_concise_style",
+    }
+
+
+def test_quality_rewriter_uses_configured_streaming_transport() -> None:
+    rewritten = GatewayPersonaRewriter(
+        StreamingOnlyGateway(),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+    ).rewrite(
+        "太短。",
+        _context(ReplyMode.MUSICAL_VIDEO),
+        ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",),
+    )
+
+    assert rewritten == "林" * 190
+
+
 def test_invalid_reviewer_json_degrades_only_clean_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -278,3 +334,31 @@ def test_quality_model_can_be_disabled_without_disabling_generation(
     assert result.state is ReplyState.COMPLETED
     assert result.quality_status == "accepted_degraded"
     assert gateway.call_kinds == ["generation"]
+
+
+def test_quality_model_default_timeout_allows_slow_configured_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
+    gateway = SequencedQualityGateway(candidate="候选。", reviews=[])
+    orchestrator = SimpleNamespace(
+        gateway=SimpleNamespace(
+            adapter=SimpleNamespace(
+                config=SimpleNamespace(
+                    provider="openai_compatible",
+                    timeout_seconds=90.0,
+                ),
+                persona_v2_path=(
+                    ROOT / "linli_character" / "persona_release_v2.json"
+                ),
+                gateway=gateway,
+            )
+        )
+    )
+
+    reviewer, rewriter = create_model_quality_ports(orchestrator)
+
+    assert reviewer is not None
+    assert rewriter is not None
+    assert reviewer.adapter.config.timeout_seconds == 60.0
+    assert rewriter.timeout_seconds == 60.0

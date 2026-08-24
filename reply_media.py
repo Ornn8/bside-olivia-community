@@ -27,6 +27,33 @@ class ReplyMediaError(RuntimeError):
     pass
 
 
+def _bounded_voice_reference(source: Path, temporary_root: Path) -> Path:
+    """Use only the reviewed 4.85-second clean official voice prompt."""
+
+    try:
+        with wave.open(str(source), "rb") as reference:
+            frame_rate = reference.getframerate()
+            if frame_rate <= 0:
+                raise wave.Error("invalid frame rate")
+            maximum_frames = int(frame_rate * 4.85)
+            if reference.getnframes() <= maximum_frames:
+                return source
+            parameters = reference.getparams()
+            frames = reference.readframes(maximum_frames)
+    except (OSError, EOFError, wave.Error) as exc:
+        raise ReplyMediaError("VOICE_REFERENCE_INVALID") from exc
+
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    bounded = temporary_root / "voice-reference.wav"
+    try:
+        with wave.open(str(bounded), "wb") as target:
+            target.setparams(parameters)
+            target.writeframes(frames)
+    except (OSError, wave.Error) as exc:
+        raise ReplyMediaError("VOICE_REFERENCE_INVALID") from exc
+    return bounded
+
+
 def _settings(path: Path) -> dict:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -72,7 +99,10 @@ def _tts_config(
             )
         )
         if official_reference.is_file():
-            settings["reference_audio"] = str(official_reference)
+            settings["reference_audio"] = str(
+                _bounded_voice_reference(official_reference, temporary_root)
+            )
+            settings["leading_trim_seconds"] = 0.0
         provider_options["voice_condition_mode"] = "cross_lingual_audio_only"
     reference_audio = Path(str(settings.get("reference_audio", "")))
     leading_trim = settings.get("leading_trim_seconds")
@@ -211,7 +241,8 @@ def render_reply_video(
         delivery_metadata = (
             {
                 "delivery_plan": delivery_plan.to_dict(),
-                "delivery_plan_applied_to_audio": True,
+                "delivery_block_grouping_applied_to_audio": True,
+                "delivery_cue_controls_applied_to_audio": False,
                 # LatentSync derives the face performance from the paced audio
                 # while the accepted original-motion video keeps body/scene motion.
                 "visual_cues_backend_control": False,

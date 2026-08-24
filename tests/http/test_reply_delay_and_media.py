@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -43,8 +44,63 @@ def test_exact_modes_keep_legacy_wire_compatibility():
     assert local_server._exact_reply_mode("video") == "musical_video"
 
 
+def test_successful_media_retry_clears_the_previous_failure_code(
+    tmp_path: Path,
+    monkeypatch,
+):
+    scene = tmp_path / "scene.mp4"
+    scene.write_bytes(b"scene")
+    official_reference = tmp_path / "official-complete-reply.mp4"
+    official_reference.write_bytes(b"official")
+    letter = {
+        "letter_id": "retry-media",
+        "content": "letter",
+        "reply_text": "reply",
+        "reply_mode": "musical_video",
+        "media_status": "UNAVAILABLE",
+        "media_error_code": "MINIMAX_MUSIC3_FAILED",
+        "music_duration_seconds": 60,
+    }
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("OLIVIA_SCENE_DAY", str(scene))
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(official_reference))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+    observed = {}
+
+    def render(_content, _reply, output, **kwargs):
+        observed.update(kwargs)
+        Path(output).write_bytes(b"final-video")
+        return {}
+
+    monkeypatch.setattr(local_server, "render_musical_reply", render)
+
+    asyncio.run(
+        local_server._render_media_job(
+            "retry-media", "letter", "reply", "musical_video"
+        )
+    )
+
+    assert letter["media_status"] == "COMPLETED"
+    assert letter["media_error_code"] is None
+    assert observed["official_reply_reference_path"] == official_reference
+    assert "normal_scene_path" not in observed
+    assert observed["normal_video_path"].name.endswith("-official-spoken-v1.mp4")
+    assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
+
+
+def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
+    monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
+
+    assert local_server._reply_pipeline_timeout_seconds() == 275.0
+
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
+    assert local_server._reply_pipeline_timeout_seconds() == 155.0
+
+
 @pytest.mark.parametrize(
-    ("exact_mode", "decision", "expected_media"),
+    ("routed_mode", "decision", "delivery_mode", "expected_media"),
     (
         (
             ReplyMode.TEXT_LETTER.value,
@@ -55,6 +111,7 @@ def test_exact_modes_keep_legacy_wire_compatibility():
                 "completed",
                 True,
             ),
+            ReplyMode.TEXT_LETTER.value,
             (),
         ),
         (
@@ -68,7 +125,8 @@ def test_exact_modes_keep_legacy_wire_compatibility():
                 direct_response_sufficient=True,
                 voice_materially_better=True,
             ),
-            (ReplyMode.SPOKEN_VIDEO.value,),
+            ReplyMode.MUSICAL_VIDEO.value,
+            (ReplyMode.MUSICAL_VIDEO.value,),
         ),
         (
             ReplyMode.MUSICAL_VIDEO.value,
@@ -84,17 +142,19 @@ def test_exact_modes_keep_legacy_wire_compatibility():
                 music_materially_better=True,
                 character_willing=True,
             ),
+            ReplyMode.MUSICAL_VIDEO.value,
             (ReplyMode.MUSICAL_VIDEO.value,),
         ),
     ),
 )
-def test_generate_reply_carries_one_exact_mode_through_context_and_media(
+def test_generate_reply_delivers_every_video_route_as_spoken_transition_and_music(
     monkeypatch,
-    exact_mode,
+    routed_mode,
     decision,
+    delivery_mode,
     expected_media,
 ):
-    letter_id = f"synthetic-{exact_mode}"
+    letter_id = f"synthetic-{routed_mode}"
     letter = {
         "letter_id": letter_id,
         "content": "synthetic current letter",
@@ -109,7 +169,8 @@ def test_generate_reply_carries_one_exact_mode_through_context_and_media(
     async def classify(_content):
         return decision
 
-    async def run_pipeline(_request, context):
+    async def run_pipeline(request, context):
+        observed["request_content"] = request.content
         observed["context_mode"] = context.mode.value
         return PipelineResult(
             letter_id,
@@ -136,12 +197,15 @@ def test_generate_reply_carries_one_exact_mode_through_context_and_media(
     assert asyncio.run(
         local_server.generate_reply(letter_id, "synthetic current letter")
     )
-    assert observed["context_mode"] == exact_mode
-    assert letter["reply_mode"] == exact_mode
+    assert observed["context_mode"] == delivery_mode
+    assert ("<ordinary_video_reply_constraints>" in observed["request_content"]) is (
+        delivery_mode != ReplyMode.TEXT_LETTER.value
+    )
+    assert letter["reply_mode"] == delivery_mode
     assert tuple(scheduled) == expected_media
 
     public = local_server.letter_to_out(letter)
-    assert public["reply_mode_exact"] == exact_mode
+    assert public["reply_mode_exact"] == delivery_mode
     assert public["reply_mode"] == (
-        "text" if exact_mode == ReplyMode.TEXT_LETTER.value else "video"
+        "text" if delivery_mode == ReplyMode.TEXT_LETTER.value else "video"
     )

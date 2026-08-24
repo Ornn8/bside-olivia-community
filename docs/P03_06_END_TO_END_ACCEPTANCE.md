@@ -290,11 +290,12 @@ musical_video ReplyContext
 
 - SongSemanticPlan 合法；
 - Caption 只来自程序模板；
-- 音频时长符合 90/118 秒配置；
+- 音频时长符合 40/60 秒配置；
 - 歌曲和 vocals 非空；
 - normal video 与 song video 均生成；
 - 拼接顺序为 spoken -> optional transition -> performance；
 - transition 音轨已替换为静音；
+- 最后 2 秒视频与音频同步渐暗；
 - 各分段帧数与最终帧数一致；
 - 最终视频可解码；
 - 最终时长与分段总和一致；

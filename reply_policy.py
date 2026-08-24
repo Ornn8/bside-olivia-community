@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import re
 
-from reply_context import ReplyContext
+from reply_context import ReplyContext, ReplyMode
 
 
 class ViolationSeverity(StrEnum):
@@ -16,6 +16,7 @@ class ViolationSeverity(StrEnum):
 
 class ViolationCode(StrEnum):
     OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
+    VIDEO_REPLY_LENGTH_OUT_OF_RANGE = "VIDEO_REPLY_LENGTH_OUT_OF_RANGE"
     STAGE_DIRECTION_IN_SPOKEN_TEXT = "STAGE_DIRECTION_IN_SPOKEN_TEXT"
     INTERNAL_CONTROL_MARKUP = "INTERNAL_CONTROL_MARKUP"
     PRIVATE_STATE_EXPOSED = "PRIVATE_STATE_EXPOSED"
@@ -116,6 +117,19 @@ def scan_reply(
                 ViolationCode.OUTPUT_LIMIT_EXCEEDED,
                 ViolationSeverity.HARD,
                 limit,
+                len(candidate),
+            )
+        )
+    compact_length = len("".join(candidate.split()))
+    if (
+        context.mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO}
+        and not 180 <= compact_length <= 200
+    ):
+        violations.append(
+            Violation(
+                ViolationCode.VIDEO_REPLY_LENGTH_OUT_OF_RANGE,
+                ViolationSeverity.HARD,
+                0,
                 len(candidate),
             )
         )

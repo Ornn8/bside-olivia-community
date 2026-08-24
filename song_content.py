@@ -106,7 +106,8 @@ class SongContentPlan:
     duration_seconds: int
 
 
-_LINE_COUNTS = {90: 12, 118: 16}
+_LINE_COUNTS = {40: 12, 60: 16}
+_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8)}
 _SEMANTIC_PLAN_FIELDS = frozenset(
     {
         "schema_version",
@@ -118,7 +119,7 @@ _SEMANTIC_PLAN_FIELDS = frozenset(
         "lyrics",
     }
 )
-_SONG_TAGS = ("[Intro]", "[Verse]", "[Interlude]", "[Verse]", "[Outro]")
+_SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
 _CJK = re.compile(r"[\u3400-\u9fff]")
 
@@ -179,15 +180,16 @@ def _validate_semantic_lyrics(lyrics: str, duration_seconds: int) -> str:
 
     if tuple(tag for tag, _section in sections) != _SONG_TAGS:
         raise ValueError("SONG_SEMANTIC_PLAN_LYRICS_TAGS_INVALID")
-    if sections[0][1] or sections[2][1] or sections[4][1]:
+    if sections[0][1] or sections[3][1]:
         raise ValueError("SONG_SEMANTIC_PLAN_LYRICS_NONVERSE_CONTENT")
 
-    expected_per_verse = _LINE_COUNTS[duration_seconds] // 2
-    verse_sections = (sections[1][1], sections[3][1])
-    if any(len(section) != expected_per_verse for section in verse_sections):
+    verse_lines = sections[1][1]
+    chorus_lines = sections[2][1]
+    expected_verse, expected_chorus = _SECTION_LINE_COUNTS[duration_seconds]
+    if (len(verse_lines), len(chorus_lines)) != (expected_verse, expected_chorus):
         raise ValueError("SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID")
 
-    for line in (*verse_sections[0], *verse_sections[1]):
+    for line in (*verse_lines, *chorus_lines):
         compact = "".join(line.split())
         if not 4 <= len(compact) <= 24:
             raise ValueError("SONG_SEMANTIC_PLAN_LYRIC_LINE_LENGTH_INVALID")
@@ -244,7 +246,7 @@ def _system_prompt(duration_seconds: int) -> str:
         / "system_prompt.md"
     ).read_text(encoding="utf-8")
     line_count = _LINE_COUNTS[duration_seconds]
-    per_verse = line_count // 2
+    verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
     return f"""You are the controlled semantic song-planning stage for Lin Li's MiniMax Music 3 reply.
 Return one JSON object only. The JSON object must contain exactly these seven string keys:
 - schema_version
@@ -267,10 +269,10 @@ Choose the closest allowed values from their meaning. Do not output a caption, g
 instrument list, production notes, title, explanation, Markdown fence, or any extra key.
 
 Lyrics contract:
-- Exact section order: [Intro], [Verse], [Interlude], [Verse], [Outro].
-- Put every tag on its own line. Only the two Verse blocks contain lyric lines.
-- Keep Intro, Interlude, and Outro empty.
-- Write exactly {line_count} original Simplified Chinese lyric lines, {per_verse} per Verse.
+- Exact section order: [Intro], [Verse], [Chorus], [Outro].
+- Put every tag on its own line. Only the Verse and Chorus blocks contain lyric lines.
+- Keep Intro and Outro empty.
+- Write exactly {line_count} original Simplified Chinese lyric lines: {verse_count} in Verse and {chorus_count} in Chorus.
 - Each lyric line must contain four to twenty-four non-whitespace characters.
 - Keep the lines concise, naturally singable, and mostly syllabic.
 - Respond as Lin Li; recognize the listener's actual concern before any reassurance.

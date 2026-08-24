@@ -25,6 +25,15 @@ class _Gateway:
         return _Response(self.response)
 
 
+def test_router_timeout_uses_portable_environment_configuration():
+    router = LetterReplyRouter(
+        _Gateway("{}"),
+        environ={"OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS": "90"},
+    )
+
+    assert router.timeout_seconds == 90.0
+
+
 def _route(*, context=None, **overrides):
     payload = {
         "mode": "text_letter",

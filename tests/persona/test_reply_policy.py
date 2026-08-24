@@ -42,8 +42,41 @@ def test_spoken_output_enforces_length_and_standalone_stage_direction_rules() ->
 
     assert tuple(violation.code for violation in result.violations) == (
         ViolationCode.OUTPUT_LIMIT_EXCEEDED,
+        ViolationCode.VIDEO_REPLY_LENGTH_OUT_OF_RANGE,
         ViolationCode.STAGE_DIRECTION_IN_SPOKEN_TEXT,
     )
+
+
+def test_video_reply_requires_delivery_length_without_affecting_text_letters() -> None:
+    trusted_time = TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))
+    short_reply = "短回复。"
+    valid_reply = "林" * 180
+
+    for mode in (ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO):
+        short_result = scan_reply(
+            short_reply,
+            ReplyContext.create(mode, trusted_time=trusted_time),
+        )
+        assert tuple(item.code for item in short_result.violations) == (
+            ViolationCode.VIDEO_REPLY_LENGTH_OUT_OF_RANGE,
+        )
+        assert scan_reply(
+            valid_reply,
+            ReplyContext.create(mode, trusted_time=trusted_time),
+        ).passed is True
+        assert scan_reply(
+            "林" * 179,
+            ReplyContext.create(mode, trusted_time=trusted_time),
+        ).passed is False
+        assert scan_reply(
+            "林" * 201,
+            ReplyContext.create(mode, trusted_time=trusted_time),
+        ).passed is False
+
+    assert scan_reply(
+        short_reply,
+        ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=trusted_time),
+    ).passed is True
 
 
 def test_only_explicit_permanent_or_exclusive_commitments_are_blocked() -> None:

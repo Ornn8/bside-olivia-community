@@ -29,8 +29,7 @@ def _semantic_plan() -> SongSemanticPlan:
             "我把声音放得轻一点",
             "今晚先照顾眼前一步",
             "剩下的事明天再想吧",
-            "[Interlude]",
-            "[Verse]",
+            "[Chorus]",
             "你不需要立刻变勇敢",
             "难过也有自己的位置",
             "等呼吸重新变得安稳",
@@ -47,7 +46,7 @@ def _semantic_plan() -> SongSemanticPlan:
         dynamic_arc=SongDynamicArc.SOFT_GENTLE_RISE_SETTLE,
         ending=SongEnding.COMPLETE_SOFT_CADENCE,
         lyrics=lyrics,
-        duration_seconds=90,
+        duration_seconds=40,
     )
 
 
@@ -59,6 +58,35 @@ def _write(path: Path, data: bytes = b"synthetic") -> Path:
 
 def _value_after(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
+
+
+def test_prepare_official_spoken_base_uses_only_first_35_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = _write(tmp_path / "official-complete-reply.mp4")
+    destination = tmp_path / "stages" / "official-spoken-000-035s.mp4"
+    observed: list[tuple[list[str], str]] = []
+
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+
+    def fake_run(command, error_code, *, timeout=900.0):
+        del timeout
+        observed.append((list(command), error_code))
+        _write(Path(command[-1]), b"official-spoken")
+
+    monkeypatch.setattr(music_reply, "_run", fake_run)
+
+    result = music_reply.prepare_official_spoken_base(reference, destination)
+
+    assert result == destination
+    assert destination.read_bytes() == b"official-spoken"
+    command, error_code = observed[0]
+    assert error_code == "MUSIC_REPLY_SPOKEN_REFERENCE_FAILED"
+    assert _value_after(command, "-ss") == "0"
+    assert _value_after(command, "-t") == "35"
+    assert _value_after(command, "-i") == str(reference)
+    assert "-an" in command
 
 
 def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
@@ -103,7 +131,7 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     assert "[normal_v][normal_a][transition_v][transition_a][song_v][song_a]" in filters
     assert "concat=n=3:v=1:a=1[joined_v][joined_a]" in filters
     assert "anullsrc=r=44100:cl=stereo" in filters
-    assert "trim=start=41.000000:end=43.000000" in filters
+    assert "trim=start=35.000000:end=43.000000" in filters
     assert assembly[:8] == [
         "ffmpeg",
         "-hide_banner",
@@ -118,8 +146,8 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     assert str(transition) in assembly
 
     final = commands[1][0]
-    assert _value_after(final, "-frames:v") == "350"
-    assert _value_after(final, "-t") == "14.000000"
+    assert _value_after(final, "-frames:v") == "500"
+    assert _value_after(final, "-t") == "20.000000"
 
 
 def test_concat_videos_without_transition_preserves_two_segment_order(
@@ -150,6 +178,8 @@ def test_concat_videos_without_transition_preserves_two_segment_order(
     filters = _value_after(commands[0], "-filter_complex")
     assert "[normal_v][normal_a][song_v][song_a]" in filters
     assert "concat=n=2:v=1:a=1[joined_v][joined_a]" in filters
+    assert "fade=t=out:st=13.000000:d=2.000000" in filters
+    assert "afade=t=out:st=13.000000:d=2.000000" in filters
     assert "transition_v" not in filters
     assert _value_after(commands[1], "-frames:v") == "375"
     assert _value_after(commands[1], "-t") == "15.000000"
@@ -170,6 +200,12 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     output = tmp_path / "final.mp4"
     normal = tmp_path / "spoken.mp4"
     song_video = tmp_path / "performance.mp4"
+    official_reference = _write(tmp_path / "official-complete-reply.mp4")
+    official_spoken = (
+        tmp_path
+        / "final-music-v2-40s-stages"
+        / "official-spoken-000-035s.mp4"
+    )
     transition = _write(tmp_path / "official-transition.mp4")
     order: list[str] = []
     observed: dict[str, object] = {}
@@ -223,6 +259,16 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         _write(Path(destination), b"final")
 
     monkeypatch.setattr(music_reply, "plan_song_content", fake_plan)
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda reference, destination: (
+            observed.setdefault(
+                "spoken_reference", (Path(reference), Path(destination))
+            )
+            and _write(Path(destination), b"official-spoken")
+        ),
+    )
     monkeypatch.setattr(music_reply, "render_reply_video", fake_normal)
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
@@ -235,13 +281,13 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         "synthetic canonical reply",
         output,
         normal_video_path=normal,
-        normal_scene_path=tmp_path / "scene.mp4",
+        official_reply_reference_path=official_reference,
         song_video_path=song_video,
         tts_config_path=tmp_path / "tts.json",
         visual_config_path=tmp_path / "visual.json",
         worker_path=tmp_path / "visual-worker.py",
         performance_video_path=tmp_path / "base-performance.mp4",
-        duration_seconds=90,
+        duration_seconds=40,
     )
 
     assert order == [
@@ -254,6 +300,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     ]
     assert observed["minimax"][3]["lyrics"] == semantic.lyrics
     assert observed["minimax"][3]["caption"] == caption
+    assert observed["spoken"][2]["adaptive_delivery"] is True
+    assert observed["spoken"][2]["scene_path"] == official_spoken
+    assert observed["spoken_reference"] == (official_reference, official_spoken)
     assert observed["concat"] == (
         normal,
         song_video,
@@ -264,7 +313,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert result["reply_structure"] == (
         "normal_video_then_official_transition_then_song_video"
     )
-    assert result["transition_duration_seconds"] == 2.0
+    assert result["transition_duration_seconds"] == 8.0
     assert result["lyrics_sha256"] == hashlib.sha256(
         semantic.lyrics.encode("utf-8")
     ).hexdigest()
@@ -274,3 +323,97 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert result["spoken_stage"] == "completed"
     assert result["music_stage"] == "completed"
     assert result["performance_stage"] == "completed"
+
+
+def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "letter.mp4"
+    normal = tmp_path / "letter-spoken.mp4"
+    song_video = tmp_path / "letter-song.mp4"
+    old_stage_root = tmp_path / "letter-stages"
+    stage_root = tmp_path / "letter-music-v2-40s-stages"
+    _write(old_stage_root / "song.flac", b"stale-118-second-song")
+    calls = {"spoken": 0, "minimax": 0, "separate": 0}
+
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="gentle_reassurance",
+            lyrics="[Verse]\nStay here",
+            caption="gentle piano ballad",
+            duration_seconds=40,
+        ),
+    )
+
+    def fake_normal(_text, destination, **_kwargs):
+        calls["spoken"] += 1
+        _write(Path(destination), b"spoken")
+        return {"spoken_stage": "completed"}
+
+    def fake_generate(self, _content, _reply_text, destination, **_kwargs):
+        del self
+        calls["minimax"] += 1
+        _write(Path(destination), b"expensive-song")
+        return {"music_stage": "completed"}
+
+    def flaky_separate(_source, destination):
+        calls["separate"] += 1
+        if calls["separate"] == 1:
+            raise music_reply.MusicReplyError("ROFORMER_FAILED")
+        _write(Path(destination), b"vocals")
+
+    monkeypatch.setattr(music_reply, "render_reply_video", fake_normal)
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
+    monkeypatch.setattr(music_reply, "separate_vocals", flaky_separate)
+    monkeypatch.setattr(
+        music_reply,
+        "render_full_face_performance",
+        lambda _base, _vocals, _song, destination: (
+            _write(Path(destination), b"performance")
+            and {"performance_stage": "completed"}
+        ),
+    )
+    monkeypatch.setattr(music_reply, "_official_transition_reference", lambda: None)
+    monkeypatch.setattr(
+        music_reply,
+        "concat_videos",
+        lambda _normal, _song, destination, **_kwargs: _write(
+            Path(destination), b"final"
+        ),
+    )
+
+    official_reference = _write(tmp_path / "official-complete-reply.mp4")
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+    )
+    kwargs = {
+        "normal_video_path": normal,
+        "official_reply_reference_path": official_reference,
+        "song_video_path": song_video,
+        "tts_config_path": tmp_path / "tts.json",
+        "visual_config_path": tmp_path / "visual.json",
+        "worker_path": tmp_path / "visual-worker.py",
+        "performance_video_path": tmp_path / "base-performance.mp4",
+        "duration_seconds": 40,
+    }
+    with pytest.raises(music_reply.MusicReplyError, match="ROFORMER_FAILED"):
+        music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    assert normal.read_bytes() == b"spoken"
+    assert (stage_root / "song.flac").read_bytes() == b"expensive-song"
+    assert (old_stage_root / "song.flac").read_bytes() == b"stale-118-second-song"
+
+    result = music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    assert output.read_bytes() == b"final"
+    assert calls == {"spoken": 1, "minimax": 1, "separate": 2}
+    assert result["spoken_stage"] == "reused"
+    assert result["music_stage"] == "reused"
