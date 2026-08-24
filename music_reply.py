@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 from latentsync_reply import (
     LatentSyncReplyError,
     render_latentsync_video,
+    resolve_ffmpeg_executable,
 )
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from reply_media import (
@@ -296,17 +297,9 @@ class AceStepClient:
 
 
 def _ffmpeg() -> str:
-    configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
-    if configured and Path(configured).is_file():
-        return configured
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise MusicReplyError("FFMPEG_UNAVAILABLE") from exc
 
 

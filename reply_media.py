@@ -13,7 +13,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video
+from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
 try:
     from runtime.visual.livetalking import LiveTalkingConfig, capture_candidate_frames
@@ -74,14 +74,9 @@ def _settings(path: Path) -> dict:
 
 
 def _ffmpeg() -> str:
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
     try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError, OSError) as exc:
+        return str(resolve_ffmpeg_executable())
+    except LatentSyncReplyError as exc:
         raise ReplyMediaError("FFMPEG_UNAVAILABLE") from exc
 
 
