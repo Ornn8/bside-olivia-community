@@ -54,6 +54,13 @@ def _context() -> ReplyContext:
     )
 
 
+def _video_context() -> ReplyContext:
+    return ReplyContext.create(
+        ReplyMode.MUSICAL_VIDEO,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+
 def test_clean_candidate_passes_degraded_when_reviewer_is_disabled() -> None:
     result = run_reply_quality_gate(
         "A clean synthetic candidate.",
@@ -104,6 +111,40 @@ def test_second_hard_result_is_blocked_without_a_hidden_rewrite_loop() -> None:
     assert result.accepted is False
     assert result.rewrite_calls == 1
     assert result.reviewer_calls == 2
+    assert rewriter.calls == 1
+
+
+def test_short_video_reply_uses_the_single_global_rewrite_budget() -> None:
+    reviewer = _Reviewer(_pass_review(), _pass_review())
+    rewriter = _Rewriter("林" * 190)
+
+    result = run_reply_quality_gate(
+        "太短。",
+        _video_context(),
+        reviewer=reviewer,
+        rewriter=rewriter,
+    )
+
+    assert result.status is QualityGateStatus.ACCEPTED
+    assert result.rewrite_calls == 1
+    assert reviewer.calls == 2
+    assert rewriter.calls == 1
+
+
+def test_short_video_rewrite_is_blocked_without_a_second_rewrite() -> None:
+    reviewer = _Reviewer(_pass_review(), _pass_review())
+    rewriter = _Rewriter("还是太短。")
+
+    result = run_reply_quality_gate(
+        "太短。",
+        _video_context(),
+        reviewer=reviewer,
+        rewriter=rewriter,
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+    assert result.rewrite_calls == 1
     assert rewriter.calls == 1
 
 

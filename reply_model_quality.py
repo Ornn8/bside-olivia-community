@@ -203,6 +203,14 @@ class GatewayPersonaRewriter:
         *,
         user_text: str,
     ) -> str:
+        delivery_length_contract = None
+        if "VIDEO_REPLY_LENGTH_OUT_OF_RANGE" in violation_codes:
+            delivery_length_contract = {
+                "compact_characters_min": 180,
+                "compact_characters_max": 200,
+                "target_compact_characters": 190,
+                "priority": "required_over_concise_style",
+            }
         payload = {
             "persona": _persona_review_profile(
                 self.persona_path,
@@ -231,6 +239,8 @@ class GatewayPersonaRewriter:
                 violation_codes
             ),
         }
+        if delivery_length_contract is not None:
+            payload["delivery_length_contract"] = delivery_length_contract
         messages = (
             {
                 "role": "system",
@@ -242,6 +252,10 @@ class GatewayPersonaRewriter:
                     "style. Do not invent history or facts. Return only the replacement "
                     "plain-text reply: no analysis, JSON, Markdown heading, stage direction, "
                     "speaker prefix, or control markup."
+                    " When delivery_length_contract is present, it overrides the usual "
+                    "concise style: rewrite to its target length and verify the compact "
+                    "character count is within the inclusive range before returning. "
+                    "视频回信字数契约优先于简短风格；目标为190字，去除空白后必须在180到200字之间。"
                 ),
             },
             {
@@ -326,7 +340,7 @@ def create_model_quality_ports(
     )
     timeout = _env_timeout(
         "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
-        min(configured_timeout, 12.0),
+        min(configured_timeout, 60.0),
     )
     reviewer = GatewayPersonaReviewer(
         gateway,
@@ -473,12 +487,26 @@ def _complete_text(
     timeout_seconds: float,
 ) -> str:
     async def invoke() -> str:
+        request_id = f"quality-{uuid.uuid4().hex}"
+        if bool(getattr(gateway, "stream_enabled", False)):
+            async def collect_stream() -> str:
+                chunks: list[str] = []
+                async for delta in gateway.stream(
+                    messages,
+                    request_id=request_id,
+                ):
+                    if delta.text:
+                        chunks.append(delta.text)
+                return "".join(chunks)
+
+            return await asyncio.wait_for(
+                collect_stream(),
+                timeout_seconds,
+            )
         response = await asyncio.wait_for(
             gateway.complete(
                 messages,
-                request_id=(
-                    f"quality-{uuid.uuid4().hex}"
-                ),
+                request_id=request_id,
             ),
             timeout_seconds,
         )

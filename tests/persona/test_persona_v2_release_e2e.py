@@ -119,7 +119,7 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
 
 @pytest.mark.parametrize("mode", [ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
 def test_media_spoken_text_rewrites_stage_directions_once(mode: ReplyMode) -> None:
-    rewriter = FixedRewriter("我听见了。先不用急着给自己一个结论。")
+    rewriter = FixedRewriter("我听见了。" + "林" * 185)
     result = asyncio.run(
         ReplyPipeline(
             CompletedOrchestrator("(smiles)\n我听见了。"),
