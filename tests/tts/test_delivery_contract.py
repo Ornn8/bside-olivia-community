@@ -21,6 +21,7 @@ from tts.delivery import (
     build_external_delivery_request,
     delivery_tempo_factor,
 )
+from voice_direction import VoicePerformancePlan, VoicePerformanceSegment
 
 
 def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() -> None:
@@ -36,7 +37,7 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
     assert ordinary_video_reply_length_ok("林" * 201) is False
 
 
-def test_delivery_request_uses_audio_only_cross_lingual_conditioning() -> None:
+def test_delivery_request_uses_one_contextual_long_form_payload() -> None:
     config = SimpleNamespace(
         runtime_root="runtime",
         model_dir="model",
@@ -50,11 +51,52 @@ def test_delivery_request_uses_audio_only_cross_lingual_conditioning() -> None:
         plan_reply_delivery("第一句。第二句。"),
     )
 
-    assert request["voice_condition_mode"] == "cross_lingual_audio_only"
+    assert request["voice_condition_mode"] == "contextual_long_form"
     assert "reference_text" not in request
     assert "instruct_text" not in request
     assert request["blocks"] == ["第一句。第二句。"]
     assert request["seed"] == 200717
+    assert request["performance_control_mode"] == "single_pass_global"
+
+
+def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
+    reply_text = "I hear you. I will stay with you through this."
+    plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        segments=(
+            VoicePerformanceSegment(
+                text=reply_text,
+                sentence_start=1,
+                sentence_end=2,
+                emotion="restrained empathy becoming steady reassurance",
+                intensity=0.62,
+                speed=1.06,
+                pause_after_seconds=0.0,
+                gain_db=0.1,
+            ),
+        ),
+        overall_emotion="restrained empathy becoming steady reassurance",
+        global_speed=1.06,
+        energy=0.62,
+        emphasize_sentences=(2,),
+    )
+    config = SimpleNamespace(
+        runtime_root="runtime",
+        model_dir="model",
+        reference_audio="reference.wav",
+        fp16=True,
+    )
+
+    request = build_external_delivery_request(config, plan)
+
+    assert request["voice_condition_mode"] == "instruct2_single_pass"
+    assert request["text"] == plan.render_text
+    assert request["instruct_text"].count("<|endofprompt|>") == 1
+    assert request["performance_control_mode"] == "single_pass_llm_instruct"
+    assert request["duration_target_seconds"] == [40.0, 50.0]
+    assert request["max_attempts"] == 3
+    assert "blocks" not in request
+    assert "reference_text" not in request
 
 
 def test_delivery_tempo_allows_only_modest_whole_utterance_fit() -> None:
@@ -173,3 +215,85 @@ def test_external_worker_renders_blocks_with_one_cross_lingual_model_load(
     }
     with wave.open(str(output), "rb") as rendered:
         assert rendered.getnframes() == 190
+
+
+def test_external_worker_runs_one_whole_reply_instruct2_inference(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = {"loads": 0, "inference": []}
+
+    class Tensor:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def float(self):
+            return self
+
+        def reshape(self, *_shape):
+            return self
+
+        def tolist(self):
+            return [0.05] * 4200
+
+    class AutoModel:
+        sample_rate = 100
+
+        def __init__(self, **_kwargs):
+            calls["loads"] += 1
+
+        def inference_instruct2(self, text, instruction, reference_audio, **kwargs):
+            calls["inference"].append((text, instruction, reference_audio, kwargs))
+            yield {"tts_speech": Tensor()}
+
+    cosyvoice = ModuleType("cosyvoice")
+    cli = ModuleType("cosyvoice.cli")
+    module = ModuleType("cosyvoice.cli.cosyvoice")
+    module.AutoModel = AutoModel
+    torch = ModuleType("torch")
+    torch.manual_seed = lambda _value: None
+    torch.cuda = SimpleNamespace(is_available=lambda: False)
+    numpy = ModuleType("numpy")
+    numpy.random = SimpleNamespace(seed=lambda _value: None)
+    monkeypatch.setitem(sys.modules, "cosyvoice", cosyvoice)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli", cli)
+    monkeypatch.setitem(sys.modules, "cosyvoice.cli.cosyvoice", module)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "numpy", numpy)
+    output = tmp_path / "directed.wav"
+
+    external_cosyvoice_worker._synthesize(
+        {
+            "runtime_root": str(tmp_path),
+            "model_dir": str(tmp_path),
+            "reference_audio": str(tmp_path / "reference.wav"),
+            "voice_condition_mode": "instruct2_single_pass",
+            "text": "one complete frozen reply",
+            "instruct_text": "steady reassurance<|endofprompt|>",
+            "speed": 1.06,
+            "duration_target_seconds": [40.0, 50.0],
+            "max_attempts": 3,
+            "seed": 200717,
+        },
+        output,
+    )
+
+    assert calls["loads"] == 1
+    assert calls["inference"] == [
+        (
+            "one complete frozen reply",
+            "steady reassurance<|endofprompt|>",
+            str(tmp_path / "reference.wav"),
+            {
+                "zero_shot_spk_id": "",
+                "stream": False,
+                "speed": 1.06,
+                "text_frontend": False,
+            },
+        )
+    ]
+    with wave.open(str(output), "rb") as rendered:
+        assert rendered.getnframes() == 4200

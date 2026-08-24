@@ -48,20 +48,63 @@ def validate_delivery_duration(duration_seconds: float) -> None:
 
 def build_external_delivery_request(
     config: TTSConfig,
-    plan: ReplyDeliveryPlan,
+    plan: ReplyDeliveryPlan | object,
 ) -> dict[str, object]:
-    """Keep delivery control separate from the one continuous spoken payload."""
+    """Render the frozen reply in one inference so the voice never resets."""
 
-    return {
+    units = tuple(plan.speech_units())
+    spoken_text = str(getattr(plan, "spoken_text", "") or "".join(unit.text for unit in units))
+    render_text = str(getattr(plan, "render_text", "") or spoken_text)
+    if len(units) == 1:
+        speed = float(units[0].speed)
+        gain_db = float(getattr(units[0], "gain_db", 0.0))
+    else:
+        total_chars = max(1, sum(len(unit.text) for unit in units))
+        speed = sum(len(unit.text) * float(unit.speed) for unit in units) / total_chars
+        gain_db = sum(
+            len(unit.text) * float(getattr(unit, "gain_db", 0.0)) for unit in units
+        ) / total_chars
+    common: dict[str, object] = {
         "runtime_root": config.runtime_root,
         "model_dir": config.model_dir,
         "reference_audio": config.reference_audio,
         "fp16": bool(config.fp16),
-        "voice_condition_mode": "cross_lingual_audio_only",
-        "blocks": [unit.text for unit in plan.speech_units()],
-        "speed": 1.0,
+    }
+    overall_emotion = str(getattr(plan, "overall_emotion", "") or "").strip()
+    if overall_emotion:
+        return {
+            **common,
+            "voice_condition_mode": "instruct2_single_pass",
+            "text": render_text,
+            "instruct_text": (
+                "You are a helpful assistant. 请用"
+                + overall_emotion
+                + "表达这段回信。<|endofprompt|>"
+            ),
+            "speed": max(1.02, min(1.08, speed)),
+            "gain_db": max(-0.75, min(0.75, gain_db)),
+            "duration_target_seconds": [40.0, 50.0],
+            "max_attempts": 3,
+            "seed": 200717,
+            "performance_control_mode": "single_pass_llm_instruct",
+            "director_segment_count": len(getattr(plan, "cues", units)),
+        }
+    return {
+        **common,
+        "voice_condition_mode": "contextual_long_form",
+        "blocks": [render_text],
+        "block_controls": [
+            {
+                "speed": max(0.96, min(1.15, speed)),
+                "pause_after_seconds": 0.0,
+                "gain_db": max(-1.5, min(1.5, gain_db)),
+            }
+        ],
+        "speed": max(0.96, min(1.15, speed)),
         "cross_fade_seconds": 0.08,
         "seed": 200717,
+        "performance_control_mode": "single_pass_global",
+        "director_segment_count": len(getattr(plan, "cues", units)),
     }
 
 
@@ -140,7 +183,7 @@ def delivery_configured(config: TTSConfig) -> bool:
 
 def render_delivery_wav(
     config: TTSConfig,
-    plan: ReplyDeliveryPlan,
+    plan: ReplyDeliveryPlan | object,
     output_path: Path,
     *,
     timeout_seconds: float = 3600.0,
