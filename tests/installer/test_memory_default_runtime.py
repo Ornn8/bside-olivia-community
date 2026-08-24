@@ -92,6 +92,8 @@ def test_windows_installer_keeps_memory_optional_and_verified() -> None:
     assert "Olivia will continue without long-term memory" in script
     assert "MEMORY_DEPENDENCIES_UNAVAILABLE" in script
     assert "MEMORY_MODEL_UNAVAILABLE" in script
+    assert "if (-not $?) { exit 2 }" in script
+    assert script.rstrip().endswith("exit 0")
 
     lock = (root / "installer" / "memory-runtime-requirements.txt").read_text(
         encoding="utf-8"
