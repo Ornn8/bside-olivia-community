@@ -27,7 +27,7 @@ from song_content import (
 
 
 MUSIC_CALIBRATION_SCHEMA_VERSION = "p03.music-calibration.v1"
-MUSIC_CALIBRATION_CASESET_VERSION = "p03.music-cases.v1"
+MUSIC_CALIBRATION_CASESET_VERSION = "p03.music-cases.v2"
 DEFAULT_CALIBRATION_SEEDS = (200717, 1247, 2702, 202608)
 _QUICK_CASE_IDS = ("ordinary_reassurance", "conflict_repair")
 
@@ -377,6 +377,8 @@ def create_music_calibration_run(
         run_root / "private-mapping.json",
         {
             "schema_version": MUSIC_CALIBRATION_SCHEMA_VERSION,
+            "caseset_version": MUSIC_CALIBRATION_CASESET_VERSION,
+            "caption_version": MINIMAX_CAPTION_VERSION,
             "run_id": run_id,
             "profiles_hidden_until_scoring": True,
             "mapping": private_mapping,
