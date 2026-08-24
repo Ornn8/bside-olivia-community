@@ -56,10 +56,11 @@ def build_external_delivery_request(
         "model_dir": config.model_dir,
         "reference_audio": config.reference_audio,
         "fp16": bool(config.fp16),
-        "voice_condition_mode": "contextual_long_form",
+        "voice_condition_mode": "cross_lingual_audio_only",
         "blocks": [unit.text for unit in plan.speech_units()],
         "speed": 1.0,
         "cross_fade_seconds": 0.08,
+        "seed": 200717,
     }
 
 
@@ -86,7 +87,11 @@ def _ffmpeg() -> str:
 
 
 def _fit_overlong_wav(path: Path, duration_seconds: float) -> tuple[int, int]:
-    factor = delivery_tempo_factor(duration_seconds)
+    duration = float(duration_seconds)
+    if duration > 52.0:
+        raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
+
+    factor = delivery_tempo_factor(duration)
     if factor is None:
         return _validate_wav(path)
     fitted = path.with_name("speech-fitted.wav")
