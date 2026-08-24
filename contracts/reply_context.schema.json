@@ -162,7 +162,7 @@
         "tension",
         "relationship_stage",
         "nickname_permission",
-        "home_access",
+        "home_history_allowed",
         "known_continuations"
       ],
       "properties": {
@@ -220,14 +220,7 @@
             "allowed"
           ]
         },
-        "home_access": {
-          "enum": [
-            "no_access",
-            "visit_access",
-            "errand_access",
-            "domestic_access"
-          ]
-        },
+        "home_history_allowed": {"type": "boolean"},
         "known_continuations": {
           "type": "array",
           "maxItems": 32,

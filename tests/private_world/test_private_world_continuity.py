@@ -2,7 +2,9 @@ import json
 import sqlite3
 from pathlib import Path
 
-from private_world_ledger import LedgerEvent, SQLitePrivateWorldLedger
+import pytest
+
+from private_world_ledger import LedgerEvent, LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_port import (
     ContinuationAwareness,
     LocalContinuationFact,
@@ -47,7 +49,7 @@ def test_ledger_round_trips_unicode_nickname_and_continuation_facts(
     }
 
 
-def test_ledger_loads_legacy_snapshot_without_continuation_facts(
+def test_ledger_rejects_legacy_snapshot_without_required_continuation_facts(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "legacy.sqlite3"
@@ -73,6 +75,5 @@ def test_ledger_loads_legacy_snapshot_without_continuation_facts(
             (1, json.dumps(legacy), "legacy-event"),
         )
 
-    loaded = ledger.snapshot()
-    assert loaded.trust == 3
-    assert loaded.continuation_facts == ()
+    with pytest.raises(LedgerWriteError, match="stored snapshot is invalid"):
+        ledger.snapshot()

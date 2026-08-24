@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -9,7 +11,8 @@ from private_world_delivery import (
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,
 )
-from private_world_ledger import SQLitePrivateWorldLedger
+from private_world_ledger import LedgerEvent, SQLitePrivateWorldLedger
+from private_world_port import PrivateWorldSnapshot
 from private_world_reducer import ReducerEventKind
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult
@@ -56,6 +59,80 @@ def test_explicit_relationship_event_reduces_then_persists_atomically(
     assert ledger.snapshot().trust == 1
     assert ledger.snapshot().comfort == 1
     assert ledger.snapshot().version == 2
+
+
+def test_delivery_degrades_when_sqlite_snapshot_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
+    committer = PrivateWorldDeliveryCommitter(ledger)
+    delivery = DeliveryEvent(
+        delivery_id="letter-sqlite-failure:1",
+        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+        occurred_at=NOW,
+        semantic_key="canonical.sqlite-failure",
+    )
+
+    def unavailable_snapshot() -> object:
+        raise sqlite3.DatabaseError("synthetic sqlite failure")
+
+    monkeypatch.setattr(ledger, "snapshot", unavailable_snapshot)
+
+    assert committer.commit(delivery) is DeliveryStatus.UNAVAILABLE
+
+
+def test_delivery_degrades_when_snapshot_json_is_semantically_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
+    committer = PrivateWorldDeliveryCommitter(ledger)
+    delivery = DeliveryEvent(
+        delivery_id="letter-corrupt-snapshot:1",
+        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+        occurred_at=NOW,
+        semantic_key="canonical.corrupt-snapshot",
+    )
+
+    def corrupt_snapshot() -> object:
+        raise json.JSONDecodeError("synthetic corrupt snapshot", "{", 1)
+
+    monkeypatch.setattr(ledger, "snapshot", corrupt_snapshot)
+
+    assert committer.commit(delivery) is DeliveryStatus.UNAVAILABLE
+
+
+def test_delivery_degrades_when_snapshot_json_has_the_wrong_shape(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private.sqlite3"
+    ledger = SQLitePrivateWorldLedger(database)
+    ledger.apply_once(
+        LedgerEvent(
+            event_id="wrong-shape-seed-event",
+            delivery_id="wrong-shape-seed-delivery",
+            event_type="canonical_reply_delivered",
+            payload={"applied": False},
+            occurred_at=NOW.isoformat(),
+        ),
+        PrivateWorldSnapshot(version=1),
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE private_world_snapshots SET payload_json = ?",
+            ("[]",),
+        )
+    committer = PrivateWorldDeliveryCommitter(ledger)
+
+    assert committer.commit(
+        DeliveryEvent(
+            delivery_id="wrong-shape-delivery:1",
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+            occurred_at=NOW,
+            semantic_key="canonical.wrong-shape",
+        )
+    ) is DeliveryStatus.UNAVAILABLE
 
 
 class AcceptedPipeline:

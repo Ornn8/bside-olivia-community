@@ -10,10 +10,11 @@ review a reply, or commit private state. The matching JSON Schema is
 - `ReplyContext.create(...)` accepts a `ReplyMode`, timezone-aware
   `TrustedTime`, identified `TrustedWorldFact` values, a bounded
   `PrivateBehaviorView`, and explicit `OutputConstraints`.
-- `PrivateBehaviorView` contains only finite relationship/home enums plus
-  typed `KnownContinuationFact` values already marked character-known. It
-  rejects raw scores, control awareness, arbitrary dictionaries, duplicates,
-  and unbounded statements.
+- `PrivateBehaviorView` contains only finite relationship projections, the
+  boolean `home_history_allowed`, and typed `KnownContinuationFact` values
+  already marked character-known. It rejects raw home-access levels, scores,
+  control awareness, arbitrary dictionaries, duplicates, and unbounded
+  statements.
 - `ReplyModeAdapter` preserves the legacy wire values: `text` maps to
   `text_letter`, while `video` maps to `spoken_video`. Both spoken and musical
   video serialize back to `video`.

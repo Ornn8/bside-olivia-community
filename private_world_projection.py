@@ -11,7 +11,6 @@ from private_world_port import (
 )
 from reply_context import (
     BehaviorLevel,
-    HomeAccess,
     KnownContinuationFact,
     NicknamePermission,
     PrivateBehaviorView,
@@ -92,7 +91,9 @@ def project_private_world(
             if nicknames
             else NicknamePermission.NOT_ALLOWED
         ),
-        home_access=HomeAccess(snapshot.home_access.value),
+        home_history_allowed=(
+            snapshot.home_access.value != "no_access"
+        ),
         known_continuations=known_facts,
     )
     return ProjectedPrivateWorld(
