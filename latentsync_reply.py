@@ -13,13 +13,15 @@ class LatentSyncReplyError(RuntimeError):
     """Stable product error for the external LatentSync process."""
 
 
-def _environment_with_ffmpeg(shim_root: Path, cache_root: Path) -> dict[str, str]:
+def resolve_ffmpeg_executable() -> Path:
+    """Resolve the same FFmpeg executable used by the LatentSync renderer."""
+
     configured = os.environ.get("OLIVIA_FFMPEG_EXE", "").strip()
     if configured:
         configured_path = Path(configured)
         if not configured_path.is_file():
             raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
-        executable = str(configured_path)
+        executable = configured_path
     else:
         executable = shutil.which("ffmpeg")
     if executable is None:
@@ -30,6 +32,25 @@ def _environment_with_ffmpeg(shim_root: Path, cache_root: Path) -> dict[str, str
         except (ImportError, RuntimeError, OSError) as exc:
             raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE") from exc
     resolved = Path(executable).resolve()
+    if not resolved.is_file():
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+    return resolved
+
+
+def media_runtime_available() -> bool:
+    """Check the FFmpeg resolver and frame probe used by complete delivery."""
+
+    try:
+        resolve_ffmpeg_executable()
+        import imageio_ffmpeg
+
+        return callable(getattr(imageio_ffmpeg, "count_frames_and_secs", None))
+    except (ImportError, RuntimeError, OSError, LatentSyncReplyError):
+        return False
+
+
+def _environment_with_ffmpeg(shim_root: Path, cache_root: Path) -> dict[str, str]:
+    resolved = resolve_ffmpeg_executable()
     directory = resolved.parent
     if resolved.stem.casefold() != "ffmpeg":
         shim = Path(shim_root) / "ffmpeg.exe"
@@ -209,4 +230,9 @@ def render_latentsync_video(
     }
 
 
-__all__ = ["LatentSyncReplyError", "render_latentsync_video"]
+__all__ = [
+    "LatentSyncReplyError",
+    "media_runtime_available",
+    "render_latentsync_video",
+    "resolve_ffmpeg_executable",
+]

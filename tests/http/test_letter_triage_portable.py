@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 
+import latentsync_reply
 from letter_triage import (
     LetterReplyRouter,
     RoutingContext,
@@ -276,6 +279,7 @@ def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
 
 def test_complete_video_readiness_fails_closed_for_every_missing_renderer_dependency(
     tmp_path,
+    monkeypatch,
 ):
     def write(relative: str) -> str:
         path = tmp_path / relative
@@ -344,6 +348,21 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         missing.unlink()
         assert routing_context_from_environment(env) == RoutingContext(False, False)
         missing.write_bytes(b"synthetic")
+
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    for resolved_ffmpeg in (None, write("runtime/ffmpeg.exe")):
+        monkeypatch.setattr(
+            latentsync_reply.shutil,
+            "which",
+            lambda _name: resolved_ffmpeg,
+        )
+        assert routing_context_from_environment(env) == RoutingContext(False, False)
+
+    acceptance_document = Path("docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "optional transition" not in acceptance_document
+    assert "mandatory official silent turn/black transition" in acceptance_document
 
 
 def test_invalid_router_output_fails_closed_to_text_letter():

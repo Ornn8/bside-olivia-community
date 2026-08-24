@@ -286,7 +286,7 @@ spoken_video / musical_video ReplyContext
      生成 song_video_path（演唱视频）
   -> concat_videos(...)
      normal_video_path
-     + 可选 official transition（旧音频静音）
+     + mandatory official silent turn/black transition（旧音频静音）
      + song_video_path
   -> 最终 MP4
 ```
@@ -298,7 +298,7 @@ spoken_video / musical_video ReplyContext
 - 音频时长符合 40/60 秒配置；
 - 歌曲和 vocals 非空；
 - normal video 与 song video 均生成；
-- 拼接顺序为 spoken -> optional transition -> performance；
+- 拼接顺序为 spoken -> mandatory official silent turn/black transition -> performance；
 - transition 音轨已替换为静音；
 - 最后 2 秒视频与音频同步渐暗；
 - 各分段帧数与最终帧数一致；
