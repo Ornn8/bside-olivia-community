@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from array import array
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -12,6 +13,7 @@ import wave
 import pytest
 
 import latentsync_reply
+import music_reply
 from latentsync_reply import render_latentsync_video
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration
 from music_reply import MusicReplyError, render_musical_reply
@@ -62,6 +64,7 @@ def test_media_workers_fail_closed_without_external_provider(tmp_path):
             "测试回信",
             tmp_path / "music.mp4",
             normal_video_path=tmp_path / "normal.mp4",
+            official_reply_reference_path=tmp_path / "missing-official.mp4",
             song_video_path=tmp_path / "song.mp4",
             tts_config_path=tmp_path / "missing.json",
             visual_config_path=tmp_path / "missing.json",
@@ -69,6 +72,44 @@ def test_media_workers_fail_closed_without_external_provider(tmp_path):
             performance_video_path=tmp_path / "performance.mp4",
             duration_seconds=40,
         )
+
+
+def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
+    executable = tmp_path / "roformer.exe"
+    model = tmp_path / "models" / "MelBandRoformer.ckpt"
+    config = tmp_path / "models" / "config.yaml"
+    song = tmp_path / "song.flac"
+    vocals = tmp_path / "vocals.wav"
+    for path in (executable, model, config, song):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+    monkeypatch.setenv("OLIVIA_ROFORMER_EXE", str(executable))
+    monkeypatch.setenv("OLIVIA_ROFORMER_MODEL_PATH", str(model))
+    monkeypatch.setenv("OLIVIA_ROFORMER_CONFIG_PATH", str(config))
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+    observed = []
+
+    def fake_run(command, error_code, *, timeout=900.0, env=None):
+        observed.append((command, error_code, env))
+        if "--store_dir" in command:
+            output_root = Path(command[command.index("--store_dir") + 1])
+            (output_root / "synthetic_vocals.wav").write_bytes(b"vocals")
+
+    monkeypatch.setattr(music_reply, "_run", fake_run)
+
+    music_reply.separate_vocals(song, vocals)
+
+    assert observed[0][0][:4] == ["ffmpeg", "-y", "-i", str(song)]
+    assert observed[0][1] == "ROFORMER_INPUT_CONVERSION_FAILED"
+    assert observed[1][0][-4:] == [
+        "--model_path",
+        str(model),
+        "--config_path",
+        str(config),
+    ]
+    assert observed[1][2]["PYTHONUTF8"] == "1"
+    assert observed[1][2]["PYTHONIOENCODING"] == "utf-8"
+    assert vocals.read_bytes() == b"vocals"
 
 
 def test_official_voice_reference_is_bounded_for_cosyvoice(tmp_path, monkeypatch):
