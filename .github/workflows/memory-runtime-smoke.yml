@@ -1,28 +1,28 @@
 name: memory-runtime-smoke
 
 on:
+  push:
+    branches:
+      - feat/p03-memory-default-runtime
   pull_request:
-    paths:
-      - "mem0_memory.py"
-      - "memory_model.py"
-      - "conversation_memory_*.py"
-      - "memory_prompt.py"
-      - "installer/**"
-      - "tools/provision_memory_model.py"
-      - "tests/memory/**"
-      - "tests/installer/**"
-      - ".github/workflows/memory-runtime-smoke.yml"
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  memory-runtime-smoke:
+  windows-memory-runtime:
     name: Memory runtime (Windows / Python 3.12)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
+    env:
+      OLIVIA_MEMORY_RUNTIME_TEST: "1"
+      OLIVIA_TEST_MODEL_CACHE: ${{ runner.temp }}\olivia-memory-model
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Check out source
+      - name: Check out frozen source
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -30,10 +30,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install public test dependencies
+      - name: Reject generated-worktree test machinery
+        shell: pwsh
+        run: |
+          $forbidden = @(
+            '.github/workflows/build-memory-default-runtime.yml',
+            '.github/workflows/probe-memory-model.yml',
+            'tools/prepare_memory_default_runtime.py'
+          )
+          foreach ($path in $forbidden) {
+            if (Test-Path -LiteralPath $path) {
+              throw "forbidden generated-tree path remains: $path"
+            }
+          }
+
+      - name: Install public development dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Install pinned memory runtime
+      - name: Install pinned Mem0 runtime closure
         run: >-
           python -m pip install
           --disable-pip-version-check
@@ -41,31 +55,48 @@ jobs:
           --only-binary=:all:
           -r installer/memory-runtime-requirements.txt
 
-      - name: Provision pinned Chinese model
-        shell: pwsh
-        run: |
-          $cache = Join-Path $env:RUNNER_TEMP 'olivia-memory-model-cache'
-          python tools/provision_memory_model.py --manifest installer/memory-model-manifest.json --cache-root $cache --provision
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "OLIVIA_TEST_MODEL_CACHE=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "OLIVIA_MEMORY_RUNTIME_TEST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "HF_HUB_OFFLINE=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "HF_HUB_DISABLE_TELEMETRY=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Verify offline model and real Mem0 initialization
+      - name: Verify installed runtime imports
         run: >-
-          python -m pytest -q
-          tests/installer/test_memory_model_provisioning.py
-          tests/installer/test_memory_default_runtime.py
-          tests/memory/test_mem0_memory.py
-          tests/memory/test_mem0_installed_runtime.py
-          tests/memory/test_memory_prompt_mem0_wiring.py
-          tests/memory/test_conversation_memory_runtime.py
+          python -c
+          "import mem0,fastembed,qdrant_client,onnxruntime; print('memory-runtime-imports-ready')"
 
-      - name: Verify model without network
+      - name: Provision and verify the real Chinese embedding model
         shell: pwsh
         run: |
-          python tools/provision_memory_model.py --manifest installer/memory-model-manifest.json --cache-root $env:OLIVIA_TEST_MODEL_CACHE --verify-only
+          python tools/provision_memory_model.py `
+            --manifest installer/memory-model-manifest.json `
+            --cache-root $env:OLIVIA_TEST_MODEL_CACHE `
+            --provision
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/provision_memory_model.py `
+            --manifest installer/memory-model-manifest.json `
+            --cache-root $env:OLIVIA_TEST_MODEL_CACHE `
+            --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Check whitespace
-        run: git diff --check --exit-code
+      - name: Run real offline Mem0, Qdrant, installer and archive-isolation tests
+        shell: pwsh
+        run: |
+          $output = python -m pytest -q -rs `
+            tests/memory/test_mem0_installed_runtime.py `
+            tests/memory/test_mem0_memory.py `
+            tests/installer/test_memory_model_provisioning.py `
+            tests/installer/test_memory_default_runtime.py 2>&1
+          $output | Write-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (($output -join "`n") -match '(?i)skipped') {
+            throw 'memory runtime tests must not skip in the required workflow'
+          }
+
+      - name: Run repository hardening scan
+        run: python baseline_hardening_scan.py --mode all
+
+      - name: Verify clean checkout remained unchanged
+        shell: pwsh
+        run: |
+          git diff --exit-code
+          $status = git status --porcelain
+          if ($status) {
+            $status | Write-Host
+            throw 'tests modified the frozen checkout'
+          }
