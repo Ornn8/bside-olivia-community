@@ -159,8 +159,16 @@ class MemoryPromptBuilder:
         used_domains: list[str] = []
         truncated = False
         domain_specs = (
-            (CONVERSATION_MEMORY, self.conversation_budget, "CONVERSATION_MEMORY_CURRENT"),
-            (LEGACY_LETTERS, self.legacy_budget, "LEGACY_LETTERS_REFERENCE_ONLY"),
+            (
+                CONVERSATION_MEMORY,
+                self.conversation_budget,
+                "CONVERSATION_MEMORY_CURRENT [CURRENT_MEMORIES_UNTRUSTED_SUMMARIES]",
+            ),
+            (
+                LEGACY_LETTERS,
+                self.legacy_budget,
+                "LEGACY_LETTERS_REFERENCE_ONLY [ARCHIVE_ORIGINAL_REFERENCES_AUTHORITY]",
+            ),
         )
         for domain, domain_budget, marker in domain_specs:
             if domain_budget <= 0:

@@ -8,8 +8,40 @@
     "enabled": {"type": "boolean", "default": false},
     "provider": {"type": "string", "enum": ["sqlite", "mem0"], "default": "sqlite"},
     "data_root": {"type": "string", "minLength": 1},
+    "user_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$", "default": "local-user"},
     "ttl_seconds": {"type": ["integer", "null"], "minimum": 1},
     "context_max_chars": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "write_timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 300, "default": 30},
+    "search_timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 300, "default": 8},
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "base_url": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "api_key_env": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,95}$"}
+      }
+    },
+    "embedder": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "device": {"type": "string", "minLength": 1},
+        "embedding_dims": {"type": "integer", "minimum": 64, "maximum": 8192}
+      }
+    },
+    "vector_store": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "collection_name": {"type": "string", "minLength": 1},
+        "on_disk": {"type": "boolean"}
+      }
+    },
     "persona_evidence": {
       "type": "array",
       "items": {

@@ -8,14 +8,15 @@ changes the already-persisted reply.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 import re
 
+from bounded_daemon_call import BoundedDaemonCall
 from conversation_memory_port import (
     ConversationMemoryPort,
+    MemoryWriteResult,
     MemoryWriteStatus,
 )
 
@@ -132,6 +133,7 @@ class ConversationMemoryDeliveryCommitter:
             raise ValueError("memory delivery timeout is invalid")
         self.memory = memory
         self.timeout_seconds = float(timeout_seconds)
+        self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
 
     async def commit(
         self,
@@ -140,42 +142,29 @@ class ConversationMemoryDeliveryCommitter:
         if not isinstance(delivery, CanonicalMemoryDelivery):
             raise TypeError("a canonical memory delivery is required")
 
-        provider_status = _provider_status(self.memory)
-        if provider_status == "disabled":
-            return CanonicalMemoryDeliveryResult(
-                CanonicalMemoryDeliveryStatus.SKIPPED,
-                delivery.source_id,
-            )
-        if provider_status == "unavailable":
-            return CanonicalMemoryDeliveryResult(
-                CanonicalMemoryDeliveryStatus.UNAVAILABLE,
-                delivery.source_id,
-                error_code=_provider_error(self.memory),
-            )
-
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.memory.remember_exchange,
-                    user_message=delivery.user_message,
-                    assistant_message=delivery.assistant_message,
-                    occurred_at=delivery.occurred_at,
-                    source_id=delivery.source_id,
-                    user_id=delivery.user_id,
-                ),
-                timeout=self.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
+        state, result = await self._provider_call.call_async(
+            lambda: _deliver_to_provider(self.memory, delivery),
+            timeout_seconds=self.timeout_seconds,
+        )
+        if state in {"timeout", "inflight"}:
             return CanonicalMemoryDeliveryResult(
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
                 delivery.source_id,
                 error_code="MEM0_WRITE_TIMEOUT",
             )
-        except Exception:
+        if state == "failed":
             return CanonicalMemoryDeliveryResult(
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
                 delivery.source_id,
                 error_code="MEM0_WRITE_FAILED",
+            )
+        if isinstance(result, CanonicalMemoryDeliveryResult):
+            return result
+        if not isinstance(result, MemoryWriteResult):
+            return CanonicalMemoryDeliveryResult(
+                CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+                delivery.source_id,
+                error_code="MEM0_WRITE_RESULT_INVALID",
             )
 
         mapping = {
@@ -223,20 +212,49 @@ def _message(value: object, *, field_name: str, maximum: int) -> str:
     return value
 
 
-def _provider_status(memory: ConversationMemoryPort) -> str:
+def _deliver_to_provider(
+    memory: ConversationMemoryPort,
+    delivery: CanonicalMemoryDelivery,
+) -> CanonicalMemoryDeliveryResult | MemoryWriteResult:
     try:
-        status = memory.status().status
+        provider = memory.status()
     except Exception:
-        return "unavailable"
-    return status if status in {"available", "degraded", "unavailable", "disabled"} else "unavailable"
-
-
-def _provider_error(memory: ConversationMemoryPort) -> str:
+        return CanonicalMemoryDeliveryResult(
+            CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+            delivery.source_id,
+            error_code="MEM0_WRITE_FAILED",
+        )
+    status = provider.status
+    error_code = provider.reason_code
+    if status == "disabled":
+        return CanonicalMemoryDeliveryResult(
+            CanonicalMemoryDeliveryStatus.SKIPPED,
+            delivery.source_id,
+        )
+    if status not in {"available", "degraded"}:
+        return CanonicalMemoryDeliveryResult(
+            CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+            delivery.source_id,
+            error_code=(
+                error_code
+                if isinstance(error_code, str) and _ERROR_RE.fullmatch(error_code)
+                else "MEM0_WRITE_FAILED"
+            ),
+        )
     try:
-        code = memory.status().reason_code
+        return memory.remember_exchange(
+            user_message=delivery.user_message,
+            assistant_message=delivery.assistant_message,
+            occurred_at=delivery.occurred_at,
+            source_id=delivery.source_id,
+            user_id=delivery.user_id,
+        )
     except Exception:
-        code = None
-    return code if isinstance(code, str) and _ERROR_RE.fullmatch(code) else "MEM0_WRITE_FAILED"
+        return CanonicalMemoryDeliveryResult(
+            CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+            delivery.source_id,
+            error_code="MEM0_WRITE_FAILED",
+        )
 
 
 __all__ = [

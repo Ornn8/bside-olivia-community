@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory_outbox_runtime.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "enabled", "provider", "worker_running", "terminal_count", "pending_count", "attempt_count"],
+  "properties": {
+    "status": {"type": "string", "enum": ["available", "degraded", "unavailable", "disabled"]},
+    "enabled": {"type": "boolean"},
+    "provider": {"type": "string", "enum": ["mem0", "mem0-outbox", "none"]},
+    "worker_running": {"type": "boolean"},
+    "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,95}$"},
+    "terminal_count": {"type": "integer", "minimum": 0},
+    "pending_count": {"type": "integer", "minimum": 0},
+    "attempt_count": {"type": "integer", "minimum": 0}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "status": {"const": "disabled"},
+        "enabled": {"const": false},
+        "provider": {"enum": ["none", "mem0-outbox"]},
+        "worker_running": {"const": false}
+      },
+      "not": {"required": ["reason_code"]}
+    },
+    {
+      "properties": {
+        "status": {"const": "unavailable"},
+        "enabled": {"const": false},
+        "provider": {"enum": ["mem0", "mem0-outbox", "none"]},
+        "worker_running": {"const": false}
+      },
+      "required": ["reason_code"]
+    },
+    {
+      "properties": {
+        "status": {"const": "unavailable"},
+        "enabled": {"const": true},
+        "provider": {"const": "mem0-outbox"}
+      },
+      "required": ["reason_code"]
+    },
+    {
+      "properties": {
+        "status": {"const": "degraded"},
+        "enabled": {"const": true},
+        "provider": {"enum": ["mem0", "mem0-outbox"]}
+      },
+      "required": ["reason_code"]
+    },
+    {
+      "properties": {
+        "status": {"const": "available"},
+        "enabled": {"const": true},
+        "provider": {"const": "mem0-outbox"},
+        "worker_running": {"const": true}
+      },
+      "not": {"required": ["reason_code"]}
+    }
+  ]
+}

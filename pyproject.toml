@@ -29,6 +29,7 @@ memory-mem0 = [
 [tool.setuptools]
 py-modules = [
     "baseline_hardening_scan",
+    "bounded_daemon_call",
     "companion_memory_context",
     "conversation_memory_admin",
     "conversation_memory_delivery",
@@ -85,4 +86,5 @@ include = [
 ]
 
 [tool.setuptools.package-data]
+contracts = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]

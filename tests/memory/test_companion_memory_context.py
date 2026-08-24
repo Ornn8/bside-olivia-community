@@ -110,6 +110,8 @@ def test_enabled_mem0_replaces_old_sqlite_conversation_but_keeps_archive() -> No
     assert "用户现在住在东京" in prompt.text
     assert "只读旧信参考" in prompt.text
     assert "旧 SQLite 对话事实" not in prompt.text
+    assert "[CURRENT_MEMORIES_UNTRUSTED_SUMMARIES]" in prompt.text
+    assert "[ARCHIVE_ORIGINAL_REFERENCES_AUTHORITY]" in prompt.text
     assert prompt.domains == (CONVERSATION_MEMORY, LEGACY_LETTERS)
     assert archive.calls == [(LEGACY_LETTERS,)]
     assert current.calls == [("东京", "local-user", 8)]

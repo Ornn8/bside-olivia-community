@@ -16,6 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _assert_memory_outbox_runtime_schema(payload: dict[str, object]) -> None:
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((ROOT / "contracts" / "memory_outbox_runtime.schema.json").read_text(encoding="utf-8"))
+    assert not list(Draft202012Validator(schema).iter_errors(payload))
+
+
 @pytest.fixture(autouse=True)
 def reset_local_store():
     import local_server
@@ -172,32 +179,103 @@ def test_memory_health_reflects_degraded_canonical_delivery_runtime(
             "worker_running": True,
         },
     )
+    for runtime, expected, provider, probe in (
+        (
+            ConversationMemoryRuntimeStatus(
+                "degraded", True, "mem0-outbox", False,
+                reason_code="MEMORY_OUTBOX_DELIVERY_FAILED",
+                pending_count=1,
+                attempt_count=1,
+            ),
+            "degraded",
+            "mem0",
+            "in-process",
+        ),
+        (
+            ConversationMemoryRuntimeStatus(
+                "unavailable", True, "mem0-outbox", True,
+                reason_code="MEMORY_OUTBOX_STORAGE_UNAVAILABLE",
+            ),
+            "unavailable",
+            "none",
+            "not-run",
+        ),
+    ):
+        monkeypatch.setattr(local_server, "conversation_memory_runtime_status", lambda: runtime, raising=False)
+        result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+        conversation = result["data"]["providers"]["memory"]["conversation"]
+        assert result["data"]["status"] == "UNAVAILABLE"
+        assert conversation["status"] == expected
+        _assert_memory_outbox_runtime_schema(conversation["runtime"])
+        capability = result["data"]["capabilities"]["memory.conversation"]
+        assert capability["status"] == expected
+        assert capability["provider"] == provider
+        assert capability["probe"] == probe
+
+
+def test_public_memory_outbox_runtime_schema_matches_every_emitted_state() -> None:
+    from jsonschema import Draft202012Validator
+    schema = json.loads(
+        (ROOT / "contracts" / "memory_outbox_runtime.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator = Draft202012Validator(schema)
+    base = {"terminal_count": 0, "pending_count": 0, "attempt_count": 0}
+    valid = [
+        {**base, "status": "disabled", "enabled": False, "provider": "none", "worker_running": False},
+        {**base, "status": "disabled", "enabled": False, "provider": "mem0-outbox", "worker_running": False},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0", "worker_running": False, "reason_code": "MEM0_INITIALIZATION_FAILED"},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0-outbox", "worker_running": False, "reason_code": "MEMORY_OUTBOX_INITIALIZATION_FAILED"},
+        {**base, "status": "unavailable", "enabled": False, "provider": "none", "worker_running": False, "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE"},
+        {**base, "status": "unavailable", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0", "worker_running": False, "reason_code": "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0-outbox", "worker_running": False, "reason_code": "MEMORY_OUTBOX_WORKER_NOT_RUNNING"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEMORY_OUTBOX_DELIVERY_FAILED"},
+        {**base, "status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+    ]
+    for payload in valid:
+        assert list(validator.iter_errors(payload)) == []
+    contradictory = [
+        {**base, "status": "available", "enabled": False, "provider": "none", "worker_running": False},
+        {**base, "status": "disabled", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0", "worker_running": False},
+        {**base, "status": "degraded", "enabled": True, "provider": "none", "worker_running": False, "reason_code": "MEM0_WRITE_FAILED"},
+        {**base, "status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEM0_WRITE_FAILED"},
+        {**valid[3], "data_root": "must-not-be-public"},
+        {**valid[3], "reason_code": "private config value"},
+    ]
+    for payload in contradictory:
+        assert list(validator.iter_errors(payload))
+
+
+def test_memory_health_uses_public_runtime_unavailable_reason_without_config_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+    class AvailableMem0:
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", AvailableMem0())
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {"status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+    )
     monkeypatch.setattr(
         local_server,
         "conversation_memory_runtime_status",
-        lambda: ConversationMemoryRuntimeStatus(
-            "degraded",
-            True,
-            "mem0-outbox",
-            False,
-            reason_code="MEMORY_OUTBOX_DELIVERY_FAILED",
-            pending_count=1,
-            attempt_count=1,
-        ),
-        raising=False,
+        lambda: ConversationMemoryRuntimeStatus("disabled", False, "none", False),
     )
-
     result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
-
-    assert result["data"]["status"] == "UNAVAILABLE"
-    conversation = result["data"]["providers"]["memory"]["conversation"]
-    assert conversation["status"] == "degraded"
-    assert conversation["reason_code"] == "MEMORY_OUTBOX_DELIVERY_FAILED"
-    assert conversation["runtime"]["worker_running"] is False
-    assert conversation["runtime"]["pending_count"] == 1
-    capability = result["data"]["capabilities"]["memory.conversation"]
-    assert capability["status"] == "degraded"
-    assert capability["provider"] == "mem0"
+    runtime = result["data"]["providers"]["memory"]["conversation"]["runtime"]
+    assert runtime["status"] == "unavailable"
+    assert runtime["reason_code"] == "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE"
+    _assert_memory_outbox_runtime_schema(runtime)
+    assert "root" not in json.dumps(runtime).casefold()
+    assert "key" not in json.dumps(runtime).casefold()
 
 
 def test_empty_letter_and_music_paths_are_explicitly_empty() -> None:

@@ -16,6 +16,7 @@ import re
 import threading
 from typing import Callable, Mapping, Protocol, Sequence
 
+from bounded_daemon_call import BoundedDaemonCall
 from conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
@@ -59,16 +60,26 @@ class Mem0Backend(Protocol):
 class Mem0Config:
     enabled: bool
     data_root: Path
+    outbox_data_root: Path | None = None
     user_id: str = "local-user"
     agent_id: str = "linli"
     collection_name: str = "olivia_conversation_memory_v1"
     llm_base_url: str = ""
     llm_model: str = ""
     llm_api_key_env: str = "DEEPSEEK_API_KEY"
+    llm_provider: str = "openai"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dims: int = 512
     embedding_cache: Path | None = None
+    embedding_provider: str = "huggingface"
+    embedding_device: str = "cpu"
+    vector_store_provider: str = "qdrant"
+    vector_store_on_disk: bool = True
     context_max_chars: int = 2400
+    write_timeout_seconds: float = 30.0
+    search_timeout_seconds: float = 8.0
+    outbox_enabled: bool = True
+    outbox_interval_seconds: float = 5.0
     config_error: str | None = None
 
     def __post_init__(self) -> None:
@@ -78,6 +89,11 @@ class Mem0Config:
         if str(root) in {"", "."}:
             raise ValueError("an explicit data root is required")
         object.__setattr__(self, "data_root", root)
+        if self.outbox_data_root is not None:
+            outbox_root = Path(self.outbox_data_root)
+            if not outbox_root.is_absolute():
+                raise ValueError("outbox_data_root must be absolute")
+            object.__setattr__(self, "outbox_data_root", outbox_root)
         for value, field_name in (
             (self.user_id, "user_id"),
             (self.agent_id, "agent_id"),
@@ -99,8 +115,27 @@ class Mem0Config:
             raise ValueError("embedding_dims is invalid")
         if self.embedding_cache is not None:
             object.__setattr__(self, "embedding_cache", Path(self.embedding_cache))
+        for value, field_name in (
+            (self.llm_provider, "llm_provider"),
+            (self.embedding_provider, "embedding_provider"),
+            (self.embedding_device, "embedding_device"),
+            (self.vector_store_provider, "vector_store_provider"),
+        ):
+            if not isinstance(value, str) or not value.strip() or len(value) > 128:
+                raise ValueError(f"{field_name} is invalid")
+        if type(self.vector_store_on_disk) is not bool:
+            raise ValueError("vector_store_on_disk is invalid")
         if type(self.context_max_chars) is not int or not 0 <= self.context_max_chars <= 20_000:
             raise ValueError("context_max_chars is invalid")
+        for value, field_name in (
+            (self.write_timeout_seconds, "write_timeout_seconds"),
+            (self.search_timeout_seconds, "search_timeout_seconds"),
+            (self.outbox_interval_seconds, "outbox_interval_seconds"),
+        ):
+            if isinstance(value, bool) or not 0.1 <= float(value) <= 300:
+                raise ValueError(f"{field_name} is invalid")
+        if type(self.outbox_enabled) is not bool:
+            raise ValueError("outbox_enabled is invalid")
         if self.config_error is not None and not re.fullmatch(
             r"^[A-Z][A-Z0-9_]{0,95}$", self.config_error
         ):
@@ -122,19 +157,19 @@ class Mem0Config:
         self,
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
-        environment = environ or os.environ
+        environment = environ if environ is not None else os.environ
         return {
             "vector_store": {
-                "provider": "qdrant",
+                "provider": self.vector_store_provider,
                 "config": {
                     "collection_name": self.collection_name,
                     "path": str(self.qdrant_path),
-                    "on_disk": True,
+                    "on_disk": self.vector_store_on_disk,
                     "embedding_model_dims": self.embedding_dims,
                 },
             },
             "llm": {
-                "provider": "openai",
+                "provider": self.llm_provider,
                 "config": {
                     "model": self.llm_model,
                     "api_key": environment.get(self.llm_api_key_env, ""),
@@ -143,12 +178,12 @@ class Mem0Config:
                 },
             },
             "embedder": {
-                "provider": "huggingface",
+                "provider": self.embedding_provider,
                 "config": {
                     "model": self.embedding_model,
                     "embedding_dims": self.embedding_dims,
                     "model_kwargs": {
-                        "device": "cpu",
+                        "device": self.embedding_device,
                         "cache_folder": str(self.model_cache),
                         "local_files_only": True,
                     },
@@ -179,12 +214,22 @@ def _integer(value: object, default: int) -> int:
         return default
 
 
+def _duration(value: object, default: float, *, maximum: float = 300.0) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if 0.1 <= parsed <= maximum else default
+
+
 def load_mem0_config(
     *,
     environ: Mapping[str, str] | None = None,
     project_root: Path | None = None,
 ) -> Mem0Config:
-    environment = environ or os.environ
+    environment = environ if environ is not None else os.environ
     root = Path(project_root or Path(__file__).resolve().parent)
     configured_root = environment.get("OLIVIA_MEMORY_ROOT", "").strip()
     data_root = (
@@ -194,6 +239,12 @@ def load_mem0_config(
     )
     if not data_root.is_absolute():
         data_root = root / data_root
+    error: str | None = None
+    outbox_value = environment.get("OLIVIA_MEMORY_OUTBOX_DATA_ROOT", "").strip()
+    outbox_data_root = Path(outbox_value).expanduser() if outbox_value else None
+    if outbox_data_root is not None and not outbox_data_root.is_absolute():
+        error = "MEM0_OUTBOX_DATA_ROOT_INVALID"
+        outbox_data_root = None
     cache_value = environment.get("OLIVIA_MEMORY_EMBEDDING_CACHE", "").strip()
     embedding_cache = Path(cache_value).expanduser() if cache_value else None
     if embedding_cache is not None and not embedding_cache.is_absolute():
@@ -212,7 +263,6 @@ def load_mem0_config(
         "OLIVIA_MEMORY_LLM_API_KEY_ENV",
         environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
     ).strip()
-    error: str | None = None
     if enabled and (not llm_base_url or not llm_model):
         error = "MEM0_LLM_CONFIG_INCOMPLETE"
 
@@ -224,10 +274,20 @@ def load_mem0_config(
     if not 0 <= context_max <= 20_000:
         context_max = 2400
         error = "MEM0_CONTEXT_LIMIT_INVALID"
+    write_timeout = _duration(
+        environment.get("OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"), 30.0
+    )
+    search_timeout = _duration(
+        environment.get("OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS"), 8.0
+    )
+    outbox_interval = _duration(
+        environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"), 5.0, maximum=3600.0
+    )
 
     return Mem0Config(
         enabled=enabled,
         data_root=data_root,
+        outbox_data_root=outbox_data_root,
         user_id=environment.get("OLIVIA_MEMORY_USER_ID", "local-user").strip()
         or "local-user",
         agent_id=environment.get("OLIVIA_MEMORY_AGENT_ID", "linli").strip()
@@ -239,13 +299,32 @@ def load_mem0_config(
         llm_base_url=llm_base_url,
         llm_model=llm_model,
         llm_api_key_env=key_env or "DEEPSEEK_API_KEY",
+        llm_provider=environment.get("OLIVIA_MEMORY_LLM_PROVIDER", "openai").strip()
+        or "openai",
         embedding_model=environment.get(
             "OLIVIA_MEMORY_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"
         ).strip()
         or "BAAI/bge-small-zh-v1.5",
         embedding_dims=dims,
         embedding_cache=embedding_cache,
+        embedding_provider=environment.get(
+            "OLIVIA_MEMORY_EMBEDDER_PROVIDER", "huggingface"
+        ).strip()
+        or "huggingface",
+        embedding_device=environment.get("OLIVIA_MEMORY_EMBEDDING_DEVICE", "cpu").strip()
+        or "cpu",
+        vector_store_provider=environment.get(
+            "OLIVIA_MEMORY_VECTOR_STORE_PROVIDER", "qdrant"
+        ).strip()
+        or "qdrant",
+        vector_store_on_disk=_bool(
+            environment.get("OLIVIA_MEMORY_VECTOR_STORE_ON_DISK"), True
+        ),
         context_max_chars=context_max,
+        write_timeout_seconds=write_timeout,
+        search_timeout_seconds=search_timeout,
+        outbox_enabled=_bool(environment.get("OLIVIA_MEMORY_OUTBOX_ENABLED"), True),
+        outbox_interval_seconds=outbox_interval,
         config_error=error,
     )
 
@@ -336,6 +415,7 @@ class Mem0ConversationMemoryAdapter:
         self.backend = backend
         self.config = config
         self._lock = threading.RLock()
+        self._provider_call = BoundedDaemonCall(thread_name="mem0-provider")
         self._last_error_code: str | None = None
 
     def _filters(self, user_id: str) -> dict[str, object]:
@@ -369,19 +449,28 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         limit: int = 100,
     ) -> tuple[ConversationMemoryRecord, ...]:
+        records = self._list_records(user_id=user_id, limit=limit)
+        return () if records is None else records
+
+    def _list_records(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+    ) -> tuple[ConversationMemoryRecord, ...] | None:
         if not 1 <= limit <= 1000:
-            return ()
-        try:
-            with self._lock:
-                value = self.backend.get_all(
-                    filters=self._filters(user_id),
-                    top_k=limit,
-                )
-            self._last_error_code = None
-            return self._records(value, user_id=user_id, limit=limit)
-        except Exception:
-            self._last_error_code = "MEM0_LIST_FAILED"
-            return ()
+            return None
+        value = self._read_with_timeout(
+            lambda: self.backend.get_all(
+                filters=self._filters(user_id),
+                top_k=limit,
+            ),
+            failure_code="MEM0_LIST_FAILED",
+        )
+        if value is None:
+            return None
+        self._last_error_code = None
+        return self._records(value, user_id=user_id, limit=limit)
 
     def search_context(
         self,
@@ -392,18 +481,44 @@ class Mem0ConversationMemoryAdapter:
     ) -> tuple[ConversationMemoryRecord, ...]:
         if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 100:
             return ()
+        value = self._read_with_timeout(
+            lambda: self.backend.search(
+                query.strip(),
+                filters=self._filters(user_id),
+                top_k=limit,
+            ),
+            failure_code="MEM0_SEARCH_FAILED",
+        )
+        if value is None:
+            return ()
         try:
-            with self._lock:
-                value = self.backend.search(
-                    query.strip(),
-                    filters=self._filters(user_id),
-                    top_k=limit,
-                )
             self._last_error_code = None
             return self._records(value, user_id=user_id, limit=limit)
         except Exception:
             self._last_error_code = "MEM0_SEARCH_FAILED"
             return ()
+
+    def _read_with_timeout(
+        self,
+        operation: Callable[[], object],
+        *,
+        failure_code: str,
+    ) -> object | None:
+        state, value = self._provider_call.call(
+            lambda: self._locked_provider_call(operation),
+            timeout_seconds=self.config.search_timeout_seconds,
+        )
+        if state in {"timeout", "inflight"}:
+            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
+            return None
+        if state == "failed":
+            self._last_error_code = failure_code
+            return None
+        return value
+
+    def _locked_provider_call(self, operation: Callable[[], object]) -> object:
+        with self._lock:
+            return operation()
 
     def remember_exchange(
         self,
@@ -421,7 +536,13 @@ class Mem0ConversationMemoryAdapter:
                 error_code="MEM0_EXCHANGE_INVALID",
             )
         try:
-            existing = self.list_memories(user_id=user_id, limit=1000)
+            existing = self._list_records(user_id=user_id, limit=1000)
+            if existing is None:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+                )
             if any(record.source_id == source_id for record in existing):
                 return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
             metadata = {
@@ -542,6 +663,14 @@ class Mem0ConversationMemoryAdapter:
         }
 
     def status(self) -> ConversationMemoryStatus:
+        if self._provider_call.inflight:
+            return ConversationMemoryStatus(
+                "degraded",
+                True,
+                "mem0",
+                "qdrant-local",
+                reason_code="MEM0_SEARCH_TIMEOUT",
+            )
         records = self.list_memories(user_id=self.config.user_id, limit=1000)
         if self._last_error_code:
             return ConversationMemoryStatus(
@@ -576,7 +705,7 @@ def create_mem0_adapter(
 ) -> ConversationMemoryPort:
     active = config or load_mem0_config(environ=environ)
     if active.config_error:
-        return UnavailableConversationMemoryPort(active.config_error)
+        return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled:
         return NullConversationMemoryPort()
     try:
@@ -586,9 +715,11 @@ def create_mem0_adapter(
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
     except (ModuleNotFoundError, ImportError):
-        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
+        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError):
-        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
+        return UnavailableConversationMemoryPort(
+            "MEM0_INITIALIZATION_FAILED", config=active
+        )
 
 
 __all__ = [

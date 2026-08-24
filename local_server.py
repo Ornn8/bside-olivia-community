@@ -301,7 +301,7 @@ class LetterAdapter:
                 content,
                 max_chars=min(
                     remaining,
-                    int(getattr(self.memory_port, "context_max_chars", 2400)),
+                    self._memory_context_limit(),
                 ),
             )
             if memory_context.text:
@@ -321,7 +321,7 @@ class LetterAdapter:
             content,
             max_chars=min(
                 self.config.max_input_chars,
-                int(getattr(self.memory_port, "context_max_chars", 2400)),
+                self._memory_context_limit(),
             ),
         )
         history = (
@@ -336,6 +336,25 @@ class LetterAdapter:
             max_units=self.config.max_input_chars,
             history=history,
         ).to_messages()
+
+    def _memory_context_limit(self) -> int:
+        """Keep Mem0 and Archive prompt budgets independently bounded."""
+
+        candidates = (
+            getattr(getattr(self.conversation_memory, "config", None), "context_max_chars", None),
+            getattr(self.memory_port, "context_max_chars", 2400),
+            2400,
+        )
+        for value in candidates:
+            if isinstance(value, bool):
+                continue
+            try:
+                limit = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= limit <= 10_000:
+                return limit
+        return 2400
 
     def build_reply_context(self, mode: ReplyMode) -> ReplyContext:
         try:
@@ -444,7 +463,33 @@ class Store:
 store = Store()
 
 
+def _conversation_state_root() -> Path | None:
+    """Return the validated Mem0-owned canonical state root, when selected."""
+
+    adapter = globals().get("conversation_memory_adapter")
+    if adapter is None:
+        adapter = getattr(globals().get("letters_adapter"), "conversation_memory", None)
+    config = getattr(adapter, "config", None)
+    outbox_root = getattr(config, "outbox_data_root", None)
+    if isinstance(outbox_root, Path) and outbox_root.is_absolute():
+        return outbox_root
+    data_root = getattr(config, "data_root", None)
+    if not isinstance(data_root, Path) or not data_root.is_absolute():
+        return None
+    memory_root = (
+        data_root.parent if data_root.name.casefold() == "mem0" else data_root
+    )
+    return (
+        memory_root.parent
+        if memory_root.name.casefold() == "memory"
+        else memory_root
+    )
+
+
 def _state_root() -> Path | None:
+    configured = _conversation_state_root()
+    if configured is not None:
+        return configured
     configured = _os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "")
     return Path(configured).expanduser().resolve() if configured else None
 
@@ -501,7 +546,6 @@ def _persist_store_state() -> None:
     temporary.replace(root / "state.json")
 
 
-_load_store_state()
 _memory_config = load_memory_config()
 _archive_memory_config = (
     replace(
@@ -539,6 +583,9 @@ letters_adapter = LetterAdapter(
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
 )
+# A file-only Mem0 profile owns the same canonical state root on restart; load
+# only after the validated conversation adapter has selected that root.
+_load_store_state()
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()

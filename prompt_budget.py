@@ -46,10 +46,10 @@ _REQUIRED = frozenset(
     }
 )
 _DROP_ORDER = (
-    PromptSection.HISTORY,
     PromptSection.EVIDENCE_SUMMARY,
-    PromptSection.SOFT_CANON,
     PromptSection.INFERRED_TRAIT,
+    PromptSection.SOFT_CANON,
+    PromptSection.HISTORY,
     PromptSection.PRIVATE_BEHAVIOR,
     PromptSection.WORLD_FACT,
     PromptSection.PUBLIC_CANON,

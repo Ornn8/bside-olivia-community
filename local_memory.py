@@ -18,7 +18,7 @@ import time
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -43,6 +43,7 @@ from memory_port import (
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}|[\u3400-\u9fff]{1,8}")
+_MEMORY_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _MAX_TEXT_CHARS = 200_000
 _MAX_METADATA_BYTES = 1_000_000
 _MAX_METADATA_DEPTH = 64
@@ -200,8 +201,14 @@ class MemoryConfig:
     data_root: Path | None = None
     ttl_seconds: int | None = None
     context_max_chars: int = 2400
+    user_id: str = "local-user"
+    write_timeout_seconds: float = 30.0
+    search_timeout_seconds: float = 8.0
     persona_evidence: tuple[Mapping[str, Any], ...] = ()
     provider: str = "sqlite"
+    llm: Mapping[str, Any] = field(default_factory=dict)
+    embedder: Mapping[str, Any] = field(default_factory=dict)
+    vector_store: Mapping[str, Any] = field(default_factory=dict)
     config_error: str | None = None
 
 
@@ -972,6 +979,18 @@ def _integer(value: Any, *, minimum: int, maximum: int | None = None) -> int | N
     return result
 
 
+def _duration(value: Any, *, default: float) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.1 <= result <= 300:
+        return None
+    return result
+
+
 def load_memory_config(
     path: str | os.PathLike[str] | None = None,
     *,
@@ -998,6 +1017,9 @@ def load_memory_config(
         ("OLIVIA_MEMORY_TTL_SECONDS", "ttl_seconds"),
         ("OLIVIA_MEMORY_CONTEXT_MAX_CHARS", "context_max_chars"),
         ("OLIVIA_MEMORY_PROVIDER", "provider"),
+        ("OLIVIA_MEMORY_USER_ID", "user_id"),
+        ("OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS", "write_timeout_seconds"),
+        ("OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS", "search_timeout_seconds"),
     ):
         if name in environ:
             data[key] = environ[name]
@@ -1022,6 +1044,18 @@ def load_memory_config(
         context_max = 2400
         if context_raw not in (None, ""):
             config_error = "MEMORY_CONTEXT_LIMIT_INVALID"
+    user_id = str(data.get("user_id", "local-user")).strip()
+    if not _MEMORY_USER_ID_RE.fullmatch(user_id):
+        user_id = "local-user"
+        config_error = "MEMORY_USER_ID_INVALID"
+    write_timeout = _duration(data.get("write_timeout_seconds", 30), default=30.0)
+    if write_timeout is None:
+        write_timeout = 30.0
+        config_error = "MEMORY_WRITE_TIMEOUT_INVALID"
+    search_timeout = _duration(data.get("search_timeout_seconds", 8), default=8.0)
+    if search_timeout is None:
+        search_timeout = 8.0
+        config_error = "MEMORY_SEARCH_TIMEOUT_INVALID"
     refs: list[Mapping[str, Any]] = []
     raw_refs = data.get("persona_evidence", [])
     if isinstance(raw_refs, (list, tuple)):
@@ -1030,13 +1064,27 @@ def load_memory_config(
                 refs.append(dict(ref))
             elif isinstance(ref, str):
                 refs.append({"reference": ref, "version": "config-v1"})
+    def section(name: str) -> Mapping[str, Any]:
+        nonlocal config_error
+        value = data.get(name, {})
+        if not isinstance(value, Mapping):
+            config_error = "MEMORY_MEM0_CONFIG_INVALID"
+            return {}
+        return dict(value)
+
     return MemoryConfig(
         enabled=enabled,
         data_root=data_root,
         ttl_seconds=ttl,
         context_max_chars=context_max,
+        user_id=user_id,
+        write_timeout_seconds=write_timeout,
+        search_timeout_seconds=search_timeout,
         persona_evidence=tuple(refs),
         provider=provider,
+        llm=section("llm"),
+        embedder=section("embedder"),
+        vector_store=section("vector_store"),
         config_error=config_error,
     )
 
@@ -1056,7 +1104,8 @@ def create_memory_adapter(
         return UnavailableMemoryPort("mem0 adapter unavailable", provider="mem0")
     if config.data_root is None:
         return UnavailableMemoryPort("memory root unavailable")
-    db_path = config.data_root / "memory.sqlite3"
+    archive_root = _archive_data_root(config.data_root)
+    db_path = archive_root / "memory.sqlite3"
     if not config.enabled and not allow_legacy_create and not db_path.is_file():
         return NullMemoryPort()
     try:
@@ -1070,6 +1119,21 @@ def create_memory_adapter(
         )
     except (OSError, sqlite3.Error, ValueError):
         return UnavailableMemoryPort("sqlite adapter unavailable", provider="sqlite")
+
+
+def _archive_data_root(data_root: Path) -> Path:
+    """Keep Archive SQLite outside an explicit Mem0 lifecycle root."""
+
+    return data_root.parent if data_root.name.casefold() == "mem0" else data_root
+
+
+def _conversation_state_root(data_root: Path) -> Path:
+    archive_root = _archive_data_root(data_root)
+    return (
+        archive_root.parent
+        if archive_root.name.casefold() == "memory"
+        else archive_root
+    )
 
 
 def create_conversation_memory_adapter(
@@ -1087,16 +1151,73 @@ def create_conversation_memory_adapter(
 
     active = config or load_memory_config(environ=environ)
     if active.config_error:
-        return UnavailableConversationMemoryPort(active.config_error)
+        return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled or active.provider != "mem0":
         return NullConversationMemoryPort()
+    if active.data_root is None:
+        return UnavailableConversationMemoryPort(
+            "MEM0_DATA_ROOT_NOT_CONFIGURED", config=active
+        )
 
-    mem0_environment = dict(environ or os.environ)
+    mem0_environment = dict(environ) if environ is not None else dict(os.environ)
     mem0_environment["OLIVIA_MEMORY_ENABLED"] = "true"
-    mem0_environment["OLIVIA_MEMORY_ROOT"] = str(active.data_root / "mem0")
+    mem0_root = (
+        active.data_root
+        if active.data_root.name.casefold() == "mem0"
+        else active.data_root / "mem0"
+    )
+    mem0_environment["OLIVIA_MEMORY_ROOT"] = str(mem0_root)
+    mem0_environment["OLIVIA_MEMORY_OUTBOX_DATA_ROOT"] = str(
+        _conversation_state_root(active.data_root)
+    )
     mem0_environment["OLIVIA_MEMORY_CONTEXT_MAX_CHARS"] = str(
         active.context_max_chars
     )
+    mem0_environment["OLIVIA_MEMORY_USER_ID"] = active.user_id
+    mem0_environment["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] = format(
+        active.write_timeout_seconds, "g"
+    )
+    mem0_environment["OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS"] = format(
+        active.search_timeout_seconds, "g"
+    )
+    for section, settings in (
+        (
+            active.llm,
+            (
+                ("provider", "OLIVIA_MEMORY_LLM_PROVIDER"),
+                ("base_url", "OLIVIA_MEMORY_LLM_BASE_URL"),
+                ("model", "OLIVIA_MEMORY_LLM_MODEL"),
+                ("api_key_env", "OLIVIA_MEMORY_LLM_API_KEY_ENV"),
+            ),
+        ),
+        (
+            active.embedder,
+            (
+                ("provider", "OLIVIA_MEMORY_EMBEDDER_PROVIDER"),
+                ("model", "OLIVIA_MEMORY_EMBEDDING_MODEL"),
+                ("device", "OLIVIA_MEMORY_EMBEDDING_DEVICE"),
+                ("embedding_dims", "OLIVIA_MEMORY_EMBEDDING_DIMS"),
+            ),
+        ),
+        (
+            active.vector_store,
+            (
+                ("provider", "OLIVIA_MEMORY_VECTOR_STORE_PROVIDER"),
+                ("collection_name", "OLIVIA_MEMORY_COLLECTION"),
+                ("on_disk", "OLIVIA_MEMORY_VECTOR_STORE_ON_DISK"),
+            ),
+        ),
+    ):
+        for config_name, environment_name in settings:
+            if environment_name in mem0_environment:
+                continue
+            value = section.get(config_name)
+            if isinstance(value, str) and value.strip():
+                mem0_environment[environment_name] = value.strip()
+            elif isinstance(value, bool):
+                mem0_environment[environment_name] = "true" if value else "false"
+            elif isinstance(value, int) and not isinstance(value, bool):
+                mem0_environment[environment_name] = str(value)
     fallback = llm_fallback or {}
     for memory_name, gateway_name, field_name in (
         ("OLIVIA_MEMORY_LLM_BASE_URL", "OLIVIA_LLM_BASE_URL", "base_url"),
@@ -1111,7 +1232,9 @@ def create_conversation_memory_adapter(
     try:
         return create_mem0_adapter(environ=mem0_environment)
     except Exception:
-        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
+        return UnavailableConversationMemoryPort(
+            "MEM0_INITIALIZATION_FAILED", config=active
+        )
 
 
 __all__ = [

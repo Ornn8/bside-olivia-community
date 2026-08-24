@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import threading
 import time
 
 import pytest
@@ -181,20 +182,61 @@ def test_provider_exception_and_malformed_result_become_stable_failures() -> Non
     asyncio.run(scenario())
 
 
-def test_timeout_returns_without_blocking_canonical_reply_state() -> None:
+@pytest.mark.parametrize("blocked_stage", ["status", "write"])
+def test_permanently_blocked_provider_uses_one_daemon_worker(
+    blocked_stage: str,
+) -> None:
+    release = threading.Event()
+    entered = threading.Event()
+    owned_workers: list[threading.Thread] = []
+
+    class BlockingMemory(FakeMemory):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status_calls = 0
+            self.write_calls = 0
+
+        def status(self) -> ConversationMemoryStatus:
+            self.status_calls += 1
+            if blocked_stage == "status":
+                entered.set()
+                release.wait()
+            return super().status()
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.write_calls += 1
+            if blocked_stage == "write":
+                entered.set()
+                release.wait()
+            return super().remember_exchange(**kwargs)
+
     async def scenario() -> None:
+        memory = BlockingMemory()
+        committer = ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.05)
+        existing = set(threading.enumerate())
         started = time.monotonic()
-        result = await ConversationMemoryDeliveryCommitter(
-            FakeMemory(delay_seconds=0.08),
-            timeout_seconds=0.01,
-        ).commit(_delivery())
-        elapsed = time.monotonic() - started
+        results = [await committer.commit(_delivery(revision=revision)) for revision in (2, 3, 4)]
 
-        assert result.status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
-        assert result.error_code == "MEM0_WRITE_TIMEOUT"
-        assert elapsed < 0.07
+        assert time.monotonic() - started < 0.3
+        assert all(result.error_code == "MEM0_WRITE_TIMEOUT" for result in results)
+        assert entered.is_set()
+        expected_calls = (1, 0) if blocked_stage == "status" else (1, 1)
+        assert (memory.status_calls, memory.write_calls) == expected_calls
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "olivia-memory-delivery" and thread not in existing
+        ]
+        assert len(workers) == 1
+        assert workers[0].daemon is True
+        owned_workers.extend(workers)
 
-    asyncio.run(scenario())
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+        for thread in owned_workers:
+            thread.join(timeout=0.5)
 
 
 @pytest.mark.parametrize(

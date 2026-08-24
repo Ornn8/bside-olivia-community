@@ -36,9 +36,19 @@ class ArchiveMemory:
 class ConversationMemory:
     enabled = True
 
-    def __init__(self, status: str = "available") -> None:
+    def __init__(
+        self,
+        status: str = "available",
+        *,
+        data_root: Path | None = None,
+        outbox_data_root: Path | None = None,
+    ) -> None:
         self.provider_status = status
-        self.config = SimpleNamespace(user_id="local-user")
+        self.config = SimpleNamespace(
+            user_id="local-user",
+            data_root=data_root,
+            outbox_data_root=outbox_data_root,
+        )
         self.calls: list[dict[str, object]] = []
 
     def status(self) -> ConversationMemoryStatus:
@@ -229,6 +239,81 @@ def test_missing_or_relative_data_root_never_starts_worker() -> None:
     )
     assert relative.status == "unavailable"
     assert relative.reason_code == "MEMORY_OUTBOX_DATA_ROOT_INVALID"
+
+
+def test_explicit_mem0_adapter_root_starts_outbox_without_host_environment(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "configured-state-root"
+    _write_state(root)
+    memory = ConversationMemory(
+        data_root=root / "memory" / "mem0",
+        outbox_data_root=root,
+    )
+
+    status = ensure_conversation_memory_runtime(
+        ArchiveMemory(),
+        memory,
+        environ={"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path / "host-root")},
+    )
+
+    assert status.status == "available"
+    _wait_for(lambda: len(memory.calls) == 1)
+    assert memory.calls[0]["source_id"] == "reply:letter-runtime-1:1"
+
+
+def test_adapter_runtime_configuration_wins_over_host_outbox_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import conversation_memory_runtime as runtime_module
+
+    root = tmp_path / "configured-state-root"
+    _write_state(root)
+    memory = ConversationMemory(data_root=root / "memory" / "mem0")
+    memory.config.outbox_enabled = True
+    memory.config.outbox_interval_seconds = 0.25
+    memory.config.write_timeout_seconds = 1.25
+    captured: dict[str, float] = {}
+    original = runtime_module.ConversationMemoryDeliveryCommitter
+
+    class CapturingCommitter(original):
+        def __init__(self, *args, timeout_seconds: float, **kwargs) -> None:
+            captured["timeout"] = timeout_seconds
+            super().__init__(*args, timeout_seconds=timeout_seconds, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "ConversationMemoryDeliveryCommitter", CapturingCommitter)
+    status = ensure_conversation_memory_runtime(
+        ArchiveMemory(),
+        memory,
+        environ={
+            "OLIVIA_MEMORY_OUTBOX_ENABLED": "0",
+            "OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS": "299",
+            "OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS": "999",
+        },
+    )
+
+    assert status.status == "available"
+    assert captured["timeout"] == 1.25
+    _wait_for(lambda: len(memory.calls) == 1)
+
+
+def test_available_ledger_without_worker_reports_degraded_runtime(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "configured-state-root"
+    _write_state(root)
+
+    status = ensure_conversation_memory_runtime(
+        ArchiveMemory(),
+        ConversationMemory(data_root=root / "memory" / "mem0"),
+        environ={},
+        start_background=False,
+    )
+
+    assert status.status == "degraded"
+    assert status.worker_running is False
+    assert status.reason_code == "MEMORY_OUTBOX_WORKER_NOT_RUNNING"
 
 
 def test_memory_prompt_builder_configures_runtime_but_keeps_prompt_available(
