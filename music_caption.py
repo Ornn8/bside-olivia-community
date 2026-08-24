@@ -15,7 +15,7 @@ from song_content import (
 )
 
 
-MINIMAX_CAPTION_VERSION = "p03.minimax-caption.v1"
+MINIMAX_CAPTION_VERSION = "p03.minimax-caption.v2"
 
 _EMOTION = {
     SongEmotionArc.QUIET_LONGING: (

@@ -10,8 +10,36 @@ from minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     OFFICIAL_COMFY_MINIMAX_PROFILE,
 )
-from music_caption import validate_minimax_caption
+from music_caption import MINIMAX_CAPTION_VERSION, validate_minimax_caption
 from song_content import SongSemanticPlan
+
+
+def test_calibration_provenance_binds_the_new_short_song_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(music_calibration, "_run_id", lambda: "music-provenance-run")
+
+    manifest = music_calibration.create_music_calibration_run(
+        tmp_path,
+        mode="quick",
+        seeds=(101,),
+    )
+    run_root = tmp_path / "music-provenance-run"
+    mapping = json.loads(
+        (run_root / "private-mapping.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["caseset_version"] == "p03.music-cases.v2"
+    assert (
+        manifest["caption_version"]
+        == MINIMAX_CAPTION_VERSION
+        == "p03.minimax-caption.v2"
+    )
+    assert manifest["caseset_version"] != "p03.music-cases.v1"
+    assert manifest["caption_version"] != "p03.minimax-caption.v1"
+    assert mapping["caseset_version"] == manifest["caseset_version"]
+    assert mapping["caption_version"] == manifest["caption_version"]
 
 
 def test_calibration_cases_are_synthetic_typed_and_cover_six_scenarios() -> None:
