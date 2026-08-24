@@ -307,6 +307,7 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
         "imageio_ffmpeg",
         SimpleNamespace(get_ffmpeg_exe=lambda: str(ffmpeg)),
     )
+    monkeypatch.delenv("OLIVIA_FFMPEG_EXE", raising=False)
     monkeypatch.setenv("PATH", "synthetic-original-path")
     monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
     observed = {}
@@ -348,3 +349,50 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
     assert Path(observed["prepare_command"][0]).name.casefold() == "ffmpeg.exe"
     assert "libx264" in observed["prepare_command"]
     assert Path(observed["config_path"]).name == "stage2_efficient.yaml"
+
+
+def test_latentsync_rejects_missing_explicit_ffmpeg_without_fallback(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "latentsync"
+    python = tmp_path / "python.exe"
+    source = tmp_path / "source.mp4"
+    audio = tmp_path / "speech.wav"
+    for path in (
+        python,
+        source,
+        audio,
+        root / "scripts" / "inference.py",
+        root / "configs" / "unet" / "stage2_efficient.yaml",
+        root / "checkpoints" / "latentsync_unet.pt",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(tmp_path / "missing-ffmpeg.exe"))
+
+    def unexpected_discovery(*_args, **_kwargs):
+        raise AssertionError("configured FFmpeg failure must not fall back")
+
+    monkeypatch.setattr(latentsync_reply.shutil, "which", unexpected_discovery)
+    monkeypatch.setitem(
+        sys.modules,
+        "imageio_ffmpeg",
+        SimpleNamespace(get_ffmpeg_exe=unexpected_discovery),
+    )
+
+    def unexpected_subprocess(*_args, **_kwargs):
+        raise AssertionError("configured FFmpeg failure must not fall back")
+
+    monkeypatch.setattr(latentsync_reply.subprocess, "run", unexpected_subprocess)
+
+    with pytest.raises(
+        latentsync_reply.LatentSyncReplyError,
+        match="^LATENTSYNC_FFMPEG_UNAVAILABLE$",
+    ):
+        render_latentsync_video(
+            source,
+            audio,
+            tmp_path / "reply.mp4",
+            python_path=python,
+            latentsync_root=root,
+        )
