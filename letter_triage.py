@@ -339,12 +339,22 @@ class LetterReplyRouter:
         self,
         gateway: RouterGateway,
         *,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float | None = None,
         routing_context: RoutingContext | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self.gateway = gateway
-        self.timeout_seconds = max(0.05, float(timeout_seconds))
+        if timeout_seconds is None:
+            raw_timeout = (environ or os.environ).get(
+                "OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS", "60"
+            )
+            try:
+                configured_timeout = float(raw_timeout)
+            except (TypeError, ValueError):
+                configured_timeout = 60.0
+            self.timeout_seconds = min(300.0, max(5.0, configured_timeout))
+        else:
+            self.timeout_seconds = max(0.05, float(timeout_seconds))
         self.routing_context = routing_context
         self.environ = environ
 
