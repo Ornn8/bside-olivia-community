@@ -62,7 +62,7 @@
         "status": {"const": "completed"},
         "error_code": {"type": "null"},
         "validation_mode": {"enum": ["synthetic_validation", "private_local_validation"]},
-        "private_world_arm": {"const": "fixed_disabled"},
+        "private_world_arm": {"enum": ["fixed_disabled", "controlled_projection"]},
         "completed_case_count": {"const": 19},
         "cases": {
           "type": "array",
@@ -91,7 +91,7 @@
       "properties": {
         "status": {"const": "unavailable"},
         "validation_mode": {"enum": ["synthetic_validation", "private_local_validation"]},
-        "private_world_arm": {"const": "fixed_disabled"},
+        "private_world_arm": {"enum": ["fixed_disabled", "controlled_projection"]},
         "failed_case": {"$ref": "#/$defs/failed_prefix_case"}
       }
     }
@@ -145,7 +145,7 @@
         "namespace": {"type": "string"},
         "train_original_count": {"const": 60},
         "test_original_count": {"type": "integer", "minimum": 1, "maximum": 19},
-        "private_world_arm": {"const": "fixed_disabled"},
+        "private_world_arm": {"enum": ["fixed_disabled", "controlled_projection"]},
         "selected_evidence_count": {"type": "integer", "minimum": 0},
         "persona_evaluation": {"$ref": "#/$defs/persona_evaluation"},
         "reference_status": {"enum": ["evaluated_text", "not_evaluated_media"]},
@@ -175,7 +175,7 @@
         "case_id": {"type": "string"},
         "prefix_case": {"type": "string", "pattern": "^case(?:0[1-9]|1[0-9])$"},
         "namespace": {"type": "string"},
-        "private_world_arm": {"const": "fixed_disabled"}
+        "private_world_arm": {"enum": ["fixed_disabled", "controlled_projection"]}
       }
     },
     "case01": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case01"}, "test_original_count": {"const": 1}}}]},
