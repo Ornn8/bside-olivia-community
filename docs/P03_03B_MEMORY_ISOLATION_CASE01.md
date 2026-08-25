@@ -38,6 +38,12 @@ and requires exactly 60 train and 19 test items, sorted by the manifest's
 namespaces as `<namespace>:case01` through `<namespace>:case19`; every case
 rebuilds the 60 train originals and then ingests only its test-original prefix.
 
+The memory selector remains compatible with callbacks that accept only
+`selected_evidence(original=...)`. Selectors that also declare the optional
+`exclude_source_id` keyword receive the exact `test:<case_id>` for the current
+original. This lets a real memory adapter retain the current original for later
+prefixes without returning it as same-turn historical evidence.
+
 It calls the generator once for the current prefix item, with only
 `persona_authority`, selected evidence, and that original. Generated replies
 are never ingested. Blind persona evaluation occurs before reference handling.

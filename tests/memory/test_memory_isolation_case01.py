@@ -11,6 +11,52 @@ from jsonschema import Draft202012Validator
 from memory_isolation_case01 import run_case01, run_prefix19
 
 
+def test_prefix19_routes_optional_exclusion_and_keeps_legacy_selector_compatible(
+    tmp_path: Path,
+) -> None:
+    legacy_originals: list[str] = []
+    keyword_calls: list[dict[str, str]] = []
+
+    class LegacyMemory:
+        def ingest_user_evidence(self, **_: object) -> None:
+            pass
+
+        def selected_evidence(self, *, original: str) -> tuple[str, ...]:
+            legacy_originals.append(original)
+            return (f"legacy evidence for {original}",)
+
+    class KeywordMemory:
+        def ingest_user_evidence(self, **_: object) -> None:
+            pass
+
+        def selected_evidence(self, **kwargs: str) -> tuple[str, ...]:
+            keyword_calls.append(kwargs)
+            return ()
+
+    def run(memory_type: type[object], name: str) -> dict[str, object]:
+        return run_prefix19(
+            manifest_path=_manifest_19(tmp_path),
+            namespace=f"synthetic-{name}",
+            memory_factory=lambda _namespace: memory_type(),
+            generator=lambda **_: "synthetic reply",
+            persona_evaluator=lambda **_: {
+                "score": 0.9,
+                "hard_violations": [],
+            },
+            reference_evaluator=lambda **_: {"style_score": 0.8},
+            persona_authority={"authority": "synthetic"},
+            output_path=tmp_path / f"{name}.json",
+            validation_mode="synthetic_validation",
+        )
+
+    assert run(LegacyMemory, "legacy")["completed_case_count"] == 19
+    assert run(KeywordMemory, "keyword")["completed_case_count"] == 19
+    assert len(legacy_originals) == 19
+    assert [call["exclude_source_id"] for call in keyword_calls] == [
+        f"test:test-{number:02d}" for number in range(1, 20)
+    ]
+
+
 def _entry(relative_path: str, *, kind: str = "text") -> dict[str, str]:
     return {"relative_path": relative_path, "kind": kind}
 
@@ -254,12 +300,19 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     events: list[str] = []
     ingested: list[tuple[str, str]] = []
     generator_calls: list[dict[str, object]] = []
+    selection_exclusions: list[str] = []
 
     class Memory:
         def ingest_user_evidence(self, *, source_id: str, text: str) -> None:
             ingested.append((source_id, text))
 
-        def selected_evidence(self, *, original: str) -> tuple[str, ...]:
+        def selected_evidence(
+            self,
+            *,
+            original: str,
+            exclude_source_id: str,
+        ) -> tuple[str, ...]:
+            selection_exclusions.append(exclude_source_id)
             return (f"evidence for {original[-2:]}",)
 
     def memory_factory(namespace: str) -> Memory:
@@ -309,6 +362,9 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     assert len([source_id for source_id, _ in ingested if source_id.startswith("test:")]) == sum(range(1, 20))
     assert all("synthetic reply" not in text for _, text in ingested)
     assert len(generator_calls) == 19
+    assert selection_exclusions == [
+        f"test:test-{number:02d}" for number in range(1, 20)
+    ]
     assert [case["test_original_count"] for case in cases] == list(range(1, 20))
     assert [case["reference_status"] for case in cases if case["prefix_case"] in {"case07", "case19"}] == [
         "not_evaluated_media",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from inspect import signature
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -26,6 +27,26 @@ _REFERENCE_METRICS = frozenset({"style_score", "focus_score"})
 def _original_text(manifest_root: Path, item: Mapping[str, Any]) -> str:
     original = item["original"]
     return (manifest_root / original["relative_path"]).read_text(encoding="utf-8")
+
+
+def _select_memory_evidence(
+    memory: Any,
+    *,
+    original: str,
+    exclude_source_id: str,
+) -> Any:
+    selector = memory.selected_evidence
+    try:
+        signature(selector).bind(
+            original=original,
+            exclude_source_id=exclude_source_id,
+        )
+    except TypeError:
+        return selector(original=original)
+    return selector(
+        original=original,
+        exclude_source_id=exclude_source_id,
+    )
 
 
 def _reference_text(manifest_root: Path, item: Mapping[str, Any]) -> str:
@@ -257,7 +278,11 @@ def run_prefix19(
                 )
 
             original = _original_text(manifest_root, target)
-            selected_evidence = memory.selected_evidence(original=original)
+            selected_evidence = _select_memory_evidence(
+                memory,
+                original=original,
+                exclude_source_id=f"test:{target['case_id']}",
+            )
             stage = "generator"
             reply = generator(
                 persona_authority=persona_authority,
