@@ -23,6 +23,7 @@ MEMORY_CORRECT_PATH = "/toy/companion/memory/correct"
 MEMORY_DELETE_PATH = "/toy/companion/memory/delete"
 MEMORY_PAUSE_PATH = "/toy/companion/memory/pause"
 MEMORY_RESUME_PATH = "/toy/companion/memory/resume"
+MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install"
 CANDIDATE_DECISION_PATH = "/toy/companion/private-world/candidates/{candidate_id}/{decision}"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
@@ -120,6 +121,16 @@ class OriginalClientCompanionMutationBackend(Protocol):
         request_id: str,
         reason: str,
         decided_at: str,
+    ) -> CompanionMutationResult: ...
+
+
+@runtime_checkable
+class EmbeddingInstallMutationBackend(Protocol):
+    def install_embedding(
+        self,
+        *,
+        request_id: str,
+        reason: str,
     ) -> CompanionMutationResult: ...
 
 
@@ -401,6 +412,35 @@ async def _resume_memory(request: web.Request) -> web.Response:
     return await _lifecycle_memory(request, "resume")
 
 
+async def _install_embedding(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _body(request, fields=frozenset({"request_id", "reason"}))
+        backend = _backend(request)
+        if not isinstance(backend, EmbeddingInstallMutationBackend):
+            raise OriginalClientCompanionMutationError(
+                "MEM0_EMBEDDING_INSTALL_UNAVAILABLE", status=503
+            )
+        result = await asyncio.to_thread(
+            backend.install_embedding,
+            request_id=_identifier(
+                value["request_id"], code="COMPANION_REQUEST_ID_INVALID", request=True
+            ),
+            reason=_text(value["reason"], maximum=500, code="COMPANION_REASON_INVALID"),
+        )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError("COMPANION_MUTATION_INVALID", status=503)
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError("COMPANION_MUTATION_UNAVAILABLE", status=503),
+            origin,
+        )
+
+
 async def _decide_candidate(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
@@ -467,6 +507,7 @@ def mount_original_client_companion_mutation_api(
     for path, handler in (
         (MEMORY_PAUSE_PATH, _pause_memory),
         (MEMORY_RESUME_PATH, _resume_memory),
+        (MEMORY_EMBEDDING_INSTALL_PATH, _install_embedding),
     ):
         app.router.add_post(path, handler)
         app.router.add_options(path, _preflight)
@@ -480,8 +521,10 @@ __all__ = [
     "CONFIRM_HEADER",
     "CONFIRM_VALUE",
     "CompanionMutationResult",
+    "EmbeddingInstallMutationBackend",
     "MEMORY_CORRECT_PATH",
     "MEMORY_DELETE_PATH",
+    "MEMORY_EMBEDDING_INSTALL_PATH",
     "MEMORY_PAUSE_PATH",
     "MEMORY_RESUME_PATH",
     "OriginalClientCompanionMutationBackend",

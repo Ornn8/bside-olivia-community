@@ -6,11 +6,37 @@ operations:
 
 - `/toy/companion/memory/pause`
 - `/toy/companion/memory/resume`
+- `/toy/companion/memory/embedding/install`
 
-Both use the existing `p03.original-companion-mutation.v1` envelope, require a
-loopback origin and `X-Olivia-Companion-Action: confirmed`, and are idempotent
-by request ID. There is no clear operation in this contract; data deletion is a
-separate, independently reviewable change.
+All use the existing `p03.original-companion-mutation.v1` envelope and require
+a loopback origin plus `X-Olivia-Companion-Action: confirmed`. Pause and resume
+are idempotent by request ID; embedding installation is single-flight per cache
+and returns `NOOP` after verified readiness. There is no clear operation in this
+contract; data deletion is a separate, independently reviewable change.
+
+## Explicit embedding installation
+
+When the existing Mem0 runtime reports `MEM0_EMBEDDING_CACHE_UNAVAILABLE`, the
+same original Settings memory panel shows the concise `安装 Embedding` action.
+Only this confirmed action may contact Hugging Face, anonymously and without an
+API key. It downloads the fixed `BAAI/bge-small-zh-v1.5` revision
+`7999e1d3359715c523056ef9478215996d62a620` into a staging directory, calculates
+the existing manifest's per-file SHA-256 values, verifies the exact snapshot
+contract, and promotes it only after verification. Any download, hash, or
+ordinary promotion failure is path-free, leaves no READY cache, cleans staging,
+and can be retried. The sole exception is a pre-commit rollback restore failure:
+it returns the stable rejected result without claiming READY and retains the
+recoverable staging/backup for diagnosis or recovery. The installed runtime
+still passes `local_files_only=True`; a subsequent local service start reuses
+the verified cache offline.
+
+The confirmed mutation starts the single background job and returns promptly;
+it does not use the ordinary short mutation timeout as a download deadline.
+`/toy/companion/status` exposes the shared embedding state as `missing`,
+`installing`, `ready`, or `error` under `capabilities.memory.embedding`. The
+same Settings panel polls that read state while installing, then shows either a
+retryable error or the offline-ready restart instruction. A ready embedding does
+not by itself claim that the already-started Mem0 runtime is ready.
 
 ## Pause and resume boundary
 
