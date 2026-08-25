@@ -38,19 +38,21 @@ class VideoReplySettingsStore:
     """Own only the short setting transaction; no provider/router lock is exposed."""
     def __init__(self, root: Path, *, writer: Callable[[Path, bytes], None] | None = None) -> None:
         if not isinstance(root, Path) or not root.is_absolute(): raise VideoReplySettingsError(_UNAVAILABLE)
-        self.path, self._writer, self._lock = root / "video_reply_settings.json", writer or self._atomic_write, threading.Lock(); self._document = {}; self._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); self._open()
+        self.path, self.marker = root / "video_reply_settings.json", root / "video_reply_settings.initialized"; self._writer, self._lock = writer or self._atomic_write, threading.Lock(); self._document = {}; self._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); self._open()
     @classmethod
     def initialize(cls, root: Path, *, writer: Callable[[Path, bytes], None] | None = None) -> "VideoReplySettingsStore":
         if not isinstance(root, Path) or not root.is_absolute(): raise VideoReplySettingsError(_UNAVAILABLE)
         writer = writer or cls._atomic_write
         try:
-            root.mkdir(parents=True, exist_ok=True); path = root / "video_reply_settings.json"
-            if not path.exists(): writer(path, cls._encode({"schema_version": _SCHEMA, "settings": {_KEY: True}, "ledger": {}}))
+            root.mkdir(parents=True, exist_ok=True); path, marker = root / "video_reply_settings.json", root / "video_reply_settings.initialized"
+            if not path.exists():
+                if marker.exists(): raise VideoReplySettingsError(_UNAVAILABLE)
+                writer(path, cls._encode({"schema_version": _SCHEMA, "initialized": True, "settings": {_KEY: True}, "ledger": {}})); writer(marker, b"1\n")
         except (OSError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
         return cls(root, writer=writer)
     @classmethod
     def unavailable(cls) -> "VideoReplySettingsStore":
-        item = cls.__new__(cls); item.path = item._writer = None; item._lock, item._document = threading.Lock(), {}; item._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); return item
+        item = cls.__new__(cls); item.path = item.marker = item._writer = None; item._lock, item._document = threading.Lock(), {}; item._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); return item
     def snapshot(self) -> VideoReplySettingsSnapshot: return self._committed
     def receive_snapshot(self) -> VideoReplyReceiveEligibility: return VideoReplyReceiveEligibility(self._committed.enabled is True)
     def reload(self) -> None:
@@ -84,6 +86,8 @@ class VideoReplySettingsStore:
         if self.path is None or not self.path.is_file(): raise VideoReplySettingsError(_UNAVAILABLE)
         document = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(document, dict) or document.get("schema_version", _SCHEMA) != _SCHEMA or not all(isinstance(document.get(name, {}), dict) for name in ("settings", "ledger")): raise VideoReplySettingsError(_UNAVAILABLE)
+        if "initialized" in document and document["initialized"] is not True: raise VideoReplySettingsError(_UNAVAILABLE)
+        if document.get("initialized") is True and (self.marker is None or not self.marker.is_file() or self.marker.read_text(encoding="utf-8") != "1\n"): raise VideoReplySettingsError(_UNAVAILABLE)
         return document
     @classmethod
     def _ledger(cls, document: Mapping[str, object]) -> dict[str, object]:

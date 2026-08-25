@@ -1,28 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "p03.video-reply-setting.v1",
-  "title": "Video reply setting capability",
+  "title": "Video reply setting capability, request, and result",
   "oneOf": [
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["state", "enabled"],
-      "properties": {
-        "state": {"const": "available"},
-        "enabled": {"type": "boolean"}
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["state", "reason_code"],
-      "properties": {
-        "state": {"const": "unavailable"},
-        "reason_code": {
-          "type": "string",
-          "pattern": "^[A-Z][A-Z0-9_]{0,95}$"
-        }
-      }
-    }
-  ]
+    {"$ref": "#/$defs/available"},
+    {"$ref": "#/$defs/unavailable"},
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/mutation"},
+    {"$ref": "#/$defs/error"}
+  ],
+  "$defs": {
+    "available": {"type": "object", "additionalProperties": false, "required": ["state", "enabled"], "properties": {"state": {"const": "available"}, "enabled": {"type": "boolean"}}},
+    "unavailable": {"type": "object", "additionalProperties": false, "required": ["state", "reason_code"], "properties": {"state": {"const": "unavailable"}, "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,95}$"}}},
+    "request": {"type": "object", "additionalProperties": false, "required": ["request_id", "enabled"], "properties": {"request_id": {"$ref": "#/$defs/request_id"}, "enabled": {"type": "boolean"}}},
+    "mutation": {"type": "object", "additionalProperties": false, "required": ["request_id", "status", "enabled"], "properties": {"request_id": {"$ref": "#/$defs/request_id"}, "status": {"enum": ["APPLIED", "NOOP", "DUPLICATE"]}, "enabled": {"type": "boolean"}}},
+    "error": {"type": "object", "additionalProperties": false, "required": ["code", "message", "data"], "properties": {"code": {"enum": [400, 409, 503]}, "message": {"type": "string"}, "data": {"type": "object", "additionalProperties": false, "required": ["status", "error_code"], "properties": {"status": {"enum": ["FAILED", "UNAVAILABLE"]}, "error_code": {"enum": ["VIDEO_REPLY_SETTING_PAYLOAD_INVALID", "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID", "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "VIDEO_REPLY_SETTING_UNAVAILABLE"]}}}}},
+    "request_id": {"type": "string", "pattern": "^video_reply_setting:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"}
+  }
 }

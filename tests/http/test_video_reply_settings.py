@@ -17,6 +17,8 @@ def test_default_and_valid_legacy_store_are_enabled(tmp_path, legacy):
         )
     store = VideoReplySettingsStore(tmp_path) if legacy else VideoReplySettingsStore.initialize(tmp_path)
     assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
+    if not legacy:
+        assert (tmp_path / "video_reply_settings.initialized").is_file()
 def test_open_missing_store_is_unavailable_until_explicit_initialize(tmp_path):
     assert VideoReplySettingsStore(tmp_path).snapshot().state == "unavailable"
     assert not (tmp_path / "video_reply_settings.json").exists()
@@ -39,7 +41,7 @@ def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(t
     def writer(path, payload):
         nonlocal calls
         calls += 1
-        if calls > 1:
+        if calls > 2:
             raise OSError("synthetic")
         path.write_bytes(payload)
     store = VideoReplySettingsStore.initialize(tmp_path, writer=writer)
@@ -53,6 +55,23 @@ def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(t
     assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
     (tmp_path / "video_reply_settings.json").write_text("not-json", encoding="utf-8")
     assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
+
+
+def test_initialize_marker_failure_and_deleted_state_stay_unavailable(tmp_path):
+    calls = 0
+    def writer(path, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("marker unavailable")
+        path.write_bytes(payload)
+    with pytest.raises(VideoReplySettingsError):
+        VideoReplySettingsStore.initialize(tmp_path, writer=writer)
+    assert VideoReplySettingsStore(tmp_path).snapshot().state == "unavailable"
+    store = VideoReplySettingsStore.initialize(tmp_path / "ok")
+    store.mutate("video_reply_setting:off", False)
+    (tmp_path / "ok" / "video_reply_settings.json").unlink()
+    assert VideoReplySettingsStore(tmp_path / "ok").snapshot().state == "unavailable"
 
 
 @pytest.mark.parametrize("value", ["yes", 1, None])
@@ -71,6 +90,11 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert not list(validator.iter_errors({"state": "available", "enabled": True}))
     assert not list(validator.iter_errors({"state": "unavailable", "reason_code": "SETTING_UNAVAILABLE"}))
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
+    assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
+    assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "status": "DUPLICATE", "enabled": False}))
+    assert not list(validator.iter_errors({"code": 409, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT"}}))
+    for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}):
+        assert list(validator.iter_errors(value))
 
 
 @pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
@@ -93,6 +117,15 @@ def test_route_accepts_only_body_request_id_and_surfaces_unavailable(monkeypatch
         return alias, bad, conflict, unavailable
     alias, bad, conflict, unavailable = asyncio.run(calls())
     assert [alias["code"], bad["code"], conflict["code"], unavailable["code"]] == [400, 400, 409, 503]
+
+
+def test_factory_init_failure_returns_stable_unavailable(monkeypatch):
+    import local_server
+    def fail(_root):
+        raise VideoReplySettingsError("VIDEO_REPLY_SETTING_UNAVAILABLE")
+    monkeypatch.setattr(local_server.VideoReplySettingsStore, "initialize", fail)
+    store = local_server._create_video_reply_settings_store()
+    assert store.snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
 def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatch):
     import local_server
     from reply_orchestrator import ReplyState

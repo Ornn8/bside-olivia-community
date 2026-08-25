@@ -615,8 +615,8 @@ def _create_video_reply_settings_store() -> VideoReplySettingsStore:
         return VideoReplySettingsStore.unavailable()
     try:
         return VideoReplySettingsStore.initialize(root)
-    except VideoReplySettingsError as exc:
-        return VideoReplySettingsStore.unavailable(exc.code)
+    except VideoReplySettingsError:
+        return VideoReplySettingsStore.unavailable()
 
 
 video_reply_settings_store = _create_video_reply_settings_store()
