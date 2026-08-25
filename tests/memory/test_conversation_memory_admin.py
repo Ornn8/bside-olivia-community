@@ -309,6 +309,41 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
     assert memory.operations == [("clear", "local-user")]
 
 
+def test_status_counts_only_the_normalized_current_user_audit_rows(tmp_path: Path) -> None:
+    memory = FakeMemory()
+    audit = tmp_path / "memory" / "admin.sqlite3"
+    user_a = ConversationMemoryAdminService(memory, audit, user_id="User-A")
+    user_b = ConversationMemoryAdminService(memory, audit, user_id="user-b")
+    user_a.pause(request_id="pause.user-a.1", reason="用户 A 暂停长期记忆。")
+    with sqlite3.connect(audit) as connection:
+        connection.execute(
+            """
+            INSERT INTO memory_admin_operations (
+                user_id, request_id, operation, target_memory_id,
+                replacement_memory_id, replacement_source_id,
+                status, affected_count, reason, created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, 0, ?, ?, ?)
+            """,
+            (
+                "user-a",
+                "correct.user-a.pending.1",
+                "correct",
+                "replacement_written_delete_pending",
+                "synthetic pending correction",
+                "2026-08-26T00:00:00+00:00",
+                "2026-08-26T00:00:00+00:00",
+            ),
+        )
+
+    assert user_a.status().audit_count == 2
+    assert user_a.status().pending_correction_count == 1
+    assert user_b.status().audit_count == 0
+    assert user_b.status().pending_correction_count == 0
+    user_b.pause(request_id="pause.user-b.1", reason="用户 B 暂停长期记忆。")
+    assert user_a.status().audit_count == 2
+    assert user_b.status().audit_count == 1
+
+
 @pytest.mark.parametrize(
     ("provider_status", "expected"),
     [

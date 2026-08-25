@@ -145,9 +145,10 @@ class CompanionReadStatus:
             raise ValueError("companion video reply setting is invalid")
 
     def to_dict(self) -> dict[str, object]:
+        paused = self.memory.reason_code == "MEMORY_ADMIN_PAUSED"
         payload = {
             "schema_version": COMPANION_READ_SCHEMA,
-            "status": "READY",
+            "status": "PAUSED" if paused else "READY",
             "capabilities": {
                 "memory": self.memory.to_dict(),
                 "private_world": self.private_world.to_dict(),
