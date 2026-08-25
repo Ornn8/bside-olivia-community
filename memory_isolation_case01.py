@@ -205,6 +205,7 @@ def run_prefix19(
     persona_authority: object,
     output_path: Path,
     validation_mode: str,
+    private_world_arm: str = "fixed_disabled",
 ) -> dict[str, object]:
     """Run the 19 fresh-memory prefixes without exposing held-out media."""
 
@@ -213,6 +214,8 @@ def run_prefix19(
         "private_local_validation",
     }:
         raise ValueError("PREFIX19_VALIDATION_MODE_INVALID")
+    if private_world_arm not in {"fixed_disabled", "controlled_projection"}:
+        raise ValueError("PREFIX19_PRIVATE_WORLD_ARM_INVALID")
 
     manifest_file = Path(manifest_path)
     manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
@@ -236,7 +239,7 @@ def run_prefix19(
             "namespace": case_namespace,
             "train_original_count": len(train_items),
             "test_original_count": prefix_count,
-            "private_world_arm": "fixed_disabled",
+            "private_world_arm": private_world_arm,
         }
         stage = "memory"
         try:
@@ -306,7 +309,7 @@ def run_prefix19(
                 {
                     "status": "unavailable",
                     "validation_mode": validation_mode,
-                    "private_world_arm": "fixed_disabled",
+                    "private_world_arm": private_world_arm,
                     "failed_case": failed_case,
                 },
             )
@@ -328,7 +331,7 @@ def run_prefix19(
         "status": "completed",
         "error_code": None,
         "validation_mode": validation_mode,
-        "private_world_arm": "fixed_disabled",
+        "private_world_arm": private_world_arm,
         "completed_case_count": len(reports),
         "cases": reports,
     }

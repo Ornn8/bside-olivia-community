@@ -48,7 +48,12 @@ The same report schema accepts the completed 19-case aggregate. Its per-case
 records are limited to IDs, namespace, counts, statuses, finite scores, hard
 violation counts, and reference status. Synthetic fixtures use
 `synthetic_validation`; a caller-owned, Git-ignored real run must use
-`private_local_validation`. Both keep `private_world_arm=fixed_disabled`.
+`private_local_validation`. The default remains
+`private_world_arm=fixed_disabled`. A caller running a separate controlled
+PrivateWorld arm may explicitly declare
+`private_world_arm=controlled_projection`; the runner preserves that label in
+completed and unavailable reports. This declaration does not provide
+PrivateWorld state to callbacks or verify caller-owned projection behavior.
 
 Persona metrics are limited to the eight declared authority axes; held-out
 comparison is limited to `style_score` and `focus_score`. Unknown metric names

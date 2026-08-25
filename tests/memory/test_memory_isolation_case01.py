@@ -239,12 +239,17 @@ def test_case01_orders_blind_persona_before_reference_and_hides_reference_from_g
 
 
 @pytest.mark.parametrize(
-    "validation_mode",
-    ["synthetic_validation", "private_local_validation"],
+    ("validation_mode", "private_world_arm"),
+    [
+        ("synthetic_validation", "fixed_disabled"),
+        ("private_local_validation", "fixed_disabled"),
+        ("synthetic_validation", "controlled_projection"),
+    ],
 )
 def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     tmp_path: Path,
     validation_mode: str,
+    private_world_arm: str,
 ) -> None:
     events: list[str] = []
     ingested: list[tuple[str, str]] = []
@@ -289,10 +294,13 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
         persona_authority={"authority": "synthetic"},
         output_path=output_path,
         validation_mode=validation_mode,
+        private_world_arm=private_world_arm,
     )
 
     cases = report["cases"]
     assert isinstance(cases, list) and len(cases) == 19
+    assert report["private_world_arm"] == private_world_arm
+    assert all(case["private_world_arm"] == private_world_arm for case in cases)
     assert [case["namespace"] for case in cases] == [
         f"synthetic-run:case{number:02d}" for number in range(1, 20)
     ]
@@ -325,6 +333,14 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
         )
     )
     assert list(Draft202012Validator(schema).iter_errors(report)) == []
+
+    mixed_arm = json.loads(json.dumps(report))
+    mixed_arm["cases"][0]["private_world_arm"] = (
+        "controlled_projection"
+        if private_world_arm == "fixed_disabled"
+        else "fixed_disabled"
+    )
+    assert list(Draft202012Validator(schema).iter_errors(mixed_arm))
 
     unavailable_child = json.loads(json.dumps(report))
     unavailable_child["cases"][0] = {
@@ -414,6 +430,49 @@ def test_prefix19_writes_a_schema_valid_unavailable_case(tmp_path: Path) -> None
     mismatched_mode = json.loads(json.dumps(report))
     mismatched_mode["failed_case"]["validation_mode"] = "private_local_validation"
     assert list(Draft202012Validator(schema).iter_errors(mismatched_mode))
+
+
+def test_prefix19_preserves_controlled_arm_on_failure(tmp_path: Path) -> None:
+    class Memory:
+        def ingest_user_evidence(self, **_: object) -> None:
+            pass
+
+        def selected_evidence(self, **_: object) -> tuple[str, ...]:
+            return ()
+
+    def generator(**_: object) -> str:
+        raise RuntimeError("synthetic controlled failure")
+
+    output_path = tmp_path / "controlled-unavailable-prefix19-report.json"
+    with pytest.raises(RuntimeError, match="synthetic controlled failure"):
+        run_prefix19(
+            manifest_path=_manifest_19(tmp_path),
+            namespace="synthetic-controlled-run",
+            memory_factory=lambda _: Memory(),
+            generator=generator,
+            persona_evaluator=lambda **_: {"score": 0.9, "hard_violations": []},
+            reference_evaluator=lambda **_: {"style_score": 0.8},
+            persona_authority={"authority": "synthetic"},
+            output_path=output_path,
+            validation_mode="synthetic_validation",
+            private_world_arm="controlled_projection",
+        )
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["private_world_arm"] == "controlled_projection"
+    assert report["failed_case"]["private_world_arm"] == "controlled_projection"
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "memory_isolation_case01_report.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    validator = Draft202012Validator(schema)
+    assert list(validator.iter_errors(report)) == []
+    mixed_arm = json.loads(json.dumps(report))
+    mixed_arm["failed_case"]["private_world_arm"] = "fixed_disabled"
+    assert list(validator.iter_errors(mixed_arm))
 
 
 def test_prefix19_rejects_reference_kind_drift_before_callbacks(tmp_path: Path) -> None:
