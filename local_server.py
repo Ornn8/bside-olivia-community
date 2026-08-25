@@ -2147,7 +2147,7 @@ def _schedule_pending_media_jobs() -> int:
             continue
         if letter.get("letter_status") != "COMPLETED":
             continue
-        if not receive_eligibility_from_letter(letter).enabled:
+        if letter.get("video_reply_enabled", True) is False:
             continue
         letter_id = str(letter.get("letter_id", "")).strip()
         content = letter.get("content")
