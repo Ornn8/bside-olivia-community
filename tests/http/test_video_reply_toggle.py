@@ -8,6 +8,7 @@ from original_client_server import create_configured_original_client_server_runt
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult
+from voice_direction import VoicePerformancePlan
 @pytest.fixture(autouse=True)
 def isolate_local_server_state():
     import local_server
@@ -27,7 +28,7 @@ def isolate_local_server_state():
     local_server.store.settings.clear()
     local_server.store.settings.update(saved[2])
     local_server.media_jobs.clear()
-def _stub_reply(monkeypatch, *, requested_mode):
+def _stub_reply(monkeypatch, *, requested_mode, tmp_path):
     import local_server
 
     decision = TriageResult(
@@ -35,19 +36,28 @@ def _stub_reply(monkeypatch, *, requested_mode):
         direct_response_sufficient=True, voice_materially_better=True,
     )
     observed: dict[str, object] = {}
-    scheduled: list[str] = []
     async def classify(_content: str) -> TriageResult:
         return decision
     async def run_pipeline(request, context) -> PipelineResult:
         observed["context_mode"] = context.mode
         return PipelineResult("synthetic", ReplyState.COMPLETED, text="canonical reply", quality_status="accepted_degraded")
+
+    async def direct_voice(_reply_text, _gateway, *, request_id=None):
+        return VoicePerformancePlan("canonical reply", "warm", 1.05, 0.5, (), (1,))
+
+    def render_video(_reply_text, output_path, **_kwargs):
+        observed.setdefault("rendered", []).append(output_path.name)
+        output_path.write_bytes(b"synthetic mp4")
+
     monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
     monkeypatch.setattr(local_server.reply_pipeline, "run", run_pipeline)
-    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
-    monkeypatch.setattr(local_server, "_commit_private_world_letter", lambda _letter: False)
-    monkeypatch.setattr(local_server, "_schedule_media_job", lambda _letter_id, _content, _reply, mode: scheduled.append(mode))
-    monkeypatch.setattr(local_server.letters_adapter, "remember_conversation", lambda *_args: None)
-    return observed, scheduled
+    monkeypatch.setattr(local_server, "direct_voice_performance", direct_voice)
+    monkeypatch.setattr(local_server, "render_reply_video", render_video)
+    scene = tmp_path / "scene.mp4"
+    scene.write_bytes(b"synthetic scene")
+    for key in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{key}", str(scene))
+    return observed
 def _headers() -> dict[str, str]:
     return {"Origin": "http://127.0.0.1:8899", CONFIRM_HEADER: CONFIRM_VALUE}
 def test_video_reply_setting_is_visible_persistent_and_idempotent(monkeypatch, tmp_path) -> None:
@@ -90,16 +100,17 @@ def test_video_reply_setting_is_visible_persistent_and_idempotent(monkeypatch, t
     [(False, True, ReplyMode.TEXT_LETTER.value),
      (True, False, ReplyMode.SPOKEN_VIDEO.value)],
 )
-def test_receive_time_freezes_video_eligibility(monkeypatch, received_enabled, later_enabled, expected_mode) -> None:
+def test_receive_time_freezes_video_eligibility(monkeypatch, tmp_path, received_enabled, later_enabled, expected_mode) -> None:
     import local_server
-    observed, scheduled = _stub_reply(
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    observed = _stub_reply(
         monkeypatch,
         requested_mode=ReplyMode.SPOKEN_VIDEO.value,
+        tmp_path=tmp_path,
     )
     if received_enabled:
         local_server.store.settings[local_server.VIDEO_REPLY_SETTING_KEY] = "legacy"
         assert local_server._video_reply_enabled() is True
-    monkeypatch.setattr(local_server, "_schedule_media_job", lambda *args: scheduled.append(args[-1]))
     async def exercise() -> dict:
         local_server.video_reply_settings.write_video_reply_enabled(received_enabled)
         sent = await local_server.route(
@@ -107,11 +118,15 @@ def test_receive_time_freezes_video_eligibility(monkeypatch, received_enabled, l
         )
         local_server.video_reply_settings.write_video_reply_enabled(later_enabled)
         await asyncio.gather(*tuple(local_server.reply_tasks))
+        await asyncio.sleep(0)
+        media_tasks = tuple(local_server.media_tasks)
+        if media_tasks:
+            await asyncio.gather(*media_tasks)
         return sent
     sent = asyncio.run(exercise())
     letter = next(item for item in local_server.store.letters if item["letter_id"] == sent["data"]["letter_id"])
     assert letter["video_reply_enabled_at_receive"] is received_enabled
     assert observed["context_mode"] is ReplyMode(expected_mode)
     assert letter["reply_mode"] == expected_mode
-    assert scheduled == ([] if not received_enabled else [expected_mode])
-    assert letter.get("media_status", "NOT_REQUESTED") == ("NOT_REQUESTED" if not received_enabled else "PENDING")
+    assert observed.get("rendered", []) == ([] if not received_enabled else [f"{letter['letter_id']}.mp4"])
+    assert letter.get("media_status", "NOT_REQUESTED") == ("NOT_REQUESTED" if not received_enabled else "COMPLETED")
