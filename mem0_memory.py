@@ -36,6 +36,8 @@ from conversation_memory_port import (
 MEM0_OSS_VERSION = "2.0.18"
 MEM0_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 MEM0_EMBEDDING_MODEL_REVISION = "7999e1d3359715c523056ef9478215996d62a620"
+_MEM0_IMPORT_LOCK = threading.Lock()
+_SAFE_MEM0_MODULE: object | None = None
 _EMBEDDING_MANIFEST_NAME = "olivia-mem0-embedding-manifest.json"
 _EMBEDDING_SNAPSHOT_FILES = frozenset(
     {
@@ -976,11 +978,29 @@ class Mem0ConversationMemoryAdapter:
         )
 
 
+def _require_safe_mem0_import_state() -> None:
+    with _MEM0_IMPORT_LOCK:
+        os.environ["MEM0_TELEMETRY"] = "False"
+        module = sys.modules.get("mem0")
+        if module is not None and module is not _SAFE_MEM0_MODULE:
+            raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
+
+
+def _load_product_mem0_module() -> object:
+    global _SAFE_MEM0_MODULE
+    with _MEM0_IMPORT_LOCK:
+        os.environ["MEM0_TELEMETRY"] = "False"
+        module = sys.modules.get("mem0")
+        if module is None:
+            module = importlib.import_module("mem0")
+            _SAFE_MEM0_MODULE = module
+        elif module is not _SAFE_MEM0_MODULE:
+            raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
+        return module
+
+
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
-    os.environ["MEM0_TELEMETRY"] = "False"
-    if "mem0" in sys.modules:
-        raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
-    module = importlib.import_module("mem0")
+    module = _load_product_mem0_module()
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
         raise ImportError("Mem0 Memory.from_config is unavailable")
@@ -1002,12 +1022,8 @@ def create_mem0_adapter(
         return UnavailableConversationMemoryPort(
             "MEM0_EMBEDDING_CACHE_UNAVAILABLE", config=active
         )
-    os.environ["MEM0_TELEMETRY"] = "False"
-    if "mem0" in sys.modules:
-        return UnavailableConversationMemoryPort(
-            "MEM0_TELEMETRY_STATE_UNAVAILABLE", config=active
-        )
     try:
+        _require_safe_mem0_import_state()
         active.qdrant_path.parent.mkdir(parents=True, exist_ok=True)
         active.history_path.parent.mkdir(parents=True, exist_ok=True)
         backend = (memory_factory or _default_factory)(active.provider_config(environ))

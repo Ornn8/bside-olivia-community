@@ -1298,7 +1298,9 @@ def test_factory_forces_telemetry_off_before_first_mem0_import(
     def import_mem0(name: str):
         assert name == "mem0"
         observed["import"] = os.environ.get("MEM0_TELEMETRY")
-        return SimpleNamespace(Memory=FakeMemory)
+        module = SimpleNamespace(Memory=FakeMemory)
+        sys.modules[name] = module
+        return module
 
     monkeypatch.delitem(sys.modules, "mem0", raising=False)
     monkeypatch.setenv("MEM0_TELEMETRY", "true")
@@ -1312,6 +1314,94 @@ def test_factory_forces_telemetry_off_before_first_mem0_import(
     assert isinstance(port, Mem0ConversationMemoryAdapter)
     assert observed == {"import": "False", "from_config": "False"}
     assert os.environ["MEM0_TELEMETRY"] == "False"
+
+
+def test_factory_reuses_a_product_verified_mem0_import(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    observed: dict[str, object] = {"imports": 0, "from_config": []}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"].append(os.environ.get("MEM0_TELEMETRY"))
+            return FakeMem0()
+
+    module = SimpleNamespace(Memory=FakeMemory)
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["imports"] += 1
+        sys.modules[name] = module
+        return module
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setattr(mem0_memory, "_SAFE_MEM0_MODULE", None, raising=False)
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+
+    first = create_mem0_adapter(config)
+    second = create_mem0_adapter(config)
+
+    assert isinstance(first, Mem0ConversationMemoryAdapter)
+    assert isinstance(second, Mem0ConversationMemoryAdapter)
+    assert observed == {"imports": 1, "from_config": ["False", "False"]}
+
+
+def test_concurrent_factories_reuse_one_product_verified_mem0_import(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    import_entered = threading.Event()
+    release_import = threading.Event()
+    second_started = threading.Event()
+    first_finished = threading.Event()
+    second_finished = threading.Event()
+    observed: dict[str, object] = {"imports": 0, "from_config": []}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"].append(os.environ.get("MEM0_TELEMETRY"))
+            return FakeMem0()
+
+    module = SimpleNamespace(Memory=FakeMemory)
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["imports"] += 1
+        sys.modules[name] = module
+        import_entered.set()
+        assert release_import.wait(1)
+        return module
+
+    results: dict[str, object] = {}
+
+    def construct(name: str, finished: threading.Event) -> None:
+        if name == "second":
+            second_started.set()
+        results[name] = create_mem0_adapter(config)
+        finished.set()
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setattr(mem0_memory, "_SAFE_MEM0_MODULE", None, raising=False)
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+    first = threading.Thread(target=construct, args=("first", first_finished))
+    second = threading.Thread(target=construct, args=("second", second_finished))
+    first.start()
+    assert import_entered.wait(1)
+    second.start()
+    assert second_started.wait(1)
+    assert second_finished.is_set() is False
+    release_import.set()
+    assert first_finished.wait(1)
+    assert second_finished.wait(1)
+    first.join()
+    second.join()
+
+    assert isinstance(results["first"], Mem0ConversationMemoryAdapter)
+    assert isinstance(results["second"], Mem0ConversationMemoryAdapter)
+    assert observed == {"imports": 1, "from_config": ["False", "False"]}
 
 
 def test_factory_fails_closed_when_mem0_was_preloaded(tmp_path: Path, monkeypatch) -> None:
