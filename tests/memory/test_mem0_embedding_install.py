@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+import json
+import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+import mem0_embedding_install as install_module
 from conversation_memory_port import UnavailableConversationMemoryPort
-from mem0_embedding_install import EmbeddingInstallStatus, Mem0EmbeddingInstaller
-from mem0_memory import Mem0Config, create_mem0_adapter
+from mem0_embedding_install import (
+    EmbeddingInstallStatus,
+    HuggingFaceEmbeddingDownloader,
+    Mem0EmbeddingInstaller,
+)
+from mem0_memory import Mem0Config, create_mem0_adapter, verified_embedding_cache
 from mem0_memory import MEM0_EMBEDDING_MODEL_REVISION
 from original_client_companion_backend import OriginalClientCompanionServiceBackend
 from original_client_companion_mutation_backend import (
@@ -15,6 +27,7 @@ from original_client_companion_mutation_backend import (
 )
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 from conversation_memory_admin import ConversationMemoryAdminService
+from original_client_companion_api import CompanionReadStatus
 
 
 @dataclass
@@ -116,6 +129,189 @@ def test_hash_mismatch_never_promotes_ready_cache_and_cleanup_allows_retry(tmp_p
     assert retry.status().state is EmbeddingInstallStatus.READY
 
 
+def test_manifest_promotion_failure_restores_the_previously_damaged_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    (config.embedding_snapshot / "config.json").write_bytes(b"damaged")
+    assert not verified_embedding_cache(config)
+
+    replace = install_module.os.replace
+
+    def fail_manifest(source: Path | str, destination: Path | str) -> None:
+        if (
+            Path(source).name == "olivia-mem0-embedding-manifest.json"
+            and Path(source).parent.name.startswith(".olivia-mem0-embedding-stage-")
+        ):
+            raise OSError("synthetic manifest promotion failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(install_module.os, "replace", fail_manifest)
+
+    failed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert failed.status == "REJECTED"
+    assert not verified_embedding_cache(config)
+
+
+@pytest.mark.parametrize("failed_name", ["snapshot", "manifest"])
+def test_replace_failures_leave_a_new_cache_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_name: str
+) -> None:
+    config = _config(tmp_path)
+    replace = install_module.os.replace
+
+    def fail_replace(source: Path | str, destination: Path | str) -> None:
+        is_stage = any(
+            parent.name.startswith(".olivia-mem0-embedding-stage-")
+            for parent in Path(source).parents
+        )
+        is_snapshot = Path(source).name == MEM0_EMBEDDING_MODEL_REVISION
+        is_manifest = Path(source).name == "olivia-mem0-embedding-manifest.json"
+        if is_stage and (
+            (failed_name == "snapshot" and is_snapshot)
+            or (failed_name == "manifest" and is_manifest)
+        ):
+            raise OSError(f"synthetic {failed_name} promotion failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(install_module.os, "replace", fail_replace)
+
+    failed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(_files())).install()
+
+    assert failed.status == "REJECTED"
+    assert not config.embedding_snapshot.exists()
+    assert not verified_embedding_cache(config)
+
+
+def test_read_and_mutation_share_fast_background_install_state(tmp_path: Path) -> None:
+    class SharedInstaller:
+        def __init__(self) -> None:
+            self.state = EmbeddingInstallStatus.MISSING
+            self.start_calls = 0
+
+        def status(self):
+            from mem0_embedding_install import EmbeddingInstallState
+
+            return EmbeddingInstallState(self.state)
+
+        def start(self):
+            from mem0_embedding_install import EmbeddingInstallResult
+
+            self.start_calls += 1
+            self.state = EmbeddingInstallStatus.INSTALLING
+            return EmbeddingInstallResult("APPLIED")
+
+    memory = UnavailableConversationMemoryPort("MEM0_EMBEDDING_CACHE_UNAVAILABLE")
+    admin = ConversationMemoryAdminService(memory, tmp_path / "memory-admin.sqlite3")
+    installer = SharedInstaller()
+    read = OriginalClientCompanionServiceBackend(
+        memory_admin=admin,
+        embedding_installer=installer,
+    )
+    mutate = DirectOriginalClientCompanionMutationBackend(embedding_installer=installer)
+
+    before = read.read_status()
+    assert isinstance(before, CompanionReadStatus)
+    before_payload = before.to_dict()
+    assert before_payload["capabilities"]["memory"]["embedding"] == {
+        "state": "missing"
+    }
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "original_client_memory_lifecycle.schema.json").read_text("utf-8")
+    )
+    assert not list(Draft202012Validator(schema).iter_errors(before_payload))
+
+    accepted = mutate.install_embedding(
+        request_id="request.memory.embedding.install.1",
+        reason="synthetic explicit confirmation",
+    )
+
+    assert accepted.status == "APPLIED"
+    assert installer.start_calls == 1
+    assert read.read_status().to_dict()["capabilities"]["memory"]["embedding"] == {
+        "state": "installing"
+    }
+
+
+def test_start_returns_before_download_and_reuses_one_background_worker(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+
+    class BlockingDownloader(SyntheticDownloader):
+        def download(self, **kwargs: object) -> None:
+            if kwargs["relative_path"] == "config.json":
+                entered.set()
+                assert release.wait(1)
+            super().download(**kwargs)  # type: ignore[arg-type]
+            if kwargs["relative_path"] == "vocab.txt":
+                completed.set()
+
+    downloader = BlockingDownloader(_files())
+    installer = Mem0EmbeddingInstaller(_config(tmp_path), downloader=downloader)
+
+    assert installer.start().status == "APPLIED"
+    assert entered.wait(1)
+    assert installer.status().state is EmbeddingInstallStatus.INSTALLING
+    assert installer.start().status == "APPLIED"
+    assert [path for _revision, path in downloader.calls] == ["1_Pooling/config.json"]
+
+    release.set()
+    assert completed.wait(1)
+    deadline = time.monotonic() + 1
+    while (
+        installer.status().state is EmbeddingInstallStatus.INSTALLING
+        and time.monotonic() < deadline
+    ):
+        threading.Event().wait(0.01)
+    assert installer.status().state is EmbeddingInstallStatus.READY
+    assert len(downloader.calls) == len(_files())
+
+
+def test_huggingface_download_call_shape_uses_only_supported_pinned_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def hf_hub_download(
+        *, repo_id: str, filename: str, revision: str, local_dir: str, token: bool
+    ) -> str:
+        observed.update(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_dir=local_dir,
+            token=token,
+        )
+        destination = Path(local_dir) / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"synthetic")
+        return str(destination)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(hf_hub_download=hf_hub_download),
+    )
+    destination = tmp_path / "stage" / "1_Pooling" / "config.json"
+
+    HuggingFaceEmbeddingDownloader().download(
+        revision=MEM0_EMBEDDING_MODEL_REVISION,
+        relative_path="1_Pooling/config.json",
+        destination=destination,
+    )
+
+    inspect.signature(hf_hub_download).bind(**observed)
+    assert observed["revision"] == MEM0_EMBEDDING_MODEL_REVISION
+    assert observed["token"] is False
+    assert destination.read_bytes() == b"synthetic"
+
+
 def test_download_fault_cleans_staging_and_concurrent_or_ready_retries_are_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -163,6 +359,8 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     assert "安装 Embedding" in BOOTSTRAP_JAVASCRIPT
     assert "正在安装 Embedding" in BOOTSTRAP_JAVASCRIPT
     assert "Embedding 安装失败，请重试。" in BOOTSTRAP_JAVASCRIPT
+    assert "capability.embedding" in BOOTSTRAP_JAVASCRIPT
+    assert "window.setTimeout(refresh, 1000);" in BOOTSTRAP_JAVASCRIPT
     assert "http://" not in BOOTSTRAP_JAVASCRIPT
     assert "https://" not in BOOTSTRAP_JAVASCRIPT
 
@@ -175,7 +373,7 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     }
 
     class RejectingInstaller:
-        def install(self):
+        def start(self):
             from mem0_embedding_install import EmbeddingInstallResult
 
             return EmbeddingInstallResult("REJECTED", "MEM0_EMBEDDING_HASH_MISMATCH")

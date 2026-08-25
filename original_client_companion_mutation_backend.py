@@ -56,7 +56,7 @@ class CandidateDecisionService(Protocol):
 
 @runtime_checkable
 class EmbeddingInstallService(Protocol):
-    def install(self) -> EmbeddingInstallResult: ...
+    def start(self) -> EmbeddingInstallResult: ...
 
 
 def _memory_error(exc: ConversationMemoryAdminError) -> OriginalClientCompanionMutationError:
@@ -163,7 +163,7 @@ class DirectOriginalClientCompanionMutationBackend:
                 "MEM0_EMBEDDING_INSTALL_DISABLED", status=503
             )
         try:
-            result = self.embedding_installer.install()
+            result = self.embedding_installer.start()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise OriginalClientCompanionMutationError(
                 "MEM0_EMBEDDING_INSTALL_UNAVAILABLE", status=503

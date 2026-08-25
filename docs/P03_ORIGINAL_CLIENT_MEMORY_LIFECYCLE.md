@@ -27,6 +27,14 @@ promotion failure is path-free, leaves no READY cache, cleans staging, and can
 be retried. The installed runtime still passes `local_files_only=True`; a
 subsequent local service start reuses the verified cache offline.
 
+The confirmed mutation starts the single background job and returns promptly;
+it does not use the ordinary short mutation timeout as a download deadline.
+`/toy/companion/status` exposes the shared embedding state as `missing`,
+`installing`, `ready`, or `error` under `capabilities.memory.embedding`. The
+same Settings panel polls that read state while installing, then shows either a
+retryable error or the offline-ready restart instruction. A ready embedding does
+not by itself claim that the already-started Mem0 runtime is ready.
+
 ## Pause and resume boundary
 
 `pause` persists its state in the existing memory-admin audit SQLite file. The

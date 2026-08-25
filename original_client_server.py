@@ -329,6 +329,7 @@ def create_original_client_server_runtime(
         memory_admin=memory_admin,
         private_world=private_read,
         candidates=candidates,
+        embedding_installer=embedding_installer,
     )
     mutation_memory = (
         memory_admin

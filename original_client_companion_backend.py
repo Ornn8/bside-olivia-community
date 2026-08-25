@@ -13,9 +13,11 @@ from typing import Protocol, runtime_checkable
 
 from conversation_memory_admin import MemoryAdminStatus
 from conversation_memory_port import ConversationMemoryRecord
+from mem0_embedding_install import EmbeddingInstallState
 from original_client_companion_api import (
     CompanionCandidateSummary,
     CompanionCapability,
+    CompanionEmbeddingInstall,
     CompanionContinuationSummary,
     CompanionMemorySummary,
     CompanionPrivateWorldSummary,
@@ -77,6 +79,11 @@ class CandidateReadPort(Protocol):
     ) -> Sequence[PrivateWorldCandidate]: ...
 
 
+@runtime_checkable
+class EmbeddingInstallReadPort(Protocol):
+    def status(self) -> EmbeddingInstallState: ...
+
+
 def _capability_failure(code: str) -> CompanionCapability:
     return CompanionCapability("unavailable", reason_code=code)
 
@@ -133,18 +140,21 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         memory_admin: MemoryAdminReadPort | None = None,
         private_world: PrivateWorldReadPort | None = None,
         candidates: CandidateReadPort | None = None,
+        embedding_installer: EmbeddingInstallReadPort | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         for value, protocol, name in (
             (memory_admin, MemoryAdminReadPort, "memory admin"),
             (private_world, PrivateWorldReadPort, "PrivateWorld read port"),
             (candidates, CandidateReadPort, "candidate read port"),
+            (embedding_installer, EmbeddingInstallReadPort, "embedding installer"),
         ):
             if value is not None and not isinstance(value, protocol):
                 raise TypeError(f"{name} is invalid")
         self._memory_admin = memory_admin
         self._private_world = private_world
         self._candidates = candidates
+        self._embedding_installer = embedding_installer
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def _memory_status(self) -> CompanionCapability:
@@ -166,9 +176,23 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
                 status.status,
                 reason_code=status.reason_code,
                 count=count,
+                embedding=self._embedding_status(),
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             return _capability_failure("COMPANION_MEMORY_UNAVAILABLE")
+
+    def _embedding_status(self) -> CompanionEmbeddingInstall | None:
+        if self._embedding_installer is None:
+            return None
+        try:
+            state = self._embedding_installer.status()
+            if not isinstance(state, EmbeddingInstallState):
+                raise TypeError("invalid embedding install state")
+            return CompanionEmbeddingInstall(state.state.value, state.reason_code)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return CompanionEmbeddingInstall(
+                "error", "MEM0_EMBEDDING_STATUS_UNAVAILABLE"
+            )
 
     def _private_world_status(self) -> CompanionCapability:
         if self._private_world is None:
@@ -392,6 +416,7 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
 
 __all__ = [
     "CandidateReadPort",
+    "EmbeddingInstallReadPort",
     "MemoryAdminReadPort",
     "OriginalClientCompanionBackendError",
     "OriginalClientCompanionServiceBackend",

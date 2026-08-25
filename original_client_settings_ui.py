@@ -413,9 +413,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (state === "disabled" || state === "unavailable") {
       if (state === "unavailable" && capability && capability.reason_code === "MEM0_EMBEDDING_CACHE_UNAVAILABLE") {
         const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+        const embedding = capability.embedding && typeof capability.embedding === "object"
+          ? capability.embedding
+          : { state: "missing" };
+        const installState = typeof embedding.state === "string" ? embedding.state : "error";
         const summary = text(
           "p",
-          "Embedding 尚未安装，长期记忆暂不可用。",
+          installState === "ready"
+            ? "Embedding 已就绪。重启本机服务后，长期记忆会离线运行。"
+            : installState === "installing"
+            ? "正在安装 Embedding，请保持此页面打开。"
+            : installState === "error"
+            ? "Embedding 安装失败，请重试。"
+            : "Embedding 尚未安装，长期记忆暂不可用。",
           "text-text-secondary text-body-m font-regular"
         );
         const resultState = text(
@@ -424,6 +434,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           "text-text-secondary text-body-m font-regular"
         );
         resultState.setAttribute("aria-live", "polite");
+        const refresh = async () => {
+          try {
+            const payload = await requestJson(STATUS_PATH);
+            const capabilities = payload.capabilities && typeof payload.capabilities === "object"
+              ? payload.capabilities
+              : {};
+            const latest = capabilities.memory;
+            await renderMemoryPanel(panel, latest);
+          } catch (_error) {
+            resultState.textContent = "安装仍在进行，可稍后刷新。";
+            window.setTimeout(refresh, 1000);
+          }
+        };
+        if (installState === "installing") {
+          panel.replaceChildren(heading, summary, resultState);
+          window.setTimeout(refresh, 1000);
+          return;
+        }
+        if (installState === "ready") {
+          panel.replaceChildren(heading, summary, resultState);
+          return;
+        }
         const install = button("安装 Embedding", async () => {
           if (!window.confirm("确认下载本地 Embedding 模型？下载仅在此次确认后开始。")) {
             return;
@@ -436,7 +468,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
               reason: "用户在原版 Olivia 设置中明确安装 Mem0 Embedding。",
             });
             if (payload.status === "APPLIED" || payload.status === "NOOP") {
-              resultState.textContent = "Embedding 已就绪。重启本机服务后，长期记忆会离线运行。";
+              resultState.textContent = "正在安装 Embedding……";
+              await refresh();
             } else {
               resultState.textContent = "Embedding 安装失败，请重试。";
             }

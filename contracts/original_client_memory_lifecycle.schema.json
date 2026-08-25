@@ -31,7 +31,17 @@
       "properties": {
         "state": {"enum": ["available", "degraded", "unavailable", "disabled"]},
         "reason_code": {"$ref": "#/$defs/reason_code"},
-        "count": {"type": "integer", "minimum": 0}
+        "count": {"type": "integer", "minimum": 0},
+        "embedding": {"$ref": "#/$defs/embedding"}
+      }
+    },
+    "embedding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["missing", "installing", "ready", "error"]},
+        "reason_code": {"$ref": "#/$defs/reason_code"}
       }
     },
     "memory": {

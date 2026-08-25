@@ -90,7 +90,6 @@ class HuggingFaceEmbeddingDownloader:
             filename=relative_path,
             revision=revision,
             local_dir=str(local_root),
-            local_dir_use_symlinks=False,
             token=False,
         )
         fetched_path = Path(fetched)
@@ -148,6 +147,7 @@ class Mem0EmbeddingInstaller:
         self.expected_hashes = expected_hashes
         self._state = EmbeddingInstallState(EmbeddingInstallStatus.MISSING)
         self._state_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
 
     def status(self) -> EmbeddingInstallState:
         if verified_embedding_cache(self.config):
@@ -182,6 +182,25 @@ class Mem0EmbeddingInstaller:
                 shutil.rmtree(stage_root, ignore_errors=True)
             self._set_state(EmbeddingInstallStatus.READY)
             return EmbeddingInstallResult("APPLIED")
+
+    def start(self) -> EmbeddingInstallResult:
+        """Begin one background installation and return without waiting for I/O."""
+
+        if verified_embedding_cache(self.config):
+            self._set_state(EmbeddingInstallStatus.READY)
+            return EmbeddingInstallResult("NOOP")
+        with self._state_lock:
+            if self._state.state is EmbeddingInstallStatus.INSTALLING:
+                return EmbeddingInstallResult("APPLIED")
+            self._state = EmbeddingInstallState(EmbeddingInstallStatus.INSTALLING)
+            worker = threading.Thread(
+                target=self.install,
+                name="olivia-mem0-embedding-install",
+                daemon=True,
+            )
+            self._thread = worker
+            worker.start()
+        return EmbeddingInstallResult("APPLIED")
 
     def _download_and_hash(self, staged: Mem0Config) -> dict[str, str]:
         hashes: dict[str, str] = {}
@@ -219,16 +238,57 @@ class Mem0EmbeddingInstaller:
 
     def _promote(self, stage_root: Path, staged: Mem0Config) -> None:
         target = self.config.embedding_snapshot
-        if target.exists():
-            shutil.rmtree(target)
+        manifest = self.config.model_cache / _MANIFEST_NAME
+        target_backup = stage_root / "rollback-model"
+        manifest_backup = stage_root / "rollback-manifest.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staged.embedding_snapshot, target)
-        os.replace(stage_root / _MANIFEST_NAME, self.config.model_cache / _MANIFEST_NAME)
+        try:
+            if target.exists():
+                os.replace(target, target_backup)
+            if manifest.exists():
+                os.replace(manifest, manifest_backup)
+            os.replace(staged.embedding_snapshot, target)
+            os.replace(stage_root / _MANIFEST_NAME, manifest)
+        except OSError:
+            self._rollback_promotion(
+                target=target,
+                manifest=manifest,
+                target_backup=target_backup,
+                manifest_backup=manifest_backup,
+            )
+            raise
 
-    def _set_state(self, state: EmbeddingInstallStatus, reason_code: str | None = None) -> None:
+    @staticmethod
+    def _rollback_promotion(
+        *,
+        target: Path,
+        manifest: Path,
+        target_backup: Path,
+        manifest_backup: Path,
+    ) -> None:
+        _remove_path(target)
+        _remove_path(manifest)
+        try:
+            if target_backup.exists():
+                os.replace(target_backup, target)
+            if manifest_backup.exists():
+                os.replace(manifest_backup, manifest)
+        except OSError:
+            _remove_path(target)
+            _remove_path(manifest)
+
+    def _set_state(
+        self, state: EmbeddingInstallStatus, reason_code: str | None = None
+    ) -> None:
         with self._state_lock:
             self._state = EmbeddingInstallState(state, reason_code)
 
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 class _InstallFailure(RuntimeError):
     def __init__(self, code: str) -> None:
