@@ -420,6 +420,15 @@ def test_five_layer_requests_fit_default_gateway_input_budget() -> None:
     assert result.verdict.value == "pass"
     assert len(gateway.review_input_sizes) == 5
     assert max(gateway.review_input_sizes) <= 30000
+    continuity = next(
+        request
+        for request in gateway.review_requests
+        if request["layer"] == "continuity_memory"
+    )
+    evidence = str(continuity["memory_evidence"])
+    assert "忆" in evidence
+    assert "world-0" in evidence
+    assert "continuation-0" in evidence
 
 
 def test_deterministic_violation_uses_original_model_for_one_rewrite(
@@ -515,6 +524,32 @@ def test_invalid_enabled_reviewer_json_fails_closed(
             ReplyRequest(
                 content="今天有点乱。",
                 request_id="review-invalid",
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.FAILED
+    assert result.quality_status == "blocked"
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert result.reviewer_calls == 1
+    assert result.rewrite_calls == 0
+    assert gateway.call_kinds == ["generation", *("review",) * 5]
+
+
+def test_invalid_enabled_reviewer_blocks_before_deterministic_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = SequencedQualityGateway(
+        candidate="<CONTROL>invalid candidate",
+        reviews=["not-json"],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(
+                content="今天有点乱。",
+                request_id="review-invalid-deterministic",
             ),
             _context(),
         )

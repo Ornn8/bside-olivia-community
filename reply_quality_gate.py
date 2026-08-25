@@ -65,13 +65,22 @@ def run_reply_quality_gate(
         item.code.value for item in deterministic.violations
     )
     review_codes = tuple(item.code for item in review.violations)
+    if (
+        review.verdict is ReviewVerdict.UNAVAILABLE
+        and review.status is not ReviewStatus.DISABLED
+    ):
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            candidate,
+            deterministic_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=0,
+            error_code=review.error_code,
+        )
     if deterministic.passed and review.verdict is ReviewVerdict.UNAVAILABLE:
         return QualityGateResult(
-            (
-                QualityGateStatus.ACCEPTED_DEGRADED
-                if review.status is ReviewStatus.DISABLED
-                else QualityGateStatus.BLOCKED
-            ),
+            QualityGateStatus.ACCEPTED_DEGRADED,
             candidate,
             deterministic_codes,
             deterministic_checks=1,

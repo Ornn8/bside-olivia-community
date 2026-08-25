@@ -123,6 +123,7 @@ _LAYER_SPECS = {
     },
 }
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
+_MEMORY_SOURCE_CHARACTER_LIMIT = 2400
 _HEADLINE = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _REVIEW_FACETS = frozenset(
     {
@@ -185,20 +186,31 @@ class GatewayReviewTransport:
             request,
             "current.user_excerpt",
         )
-        memory_evidence = _safe_text(
-            json.dumps(
-                {
-                    "assembled_memory": _reference_text(
-                        request,
-                        "current.memory_evidence",
+        memory_evidence = json.dumps(
+            {
+                "assembled_memory": _safe_text(
+                    _reference_text(request, "current.memory_evidence"),
+                    _MEMORY_SOURCE_CHARACTER_LIMIT,
+                ),
+                "world_facts": _safe_text(
+                    json.dumps(
+                        request.get("world_facts", []),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
                     ),
-                    "world_facts": request.get("world_facts", []),
-                    "known_continuations": request.get("known_continuations", []),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            2400,
+                    _MEMORY_SOURCE_CHARACTER_LIMIT,
+                ),
+                "known_continuations": _safe_text(
+                    json.dumps(
+                        request.get("known_continuations", []),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    _MEMORY_SOURCE_CHARACTER_LIMIT,
+                ),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         results = _complete_layer_reviews(
             self.gateway,
