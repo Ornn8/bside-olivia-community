@@ -319,7 +319,7 @@ def _memory_lifecycle(memory: object) -> object | None:
         configured = os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "").strip()
         root = Path(configured).expanduser() if configured else None
     if root is None or not root.is_absolute():
-        return _UnavailableMemoryLifecycle() if memory is not None else None
+        return None
     try:
         from conversation_memory_admin import ConversationMemoryAdminService
 
