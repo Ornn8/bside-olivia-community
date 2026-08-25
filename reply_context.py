@@ -246,7 +246,7 @@ class OutputConstraints:
     @classmethod
     def for_mode(cls, mode: ReplyMode) -> "OutputConstraints":
         if mode is ReplyMode.TEXT_LETTER:
-            return cls(OutputChannel.LETTER)
+            return cls(OutputChannel.LETTER, max_characters=1_200)
         if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO}:
             return cls(OutputChannel.SPOKEN_TEXT)
         if mode is ReplyMode.FUTURE_IM:
