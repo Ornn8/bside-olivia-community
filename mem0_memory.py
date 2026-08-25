@@ -305,6 +305,8 @@ def _add_acknowledgements(value: object) -> tuple[tuple[str, str], ...] | None:
         memory = row.get("memory")
         event = row.get("event")
         if (
+            {"error", "status"} & row.keys()
+            or
             memory_id is None
             or not isinstance(memory, str)
             or not memory.strip()
@@ -355,6 +357,8 @@ def _row_to_record(
     user_id: str,
     agent_id: str,
 ) -> ConversationMemoryRecord | None:
+    if {"error", "status"} & row.keys():
+        return None
     metadata = row.get("metadata")
     if not isinstance(metadata, Mapping):
         return None

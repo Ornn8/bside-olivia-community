@@ -342,6 +342,7 @@ def test_status_and_list_fail_closed_for_malformed_provider_pages(tmp_path: Path
         {"results": [{}]},
         {"results": [{"memory_id": "memory.alias", "text": "synthetic", "user_id": "local-user", "agent_id": "linli", "metadata": {"source_id": "reply:alias:1", "domain": "conversation_memory"}}]},
         {"results": [{"id": "memory.top-level", "memory": "synthetic", "user_id": "local-user", "agent_id": "linli", "source_id": "reply:top-level:1", "metadata": {"domain": "conversation_memory"}}]},
+        *({"results": [{"id": "memory.row-marker", "memory": "synthetic", "user_id": "local-user", "agent_id": "linli", "metadata": {"source_id": "reply:row-marker:1", "domain": "conversation_memory"}, marker: "failed"}]} for marker in ("error", "status")),
     )
     for page in pages:
         adapter = Mem0ConversationMemoryAdapter(PageMem0(page), _config(tmp_path))
@@ -470,6 +471,7 @@ def test_search_fails_closed_for_malformed_provider_pages(tmp_path: Path) -> Non
         {"results": [], "status": "failed"}, {"results": [], "next": None},
         {"results": [{}]},
         {"results": [{"id": "memory.alias-search", "text": "synthetic", "user_id": "local-user", "agent_id": "linli", "metadata": {"source_id": "reply:alias-search:1", "domain": "conversation_memory"}}]},
+        *({"results": [{"id": "memory.row-marker-search", "memory": "synthetic", "user_id": "local-user", "agent_id": "linli", "metadata": {"source_id": "reply:row-marker-search:1", "domain": "conversation_memory"}, marker: "failed"}]} for marker in ("error", "status")),
     )
     for page in pages:
         adapter = Mem0ConversationMemoryAdapter(PageMem0(page), _config(tmp_path))
@@ -495,6 +497,8 @@ def test_exchange_fails_closed_for_malformed_add_acknowledgements(
         {"results": [{}]},
         {"results": [{"id": "memory.fixture.1"}]},
         {"results": [{"memory_id": "memory.fixture.1", "memory": "synthetic", "event": "ADD"}]},
+        {"results": [{"id": "memory.fixture.1", "memory": "synthetic", "event": "ADD", "error": "synthetic provider error"}]},
+        {"results": [{"id": "memory.fixture.1", "memory": "synthetic", "event": "ADD", "status": "failed"}]},
     )
     for response in responses:
         result = Mem0ConversationMemoryAdapter(AddMem0(response), _config(tmp_path)).remember_exchange(
@@ -740,6 +744,9 @@ def test_exchange_fails_closed_when_exact_source_row_scope_is_missing_or_mismatc
         "domain": "other-domain",
     }
     invalid_rows.append(mismatched_domain)
+    invalid_rows.extend(
+        {**base_row, marker: "failed"} for marker in ("error", "status")
+    )
 
     for row in invalid_rows:
         backend = ScopedExactQueryMem0(row)
