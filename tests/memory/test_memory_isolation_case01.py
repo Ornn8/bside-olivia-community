@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from jsonschema import Draft202012Validator
+
 from memory_isolation_case01 import run_case01
 
 
@@ -12,9 +15,9 @@ def _entry(relative_path: str, *, kind: str = "text") -> dict[str, str]:
     return {"relative_path": relative_path, "kind": kind}
 
 
-def _manifest(tmp_path: Path) -> Path:
+def _manifest(tmp_path: Path, *, train_count: int = 60) -> Path:
     items: list[dict[str, object]] = []
-    for number in range(60, 0, -1):
+    for number in range(train_count, 0, -1):
         relative = f"originals/train-{number:02d}.txt"
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +73,31 @@ def _manifest(tmp_path: Path) -> Path:
     return path
 
 
+class _QuietMemory:
+    def ingest_user_evidence(self, **_: object) -> None:
+        pass
+
+    def selected_evidence(self, **_: object) -> tuple[str, ...]:
+        return ()
+
+
+def _run(tmp_path: Path, **overrides: object) -> dict[str, object]:
+    manifest_path = overrides.pop("manifest_path", None)
+    arguments: dict[str, object] = {
+        "manifest_path": manifest_path or _manifest(tmp_path),
+        "namespace": "synthetic-run-namespace",
+        "memory_factory": lambda _: _QuietMemory(),
+        "generator": lambda **_: "synthetic generated reply",
+        "persona_evaluator": lambda **_: {"score": 0.9, "hard_violations": []},
+        "reference_evaluator": lambda **_: {"style_score": 0.8},
+        "persona_authority": {"authority": "synthetic"},
+        "output_path": tmp_path / "local-only-report.json",
+        "validation_mode": "synthetic_validation",
+    }
+    arguments.update(overrides)
+    return run_case01(**arguments)  # type: ignore[arg-type]
+
+
 def test_case01_orders_blind_persona_before_reference_and_hides_reference_from_generator(
     tmp_path: Path,
 ) -> None:
@@ -118,6 +146,7 @@ def test_case01_orders_blind_persona_before_reference_and_hides_reference_from_g
     output_path = tmp_path / "local-only-report.json"
     report = run_case01(
         manifest_path=_manifest(tmp_path),
+        namespace="synthetic-run-namespace",
         memory_factory=memory_factory,
         generator=generator,
         persona_evaluator=persona_evaluator,
@@ -133,7 +162,7 @@ def test_case01_orders_blind_persona_before_reference_and_hides_reference_from_g
         "test:test-first",
     ]
     assert events == [
-        "memory-factory:memory-isolation-case01",
+        "memory-factory:synthetic-run-namespace",
         *(f"ingest:train:train-{number:02d}" for number in range(1, 61)),
         "ingest:test:test-first",
         "select-memory",
@@ -142,10 +171,73 @@ def test_case01_orders_blind_persona_before_reference_and_hides_reference_from_g
         "reference-evaluate",
     ]
     assert report == json.loads(output_path.read_text(encoding="utf-8"))
-    assert report["case_id"] == "case01"
-    assert report["namespace"] == "memory-isolation-case01"
+    assert report["case_id"] == "test-first"
+    assert report["prefix_case"] == "case01"
+    assert report["namespace"] == "synthetic-run-namespace"
     assert report["validation_mode"] == "synthetic_validation"
-    assert report["boundary_flags"]["persona_before_reference"] is True
+    assert report["private_world_arm"] == "fixed_disabled"
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts" / "memory_isolation_case01_report.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert list(Draft202012Validator(schema).iter_errors(report)) == []
     assert "synthetic case01 original" not in json.dumps(report)
     assert "synthetic generated reply" not in json.dumps(report)
     assert "synthetic held-out reference" not in json.dumps(report)
+
+
+def test_case01_rejects_a_manifest_without_exactly_sixty_train_items(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def unexpected_callback(*_: object, **__: object) -> object:
+        calls.append("called")
+        raise AssertionError("train-count validation must run before callbacks")
+
+    with pytest.raises(ValueError, match="^CASE01_TRAIN_COUNT_INVALID$"):
+        _run(
+            tmp_path,
+            manifest_path=_manifest(tmp_path, train_count=59),
+            memory_factory=unexpected_callback,
+        )
+
+    assert calls == []
+
+
+def test_case01_rejects_a_non_synthetic_validation_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="^CASE01_VALIDATION_MODE_INVALID$"):
+        _run(tmp_path, manifest_path=tmp_path / "not-read.json", validation_mode="real_validation")
+
+
+def test_case01_writes_a_redacted_unavailable_report_when_generator_fails(tmp_path: Path) -> None:
+    def generator(**_: object) -> str:
+        raise RuntimeError("synthetic callback detail must not reach the report")
+
+    output_path = tmp_path / "local-only-report.json"
+    with pytest.raises(RuntimeError, match="synthetic callback detail"):
+        _run(tmp_path, generator=generator)
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["status"] == "unavailable"
+    assert report["error_code"] == "CASE01_GENERATOR_UNAVAILABLE"
+    assert report["case_id"] == "test-first"
+    assert report["prefix_case"] == "case01"
+    assert report["private_world_arm"] == "fixed_disabled"
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert "synthetic callback detail" not in serialized
+    assert "synthetic case01 original" not in serialized
+    assert "synthetic held-out reference" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_case01_rejects_malformed_persona_evaluation_without_counting_it_as_zero(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "local-only-report.json"
+    with pytest.raises(ValueError, match="^CASE01_PERSONA_EVALUATION_INVALID$"):
+        _run(tmp_path, persona_evaluator=lambda **_: {"score": 0.9, "hard_violations": "invalid"})
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["status"] == "unavailable"
+    assert report["error_code"] == "CASE01_PERSONA_EVALUATION_UNAVAILABLE"
+    assert "hard_violation_count" not in json.dumps(report)
