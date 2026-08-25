@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import json
 
 import pytest
 
@@ -30,8 +31,12 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
-    assert "input.maxLength = LETTER_CHARACTER_LIMIT;" in BOOTSTRAP_JAVASCRIPT
-    assert 'input.closest(`[${DIALOG_ATTR}]`)' in BOOTSTRAP_JAVASCRIPT
+    assert (
+        'matches[0].querySelector("textarea").maxLength = '
+        "LETTER_CHARACTER_LIMIT;"
+    ) in BOOTSTRAP_JAVASCRIPT
+    assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
+    assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
@@ -95,3 +100,85 @@ def test_original_settings_management_ui_javascript_is_parseable() -> None:
     )
     output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
     assert result.returncode == 0, output
+
+
+def test_letter_limit_handles_late_mount_and_fails_closed_on_ambiguous_dialogs() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync(0, "utf8");
+
+const run = (spec) => {
+  const makeDialog = (item) => {
+    const areas = Array.from({ length: item.textareas }, () => ({ maxLength: null }));
+    const nodes = (values) => values.map((textContent) => ({ textContent }));
+    return {
+      areas,
+      closest: () => item.companion ? {} : null,
+      querySelector: (selector) => selector === "textarea" ? areas[0] || null : null,
+      querySelectorAll: (selector) => {
+        if (selector === "textarea") return areas;
+        if (selector === "button") return nodes(item.buttons);
+        if (selector === 'h1,h2,h3,[class*="title"]') return nodes([item.title]);
+        return [];
+      },
+    };
+  };
+  const dialogs = spec.initial.map(makeDialog);
+  let mutationCallback = () => {};
+  const document = {
+    currentScript: { dataset: { apiBase: "http://127.0.0.1:8899" } },
+    documentElement: {},
+    querySelectorAll: (selector) => selector === '[role="dialog"], .el-dialog' ? dialogs : [],
+    querySelector: () => null,
+  };
+  const context = {
+    URL,
+    document,
+    window: {
+      location: { pathname: "/collection", hash: "" },
+      requestAnimationFrame: (callback) => callback(),
+      addEventListener: () => {},
+    },
+    MutationObserver: class {
+      constructor(callback) { mutationCallback = callback; }
+      observe() {}
+    },
+  };
+  vm.runInNewContext(source, context);
+  for (const item of spec.late || []) dialogs.push(makeDialog(item));
+  if (spec.late) mutationCallback();
+  return dialogs.map((dialog) => dialog.areas.map((area) => area.maxLength));
+};
+
+const letter = {
+  title: "写下你的感受",
+  buttons: ["寄出信件"],
+  textareas: 1,
+  companion: false,
+};
+process.stdout.write(JSON.stringify([
+  run({ initial: [], late: [letter] }),
+  run({ initial: [{ ...letter, title: "其他弹窗" }] }),
+  run({ initial: [letter, letter] }),
+  run({ initial: [letter, { ...letter, companion: true }] }),
+]));
+'''
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+    assert result.returncode == 0, output
+    assert json.loads(result.stdout.decode("utf-8")) == [
+        [[1200]],
+        [[None]],
+        [[None], [None]],
+        [[1200], [None]],
+    ]

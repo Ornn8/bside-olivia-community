@@ -21,6 +21,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const LETTER_CHARACTER_LIMIT = 1200;
+  const LETTER_COMPOSER_TITLE = "写下你的感受";
+  const LETTER_SUBMIT_LABEL = "寄出信件";
 
   const parseApiBase = (value) => {
     let url;
@@ -903,21 +905,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   let scheduled = false;
   const constrainLetterInputs = () => {
-    for (const input of document.querySelectorAll("textarea")) {
-      if (input.closest(`[${DIALOG_ATTR}]`)) {
-        continue;
+    const matches = Array.from(
+      document.querySelectorAll('[role="dialog"], .el-dialog')
+    ).filter((dialog) => {
+      if (dialog.closest(`[${DIALOG_ATTR}]`)) {
+        return false;
       }
-      const dialog = input.closest('[role="dialog"], .el-dialog');
-      if (!dialog) {
-        continue;
-      }
-      const isLetterEditor = Array.from(dialog.querySelectorAll("button")).some(
-        (item) => item.textContent.trim() === "寄出信件"
-      );
-      if (isLetterEditor) {
-        input.maxLength = LETTER_CHARACTER_LIMIT;
-      }
+      const textareas = dialog.querySelectorAll("textarea");
+      const titles = Array.from(
+        dialog.querySelectorAll('h1,h2,h3,[class*="title"]')
+      ).filter((item) => item.textContent.trim() === LETTER_COMPOSER_TITLE);
+      const submitButtons = Array.from(
+        dialog.querySelectorAll("button")
+      ).filter((item) => item.textContent.trim() === LETTER_SUBMIT_LABEL);
+      return textareas.length === 1 && titles.length === 1 && submitButtons.length === 1;
+    });
+    if (matches.length !== 1) {
+      return;
     }
+    matches[0].querySelector("textarea").maxLength = LETTER_CHARACTER_LIMIT;
   };
 
   const schedule = () => {

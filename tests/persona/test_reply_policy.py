@@ -92,6 +92,19 @@ def test_text_letter_accepts_1200_characters_and_rejects_1201() -> None:
         ViolationCode.OUTPUT_LIMIT_EXCEEDED,
     )
 
+    oversized_configuration = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        output_constraints=OutputConstraints(
+            OutputChannel.LETTER,
+            max_characters=12000,
+        ),
+    )
+    bypass_attempt = scan_reply("林" * 1201, oversized_configuration)
+    assert tuple(item.code for item in bypass_attempt.violations) == (
+        ViolationCode.OUTPUT_LIMIT_EXCEEDED,
+    )
+
 
 def test_only_explicit_permanent_or_exclusive_commitments_are_blocked() -> None:
     context = ReplyContext.create(

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import re
 
-from reply_context import ReplyContext, ReplyMode
+from reply_context import OutputConstraints, ReplyContext, ReplyMode
 
 
 class ViolationSeverity(StrEnum):
@@ -110,7 +110,10 @@ def scan_reply(
     if not isinstance(context, ReplyContext):
         raise TypeError("context must be ReplyContext")
     violations: list[Violation] = []
-    limit = context.output_constraints.max_characters
+    limit = min(
+        context.output_constraints.max_characters,
+        OutputConstraints.for_mode(context.mode).max_characters,
+    )
     if len(candidate) > limit:
         violations.append(
             Violation(
