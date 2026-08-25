@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 
 from conversation_memory_port import (
+    ConversationMemoryRecord,
     ConversationMemoryStatus,
     MemoryWriteResult,
     MemoryWriteStatus,
@@ -81,6 +82,29 @@ class CountingConversationMemory:
         return {"records": []}
 
 
+class SourceAwareConversationMemory(CountingConversationMemory):
+    """Synthetic Mem0 rows whose text is intentionally identical."""
+
+    def search_context(self, query, *, user_id, limit):
+        self.calls.append(
+            {"query": query, "user_id": user_id, "limit": limit}
+        )
+        return (
+            ConversationMemoryRecord(
+                memory_id="memory.current",
+                text="同文的合成记忆。",
+                user_id=user_id,
+                source_id="reply:current-letter:1",
+            ),
+            ConversationMemoryRecord(
+                memory_id="memory.older",
+                text="同文的合成记忆。",
+                user_id=user_id,
+                source_id="reply:older-letter:1",
+            ),
+        )[:limit]
+
+
 class CountingPrivateWorldCommitter:
     def __init__(self) -> None:
         self.deliveries = []
@@ -152,6 +176,80 @@ def test_unavailable_memory_falls_back_and_health_is_truthful(monkeypatch) -> No
     assert core["data"]["status"] == "HEALTHY"
     assert memory["data"]["status"] == "UNAVAILABLE"
     assert memory["data"]["capabilities"]["memory.local"]["status"] == "disabled"
+
+
+def test_current_letter_memory_excludes_only_its_exact_source_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Production generation must not retrieve its own canonical exchange."""
+
+    import local_server
+
+    memory = SourceAwareConversationMemory(tmp_path / "mem0")
+    gateway = CaptureGateway()
+    letter = {
+        "letter_id": "current-letter",
+        "content": "请记住这封合成信。",
+        "reply_text": "",
+        "reply_mode": ReplyMode.TEXT_LETTER.value,
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    local_server.store.request_keys.clear()
+    monkeypatch.setattr(local_server.letters_adapter, "conversation_memory", memory)
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "memory_prompt_builder",
+        MemoryPromptBuilder(NullMemoryPort(), conversation_memory=memory),
+    )
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+
+    assert asyncio.run(local_server.generate_reply("current-letter", letter["content"]))
+
+    rendered = "\n".join(message["content"] for message in gateway.messages)
+    assert "reply:current-letter:1" not in rendered
+    assert "reply:older-letter:1" in rendered
+    assert "同文的合成记忆。" in rendered
+
+
+def test_memory_prompt_legacy_selector_remains_compatible() -> None:
+    builder = MemoryPromptBuilder(NullMemoryPort(), conversation_memory=None)
+
+    prompt = builder.build("legacy compatible query", max_chars=2400)
+
+    assert prompt.status == "disabled"
+
+
+def test_mem0_unavailable_keeps_production_letter_generation_available(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    unavailable = UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
+    gateway = CaptureGateway()
+    letter = {
+        "letter_id": "mem0-unavailable-letter",
+        "content": "Mem0 不可用时仍应生成这封合成信。",
+        "reply_text": "",
+        "reply_mode": ReplyMode.TEXT_LETTER.value,
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    local_server.store.request_keys.clear()
+    monkeypatch.setattr(local_server.letters_adapter, "conversation_memory", unavailable)
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "memory_prompt_builder",
+        MemoryPromptBuilder(NullMemoryPort(), conversation_memory=unavailable),
+    )
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+
+    assert asyncio.run(
+        local_server.generate_reply(letter["letter_id"], letter["content"])
+    )
+    assert letter["letter_status"] == "COMPLETED"
+    assert gateway.messages[-1]["content"] == letter["content"]
 
 
 def test_legacy_import_activates_read_only_library_without_enabling_chat_memory(tmp_path, monkeypatch) -> None:
