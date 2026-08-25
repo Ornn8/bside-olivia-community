@@ -295,7 +295,10 @@ def _deliver_with_lifecycle(
     delivery: CanonicalMemoryDelivery,
 ) -> CanonicalMemoryDeliveryResult | MemoryWriteResult | None:
     try:
-        return lifecycle.run_write(lambda: _deliver_to_provider(memory, delivery))
+        return lifecycle.run_write(
+            lambda: _deliver_to_provider(memory, delivery),
+            occurred_at=delivery.occurred_at,
+        )
     except Exception:
         return CanonicalMemoryDeliveryResult(
             CanonicalMemoryDeliveryStatus.UNAVAILABLE,

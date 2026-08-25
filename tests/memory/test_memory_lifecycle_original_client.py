@@ -114,6 +114,26 @@ class ConfiguredMem0(Mem0):
         )
 
 
+class FinalGateInterleaving:
+    """Pause/resume only after the worker's initial lifecycle check."""
+
+    def __init__(self, admin: ConversationMemoryAdminService) -> None:
+        self.admin = admin
+        self.initial_check_complete = threading.Event()
+        self.allow_final_gate = threading.Event()
+
+    def blocks_delivery(self, occurred_at: datetime) -> bool:
+        del occurred_at
+        self.initial_check_complete.set()
+        assert self.allow_final_gate.wait(2.0)
+        return False
+
+    def run_write(self, operation, occurred_at: datetime | None = None):
+        if occurred_at is None:
+            return self.admin.run_write(operation)
+        return self.admin.run_write(operation, occurred_at=occurred_at)
+
+
 def _write_state(root: Path, letter_id: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "state.json").write_text(
@@ -258,6 +278,42 @@ def test_fast_pause_resume_tombstones_an_undelivered_old_canonical_reply(
     assert memory.writes == []
 
 
+def test_final_gate_rechecks_old_delivery_after_complete_pause_resume(
+    tmp_path: Path,
+) -> None:
+    memory = Mem0()
+    admin = ConversationMemoryAdminService(memory, tmp_path / "memory_admin_audit.sqlite3")
+    lifecycle = FinalGateInterleaving(admin)
+    delivery = CanonicalMemoryDelivery(
+        "letter.final-gate.gap",
+        1,
+        "synthetic user",
+        "synthetic reply",
+        datetime.now(timezone.utc),
+    )
+    result: list[object] = []
+    writer = threading.Thread(
+        target=lambda: result.append(
+            asyncio.run(
+                ConversationMemoryDeliveryCommitter(
+                    memory, memory_lifecycle=lifecycle
+                ).commit(delivery)
+            )
+        )
+    )
+
+    writer.start()
+    assert lifecycle.initial_check_complete.wait(2.0)
+    admin.pause(request_id="memory.pause.final-gate.1", reason="用户暂停长期记忆。")
+    admin.resume(request_id="memory.resume.final-gate.1", reason="用户恢复长期记忆。")
+    lifecycle.allow_final_gate.set()
+    writer.join(2.0)
+
+    assert not writer.is_alive()
+    assert result[0].status.value == "skipped"
+    assert memory.writes == []
+
+
 def test_pause_windows_are_isolated_by_normalized_user_id(tmp_path: Path) -> None:
     memory = Mem0()
     audit = tmp_path / "memory_admin_audit.sqlite3"
@@ -304,6 +360,80 @@ def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> N
     assert restarted.resume(
         request_id="memory.resume.noop.1", reason="重试同一恢复请求。"
     ).status is MemoryAdminMutationStatus.DUPLICATE
+
+
+def test_resume_rolls_back_pause_window_when_its_ledger_write_fails(
+    tmp_path: Path,
+) -> None:
+    memory = Mem0()
+    audit = tmp_path / "memory_admin_audit.sqlite3"
+    admin = ConversationMemoryAdminService(memory, audit)
+    admin.pause(request_id="memory.pause.ledger-fault.1", reason="用户暂停长期记忆。")
+    with sqlite3.connect(audit) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_resume_ledger
+            BEFORE INSERT ON memory_admin_operations
+            WHEN NEW.operation = 'resume'
+            BEGIN SELECT RAISE(FAIL, 'synthetic ledger failure'); END
+            """
+        )
+
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_AUDIT_UNAVAILABLE"):
+        admin.resume(request_id="memory.resume.ledger-fault.1", reason="用户恢复长期记忆。")
+
+    writes: list[str] = []
+    assert admin.is_paused() is True
+    assert admin.run_write(lambda: writes.append("provider")) is None
+    with sqlite3.connect(audit) as connection:
+        connection.execute("DROP TRIGGER fail_resume_ledger")
+    restarted = ConversationMemoryAdminService(memory, audit)
+    assert restarted.resume(
+        request_id="memory.resume.ledger-fault.1", reason="重试同一恢复请求。"
+    ).status is MemoryAdminMutationStatus.APPLIED
+    assert restarted.run_write(lambda: writes.append("provider")) is None
+    assert writes == ["provider"]
+
+
+def test_operation_ledger_migrates_legacy_rows_to_default_user_and_isolates_request_ids(
+    tmp_path: Path,
+) -> None:
+    memory = Mem0()
+    audit = tmp_path / "memory_admin_audit.sqlite3"
+    with sqlite3.connect(audit) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE memory_admin_operations (
+                request_id TEXT PRIMARY KEY,
+                operation TEXT NOT NULL,
+                target_memory_id TEXT,
+                replacement_memory_id TEXT,
+                replacement_source_id TEXT,
+                status TEXT NOT NULL,
+                affected_count INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO memory_admin_operations VALUES (
+                'memory.pause.shared.1', 'pause', NULL, NULL, NULL,
+                'completed', 0, 'legacy local operation',
+                '2026-08-26T00:00:00+00:00', '2026-08-26T00:00:00+00:00'
+            );
+            PRAGMA user_version=4;
+            """
+        )
+
+    default_user = ConversationMemoryAdminService(memory, audit)
+    other_user = ConversationMemoryAdminService(memory, audit, user_id="user-b")
+
+    assert default_user.pause(
+        request_id="memory.pause.shared.1", reason="重试旧本地请求。"
+    ).status is MemoryAdminMutationStatus.DUPLICATE
+    assert other_user.pause(
+        request_id="memory.pause.shared.1", reason="另一位用户暂停长期记忆。"
+    ).status is MemoryAdminMutationStatus.APPLIED
+    assert other_user.is_paused() is True
 
 
 def test_pause_waits_for_a_provider_write_already_past_the_final_gate(tmp_path: Path) -> None:

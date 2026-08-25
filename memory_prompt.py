@@ -34,7 +34,7 @@ class _UnavailableMemoryLifecycle:
     def is_paused(self) -> bool:
         raise RuntimeError(self.reason_code)
 
-    def run_write(self, operation: object) -> None:
+    def run_write(self, operation: object, **_ignored: object) -> None:
         del operation
         raise RuntimeError(self.reason_code)
 

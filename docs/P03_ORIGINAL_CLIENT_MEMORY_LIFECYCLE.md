@@ -25,15 +25,20 @@ canonical reply immediately, and the durable per-user pause/resume window
 permanently terminal-skips a reply that predates the most recent `resume` but
 was not delivered before the matching `pause`. This covers fast
 pause-then-resume without historical replay. The final state check and provider
-write share the audit-file lifecycle lock with `pause`; therefore once `pause`
-returns, no already-started delivery can reach the provider afterwards.
+write share the audit-file lifecycle lock with `pause`; the final gate repeats
+both current-state and historical-window eligibility using that delivery's
+canonical timestamp. Therefore once `pause` returns, no already-started
+delivery can reach the provider afterwards.
 `resume` only permits a later canonical reply.
 
 Every accepted lifecycle request, including an already-paused or
 already-resumed `NOOP`, is written to the existing operation ledger before its
-terminal result is returned. A retry with the same request ID is `DUPLICATE`
-after restart; reusing that ID for the other lifecycle operation is a
-`MEMORY_ADMIN_REQUEST_CONFLICT`.
+terminal result is returned in the same SQLite transaction as its pause-window
+change. The ledger is scoped by normalized `(user_id, request_id)`; a retry
+with that same identity is `DUPLICATE` after restart, while reusing that ID for
+the other lifecycle operation is a `MEMORY_ADMIN_REQUEST_CONFLICT`. The
+deterministic audit-schema upgrade assigns pre-user-scope rows to the existing
+default local user (`local-user`), rather than inferring any private identity.
 
 If lifecycle audit initialization or schema validation is unavailable,
 retrieval and delivery fail closed with the stable public reason code
