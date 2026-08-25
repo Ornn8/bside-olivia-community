@@ -82,7 +82,29 @@
           ],
           "items": false
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "private_world_arm": {"const": "fixed_disabled"},
+            "cases": {
+              "contains": {"properties": {"private_world_arm": {"const": "controlled_projection"}}},
+              "minContains": 0,
+              "maxContains": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "private_world_arm": {"const": "controlled_projection"},
+            "cases": {
+              "contains": {"properties": {"private_world_arm": {"const": "fixed_disabled"}}},
+              "minContains": 0,
+              "maxContains": 0
+            }
+          }
+        }
+      ]
     },
     {
       "type": "object",
@@ -93,7 +115,21 @@
         "validation_mode": {"enum": ["synthetic_validation", "private_local_validation"]},
         "private_world_arm": {"enum": ["fixed_disabled", "controlled_projection"]},
         "failed_case": {"$ref": "#/$defs/failed_prefix_case"}
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "private_world_arm": {"const": "fixed_disabled"},
+            "failed_case": {"properties": {"private_world_arm": {"const": "fixed_disabled"}}}
+          }
+        },
+        {
+          "properties": {
+            "private_world_arm": {"const": "controlled_projection"},
+            "failed_case": {"properties": {"private_world_arm": {"const": "controlled_projection"}}}
+          }
+        }
+      ]
     }
   ],
   "$defs": {

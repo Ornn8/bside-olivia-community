@@ -334,6 +334,14 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     )
     assert list(Draft202012Validator(schema).iter_errors(report)) == []
 
+    mixed_arm = json.loads(json.dumps(report))
+    mixed_arm["cases"][0]["private_world_arm"] = (
+        "controlled_projection"
+        if private_world_arm == "fixed_disabled"
+        else "fixed_disabled"
+    )
+    assert list(Draft202012Validator(schema).iter_errors(mixed_arm))
+
     unavailable_child = json.loads(json.dumps(report))
     unavailable_child["cases"][0] = {
         key: value
@@ -460,7 +468,11 @@ def test_prefix19_preserves_controlled_arm_on_failure(tmp_path: Path) -> None:
             / "memory_isolation_case01_report.schema.json"
         ).read_text(encoding="utf-8")
     )
-    assert list(Draft202012Validator(schema).iter_errors(report)) == []
+    validator = Draft202012Validator(schema)
+    assert list(validator.iter_errors(report)) == []
+    mixed_arm = json.loads(json.dumps(report))
+    mixed_arm["failed_case"]["private_world_arm"] = "fixed_disabled"
+    assert list(validator.iter_errors(mixed_arm))
 
 
 def test_prefix19_rejects_reference_kind_drift_before_callbacks(tmp_path: Path) -> None:
