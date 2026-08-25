@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import importlib
+from numbers import Real
 import os
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Callable, Mapping, Protocol, Sequence
 
 from bounded_daemon_call import BoundedDaemonCall
@@ -60,27 +62,23 @@ class Mem0Backend(Protocol):
 class Mem0Config:
     enabled: bool
     data_root: Path
-    outbox_data_root: Path | None = None
     user_id: str = "local-user"
     agent_id: str = "linli"
     collection_name: str = "olivia_conversation_memory_v1"
     llm_base_url: str = ""
     llm_model: str = ""
     llm_api_key_env: str = "DEEPSEEK_API_KEY"
-    llm_provider: str = "openai"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dims: int = 512
     embedding_cache: Path | None = None
-    embedding_provider: str = "huggingface"
-    embedding_device: str = "cpu"
-    vector_store_provider: str = "qdrant"
-    vector_store_on_disk: bool = True
     context_max_chars: int = 2400
+    config_error: str | None = None
     write_timeout_seconds: float = 30.0
     search_timeout_seconds: float = 8.0
+    # App-runtime controls appended after the legacy configuration slots.
+    outbox_data_root: Path | None = None
     outbox_enabled: bool = True
     outbox_interval_seconds: float = 5.0
-    config_error: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -115,27 +113,32 @@ class Mem0Config:
             raise ValueError("embedding_dims is invalid")
         if self.embedding_cache is not None:
             object.__setattr__(self, "embedding_cache", Path(self.embedding_cache))
-        for value, field_name in (
-            (self.llm_provider, "llm_provider"),
-            (self.embedding_provider, "embedding_provider"),
-            (self.embedding_device, "embedding_device"),
-            (self.vector_store_provider, "vector_store_provider"),
-        ):
-            if not isinstance(value, str) or not value.strip() or len(value) > 128:
-                raise ValueError(f"{field_name} is invalid")
-        if type(self.vector_store_on_disk) is not bool:
-            raise ValueError("vector_store_on_disk is invalid")
         if type(self.context_max_chars) is not int or not 0 <= self.context_max_chars <= 20_000:
             raise ValueError("context_max_chars is invalid")
         for value, field_name in (
             (self.write_timeout_seconds, "write_timeout_seconds"),
             (self.search_timeout_seconds, "search_timeout_seconds"),
-            (self.outbox_interval_seconds, "outbox_interval_seconds"),
         ):
-            if isinstance(value, bool) or not 0.1 <= float(value) <= 300:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not 0.1 <= float(value) <= 300
+            ):
                 raise ValueError(f"{field_name} is invalid")
+            object.__setattr__(self, field_name, float(value))
         if type(self.outbox_enabled) is not bool:
             raise ValueError("outbox_enabled is invalid")
+        if (
+            isinstance(self.outbox_interval_seconds, bool)
+            or not isinstance(self.outbox_interval_seconds, Real)
+            or not 0.1 <= float(self.outbox_interval_seconds) <= 3600
+        ):
+            raise ValueError("outbox_interval_seconds is invalid")
+        object.__setattr__(
+            self,
+            "outbox_interval_seconds",
+            float(self.outbox_interval_seconds),
+        )
         if self.config_error is not None and not re.fullmatch(
             r"^[A-Z][A-Z0-9_]{0,95}$", self.config_error
         ):
@@ -160,16 +163,16 @@ class Mem0Config:
         environment = environ if environ is not None else os.environ
         return {
             "vector_store": {
-                "provider": self.vector_store_provider,
+                "provider": "qdrant",
                 "config": {
                     "collection_name": self.collection_name,
                     "path": str(self.qdrant_path),
-                    "on_disk": self.vector_store_on_disk,
+                    "on_disk": True,
                     "embedding_model_dims": self.embedding_dims,
                 },
             },
             "llm": {
-                "provider": self.llm_provider,
+                "provider": "openai",
                 "config": {
                     "model": self.llm_model,
                     "api_key": environment.get(self.llm_api_key_env, ""),
@@ -178,12 +181,12 @@ class Mem0Config:
                 },
             },
             "embedder": {
-                "provider": self.embedding_provider,
+                "provider": "huggingface",
                 "config": {
                     "model": self.embedding_model,
                     "embedding_dims": self.embedding_dims,
                     "model_kwargs": {
-                        "device": self.embedding_device,
+                        "device": "cpu",
                         "cache_folder": str(self.model_cache),
                         "local_files_only": True,
                     },
@@ -281,13 +284,14 @@ def load_mem0_config(
         environment.get("OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS"), 8.0
     )
     outbox_interval = _duration(
-        environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"), 5.0, maximum=3600.0
+        environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"),
+        5.0,
+        maximum=3600.0,
     )
 
     return Mem0Config(
         enabled=enabled,
         data_root=data_root,
-        outbox_data_root=outbox_data_root,
         user_id=environment.get("OLIVIA_MEMORY_USER_ID", "local-user").strip()
         or "local-user",
         agent_id=environment.get("OLIVIA_MEMORY_AGENT_ID", "linli").strip()
@@ -299,42 +303,69 @@ def load_mem0_config(
         llm_base_url=llm_base_url,
         llm_model=llm_model,
         llm_api_key_env=key_env or "DEEPSEEK_API_KEY",
-        llm_provider=environment.get("OLIVIA_MEMORY_LLM_PROVIDER", "openai").strip()
-        or "openai",
         embedding_model=environment.get(
             "OLIVIA_MEMORY_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"
         ).strip()
         or "BAAI/bge-small-zh-v1.5",
         embedding_dims=dims,
         embedding_cache=embedding_cache,
-        embedding_provider=environment.get(
-            "OLIVIA_MEMORY_EMBEDDER_PROVIDER", "huggingface"
-        ).strip()
-        or "huggingface",
-        embedding_device=environment.get("OLIVIA_MEMORY_EMBEDDING_DEVICE", "cpu").strip()
-        or "cpu",
-        vector_store_provider=environment.get(
-            "OLIVIA_MEMORY_VECTOR_STORE_PROVIDER", "qdrant"
-        ).strip()
-        or "qdrant",
-        vector_store_on_disk=_bool(
-            environment.get("OLIVIA_MEMORY_VECTOR_STORE_ON_DISK"), True
-        ),
         context_max_chars=context_max,
         write_timeout_seconds=write_timeout,
         search_timeout_seconds=search_timeout,
+        config_error=error,
+        outbox_data_root=outbox_data_root,
         outbox_enabled=_bool(environment.get("OLIVIA_MEMORY_OUTBOX_ENABLED"), True),
         outbox_interval_seconds=outbox_interval,
-        config_error=error,
     )
 
 
-def _rows(value: object) -> tuple[Mapping[str, object], ...]:
-    if isinstance(value, Mapping):
-        value = value.get("results", value.get("memories", value.get("data", ())))
+def _rows(value: object) -> tuple[Mapping[str, object], ...] | None:
+    if not isinstance(value, Mapping) or set(value) != {"results"}:
+        return None
+    value = value["results"]
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return ()
-    return tuple(item for item in value if isinstance(item, Mapping))
+        return None
+    if not all(isinstance(item, Mapping) for item in value):
+        return None
+    return tuple(value)
+
+
+def _add_acknowledgements(value: object) -> tuple[tuple[str, str], ...] | None:
+    rows = _rows(value)
+    if rows is None:
+        return None
+    acknowledgements: list[tuple[str, str]] = []
+    for row in rows:
+        memory_id = _row_id(row)
+        memory = row.get("memory")
+        event = row.get("event")
+        if (
+            {"error", "status"} & row.keys()
+            or
+            memory_id is None
+            or not isinstance(memory, str)
+            or not memory.strip()
+            or event != "ADD"
+        ):
+            return None
+        acknowledgements.append((memory_id, memory))
+    return tuple(acknowledgements)
+
+
+def _has_delete_acknowledgement(value: object) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == {"message"}
+        and value["message"] == "Memory deleted successfully!"
+    )
+
+
+def _has_clear_acknowledgement(value: object) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == {"message"}
+        and value["message"] == "Memories deleted successfully!"
+    )
 
 
 def _date(value: object) -> datetime | None:
@@ -351,7 +382,7 @@ def _date(value: object) -> datetime | None:
 
 
 def _row_id(row: Mapping[str, object]) -> str | None:
-    value = row.get("id", row.get("memory_id"))
+    value = row.get("id")
     return value if isinstance(value, str) and _ID_RE.fullmatch(value) else None
 
 
@@ -359,14 +390,18 @@ def _row_to_record(
     row: Mapping[str, object],
     *,
     user_id: str,
+    agent_id: str,
 ) -> ConversationMemoryRecord | None:
+    if {"error", "status"} & row.keys():
+        return None
     metadata = row.get("metadata")
-    metadata = metadata if isinstance(metadata, Mapping) else {}
+    if not isinstance(metadata, Mapping):
+        return None
     memory_id = _row_id(row)
-    text = row.get("memory", row.get("text"))
-    source_id = metadata.get("source_id", row.get("source_id"))
-    domain = metadata.get("domain", row.get("domain", _DOMAIN))
-    row_user = row.get("user_id", user_id)
+    text = row.get("memory")
+    source_id = metadata.get("source_id")
+    domain = metadata.get("domain")
+    row_user = row.get("user_id")
     if (
         memory_id is None
         or not isinstance(text, str)
@@ -375,6 +410,7 @@ def _row_to_record(
         or not _ID_RE.fullmatch(source_id)
         or domain != _DOMAIN
         or row_user != user_id
+        or row.get("agent_id") != agent_id
     ):
         return None
     score_value = row.get("score")
@@ -415,7 +451,9 @@ class Mem0ConversationMemoryAdapter:
         self.backend = backend
         self.config = config
         self._lock = threading.RLock()
-        self._provider_call = BoundedDaemonCall(thread_name="mem0-provider")
+        self._provider_call = BoundedDaemonCall(thread_name="olivia-mem0-read")
+        self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write")
+        self._write_gate = threading.Lock()
         self._last_error_code: str | None = None
 
     def _filters(self, user_id: str) -> dict[str, object]:
@@ -433,15 +471,21 @@ class Mem0ConversationMemoryAdapter:
         *,
         user_id: str,
         limit: int,
-    ) -> tuple[ConversationMemoryRecord, ...]:
+    ) -> tuple[ConversationMemoryRecord, ...] | None:
+        rows = _rows(value)
+        if rows is None:
+            return None
         records: list[ConversationMemoryRecord] = []
-        for row in _rows(value):
-            record = _row_to_record(row, user_id=user_id)
-            if record is not None:
-                records.append(record)
-            if len(records) >= limit:
-                break
-        return tuple(records)
+        for row in rows:
+            record = _row_to_record(
+                row,
+                user_id=user_id,
+                agent_id=self.config.agent_id,
+            )
+            if record is None:
+                return None
+            records.append(record)
+        return tuple(records[:limit])
 
     def list_memories(
         self,
@@ -469,8 +513,12 @@ class Mem0ConversationMemoryAdapter:
         )
         if value is None:
             return None
+        records = self._records(value, user_id=user_id, limit=limit)
+        if records is None:
+            self._last_error_code = "MEM0_LIST_FAILED"
+            return None
         self._last_error_code = None
-        return self._records(value, user_id=user_id, limit=limit)
+        return records
 
     def search_context(
         self,
@@ -491,12 +539,12 @@ class Mem0ConversationMemoryAdapter:
         )
         if value is None:
             return ()
-        try:
-            self._last_error_code = None
-            return self._records(value, user_id=user_id, limit=limit)
-        except Exception:
+        records = self._records(value, user_id=user_id, limit=limit)
+        if records is None:
             self._last_error_code = "MEM0_SEARCH_FAILED"
             return ()
+        self._last_error_code = None
+        return records
 
     def _read_with_timeout(
         self,
@@ -520,6 +568,143 @@ class Mem0ConversationMemoryAdapter:
         with self._lock:
             return operation()
 
+    def _source_id_exists_in_exact_response(
+        self,
+        value: object,
+        *,
+        user_id: str,
+        source_id: str,
+    ) -> bool | None:
+        rows = self._exact_source_id_rows(value)
+        if rows is None:
+            return None
+        if any(
+            not isinstance(row.get("metadata"), Mapping)
+            or row.get("user_id") != user_id
+            or row.get("agent_id") != self.config.agent_id
+            or row["metadata"].get("domain") != _DOMAIN
+            for row in rows
+        ):
+            return None
+        records = tuple(
+            _row_to_record(
+                row,
+                user_id=user_id,
+                agent_id=self.config.agent_id,
+            )
+            for row in rows
+        )
+        if any(record is None or record.source_id != source_id for record in records):
+            return None
+        self._last_error_code = None
+        return bool(records)
+
+    def _exact_source_id_rows(
+        self,
+        value: object | None,
+    ) -> tuple[Mapping[str, object], ...] | None:
+        if not isinstance(value, Mapping) or set(value) not in (
+            {"results"}, {"results", "has_more"}
+        ):
+            return None
+        if value.get("has_more", False) is not False:
+            return None
+        value = value["results"]
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            return None
+        if not all(
+            isinstance(row, Mapping) for row in value
+        ):
+            return None
+        return tuple(value)
+
+    def _write_with_timeout(
+        self,
+        operation: Callable[[], object],
+    ) -> tuple[str, object | None]:
+        deadline = time.monotonic() + self.config.write_timeout_seconds
+        if not self._write_gate.acquire(timeout=self.config.write_timeout_seconds):
+            return "timeout", None
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "timeout", None
+            return self._write_call.call(
+                lambda: self._locked_provider_call(operation),
+                timeout_seconds=remaining,
+            )
+        finally:
+            self._write_gate.release()
+
+    def _remember_exchange_transaction(
+        self,
+        *,
+        user_message: str,
+        assistant_message: str,
+        occurred_at: datetime,
+        source_id: str,
+        user_id: str,
+    ) -> MemoryWriteResult:
+        try:
+            exact_response = self.backend.get_all(
+                filters={**self._filters(user_id), "source_id": source_id},
+                top_k=1,
+            )
+        except Exception:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+            )
+        source_exists = self._source_id_exists_in_exact_response(
+            exact_response,
+            user_id=user_id,
+            source_id=source_id,
+        )
+        if source_exists is None:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+            )
+        if source_exists:
+            return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+        metadata = {
+            "source_id": source_id,
+            "occurred_at": occurred_at.isoformat(),
+            "domain": _DOMAIN,
+            "canonical": True,
+        }
+        try:
+            value = self.backend.add(
+                [
+                    {"role": "user", "content": str(user_message)},
+                    {"role": "assistant", "content": str(assistant_message)},
+                ],
+                user_id=user_id,
+                agent_id=self.config.agent_id,
+                metadata=metadata,
+            )
+        except Exception:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_FAILED",
+            )
+        acknowledgements = _add_acknowledgements(value)
+        if acknowledgements is None:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_FAILED",
+            )
+        memory_ids = tuple(memory_id for memory_id, _memory in acknowledgements)
+        return MemoryWriteResult(
+            MemoryWriteStatus.WRITTEN if memory_ids else MemoryWriteStatus.SKIPPED,
+            source_id,
+            memory_ids,
+        )
+
     def remember_exchange(
         self,
         *,
@@ -535,50 +720,38 @@ class Mem0ConversationMemoryAdapter:
                 source_id,
                 error_code="MEM0_EXCHANGE_INVALID",
             )
-        try:
-            existing = self._list_records(user_id=user_id, limit=1000)
-            if existing is None:
-                return MemoryWriteResult(
-                    MemoryWriteStatus.UNAVAILABLE,
-                    source_id,
-                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
-                )
-            if any(record.source_id == source_id for record in existing):
-                return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
-            metadata = {
-                "source_id": source_id,
-                "occurred_at": occurred_at.isoformat(),
-                "domain": _DOMAIN,
-                "canonical": True,
-            }
-            with self._lock:
-                value = self.backend.add(
-                    [
-                        {"role": "user", "content": str(user_message)},
-                        {"role": "assistant", "content": str(assistant_message)},
-                    ],
-                    user_id=user_id,
-                    agent_id=self.config.agent_id,
-                    metadata=metadata,
-                )
-            ids = tuple(
-                memory_id
-                for row in _rows(value)
-                if (memory_id := _row_id(row)) is not None
-            )
-            self._last_error_code = None
+        if self._provider_call.inflight:
+            self._last_error_code = "MEM0_SOURCE_DEDUP_UNAVAILABLE"
             return MemoryWriteResult(
-                MemoryWriteStatus.WRITTEN if ids else MemoryWriteStatus.SKIPPED,
+                MemoryWriteStatus.UNAVAILABLE,
                 source_id,
-                ids,
+                error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
             )
-        except Exception:
+        state, value = self._write_with_timeout(
+            lambda: self._remember_exchange_transaction(
+                user_message=user_message,
+                assistant_message=assistant_message,
+                occurred_at=occurred_at,
+                source_id=source_id,
+                user_id=user_id,
+            )
+        )
+        if state in {"timeout", "inflight"}:
+            self._last_error_code = "MEM0_WRITE_TIMEOUT"
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_TIMEOUT",
+            )
+        if state != "completed" or not isinstance(value, MemoryWriteResult):
             self._last_error_code = "MEM0_WRITE_FAILED"
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
                 error_code="MEM0_WRITE_FAILED",
             )
+        self._last_error_code = value.error_code
+        return value
 
     def add_manual_memory(
         self,
@@ -595,25 +768,52 @@ class Mem0ConversationMemoryAdapter:
             "actor": "local_user",
         }
         try:
-            with self._lock:
-                value = self.backend.add(
+            state, value = self._write_with_timeout(
+                lambda: self.backend.add(
                     str(text),
                     user_id=user_id,
                     agent_id=self.config.agent_id,
                     metadata=metadata,
                     infer=False,
                 )
-            records = self._records(value, user_id=user_id, limit=1)
-            if not records:
-                records = tuple(
-                    record
-                    for record in self.list_memories(user_id=user_id, limit=1000)
-                    if record.source_id == source_id
-                )[:1]
-            if not records:
+            )
+            if state in {"timeout", "inflight"}:
+                self._last_error_code = "MEM0_MANUAL_WRITE_TIMEOUT"
+                raise Mem0AdapterError("MEM0_MANUAL_WRITE_TIMEOUT")
+            if state != "completed":
+                self._last_error_code = "MEM0_MANUAL_WRITE_FAILED"
+                raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED")
+            acknowledgements = _add_acknowledgements(value)
+            if acknowledgements is None or len(acknowledgements) != 1:
+                self._last_error_code = "MEM0_MANUAL_WRITE_FAILED"
+                raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED")
+            acknowledgement_id, acknowledgement_memory = acknowledgements[0]
+            read_value = self._read_with_timeout(
+                lambda: self.backend.get_all(
+                    filters={**self._filters(user_id), "source_id": source_id},
+                    top_k=1,
+                ),
+                failure_code="MEM0_MANUAL_WRITE_FAILED",
+            )
+            rows = self._exact_source_id_rows(read_value)
+            if rows is None or len(rows) != 1:
+                self._last_error_code = "MEM0_MANUAL_WRITE_FAILED"
+                raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED")
+            record = _row_to_record(
+                rows[0],
+                user_id=user_id,
+                agent_id=self.config.agent_id,
+            )
+            if (
+                record is None
+                or record.source_id != source_id
+                or record.memory_id != acknowledgement_id
+                or record.text != acknowledgement_memory
+            ):
+                self._last_error_code = "MEM0_MANUAL_WRITE_FAILED"
                 raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED")
             self._last_error_code = None
-            return records[0]
+            return record
         except Mem0AdapterError:
             raise
         except Exception as exc:
@@ -621,14 +821,24 @@ class Mem0ConversationMemoryAdapter:
             raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED") from exc
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        if self._write_call.inflight:
+            self._last_error_code = "MEM0_DELETE_TIMEOUT"
+            return False
         try:
             if not any(
                 record.memory_id == memory_id
                 for record in self.list_memories(user_id=user_id, limit=1000)
             ):
                 return False
-            with self._lock:
-                self.backend.delete(memory_id)
+            state, value = self._write_with_timeout(
+                lambda: self.backend.delete(memory_id)
+            )
+            if state in {"timeout", "inflight"}:
+                self._last_error_code = "MEM0_DELETE_TIMEOUT"
+                return False
+            if state != "completed" or not _has_delete_acknowledgement(value):
+                self._last_error_code = "MEM0_DELETE_FAILED"
+                return False
             self._last_error_code = None
             return True
         except Exception:
@@ -636,15 +846,25 @@ class Mem0ConversationMemoryAdapter:
             return False
 
     def clear_user(self, *, user_id: str) -> int:
+        if self._write_call.inflight:
+            self._last_error_code = "MEM0_CLEAR_TIMEOUT"
+            return 0
         records = self.list_memories(user_id=user_id, limit=1000)
         if not records:
             return 0
         try:
-            with self._lock:
-                self.backend.delete_all(
+            state, value = self._write_with_timeout(
+                lambda: self.backend.delete_all(
                     user_id=user_id,
                     agent_id=self.config.agent_id,
                 )
+            )
+            if state in {"timeout", "inflight"}:
+                self._last_error_code = "MEM0_CLEAR_TIMEOUT"
+                return 0
+            if state != "completed" or not _has_clear_acknowledgement(value):
+                self._last_error_code = "MEM0_CLEAR_FAILED"
+                return 0
             self._last_error_code = None
             return len(records)
         except Exception:
@@ -705,7 +925,7 @@ def create_mem0_adapter(
 ) -> ConversationMemoryPort:
     active = config or load_mem0_config(environ=environ)
     if active.config_error:
-        return UnavailableConversationMemoryPort(active.config_error, config=active)
+        return UnavailableConversationMemoryPort(active.config_error)
     if not active.enabled:
         return NullConversationMemoryPort()
     try:
@@ -715,11 +935,9 @@ def create_mem0_adapter(
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
     except (ModuleNotFoundError, ImportError):
-        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
+        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
     except (OSError, RuntimeError, TypeError, ValueError):
-        return UnavailableConversationMemoryPort(
-            "MEM0_INITIALIZATION_FAILED", config=active
-        )
+        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
 
 
 __all__ = [
