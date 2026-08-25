@@ -6,6 +6,7 @@
 #   letter_adapter.reply(content)  -> 本地 LLM 生成回信
 #   music_adapter.generate(midi)   -> 本地音乐模型生成演奏
 import asyncio
+from contextvars import ContextVar
 import json
 import os as _os
 import re as _re
@@ -159,6 +160,12 @@ class LLMError(RuntimeError):
         super().__init__(code)
 
 
+_CURRENT_LETTER_MEMORY_SOURCE: ContextVar[str | None] = ContextVar(
+    "current_letter_memory_source",
+    default=None,
+)
+
+
 class _LetterGateway(Gateway):
     """Bridge the legacy sync facade to the async reply orchestrator."""
 
@@ -309,7 +316,7 @@ class LetterAdapter:
             self.config.max_input_chars - len(snapshot.system_prompt) - len(user_content) - 2,
         )
         if remaining:
-            memory_context = self.memory_prompt_builder.build(
+            memory_context = self._build_memory_prompt(
                 content,
                 max_chars=min(
                     remaining,
@@ -329,7 +336,7 @@ class LetterAdapter:
         user_content = content + ("\n\n" + context if context else "")
         loaded = load_persona(self.persona_v2_path)
         reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
-        memory_context = self.memory_prompt_builder.build(
+        memory_context = self._build_memory_prompt(
             content,
             max_chars=min(
                 self.config.max_input_chars,
@@ -348,6 +355,21 @@ class LetterAdapter:
             max_units=self.config.max_input_chars,
             history=history,
         ).to_messages()
+
+    @staticmethod
+    def _memory_source_exclusions() -> tuple[str, ...]:
+        source_id = _CURRENT_LETTER_MEMORY_SOURCE.get()
+        return (source_id,) if source_id else ()
+
+    def _build_memory_prompt(self, content: str, *, max_chars: int):
+        excluded = self._memory_source_exclusions()
+        if excluded:
+            return self.memory_prompt_builder.build(
+                content,
+                max_chars=max_chars,
+                exclude_source_ids=excluded,
+            )
+        return self.memory_prompt_builder.build(content, max_chars=max_chars)
 
     def _memory_context_limit(self) -> int:
         """Keep Mem0 and Archive prompt budgets independently bounded."""
@@ -2193,6 +2215,44 @@ def recover_pending_private_world() -> int:
     return recovered
 
 
+async def _run_reply_pipeline_for_letter(
+    letter: dict,
+    content: str,
+    exact_mode: str,
+    *,
+    idempotency_key: str | None,
+):
+    letter_id = str(letter["letter_id"])
+    revision = max(0, int(letter.get("reply_revision", 0))) + 1
+    source_token = _CURRENT_LETTER_MEMORY_SOURCE.set(
+        f"reply:{letter_id}:{revision}"
+    )
+    try:
+        reply_input = (
+            build_ordinary_video_llm_content(content)
+            if exact_mode
+            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+            else content
+        )
+        request = ReplyRequest(
+            content=reply_input,
+            request_id=f"letter-reply:{letter_id}",
+            idempotency_key=(
+                f"{idempotency_key}:{letter_id}" if idempotency_key else None
+            ),
+            max_input_chars=LLM_CONFIG.max_input_chars,
+        )
+        return await asyncio.wait_for(
+            reply_pipeline.run(
+                request,
+                letters_adapter.build_reply_context(ReplyMode(exact_mode)),
+            ),
+            timeout=_reply_pipeline_timeout_seconds(),
+        )
+    finally:
+        _CURRENT_LETTER_MEMORY_SOURCE.reset(source_token)
+
+
 async def generate_reply(letter_id, content, *, idempotency_key=None):
     """Run one routed current-letter reply to its canonical terminal state."""
 
@@ -2218,26 +2278,11 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
 
     try:
-        reply_input = (
-            build_ordinary_video_llm_content(content)
-            if exact_mode
-            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
-            else content
-        )
-        request = ReplyRequest(
-            content=reply_input,
-            request_id=f"letter-reply:{letter_id}",
-            idempotency_key=(
-                f"{idempotency_key}:{letter_id}" if idempotency_key else None
-            ),
-            max_input_chars=LLM_CONFIG.max_input_chars,
-        )
-        result = await asyncio.wait_for(
-            reply_pipeline.run(
-                request,
-                letters_adapter.build_reply_context(ReplyMode(exact_mode)),
-            ),
-            timeout=_reply_pipeline_timeout_seconds(),
+        result = await _run_reply_pipeline_for_letter(
+            letter,
+            content,
+            exact_mode,
+            idempotency_key=idempotency_key,
         )
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
