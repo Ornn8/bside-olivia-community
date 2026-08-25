@@ -257,7 +257,10 @@ def run_prefix19(
                 )
 
             original = _original_text(manifest_root, target)
-            selected_evidence = memory.selected_evidence(original=original)
+            selected_evidence = memory.selected_evidence(
+                original=original,
+                exclude_source_id=f"test:{target['case_id']}",
+            )
             stage = "generator"
             reply = generator(
                 persona_authority=persona_authority,

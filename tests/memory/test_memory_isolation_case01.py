@@ -254,12 +254,19 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     events: list[str] = []
     ingested: list[tuple[str, str]] = []
     generator_calls: list[dict[str, object]] = []
+    selection_exclusions: list[str] = []
 
     class Memory:
         def ingest_user_evidence(self, *, source_id: str, text: str) -> None:
             ingested.append((source_id, text))
 
-        def selected_evidence(self, *, original: str) -> tuple[str, ...]:
+        def selected_evidence(
+            self,
+            *,
+            original: str,
+            exclude_source_id: str,
+        ) -> tuple[str, ...]:
+            selection_exclusions.append(exclude_source_id)
             return (f"evidence for {original[-2:]}",)
 
     def memory_factory(namespace: str) -> Memory:
@@ -309,6 +316,9 @@ def test_prefix19_rebuilds_isolated_memory_without_reading_video_references(
     assert len([source_id for source_id, _ in ingested if source_id.startswith("test:")]) == sum(range(1, 20))
     assert all("synthetic reply" not in text for _, text in ingested)
     assert len(generator_calls) == 19
+    assert selection_exclusions == [
+        f"test:test-{number:02d}" for number in range(1, 20)
+    ]
     assert [case["test_original_count"] for case in cases] == list(range(1, 20))
     assert [case["reference_status"] for case in cases if case["prefix_case"] in {"case07", "case19"}] == [
         "not_evaluated_media",
