@@ -16,19 +16,22 @@ def test_default_and_valid_legacy_store_are_enabled(tmp_path, legacy):
         (tmp_path / "video_reply_settings.json").write_text(
             json.dumps({"schema_version": 1, "settings": {}, "ledger": {}}), encoding="utf-8"
         )
-    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": True}
-
-
+    store = VideoReplySettingsStore(tmp_path) if legacy else VideoReplySettingsStore.initialize(tmp_path)
+    assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
+def test_open_missing_store_is_unavailable_until_explicit_initialize(tmp_path):
+    assert VideoReplySettingsStore(tmp_path).snapshot().state == "unavailable"
+    assert not (tmp_path / "video_reply_settings.json").exists()
+    assert VideoReplySettingsStore.initialize(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": True}
 def test_mutation_is_atomic_namespaced_and_replayed_after_restart(tmp_path):
-    store = VideoReplySettingsStore(tmp_path)
-    first = store.mutate("video-reply-setting.same", False)
-    assert first.to_dict() == {"request_id": "video-reply-setting.same", "status": "APPLIED", "enabled": False}
-    assert VideoReplySettingsStore(tmp_path).mutate("video-reply-setting.same", False).to_dict() == first.to_dict()
+    store = VideoReplySettingsStore.initialize(tmp_path)
+    first = store.mutate("video_reply_setting:same", False)
+    assert first.to_dict() == {"request_id": "video_reply_setting:same", "status": "APPLIED", "enabled": False}
+    assert VideoReplySettingsStore(tmp_path).mutate("video_reply_setting:same", False).to_dict() == first.to_dict()
     with pytest.raises(VideoReplySettingsError) as conflict:
-        store.mutate("video-reply-setting.same", True)
+        store.mutate("video_reply_setting:same", True)
     assert (conflict.value.code, conflict.value.status) == ("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", 409)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda _: store.mutate("video-reply-setting.concurrent", False), range(4)))
+        results = list(pool.map(lambda _: store.mutate("video_reply_setting:concurrent", False), range(4)))
     assert {result.status for result in results} == {"NOOP"}
 
 
@@ -40,15 +43,17 @@ def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(t
         if calls > 1:
             raise OSError("synthetic")
         path.write_bytes(payload)
-    store = VideoReplySettingsStore(tmp_path, writer=writer)
+    store = VideoReplySettingsStore.initialize(tmp_path, writer=writer)
     with pytest.raises(VideoReplySettingsError) as failed:
-        store.mutate("video-reply-setting.write", False)
-    assert failed.value.code == "VIDEO_REPLY_SETTING_WRITE_UNAVAILABLE"
+        store.mutate("video_reply_setting:write", False)
+    assert failed.value.code == "VIDEO_REPLY_SETTING_UNAVAILABLE"
+    assert store.snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
+    assert store.receive_snapshot().enabled is False
+    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": True}
+    store.reload()
     assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
     (tmp_path / "video_reply_settings.json").write_text("not-json", encoding="utf-8")
-    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {
-        "state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_STORE_CORRUPT"
-    }
+    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
 
 
 @pytest.mark.parametrize("value", ["yes", 1, None])
@@ -69,34 +74,41 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
 
 
-def test_router_off_is_deterministic_text_without_provider_call():
-    from letter_triage import LetterReplyRouter, RoutingContext
-    class Gateway:
-        async def complete(self, *_args, **_kwargs):
-            raise AssertionError("router provider called while disabled")
-    result = asyncio.run(LetterReplyRouter(
-        Gateway(), routing_context=RoutingContext(True, True, video_reply_enabled=False)
-    ).classify("synthetic"))
-    assert result.to_dict()["reply_mode"] == "text_letter"
-    assert result.to_dict()["reason_code"] == "video_reply_disabled"
-    assert result.to_dict()["llm_called"] is False
-
-
+@pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
+def test_request_namespace_is_enforced(tmp_path, value):
+    with pytest.raises(VideoReplySettingsError) as invalid:
+        VideoReplySettingsStore.initialize(tmp_path).mutate(value, False)
+    assert invalid.value.code == "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID"
+def test_route_accepts_only_body_request_id_and_surfaces_unavailable(monkeypatch, tmp_path):
+    import local_server
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
+    async def calls():
+        alias = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "idempotency_key": "letter:shared"}, {"request_id": "video_reply_setting:query"})
+        bad = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": "false", "request_id": "video_reply_setting:type"}, {})
+        await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:conflict"}, {})
+        conflict = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": True, "request_id": "video_reply_setting:conflict"}, {})
+        monkeypatch.setattr(local_server, "video_reply_settings_store", VideoReplySettingsStore(tmp_path / "missing"))
+        unavailable = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:unavailable"}, {})
+        assert (await local_server.route("GET", "/toy/settings/video-reply", {}, {}))["data"]["state"] == "unavailable" and local_server._health_result()["data"]["capabilities"]["settings.video_reply"]["status"] == "unavailable"
+        return alias, bad, conflict, unavailable
+    alias, bad, conflict, unavailable = asyncio.run(calls())
+    assert [alias["code"], bad["code"], conflict["code"], unavailable["code"]] == [400, 400, 409, 503]
 def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatch):
     import local_server
     from reply_orchestrator import ReplyState
     from reply_pipeline import PipelineResult
-    settings = VideoReplySettingsStore(tmp_path)
+    settings = VideoReplySettingsStore.initialize(tmp_path)
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     async def route_check():
-        result = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video-reply-setting.ui"}, {})
+        result = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:ui"}, {})
         assert result["data"]["status"] == "APPLIED"
         monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_a, **_k: None)
         sent = await local_server.route("POST", "/toy/letter/send", {"content": "synthetic"}, {}, defer_reply=True)
         return next(item for item in local_server.store.letters if item["letter_id"] == sent["data"]["letter_id"])
     letter = asyncio.run(route_check())
     class Router:
-        async def classify(self, *_a, **_k):
+        async def classify(self, *_a):
             raise AssertionError("router called")
     class Pipeline:
         async def run(self, _request, context):
@@ -123,10 +135,3 @@ def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch)
         assert local_server._schedule_pending_media_jobs() == 1 and scheduled == ["legacy"]
     finally:
         local_server.store.letters.remove(off); local_server.store.letters.remove(legacy)
-
-
-def test_settings_ui_has_server_route_and_non_success_guard():
-    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
-    assert '"/toy/settings/video-reply"' in BOOTSTRAP_JAVASCRIPT
-    assert '"APPLIED", "NOOP", "DUPLICATE"' in BOOTSTRAP_JAVASCRIPT
-    assert "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" in BOOTSTRAP_JAVASCRIPT

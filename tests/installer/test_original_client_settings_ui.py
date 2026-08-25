@@ -197,6 +197,8 @@ const document = {
 let statusIndex = 0;
 let currentStatus = "READY";
 const mutationPaths = [];
+const videoMethods = [];
+let videoWrites = 0;
 const statuses = ["READY", "PAUSED", "READY"];
 const statusPayload = (status) => ({
   status,
@@ -209,6 +211,14 @@ const statusPayload = (status) => ({
   },
 });
 const fetch = async (endpoint, options) => {
+  if (endpoint.pathname === "/toy/settings/video-reply") {
+    videoMethods.push(options.method);
+    if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
+    videoWrites += 1;
+    return videoWrites === 1
+      ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
+      : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
+  }
   if (endpoint.pathname === "/toy/companion/status") {
     currentStatus = statuses[Math.min(statusIndex++, statuses.length - 1)];
     return { ok: true, json: async () => statusPayload(currentStatus) };
@@ -246,9 +256,14 @@ vm.runInNewContext(source, context);
   const findButton = (label) => body.querySelectorAll("button").find((item) => item.textContent === label);
   const open = findButton("打开");
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
-  await open.click();
-  await flush();
-  await findButton("暂停长期记忆").click();
+      await open.click();
+      await flush();
+      await findButton("已开启").click();
+      await flush();
+      await findButton("已关闭").click();
+      await flush();
+      if (!body.querySelectorAll("div").some((item) => item.textContent.includes("原设置保持不变"))) throw new Error("video mutation error was hidden");
+      await findButton("暂停长期记忆").click();
   await flush();
   const resume = findButton("恢复长期记忆");
   if (!resume) throw new Error("resume button was not rendered after pause");
@@ -256,7 +271,7 @@ vm.runInNewContext(source, context);
   await flush();
   const pause = findButton("暂停长期记忆");
   if (!pause) throw new Error("pause button was not rendered after resume");
-  process.stdout.write(JSON.stringify({ mutationPaths, statusIndex }));
+      process.stdout.write(JSON.stringify({ mutationPaths, videoMethods, statusIndex }));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 '''
     result = subprocess.run(
@@ -273,6 +288,7 @@ vm.runInNewContext(source, context);
             "/toy/companion/memory/pause",
             "/toy/companion/memory/resume",
         ],
+        "videoMethods": ["GET", "POST", "POST"],
         "statusIndex": 3,
     }
 

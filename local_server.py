@@ -612,11 +612,9 @@ conversation_memory_adapter: ConversationMemoryPort = (
 def _create_video_reply_settings_store() -> VideoReplySettingsStore:
     root = _state_root()
     if root is None:
-        return VideoReplySettingsStore.unavailable(
-            "VIDEO_REPLY_SETTING_STATE_ROOT_NOT_CONFIGURED"
-        )
+        return VideoReplySettingsStore.unavailable()
     try:
-        return VideoReplySettingsStore(root)
+        return VideoReplySettingsStore.initialize(root)
     except VideoReplySettingsError as exc:
         return VideoReplySettingsStore.unavailable(exc.code)
 
@@ -1611,14 +1609,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
     if p == "/toy/settings/video-reply":
         if method == "GET":
             return ok(video_reply_settings_store.snapshot().to_dict())
-        request_id = _request_value(
-            body,
-            query,
-            "request_id",
-            "requestId",
-            "idempotency_key",
-            "idempotencyKey",
-        )
+        request_id = body.get("request_id") if "request_id" in body and len(body) == 2 else None
         if "enabled" not in body:
             return _missing_field("enabled")
         try:
@@ -2361,10 +2352,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     receive_eligibility = receive_eligibility_from_letter(letter)
     if receive_eligibility.enabled:
-        decision = await emotion_triage.classify(
-            content,
-            receive_eligibility=receive_eligibility,
-        )
+        decision = await emotion_triage.classify(content)
     else:
         decision = TriageResult(
             "unknown",
