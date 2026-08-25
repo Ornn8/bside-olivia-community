@@ -33,6 +33,7 @@ def test_text_wire_mode_builds_an_immutable_letter_context() -> None:
     assert mode is ReplyMode.TEXT_LETTER
     assert context.to_dict()["wire_mode"] == "text"
     assert context.to_dict()["output_constraints"]["channel"] == "letter"
+    assert context.output_constraints.max_characters == 1200
 
 
 def test_trusted_time_normalizes_to_utc_and_rejects_unstable_inputs() -> None:
@@ -98,6 +99,7 @@ def test_legacy_video_mapping_is_preserved_and_future_im_requires_opt_in() -> No
     )
     assert context.to_dict()["wire_mode"] is None
     assert context.to_dict()["output_constraints"]["channel"] == "instant_message"
+    assert context.output_constraints.max_characters == 12000
 
 
 def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:

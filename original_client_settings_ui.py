@@ -20,6 +20,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
+  const LETTER_CHARACTER_LIMIT = 1200;
+  const LETTER_COMPOSER_TITLE = "写下你的感受";
+  const LETTER_SUBMIT_LABEL = "寄出信件";
 
   const parseApiBase = (value) => {
     let url;
@@ -901,6 +904,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   let scheduled = false;
+  const constrainLetterInputs = () => {
+    const matches = new Set(
+      Array.from(
+        document.querySelectorAll('[role="dialog"], .el-dialog')
+      ).filter((dialog) => {
+        if (dialog.closest(`[${DIALOG_ATTR}]`)) {
+          return false;
+        }
+        const textareas = dialog.querySelectorAll("textarea");
+        const titles = Array.from(
+          dialog.querySelectorAll('h1,h2,h3,[class*="title"]')
+        ).filter((item) => item.textContent.trim() === LETTER_COMPOSER_TITLE);
+        const submitButtons = Array.from(
+          dialog.querySelectorAll("button")
+        ).filter((item) => item.textContent.trim() === LETTER_SUBMIT_LABEL);
+        return textareas.length === 1 && titles.length === 1 && submitButtons.length === 1;
+      }).map((dialog) => dialog.querySelector("textarea"))
+    );
+    if (matches.size !== 1) {
+      return;
+    }
+    matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;
+  };
+
   const schedule = () => {
     if (scheduled) {
       return;
@@ -908,6 +935,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     scheduled = true;
     window.requestAnimationFrame(() => {
       scheduled = false;
+      constrainLetterInputs();
       mountShell();
     });
   };
