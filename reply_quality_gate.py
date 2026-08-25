@@ -81,7 +81,11 @@ def run_reply_quality_gate(
     }
     if not rewrite_required:
         return QualityGateResult(
-            QualityGateStatus.ACCEPTED,
+            (
+                QualityGateStatus.ACCEPTED_WITH_WARNINGS
+                if review.violations
+                else QualityGateStatus.ACCEPTED
+            ),
             candidate,
             deterministic_codes + review_codes,
             deterministic_checks=1,
