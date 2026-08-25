@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import importlib
+import json
 from numbers import Real
 import os
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Callable, Mapping, Protocol, Sequence
@@ -31,6 +34,25 @@ from conversation_memory_port import (
 
 
 MEM0_OSS_VERSION = "2.0.18"
+MEM0_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+MEM0_EMBEDDING_MODEL_REVISION = "7999e1d3359715c523056ef9478215996d62a620"
+_MEM0_IMPORT_LOCK = threading.Lock()
+_SAFE_MEM0_MODULE: object | None = None
+_EMBEDDING_MANIFEST_NAME = "olivia-mem0-embedding-manifest.json"
+_EMBEDDING_SNAPSHOT_FILES = frozenset(
+    {
+        "1_Pooling/config.json",
+        "config.json",
+        "config_sentence_transformers.json",
+        "model.safetensors",
+        "modules.json",
+        "sentence_bert_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.txt",
+    }
+)
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 
@@ -68,7 +90,7 @@ class Mem0Config:
     llm_base_url: str = ""
     llm_model: str = ""
     llm_api_key_env: str = "DEEPSEEK_API_KEY"
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_model: str = MEM0_EMBEDDING_MODEL
     embedding_dims: int = 512
     embedding_cache: Path | None = None
     context_max_chars: int = 2400
@@ -156,6 +178,15 @@ class Mem0Config:
     def model_cache(self) -> Path:
         return self.embedding_cache or self.data_root.parent / "model-cache"
 
+    @property
+    def embedding_snapshot(self) -> Path:
+        return (
+            self.model_cache
+            / "models--BAAI--bge-small-zh-v1.5"
+            / "snapshots"
+            / MEM0_EMBEDDING_MODEL_REVISION
+        )
+
     def provider_config(
         self,
         environ: Mapping[str, str] | None = None,
@@ -189,6 +220,7 @@ class Mem0Config:
                         "device": "cpu",
                         "cache_folder": str(self.model_cache),
                         "local_files_only": True,
+                        "revision": MEM0_EMBEDDING_MODEL_REVISION,
                     },
                 },
             },
@@ -225,6 +257,43 @@ def _duration(value: object, default: float, *, maximum: float = 300.0) -> float
     except (TypeError, ValueError):
         return default
     return parsed if 0.1 <= parsed <= maximum else default
+
+
+def _verified_embedding_cache(config: Mem0Config) -> bool:
+    """Accept only the pinned, manifest-verified local embedding files."""
+
+    if config.embedding_model != MEM0_EMBEDDING_MODEL:
+        return False
+    try:
+        manifest = json.loads(
+            (config.model_cache / _EMBEDDING_MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, dict) or set(manifest) != {"model", "revision", "files"}:
+        return False
+    files = manifest.get("files")
+    if (
+        manifest.get("model") != MEM0_EMBEDDING_MODEL
+        or manifest.get("revision") != MEM0_EMBEDDING_MODEL_REVISION
+        or not isinstance(files, dict)
+        or set(files) != _EMBEDDING_SNAPSHOT_FILES
+    ):
+        return False
+    for relative_path, expected_sha256 in files.items():
+        if not isinstance(expected_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", expected_sha256
+        ):
+            return False
+        candidate = config.embedding_snapshot.joinpath(*relative_path.split("/"))
+        try:
+            with candidate.open("rb") as snapshot_file:
+                digest = hashlib.file_digest(snapshot_file, "sha256").hexdigest()
+        except OSError:
+            return False
+        if digest != expected_sha256:
+            return False
+    return True
 
 
 def load_mem0_config(
@@ -909,8 +978,29 @@ class Mem0ConversationMemoryAdapter:
         )
 
 
+def _require_safe_mem0_import_state() -> None:
+    with _MEM0_IMPORT_LOCK:
+        os.environ["MEM0_TELEMETRY"] = "False"
+        module = sys.modules.get("mem0")
+        if module is not None and module is not _SAFE_MEM0_MODULE:
+            raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
+
+
+def _load_product_mem0_module() -> object:
+    global _SAFE_MEM0_MODULE
+    with _MEM0_IMPORT_LOCK:
+        os.environ["MEM0_TELEMETRY"] = "False"
+        module = sys.modules.get("mem0")
+        if module is None:
+            module = importlib.import_module("mem0")
+            _SAFE_MEM0_MODULE = module
+        elif module is not _SAFE_MEM0_MODULE:
+            raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
+        return module
+
+
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
-    module = importlib.import_module("mem0")
+    module = _load_product_mem0_module()
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
         raise ImportError("Mem0 Memory.from_config is unavailable")
@@ -928,12 +1018,18 @@ def create_mem0_adapter(
         return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled:
         return NullConversationMemoryPort()
+    if not _verified_embedding_cache(active):
+        return UnavailableConversationMemoryPort(
+            "MEM0_EMBEDDING_CACHE_UNAVAILABLE", config=active
+        )
     try:
+        _require_safe_mem0_import_state()
         active.qdrant_path.parent.mkdir(parents=True, exist_ok=True)
         active.history_path.parent.mkdir(parents=True, exist_ok=True)
-        active.model_cache.mkdir(parents=True, exist_ok=True)
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
+    except Mem0AdapterError as exc:
+        return UnavailableConversationMemoryPort(exc.code, config=active)
     except (ModuleNotFoundError, ImportError):
         return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -943,6 +1039,8 @@ def create_mem0_adapter(
 
 
 __all__ = [
+    "MEM0_EMBEDDING_MODEL",
+    "MEM0_EMBEDDING_MODEL_REVISION",
     "MEM0_OSS_VERSION",
     "Mem0AdapterError",
     "Mem0Config",

@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 import threading
 import time
+import tomllib
+from types import SimpleNamespace
 
 from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
 from conversation_memory_outbox import CanonicalMemoryOutbox
@@ -16,6 +21,8 @@ from conversation_memory_port import (
     UnavailableConversationMemoryPort,
 )
 from mem0_memory import (
+    MEM0_EMBEDDING_MODEL,
+    MEM0_EMBEDDING_MODEL_REVISION,
     MEM0_OSS_VERSION,
     Mem0AdapterError,
     Mem0Config,
@@ -23,6 +30,7 @@ from mem0_memory import (
     create_mem0_adapter,
     load_mem0_config,
 )
+import mem0_memory
 
 
 NOW = datetime(2026, 8, 23, 2, 0, tzinfo=timezone.utc)
@@ -125,6 +133,38 @@ def _config(tmp_path: Path) -> Mem0Config:
     )
 
 
+def _write_verified_embedding_cache(config: Mem0Config) -> None:
+    files = {
+        "1_Pooling/config.json": b"{\"word_embedding_dimension\": 512}",
+        "config.json": b"{\"model_type\": \"bert\"}",
+        "config_sentence_transformers.json": b"{}",
+        "model.safetensors": b"synthetic weights",
+        "modules.json": b"[]",
+        "sentence_bert_config.json": b"{}",
+        "special_tokens_map.json": b"{}",
+        "tokenizer.json": b"{}",
+        "tokenizer_config.json": b"{}",
+        "vocab.txt": b"synthetic\n",
+    }
+    for relative_path, content in files.items():
+        destination = config.embedding_snapshot.joinpath(*relative_path.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    (config.model_cache / "olivia-mem0-embedding-manifest.json").write_text(
+        json.dumps(
+            {
+                "model": MEM0_EMBEDDING_MODEL,
+                "revision": MEM0_EMBEDDING_MODEL_REVISION,
+                "files": {
+                    relative_path: hashlib.sha256(content).hexdigest()
+                    for relative_path, content in files.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> None:
     assert MEM0_OSS_VERSION == "2.0.18"
     config = _config(tmp_path)
@@ -145,10 +185,20 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
         "device": "cpu",
         "cache_folder": str(config.model_cache),
         "local_files_only": True,
+        "revision": MEM0_EMBEDDING_MODEL_REVISION,
     }
     assert mapping["llm"]["config"]["openai_base_url"] == "http://127.0.0.1:9/v1"
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
     assert "private_world" not in repr(mapping)
+
+
+def test_memory_extra_pins_the_verified_mem0_embedding_dependencies() -> None:
+    project = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text("utf-8"))
+
+    assert project["project"]["optional-dependencies"]["memory-mem0"] == [
+        "mem0ai==2.0.18",
+        "sentence-transformers==5.7.0",
+    ]
 
 
 def test_config_preserves_legacy_positional_config_error_slot(tmp_path: Path) -> None:
@@ -1194,6 +1244,7 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
         captured.update(config)
         return backend
 
+    _write_verified_embedding_cache(_config(tmp_path))
     adapter = create_mem0_adapter(
         _config(tmp_path),
         environ={"DEEPSEEK_API_KEY": "fixture-secret"},
@@ -1212,6 +1263,194 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
     assert isinstance(unavailable, UnavailableConversationMemoryPort)
     assert unavailable.reason_code == "MEM0_INITIALIZATION_FAILED"
     assert unavailable.config.data_root == _config(tmp_path).data_root
+
+
+def test_factory_refuses_an_unverified_local_embedding_cache(tmp_path: Path) -> None:
+    factory_called = False
+
+    def factory(_config):
+        nonlocal factory_called
+        factory_called = True
+        return FakeMem0()
+
+    port = create_mem0_adapter(_config(tmp_path), memory_factory=factory)
+
+    assert isinstance(port, UnavailableConversationMemoryPort)
+    assert port.reason_code == "MEM0_EMBEDDING_CACHE_UNAVAILABLE"
+    assert factory_called is False
+    assert "model" not in port.status().to_dict()
+    assert "cache" not in port.status().to_dict()
+
+
+def test_factory_forces_telemetry_off_before_first_mem0_import(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    observed: dict[str, str | None] = {}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"] = os.environ.get("MEM0_TELEMETRY")
+            return FakeMem0()
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["import"] = os.environ.get("MEM0_TELEMETRY")
+        module = SimpleNamespace(Memory=FakeMemory)
+        sys.modules[name] = module
+        return module
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setenv("MEM0_TELEMETRY", "true")
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+
+    port = create_mem0_adapter(
+        config,
+        environ={"MEM0_TELEMETRY": "true"},
+    )
+
+    assert isinstance(port, Mem0ConversationMemoryAdapter)
+    assert observed == {"import": "False", "from_config": "False"}
+    assert os.environ["MEM0_TELEMETRY"] == "False"
+
+
+def test_factory_reuses_a_product_verified_mem0_import(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    observed: dict[str, object] = {"imports": 0, "from_config": []}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"].append(os.environ.get("MEM0_TELEMETRY"))
+            return FakeMem0()
+
+    module = SimpleNamespace(Memory=FakeMemory)
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["imports"] += 1
+        sys.modules[name] = module
+        return module
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setattr(mem0_memory, "_SAFE_MEM0_MODULE", None, raising=False)
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+
+    first = create_mem0_adapter(config)
+    second = create_mem0_adapter(config)
+
+    assert isinstance(first, Mem0ConversationMemoryAdapter)
+    assert isinstance(second, Mem0ConversationMemoryAdapter)
+    assert observed == {"imports": 1, "from_config": ["False", "False"]}
+
+
+def test_concurrent_factories_reuse_one_product_verified_mem0_import(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    import_entered = threading.Event()
+    release_import = threading.Event()
+    second_started = threading.Event()
+    first_finished = threading.Event()
+    second_finished = threading.Event()
+    observed: dict[str, object] = {"imports": 0, "from_config": []}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"].append(os.environ.get("MEM0_TELEMETRY"))
+            return FakeMem0()
+
+    module = SimpleNamespace(Memory=FakeMemory)
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["imports"] += 1
+        sys.modules[name] = module
+        import_entered.set()
+        assert release_import.wait(1)
+        return module
+
+    results: dict[str, object] = {}
+
+    def construct(name: str, finished: threading.Event) -> None:
+        if name == "second":
+            second_started.set()
+        results[name] = create_mem0_adapter(config)
+        finished.set()
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setattr(mem0_memory, "_SAFE_MEM0_MODULE", None, raising=False)
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+    first = threading.Thread(target=construct, args=("first", first_finished))
+    second = threading.Thread(target=construct, args=("second", second_finished))
+    first.start()
+    assert import_entered.wait(1)
+    second.start()
+    assert second_started.wait(1)
+    assert second_finished.is_set() is False
+    release_import.set()
+    assert first_finished.wait(1)
+    assert second_finished.wait(1)
+    first.join()
+    second.join()
+
+    assert isinstance(results["first"], Mem0ConversationMemoryAdapter)
+    assert isinstance(results["second"], Mem0ConversationMemoryAdapter)
+    assert observed == {"imports": 1, "from_config": ["False", "False"]}
+
+
+def test_factory_fails_closed_when_mem0_was_preloaded(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    factory_called = False
+
+    def factory(_config):
+        nonlocal factory_called
+        factory_called = True
+        return FakeMem0()
+
+    monkeypatch.setenv("MEM0_TELEMETRY", "true")
+    monkeypatch.setitem(sys.modules, "mem0", SimpleNamespace())
+
+    port = create_mem0_adapter(config, memory_factory=factory)
+
+    assert isinstance(port, UnavailableConversationMemoryPort)
+    assert port.reason_code == "MEM0_TELEMETRY_STATE_UNAVAILABLE"
+    assert factory_called is False
+    assert os.environ["MEM0_TELEMETRY"] == "False"
+    assert "path" not in repr(port.status().to_dict())
+
+
+def test_factory_refuses_corrupt_or_revision_mismatched_embedding_caches(
+    tmp_path: Path,
+) -> None:
+    corrupt = _config(tmp_path / "corrupt")
+    _write_verified_embedding_cache(corrupt)
+    (corrupt.embedding_snapshot / "model.safetensors").write_bytes(b"corrupt")
+
+    corrupt_port = create_mem0_adapter(corrupt, memory_factory=lambda _: FakeMem0())
+
+    assert isinstance(corrupt_port, UnavailableConversationMemoryPort)
+    assert corrupt_port.reason_code == "MEM0_EMBEDDING_CACHE_UNAVAILABLE"
+
+    mismatched_revision = _config(tmp_path / "mismatched-revision")
+    _write_verified_embedding_cache(mismatched_revision)
+    manifest_path = mismatched_revision.model_cache / "olivia-mem0-embedding-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["revision"] = "0" * 40
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    mismatched_port = create_mem0_adapter(
+        mismatched_revision, memory_factory=lambda _: FakeMem0()
+    )
+
+    assert isinstance(mismatched_port, UnavailableConversationMemoryPort)
+    assert mismatched_port.reason_code == "MEM0_EMBEDDING_CACHE_UNAVAILABLE"
 
 
 def test_manual_failure_uses_stable_error(tmp_path: Path) -> None:

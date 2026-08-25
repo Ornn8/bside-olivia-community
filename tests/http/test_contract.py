@@ -127,7 +127,10 @@ def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_avai
     monkeypatch.setattr(
         local_server,
         "conversation_memory_adapter",
-        UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED"),
+        UnavailableConversationMemoryPort(
+            "MEM0_TELEMETRY_STATE_UNAVAILABLE",
+            config={"telemetry": "private-synthetic-telemetry-detail"},
+        ),
     )
 
     result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
@@ -137,6 +140,9 @@ def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_avai
     conversation = result["data"]["capabilities"]["memory.conversation"]
     assert conversation["status"] == "unavailable"
     assert conversation["provider"] == "none"
+    health = json.dumps(result)
+    assert "MEM0_TELEMETRY_STATE_UNAVAILABLE" in health
+    assert "private-synthetic-telemetry-detail" not in health
 
 
 def test_memory_health_reflects_degraded_canonical_delivery_runtime(
