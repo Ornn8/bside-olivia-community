@@ -8,23 +8,53 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from memory_isolation_case01 import (
-    _select_memory_evidence,
-    run_case01,
-    run_prefix19,
-)
+from memory_isolation_case01 import run_case01, run_prefix19
 
 
-def test_prefix19_keeps_legacy_memory_selector_compatible() -> None:
+def test_prefix19_routes_optional_exclusion_and_keeps_legacy_selector_compatible(
+    tmp_path: Path,
+) -> None:
+    legacy_originals: list[str] = []
+    keyword_calls: list[dict[str, str]] = []
+
     class LegacyMemory:
+        def ingest_user_evidence(self, **_: object) -> None:
+            pass
+
         def selected_evidence(self, *, original: str) -> tuple[str, ...]:
+            legacy_originals.append(original)
             return (f"legacy evidence for {original}",)
 
-    assert _select_memory_evidence(
-        LegacyMemory(),
-        original="synthetic current original",
-        exclude_source_id="test:test-01",
-    ) == ("legacy evidence for synthetic current original",)
+    class KeywordMemory:
+        def ingest_user_evidence(self, **_: object) -> None:
+            pass
+
+        def selected_evidence(self, **kwargs: str) -> tuple[str, ...]:
+            keyword_calls.append(kwargs)
+            return ()
+
+    def run(memory_type: type[object], name: str) -> dict[str, object]:
+        return run_prefix19(
+            manifest_path=_manifest_19(tmp_path),
+            namespace=f"synthetic-{name}",
+            memory_factory=lambda _namespace: memory_type(),
+            generator=lambda **_: "synthetic reply",
+            persona_evaluator=lambda **_: {
+                "score": 0.9,
+                "hard_violations": [],
+            },
+            reference_evaluator=lambda **_: {"style_score": 0.8},
+            persona_authority={"authority": "synthetic"},
+            output_path=tmp_path / f"{name}.json",
+            validation_mode="synthetic_validation",
+        )
+
+    assert run(LegacyMemory, "legacy")["completed_case_count"] == 19
+    assert run(KeywordMemory, "keyword")["completed_case_count"] == 19
+    assert len(legacy_originals) == 19
+    assert [call["exclude_source_id"] for call in keyword_calls] == [
+        f"test:test-{number:02d}" for number in range(1, 20)
+    ]
 
 
 def _entry(relative_path: str, *, kind: str = "text") -> dict[str, str]:
