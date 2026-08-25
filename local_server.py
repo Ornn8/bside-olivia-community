@@ -7,12 +7,17 @@
 #   music_adapter.generate(midi)   -> 本地音乐模型生成演奏
 import asyncio
 import json
+import multiprocessing as _multiprocessing
 import os as _os
+import queue as _queue
 import re as _re
 import random
+import shutil
 import time
 import uuid
 import hashlib
+import inspect
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -590,15 +595,28 @@ class _VideoReplySettings:
     def cancel_video_reply_jobs(self) -> None:
         """Stop queued media work when the user disables future video replies."""
 
+        for event in tuple(media_cancel_events.values()):
+            event.set()
         for task in tuple(media_tasks):
-            task.cancel()
-        media_jobs.clear()
+            # Renderers run in worker threads; the event is their cooperative
+            # stop signal. Cancelling the asyncio wrapper would orphan output.
+            if task.done():
+                media_tasks.discard(task)
         changed = False
         for letter in store.letters:
             if letter.get("media_status") in {"PENDING", "QUEUED", "PROCESSING"}:
                 letter["media_status"] = "NOT_REQUESTED"
                 letter.pop("media_error_code", None)
                 letter.pop("reply_video_url", None)
+                active = media_jobs.get(str(letter.get("letter_id", "")))
+                if active is None or active.done():
+                    output_dir = _media_output_dir()
+                    if output_dir is not None:
+                        _cleanup_media_outputs(
+                            str(letter.get("letter_id", "")),
+                            output_dir,
+                            include_published=True,
+                        )
                 changed = True
         if changed:
             _persist_media_state()
@@ -685,6 +703,7 @@ emotion_triage = LetterEmotionTriage(
 )
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
+media_cancel_events: dict[str, threading.Event] = {}
 reply_tasks: set[asyncio.Task] = set()
 private_world_candidate_tasks: set[asyncio.Task] = set()
 reply_jobs: dict[str, asyncio.Task] = {}
@@ -1460,6 +1479,16 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
     letter["reply_not_before"] = time.time() + delay * 60.0
 
 
+def _downgrade_disabled_video_reply(letter: dict) -> None:
+    triage = dict(letter.get("triage") or {})
+    triage.update(reply_mode=ReplyMode.TEXT_LETTER.value, reason_code="video_replies_disabled")
+    letter["triage"] = triage
+    letter["reply_mode"] = ReplyMode.TEXT_LETTER.value
+    for key in ("media_status", "media_error_code", "reply_video_url"):
+        letter.pop(key, None)
+    _schedule_text_reply_delay(letter, ReplyMode.TEXT_LETTER.value)
+
+
 def _reply_pipeline_timeout_seconds() -> float:
     """Cover generation plus review, one rewrite, and the final recheck."""
 
@@ -1908,6 +1937,132 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
     _safe_log('unimplemented_route', method=method, path=p)
     return not_implemented()
 
+def _renderer_accepts_cancel(renderer: Callable[..., object]) -> bool:
+    try:
+        parameters = inspect.signature(renderer).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "cancellation_event"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _renderer_process_entry(renderer, args, kwargs, result_queue) -> None:
+    """Run a provider renderer in an owned process for hard cancellation."""
+
+    try:
+        renderer(*args, **kwargs)
+    except BaseException as exc:  # the parent turns this into a stable failure
+        result_queue.put(("error", type(exc).__name__, str(exc)[:160]))
+    else:
+        result_queue.put(("completed",))
+
+
+def _run_renderer_process(
+    renderer: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    cancellation_event: threading.Event,
+) -> bool:
+    """Run a non-cooperative provider in a process we can terminate on disable."""
+
+    context = _multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_renderer_process_entry,
+        args=(renderer, args, kwargs, result_queue),
+    )
+    try:
+        process.start()
+    except BaseException:
+        result_queue.close()
+        result_queue.join_thread()
+        raise
+    outcome = None
+    try:
+        while outcome is None:
+            if cancellation_event.is_set():
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+                return False
+            try:
+                outcome = result_queue.get(timeout=0.05)
+            except _queue.Empty:
+                if not process.is_alive():
+                    process.join()
+                    break
+        if process.is_alive():
+            process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join()
+        if cancellation_event.is_set():
+            return False
+        if process.exitcode not in {0, None}:
+            raise RuntimeError("MEDIA_RENDERER_FAILED")
+        if not outcome or outcome[0] != "completed":
+            raise RuntimeError("MEDIA_RENDERER_FAILED")
+        return True
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _run_renderer(renderer, args, kwargs, cancellation_event: threading.Event) -> bool:
+    if cancellation_event.is_set():
+        return False
+    if _renderer_accepts_cancel(renderer):
+        kwargs = {**kwargs, "cancellation_event": cancellation_event}
+        renderer(*args, **kwargs)
+        return not cancellation_event.is_set()
+    return _run_renderer_process(renderer, args, kwargs, cancellation_event)
+
+
+def _media_output_dir() -> Path | None:
+    data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
+    return data_root / "media" if data_root.is_absolute() else None
+
+
+def _cleanup_media_outputs(
+    letter_id: str,
+    output_dir: Path,
+    *,
+    include_published: bool,
+) -> None:
+    """Remove only this reply's temporary and provider-stage artifacts."""
+
+    if Path(letter_id).name != letter_id:
+        return
+    paths = [
+        output_dir / f".{letter_id}.render.mp4",
+        output_dir / f".{letter_id}.render.rendering.mp4",
+        output_dir / f"{letter_id}-official-spoken-v1.mp4",
+    ]
+    paths.extend(output_dir.glob(f".{letter_id}.render-music-v2-*-stages"))
+    paths.extend(output_dir.glob(f"{letter_id}-song-v2-*.mp4"))
+    if include_published:
+        paths.append(output_dir / f"{letter_id}.mp4")
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            # The status boundary remains fail-closed if a provider leaves a
+            # locked file behind; the next owned cleanup can retry it.
+            continue
+
+
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
     """Render one media reply at a time and persist a relative artifact path."""
 
@@ -1919,51 +2074,64 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         letter.pop("media_error_code", None)
         letter.pop("reply_video_url", None)
         _persist_media_state()
+        if (output_dir := _media_output_dir()) is not None:
+            _cleanup_media_outputs(letter_id, output_dir, include_published=True)
         return
+    cancellation_event = media_cancel_events.setdefault(letter_id, threading.Event())
     async with media_semaphore:
         if not _video_reply_enabled():
             letter["media_status"] = "NOT_REQUESTED"
             letter.pop("media_error_code", None)
             letter.pop("reply_video_url", None)
             _persist_media_state()
+            if (output_dir := _media_output_dir()) is not None:
+                _cleanup_media_outputs(letter_id, output_dir, include_published=True)
+            if media_jobs.get(letter_id) is None:
+                media_cancel_events.pop(letter_id, None)
             return
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
-        data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
-        output_dir = data_root / "media" if data_root.is_absolute() else None
+        output_dir = _media_output_dir()
         if output_dir is None:
             letter["media_status"] = "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED"
             return
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{letter_id}.mp4"
+        temporary_output = output_dir / f".{letter_id}.render.mp4"
+        published = False
         try:
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
+            if cancellation_event.is_set() or not _video_reply_enabled():
+                cancellation_event.set()
+                return
             voice_plan = await _voice_plan_for_letter(letter, reply_text)
+            if cancellation_event.is_set() or not _video_reply_enabled():
+                cancellation_event.set()
+                return
             if reply_mode == "musical_video":
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(_os.environ)
                 if performance_scene is None or not performance_scene.is_file():
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
-                await asyncio.to_thread(render_musical_reply,
-                    content,
-                    reply_text,
-                    output_path,
-                    normal_video_path=output_dir / f"{letter_id}-official-spoken-v1.mp4",
-                    song_video_path=output_dir / (
+                completed = await asyncio.to_thread(_run_renderer, render_musical_reply,
+                    (content, reply_text, temporary_output),
+                    {
+                    "normal_video_path": output_dir / f"{letter_id}-official-spoken-v1.mp4",
+                    "song_video_path": output_dir / (
                         f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
                     ),
-                    official_reply_reference_path=select_speaking_scene(
+                    "official_reply_reference_path": select_speaking_scene(
                         speaking_scene_candidates(_os.environ)
                     ) or Path(),
-                    tts_config_path=tts_config,
-                    visual_config_path=visual_config,
-                    worker_path=worker,
-                    performance_video_path=performance_scene,
-                    duration_seconds=music_duration_seconds,
-                    voice_performance_plan=voice_plan,
-                )
+                    "tts_config_path": tts_config,
+                    "visual_config_path": visual_config,
+                    "worker_path": worker,
+                    "performance_video_path": performance_scene,
+                    "duration_seconds": music_duration_seconds,
+                    "voice_performance_plan": voice_plan,
+                    }, cancellation_event)
             else:
                 from datetime import datetime
 
@@ -1973,18 +2141,23 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 normal_scene = Path(normal_scene_value).expanduser() if normal_scene_value else None
                 if normal_scene is None or not normal_scene.is_file():
                     raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
-                await asyncio.to_thread(render_reply_video,
-                    reply_text,
-                    output_path,
-                    tts_config_path=tts_config,
-                    visual_config_path=visual_config,
-                    worker_path=worker,
-                    scene_path=normal_scene,
-                    latentsync_python_path=Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                    latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
-                    adaptive_delivery=True,
-                    voice_performance_plan=voice_plan,
-                )
+                completed = await asyncio.to_thread(_run_renderer, render_reply_video,
+                    (reply_text, temporary_output),
+                    {
+                    "tts_config_path": tts_config,
+                    "visual_config_path": visual_config,
+                    "worker_path": worker,
+                    "scene_path": normal_scene,
+                    "latentsync_python_path": Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
+                    "latentsync_root": Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                    "adaptive_delivery": True,
+                    "voice_performance_plan": voice_plan,
+                    }, cancellation_event)
+            if not completed or cancellation_event.is_set() or not _video_reply_enabled():
+                cancellation_event.set()
+                return
+            temporary_output.replace(output_path)
+            published = True
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
@@ -1995,18 +2168,41 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             VoiceDirectionError,
             GatewayError,
             asyncio.TimeoutError,
+            RuntimeError,
             ValueError,
             OSError,
         ) as exc:
             letter["media_status"] = "UNAVAILABLE"
             letter["media_error_code"] = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
             _persist_media_state()
+        finally:
+            if not published:
+                _cleanup_media_outputs(
+                    letter_id,
+                    output_dir,
+                    include_published=(
+                        cancellation_event.is_set() or not _video_reply_enabled()
+                    ),
+                )
+            if media_jobs.get(letter_id) is None:
+                media_cancel_events.pop(letter_id, None)
 
 
 def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
+    if not _video_reply_enabled():
+        letter = next(
+            (item for item in store.letters if item.get("letter_id") == letter_id),
+            None,
+        )
+        if letter is not None:
+            _downgrade_disabled_video_reply(letter)
+            _persist_store_state()
+        return
     active = media_jobs.get(letter_id)
     if active is not None and not active.done():
         return
+    cancellation_event = threading.Event()
+    media_cancel_events[letter_id] = cancellation_event
     task = asyncio.create_task(_render_media_job(letter_id, content, reply_text, reply_mode))
     media_tasks.add(task)
     media_jobs[letter_id] = task
@@ -2015,6 +2211,8 @@ def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mod
         media_tasks.discard(completed)
         if media_jobs.get(letter_id) is completed:
             media_jobs.pop(letter_id, None)
+        if media_cancel_events.get(letter_id) is cancellation_event:
+            media_cancel_events.pop(letter_id, None)
 
     task.add_done_callback(discard)
 
@@ -2115,6 +2313,13 @@ def _schedule_pending_media_jobs() -> int:
                 letter["media_status"] = "NOT_REQUESTED"
                 letter.pop("media_error_code", None)
                 letter.pop("reply_video_url", None)
+                output_dir = _media_output_dir()
+                if output_dir is not None:
+                    _cleanup_media_outputs(
+                        str(letter.get("letter_id", "")),
+                        output_dir,
+                        include_published=True,
+                    )
                 changed = True
         if changed:
             _persist_media_state()
@@ -2153,16 +2358,32 @@ async def _start_reply_tasks(_app: web.Application) -> None:
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks)
+    media_pending = tuple(media_tasks)
+    tasks = tuple(reply_tasks | private_world_candidate_tasks)
+    for event in tuple(media_cancel_events.values()):
+        event.set()
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    # Do not cancel the asyncio wrapper around a renderer: cancellation would
+    # return before its owned process/thread has acknowledged the stop signal.
+    if media_pending:
+        cancellable_media_tasks = {
+            task
+            for letter_id, task in media_jobs.items()
+            if letter_id in media_cancel_events and task in media_pending
+        }
+        for task in media_pending:
+            if task not in cancellable_media_tasks:
+                task.cancel()
+        await asyncio.gather(*media_pending, return_exceptions=True)
     reply_tasks.clear()
     private_world_candidate_tasks.clear()
     media_tasks.clear()
     reply_jobs.clear()
     media_jobs.clear()
+    media_cancel_events.clear()
 
 
 def install_reply_task_lifecycle(app: web.Application) -> None:
@@ -2362,6 +2583,12 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _safe_log("letter_failed", error_code=public_code)
         return False
 
+    if exact_mode in {
+        ReplyMode.SPOKEN_VIDEO.value,
+        ReplyMode.MUSICAL_VIDEO.value,
+    } and not _video_reply_enabled():
+        _downgrade_disabled_video_reply(letter)
+        exact_mode = ReplyMode.TEXT_LETTER.value
     _prepare_private_world_delivery(letter, result.text)
     letter["reply_text"] = result.text
     letter["letter_status"] = "COMPLETED"
@@ -2376,9 +2603,17 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
     }:
-        letter["media_status"] = "PENDING"
-        _persist_media_state()
-        _schedule_media_job(letter_id, content, result.text, exact_mode)
+        # The setting can change from the companion API's worker thread while
+        # the canonical reply is being persisted. Re-read at the queue edge so
+        # a completed text reply can never create a new media wait state.
+        if not _video_reply_enabled():
+            _downgrade_disabled_video_reply(letter)
+            _persist_store_state()
+            exact_mode = ReplyMode.TEXT_LETTER.value
+        else:
+            letter["media_status"] = "PENDING"
+            _persist_media_state()
+            _schedule_media_job(letter_id, content, result.text, exact_mode)
 
     letters_adapter.remember_conversation(content, result.text)
     _safe_log("letter_completed", reply_mode=exact_mode)
