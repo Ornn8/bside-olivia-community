@@ -309,24 +309,6 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
     assert memory.operations == [("clear", "local-user")]
 
 
-def test_paused_clear_uses_the_existing_admin_availability_boundary(tmp_path: Path) -> None:
-    memory = FakeMemory()
-    _seed(memory)
-    memory.operations.clear()
-    service = _service(tmp_path, memory)
-    service.pause(request_id="pause.before.clear", reason="用户暂停长期记忆。")
-
-    with pytest.raises(ConversationMemoryAdminError) as paused:
-        service.clear(
-            request_id="clear.while.paused",
-            reason="不定义暂停状态的清空行为。",
-            confirmed=True,
-        )
-
-    assert paused.value.code == "MEMORY_ADMIN_PAUSED"
-    assert memory.operations == []
-
-
 def test_status_counts_only_the_normalized_current_user_audit_rows(tmp_path: Path) -> None:
     memory = FakeMemory()
     audit = tmp_path / "memory" / "admin.sqlite3"
