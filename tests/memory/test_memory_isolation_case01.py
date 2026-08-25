@@ -8,7 +8,23 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from memory_isolation_case01 import run_case01, run_prefix19
+from memory_isolation_case01 import (
+    _select_memory_evidence,
+    run_case01,
+    run_prefix19,
+)
+
+
+def test_prefix19_keeps_legacy_memory_selector_compatible() -> None:
+    class LegacyMemory:
+        def selected_evidence(self, *, original: str) -> tuple[str, ...]:
+            return (f"legacy evidence for {original}",)
+
+    assert _select_memory_evidence(
+        LegacyMemory(),
+        original="synthetic current original",
+        exclude_source_id="test:test-01",
+    ) == ("legacy evidence for synthetic current original",)
 
 
 def _entry(relative_path: str, *, kind: str = "text") -> dict[str, str]:
