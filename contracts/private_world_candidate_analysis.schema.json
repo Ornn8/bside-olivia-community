@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p03.private-world-candidate.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate",
+    "confidence",
+    "summary",
+    "evidence_spans"
+  ],
+  "properties": {
+    "schema_version": {"const": "p03.private-world-candidate.v1"},
+    "candidate": {
+      "enum": ["none", "boundary_respected", "conflict", "repair"]
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "summary": {"type": "string", "maxLength": 280},
+    "evidence_spans": {
+      "type": "array",
+      "maxItems": 0
+    }
+  }
+}
