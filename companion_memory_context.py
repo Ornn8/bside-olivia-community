@@ -9,7 +9,7 @@ Archive.  Both domains are rendered by the existing untrusted-data formatter.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from conversation_memory_port import (
     ConversationMemoryPort,
@@ -138,14 +138,24 @@ class CompanionMemoryPromptBuilder:
             conversation_memory=None,
         )
 
-    def build(self, query: str, *, max_chars: int | None = None) -> MemoryPrompt:
+    def build(
+        self,
+        query: str,
+        *,
+        max_chars: int | None = None,
+        exclude_source_ids: Iterable[str] = (),
+    ) -> MemoryPrompt:
         budget = max(0, int(max_chars if max_chars is not None else 2400))
         if budget <= 0 or not isinstance(query, str) or not query.strip():
             return MemoryPrompt(status="disabled")
 
         conversation_status = _port_status(self.conversation_memory)
         if conversation_status == "disabled":
-            return self._fallback.build(query, max_chars=budget)
+            return self._fallback.build(
+                query,
+                max_chars=budget,
+                exclude_source_ids=exclude_source_ids,
+            )
 
         current_budget = max(0, int(budget * self.current_share))
         archive_budget = max(0, budget - current_budget)
@@ -158,7 +168,11 @@ class CompanionMemoryPromptBuilder:
             legacy_budget=0,
             conversation_budget=current_budget,
             conversation_memory=None,
-        ).build(query, max_chars=current_budget)
+        ).build(
+            query,
+            max_chars=current_budget,
+            exclude_source_ids=exclude_source_ids,
+        )
         archive = MemoryPromptBuilder(
             _LegacyArchiveView(self.archive_memory),
             max_results=self.max_results,

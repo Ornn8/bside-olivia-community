@@ -145,13 +145,24 @@ def _prepare_generation_request(
         raise ValueError("persona generation boundary is unavailable")
 
     loaded = load_persona(persona_path)
-    memory_context = memory_builder.build(
-        request.content,
-        max_chars=min(
-            request.max_input_chars,
-            int(getattr(memory_port, "context_max_chars", 2400)),
-        ),
+    memory_limit = min(
+        request.max_input_chars,
+        int(getattr(memory_port, "context_max_chars", 2400)),
     )
+    build_memory_prompt = getattr(adapter, "_build_memory_prompt", None)
+    if callable(build_memory_prompt):
+        memory_context = build_memory_prompt(
+            request.content,
+            max_chars=memory_limit,
+        )
+    else:
+        # Test and third-party bridges may retain the original builder-only
+        # surface; source selection is unavailable only outside the local
+        # LetterAdapter production boundary.
+        memory_context = memory_builder.build(
+            request.content,
+            max_chars=memory_limit,
+        )
     history = (
         (UntrustedFragment("memory.references", memory_context.text),)
         if memory_context.text

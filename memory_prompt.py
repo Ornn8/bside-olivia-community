@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from conversation_memory_port import ConversationMemoryPort
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, MemoryPort, MemoryRecord
@@ -108,7 +108,18 @@ class MemoryPromptBuilder:
             conversation_memory,
         )
 
-    def build(self, query: str, *, max_chars: int | None = None) -> MemoryPrompt:
+    def build(
+        self,
+        query: str,
+        *,
+        max_chars: int | None = None,
+        exclude_source_ids: Iterable[str] = (),
+    ) -> MemoryPrompt:
+        excluded = frozenset(
+            source_id
+            for source_id in exclude_source_ids
+            if isinstance(source_id, str) and source_id
+        )
         budget = max(
             0,
             int(max_chars if max_chars is not None else self.legacy_budget + self.conversation_budget),
@@ -130,7 +141,11 @@ class MemoryPromptBuilder:
                     self.conversation_budget,
                     self.legacy_budget,
                 ),
-            ).build(query, max_chars=budget)
+            ).build(
+                query,
+                max_chars=budget,
+                exclude_source_ids=excluded,
+            )
 
         try:
             records = self.memory.search(
@@ -145,6 +160,10 @@ class MemoryPromptBuilder:
             record
             for record in records
             if record.domain in {CONVERSATION_MEMORY, LEGACY_LETTERS}
+            and (
+                record.domain != CONVERSATION_MEMORY
+                or _record_source_id(record) not in excluded
+            )
         ]
         if not records:
             return MemoryPrompt(status=status)
@@ -217,6 +236,14 @@ class MemoryPromptBuilder:
             truncated=truncated,
             domains=tuple(used_domains),
         )
+
+
+def _record_source_id(record: MemoryRecord) -> str | None:
+    provenance = record.provenance
+    if not isinstance(provenance, Mapping):
+        return None
+    source_id = provenance.get("source_record_id")
+    return source_id if isinstance(source_id, str) else None
 
 
 def _default_conversation_memory() -> ConversationMemoryPort | None:

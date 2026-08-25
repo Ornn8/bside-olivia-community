@@ -18,7 +18,7 @@ from local_memory import (
     create_memory_adapter,
     load_memory_config,
 )
-from mem0_memory import load_mem0_config
+from mem0_memory import MEM0_EMBEDDING_MODEL_REVISION, load_mem0_config
 from memory_import import ImportOptions, LegacyLetterImporter
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, LegacyLetter, MemoryUnavailable
 from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPromptBuilder
@@ -250,11 +250,12 @@ def test_independent_mem0_file_configuration_reaches_provider_without_a_key_valu
         "config": {
             "model": "BAAI/bge-small-zh-v1.5",
             "embedding_dims": 512,
-            "model_kwargs": {
-                "device": "cpu",
-                "cache_folder": str(tmp_path / "memory" / "model-cache"),
-                "local_files_only": True,
-            },
+                "model_kwargs": {
+                    "device": "cpu",
+                    "cache_folder": str(tmp_path / "memory" / "model-cache"),
+                    "local_files_only": True,
+                    "revision": MEM0_EMBEDDING_MODEL_REVISION,
+                },
         },
     }
     assert provider["vector_store"] == {
