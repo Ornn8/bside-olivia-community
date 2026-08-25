@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import threading
 import time
 
 import pytest
@@ -195,6 +196,80 @@ def test_timeout_returns_without_blocking_canonical_reply_state() -> None:
         assert elapsed < 0.07
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("blocked_stage", ["status", "write"])
+def test_provider_timeout_uses_one_daemon_worker_for_status_and_write(
+    blocked_stage: str,
+) -> None:
+    release = threading.Event()
+    entered = threading.Event()
+    existing_threads = set(threading.enumerate())
+
+    class BlockingMemory(FakeMemory):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status_calls = 0
+            self.write_calls = 0
+
+        def status(self) -> ConversationMemoryStatus:
+            self.status_calls += 1
+            if blocked_stage == "status":
+                entered.set()
+                release.wait()
+            return super().status()
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.write_calls += 1
+            if blocked_stage == "write":
+                entered.set()
+                release.wait()
+            return super().remember_exchange(**kwargs)
+
+    async def scenario() -> None:
+        memory = BlockingMemory()
+        committer = ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.02)
+        started = time.monotonic()
+        results = [
+            await committer.commit(_delivery(revision=revision))
+            for revision in (2, 3, 4)
+        ]
+        assert time.monotonic() - started < 0.2
+        assert all(result.error_code == "MEM0_WRITE_TIMEOUT" for result in results)
+        assert entered.is_set()
+        assert (memory.status_calls, memory.write_calls) == (
+            (1, 0) if blocked_stage == "status" else (1, 1)
+        )
+
+    failure: list[BaseException] = []
+    done = threading.Event()
+
+    def run_scenario() -> None:
+        try:
+            asyncio.run(scenario())
+        except BaseException as exc:
+            failure.append(exc)
+        finally:
+            done.set()
+
+    probe = threading.Thread(target=run_scenario, daemon=True)
+    try:
+        probe.start()
+        assert done.wait(0.3)
+        assert not failure
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "olivia-memory-delivery" and thread not in existing_threads
+        ]
+        assert len(workers) == 1
+        assert workers[0].daemon is True
+    finally:
+        release.set()
+        probe.join(timeout=0.5)
+        for thread in threading.enumerate():
+            if thread.name == "olivia-memory-delivery" and thread not in existing_threads:
+                thread.join(timeout=0.5)
 
 
 @pytest.mark.parametrize(
