@@ -259,7 +259,13 @@ def _duration(value: object, default: float, *, maximum: float = 300.0) -> float
     return parsed if 0.1 <= parsed <= maximum else default
 
 
-def _verified_embedding_cache(config: Mem0Config) -> bool:
+def embedding_snapshot_files() -> frozenset[str]:
+    """Return the one pinned model file set shared by verifier and installer."""
+
+    return _EMBEDDING_SNAPSHOT_FILES
+
+
+def verified_embedding_cache(config: Mem0Config) -> bool:
     """Accept only the pinned, manifest-verified local embedding files."""
 
     if config.embedding_model != MEM0_EMBEDDING_MODEL:
@@ -1018,7 +1024,7 @@ def create_mem0_adapter(
         return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled:
         return NullConversationMemoryPort()
-    if not _verified_embedding_cache(active):
+    if not verified_embedding_cache(active):
         return UnavailableConversationMemoryPort(
             "MEM0_EMBEDDING_CACHE_UNAVAILABLE", config=active
         )
@@ -1046,5 +1052,7 @@ __all__ = [
     "Mem0Config",
     "Mem0ConversationMemoryAdapter",
     "create_mem0_adapter",
+    "embedding_snapshot_files",
     "load_mem0_config",
+    "verified_embedding_cache",
 ]

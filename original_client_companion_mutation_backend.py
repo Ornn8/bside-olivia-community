@@ -19,6 +19,7 @@ from conversation_memory_admin import (
     MemoryAdminMutationResult,
     MemoryAdminMutationStatus,
 )
+from mem0_embedding_install import EmbeddingInstallResult
 from original_client_companion_mutation_api import (
     CompanionMutationResult,
     OriginalClientCompanionMutationError,
@@ -51,6 +52,11 @@ class CandidateDecisionService(Protocol):
         self,
         request: CandidateDecisionRequest,
     ) -> CandidateDecisionResult: ...
+
+
+@runtime_checkable
+class EmbeddingInstallService(Protocol):
+    def start(self) -> EmbeddingInstallResult: ...
 
 
 def _memory_error(exc: ConversationMemoryAdminError) -> OriginalClientCompanionMutationError:
@@ -128,6 +134,7 @@ class DirectOriginalClientCompanionMutationBackend:
         *,
         memory_admin: MemoryAdminMutationService | None = None,
         candidate_decisions: CandidateDecisionService | None = None,
+        embedding_installer: EmbeddingInstallService | None = None,
     ) -> None:
         if memory_admin is not None and not isinstance(
             memory_admin,
@@ -139,8 +146,38 @@ class DirectOriginalClientCompanionMutationBackend:
             CandidateDecisionService,
         ):
             raise TypeError("an explicit candidate decision service is required")
+        if embedding_installer is not None and not isinstance(
+            embedding_installer, EmbeddingInstallService
+        ):
+            raise TypeError("an explicit embedding install service is required")
         self.memory_admin = memory_admin
         self.candidate_decisions = candidate_decisions
+        self.embedding_installer = embedding_installer
+
+    def install_embedding(
+        self, *, request_id: str, reason: str
+    ) -> CompanionMutationResult:
+        del reason
+        if self.embedding_installer is None:
+            raise OriginalClientCompanionMutationError(
+                "MEM0_EMBEDDING_INSTALL_DISABLED", status=503
+            )
+        try:
+            result = self.embedding_installer.start()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise OriginalClientCompanionMutationError(
+                "MEM0_EMBEDDING_INSTALL_UNAVAILABLE", status=503
+            ) from exc
+        if not isinstance(result, EmbeddingInstallResult):
+            raise OriginalClientCompanionMutationError(
+                "MEM0_EMBEDDING_INSTALL_UNAVAILABLE", status=503
+            )
+        return CompanionMutationResult(
+            request_id=request_id,
+            status=result.status,
+            affected_count=1 if result.status == "APPLIED" else 0,
+            reason_code=result.reason_code,
+        )
 
     def correct_memory(
         self,
@@ -240,5 +277,6 @@ class DirectOriginalClientCompanionMutationBackend:
 __all__ = [
     "CandidateDecisionService",
     "DirectOriginalClientCompanionMutationBackend",
+    "EmbeddingInstallService",
     "MemoryAdminMutationService",
 ]

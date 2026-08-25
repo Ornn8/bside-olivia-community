@@ -27,6 +27,8 @@ from conversation_memory_admin import (
     ConversationMemoryAdminService,
 )
 from conversation_memory_port import ConversationMemoryPort
+from mem0_embedding_install import Mem0EmbeddingInstaller
+from mem0_memory import Mem0Config
 from original_client_companion_api import mount_original_companion_read_api
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
@@ -310,6 +312,7 @@ def create_original_client_server_runtime(
     private_world: PrivateWorldPort | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
     candidate_decisions: CandidateReviewBackend | None = None,
+    embedding_installer: Mem0EmbeddingInstaller | None = None,
     letter_collection: LetterCollection | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
@@ -326,6 +329,7 @@ def create_original_client_server_runtime(
         memory_admin=memory_admin,
         private_world=private_read,
         candidates=candidates,
+        embedding_installer=embedding_installer,
     )
     mutation_memory = (
         memory_admin
@@ -335,6 +339,7 @@ def create_original_client_server_runtime(
     mutation_backend = DirectOriginalClientCompanionMutationBackend(
         memory_admin=mutation_memory,
         candidate_decisions=candidate_decisions,
+        embedding_installer=embedding_installer,
     )
     app = web.Application()
     origins = tuple(trusted_origins)
@@ -478,6 +483,23 @@ def _configured_private_world(
     return port, candidates, candidate_decisions
 
 
+def _configured_embedding_installer(
+    server_module: ModuleType | Any,
+) -> Mem0EmbeddingInstaller | None:
+    builder = getattr(
+        getattr(server_module, "letters_adapter", None),
+        "memory_prompt_builder",
+        None,
+    )
+    config = getattr(getattr(builder, "conversation_memory", None), "config", None)
+    if not isinstance(config, Mem0Config) or not config.enabled:
+        return None
+    try:
+        return Mem0EmbeddingInstaller(config)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
 def create_configured_original_client_server_runtime(
     *,
     server_module: ModuleType | Any | None = None,
@@ -494,6 +516,7 @@ def create_configured_original_client_server_runtime(
         getattr(server_module, "TRUSTED_FRONTEND_ORIGINS", ())
     )
     memory_admin = _configured_memory_admin(server_module, values)
+    embedding_installer = _configured_embedding_installer(server_module)
     private_world, candidates, candidate_decisions = _configured_private_world(
         server_module,
         values,
@@ -505,6 +528,7 @@ def create_configured_original_client_server_runtime(
         private_world=private_world,
         candidates=candidates,
         candidate_decisions=candidate_decisions,
+        embedding_installer=embedding_installer,
         letter_collection=collection if callable(collection) else None,
         trusted_origins=origins,
     )

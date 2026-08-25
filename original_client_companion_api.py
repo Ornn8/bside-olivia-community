@@ -32,6 +32,7 @@ _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _LOCAL_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _LEVELS = frozenset({"unknown", "low", "medium", "high"})
 _CAPABILITY_STATES = frozenset({"available", "degraded", "unavailable", "disabled"})
+_EMBEDDING_INSTALL_STATES = frozenset({"missing", "installing", "ready", "error"})
 _AWARENESS = frozenset({"control_only", "pending", "character_known"})
 _HOME_ACCESS = frozenset({"no_access", "visit_access", "errand_access", "domestic_access"})
 _CANDIDATE_TYPES = frozenset({"boundary_respected", "conflict", "repair"})
@@ -89,10 +90,29 @@ def _timestamp(value: object, *, code: str, optional: bool = False) -> str | Non
 
 
 @dataclass(frozen=True)
+class CompanionEmbeddingInstall:
+    state: str
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in _EMBEDDING_INSTALL_STATES:
+            raise ValueError("embedding install state is invalid")
+        if self.reason_code is not None and not _CODE_RE.fullmatch(self.reason_code):
+            raise ValueError("embedding install reason is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        payload = {"state": self.state}
+        if self.reason_code is not None:
+            payload["reason_code"] = self.reason_code
+        return payload
+
+
+@dataclass(frozen=True)
 class CompanionCapability:
     state: str
     reason_code: str | None = None
     count: int | None = None
+    embedding: CompanionEmbeddingInstall | None = None
 
     def __post_init__(self) -> None:
         if self.state not in _CAPABILITY_STATES:
@@ -101,6 +121,10 @@ class CompanionCapability:
             raise ValueError("companion capability reason is invalid")
         if self.count is not None and (type(self.count) is not int or self.count < 0):
             raise ValueError("companion capability count is invalid")
+        if self.embedding is not None and not isinstance(
+            self.embedding, CompanionEmbeddingInstall
+        ):
+            raise ValueError("companion embedding state is invalid")
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {"state": self.state}
@@ -108,6 +132,8 @@ class CompanionCapability:
             payload["reason_code"] = self.reason_code
         if self.count is not None:
             payload["count"] = self.count
+        if self.embedding is not None:
+            payload["embedding"] = self.embedding.to_dict()
         return payload
 
 
@@ -500,6 +526,7 @@ __all__ = [
     "STATUS_PATH",
     "CompanionCandidateSummary",
     "CompanionCapability",
+    "CompanionEmbeddingInstall",
     "CompanionContinuationSummary",
     "CompanionMemorySummary",
     "CompanionPrivateWorldSummary",
