@@ -25,10 +25,10 @@ from conversation_memory_port import (
 )
 
 
-MEMORY_ADMIN_AUDIT_SCHEMA = 1
+MEMORY_ADMIN_AUDIT_SCHEMA = 2
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _ERROR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
-_OPERATIONS = frozenset({"add", "delete", "correct", "clear"})
+_OPERATIONS = frozenset({"add", "delete", "correct", "clear", "pause", "resume"})
 _AUDIT_STATUSES = frozenset(
     {"completed", "noop", "replacement_written_delete_pending"}
 )
@@ -95,6 +95,7 @@ class MemoryAdminStatus:
     audit_count: int
     pending_correction_count: int
     reason_code: str | None = None
+    paused: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in {"available", "degraded", "unavailable", "disabled"}:
@@ -103,6 +104,8 @@ class MemoryAdminStatus:
             raise ValueError("memory admin provider is invalid")
         if type(self.enabled) is not bool:
             raise ValueError("memory admin enabled flag is invalid")
+        if type(self.paused) is not bool:
+            raise ValueError("memory admin paused flag is invalid")
         if self.memory_count is not None and (
             type(self.memory_count) is not int or self.memory_count < 0
         ):
@@ -126,6 +129,8 @@ class MemoryAdminStatus:
             payload["memory_count"] = self.memory_count
         if self.reason_code is not None:
             payload["reason_code"] = self.reason_code
+        if self.paused:
+            payload["paused"] = True
         return payload
 
 
@@ -160,7 +165,7 @@ class ConversationMemoryAdminService:
         try:
             with self._connect() as connection:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-                if version not in {0, MEMORY_ADMIN_AUDIT_SCHEMA}:
+                if version not in {0, 1, MEMORY_ADMIN_AUDIT_SCHEMA}:
                     raise ConversationMemoryAdminError(
                         "MEMORY_ADMIN_SCHEMA_UNSUPPORTED"
                     )
@@ -185,6 +190,12 @@ class ConversationMemoryAdminService:
                         reason TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS memory_admin_pause_windows (
+                        pause_request_id TEXT PRIMARY KEY,
+                        resume_request_id TEXT UNIQUE,
+                        started_at TEXT NOT NULL,
+                        resumed_at TEXT
                     );
                     """
                 )
@@ -449,7 +460,7 @@ class ConversationMemoryAdminService:
             existing = self._existing_result(request_id, "clear")
             if existing is not None:
                 return existing
-            records = self.list_memories(limit=1000)
+            records = self._records(allow_paused=True)
             if not records:
                 self._write_audit(
                     request_id=request_id,
@@ -469,7 +480,7 @@ class ConversationMemoryAdminService:
                 raise ConversationMemoryAdminError(
                     "MEMORY_ADMIN_CLEAR_FAILED"
                 ) from exc
-            if count <= 0 and self.list_memories(limit=1):
+            if count <= 0 and self._records(allow_paused=True):
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_CLEAR_FAILED")
             affected = max(count, len(records))
             self._write_audit(
@@ -485,6 +496,99 @@ class ConversationMemoryAdminService:
                 "clear",
                 affected_count=affected,
             )
+
+    def pause(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+    ) -> MemoryAdminMutationResult:
+        request_id = _identifier(request_id, field_name="request_id")
+        _text(reason, field_name="reason", maximum=500)
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    existing = connection.execute(
+                        "SELECT 1 FROM memory_admin_pause_windows WHERE pause_request_id = ?",
+                        (request_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        return MemoryAdminMutationResult(
+                            MemoryAdminMutationStatus.DUPLICATE, request_id, "pause"
+                        )
+                    active = connection.execute(
+                        "SELECT 1 FROM memory_admin_pause_windows WHERE resumed_at IS NULL"
+                    ).fetchone()
+                    if active is not None:
+                        return MemoryAdminMutationResult(
+                            MemoryAdminMutationStatus.NOOP, request_id, "pause"
+                        )
+                    connection.execute(
+                        "INSERT INTO memory_admin_pause_windows (pause_request_id, started_at) VALUES (?, ?)",
+                        (request_id, datetime.now(timezone.utc).isoformat()),
+                    )
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+        return MemoryAdminMutationResult(MemoryAdminMutationStatus.APPLIED, request_id, "pause")
+
+    def resume(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+    ) -> MemoryAdminMutationResult:
+        request_id = _identifier(request_id, field_name="request_id")
+        _text(reason, field_name="reason", maximum=500)
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    existing = connection.execute(
+                        "SELECT 1 FROM memory_admin_pause_windows WHERE resume_request_id = ?",
+                        (request_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        return MemoryAdminMutationResult(
+                            MemoryAdminMutationStatus.DUPLICATE, request_id, "resume"
+                        )
+                    active = connection.execute(
+                        "SELECT pause_request_id FROM memory_admin_pause_windows "
+                        "WHERE resumed_at IS NULL ORDER BY started_at DESC LIMIT 1"
+                    ).fetchone()
+                    if active is None:
+                        return MemoryAdminMutationResult(
+                            MemoryAdminMutationStatus.NOOP, request_id, "resume"
+                        )
+                    connection.execute(
+                        "UPDATE memory_admin_pause_windows SET resume_request_id = ?, resumed_at = ? "
+                        "WHERE pause_request_id = ?",
+                        (request_id, datetime.now(timezone.utc).isoformat(), str(active[0])),
+                    )
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+        return MemoryAdminMutationResult(MemoryAdminMutationStatus.APPLIED, request_id, "resume")
+
+    def is_paused(self) -> bool:
+        try:
+            with self._connect() as connection:
+                return connection.execute(
+                    "SELECT 1 FROM memory_admin_pause_windows WHERE resumed_at IS NULL"
+                ).fetchone() is not None
+        except (OSError, sqlite3.Error) as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+
+    def blocks_delivery(self, occurred_at: datetime) -> bool:
+        if not isinstance(occurred_at, datetime) or occurred_at.tzinfo is None:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_DELIVERY_TIME_INVALID")
+        timestamp = occurred_at.astimezone(timezone.utc).isoformat()
+        try:
+            with self._connect() as connection:
+                return connection.execute(
+                    "SELECT 1 FROM memory_admin_pause_windows "
+                    "WHERE started_at <= ? AND (resumed_at IS NULL OR resumed_at >= ?) LIMIT 1",
+                    (timestamp, timestamp),
+                ).fetchone() is not None
+        except (OSError, sqlite3.Error) as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
 
     def export(self) -> dict[str, object]:
         self._require_available()
@@ -520,22 +624,26 @@ class ConversationMemoryAdminService:
                 0,
                 reason_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
             )
+        paused = self.is_paused()
         return MemoryAdminStatus(
-            provider.status,
+            "degraded" if paused else provider.status,
             provider.provider,
             provider.enabled,
             provider.memory_count,
             audit_count,
             pending_count,
-            reason_code=provider.reason_code,
+            reason_code="MEMORY_ADMIN_PAUSED" if paused else provider.reason_code,
+            paused=paused,
         )
 
-    def _require_available(self) -> None:
+    def _require_available(self, *, allow_paused: bool = False) -> None:
         status = self._provider_status()
         if status.status == "disabled":
             raise ConversationMemoryAdminError("MEMORY_ADMIN_DISABLED")
         if status.status == "unavailable":
             raise ConversationMemoryAdminError("MEMORY_ADMIN_UNAVAILABLE")
+        if not allow_paused and self.is_paused():
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_PAUSED")
 
     def _provider_status(self) -> ConversationMemoryStatus:
         try:
@@ -548,8 +656,10 @@ class ConversationMemoryAdminService:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_UNAVAILABLE")
         return status
 
-    def _records(self) -> tuple[ConversationMemoryRecord, ...]:
-        self._require_available()
+    def _records(
+        self, *, allow_paused: bool = False
+    ) -> tuple[ConversationMemoryRecord, ...]:
+        self._require_available(allow_paused=allow_paused)
         try:
             return self.memory.list_memories(
                 user_id=self.user_id,

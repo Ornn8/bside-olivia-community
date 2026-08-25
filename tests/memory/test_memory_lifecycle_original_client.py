@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import time
+
+import pytest
+
+from companion_memory_context import CompanionMemoryPromptBuilder
+from conversation_memory_admin import ConversationMemoryAdminError, ConversationMemoryAdminService
+from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
+from conversation_memory_runtime import (
+    ensure_conversation_memory_runtime,
+    stop_conversation_memory_runtime,
+)
+from memory_port import LEGACY_LETTERS, MemoryRecord
+
+
+class Archive:
+    enabled = True
+    conversation_enabled = False
+
+    def status(self):
+        return {"status": "available", "enabled": True, "provider": "sqlite"}
+
+    def search(self, query, *, domains=None, limit=8):
+        del query, domains, limit
+        return [
+            MemoryRecord(
+                memory_id="archive.1",
+                domain=LEGACY_LETTERS,
+                text="Archive 原文必须始终可用。",
+                source="legacy-import",
+                created_at=1,
+                provenance={"domain": LEGACY_LETTERS},
+            )
+        ]
+
+
+class Mem0:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.searches = 0
+        self.writes: list[str] = []
+
+    def status(self) -> ConversationMemoryStatus:
+        return ConversationMemoryStatus(
+            "available", True, "mem0", "qdrant-local", memory_count=1
+        )
+
+    def search_context(self, query, *, user_id, limit):
+        del query, user_id, limit
+        self.searches += 1
+        return (
+            ConversationMemoryRecord(
+                memory_id="mem0.1",
+                text="这条 Mem0 事实在暂停时绝不能进入 Prompt。",
+                user_id="local-user",
+                source_id="reply:old:1",
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    def remember_exchange(self, **kwargs):
+        self.writes.append(str(kwargs["source_id"]))
+        from conversation_memory_port import MemoryWriteResult, MemoryWriteStatus
+
+        return MemoryWriteResult(
+            MemoryWriteStatus.WRITTEN,
+            str(kwargs["source_id"]),
+            ("mem0.new",),
+        )
+
+    def list_memories(self, *, user_id, limit):
+        del user_id, limit
+        return ()
+
+    def clear_user(self, *, user_id):
+        del user_id
+        return 0
+
+
+def _write_state(root: Path, letter_id: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "letters": [
+                    {
+                        "letter_id": letter_id,
+                        "letter_status": "COMPLETED",
+                        "reply_revision": 1,
+                        "content": "canonical user message",
+                        "reply_text": "canonical assistant reply",
+                        "private_world_occurred_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _wait_for(predicate) -> None:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition was not reached")
+
+
+def test_pause_persists_blocks_mem0_only_and_never_backfills_paused_letters(
+    tmp_path: Path,
+) -> None:
+    stop_conversation_memory_runtime()
+    root = tmp_path / "data"
+    memory = Mem0()
+    admin = ConversationMemoryAdminService(memory, root / "memory" / "memory_admin_audit.sqlite3")
+    admin.pause(request_id="memory.pause.1", reason="用户暂停长期记忆。")
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_PAUSED"):
+        admin.list_memories()
+
+    prompt = CompanionMemoryPromptBuilder(
+        Archive(), memory, memory_lifecycle=admin
+    ).build("测试", max_chars=1200)
+    assert "Archive 原文必须始终可用。" in prompt.text
+    assert "Mem0 事实" not in prompt.text
+    assert memory.searches == 0
+
+    _write_state(root, "letter.paused.1")
+    paused_runtime = ensure_conversation_memory_runtime(
+        Archive(), memory, environ={"OLIVIA_LOCAL_DATA_ROOT": str(root), "OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS": "0.25"}, memory_lifecycle=admin
+    )
+    assert paused_runtime.reason_code == "MEMORY_ADMIN_PAUSED"
+    assert paused_runtime.worker_running is True
+    time.sleep(0.35)
+    assert memory.writes == []
+
+    restarted = ConversationMemoryAdminService(memory, root / "memory" / "memory_admin_audit.sqlite3")
+    assert restarted.status().paused is True
+    restarted.resume(request_id="memory.resume.1", reason="用户恢复长期记忆。")
+    ensure_conversation_memory_runtime(
+        Archive(), memory, environ={"OLIVIA_LOCAL_DATA_ROOT": str(root)}, memory_lifecycle=restarted
+    )
+    time.sleep(0.35)
+    assert memory.writes == []
+
+    _write_state(root, "letter.future.1")
+    _wait_for(lambda: memory.writes == ["reply:letter.future.1:1"])
+    stop_conversation_memory_runtime()

@@ -79,6 +79,7 @@ class ConversationMemoryRuntime:
         outbox: CanonicalMemoryOutbox,
         *,
         interval_seconds: float = 5.0,
+        memory_lifecycle: object | None = None,
     ) -> None:
         if not isinstance(outbox, CanonicalMemoryOutbox):
             raise TypeError("a canonical memory outbox is required")
@@ -86,6 +87,7 @@ class ConversationMemoryRuntime:
             raise ValueError("memory outbox interval is invalid")
         self.outbox = outbox
         self.interval_seconds = float(interval_seconds)
+        self.memory_lifecycle = memory_lifecycle
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
@@ -128,6 +130,14 @@ class ConversationMemoryRuntime:
         if status == "available" and not worker_running:
             status = "degraded"
             reason_code = "MEMORY_OUTBOX_WORKER_NOT_RUNNING"
+        if self.memory_lifecycle is not None:
+            try:
+                if bool(self.memory_lifecycle.is_paused()):
+                    status = "degraded"
+                    reason_code = "MEMORY_ADMIN_PAUSED"
+            except Exception:
+                status = "unavailable"
+                reason_code = "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
         return ConversationMemoryRuntimeStatus(
             status=status,
             enabled=True,
@@ -156,6 +166,7 @@ def ensure_conversation_memory_runtime(
     *,
     environ: Mapping[str, str] | None = None,
     start_background: bool = True,
+    memory_lifecycle: object | None = None,
 ) -> ConversationMemoryRuntimeStatus:
     """Configure at most one outbox worker for the current local data root."""
 
@@ -237,6 +248,7 @@ def ensure_conversation_memory_runtime(
                 committer = ConversationMemoryDeliveryCommitter(
                     conversation_memory,
                     timeout_seconds=timeout,
+                    memory_lifecycle=memory_lifecycle,
                 )
                 outbox = CanonicalMemoryOutbox(
                     root / "state.json",
@@ -247,6 +259,7 @@ def ensure_conversation_memory_runtime(
                 _RUNTIME = ConversationMemoryRuntime(
                     outbox,
                     interval_seconds=interval,
+                    memory_lifecycle=memory_lifecycle,
                 )
                 _RUNTIME_KEY = key
             except (OSError, RuntimeError, TypeError, ValueError):

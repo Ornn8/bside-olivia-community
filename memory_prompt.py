@@ -6,6 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from conversation_memory_port import ConversationMemoryPort
@@ -91,6 +92,7 @@ class MemoryPromptBuilder:
         conversation_budget: int = 1200,
         conversation_memory: ConversationMemoryPort | None | object = _AUTO_CONVERSATION_MEMORY,
         conversation_memory_user_id: str | None = None,
+        memory_lifecycle: object | None = None,
     ) -> None:
         self.memory = memory
         self.max_results = max(1, min(32, int(max_results)))
@@ -103,9 +105,13 @@ class MemoryPromptBuilder:
             conversation_memory,
             conversation_memory_user_id,
         )
+        self.memory_lifecycle = memory_lifecycle or _memory_lifecycle(
+            conversation_memory
+        )
         self.conversation_runtime_status = _ensure_conversation_runtime(
             memory,
             conversation_memory,
+            memory_lifecycle=self.memory_lifecycle,
         )
 
     def build(
@@ -141,6 +147,7 @@ class MemoryPromptBuilder:
                     self.conversation_budget,
                     self.legacy_budget,
                 ),
+                memory_lifecycle=self.memory_lifecycle,
             ).build(
                 query,
                 max_chars=budget,
@@ -260,6 +267,8 @@ def _default_conversation_memory() -> ConversationMemoryPort | None:
 def _ensure_conversation_runtime(
     archive_memory: MemoryPort,
     conversation_memory: object,
+    *,
+    memory_lifecycle: object | None,
 ) -> dict[str, object] | None:
     if conversation_memory is None:
         return None
@@ -269,6 +278,7 @@ def _ensure_conversation_runtime(
         return ensure_conversation_memory_runtime(
             archive_memory,
             conversation_memory,  # type: ignore[arg-type]
+            memory_lifecycle=memory_lifecycle,
         ).to_dict()
     except Exception:
         # Prompt retrieval remains independently degradable when the outbox
@@ -283,6 +293,32 @@ def _ensure_conversation_runtime(
             "attempt_count": 0,
             "reason_code": "MEMORY_OUTBOX_INITIALIZATION_FAILED",
         }
+
+
+def _memory_lifecycle(memory: object) -> object | None:
+    config = getattr(memory, "config", None)
+    outbox_root = getattr(config, "outbox_data_root", None)
+    data_root = getattr(config, "data_root", None)
+    if isinstance(outbox_root, Path) and outbox_root.is_absolute():
+        root = outbox_root
+    elif isinstance(data_root, Path) and data_root.is_absolute():
+        memory_root = data_root.parent if data_root.name.casefold() == "mem0" else data_root
+        root = memory_root.parent if memory_root.name.casefold() == "memory" else memory_root
+    else:
+        configured = os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "").strip()
+        root = Path(configured).expanduser() if configured else None
+    if root is None or not root.is_absolute():
+        return None
+    try:
+        from conversation_memory_admin import ConversationMemoryAdminService
+
+        return ConversationMemoryAdminService(
+            memory,  # type: ignore[arg-type]
+            root / "memory" / "memory_admin_audit.sqlite3",
+            user_id=_conversation_user_id(memory, None),
+        )
+    except Exception:
+        return None
 
 
 def _conversation_status(memory: object) -> str:

@@ -94,6 +94,9 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "/toy/companion/private-world/candidates",
         "/toy/companion/memory/correct",
         "/toy/companion/memory/delete",
+        "/toy/companion/memory/pause",
+        "/toy/companion/memory/resume",
+        "/toy/companion/memory/clear",
     ):
         assert path_value in bootstrap
     for visible_text in (
@@ -104,6 +107,9 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "本地世界线",
         "保存更正",
         "删除",
+        "暂停长期记忆",
+        "恢复长期记忆",
+        "清空所有长期记忆",
         "批准",
         "拒绝",
     ):

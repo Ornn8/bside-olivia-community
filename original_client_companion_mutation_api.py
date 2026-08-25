@@ -21,6 +21,9 @@ from aiohttp import web
 COMPANION_MUTATION_SCHEMA = "p03.original-companion-mutation.v1"
 MEMORY_CORRECT_PATH = "/toy/companion/memory/correct"
 MEMORY_DELETE_PATH = "/toy/companion/memory/delete"
+MEMORY_PAUSE_PATH = "/toy/companion/memory/pause"
+MEMORY_RESUME_PATH = "/toy/companion/memory/resume"
+MEMORY_CLEAR_PATH = "/toy/companion/memory/clear"
 CANDIDATE_DECISION_PATH = "/toy/companion/private-world/candidates/{candidate_id}/{decision}"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
@@ -345,6 +348,62 @@ async def _delete_memory(request: web.Request) -> web.Response:
         )
 
 
+async def _lifecycle_memory(request: web.Request, operation: str) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        fields = {"request_id", "reason"}
+        if operation == "clear":
+            fields.add("confirmed")
+        value = await _body(request, fields=frozenset(fields))
+        request_id = _identifier(
+            value["request_id"], code="COMPANION_REQUEST_ID_INVALID", request=True
+        )
+        reason = _text(value["reason"], maximum=500, code="COMPANION_REASON_INVALID")
+        backend = _backend(request)
+        if operation == "pause":
+            result = await asyncio.to_thread(
+                backend.pause_memory, request_id=request_id, reason=reason
+            )
+        elif operation == "resume":
+            result = await asyncio.to_thread(
+                backend.resume_memory, request_id=request_id, reason=reason
+            )
+        else:
+            if value["confirmed"] is not True:
+                raise OriginalClientCompanionMutationError(
+                    "MEMORY_ADMIN_CONFIRMATION_REQUIRED", status=400
+                )
+            result = await asyncio.to_thread(
+                backend.clear_memory,
+                request_id=request_id,
+                reason=reason,
+                confirmed=True,
+            )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError("COMPANION_MUTATION_INVALID", status=503)
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError("COMPANION_MUTATION_UNAVAILABLE", status=503),
+            origin,
+        )
+
+
+async def _pause_memory(request: web.Request) -> web.Response:
+    return await _lifecycle_memory(request, "pause")
+
+
+async def _resume_memory(request: web.Request) -> web.Response:
+    return await _lifecycle_memory(request, "resume")
+
+
+async def _clear_memory(request: web.Request) -> web.Response:
+    return await _lifecycle_memory(request, "clear")
+
+
 async def _decide_candidate(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
@@ -408,6 +467,13 @@ def mount_original_client_companion_mutation_api(
     app.router.add_options(MEMORY_CORRECT_PATH, _preflight)
     app.router.add_post(MEMORY_DELETE_PATH, _delete_memory)
     app.router.add_options(MEMORY_DELETE_PATH, _preflight)
+    for path, handler in (
+        (MEMORY_PAUSE_PATH, _pause_memory),
+        (MEMORY_RESUME_PATH, _resume_memory),
+        (MEMORY_CLEAR_PATH, _clear_memory),
+    ):
+        app.router.add_post(path, handler)
+        app.router.add_options(path, _preflight)
     app.router.add_post(CANDIDATE_DECISION_PATH, _decide_candidate)
     app.router.add_options(CANDIDATE_DECISION_PATH, _preflight)
 
@@ -420,6 +486,9 @@ __all__ = [
     "CompanionMutationResult",
     "MEMORY_CORRECT_PATH",
     "MEMORY_DELETE_PATH",
+    "MEMORY_PAUSE_PATH",
+    "MEMORY_RESUME_PATH",
+    "MEMORY_CLEAR_PATH",
     "OriginalClientCompanionMutationBackend",
     "OriginalClientCompanionMutationError",
     "mount_original_client_companion_mutation_api",

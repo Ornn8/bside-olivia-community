@@ -143,6 +143,19 @@ def test_original_settings_read_contract_returns_bounded_payloads() -> None:
     asyncio.run(scenario())
 
 
+def test_paused_memory_is_never_reported_as_ready() -> None:
+    payload = CompanionReadStatus(
+        memory=CompanionCapability(
+            "degraded", reason_code="MEMORY_ADMIN_PAUSED", count=2
+        ),
+        private_world=CompanionCapability("available"),
+        candidates=CompanionCapability("available"),
+    ).to_dict()
+
+    assert payload["status"] == "PAUSED"
+    assert payload["capabilities"]["memory"]["reason_code"] == "MEMORY_ADMIN_PAUSED"
+
+
 def test_read_contract_requires_original_or_loopback_origin_and_loopback_host() -> None:
     async def scenario() -> None:
         client = await _client(FixtureBackend())
