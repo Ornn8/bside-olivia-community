@@ -57,6 +57,18 @@ class EmbeddingInstallResult:
             raise ValueError("embedding install result reason is invalid")
 
 
+@dataclass
+class _PromotionState:
+    target: Path
+    manifest: Path
+    target_backup: Path
+    manifest_backup: Path
+    snapshot_backed_up: bool = False
+    manifest_backed_up: bool = False
+    snapshot_promoted: bool = False
+    manifest_promoted: bool = False
+
+
 class EmbeddingDownloader(Protocol):
     def download(
         self,
@@ -163,19 +175,25 @@ class Mem0EmbeddingInstaller:
                 return EmbeddingInstallResult("NOOP")
             self._set_state(EmbeddingInstallStatus.INSTALLING)
             stage_root = self.config.model_cache / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
+            promotion: _PromotionState | None = None
             try:
                 staged = _stage_config(self.config, stage_root)
                 hashes = self._download_and_hash(staged)
                 self._write_manifest(stage_root, hashes)
                 if not verified_embedding_cache(staged):
                     raise _InstallFailure("MEM0_EMBEDDING_VERIFICATION_FAILED")
-                self._promote(stage_root, staged)
+                promotion = self._promote(stage_root, staged)
                 if not verified_embedding_cache(self.config):
                     raise _InstallFailure("MEM0_EMBEDDING_VERIFICATION_FAILED")
+                self._complete_promotion(promotion)
             except _InstallFailure as exc:
+                if promotion is not None:
+                    self._rollback_promotion(promotion)
                 self._set_state(EmbeddingInstallStatus.ERROR, exc.code)
                 return EmbeddingInstallResult("REJECTED", exc.code)
             except (OSError, RuntimeError, TypeError, ValueError):
+                if promotion is not None:
+                    self._rollback_promotion(promotion)
                 self._set_state(EmbeddingInstallStatus.ERROR, "MEM0_EMBEDDING_INSTALL_FAILED")
                 return EmbeddingInstallResult("REJECTED", "MEM0_EMBEDDING_INSTALL_FAILED")
             finally:
@@ -236,46 +254,51 @@ class Mem0EmbeddingInstaller:
             encoding="utf-8",
         )
 
-    def _promote(self, stage_root: Path, staged: Mem0Config) -> None:
-        target = self.config.embedding_snapshot
-        manifest = self.config.model_cache / _MANIFEST_NAME
-        target_backup = stage_root / "rollback-model"
-        manifest_backup = stage_root / "rollback-manifest.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
+    def _promote(self, stage_root: Path, staged: Mem0Config) -> _PromotionState:
+        promotion = _PromotionState(
+            target=self.config.embedding_snapshot,
+            manifest=self.config.model_cache / _MANIFEST_NAME,
+            target_backup=stage_root / "rollback-model",
+            manifest_backup=stage_root / "rollback-manifest.json",
+        )
+        promotion.target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            if target.exists():
-                os.replace(target, target_backup)
-            if manifest.exists():
-                os.replace(manifest, manifest_backup)
-            os.replace(staged.embedding_snapshot, target)
-            os.replace(stage_root / _MANIFEST_NAME, manifest)
+            if promotion.target.exists():
+                os.replace(promotion.target, promotion.target_backup)
+                promotion.snapshot_backed_up = True
+            if promotion.manifest.exists():
+                os.replace(promotion.manifest, promotion.manifest_backup)
+                promotion.manifest_backed_up = True
+            os.replace(staged.embedding_snapshot, promotion.target)
+            promotion.snapshot_promoted = True
+            os.replace(stage_root / _MANIFEST_NAME, promotion.manifest)
+            promotion.manifest_promoted = True
         except OSError:
-            self._rollback_promotion(
-                target=target,
-                manifest=manifest,
-                target_backup=target_backup,
-                manifest_backup=manifest_backup,
-            )
+            self._rollback_promotion(promotion)
             raise
+        return promotion
 
     @staticmethod
-    def _rollback_promotion(
-        *,
-        target: Path,
-        manifest: Path,
-        target_backup: Path,
-        manifest_backup: Path,
-    ) -> None:
-        _remove_path(target)
-        _remove_path(manifest)
-        try:
-            if target_backup.exists():
-                os.replace(target_backup, target)
-            if manifest_backup.exists():
-                os.replace(manifest_backup, manifest)
-        except OSError:
-            _remove_path(target)
-            _remove_path(manifest)
+    def _complete_promotion(promotion: _PromotionState) -> None:
+        _remove_path(promotion.target_backup)
+        _remove_path(promotion.manifest_backup)
+
+    @staticmethod
+    def _rollback_promotion(promotion: _PromotionState) -> None:
+        if promotion.snapshot_promoted:
+            _remove_path(promotion.target)
+        if promotion.manifest_promoted:
+            _remove_path(promotion.manifest)
+        if promotion.snapshot_backed_up and promotion.target_backup.exists():
+            try:
+                os.replace(promotion.target_backup, promotion.target)
+            except OSError:
+                _remove_path(promotion.target)
+        if promotion.manifest_backed_up and promotion.manifest_backup.exists():
+            try:
+                os.replace(promotion.manifest_backup, promotion.manifest)
+            except OSError:
+                _remove_path(promotion.manifest)
 
     def _set_state(
         self, state: EmbeddingInstallStatus, reason_code: str | None = None

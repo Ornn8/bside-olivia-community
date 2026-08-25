@@ -156,6 +156,78 @@ def test_manifest_promotion_failure_restores_the_previously_damaged_cache(
     assert not verified_embedding_cache(config)
 
 
+def test_snapshot_backup_fault_preserves_a_previously_ready_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    snapshot_before = (config.embedding_snapshot / "config.json").read_bytes()
+    manifest_before = (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes()
+
+    verifier = install_module.verified_embedding_cache
+
+    def force_one_reinstall(candidate: Mem0Config) -> bool:
+        if candidate is config:
+            monkeypatch.setattr(install_module, "verified_embedding_cache", verifier)
+            return False
+        return verifier(candidate)
+
+    monkeypatch.setattr(install_module, "verified_embedding_cache", force_one_reinstall)
+    replace = install_module.os.replace
+
+    def fail_snapshot_backup(source: Path | str, destination: Path | str) -> None:
+        if Path(source) == config.embedding_snapshot and Path(destination).name == "rollback-model":
+            raise OSError("synthetic snapshot backup failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(install_module.os, "replace", fail_snapshot_backup)
+
+    failed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert failed.status == "REJECTED"
+    assert verified_embedding_cache(config)
+    assert (config.embedding_snapshot / "config.json").read_bytes() == snapshot_before
+    assert (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes() == manifest_before
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
+def test_manifest_backup_fault_preserves_a_previously_ready_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    snapshot_before = (config.embedding_snapshot / "config.json").read_bytes()
+    manifest_before = (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes()
+
+    verifier = install_module.verified_embedding_cache
+
+    def force_one_reinstall(candidate: Mem0Config) -> bool:
+        if candidate is config:
+            monkeypatch.setattr(install_module, "verified_embedding_cache", verifier)
+            return False
+        return verifier(candidate)
+
+    monkeypatch.setattr(install_module, "verified_embedding_cache", force_one_reinstall)
+    replace = install_module.os.replace
+
+    def fail_manifest_backup(source: Path | str, destination: Path | str) -> None:
+        if Path(source).name == "olivia-mem0-embedding-manifest.json" and Path(destination).name == "rollback-manifest.json":
+            raise OSError("synthetic manifest backup failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(install_module.os, "replace", fail_manifest_backup)
+
+    failed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert failed.status == "REJECTED"
+    assert verified_embedding_cache(config)
+    assert (config.embedding_snapshot / "config.json").read_bytes() == snapshot_before
+    assert (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes() == manifest_before
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
 @pytest.mark.parametrize("failed_name", ["snapshot", "manifest"])
 def test_replace_failures_leave_a_new_cache_unverified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_name: str
@@ -184,6 +256,42 @@ def test_replace_failures_leave_a_new_cache_unverified(
     assert failed.status == "REJECTED"
     assert not config.embedding_snapshot.exists()
     assert not verified_embedding_cache(config)
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
+@pytest.mark.parametrize("verifier_outcome", [False, RuntimeError("synthetic verifier failure")])
+def test_post_promotion_verifier_failure_restores_the_previously_damaged_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verifier_outcome: bool | RuntimeError
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    (config.embedding_snapshot / "config.json").write_bytes(b"damaged")
+    manifest_before = (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes()
+    assert not verified_embedding_cache(config)
+
+    verifier = install_module.verified_embedding_cache
+    config_checks = 0
+
+    def fail_after_promotion(candidate: Mem0Config) -> bool:
+        nonlocal config_checks
+        if candidate is config:
+            config_checks += 1
+            if config_checks == 2:
+                if isinstance(verifier_outcome, Exception):
+                    raise verifier_outcome
+                return verifier_outcome
+        return verifier(candidate)
+
+    monkeypatch.setattr(install_module, "verified_embedding_cache", fail_after_promotion)
+
+    failed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert failed.status == "REJECTED"
+    assert not verified_embedding_cache(config)
+    assert (config.embedding_snapshot / "config.json").read_bytes() == b"damaged"
+    assert (config.model_cache / "olivia-mem0-embedding-manifest.json").read_bytes() == manifest_before
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
 
 
 def test_read_and_mutation_share_fast_background_install_state(tmp_path: Path) -> None:
@@ -236,6 +344,36 @@ def test_read_and_mutation_share_fast_background_install_state(tmp_path: Path) -
     assert read.read_status().to_dict()["capabilities"]["memory"]["embedding"] == {
         "state": "installing"
     }
+
+
+def test_schema_allows_embedding_only_under_memory() -> None:
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "original_client_memory_lifecycle.schema.json").read_text("utf-8")
+    )
+    validator = Draft202012Validator(schema)
+
+    def payload() -> dict[str, object]:
+        return {
+            "schema_version": "p03.original-companion-read.v1",
+            "status": "READY",
+            "capabilities": {
+                "memory": {"state": "unavailable"},
+                "private_world": {"state": "available"},
+                "candidates": {"state": "available"},
+            },
+        }
+
+    for state in ("missing", "installing", "ready", "error"):
+        candidate = payload()
+        candidate["capabilities"]["memory"]["embedding"] = {"state": state}  # type: ignore[index]
+        assert not list(validator.iter_errors(candidate))
+
+    for capability in ("private_world", "candidates"):
+        candidate = payload()
+        candidate["capabilities"][capability]["embedding"] = {"state": "ready"}  # type: ignore[index]
+        assert list(validator.iter_errors(candidate))
 
 
 def test_start_returns_before_download_and_reuses_one_background_worker(tmp_path: Path) -> None:

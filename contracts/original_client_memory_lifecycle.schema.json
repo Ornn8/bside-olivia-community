@@ -31,8 +31,7 @@
       "properties": {
         "state": {"enum": ["available", "degraded", "unavailable", "disabled"]},
         "reason_code": {"$ref": "#/$defs/reason_code"},
-        "count": {"type": "integer", "minimum": 0},
-        "embedding": {"$ref": "#/$defs/embedding"}
+        "count": {"type": "integer", "minimum": 0}
       }
     },
     "embedding": {
@@ -45,8 +44,16 @@
       }
     },
     "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["available", "degraded", "unavailable", "disabled"]},
+        "reason_code": {"$ref": "#/$defs/reason_code"},
+        "count": {"type": "integer", "minimum": 0},
+        "embedding": {"$ref": "#/$defs/embedding"}
+      },
       "allOf": [
-        {"$ref": "#/$defs/capability"},
         {
           "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_PAUSED"}}, "required": ["reason_code"]},
           "then": {"properties": {"state": {"const": "degraded"}}}
