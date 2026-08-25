@@ -23,9 +23,12 @@ API key. It downloads the fixed `BAAI/bge-small-zh-v1.5` revision
 `7999e1d3359715c523056ef9478215996d62a620` into a staging directory, calculates
 the existing manifest's per-file SHA-256 values, verifies the exact snapshot
 contract, and promotes it only after verification. Any download, hash, or
-promotion failure is path-free, leaves no READY cache, cleans staging, and can
-be retried. The installed runtime still passes `local_files_only=True`; a
-subsequent local service start reuses the verified cache offline.
+ordinary promotion failure is path-free, leaves no READY cache, cleans staging,
+and can be retried. The sole exception is a pre-commit rollback restore failure:
+it returns the stable rejected result without claiming READY and retains the
+recoverable staging/backup for diagnosis or recovery. The installed runtime
+still passes `local_files_only=True`; a subsequent local service start reuses
+the verified cache offline.
 
 The confirmed mutation starts the single background job and returns promptly;
 it does not use the ordinary short mutation timeout as a download deadline.
