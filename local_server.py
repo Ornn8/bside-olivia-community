@@ -47,7 +47,7 @@ from persona_provider import (
     persona_status,
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
-from letter_triage import LetterEmotionTriage, _current_music_performance
+from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
@@ -56,6 +56,11 @@ from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
     direct_voice_performance,
+)
+from video_reply_settings import (
+    VideoReplySettingsError,
+    VideoReplySettingsStore,
+    receive_eligibility_from_letter,
 )
 from conversation_memory_port import ConversationMemoryPort
 from conversation_memory_runtime import conversation_memory_runtime_status
@@ -602,6 +607,21 @@ conversation_memory_adapter: ConversationMemoryPort = (
         },
     )
 )
+
+
+def _create_video_reply_settings_store() -> VideoReplySettingsStore:
+    root = _state_root()
+    if root is None:
+        return VideoReplySettingsStore.unavailable(
+            "VIDEO_REPLY_SETTING_STATE_ROOT_NOT_CONFIGURED"
+        )
+    try:
+        return VideoReplySettingsStore(root)
+    except VideoReplySettingsError as exc:
+        return VideoReplySettingsStore.unavailable(exc.code)
+
+
+video_reply_settings_store = _create_video_reply_settings_store()
 private_world_runtime: PrivateWorldRuntime = create_private_world_runtime()
 private_world_port: PrivateWorldPort = private_world_runtime.port
 private_world_committer: PrivateWorldDeliveryCommitter | None = (
@@ -1003,6 +1023,26 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
         )
 
     document = contract.contract_document()
+    setting_snapshot = video_reply_settings_store.snapshot()
+    setting_capability = document["capabilities"].get("settings.video_reply", {})
+    if setting_snapshot.state == "available":
+        setting_capability.update(
+            {
+                "status": "available",
+                "provider": "local-atomic-state",
+                "probe": "startup",
+            }
+        )
+    else:
+        setting_capability.update(
+            {
+                "status": "unavailable",
+                "provider": "none",
+                "reason_code": setting_snapshot.reason_code,
+                "probe": "startup",
+            }
+        )
+    document["capabilities"]["settings.video_reply"] = setting_capability
     asr_config, native_asr_status = _asr_health()
     document["capabilities"]["text.input.fallback"].update(
         {
@@ -1568,6 +1608,32 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
     if p == "/toy/submitPreferenceSurvey":
         return not_implemented("PREFERENCE_SURVEY_NOT_IMPLEMENTED")
 
+    if p == "/toy/settings/video-reply":
+        if method == "GET":
+            return ok(video_reply_settings_store.snapshot().to_dict())
+        request_id = _request_value(
+            body,
+            query,
+            "request_id",
+            "requestId",
+            "idempotency_key",
+            "idempotencyKey",
+        )
+        if "enabled" not in body:
+            return _missing_field("enabled")
+        try:
+            result = video_reply_settings_store.mutate(request_id, body["enabled"])
+        except VideoReplySettingsError as exc:
+            return err(
+                exc.status,
+                exc.code,
+                {
+                    "status": "UNAVAILABLE" if exc.status == 503 else "FAILED",
+                    "error_code": exc.code,
+                },
+            )
+        return ok(result.to_dict())
+
     # ---- 信件 ----
     if p == "/toy/letter/list":
         scope = query.get("scope", "current")
@@ -1765,6 +1831,9 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             "reply_mode": ReplyMode.TEXT_LETTER.value,
             "triage": {"status": "pending"},
             "music_duration_seconds": duration,
+            # Freeze the setting at the service receive boundary.  Recovery,
+            # retry, and media work read this field rather than global state.
+            "video_reply_enabled": video_reply_settings_store.receive_snapshot().enabled,
         }
         store.letters.insert(0, letter)
         if idempotency_key is not None:
@@ -2087,6 +2156,8 @@ def _schedule_pending_media_jobs() -> int:
             continue
         if letter.get("letter_status") != "COMPLETED":
             continue
+        if not receive_eligibility_from_letter(letter).enabled:
+            continue
         letter_id = str(letter.get("letter_id", "")).strip()
         content = letter.get("content")
         reply_text = letter.get("reply_text")
@@ -2288,7 +2359,21 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
 
     letter["letter_status"] = "PROCESSING"
     _persist_store_state()
-    decision = await emotion_triage.classify(content)
+    receive_eligibility = receive_eligibility_from_letter(letter)
+    if receive_eligibility.enabled:
+        decision = await emotion_triage.classify(
+            content,
+            receive_eligibility=receive_eligibility,
+        )
+    else:
+        decision = TriageResult(
+            "unknown",
+            ReplyMode.TEXT_LETTER.value,
+            "video_reply_disabled",
+            "disabled",
+            False,
+            character_willing=True,
+        )
     exact_mode = _exact_reply_mode(decision.reply_mode)
     letter["triage"] = decision.to_dict()
     letter["reply_mode"] = exact_mode

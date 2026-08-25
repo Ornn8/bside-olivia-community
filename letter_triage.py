@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -153,6 +153,15 @@ class RoutingContext:
     spoken_video_available: bool = False
     musical_video_available: bool = False
     current_music_work: tuple[str, ...] = ()
+    video_reply_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.spoken_video_available) is not bool:
+            raise ValueError("spoken video availability must be boolean")
+        if type(self.musical_video_available) is not bool:
+            raise ValueError("musical video availability must be boolean")
+        if type(self.video_reply_enabled) is not bool:
+            raise ValueError("video reply eligibility must be boolean")
 
     def to_model_dict(self) -> dict[str, object]:
         current_work: list[str] = []
@@ -164,6 +173,7 @@ class RoutingContext:
             "spoken_video_available": bool(self.spoken_video_available),
             "musical_video_available": bool(self.musical_video_available),
             "current_music_work": current_work,
+            "video_reply_enabled": self.video_reply_enabled,
         }
 
 
@@ -363,12 +373,31 @@ class LetterReplyRouter:
         self.routing_context = routing_context
         self.environ = environ
 
-    async def classify(self, content: str) -> TriageResult:
+    async def classify(
+        self,
+        content: str,
+        *,
+        receive_eligibility: object | None = None,
+    ) -> TriageResult:
         if not isinstance(content, str) or not content.strip():
             return _failed("router_invalid_content", called=False)
         context = self.routing_context or routing_context_from_environment(
             self.environ
         )
+        if receive_eligibility is not None:
+            enabled = getattr(receive_eligibility, "enabled", receive_eligibility)
+            if type(enabled) is not bool:
+                return _failed("router_invalid_eligibility", called=False)
+            context = replace(context, video_reply_enabled=enabled)
+        if not context.video_reply_enabled:
+            return TriageResult(
+                "unknown",
+                "text_letter",
+                "video_reply_disabled",
+                "disabled",
+                False,
+                character_willing=True,
+            )
         payload = {
             "routing_context": context.to_model_dict(),
             "current_letter": content.strip(),

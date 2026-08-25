@@ -16,6 +16,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_PATH = "/toy/companion/memory";
   const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
   const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
+  const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
@@ -236,12 +237,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      let payload = null;
+      let responseBody = null;
       try {
-        payload = await response.json();
+        responseBody = await response.json();
       } catch (_error) {
-        payload = null;
+        responseBody = null;
       }
+      const payload = path === VIDEO_REPLY_SETTINGS_PATH
+        && responseBody && responseBody.data && typeof responseBody.data === "object"
+        ? responseBody.data
+        : responseBody;
       if (!response.ok || !payload || typeof payload.status !== "string") {
         const error = new Error("mutation-unavailable");
         error.code = payload && typeof payload.error_code === "string"
@@ -901,6 +906,45 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return null;
   };
 
+  const mountVideoReplySetting = (section) => {
+    const row = document.createElement("div");
+    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
+    const state = text("div", "默认开启；服务端在接收新信时确认资格。", "text-text-secondary text-caption-m font-regular");
+    state.setAttribute("aria-live", "polite");
+    copy.append(text("div", "允许视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
+    let enabled = true;
+    let toggle = null;
+    const render = () => {
+      if (!toggle) return;
+      toggle.textContent = enabled ? "已开启" : "已关闭";
+      toggle.setAttribute("aria-pressed", String(enabled));
+      state.textContent = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
+    };
+    const apply = async () => {
+      if (!toggle) return;
+      const previous = enabled;
+      setButtonsBusy([toggle], true);
+      try {
+        const payload = await requestMutation(VIDEO_REPLY_SETTINGS_PATH, { enabled: !previous, request_id: requestId("video-reply-setting") });
+        if (!["APPLIED", "NOOP", "DUPLICATE"].includes(payload.status) || typeof payload.enabled !== "boolean") throw new Error("mutation-unavailable");
+        enabled = payload.enabled;
+      } catch (error) {
+        enabled = previous;
+        state.textContent = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
+      } finally {
+        setButtonsBusy([toggle], false);
+        render();
+      }
+    };
+    toggle = button("已开启", apply);
+    toggle.setAttribute("aria-label", "切换视频回信");
+    row.append(copy, toggle);
+    section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
+    render();
+  };
+
   const mountShell = () => {
     if (!isSettingsRoute()) {
       removeShell();
@@ -935,6 +979,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     row.append(copy, button("打开", openDialog));
     section.append(title, row);
+    mountVideoReplySetting(section);
     container.append(section);
   };
 

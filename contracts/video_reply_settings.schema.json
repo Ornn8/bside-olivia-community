@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p03.video-reply-setting.v1",
+  "title": "Video reply setting capability",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "enabled"],
+      "properties": {
+        "state": {"const": "available"},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason_code"],
+      "properties": {
+        "state": {"const": "unavailable"},
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,95}$"
+        }
+      }
+    }
+  ]
+}
