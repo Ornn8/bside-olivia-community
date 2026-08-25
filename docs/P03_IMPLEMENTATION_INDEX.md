@@ -63,6 +63,7 @@ P03 不包含 IM、主动发消息、自主生活状态机、多模态输入、�
 | 2 | `P03_02_PRIVATE_WORLD_RUNTIME.md` | 建立默认持久化、受控事件、权限与审计闭环 |
 | 3 | `P03_03_LONG_TERM_MEMORY_MEM0.md` | 使用 Mem0 OSS 编排新对话长期记忆，不重复造轮子 |
 | 3A | `P03_03A_COMPANION_CONTROL_CENTER.md` | 提供 PrivateWorld、Memory、音乐校准和数据管理 UI |
+| 3B | `P03_03B_MEMORY_ISOLATION_CASE01.md` | 以合成回调验证 case01 长期记忆隔离与盲评顺序 |
 | 4 | `P03_04_CLIENT_COMPAT_AND_CLEANUP.md` | 修正原版客户端终态，迁移验收资产并清理旧 PR |
 | 5 | `P03_05_INSTALLATION_AND_DEFAULTS.md` | 图形化安装、Setup Wizard、默认数据和健康检查 |
 | 6 | `P03_06_END_TO_END_ACCEPTANCE.md` | 用真实模型和本机媒体环境验收完整链路 |
