@@ -279,7 +279,10 @@ def test_continuity_layer_receives_assembled_memory_evidence(
         for request in gateway.review_requests
         if request["layer"] == "continuity_memory"
     )
-    assert "用户目前在东京工作" in continuity["memory_evidence"]
+    assert "用户目前在东京工作" in json.dumps(
+        continuity["memory_evidence"],
+        ensure_ascii=False,
+    )
     assert all(
         "memory_evidence" not in request
         for request in gateway.review_requests
@@ -425,10 +428,55 @@ def test_five_layer_requests_fit_default_gateway_input_budget() -> None:
         for request in gateway.review_requests
         if request["layer"] == "continuity_memory"
     )
-    evidence = str(continuity["memory_evidence"])
+    evidence = json.dumps(continuity["memory_evidence"], ensure_ascii=False)
     assert "忆" in evidence
     assert "world-0" in evidence
     assert "continuation-0" in evidence
+
+
+def test_escape_heavy_review_input_fails_closed_before_provider_call() -> None:
+    gateway = SequencedQualityGateway(
+        candidate='"' * 12000,
+        reviews=_passing_layer_payloads(),
+    )
+    reviewer = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+    )
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        world_facts=(
+            TrustedWorldFact("world-quotes", "synthetic-test", '"' * 600),
+        ),
+        private_behavior=PrivateBehaviorView(
+            known_continuations=(
+                KnownContinuationFact("continuation-quotes", '"' * 600),
+            )
+        ),
+    )
+    memory = json.dumps(
+        {"untrusted": True, "text": '"' * 2400},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    result = reviewer.review_with_messages(
+        '"' * 12000,
+        context,
+        (
+            {
+                "role": "system",
+                "content": f"<untrusted_history>\n{memory}\n</untrusted_history>\n",
+            },
+            {"role": "user", "content": '"' * 1200},
+        ),
+    )
+
+    assert result.verdict.value == "unavailable"
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert gateway.review_input_sizes == []
 
 
 def test_deterministic_violation_uses_original_model_for_one_rewrite(

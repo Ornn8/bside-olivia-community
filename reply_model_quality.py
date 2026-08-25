@@ -124,6 +124,7 @@ _LAYER_SPECS = {
 }
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
 _MEMORY_SOURCE_CHARACTER_LIMIT = 2400
+_REVIEW_INPUT_CHARACTER_LIMIT = 30000
 _HEADLINE = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _REVIEW_FACETS = frozenset(
     {
@@ -186,32 +187,28 @@ class GatewayReviewTransport:
             request,
             "current.user_excerpt",
         )
-        memory_evidence = json.dumps(
-            {
-                "assembled_memory": _safe_text(
-                    _reference_text(request, "current.memory_evidence"),
-                    _MEMORY_SOURCE_CHARACTER_LIMIT,
+        memory_evidence = {
+            "assembled_memory": _safe_text(
+                _reference_text(request, "current.memory_evidence"),
+                _MEMORY_SOURCE_CHARACTER_LIMIT,
+            ),
+            "world_facts": _safe_text(
+                json.dumps(
+                    request.get("world_facts", []),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 ),
-                "world_facts": _safe_text(
-                    json.dumps(
-                        request.get("world_facts", []),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    _MEMORY_SOURCE_CHARACTER_LIMIT,
+                _MEMORY_SOURCE_CHARACTER_LIMIT,
+            ),
+            "known_continuations": _safe_text(
+                json.dumps(
+                    request.get("known_continuations", []),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 ),
-                "known_continuations": _safe_text(
-                    json.dumps(
-                        request.get("known_continuations", []),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    _MEMORY_SOURCE_CHARACTER_LIMIT,
-                ),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+                _MEMORY_SOURCE_CHARACTER_LIMIT,
+            ),
+        }
         results = _complete_layer_reviews(
             self.gateway,
             authorities,
@@ -555,7 +552,7 @@ def _layer_messages(
     *,
     candidate: str,
     current_user_input: str,
-    memory_evidence: str,
+    memory_evidence: Mapping[str, str],
     mode: str,
 ) -> tuple[dict[str, str], dict[str, str]]:
     allowed = ", ".join(layer.allowed_codes)
@@ -589,10 +586,16 @@ def _layer_messages(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    return (
+    messages = (
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     )
+    if (
+        sum(len(item["content"]) for item in messages)
+        > _REVIEW_INPUT_CHARACTER_LIMIT
+    ):
+        raise RuntimeError("LAYER_REVIEW_INPUT_TOO_LARGE")
+    return messages
 
 
 def _parse_layer_result(layer: _LayerAuthority, text: str) -> _LayerResult:
@@ -648,14 +651,37 @@ def _complete_layer_reviews(
     *,
     candidate: str,
     current_user_input: str,
-    memory_evidence: str,
+    memory_evidence: Mapping[str, str],
     mode: str,
     timeout_seconds: float,
 ) -> tuple[_LayerResult, ...]:
-    async def invoke() -> tuple[_LayerResult, ...]:
-        async def run_one(layer: _LayerAuthority) -> _LayerResult:
+    async def invoke(
+        requests: Sequence[
+            tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
+        ],
+    ) -> tuple[_LayerResult, ...]:
+        async def run_one(
+            layer: _LayerAuthority,
+            messages: tuple[dict[str, str], dict[str, str]],
+        ) -> _LayerResult:
             text = await _complete_layer_text(
                 gateway,
+                messages,
+                timeout_seconds,
+                f"quality-{uuid.uuid4().hex}:{layer.name}",
+            )
+            return _parse_layer_result(layer, text)
+
+        return tuple(
+            await asyncio.gather(
+                *(run_one(layer, messages) for layer, messages in requests)
+            )
+        )
+
+    try:
+        requests = tuple(
+            (
+                layer,
                 _layer_messages(
                     layer,
                     candidate=candidate,
@@ -663,15 +689,10 @@ def _complete_layer_reviews(
                     memory_evidence=memory_evidence,
                     mode=mode,
                 ),
-                timeout_seconds,
-                f"quality-{uuid.uuid4().hex}:{layer.name}",
             )
-            return _parse_layer_result(layer, text)
-
-        return tuple(await asyncio.gather(*(run_one(item) for item in authorities)))
-
-    try:
-        return asyncio.run(invoke())
+            for layer in authorities
+        )
+        return asyncio.run(invoke(requests))
     except Exception:
         raise RuntimeError("quality model unavailable") from None
 
