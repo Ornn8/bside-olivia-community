@@ -130,8 +130,9 @@ def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch)
     legacy = {"letter_id": "legacy", "content": "x", "reply_text": "r", "letter_status": "COMPLETED", "reply_mode": "spoken_video", "media_status": "QUEUED"}
     scheduled = []
     monkeypatch.setattr(local_server, "_schedule_media_job", lambda lid, *_a: scheduled.append(lid))
-    local_server.store.letters.extend([off, legacy])
+    original = local_server.store.letters[:]
+    local_server.store.letters[:] = [off, legacy]
     try:
         assert local_server._schedule_pending_media_jobs() == 1 and scheduled == ["legacy"]
     finally:
-        local_server.store.letters.remove(off); local_server.store.letters.remove(legacy)
+        local_server.store.letters[:] = original
