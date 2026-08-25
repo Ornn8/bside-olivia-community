@@ -73,9 +73,21 @@ from private_world_delivery import (
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,
 )
+from private_world_candidate import (
+    PrivateWorldCandidateAnalyzer,
+    PrivateWorldCandidateRequest,
+    PrivateWorldCandidateRuntime,
+    create_private_world_candidate_runtime,
+    deliver_private_world_candidate,
+)
+from private_world_candidates import SQLitePrivateWorldCandidateStore
 from private_world_reducer import ReducerEventKind
 from private_world_projection import project_private_world
-from private_world_runtime import PrivateWorldRuntime, create_private_world_runtime
+from private_world_runtime import (
+    PrivateWorldRuntime,
+    create_private_world_runtime,
+    resolve_private_world_database,
+)
 from reply_context import (
     ReplyContext,
     ReplyMode,
@@ -578,6 +590,35 @@ letters_adapter = LetterAdapter(
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
 )
+
+
+def _create_candidate_runtime() -> PrivateWorldCandidateRuntime:
+    try:
+        database_path, _reason, _enabled = resolve_private_world_database()
+    except (OSError, RuntimeError, ValueError):
+        database_path = None
+    gateway_ready = (
+        not isinstance(letters_adapter.gateway, UnconfiguredAdapter)
+        and (
+            not LLM_CONFIG.requires_api_key
+            or api_key_configured(LLM_CONFIG)
+        )
+    )
+    return create_private_world_candidate_runtime(
+        letters_adapter.gateway,
+        database_path=database_path,
+        gateway_ready=gateway_ready,
+        environ=_os.environ,
+    )
+
+
+private_world_candidate_runtime = _create_candidate_runtime()
+private_world_candidate_analyzer: PrivateWorldCandidateAnalyzer = (
+    private_world_candidate_runtime.analyzer
+)
+private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
+    private_world_candidate_runtime.store
+)
 # A file-only Mem0 profile owns the same canonical state root on restart; load
 # only after the validated conversation adapter has selected that root.
 _load_store_state()
@@ -585,6 +626,7 @@ emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
+private_world_candidate_tasks: set[asyncio.Task] = set()
 reply_jobs: dict[str, asyncio.Task] = {}
 media_jobs: dict[str, asyncio.Task] = {}
 
@@ -1122,6 +1164,9 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                 },
                 "memory": memory_info,
                 "private_world": private_world_runtime.public_status(),
+                "private_world_candidates": (
+                    private_world_candidate_runtime.public_status()
+                ),
                 "music_catalog": {
                     "status": "available",
                     "provider": "sanitized-local-fixture",
@@ -2024,12 +2069,13 @@ async def _start_reply_tasks(_app: web.Application) -> None:
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    tasks = tuple(reply_tasks | media_tasks)
+    tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks)
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     reply_tasks.clear()
+    private_world_candidate_tasks.clear()
     media_tasks.clear()
     reply_jobs.clear()
     media_jobs.clear()
@@ -2057,6 +2103,55 @@ def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
     letter["private_world_occurred_at"] = datetime.now(timezone.utc).isoformat()
     letter["private_world_event_kind"] = ReducerEventKind.CANONICAL_REPLY_DELIVERED.value
     letter["private_world_semantic_key"] = f"canonical.{semantic_digest}"
+
+
+async def _deliver_private_world_candidate(
+    letter: dict,
+    user_message: str,
+    canonical_reply: str,
+) -> None:
+    store = private_world_candidate_store
+    if store is None:
+        return
+    try:
+        snapshot = private_world_port.snapshot()
+        request = PrivateWorldCandidateRequest.create(
+            source_letter_id=str(letter["letter_id"]),
+            source_reply_revision=int(letter["reply_revision"]),
+            user_message=user_message,
+            canonical_reply=canonical_reply,
+            character_view=snapshot.character_view(),
+            occurred_at=datetime.fromisoformat(
+                str(letter["private_world_occurred_at"])
+            ),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return
+    await deliver_private_world_candidate(
+        private_world_candidate_analyzer,
+        store,
+        request,
+    )
+
+
+def _schedule_private_world_candidate(
+    letter: dict,
+    user_message: str,
+    canonical_reply: str,
+) -> None:
+    if private_world_candidate_store is None:
+        return
+    task = asyncio.create_task(
+        _deliver_private_world_candidate(letter, user_message, canonical_reply)
+    )
+    private_world_candidate_tasks.add(task)
+    task.add_done_callback(private_world_candidate_tasks.discard)
+
+
+async def wait_for_private_world_candidate_tasks() -> None:
+    tasks = tuple(private_world_candidate_tasks)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _commit_private_world_letter(letter: dict) -> bool:
@@ -2179,8 +2274,10 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     letter["letter_status"] = "COMPLETED"
     _mark_superseded_failed_retries()
     _persist_store_state()
-    _commit_private_world_letter(letter)
+    private_world_committed = _commit_private_world_letter(letter)
     _persist_store_state()
+    if private_world_committed:
+        _schedule_private_world_candidate(letter, content, result.text)
 
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,
