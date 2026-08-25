@@ -20,6 +20,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
+  const LETTER_CHARACTER_LIMIT = 1200;
 
   const parseApiBase = (value) => {
     let url;
@@ -901,6 +902,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   let scheduled = false;
+  const constrainLetterInputs = () => {
+    for (const input of document.querySelectorAll("textarea")) {
+      if (input.closest(`[${DIALOG_ATTR}]`)) {
+        continue;
+      }
+      const dialog = input.closest('[role="dialog"], .el-dialog');
+      if (!dialog) {
+        continue;
+      }
+      const isLetterEditor = Array.from(dialog.querySelectorAll("button")).some(
+        (item) => item.textContent.trim() === "寄出信件"
+      );
+      if (isLetterEditor) {
+        input.maxLength = LETTER_CHARACTER_LIMIT;
+      }
+    }
+  };
+
   const schedule = () => {
     if (scheduled) {
       return;
@@ -908,6 +927,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     scheduled = true;
     window.requestAnimationFrame(() => {
       scheduled = false;
+      constrainLetterInputs();
       mountShell();
     });
   };

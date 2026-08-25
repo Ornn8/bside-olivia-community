@@ -211,7 +211,7 @@ class PrivateBehaviorView:
 @dataclass(frozen=True)
 class OutputConstraints:
     channel: OutputChannel
-    max_characters: int = 12_000
+    max_characters: int = 1_200
     plain_text_only: bool = True
     allow_stage_directions: bool = False
     allow_control_markup: bool = False

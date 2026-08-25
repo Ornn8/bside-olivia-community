@@ -29,6 +29,9 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 1
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
+    assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
+    assert "input.maxLength = LETTER_CHARACTER_LIMIT;" in BOOTSTRAP_JAVASCRIPT
+    assert 'input.closest(`[${DIALOG_ATTR}]`)' in BOOTSTRAP_JAVASCRIPT
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT

@@ -79,6 +79,20 @@ def test_video_reply_requires_delivery_length_without_affecting_text_letters() -
     ).passed is True
 
 
+def test_text_letter_accepts_1200_characters_and_rejects_1201() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+    assert scan_reply("林" * 1200, context).passed is True
+    result = scan_reply("林" * 1201, context)
+
+    assert tuple(item.code for item in result.violations) == (
+        ViolationCode.OUTPUT_LIMIT_EXCEEDED,
+    )
+
+
 def test_only_explicit_permanent_or_exclusive_commitments_are_blocked() -> None:
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,

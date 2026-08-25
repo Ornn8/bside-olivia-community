@@ -33,6 +33,7 @@ def test_text_wire_mode_builds_an_immutable_letter_context() -> None:
     assert mode is ReplyMode.TEXT_LETTER
     assert context.to_dict()["wire_mode"] == "text"
     assert context.to_dict()["output_constraints"]["channel"] == "letter"
+    assert context.output_constraints.max_characters == 1200
 
 
 def test_trusted_time_normalizes_to_utc_and_rejects_unstable_inputs() -> None:
