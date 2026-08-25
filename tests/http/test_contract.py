@@ -145,6 +145,56 @@ def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_avai
     assert "private-synthetic-telemetry-detail" not in health
 
 
+def test_memory_health_keeps_lifecycle_audit_failure_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+
+    class AvailableMem0:
+        def status(self):
+            return ConversationMemoryStatus(
+                "available", True, "mem0", "qdrant-local", memory_count=0
+            )
+
+    class UnavailableLifecycle:
+        def is_paused(self) -> bool:
+            raise RuntimeError("synthetic schema incompatibility")
+
+    memory = AvailableMem0()
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_memory",
+        memory,
+    )
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "memory_lifecycle",
+        UnavailableLifecycle(),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_runtime_status",
+        lambda: ConversationMemoryRuntimeStatus(
+            "degraded",
+            True,
+            "mem0-outbox",
+            True,
+            reason_code="MEMORY_OUTBOX_DELIVERY_FAILED",
+        ),
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    conversation = result["data"]["providers"]["memory"]["conversation"]
+    assert result["data"]["status"] == "UNAVAILABLE"
+    assert conversation["status"] == "unavailable"
+    assert conversation["reason_code"] == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+    assert result["data"]["capabilities"]["memory.conversation"]["status"] == "unavailable"
+
+
 def test_memory_health_reflects_degraded_canonical_delivery_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

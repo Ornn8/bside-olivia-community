@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
-from typing import Mapping
+from typing import Callable, Mapping, TypeVar
 
 from conversation_memory_port import (
     ConversationMemoryPort,
@@ -32,6 +32,9 @@ _OPERATIONS = frozenset({"add", "delete", "correct", "clear", "pause", "resume"}
 _AUDIT_STATUSES = frozenset(
     {"completed", "noop", "replacement_written_delete_pending"}
 )
+_LIFECYCLE_LOCKS: dict[str, threading.RLock] = {}
+_LIFECYCLE_LOCKS_GUARD = threading.Lock()
+_T = TypeVar("_T")
 
 
 class ConversationMemoryAdminError(RuntimeError):
@@ -153,6 +156,7 @@ class ConversationMemoryAdminService:
         self.audit_path = path
         self.user_id = user_id
         self._lock = threading.RLock()
+        self._lifecycle_lock = _lifecycle_lock(path)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -249,7 +253,7 @@ class ConversationMemoryAdminService:
         text = _text(text, field_name="memory text", maximum=2000)
         reason = _text(reason, field_name="reason", maximum=500)
         source_id = f"manual:{request_id}"
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             existing = self._existing_result(request_id, "add")
             if existing is not None:
                 return existing
@@ -292,7 +296,7 @@ class ConversationMemoryAdminService:
         memory_id = _identifier(memory_id, field_name="memory_id")
         request_id = _identifier(request_id, field_name="request_id")
         reason = _text(reason, field_name="reason", maximum=500)
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             existing = self._existing_result(request_id, "delete")
             if existing is not None:
                 return existing
@@ -355,7 +359,7 @@ class ConversationMemoryAdminService:
         )
         reason = _text(reason, field_name="reason", maximum=500)
         source_id = f"correction:{request_id}"
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             existing = self._audit_row(request_id)
             if existing is not None:
                 if str(existing["operation"]) != "correct":
@@ -505,7 +509,7 @@ class ConversationMemoryAdminService:
     ) -> MemoryAdminMutationResult:
         request_id = _identifier(request_id, field_name="request_id")
         _text(reason, field_name="reason", maximum=500)
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             try:
                 with self._connect() as connection:
                     existing = connection.execute(
@@ -539,7 +543,7 @@ class ConversationMemoryAdminService:
     ) -> MemoryAdminMutationResult:
         request_id = _identifier(request_id, field_name="request_id")
         _text(reason, field_name="reason", maximum=500)
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             try:
                 with self._connect() as connection:
                     existing = connection.execute(
@@ -568,6 +572,10 @@ class ConversationMemoryAdminService:
         return MemoryAdminMutationResult(MemoryAdminMutationStatus.APPLIED, request_id, "resume")
 
     def is_paused(self) -> bool:
+        with self._lifecycle_lock:
+            return self._is_paused()
+
+    def _is_paused(self) -> bool:
         try:
             with self._connect() as connection:
                 return connection.execute(
@@ -580,15 +588,25 @@ class ConversationMemoryAdminService:
         if not isinstance(occurred_at, datetime) or occurred_at.tzinfo is None:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_DELIVERY_TIME_INVALID")
         timestamp = occurred_at.astimezone(timezone.utc).isoformat()
-        try:
-            with self._connect() as connection:
-                return connection.execute(
-                    "SELECT 1 FROM memory_admin_pause_windows "
-                    "WHERE started_at <= ? AND (resumed_at IS NULL OR resumed_at >= ?) LIMIT 1",
-                    (timestamp, timestamp),
-                ).fetchone() is not None
-        except (OSError, sqlite3.Error) as exc:
-            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+        with self._lifecycle_lock:
+            if self._is_paused():
+                return True
+            try:
+                with self._connect() as connection:
+                    return connection.execute(
+                        "SELECT 1 FROM memory_admin_pause_windows "
+                        "WHERE started_at <= ? AND (resumed_at IS NULL OR resumed_at >= ?) LIMIT 1",
+                        (timestamp, timestamp),
+                    ).fetchone() is not None
+            except (OSError, sqlite3.Error) as exc:
+                raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+
+    def run_write(self, operation: Callable[[], _T]) -> _T | None:
+        """Serialize the final pause check and provider write for this audit file."""
+        with self._lifecycle_lock:
+            if self._is_paused():
+                return None
+            return operation()
 
     def export(self) -> dict[str, object]:
         self._require_available()
@@ -823,6 +841,12 @@ def _text(value: object, *, field_name: str, maximum: int) -> str:
     ):
         raise ConversationMemoryAdminError("MEMORY_ADMIN_TEXT_INVALID")
     return normalized
+
+
+def _lifecycle_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve()).casefold()
+    with _LIFECYCLE_LOCKS_GUARD:
+        return _LIFECYCLE_LOCKS.setdefault(key, threading.RLock())
 
 
 __all__ = [

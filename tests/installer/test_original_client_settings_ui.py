@@ -24,7 +24,6 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
         'const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";',
-        'const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";',
         'const CONFIRM_HEADER = "X-Olivia-Companion-Action";',
         'const CONFIRM_VALUE = "confirmed";',
     ):
@@ -41,7 +40,6 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
-    assert "window.prompt" in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
     assert "encodeURIComponent" in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
@@ -86,8 +84,6 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "清空所有长期记忆",
-        "Archive 和私人世界不会被删除",
     ):
         assert required in source
     assert "http://" not in source

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "original_client_memory_lifecycle.schema.json",
+  "title": "P03 original-client Mem0 lifecycle read status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "capabilities"],
+  "properties": {
+    "schema_version": {"const": "p03.original-companion-read.v1"},
+    "status": {"enum": ["READY", "PAUSED"]},
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory", "private_world", "candidates"],
+      "properties": {
+        "memory": {"$ref": "#/$defs/memory"},
+        "private_world": {"$ref": "#/$defs/capability"},
+        "candidates": {"$ref": "#/$defs/capability"}
+      }
+    }
+  },
+  "$defs": {
+    "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,95}$"},
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["available", "degraded", "unavailable", "disabled"]},
+        "reason_code": {"$ref": "#/$defs/reason_code"},
+        "count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "memory": {
+      "allOf": [
+        {"$ref": "#/$defs/capability"},
+        {
+          "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_PAUSED"}}, "required": ["reason_code"]},
+          "then": {"properties": {"state": {"const": "degraded"}}}
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "PAUSED"}}},
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "memory": {
+                "required": ["reason_code"],
+                "properties": {"reason_code": {"const": "MEMORY_ADMIN_PAUSED"}}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "memory": {
+                "required": ["reason_code"],
+                "properties": {"reason_code": {"const": "MEMORY_ADMIN_PAUSED"}}
+              }
+            }
+          }
+        }
+      },
+      "then": {"properties": {"status": {"const": "PAUSED"}}}
+    }
+  ]
+}

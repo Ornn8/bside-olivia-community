@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 import json
 from pathlib import Path
 import time
+import threading
+import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from companion_memory_context import CompanionMemoryPromptBuilder
 from conversation_memory_admin import ConversationMemoryAdminError, ConversationMemoryAdminService
 from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
+from conversation_memory_delivery import CanonicalMemoryDelivery, ConversationMemoryDeliveryCommitter
 from conversation_memory_runtime import (
     ensure_conversation_memory_runtime,
     stop_conversation_memory_runtime,
 )
 from memory_port import LEGACY_LETTERS, MemoryRecord
+from memory_prompt import MemoryPromptBuilder
 
 
 class Archive:
@@ -82,6 +88,28 @@ class Mem0:
         return 0
 
 
+class BlockingMem0(Mem0):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def remember_exchange(self, **kwargs):
+        self.entered.set()
+        assert self.release.wait(2.0)
+        return super().remember_exchange(**kwargs)
+
+
+class ConfiguredMem0(Mem0):
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.config = SimpleNamespace(
+            user_id="local-user",
+            outbox_data_root=root,
+            data_root=root / "memory" / "mem0",
+        )
+
+
 def _write_state(root: Path, letter_id: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "state.json").write_text(
@@ -94,6 +122,27 @@ def _write_state(root: Path, letter_id: str) -> None:
                         "reply_revision": 1,
                         "content": "canonical user message",
                         "reply_text": "canonical assistant reply",
+                        "private_world_occurred_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_prepaused_state(root: Path, letter_id: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "letters": [
+                    {
+                        "letter_id": letter_id,
+                        "letter_status": "COMPLETED",
+                        "reply_revision": 1,
+                        "content": "canonical before pause",
+                        "reply_text": "reply before pause",
                         "private_world_occurred_at": datetime.now(timezone.utc).isoformat(),
                     }
                 ]
@@ -151,3 +200,92 @@ def test_pause_persists_blocks_mem0_only_and_never_backfills_paused_letters(
     _write_state(root, "letter.future.1")
     _wait_for(lambda: memory.writes == ["reply:letter.future.1:1"])
     stop_conversation_memory_runtime()
+
+
+def test_pause_blocks_preexisting_canonical_delivery_until_it_is_recorded_terminal(
+    tmp_path: Path,
+) -> None:
+    stop_conversation_memory_runtime()
+    root = tmp_path / "data"
+    memory = Mem0()
+    _write_prepaused_state(root, "letter.before.pause.1")
+    admin = ConversationMemoryAdminService(memory, root / "memory" / "memory_admin_audit.sqlite3")
+    admin.pause(request_id="memory.pause.before.1", reason="用户暂停长期记忆。")
+    ensure_conversation_memory_runtime(
+        Archive(), memory,
+        environ={"OLIVIA_LOCAL_DATA_ROOT": str(root), "OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS": "0.25"},
+        memory_lifecycle=admin,
+    )
+    time.sleep(0.35)
+    assert memory.writes == []
+    stop_conversation_memory_runtime()
+    admin.resume(request_id="memory.resume.before.1", reason="用户恢复长期记忆。")
+    ensure_conversation_memory_runtime(
+        Archive(),
+        memory,
+        environ={"OLIVIA_LOCAL_DATA_ROOT": str(root)},
+        memory_lifecycle=admin,
+    )
+    time.sleep(0.35)
+    assert memory.writes == []
+    stop_conversation_memory_runtime()
+
+
+def test_pause_waits_for_a_provider_write_already_past_the_final_gate(tmp_path: Path) -> None:
+    memory = BlockingMem0()
+    admin = ConversationMemoryAdminService(memory, tmp_path / "memory_admin_audit.sqlite3")
+    committer = ConversationMemoryDeliveryCommitter(memory, memory_lifecycle=admin)
+    delivery = CanonicalMemoryDelivery("letter.race.1", 1, "synthetic user", "synthetic reply", datetime.now(timezone.utc))
+    writer = threading.Thread(target=lambda: asyncio.run(committer.commit(delivery)))
+    writer.start()
+    assert memory.entered.wait(2.0)
+    pause_done = threading.Event()
+    pauser = threading.Thread(target=lambda: (admin.pause(request_id="memory.pause.race.1", reason="用户暂停长期记忆。"), pause_done.set()))
+    pauser.start()
+    time.sleep(0.05)
+    assert not pause_done.is_set()
+    memory.release.set()
+    writer.join(2.0)
+    pauser.join(2.0)
+    assert pause_done.is_set()
+    assert memory.writes == ["reply:letter.race.1:1"]
+
+
+def test_unsupported_lifecycle_schema_fails_closed_for_mem0_prompt_retrieval(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    audit = root / "memory" / "memory_admin_audit.sqlite3"
+    audit.parent.mkdir(parents=True)
+    with sqlite3.connect(audit) as connection:
+        connection.execute("PRAGMA user_version=99")
+    memory = ConfiguredMem0(root)
+    prompt = MemoryPromptBuilder(Archive(), conversation_memory=memory).build("synthetic", max_chars=1200)
+    assert memory.searches == 0
+    assert "Archive 原文必须始终可用。" in prompt.text
+
+
+def test_unsupported_lifecycle_schema_fails_closed_for_mem0_delivery(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    audit = root / "memory" / "memory_admin_audit.sqlite3"
+    audit.parent.mkdir(parents=True)
+    with sqlite3.connect(audit) as connection:
+        connection.execute("PRAGMA user_version=99")
+    memory = ConfiguredMem0(root)
+    builder = MemoryPromptBuilder(Archive(), conversation_memory=memory)
+    delivery = CanonicalMemoryDelivery(
+        "letter.schema.1",
+        1,
+        "synthetic user",
+        "synthetic reply",
+        datetime.now(timezone.utc),
+    )
+
+    result = asyncio.run(
+        ConversationMemoryDeliveryCommitter(
+            memory,
+            memory_lifecycle=builder.memory_lifecycle,
+        ).commit(delivery)
+    )
+
+    assert result.status.value == "unavailable"
+    assert result.error_code == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+    assert memory.writes == []

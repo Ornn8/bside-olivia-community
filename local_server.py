@@ -1041,16 +1041,19 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
             "storage": "none",
             "reason_code": "MEM0_STATUS_FAILED",
         }
+    memory_prompt_builder = letters_adapter.memory_prompt_builder
     runtime_info = getattr(
-        letters_adapter.memory_prompt_builder,
+        memory_prompt_builder,
         "conversation_runtime_status",
         None,
     )
-    memory_lifecycle = getattr(
-        letters_adapter.memory_prompt_builder,
-        "memory_lifecycle",
-        None,
+    memory_lifecycle = (
+        getattr(memory_prompt_builder, "memory_lifecycle", None)
+        if getattr(memory_prompt_builder, "conversation_memory", None)
+        is conversation_memory_adapter
+        else None
     )
+    lifecycle_unavailable = False
     try:
         if memory_lifecycle is not None and memory_lifecycle.is_paused():
             conversation_info["lifecycle"] = "paused"
@@ -1058,10 +1061,11 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
             conversation_info["reason_code"] = "MEMORY_ADMIN_PAUSED"
     except Exception:
         if memory_lifecycle is not None:
+            lifecycle_unavailable = True
             conversation_info["lifecycle"] = "unavailable"
             conversation_info["status"] = "unavailable"
             conversation_info["reason_code"] = "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
-    if conversation_info.get("status") != "disabled":
+    if conversation_info.get("status") != "disabled" and not lifecycle_unavailable:
         try:
             live_runtime_info = conversation_memory_runtime_status().to_dict()
         except Exception:

@@ -194,19 +194,6 @@ class DirectOriginalClientCompanionMutationBackend:
     def resume_memory(self, *, request_id: str, reason: str) -> CompanionMutationResult:
         return self._lifecycle_mutation("resume", request_id=request_id, reason=reason)
 
-    def clear_memory(
-        self, *, request_id: str, reason: str, confirmed: bool
-    ) -> CompanionMutationResult:
-        if self.memory_admin is None:
-            raise OriginalClientCompanionMutationError("MEMORY_MUTATION_DISABLED", status=503)
-        try:
-            result = self.memory_admin.clear(
-                request_id=request_id, reason=reason, confirmed=confirmed
-            )
-        except ConversationMemoryAdminError as exc:
-            raise _memory_error(exc) from exc
-        return _memory_result(result)
-
     def _lifecycle_mutation(
         self, operation: str, *, request_id: str, reason: str
     ) -> CompanionMutationResult:

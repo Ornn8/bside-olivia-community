@@ -20,7 +20,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
-  const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const LETTER_CHARACTER_LIMIT = 1200;
@@ -474,7 +473,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!window.confirm(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
         return;
       }
-      setButtonsBusy([toggle, clear], true);
+      setButtonsBusy([toggle], true);
       resultState.textContent = `正在${action}长期记忆……`;
       try {
         const payload = await requestMutation(
@@ -489,34 +488,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         resultState.textContent = `长期记忆${action}失败。`;
       } finally {
-        setButtonsBusy([toggle, clear], false);
+        setButtonsBusy([toggle], false);
       }
     });
-    const clear = button("清空所有长期记忆", async () => {
-      if (!window.confirm("这会清空所有 Mem0 长期记忆；Archive 和私人世界不会被删除。是否继续？")) {
-        return;
-      }
-      if (window.prompt("请输入“清空”以作第二次确认。") !== "清空") {
-        resultState.textContent = "未完成第二次确认，未清空长期记忆。";
-        return;
-      }
-      setButtonsBusy([toggle, clear], true);
-      resultState.textContent = "正在清空长期记忆……";
-      try {
-        const payload = await requestMutation(MEMORY_CLEAR_PATH, {
-          request_id: requestId("memory.clear"),
-          reason: "用户在原版 Olivia 设置中二次确认清空 Mem0 长期记忆。",
-          confirmed: true,
-        });
-        resultState.textContent = mutationMessage(payload, "长期记忆已清空；Archive 和私人世界未改动。");
-        await load();
-      } catch (_error) {
-        resultState.textContent = "清空长期记忆失败，Archive 和私人世界未改动。";
-      } finally {
-        setButtonsBusy([toggle, clear], false);
-      }
-    });
-    lifecycleControls.append(toggle, clear);
+    lifecycleControls.append(toggle);
     panel.replaceChildren(heading, summary, lifecycleControls, controls, resultState, list);
     await load();
   };

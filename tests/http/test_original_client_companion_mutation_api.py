@@ -11,7 +11,6 @@ from original_client_companion_mutation_api import (
     CONFIRM_VALUE,
     CompanionMutationResult,
     MEMORY_CORRECT_PATH,
-    MEMORY_CLEAR_PATH,
     MEMORY_DELETE_PATH,
     MEMORY_PAUSE_PATH,
     MEMORY_RESUME_PATH,
@@ -47,10 +46,6 @@ class RecordingBackend:
     def resume_memory(self, **kwargs) -> CompanionMutationResult:
         self.calls.append(("resume_memory", kwargs))
         return CompanionMutationResult(str(kwargs["request_id"]), "APPLIED", 0)
-
-    def clear_memory(self, **kwargs) -> CompanionMutationResult:
-        self.calls.append(("clear_memory", kwargs))
-        return CompanionMutationResult(str(kwargs["request_id"]), "APPLIED", 3)
 
     def decide_candidate(self, **kwargs) -> CompanionMutationResult:
         self.calls.append(("decide_candidate", kwargs))
@@ -162,7 +157,7 @@ def test_candidate_approve_and_reject_preserve_decision_envelope() -> None:
     asyncio.run(scenario())
 
 
-def test_memory_lifecycle_routes_require_confirmation_and_clear_requires_second_flag() -> None:
+def test_memory_lifecycle_routes_require_confirmation() -> None:
     async def scenario() -> None:
         client, backend, origin = await _client()
         try:
@@ -176,21 +171,7 @@ def test_memory_lifecycle_routes_require_confirmation_and_clear_requires_second_
                     headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
                 )
                 assert response.status == 200
-            missing_second = await client.post(
-                MEMORY_CLEAR_PATH,
-                json={"request_id": "request.memory.clear.1", "reason": "用户明确确认。", "confirmed": False},
-                headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
-            )
-            assert missing_second.status == 400
-            cleared = await client.post(
-                MEMORY_CLEAR_PATH,
-                json={"request_id": "request.memory.clear.2", "reason": "用户二次确认。", "confirmed": True},
-                headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
-            )
-            assert cleared.status == 200
-            assert [call[0] for call in backend.calls] == [
-                "pause_memory", "resume_memory", "clear_memory"
-            ]
+            assert [call[0] for call in backend.calls] == ["pause_memory", "resume_memory"]
         finally:
             await client.close()
 

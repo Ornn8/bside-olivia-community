@@ -28,6 +28,17 @@ _UNESCAPE_RE = re.compile(r"\\u(003C|003E|005B|005C|005D|005F)")
 _AUTO_CONVERSATION_MEMORY = object()
 
 
+class _UnavailableMemoryLifecycle:
+    reason_code = "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+
+    def is_paused(self) -> bool:
+        raise RuntimeError(self.reason_code)
+
+    def run_write(self, operation: object) -> None:
+        del operation
+        raise RuntimeError(self.reason_code)
+
+
 @dataclass(frozen=True)
 class MemoryPrompt:
     text: str = ""
@@ -308,7 +319,7 @@ def _memory_lifecycle(memory: object) -> object | None:
         configured = os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "").strip()
         root = Path(configured).expanduser() if configured else None
     if root is None or not root.is_absolute():
-        return None
+        return _UnavailableMemoryLifecycle() if memory is not None else None
     try:
         from conversation_memory_admin import ConversationMemoryAdminService
 
@@ -318,7 +329,7 @@ def _memory_lifecycle(memory: object) -> object | None:
             user_id=_conversation_user_id(memory, None),
         )
     except Exception:
-        return None
+        return _UnavailableMemoryLifecycle()
 
 
 def _conversation_status(memory: object) -> str:
