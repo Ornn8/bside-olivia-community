@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import threading
 import time
 
+from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+from conversation_memory_outbox import CanonicalMemoryOutbox
 from conversation_memory_port import (
     MemoryWriteStatus,
     NullConversationMemoryPort,
@@ -324,6 +328,58 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     status = adapter.status().to_dict()
     assert status["status"] == "degraded"
     assert status["reason_code"] == "MEM0_LIST_FAILED"
+
+
+def test_outbox_retry_after_a_timed_out_source_check_never_adds_duplicate(
+    tmp_path: Path,
+) -> None:
+    release = threading.Event()
+
+    class DelayedMem0(FakeMem0):
+        def get_all(self, **kwargs):
+            release.wait()
+            return super().get_all(**kwargs)
+
+    backend = DelayedMem0()
+    backend.rows.append(
+        {
+            "id": "memory.existing",
+            "memory": "already canonical",
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "reply:letter-1:1",
+                "domain": "conversation_memory",
+            },
+        }
+    )
+    config = replace(_config(tmp_path), search_timeout_seconds=0.1)
+    adapter = Mem0ConversationMemoryAdapter(backend, config)
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "letters": [
+                    {
+                        "letter_id": "letter-1",
+                        "reply_revision": 1,
+                        "letter_status": "COMPLETED",
+                        "content": "synthetic user",
+                        "reply_text": "synthetic reply",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    outbox = CanonicalMemoryOutbox(
+        tmp_path / "state.json",
+        tmp_path / "memory" / "mem0" / "delivery.sqlite3",
+        ConversationMemoryDeliveryCommitter(adapter),
+    )
+    assert asyncio.run(outbox.scan_once()).pending == 1
+    release.set()
+    assert asyncio.run(outbox.scan_once()).duplicates == 1
+    assert not [call for call in backend.calls if call[0] == "add"]
 
 
 def test_status_and_list_fail_closed_for_malformed_provider_pages(tmp_path: Path) -> None:
@@ -1127,7 +1183,9 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
         data_root=tmp_path / "broken",
         config_error="MEM0_LLM_CONFIG_INCOMPLETE",
     )
-    assert isinstance(create_mem0_adapter(broken), UnavailableConversationMemoryPort)
+    broken_port = create_mem0_adapter(broken)
+    assert isinstance(broken_port, UnavailableConversationMemoryPort)
+    assert broken_port.config is broken
 
     captured: dict[str, object] = {}
     backend = FakeMem0()
@@ -1153,6 +1211,7 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
     )
     assert isinstance(unavailable, UnavailableConversationMemoryPort)
     assert unavailable.reason_code == "MEM0_INITIALIZATION_FAILED"
+    assert unavailable.config.data_root == _config(tmp_path).data_root
 
 
 def test_manual_failure_uses_stable_error(tmp_path: Path) -> None:

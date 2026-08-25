@@ -7,13 +7,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 import local_memory
 from local_memory import (
     LocalMemoryAdapter,
+    MemoryConfig,
     UnavailableMemoryPort,
+    create_conversation_memory_adapter,
     create_memory_adapter,
+    load_memory_config,
 )
+from mem0_memory import load_mem0_config
 from memory_import import ImportOptions, LegacyLetterImporter
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, LegacyLetter, MemoryUnavailable
 from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPromptBuilder
@@ -21,6 +26,285 @@ from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPrompt
 
 def make_adapter(tmp_path: Path, **kwargs) -> LocalMemoryAdapter:
     return LocalMemoryAdapter(tmp_path / "memory.sqlite3", **kwargs)
+
+
+def test_explicit_mem0_config_selects_conversation_adapter_without_archive_crossing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+
+    adapter = create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+            context_max_chars=1800,
+        ),
+        environ={"OLIVIA_MEMORY_LLM_BASE_URL": "http://127.0.0.1:8000/v1"},
+    )
+
+    assert adapter is sentinel
+    configured = captured["environ"]
+    assert isinstance(configured, dict)
+    assert configured["OLIVIA_MEMORY_ENABLED"] == "true"
+    assert configured["OLIVIA_MEMORY_ROOT"] == str(tmp_path / "memory" / "mem0")
+    assert configured["OLIVIA_MEMORY_CONTEXT_MAX_CHARS"] == "1800"
+
+
+def test_mem0_root_is_not_appended_twice_before_the_conversation_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+    configured_root = tmp_path / "memory" / "mem0"
+
+    create_conversation_memory_adapter(
+        MemoryConfig(enabled=True, provider="mem0", data_root=configured_root),
+        environ={},
+    )
+
+    environment = captured["environ"]
+    assert isinstance(environment, dict)
+    assert environment["OLIVIA_MEMORY_ROOT"] == str(configured_root)
+
+
+def test_archive_factory_uses_parent_memory_root_when_mem0_root_is_explicit(
+    tmp_path: Path,
+) -> None:
+    archive_root = tmp_path / "memory"
+    adapter = create_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="sqlite",
+            data_root=archive_root / "mem0",
+        )
+    )
+
+    assert isinstance(adapter, LocalMemoryAdapter)
+    try:
+        assert adapter.db_path == archive_root / "memory.sqlite3"
+        assert not (archive_root / "mem0" / "memory.sqlite3").exists()
+    finally:
+        adapter.close()
+
+
+def test_explicit_mem0_config_reuses_normal_letter_llm_file_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+
+    create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+        ),
+        environ={},
+        llm_fallback={
+            "base_url": "http://127.0.0.1:8000/v1",
+            "model": "synthetic-chat-model",
+            "api_key_env": "SYNTHETIC_API_KEY",
+        },
+    )
+
+    configured = captured["environ"]
+    assert isinstance(configured, dict)
+    assert configured["OLIVIA_MEMORY_LLM_BASE_URL"] == "http://127.0.0.1:8000/v1"
+    assert configured["OLIVIA_MEMORY_LLM_MODEL"] == "synthetic-chat-model"
+    assert configured["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == "SYNTHETIC_API_KEY"
+
+
+def test_documented_mem0_profile_is_schema_valid_and_reaches_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "enabled": True,
+        "provider": "mem0",
+        "data_root": "memory/mem0",
+        "user_id": "fixture-user",
+        "write_timeout_seconds": 17,
+        "search_timeout_seconds": 6,
+        "llm": {
+            "provider": "openai",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "model": "memory-model",
+            "api_key_env": "MEM0_FIXTURE_KEY",
+        },
+    }
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts" / "memory_config.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert list(Draft202012Validator(schema).iter_errors(payload)) == []
+    config_path = tmp_path / "memory_config.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = load_memory_config(config_path, environ={}, root=tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+    create_conversation_memory_adapter(config, environ={})
+
+    assert config.user_id == "fixture-user"
+    assert config.write_timeout_seconds == 17
+    assert config.search_timeout_seconds == 6
+    environment = captured["environ"]
+    assert isinstance(environment, dict)
+    assert environment["OLIVIA_MEMORY_USER_ID"] == "fixture-user"
+    assert environment["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "17"
+    assert environment["OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS"] == "6"
+    assert "MEM0_FIXTURE_KEY" not in environment
+    runtime_config = load_mem0_config(environ=environment, project_root=tmp_path)
+    assert runtime_config.outbox_data_root == tmp_path
+    assert runtime_config.write_timeout_seconds == 17
+    assert runtime_config.search_timeout_seconds == 6
+
+
+def test_independent_mem0_file_configuration_reaches_provider_without_a_key_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "memory_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "provider": "mem0",
+                "data_root": "memory/mem0",
+                "llm": {
+                    "provider": "openai",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "model": "memory-model",
+                    "api_key_env": "MEM0_FIXTURE_KEY",
+                },
+                "embedder": {
+                    "provider": "huggingface",
+                    "model": "BAAI/bge-small-zh-v1.5",
+                    "device": "cpu",
+                    "embedding_dims": 512,
+                },
+                "vector_store": {
+                    "provider": "qdrant",
+                    "collection_name": "fixture_memory_v1",
+                    "on_disk": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_create_mem0_adapter(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fake_create_mem0_adapter)
+    monkeypatch.setenv("MEM0_FIXTURE_KEY", "host-secret-must-not-be-read")
+    config = load_memory_config(config_path, environ={}, root=tmp_path)
+
+    create_conversation_memory_adapter(
+        config,
+        environ={},
+        llm_fallback={
+            "base_url": "http://fallback.invalid/v1",
+            "model": "fallback-model",
+            "api_key_env": "FALLBACK_KEY",
+        },
+    )
+
+    environment = captured["environ"]
+    assert isinstance(environment, dict)
+    provider = load_mem0_config(environ=environment, project_root=tmp_path).provider_config({})
+    assert provider["llm"] == {
+        "provider": "openai",
+        "config": {
+            "model": "memory-model",
+            "api_key": "",
+            "openai_base_url": "http://127.0.0.1:8000/v1",
+            "temperature": 0.1,
+        },
+    }
+    assert provider["embedder"] == {
+        "provider": "huggingface",
+        "config": {
+            "model": "BAAI/bge-small-zh-v1.5",
+            "embedding_dims": 512,
+            "model_kwargs": {
+                "device": "cpu",
+                "cache_folder": str(tmp_path / "memory" / "model-cache"),
+                "local_files_only": True,
+            },
+        },
+    }
+    assert provider["vector_store"] == {
+        "provider": "qdrant",
+        "config": {
+            "collection_name": "fixture_memory_v1",
+            "path": str(tmp_path / "memory" / "mem0" / "qdrant"),
+            "on_disk": True,
+            "embedding_model_dims": 512,
+        },
+    }
+    assert environment["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == "MEM0_FIXTURE_KEY"
+    assert "MEM0_FIXTURE_KEY" not in environment
+
+
+def test_unexpected_mem0_initialization_failure_degrades_without_blocking_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_mem0_initialization(**_kwargs: object) -> object:
+        raise LookupError("synthetic provider failure")
+
+    monkeypatch.setattr(local_memory, "create_mem0_adapter", fail_mem0_initialization)
+
+    adapter = create_conversation_memory_adapter(
+        MemoryConfig(
+            enabled=True,
+            provider="mem0",
+            data_root=tmp_path / "memory",
+        ),
+        environ={
+            "OLIVIA_MEMORY_LLM_BASE_URL": "http://127.0.0.1:8000/v1",
+            "OLIVIA_MEMORY_LLM_MODEL": "synthetic-model",
+        },
+    )
+
+    status = adapter.status()
+    assert status.status == "unavailable"
+    assert status.reason_code == "MEM0_INITIALIZATION_FAILED"
+    assert adapter.config.data_root == tmp_path / "memory"
+
+
+def test_mem0_factory_without_a_data_root_fails_closed() -> None:
+    adapter = create_conversation_memory_adapter(
+        MemoryConfig(enabled=True, provider="mem0", data_root=None),
+        environ={},
+    )
+
+    status = adapter.status()
+    assert status.status == "unavailable"
+    assert status.reason_code == "MEM0_DATA_ROOT_NOT_CONFIGURED"
 
 
 def test_metadata_long_value_round_trips_as_valid_json_without_truncation(tmp_path: Path) -> None:

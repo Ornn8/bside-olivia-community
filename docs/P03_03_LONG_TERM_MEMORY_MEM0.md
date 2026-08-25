@@ -290,6 +290,8 @@ Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；
   "search_timeout_seconds": 8,
   "llm": {
     "provider": "openai",
+    "base_url": "https://configured-memory-endpoint/v1",
+    "api_key_env": "OLIVIA_MEMORY_LLM_API_KEY",
     "model": "configured-memory-model"
   },
   "embedder": {
@@ -307,6 +309,26 @@ Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；
 ```
 
 真实路径和凭据不提交到仓库。
+`llm.api_key_env` 只能是进程环境变量名；配置文件与 bridge 只传递该名称，health 和日志都不得写入、回显或保存 key 值。
+`user_id` 必须为 1–128 个 `[A-Za-z0-9._:-]` 字符；`write_timeout_seconds`
+与 `search_timeout_seconds` 均为 0.1–300 秒。配置的 `data_root` 是
+Memory 根：Archive 使用该根的 `memory.sqlite3`，Mem0 使用其 `mem0/`
+子目录；若显式配置已经以 `mem0` 结尾，则 Archive 固定使用其父目录，
+不得在 Mem0 目录内创建 Archive SQLite。配置化 Mem0 会从该布局推导
+canonical outbox state root，不依赖宿主进程环境变量。
+
+`/health` 的 `providers.memory.conversation.runtime` 使用
+`contracts/memory_outbox_runtime.schema.json`。它只公开 `status`、
+`enabled`、`provider`、`worker_running`、无内容的计数以及稳定
+`reason_code`（包括 `MEMORY_OUTBOX_RUNTIME_UNAVAILABLE`）；不得公开
+data root、配置字段、消息正文或 API key。runtime 不可用时 conversation
+health 必须诚实降级，canonical 正文保持已持久化且不会补写第二次。
+
+`write_timeout_seconds` 由 canonical outbox 的 delivery committer 消费；
+`search_timeout_seconds` 由 Mem0 retrieval 消费。检索超时只返回空的
+untrusted memory context 并记录稳定状态，不能阻断正常书信；任何挂起的
+provider 调用最多占用一个 daemon worker，后续检索直接 fail-closed，避免
+累积不可终止的非 daemon 线程。
 
 ## 9. 数据进入规则
 

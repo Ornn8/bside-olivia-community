@@ -119,17 +119,21 @@ class ConversationMemoryRuntime:
         worker_running = bool(self._thread and self._thread.is_alive())
         raw_status = str(health.get("status", "unavailable"))
         status = raw_status if raw_status in {"available", "degraded", "unavailable"} else "unavailable"
+        reason_code = (
+            str(health["reason_code"])
+            if isinstance(health.get("reason_code"), str)
+            and _ERROR_RE.fullmatch(str(health["reason_code"]))
+            else None
+        )
+        if status == "available" and not worker_running:
+            status = "degraded"
+            reason_code = "MEMORY_OUTBOX_WORKER_NOT_RUNNING"
         return ConversationMemoryRuntimeStatus(
             status=status,
             enabled=True,
             provider="mem0-outbox",
             worker_running=worker_running,
-            reason_code=(
-                str(health["reason_code"])
-                if isinstance(health.get("reason_code"), str)
-                and _ERROR_RE.fullmatch(str(health["reason_code"]))
-                else None
-            ),
+            reason_code=reason_code,
             terminal_count=_count(health.get("terminal_count")),
             pending_count=_count(health.get("pending_count")),
             attempt_count=_count(health.get("attempt_count")),
@@ -176,7 +180,10 @@ def ensure_conversation_memory_runtime(
             reason_code=reason_code or "MEM0_INITIALIZATION_FAILED",
         )
 
-    if not _as_bool(environment.get("OLIVIA_MEMORY_OUTBOX_ENABLED", "1"), True):
+    outbox_enabled = _config_bool(conversation_memory, "outbox_enabled")
+    if outbox_enabled is None:
+        outbox_enabled = _as_bool(environment.get("OLIVIA_MEMORY_OUTBOX_ENABLED", "1"), True)
+    if not outbox_enabled:
         return ConversationMemoryRuntimeStatus(
             "disabled",
             False,
@@ -184,38 +191,41 @@ def ensure_conversation_memory_runtime(
             False,
         )
 
-    root_value = str(environment.get("OLIVIA_LOCAL_DATA_ROOT", "")).strip()
-    if not root_value:
+    root, root_error = _state_root(conversation_memory, environment)
+    if root is None:
         return ConversationMemoryRuntimeStatus(
-            "degraded",
-            True,
+            "unavailable" if root_error == "MEMORY_OUTBOX_DATA_ROOT_INVALID" else "degraded",
+            root_error != "MEMORY_OUTBOX_DATA_ROOT_INVALID",
             "mem0",
             False,
-            reason_code="MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED",
-        )
-    root = Path(root_value).expanduser()
-    if not root.is_absolute():
-        return ConversationMemoryRuntimeStatus(
-            "unavailable",
-            False,
-            "mem0",
-            False,
-            reason_code="MEMORY_OUTBOX_DATA_ROOT_INVALID",
+            reason_code=root_error,
         )
 
     user_id = _user_id(conversation_memory, environment)
-    timeout = _float(
-        environment.get("OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"),
-        default=30.0,
-        minimum=0.1,
+    timeout = _config_duration(
+        conversation_memory,
+        "write_timeout_seconds",
         maximum=300.0,
     )
-    interval = _float(
-        environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"),
-        default=5.0,
-        minimum=0.25,
+    if timeout is None:
+        timeout = _float(
+            environment.get("OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"),
+            default=30.0,
+            minimum=0.1,
+            maximum=300.0,
+        )
+    interval = _config_duration(
+        conversation_memory,
+        "outbox_interval_seconds",
         maximum=3600.0,
     )
+    if interval is None:
+        interval = _float(
+            environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"),
+            default=5.0,
+            minimum=0.25,
+            maximum=3600.0,
+        )
     key = (str(root.resolve()), user_id)
 
     global _RUNTIME, _RUNTIME_KEY, _ATEXIT_REGISTERED
@@ -312,6 +322,43 @@ def _provider_status(
     return raw_status, reason if isinstance(reason, str) and _ERROR_RE.fullmatch(reason) else None
 
 
+def _state_root(
+    memory: ConversationMemoryPort,
+    environment: Mapping[str, str],
+) -> tuple[Path | None, str]:
+    """Resolve the canonical-state root without inheriting host configuration.
+
+    A validated adapter profile wins. When it carries an explicit outbox root,
+    that root is used before process settings; otherwise its ``.../memory/mem0``
+    root supplies the sibling application state root. Canonical delivery thus
+    remains active without ``OLIVIA_LOCAL_DATA_ROOT`` in the process environment.
+    """
+
+    adapter_config = getattr(memory, "config", None)
+    adapter_outbox_root = getattr(adapter_config, "outbox_data_root", None)
+    if isinstance(adapter_outbox_root, Path) and adapter_outbox_root.is_absolute():
+        return adapter_outbox_root, ""
+
+    configured = str(
+        environment.get(
+            "OLIVIA_MEMORY_OUTBOX_DATA_ROOT",
+            environment.get("OLIVIA_LOCAL_DATA_ROOT", ""),
+        )
+    ).strip()
+    if configured:
+        root = Path(configured).expanduser()
+        if root.is_absolute():
+            return root, ""
+        return None, "MEMORY_OUTBOX_DATA_ROOT_INVALID"
+
+    adapter_root = getattr(adapter_config, "data_root", None)
+    if not isinstance(adapter_root, Path) or not adapter_root.is_absolute():
+        return None, "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED"
+    memory_root = adapter_root.parent if adapter_root.name.casefold() == "mem0" else adapter_root
+    state_root = memory_root.parent if memory_root.name.casefold() == "memory" else memory_root
+    return state_root, ""
+
+
 def _user_id(
     memory: ConversationMemoryPort,
     environment: Mapping[str, str],
@@ -324,6 +371,27 @@ def _user_id(
         if isinstance(value, str) and re.fullmatch(r"^[A-Za-z0-9._:-]{1,128}$", value.strip()):
             return value.strip()
     return "local-user"
+
+
+def _config_bool(memory: ConversationMemoryPort, name: str) -> bool | None:
+    value = getattr(getattr(memory, "config", None), name, None)
+    return value if type(value) is bool else None
+
+
+def _config_duration(
+    memory: ConversationMemoryPort,
+    name: str,
+    *,
+    maximum: float,
+) -> float | None:
+    value = getattr(getattr(memory, "config", None), name, None)
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if 0.1 <= parsed <= maximum else None
 
 
 def _as_bool(value: object, default: bool) -> bool:

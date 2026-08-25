@@ -43,13 +43,13 @@ def test_optional_blocks_are_dropped_whole_in_the_fixed_priority_order() -> None
     plan = plan_prompt_budget(items, max_units=130)
 
     assert plan.report.used_units == 125
-    assert plan.report.dropped_ids == ("history", "evidence", "soft")
+    assert plan.report.dropped_ids == ("evidence", "inferred", "soft")
     assert tuple(item.item_id for item in plan.items) == (
         "constitution",
         "forbidden",
         "mode",
         "user",
-        "inferred",
+        "history",
         "behavior",
         "world",
         "canon",

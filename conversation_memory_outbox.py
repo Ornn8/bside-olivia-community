@@ -180,6 +180,9 @@ class CanonicalMemoryOutbox:
                 elif result.status is CanonicalMemoryDeliveryStatus.DUPLICATE:
                     duplicates += 1
                     self._record(delivery, result)
+                elif result.status is CanonicalMemoryDeliveryStatus.SKIPPED:
+                    ignored += 1
+                    self._record(delivery, result)
                 else:
                     pending += 1
                     self._record(delivery, result)
@@ -261,7 +264,9 @@ class CanonicalMemoryOutbox:
     ) -> None:
         status = result.status.value
         if status == CanonicalMemoryDeliveryStatus.SKIPPED.value:
-            status = "pending"
+            # A successful no-op extraction is terminal.  The v1 journal's
+            # existing duplicate state is the content-free terminal marker.
+            status = CanonicalMemoryDeliveryStatus.DUPLICATE.value
         error_code = result.error_code
         if status == "pending" and error_code is None:
             error_code = "MEMORY_PROVIDER_DISABLED"

@@ -1,9 +1,14 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from conversation_memory_port import (
+    ConversationMemoryStatus,
+    NullConversationMemoryPort,
+)
 from llm_gateway import GatewayConfig
+from local_memory import LocalMemoryAdapter
 from local_server import LetterAdapter
-from memory_port import NullMemoryPort
+from memory_port import CONVERSATION_MEMORY, NullMemoryPort
 from memory_prompt import MemoryPrompt
 from private_world_port import (
     ContinuationAwareness,
@@ -32,6 +37,23 @@ class FixedMemoryPromptBuilder:
         )
 
 
+class ExplicitConversationMemory:
+    enabled = True
+
+    def status(self):
+        return ConversationMemoryStatus(
+            "available",
+            True,
+            "mem0",
+            "qdrant-local",
+            memory_count=0,
+        )
+
+    def search_context(self, query, *, user_id, limit):
+        del query, user_id, limit
+        return ()
+
+
 def _config(**changes: object) -> GatewayConfig:
     values: dict[str, object] = {
         "provider": "mock",
@@ -57,6 +79,44 @@ def test_enabled_v2_uses_persona_assembly_and_separate_user_message() -> None:
     assert "<constitution>" in messages[0]["content"]
     assert "<mode_constraints>" in messages[0]["content"]
     assert "synthetic current letter" not in messages[0]["content"]
+
+
+def test_letter_adapter_uses_explicit_conversation_memory_port() -> None:
+    conversation_memory = ExplicitConversationMemory()
+    archive_memory = NullMemoryPort()
+
+    adapter = LetterAdapter(
+        _config(),
+        memory_port=archive_memory,
+        conversation_memory=conversation_memory,
+        now=lambda: NOW,
+    )
+
+    assert adapter.memory_port is archive_memory
+    assert adapter.memory_prompt_builder.conversation_memory is conversation_memory
+
+
+def test_disabled_conversation_port_preserves_sqlite_canonical_write(
+    tmp_path: Path,
+) -> None:
+    with LocalMemoryAdapter(tmp_path / "memory.sqlite3") as archive_memory:
+        adapter = LetterAdapter(
+            _config(),
+            memory_port=archive_memory,
+            conversation_memory=NullConversationMemoryPort(),
+            now=lambda: NOW,
+        )
+
+        adapter.remember_conversation("synthetic user letter", "synthetic canonical reply")
+
+        records = archive_memory.search(
+            "synthetic",
+            domains=(CONVERSATION_MEMORY,),
+        )
+        assert sorted(record.text for record in records) == [
+            "Assistant completed a reply: synthetic canonical reply",
+            "User sent a new letter: synthetic user letter",
+        ]
 
 
 def test_private_world_projection_enters_only_as_bounded_character_input() -> None:

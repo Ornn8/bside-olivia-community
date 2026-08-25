@@ -16,6 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _assert_memory_outbox_runtime_schema(payload: dict[str, object]) -> None:
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((ROOT / "contracts" / "memory_outbox_runtime.schema.json").read_text(encoding="utf-8"))
+    assert not list(Draft202012Validator(schema).iter_errors(payload))
+
+
 @pytest.fixture(autouse=True)
 def reset_local_store():
     import local_server
@@ -57,6 +64,218 @@ def test_invalid_health_profile_is_a_stable_client_error() -> None:
         "message": "INVALID_PROFILE",
         "data": {"status": "FAILED", "error_code": "INVALID_PROFILE"},
     }
+
+
+def test_sqlite_memory_health_is_json_serializable_and_keeps_domain_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import NullConversationMemoryPort
+
+    class SQLiteArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": True,
+                "network_called": False,
+            }
+
+    monkeypatch.setattr(local_server, "memory_adapter", SQLiteArchive())
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        NullConversationMemoryPort(),
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    json.dumps(result)
+    memory = result["data"]["providers"]["memory"]
+    assert memory["conversation"] == {
+        "status": "available",
+        "enabled": True,
+        "provider": "sqlite",
+        "storage": "sqlite",
+        "conversation_enabled": True,
+        "network_called": False,
+    }
+    assert result["data"]["capabilities"]["memory.legacy"]["status"] == "available"
+    assert result["data"]["capabilities"]["memory.conversation"]["status"] == "available"
+
+
+def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import UnavailableConversationMemoryPort
+
+    class ReadOnlyArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": False,
+                "network_called": False,
+            }
+
+    monkeypatch.setattr(local_server, "memory_adapter", ReadOnlyArchive())
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED"),
+    )
+
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+
+    assert result["data"]["status"] == "UNAVAILABLE"
+    assert result["data"]["capabilities"]["memory.legacy"]["status"] == "available"
+    conversation = result["data"]["capabilities"]["memory.conversation"]
+    assert conversation["status"] == "unavailable"
+    assert conversation["provider"] == "none"
+
+
+def test_memory_health_reflects_degraded_canonical_delivery_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+
+    class ReadOnlyArchive:
+        def status(self):
+            return {
+                "status": "available",
+                "enabled": True,
+                "provider": "sqlite",
+                "storage": "sqlite",
+                "conversation_enabled": False,
+                "network_called": False,
+            }
+
+    class AvailableMem0:
+        def status(self):
+            return ConversationMemoryStatus(
+                "available",
+                True,
+                "mem0",
+                "qdrant-local",
+                memory_count=0,
+            )
+
+    monkeypatch.setattr(local_server, "memory_adapter", ReadOnlyArchive())
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", AvailableMem0())
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {
+            "status": "available",
+            "enabled": True,
+            "provider": "mem0-outbox",
+            "worker_running": True,
+        },
+    )
+    for runtime, expected, provider, probe in (
+        (
+            ConversationMemoryRuntimeStatus(
+                "degraded", True, "mem0-outbox", False,
+                reason_code="MEMORY_OUTBOX_DELIVERY_FAILED",
+                pending_count=1,
+                attempt_count=1,
+            ),
+            "degraded",
+            "mem0",
+            "in-process",
+        ),
+        (
+            ConversationMemoryRuntimeStatus(
+                "unavailable", True, "mem0-outbox", True,
+                reason_code="MEMORY_OUTBOX_STORAGE_UNAVAILABLE",
+            ),
+            "unavailable",
+            "none",
+            "not-run",
+        ),
+    ):
+        monkeypatch.setattr(local_server, "conversation_memory_runtime_status", lambda: runtime, raising=False)
+        result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+        conversation = result["data"]["providers"]["memory"]["conversation"]
+        assert result["data"]["status"] == "UNAVAILABLE"
+        assert conversation["status"] == expected
+        _assert_memory_outbox_runtime_schema(conversation["runtime"])
+        capability = result["data"]["capabilities"]["memory.conversation"]
+        assert capability["status"] == expected
+        assert capability["provider"] == provider
+        assert capability["probe"] == probe
+
+
+def test_public_memory_outbox_runtime_schema_matches_every_emitted_state() -> None:
+    from jsonschema import Draft202012Validator
+    schema = json.loads(
+        (ROOT / "contracts" / "memory_outbox_runtime.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator = Draft202012Validator(schema)
+    base = {"terminal_count": 0, "pending_count": 0, "attempt_count": 0}
+    valid = [
+        {**base, "status": "disabled", "enabled": False, "provider": "none", "worker_running": False},
+        {**base, "status": "disabled", "enabled": False, "provider": "mem0-outbox", "worker_running": False},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0", "worker_running": False, "reason_code": "MEM0_INITIALIZATION_FAILED"},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0-outbox", "worker_running": False, "reason_code": "MEMORY_OUTBOX_INITIALIZATION_FAILED"},
+        {**base, "status": "unavailable", "enabled": False, "provider": "none", "worker_running": False, "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE"},
+        {**base, "status": "unavailable", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0", "worker_running": False, "reason_code": "MEMORY_OUTBOX_DATA_ROOT_NOT_CONFIGURED"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0-outbox", "worker_running": False, "reason_code": "MEMORY_OUTBOX_WORKER_NOT_RUNNING"},
+        {**base, "status": "degraded", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEMORY_OUTBOX_DELIVERY_FAILED"},
+        {**base, "status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+    ]
+    for payload in valid:
+        assert list(validator.iter_errors(payload)) == []
+    contradictory = [
+        {**base, "status": "available", "enabled": False, "provider": "none", "worker_running": False},
+        {**base, "status": "disabled", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+        {**base, "status": "unavailable", "enabled": False, "provider": "mem0", "worker_running": False},
+        {**base, "status": "degraded", "enabled": True, "provider": "none", "worker_running": False, "reason_code": "MEM0_WRITE_FAILED"},
+        {**base, "status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True, "reason_code": "MEM0_WRITE_FAILED"},
+        {**valid[3], "data_root": "must-not-be-public"},
+        {**valid[3], "reason_code": "private config value"},
+    ]
+    for payload in contradictory:
+        assert list(validator.iter_errors(payload))
+
+
+def test_memory_health_uses_public_runtime_unavailable_reason_without_config_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+    class AvailableMem0:
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", AvailableMem0())
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {"status": "available", "enabled": True, "provider": "mem0-outbox", "worker_running": True},
+    )
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_runtime_status",
+        lambda: ConversationMemoryRuntimeStatus("disabled", False, "none", False),
+    )
+    result = asyncio.run(local_server.route("GET", "/health", {}, {"profile": "memory"}))
+    runtime = result["data"]["providers"]["memory"]["conversation"]["runtime"]
+    assert runtime["status"] == "unavailable"
+    assert runtime["reason_code"] == "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE"
+    _assert_memory_outbox_runtime_schema(runtime)
+    assert "root" not in json.dumps(runtime).casefold()
+    assert "key" not in json.dumps(runtime).casefold()
 
 
 def test_empty_letter_and_music_paths_are_explicitly_empty() -> None:
@@ -721,6 +940,59 @@ def test_legacy_import_validation_and_storage_errors_do_not_echo_request_values(
     serialized = json.dumps(unavailable)
     assert private_body not in serialized
     assert credential_marker not in serialized
+
+
+def test_mem0_mode_can_incrementally_import_archive_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+    from local_memory import LocalMemoryAdapter, MemoryConfig, create_memory_adapter
+    from memory_port import LegacyLetter
+
+    memory_root = tmp_path / "memory"
+    with LocalMemoryAdapter(
+        memory_root / "memory.sqlite3",
+        conversation_enabled=False,
+    ) as initial_archive:
+        initial_archive.import_legacy_records(
+            [LegacyLetter("first archived letter", "archive-1", "synthetic")]
+        )
+    restarted_archive = create_memory_adapter(
+        MemoryConfig(
+            enabled=False,
+            provider="sqlite",
+            data_root=memory_root,
+        )
+    )
+    monkeypatch.setattr(local_server, "memory_adapter", restarted_archive)
+    monkeypatch.setenv("OLIVIA_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("OLIVIA_MEMORY_PROVIDER", "mem0")
+    monkeypatch.setenv("OLIVIA_MEMORY_ROOT", str(memory_root))
+
+    result = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/import",
+            {
+                "mode": "read_only",
+                "letters": [
+                    {
+                        "source_record_id": "archive-2",
+                        "source": "synthetic",
+                        "content": "second archived letter",
+                    }
+                ],
+            },
+            {},
+        )
+    )
+
+    assert result["code"] == 0
+    assert result["data"]["inserted"] == 1
+    assert sorted(
+        record["source_record_id"] for record in local_server.memory_adapter.list_legacy()
+    ) == ["archive-1", "archive-2"]
 
 
 def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:

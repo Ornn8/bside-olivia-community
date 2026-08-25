@@ -154,6 +154,26 @@ def test_unavailable_delivery_remains_pending_and_retries_to_success(tmp_path: P
     asyncio.run(scenario())
 
 
+def test_skipped_delivery_is_terminal_and_never_retried(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        _state(tmp_path / "state.json")
+        committer = SequencedCommitter([CanonicalMemoryDeliveryStatus.SKIPPED])
+        outbox = _outbox(tmp_path, committer)
+
+        first = await outbox.scan_once()
+        second = await outbox.scan_once()
+
+        assert first.status == "available"
+        assert first.ignored == 1
+        assert first.pending == 0
+        assert second.duplicates == 1
+        assert len(committer.calls) == 1
+        assert outbox.health()["terminal_count"] == 1
+        assert outbox.health()["pending_count"] == 0
+
+    asyncio.run(scenario())
+
+
 def test_new_canonical_revision_creates_a_new_delivery_identity(tmp_path: Path) -> None:
     async def scenario() -> None:
         state = tmp_path / "state.json"

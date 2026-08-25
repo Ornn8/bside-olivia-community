@@ -328,13 +328,14 @@ class NullConversationMemoryPort:
 class UnavailableConversationMemoryPort(NullConversationMemoryPort):
     enabled = False
 
-    def __init__(self, reason_code: str) -> None:
+    def __init__(self, reason_code: str, *, config: object | None = None) -> None:
         if not isinstance(reason_code, str) or not re.fullmatch(
             r"^[A-Z][A-Z0-9_]{0,95}$",
             reason_code,
         ):
             raise ConversationMemoryError("reason_code is invalid")
         self.reason_code = reason_code
+        self.config = config
 
     def remember_exchange(
         self,

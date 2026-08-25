@@ -75,6 +75,10 @@ class Mem0Config:
     config_error: str | None = None
     write_timeout_seconds: float = 30.0
     search_timeout_seconds: float = 8.0
+    # App-runtime controls appended after the legacy configuration slots.
+    outbox_data_root: Path | None = None
+    outbox_enabled: bool = True
+    outbox_interval_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -83,6 +87,11 @@ class Mem0Config:
         if str(root) in {"", "."}:
             raise ValueError("an explicit data root is required")
         object.__setattr__(self, "data_root", root)
+        if self.outbox_data_root is not None:
+            outbox_root = Path(self.outbox_data_root)
+            if not outbox_root.is_absolute():
+                raise ValueError("outbox_data_root must be absolute")
+            object.__setattr__(self, "outbox_data_root", outbox_root)
         for value, field_name in (
             (self.user_id, "user_id"),
             (self.agent_id, "agent_id"),
@@ -117,6 +126,19 @@ class Mem0Config:
             ):
                 raise ValueError(f"{field_name} is invalid")
             object.__setattr__(self, field_name, float(value))
+        if type(self.outbox_enabled) is not bool:
+            raise ValueError("outbox_enabled is invalid")
+        if (
+            isinstance(self.outbox_interval_seconds, bool)
+            or not isinstance(self.outbox_interval_seconds, Real)
+            or not 0.1 <= float(self.outbox_interval_seconds) <= 3600
+        ):
+            raise ValueError("outbox_interval_seconds is invalid")
+        object.__setattr__(
+            self,
+            "outbox_interval_seconds",
+            float(self.outbox_interval_seconds),
+        )
         if self.config_error is not None and not re.fullmatch(
             r"^[A-Z][A-Z0-9_]{0,95}$", self.config_error
         ):
@@ -195,14 +217,14 @@ def _integer(value: object, default: int) -> int:
         return default
 
 
-def _duration(value: object, default: float) -> float:
+def _duration(value: object, default: float, *, maximum: float = 300.0) -> float:
     if isinstance(value, bool):
         return default
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return default
-    return parsed if 0.1 <= parsed <= 300 else default
+    return parsed if 0.1 <= parsed <= maximum else default
 
 
 def load_mem0_config(
@@ -220,6 +242,12 @@ def load_mem0_config(
     )
     if not data_root.is_absolute():
         data_root = root / data_root
+    error: str | None = None
+    outbox_value = environment.get("OLIVIA_MEMORY_OUTBOX_DATA_ROOT", "").strip()
+    outbox_data_root = Path(outbox_value).expanduser() if outbox_value else None
+    if outbox_data_root is not None and not outbox_data_root.is_absolute():
+        error = "MEM0_OUTBOX_DATA_ROOT_INVALID"
+        outbox_data_root = None
     cache_value = environment.get("OLIVIA_MEMORY_EMBEDDING_CACHE", "").strip()
     embedding_cache = Path(cache_value).expanduser() if cache_value else None
     if embedding_cache is not None and not embedding_cache.is_absolute():
@@ -238,7 +266,6 @@ def load_mem0_config(
         "OLIVIA_MEMORY_LLM_API_KEY_ENV",
         environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
     ).strip()
-    error: str | None = None
     if enabled and (not llm_base_url or not llm_model):
         error = "MEM0_LLM_CONFIG_INCOMPLETE"
 
@@ -255,6 +282,11 @@ def load_mem0_config(
     )
     search_timeout = _duration(
         environment.get("OLIVIA_MEMORY_SEARCH_TIMEOUT_SECONDS"), 8.0
+    )
+    outbox_interval = _duration(
+        environment.get("OLIVIA_MEMORY_OUTBOX_INTERVAL_SECONDS"),
+        5.0,
+        maximum=3600.0,
     )
 
     return Mem0Config(
@@ -281,6 +313,9 @@ def load_mem0_config(
         write_timeout_seconds=write_timeout,
         search_timeout_seconds=search_timeout,
         config_error=error,
+        outbox_data_root=outbox_data_root,
+        outbox_enabled=_bool(environment.get("OLIVIA_MEMORY_OUTBOX_ENABLED"), True),
+        outbox_interval_seconds=outbox_interval,
     )
 
 
@@ -890,7 +925,7 @@ def create_mem0_adapter(
 ) -> ConversationMemoryPort:
     active = config or load_mem0_config(environ=environ)
     if active.config_error:
-        return UnavailableConversationMemoryPort(active.config_error)
+        return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled:
         return NullConversationMemoryPort()
     try:
@@ -900,9 +935,11 @@ def create_mem0_adapter(
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
     except (ModuleNotFoundError, ImportError):
-        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
+        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError):
-        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
+        return UnavailableConversationMemoryPort(
+            "MEM0_INITIALIZATION_FAILED", config=active
+        )
 
 
 __all__ = [

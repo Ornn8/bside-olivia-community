@@ -101,12 +101,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-contracts = [
-    "music_fixture.json",
-    "reply_review.schema.json",
-    "persona_v2.schema.json",
-    "persona_v2_provenance.schema.json",
-]
+contracts = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
 linli_character = [
     "persona_release_v2.json",
