@@ -26,5 +26,32 @@ counts, IDs, status, scores, and stable error codes; it excludes corpus text,
 generated replies, reference text, exception messages, secrets, and absolute
 paths.
 
-This narrow slice does not run the 19-prefix series, contact a real provider,
-or enable PrivateWorld state changes.
+`run_case01` does not run the 19-prefix series, contact a real provider, or
+enable PrivateWorld state changes.
+
+## Prefix19 runner
+
+`memory_isolation_case01.run_prefix19` is the corresponding public runner for
+case01 through case19. It accepts the same caller-owned callbacks
+and requires exactly 60 train and 19 test items, sorted by the manifest's
+`split_sequence`, `source_date`, and `source_order` fields. It derives fresh
+namespaces as `<namespace>:case01` through `<namespace>:case19`; every case
+rebuilds the 60 train originals and then ingests only its test-original prefix.
+
+It calls the generator once for the current prefix item, with only
+`persona_authority`, selected evidence, and that original. Generated replies
+are never ingested. Blind persona evaluation occurs before reference handling.
+Only text references are opened for the reference evaluator; video references
+are reported as `not_evaluated_media` and are never opened or uploaded.
+
+The same report schema accepts the completed 19-case aggregate. Its per-case
+records are limited to IDs, namespace, counts, statuses, finite scores, hard
+violation counts, and reference status. Synthetic fixtures use
+`synthetic_validation`; a caller-owned, Git-ignored real run must use
+`private_local_validation`. Both keep `private_world_arm=fixed_disabled`.
+
+Persona metrics are limited to the eight declared authority axes; held-out
+comparison is limited to `style_score` and `focus_score`. Unknown metric names
+are rejected so callback-controlled text cannot become a report key. A failed
+run writes only its redacted `failed_case`, rather than a partial case array
+whose count could disagree with its contents.
