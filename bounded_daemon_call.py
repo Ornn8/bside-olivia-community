@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import math
+from numbers import Real
 import threading
 import time
 from typing import Callable
+
+
+def validate_timeout_seconds(value: object) -> float:
+    """Return a finite provider timeout within the shared lifecycle bound."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(value)
+        or not 0 < value <= 300
+    ):
+        raise ValueError("timeout_seconds is invalid")
+    return float(value)
 
 
 class BoundedDaemonCall:
@@ -29,6 +43,7 @@ class BoundedDaemonCall:
         *,
         timeout_seconds: float,
     ) -> tuple[str, object | None]:
+        timeout_seconds = validate_timeout_seconds(timeout_seconds)
         pending = self._start(operation)
         if pending is None:
             return "inflight", None
@@ -41,6 +56,7 @@ class BoundedDaemonCall:
         *,
         timeout_seconds: float,
     ) -> tuple[str, object | None]:
+        timeout_seconds = validate_timeout_seconds(timeout_seconds)
         pending = self._start(operation)
         if pending is None:
             return "inflight", None

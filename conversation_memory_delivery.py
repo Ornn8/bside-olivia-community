@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 import re
 
-from bounded_daemon_call import BoundedDaemonCall
+from bounded_daemon_call import BoundedDaemonCall, validate_timeout_seconds
 from conversation_memory_port import (
     ConversationMemoryPort,
     MemoryWriteResult,
@@ -129,10 +129,8 @@ class ConversationMemoryDeliveryCommitter:
         *,
         timeout_seconds: float = 30.0,
     ) -> None:
-        if timeout_seconds <= 0 or timeout_seconds > 300:
-            raise ValueError("memory delivery timeout is invalid")
         self.memory = memory
-        self.timeout_seconds = float(timeout_seconds)
+        self.timeout_seconds = validate_timeout_seconds(timeout_seconds)
         self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
 
     async def commit(

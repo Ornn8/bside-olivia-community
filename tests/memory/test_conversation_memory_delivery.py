@@ -291,14 +291,17 @@ def test_delivery_contract_rejects_invalid_or_ambiguous_inputs(
         _delivery(**changes)
 
 
-def test_committer_requires_typed_delivery_and_bounded_timeout() -> None:
+@pytest.mark.parametrize(
+    "timeout_seconds", [0, 301, True, "0.1", float("nan"), float("inf"), -float("inf")]
+)
+def test_committer_requires_typed_delivery_and_bounded_timeout(
+    timeout_seconds: object,
+) -> None:
     memory = FakeMemory()
-    with pytest.raises(ValueError):
-        ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0)
-    with pytest.raises(ValueError):
-        ConversationMemoryDeliveryCommitter(memory, timeout_seconds=301)
 
     async def scenario() -> None:
+        with pytest.raises(ValueError):
+            ConversationMemoryDeliveryCommitter(memory, timeout_seconds=timeout_seconds)  # type: ignore[arg-type]
         with pytest.raises(TypeError):
             await ConversationMemoryDeliveryCommitter(memory).commit(object())  # type: ignore[arg-type]
 
