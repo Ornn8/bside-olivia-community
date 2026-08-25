@@ -6,17 +6,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "status",
-        "error_code",
-        "case_id",
-        "prefix_case",
-        "validation_mode",
-        "namespace",
-        "train_original_count",
-        "test_original_count",
-        "private_world_arm",
-        "selected_evidence_count",
-        "persona_evaluation",
+        "status", "error_code", "case_id", "prefix_case", "validation_mode",
+        "namespace", "train_original_count", "test_original_count",
+        "private_world_arm", "selected_evidence_count", "persona_evaluation",
         "reference_evaluation"
       ],
       "properties": {
@@ -30,46 +22,22 @@
         "test_original_count": {"const": 1},
         "private_world_arm": {"const": "fixed_disabled"},
         "selected_evidence_count": {"type": "integer", "minimum": 0},
-        "persona_evaluation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["score", "hard_violation_count", "metrics"],
-          "properties": {
-            "score": {"type": "number"},
-            "hard_violation_count": {"type": "integer", "minimum": 0},
-            "metrics": {
-              "type": "object",
-              "additionalProperties": {"type": "number"}
-            }
-          }
-        },
-        "reference_evaluation": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": {"type": "number"}
-        }
+        "persona_evaluation": {"$ref": "#/$defs/persona_evaluation"},
+        "reference_evaluation": {"$ref": "#/$defs/reference_evaluation"}
       }
     },
     {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "status",
-        "error_code",
-        "case_id",
-        "prefix_case",
-        "validation_mode",
-        "namespace",
-        "train_original_count",
-        "test_original_count",
-        "private_world_arm"
+        "status", "error_code", "case_id", "prefix_case", "validation_mode",
+        "namespace", "train_original_count", "test_original_count", "private_world_arm"
       ],
       "properties": {
         "status": {"const": "unavailable"},
         "error_code": {
           "enum": [
-            "CASE01_MEMORY_UNAVAILABLE",
-            "CASE01_GENERATOR_UNAVAILABLE",
+            "CASE01_MEMORY_UNAVAILABLE", "CASE01_GENERATOR_UNAVAILABLE",
             "CASE01_PERSONA_EVALUATION_UNAVAILABLE",
             "CASE01_REFERENCE_EVALUATION_UNAVAILABLE"
           ]
@@ -82,6 +50,152 @@
         "test_original_count": {"const": 1},
         "private_world_arm": {"const": "fixed_disabled"}
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "error_code", "validation_mode", "private_world_arm",
+        "completed_case_count", "cases"
+      ],
+      "properties": {
+        "status": {"const": "completed"},
+        "error_code": {"type": "null"},
+        "validation_mode": {"enum": ["synthetic_validation", "private_local_validation"]},
+        "private_world_arm": {"const": "fixed_disabled"},
+        "completed_case_count": {"const": 19},
+        "cases": {
+          "type": "array",
+          "minItems": 19,
+          "maxItems": 19,
+          "prefixItems": [
+            {"$ref": "#/$defs/case01"}, {"$ref": "#/$defs/case02"},
+            {"$ref": "#/$defs/case03"}, {"$ref": "#/$defs/case04"},
+            {"$ref": "#/$defs/case05"}, {"$ref": "#/$defs/case06"},
+            {"$ref": "#/$defs/case07"}, {"$ref": "#/$defs/case08"},
+            {"$ref": "#/$defs/case09"}, {"$ref": "#/$defs/case10"},
+            {"$ref": "#/$defs/case11"}, {"$ref": "#/$defs/case12"},
+            {"$ref": "#/$defs/case13"}, {"$ref": "#/$defs/case14"},
+            {"$ref": "#/$defs/case15"}, {"$ref": "#/$defs/case16"},
+            {"$ref": "#/$defs/case17"}, {"$ref": "#/$defs/case18"},
+            {"$ref": "#/$defs/case19"}
+          ],
+          "items": false
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "validation_mode", "private_world_arm", "failed_case"],
+      "properties": {
+        "status": {"const": "unavailable"},
+        "validation_mode": {"enum": ["synthetic_validation", "private_local_validation"]},
+        "private_world_arm": {"const": "fixed_disabled"},
+        "failed_case": {"$ref": "#/$defs/failed_prefix_case"}
+      }
     }
-  ]
+  ],
+  "$defs": {
+    "persona_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "hard_violation_count", "metrics"],
+      "properties": {
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "hard_violation_count": {"type": "integer", "minimum": 0},
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "identity": {"type": "number", "minimum": 0, "maximum": 1},
+            "tone": {"type": "number", "minimum": 0, "maximum": 1},
+            "reply_rhythm": {"type": "number", "minimum": 0, "maximum": 1},
+            "boundaries": {"type": "number", "minimum": 0, "maximum": 1},
+            "continuity": {"type": "number", "minimum": 0, "maximum": 1},
+            "non_overintimacy": {"type": "number", "minimum": 0, "maximum": 1},
+            "no_invention": {"type": "number", "minimum": 0, "maximum": 1},
+            "style_stability": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
+      }
+    },
+    "reference_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "style_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "focus_score": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "completed_prefix_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "error_code", "case_id", "prefix_case",
+        "namespace", "train_original_count", "test_original_count", "private_world_arm",
+        "selected_evidence_count", "persona_evaluation", "reference_status"
+      ],
+      "properties": {
+        "status": {"const": "completed"},
+        "error_code": {"type": "null"},
+        "case_id": {"type": "string"},
+        "prefix_case": {"type": "string", "pattern": "^case(?:0[1-9]|1[0-9])$"},
+        "namespace": {"type": "string"},
+        "train_original_count": {"const": 60},
+        "test_original_count": {"type": "integer", "minimum": 1, "maximum": 19},
+        "private_world_arm": {"const": "fixed_disabled"},
+        "selected_evidence_count": {"type": "integer", "minimum": 0},
+        "persona_evaluation": {"$ref": "#/$defs/persona_evaluation"},
+        "reference_status": {"enum": ["evaluated_text", "not_evaluated_media"]},
+        "reference_evaluation": {"$ref": "#/$defs/reference_evaluation"}
+      },
+      "oneOf": [
+        {"required": ["reference_evaluation"], "properties": {"reference_status": {"const": "evaluated_text"}}},
+        {"properties": {"reference_status": {"const": "not_evaluated_media"}}, "not": {"required": ["reference_evaluation"]}}
+      ]
+    },
+    "failed_prefix_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "error_code", "case_id", "prefix_case",
+        "namespace", "private_world_arm"
+      ],
+      "properties": {
+        "status": {"const": "unavailable"},
+        "error_code": {
+          "enum": [
+            "PREFIX19_MEMORY_UNAVAILABLE", "PREFIX19_GENERATOR_UNAVAILABLE",
+            "PREFIX19_PERSONA_EVALUATION_UNAVAILABLE",
+            "PREFIX19_REFERENCE_EVALUATION_UNAVAILABLE"
+          ]
+        },
+        "case_id": {"type": "string"},
+        "prefix_case": {"type": "string", "pattern": "^case(?:0[1-9]|1[0-9])$"},
+        "namespace": {"type": "string"},
+        "private_world_arm": {"const": "fixed_disabled"}
+      }
+    },
+    "case01": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case01"}, "test_original_count": {"const": 1}}}]},
+    "case02": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case02"}, "test_original_count": {"const": 2}}}]},
+    "case03": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case03"}, "test_original_count": {"const": 3}}}]},
+    "case04": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case04"}, "test_original_count": {"const": 4}}}]},
+    "case05": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case05"}, "test_original_count": {"const": 5}}}]},
+    "case06": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case06"}, "test_original_count": {"const": 6}}}]},
+    "case07": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case07"}, "test_original_count": {"const": 7}}}]},
+    "case08": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case08"}, "test_original_count": {"const": 8}}}]},
+    "case09": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case09"}, "test_original_count": {"const": 9}}}]},
+    "case10": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case10"}, "test_original_count": {"const": 10}}}]},
+    "case11": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case11"}, "test_original_count": {"const": 11}}}]},
+    "case12": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case12"}, "test_original_count": {"const": 12}}}]},
+    "case13": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case13"}, "test_original_count": {"const": 13}}}]},
+    "case14": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case14"}, "test_original_count": {"const": 14}}}]},
+    "case15": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case15"}, "test_original_count": {"const": 15}}}]},
+    "case16": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case16"}, "test_original_count": {"const": 16}}}]},
+    "case17": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case17"}, "test_original_count": {"const": 17}}}]},
+    "case18": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case18"}, "test_original_count": {"const": 18}}}]},
+    "case19": {"allOf": [{"$ref": "#/$defs/completed_prefix_case"}, {"properties": {"prefix_case": {"const": "case19"}, "test_original_count": {"const": 19}}}]}
+  }
 }
