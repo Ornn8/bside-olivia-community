@@ -15,6 +15,7 @@ from companion_memory_context import CompanionMemoryPromptBuilder
 from conversation_memory_admin import (
     ConversationMemoryAdminError,
     ConversationMemoryAdminService,
+    MEMORY_ADMIN_AUDIT_SCHEMA,
     MemoryAdminMutationStatus,
 )
 from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
@@ -434,6 +435,106 @@ def test_operation_ledger_migrates_legacy_rows_to_default_user_and_isolates_requ
         request_id="memory.pause.shared.1", reason="另一位用户暂停长期记忆。"
     ).status is MemoryAdminMutationStatus.APPLIED
     assert other_user.is_paused() is True
+
+
+@pytest.mark.parametrize("version", (1, 4))
+def test_operation_ledger_migration_rolls_back_copy_fault_and_retries_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: int,
+) -> None:
+    memory = Mem0()
+    audit = tmp_path / "memory_admin_audit.sqlite3"
+    with sqlite3.connect(audit) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE memory_admin_operations (
+                request_id TEXT PRIMARY KEY,
+                operation TEXT NOT NULL,
+                target_memory_id TEXT,
+                replacement_memory_id TEXT,
+                replacement_source_id TEXT,
+                status TEXT NOT NULL,
+                affected_count INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO memory_admin_operations VALUES (
+                'memory.pause.migration.1', 'pause', NULL, NULL, NULL,
+                'completed', 0, 'legacy local operation',
+                '2026-08-26T00:00:00+00:00', '2026-08-26T00:00:00+00:00'
+            );
+            """
+        )
+        if version == 4:
+            connection.execute(
+                """
+                CREATE TABLE memory_admin_pause_windows (
+                    user_id TEXT NOT NULL,
+                    pause_request_id TEXT NOT NULL,
+                    resume_request_id TEXT,
+                    started_at TEXT NOT NULL,
+                    resumed_at TEXT,
+                    PRIMARY KEY (user_id, pause_request_id),
+                    UNIQUE (user_id, resume_request_id)
+                )
+                """
+            )
+        connection.execute(f"PRAGMA user_version={version}")
+
+    original_connect = ConversationMemoryAdminService._connect
+    faulted = False
+
+    class CopyFaultConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, statement: str, parameters=()):
+            nonlocal faulted
+            if not faulted and statement.lstrip().startswith("INSERT INTO memory_admin_operations"):
+                faulted = True
+                raise sqlite3.OperationalError("synthetic migration copy fault")
+            return self.connection.execute(statement, parameters)
+
+        def __getattr__(self, name: str):
+            return getattr(self.connection, name)
+
+    def failing_connect(service: ConversationMemoryAdminService):
+        return CopyFaultConnection(original_connect(service))
+
+    monkeypatch.setattr(ConversationMemoryAdminService, "_connect", failing_connect)
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_INITIALIZATION_FAILED"):
+        ConversationMemoryAdminService(memory, audit)
+    monkeypatch.setattr(ConversationMemoryAdminService, "_connect", original_connect)
+
+    with sqlite3.connect(audit) as connection:
+        names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "memory_admin_operations" in names
+        assert "memory_admin_operations_legacy" not in names
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == version
+        assert connection.execute(
+            "SELECT request_id FROM memory_admin_operations"
+        ).fetchone()[0] == "memory.pause.migration.1"
+
+    restarted = ConversationMemoryAdminService(memory, audit)
+    assert restarted.pause(
+        request_id="memory.pause.migration.1", reason="重试旧本地请求。"
+    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with sqlite3.connect(audit) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == MEMORY_ADMIN_AUDIT_SCHEMA
 
 
 def test_pause_waits_for_a_provider_write_already_past_the_final_gate(tmp_path: Path) -> None:

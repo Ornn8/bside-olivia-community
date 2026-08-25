@@ -39,6 +39,9 @@ with that same identity is `DUPLICATE` after restart, while reusing that ID for
 the other lifecycle operation is a `MEMORY_ADMIN_REQUEST_CONFLICT`. The
 deterministic audit-schema upgrade assigns pre-user-scope rows to the existing
 default local user (`local-user`), rather than inferring any private identity.
+That upgrade atomically renames, recreates, copies, drops, and versions the
+ledger; an interrupted upgrade leaves the prior schema retryable. Status audit
+and pending-correction counts use the same normalized user scope.
 
 If lifecycle audit initialization or schema validation is unavailable,
 retrieval and delivery fail closed with the stable public reason code
