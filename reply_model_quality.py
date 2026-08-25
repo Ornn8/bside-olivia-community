@@ -122,6 +122,7 @@ _LAYER_SPECS = {
         ),
     },
 }
+_MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
 _HEADLINE = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _REVIEW_FACETS = frozenset(
     {
@@ -184,17 +185,20 @@ class GatewayReviewTransport:
             request,
             "current.user_excerpt",
         )
-        memory_evidence = json.dumps(
-            {
-                "assembled_memory": _reference_text(
-                    request,
-                    "current.memory_evidence",
-                ),
-                "world_facts": request.get("world_facts", []),
-                "known_continuations": request.get("known_continuations", []),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
+        memory_evidence = _safe_text(
+            json.dumps(
+                {
+                    "assembled_memory": _reference_text(
+                        request,
+                        "current.memory_evidence",
+                    ),
+                    "world_facts": request.get("world_facts", []),
+                    "known_continuations": request.get("known_continuations", []),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            2400,
         )
         results = _complete_layer_reviews(
             self.gateway,
@@ -560,14 +564,16 @@ def _layer_messages(
         f"GLOBAL_AUTHORITY:\n{layer.global_authority}\n"
         f"LAYER_AUTHORITY:\n{layer.layer_authority}"
     )
+    payload = {
+        "layer": layer.name,
+        "mode": mode,
+        "current_user_input": current_user_input,
+        "candidate_reply": candidate,
+    }
+    if layer.name in _MEMORY_EVIDENCE_LAYERS:
+        payload["memory_evidence"] = memory_evidence
     user = json.dumps(
-        {
-            "layer": layer.name,
-            "mode": mode,
-            "current_user_input": current_user_input,
-            "memory_evidence": memory_evidence,
-            "candidate_reply": candidate,
-        },
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
     )

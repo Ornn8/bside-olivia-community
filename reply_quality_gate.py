@@ -8,7 +8,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from reply_context import ReplyContext
 from reply_policy import scan_reply
-from reply_reviewer import ReviewResult, ReviewVerdict
+from reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 
 class QualityGateStatus(StrEnum):
@@ -67,7 +67,11 @@ def run_reply_quality_gate(
     review_codes = tuple(item.code for item in review.violations)
     if deterministic.passed and review.verdict is ReviewVerdict.UNAVAILABLE:
         return QualityGateResult(
-            QualityGateStatus.ACCEPTED_DEGRADED,
+            (
+                QualityGateStatus.ACCEPTED_DEGRADED
+                if review.status is ReviewStatus.DISABLED
+                else QualityGateStatus.BLOCKED
+            ),
             candidate,
             deterministic_codes,
             deterministic_checks=1,
@@ -136,7 +140,11 @@ def run_reply_quality_gate(
     ):
         status = QualityGateStatus.BLOCKED
     elif final_review.verdict is ReviewVerdict.UNAVAILABLE:
-        status = QualityGateStatus.ACCEPTED_DEGRADED
+        status = (
+            QualityGateStatus.ACCEPTED_DEGRADED
+            if final_review.status is ReviewStatus.DISABLED
+            else QualityGateStatus.BLOCKED
+        )
     elif final_review.verdict is ReviewVerdict.REWRITE:
         has_hard_review = any(
             item.severity == "hard" for item in final_review.violations

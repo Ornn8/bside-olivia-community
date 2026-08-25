@@ -12,7 +12,14 @@ import pytest
 from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
-from reply_context import ReplyContext, ReplyMode, TrustedTime
+from reply_context import (
+    KnownContinuationFact,
+    PrivateBehaviorView,
+    ReplyContext,
+    ReplyMode,
+    TrustedTime,
+    TrustedWorldFact,
+)
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from reply_pipeline import ReplyPipeline, UnavailableRewriter
 from reply_model_quality import (
@@ -273,6 +280,11 @@ def test_continuity_layer_receives_assembled_memory_evidence(
         if request["layer"] == "continuity_memory"
     )
     assert "用户目前在东京工作" in continuity["memory_evidence"]
+    assert all(
+        "memory_evidence" not in request
+        for request in gateway.review_requests
+        if request["layer"] != "continuity_memory"
+    )
 
 
 def test_layered_review_keeps_the_emotional_core_at_the_end_of_a_long_letter(
@@ -358,7 +370,7 @@ def test_non_voice_layer_mismatch_uses_only_existing_one_rewrite_budget(
 
 def test_five_layer_requests_fit_default_gateway_input_budget() -> None:
     gateway = SequencedQualityGateway(
-        candidate="候" * 1200,
+        candidate="候" * 12000,
         reviews=_passing_layer_payloads(),
     )
     reviewer = GatewayPersonaReviewer(
@@ -367,26 +379,47 @@ def test_five_layer_requests_fit_default_gateway_input_budget() -> None:
         2.0,
     )
     memory = json.dumps(
-        {"untrusted": True, "text": "忆" * 600},
+        {"untrusted": True, "text": "忆" * 2400},
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        world_facts=tuple(
+            TrustedWorldFact(
+                f"world-{index}",
+                "synthetic-test",
+                "界" * 600,
+            )
+            for index in range(32)
+        ),
+        private_behavior=PrivateBehaviorView(
+            known_continuations=tuple(
+                KnownContinuationFact(
+                    f"continuation-{index}",
+                    "续" * 600,
+                )
+                for index in range(32)
+            )
+        ),
+    )
 
     result = reviewer.review_with_messages(
-        "候" * 1200,
-        _context(),
+        "候" * 12000,
+        context,
         (
             {
                 "role": "system",
                 "content": f"<untrusted_history>\n{memory}\n</untrusted_history>\n",
             },
-            {"role": "user", "content": "问" * 600},
+            {"role": "user", "content": "问" * 1200},
         ),
     )
 
     assert result.verdict.value == "pass"
     assert len(gateway.review_input_sizes) == 5
-    assert max(gateway.review_input_sizes) <= 10000
+    assert max(gateway.review_input_sizes) <= 30000
 
 
 def test_deterministic_violation_uses_original_model_for_one_rewrite(
@@ -468,7 +501,7 @@ def test_quality_rewriter_uses_configured_streaming_transport() -> None:
     assert rewritten == "林" * 190
 
 
-def test_invalid_reviewer_json_degrades_only_clean_candidate(
+def test_invalid_enabled_reviewer_json_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = SequencedQualityGateway(
@@ -487,9 +520,9 @@ def test_invalid_reviewer_json_degrades_only_clean_candidate(
         )
     )
 
-    assert result.state is ReplyState.COMPLETED
-    assert result.quality_status == "accepted_degraded"
-    assert result.error_code is None
+    assert result.state is ReplyState.FAILED
+    assert result.quality_status == "blocked"
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
     assert result.reviewer_calls == 1
     assert result.rewrite_calls == 0
     assert gateway.call_kinds == ["generation", *("review",) * 5]

@@ -47,6 +47,16 @@ def _pass_review() -> ReviewResult:
     )
 
 
+def _unavailable_review() -> ReviewResult:
+    return ReviewResult(
+        ReviewStatus.UNAVAILABLE,
+        ReviewVerdict.UNAVAILABLE,
+        (),
+        ReviewerScores(0, 0, 0, 0),
+        "REVIEWER_UNAVAILABLE",
+    )
+
+
 def _context() -> ReplyContext:
     return ReplyContext.create(
         ReplyMode.TEXT_LETTER,
@@ -112,6 +122,23 @@ def test_second_hard_result_is_blocked_without_a_hidden_rewrite_loop() -> None:
     assert result.rewrite_calls == 1
     assert result.reviewer_calls == 2
     assert rewriter.calls == 1
+
+
+def test_enabled_reviewer_failure_after_rewrite_is_blocked() -> None:
+    reviewer = _Reviewer(_pass_review(), _unavailable_review())
+
+    result = run_reply_quality_gate(
+        "<CONTROL>first invalid",
+        _context(),
+        reviewer=reviewer,
+        rewriter=_Rewriter("A clean rewritten candidate."),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.accepted is False
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
 
 
 def test_short_video_reply_uses_the_single_global_rewrite_budget() -> None:
