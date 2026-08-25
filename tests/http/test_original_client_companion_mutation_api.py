@@ -12,6 +12,8 @@ from original_client_companion_mutation_api import (
     CompanionMutationResult,
     MEMORY_CORRECT_PATH,
     MEMORY_DELETE_PATH,
+    MEMORY_PAUSE_PATH,
+    MEMORY_RESUME_PATH,
     OriginalClientCompanionMutationError,
     mount_original_client_companion_mutation_api,
 )
@@ -36,6 +38,14 @@ class RecordingBackend:
             status="APPLIED",
             affected_count=1,
         )
+
+    def pause_memory(self, **kwargs) -> CompanionMutationResult:
+        self.calls.append(("pause_memory", kwargs))
+        return CompanionMutationResult(str(kwargs["request_id"]), "APPLIED", 0)
+
+    def resume_memory(self, **kwargs) -> CompanionMutationResult:
+        self.calls.append(("resume_memory", kwargs))
+        return CompanionMutationResult(str(kwargs["request_id"]), "APPLIED", 0)
 
     def decide_candidate(self, **kwargs) -> CompanionMutationResult:
         self.calls.append(("decide_candidate", kwargs))
@@ -141,6 +151,27 @@ def test_candidate_approve_and_reject_preserve_decision_envelope() -> None:
             assert backend.calls[0][1]["decision"] == "approve"
             assert backend.calls[1][1]["decision"] == "reject"
             assert backend.calls[0][1]["decided_at"] == decided_at
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_memory_lifecycle_routes_require_confirmation() -> None:
+    async def scenario() -> None:
+        client, backend, origin = await _client()
+        try:
+            for path, name in (
+                (MEMORY_PAUSE_PATH, "pause_memory"),
+                (MEMORY_RESUME_PATH, "resume_memory"),
+            ):
+                response = await client.post(
+                    path,
+                    json={"request_id": f"request.memory.{name}.1", "reason": "用户明确确认。"},
+                    headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
+                )
+                assert response.status == 200
+            assert [call[0] for call in backend.calls] == ["pause_memory", "resume_memory"]
         finally:
             await client.close()
 

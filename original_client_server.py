@@ -383,14 +383,33 @@ def _configured_memory_admin(
     server_module: ModuleType | Any,
     environ: Mapping[str, str],
 ) -> ConversationMemoryAdminService | None:
-    root = _absolute_data_root(environ)
     builder = getattr(
         getattr(server_module, "letters_adapter", None),
         "memory_prompt_builder",
         None,
     )
     memory = getattr(builder, "conversation_memory", None)
-    if root is None or not isinstance(memory, ConversationMemoryPort):
+    if not isinstance(memory, ConversationMemoryPort):
+        return None
+    root = _absolute_data_root(environ)
+    if root is None:
+        config = getattr(memory, "config", None)
+        configured_root = getattr(config, "outbox_data_root", None)
+        configured_data = getattr(config, "data_root", None)
+        if isinstance(configured_root, Path) and configured_root.is_absolute():
+            root = configured_root
+        elif isinstance(configured_data, Path) and configured_data.is_absolute():
+            memory_root = (
+                configured_data.parent
+                if configured_data.name.casefold() == "mem0"
+                else configured_data
+            )
+            root = (
+                memory_root.parent
+                if memory_root.name.casefold() == "memory"
+                else memory_root
+            )
+    if root is None:
         return None
     user_id = getattr(builder, "conversation_memory_user_id", "local-user")
     try:

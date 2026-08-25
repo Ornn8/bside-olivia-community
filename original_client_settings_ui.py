@@ -18,6 +18,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
+  const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
+  const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const LETTER_CHARACTER_LIMIT = 1200;
@@ -208,7 +210,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         signal: controller.signal,
       });
       const payload = await response.json();
-      if (!response.ok || !payload || payload.status !== "READY") {
+      if (!response.ok || !payload || !["READY", "PAUSED"].includes(payload.status)) {
         throw new Error("unavailable");
       }
       return payload;
@@ -413,9 +415,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
 
     const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+    const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
     const summary = text(
       "p",
-      `状态：${stateLabels[state]}${Number.isInteger(capability.count) ? `，共 ${capability.count} 条` : ""}`,
+      `状态：${paused ? "已暂停（不检索、不写入）" : stateLabels[state]}${Number.isInteger(capability.count) ? `，共 ${capability.count} 条` : ""}`,
       "text-text-secondary text-body-m font-regular"
     );
     const controls = document.createElement("div");
@@ -464,7 +467,39 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
 
-    panel.replaceChildren(heading, summary, controls, resultState, list);
+    const lifecycleControls = actions();
+    const refreshLifecyclePanel = async () => {
+      const payload = await requestJson(STATUS_PATH);
+      const capabilities = payload.capabilities && typeof payload.capabilities === "object"
+        ? payload.capabilities
+        : {};
+      await renderMemoryPanel(panel, capabilities.memory);
+    };
+    const toggle = button(paused ? "恢复长期记忆" : "暂停长期记忆", async () => {
+      const action = paused ? "恢复" : "暂停";
+      if (!window.confirm(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
+        return;
+      }
+      setButtonsBusy([toggle], true);
+      resultState.textContent = `正在${action}长期记忆……`;
+      try {
+        const payload = await requestMutation(
+          paused ? MEMORY_RESUME_PATH : MEMORY_PAUSE_PATH,
+          {
+            request_id: requestId(paused ? "memory.resume" : "memory.pause"),
+            reason: `用户在原版 Olivia 设置中明确${action} Mem0 长期记忆。`,
+          }
+        );
+        resultState.textContent = mutationMessage(payload, `长期记忆已${action}。`);
+        await refreshLifecyclePanel();
+      } catch (_error) {
+        resultState.textContent = `长期记忆${action}失败。`;
+      } finally {
+        setButtonsBusy([toggle], false);
+      }
+    });
+    lifecycleControls.append(toggle);
+    panel.replaceChildren(heading, summary, lifecycleControls, controls, resultState, list);
     await load();
   };
 

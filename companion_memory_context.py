@@ -9,7 +9,7 @@ Archive.  Both domains are rendered by the existing untrusted-data formatter.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from conversation_memory_port import (
     ConversationMemoryPort,
@@ -111,6 +111,10 @@ class _LegacyArchiveView:
         )
 
 
+class ConversationMemoryLifecycle(Protocol):
+    def is_paused(self) -> bool: ...
+
+
 class CompanionMemoryPromptBuilder:
     """Build bounded, visibly untrusted current-memory and Archive sections."""
 
@@ -122,6 +126,7 @@ class CompanionMemoryPromptBuilder:
         user_id: str = "local-user",
         max_results: int = 8,
         current_share: float = 0.6,
+        memory_lifecycle: ConversationMemoryLifecycle | None = None,
     ) -> None:
         if not isinstance(user_id, str) or not user_id.strip():
             raise ValueError("conversation memory user_id is required")
@@ -132,6 +137,7 @@ class CompanionMemoryPromptBuilder:
         self.user_id = user_id.strip()
         self.max_results = max(1, min(32, int(max_results)))
         self.current_share = float(current_share)
+        self.memory_lifecycle = memory_lifecycle
         self._fallback = MemoryPromptBuilder(
             archive_memory,
             max_results=self.max_results,
@@ -156,6 +162,21 @@ class CompanionMemoryPromptBuilder:
                 max_chars=budget,
                 exclude_source_ids=exclude_source_ids,
             )
+
+        if self.memory_lifecycle is not None:
+            try:
+                if self.memory_lifecycle.is_paused():
+                    return self._archive_only(
+                        query,
+                        budget,
+                        exclude_source_ids=exclude_source_ids,
+                    )
+            except Exception:
+                return self._archive_only(
+                    query,
+                    budget,
+                    exclude_source_ids=exclude_source_ids,
+                )
 
         current_budget = max(0, int(budget * self.current_share))
         archive_budget = max(0, budget - current_budget)
@@ -190,6 +211,25 @@ class CompanionMemoryPromptBuilder:
             status=_combined_status(current, archive, has_text=bool(parts)),
             truncated=current.truncated or archive.truncated,
             domains=domains,
+        )
+
+    def _archive_only(
+        self,
+        query: str,
+        budget: int,
+        *,
+        exclude_source_ids: Iterable[str],
+    ) -> MemoryPrompt:
+        return MemoryPromptBuilder(
+            _LegacyArchiveView(self.archive_memory),
+            max_results=self.max_results,
+            legacy_budget=budget,
+            conversation_budget=0,
+            conversation_memory=None,
+        ).build(
+            query,
+            max_chars=budget,
+            exclude_source_ids=exclude_source_ids,
         )
 
 

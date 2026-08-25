@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from aiohttp import web
 
@@ -141,6 +142,29 @@ def test_original_settings_read_contract_returns_bounded_payloads() -> None:
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_paused_memory_is_never_reported_as_ready() -> None:
+    from jsonschema import Draft202012Validator
+
+    payload = CompanionReadStatus(
+        memory=CompanionCapability(
+            "degraded", reason_code="MEMORY_ADMIN_PAUSED", count=2
+        ),
+        private_world=CompanionCapability("available"),
+        candidates=CompanionCapability("available"),
+    ).to_dict()
+
+    assert payload["status"] == "PAUSED"
+    assert payload["capabilities"]["memory"]["reason_code"] == "MEMORY_ADMIN_PAUSED"
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "original_client_memory_lifecycle.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert not list(Draft202012Validator(schema).iter_errors(payload))
 
 
 def test_read_contract_requires_original_or_loopback_origin_and_loopback_host() -> None:

@@ -128,9 +128,11 @@ class ConversationMemoryDeliveryCommitter:
         memory: ConversationMemoryPort,
         *,
         timeout_seconds: float = 30.0,
+        memory_lifecycle: object | None = None,
     ) -> None:
         self.memory = memory
         self.timeout_seconds = validate_timeout_seconds(timeout_seconds)
+        self.memory_lifecycle = memory_lifecycle
         self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
 
     async def commit(
@@ -139,9 +141,37 @@ class ConversationMemoryDeliveryCommitter:
     ) -> CanonicalMemoryDeliveryResult:
         if not isinstance(delivery, CanonicalMemoryDelivery):
             raise TypeError("a canonical memory delivery is required")
+        lifecycle_error = getattr(self.memory_lifecycle, "reason_code", None)
+        if isinstance(lifecycle_error, str):
+            return CanonicalMemoryDeliveryResult(
+                CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+                delivery.source_id,
+                error_code=lifecycle_error,
+            )
+        if self.memory_lifecycle is not None:
+            try:
+                if bool(self.memory_lifecycle.blocks_delivery(delivery.occurred_at)):
+                    return CanonicalMemoryDeliveryResult(
+                        CanonicalMemoryDeliveryStatus.SKIPPED,
+                        delivery.source_id,
+                    )
+            except Exception:
+                return CanonicalMemoryDeliveryResult(
+                    CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+                    delivery.source_id,
+                    error_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
+                )
 
         state, result = await self._provider_call.call_async(
-            lambda: _deliver_to_provider(self.memory, delivery),
+            lambda: (
+                _deliver_with_lifecycle(
+                    self.memory_lifecycle,
+                    self.memory,
+                    delivery,
+                )
+                if self.memory_lifecycle is not None
+                else _deliver_to_provider(self.memory, delivery)
+            ),
             timeout_seconds=self.timeout_seconds,
         )
         if state in {"timeout", "inflight"}:
@@ -158,6 +188,11 @@ class ConversationMemoryDeliveryCommitter:
             )
         if isinstance(result, CanonicalMemoryDeliveryResult):
             return result
+        if result is None:
+            return CanonicalMemoryDeliveryResult(
+                CanonicalMemoryDeliveryStatus.SKIPPED,
+                delivery.source_id,
+            )
         if not isinstance(result, MemoryWriteResult):
             return CanonicalMemoryDeliveryResult(
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
@@ -251,6 +286,24 @@ def _deliver_to_provider(
             CanonicalMemoryDeliveryStatus.UNAVAILABLE,
             delivery.source_id,
             error_code="MEM0_WRITE_FAILED",
+        )
+
+
+def _deliver_with_lifecycle(
+    lifecycle: object,
+    memory: ConversationMemoryPort,
+    delivery: CanonicalMemoryDelivery,
+) -> CanonicalMemoryDeliveryResult | MemoryWriteResult | None:
+    try:
+        return lifecycle.run_write(
+            lambda: _deliver_to_provider(memory, delivery),
+            occurred_at=delivery.occurred_at,
+        )
+    except Exception:
+        return CanonicalMemoryDeliveryResult(
+            CanonicalMemoryDeliveryStatus.UNAVAILABLE,
+            delivery.source_id,
+            error_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
         )
 
 

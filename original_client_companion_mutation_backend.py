@@ -188,6 +188,27 @@ class DirectOriginalClientCompanionMutationBackend:
             raise _memory_error(exc) from exc
         return _memory_result(result)
 
+    def pause_memory(self, *, request_id: str, reason: str) -> CompanionMutationResult:
+        return self._lifecycle_mutation("pause", request_id=request_id, reason=reason)
+
+    def resume_memory(self, *, request_id: str, reason: str) -> CompanionMutationResult:
+        return self._lifecycle_mutation("resume", request_id=request_id, reason=reason)
+
+    def _lifecycle_mutation(
+        self, operation: str, *, request_id: str, reason: str
+    ) -> CompanionMutationResult:
+        if self.memory_admin is None:
+            raise OriginalClientCompanionMutationError("MEMORY_MUTATION_DISABLED", status=503)
+        try:
+            result = (
+                self.memory_admin.pause(request_id=request_id, reason=reason)
+                if operation == "pause"
+                else self.memory_admin.resume(request_id=request_id, reason=reason)
+            )
+        except ConversationMemoryAdminError as exc:
+            raise _memory_error(exc) from exc
+        return _memory_result(result)
+
     def decide_candidate(
         self,
         *,
