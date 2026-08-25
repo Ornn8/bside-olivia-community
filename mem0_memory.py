@@ -16,6 +16,7 @@ from numbers import Real
 import os
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Callable, Mapping, Protocol, Sequence
@@ -976,6 +977,9 @@ class Mem0ConversationMemoryAdapter:
 
 
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
+    os.environ["MEM0_TELEMETRY"] = "False"
+    if "mem0" in sys.modules:
+        raise Mem0AdapterError("MEM0_TELEMETRY_STATE_UNAVAILABLE")
     module = importlib.import_module("mem0")
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
@@ -998,11 +1002,18 @@ def create_mem0_adapter(
         return UnavailableConversationMemoryPort(
             "MEM0_EMBEDDING_CACHE_UNAVAILABLE", config=active
         )
+    os.environ["MEM0_TELEMETRY"] = "False"
+    if "mem0" in sys.modules:
+        return UnavailableConversationMemoryPort(
+            "MEM0_TELEMETRY_STATE_UNAVAILABLE", config=active
+        )
     try:
         active.qdrant_path.parent.mkdir(parents=True, exist_ok=True)
         active.history_path.parent.mkdir(parents=True, exist_ok=True)
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
+    except Mem0AdapterError as exc:
+        return UnavailableConversationMemoryPort(exc.code, config=active)
     except (ModuleNotFoundError, ImportError):
         return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError):

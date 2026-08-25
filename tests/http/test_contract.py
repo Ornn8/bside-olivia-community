@@ -128,8 +128,8 @@ def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_avai
         local_server,
         "conversation_memory_adapter",
         UnavailableConversationMemoryPort(
-            "MEM0_EMBEDDING_CACHE_UNAVAILABLE",
-            config={"cache": "private-synthetic-cache-detail"},
+            "MEM0_TELEMETRY_STATE_UNAVAILABLE",
+            config={"telemetry": "private-synthetic-telemetry-detail"},
         ),
     )
 
@@ -141,8 +141,8 @@ def test_memory_health_fails_closed_when_mem0_is_unavailable_but_archive_is_avai
     assert conversation["status"] == "unavailable"
     assert conversation["provider"] == "none"
     health = json.dumps(result)
-    assert "MEM0_EMBEDDING_CACHE_UNAVAILABLE" in health
-    assert "private-synthetic-cache-detail" not in health
+    assert "MEM0_TELEMETRY_STATE_UNAVAILABLE" in health
+    assert "private-synthetic-telemetry-detail" not in health
 
 
 def test_memory_health_reflects_degraded_canonical_delivery_runtime(

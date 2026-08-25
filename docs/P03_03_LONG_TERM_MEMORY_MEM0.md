@@ -276,6 +276,13 @@ Embedding 模型必须固定 revision 或哈希，并由安装器显式下载；
 `MEM0_EMBEDDING_CACHE_UNAVAILABLE` 降级，且不得联网、创建空缓存或让 health
 报告 READY。显式下载和生成 manifest 属于后续独立安装 PR。
 
+`mem0ai==2.0.18` 的 telemetry 也属于运行期外联边界：在首次 import `mem0` 或
+调用 `Memory.from_config` 前，产品必须无条件把真实进程环境的
+`MEM0_TELEMETRY` 设为 `False`，不接受配置 mapping 或既有环境中的 `true`。如果
+`mem0` 已提前载入而无法证明 telemetry 未初始化，必须以稳定
+`MEM0_TELEMETRY_STATE_UNAVAILABLE` fail closed；health 只能公开该原因码，正文
+仍按可选记忆降级路径成功。
+
 ### 7.3 Vector Store
 
 使用 Qdrant local path：

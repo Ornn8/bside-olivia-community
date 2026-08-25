@@ -5,10 +5,13 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 import threading
 import time
 import tomllib
+from types import SimpleNamespace
 
 from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
 from conversation_memory_outbox import CanonicalMemoryOutbox
@@ -27,6 +30,7 @@ from mem0_memory import (
     create_mem0_adapter,
     load_mem0_config,
 )
+import mem0_memory
 
 
 NOW = datetime(2026, 8, 23, 2, 0, tzinfo=timezone.utc)
@@ -1276,6 +1280,60 @@ def test_factory_refuses_an_unverified_local_embedding_cache(tmp_path: Path) -> 
     assert factory_called is False
     assert "model" not in port.status().to_dict()
     assert "cache" not in port.status().to_dict()
+
+
+def test_factory_forces_telemetry_off_before_first_mem0_import(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    observed: dict[str, str | None] = {}
+
+    class FakeMemory:
+        @staticmethod
+        def from_config(_config):
+            observed["from_config"] = os.environ.get("MEM0_TELEMETRY")
+            return FakeMem0()
+
+    def import_mem0(name: str):
+        assert name == "mem0"
+        observed["import"] = os.environ.get("MEM0_TELEMETRY")
+        return SimpleNamespace(Memory=FakeMemory)
+
+    monkeypatch.delitem(sys.modules, "mem0", raising=False)
+    monkeypatch.setenv("MEM0_TELEMETRY", "true")
+    monkeypatch.setattr(mem0_memory.importlib, "import_module", import_mem0)
+
+    port = create_mem0_adapter(
+        config,
+        environ={"MEM0_TELEMETRY": "true"},
+    )
+
+    assert isinstance(port, Mem0ConversationMemoryAdapter)
+    assert observed == {"import": "False", "from_config": "False"}
+    assert os.environ["MEM0_TELEMETRY"] == "False"
+
+
+def test_factory_fails_closed_when_mem0_was_preloaded(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    _write_verified_embedding_cache(config)
+    factory_called = False
+
+    def factory(_config):
+        nonlocal factory_called
+        factory_called = True
+        return FakeMem0()
+
+    monkeypatch.setenv("MEM0_TELEMETRY", "true")
+    monkeypatch.setitem(sys.modules, "mem0", SimpleNamespace())
+
+    port = create_mem0_adapter(config, memory_factory=factory)
+
+    assert isinstance(port, UnavailableConversationMemoryPort)
+    assert port.reason_code == "MEM0_TELEMETRY_STATE_UNAVAILABLE"
+    assert factory_called is False
+    assert os.environ["MEM0_TELEMETRY"] == "False"
+    assert "path" not in repr(port.status().to_dict())
 
 
 def test_factory_refuses_corrupt_or_revision_mismatched_embedding_caches(
