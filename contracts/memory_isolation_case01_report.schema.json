@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Memory isolation case01 report",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "error_code",
+        "case_id",
+        "prefix_case",
+        "validation_mode",
+        "namespace",
+        "train_original_count",
+        "test_original_count",
+        "private_world_arm",
+        "selected_evidence_count",
+        "persona_evaluation",
+        "reference_evaluation"
+      ],
+      "properties": {
+        "status": {"const": "completed"},
+        "error_code": {"type": "null"},
+        "case_id": {"type": "string"},
+        "prefix_case": {"const": "case01"},
+        "validation_mode": {"type": "string"},
+        "namespace": {"type": "string"},
+        "train_original_count": {"const": 60},
+        "test_original_count": {"const": 1},
+        "private_world_arm": {"const": "fixed_disabled"},
+        "selected_evidence_count": {"type": "integer", "minimum": 0},
+        "persona_evaluation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "hard_violation_count", "metrics"],
+          "properties": {
+            "score": {"type": "number"},
+            "hard_violation_count": {"type": "integer", "minimum": 0},
+            "metrics": {
+              "type": "object",
+              "additionalProperties": {"type": "number"}
+            }
+          }
+        },
+        "reference_evaluation": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "number"}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "error_code",
+        "case_id",
+        "prefix_case",
+        "validation_mode",
+        "namespace",
+        "train_original_count",
+        "test_original_count",
+        "private_world_arm"
+      ],
+      "properties": {
+        "status": {"const": "unavailable"},
+        "error_code": {
+          "enum": [
+            "CASE01_MEMORY_UNAVAILABLE",
+            "CASE01_GENERATOR_UNAVAILABLE",
+            "CASE01_PERSONA_EVALUATION_UNAVAILABLE",
+            "CASE01_REFERENCE_EVALUATION_UNAVAILABLE"
+          ]
+        },
+        "case_id": {"type": "string"},
+        "prefix_case": {"const": "case01"},
+        "validation_mode": {"type": "string"},
+        "namespace": {"type": "string"},
+        "train_original_count": {"const": 60},
+        "test_original_count": {"const": 1},
+        "private_world_arm": {"const": "fixed_disabled"}
+      }
+    }
+  ]
+}
