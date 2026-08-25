@@ -925,7 +925,7 @@ def create_mem0_adapter(
 ) -> ConversationMemoryPort:
     active = config or load_mem0_config(environ=environ)
     if active.config_error:
-        return UnavailableConversationMemoryPort(active.config_error)
+        return UnavailableConversationMemoryPort(active.config_error, config=active)
     if not active.enabled:
         return NullConversationMemoryPort()
     try:
@@ -935,9 +935,11 @@ def create_mem0_adapter(
         backend = (memory_factory or _default_factory)(active.provider_config(environ))
         return Mem0ConversationMemoryAdapter(backend, active)
     except (ModuleNotFoundError, ImportError):
-        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
+        return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError):
-        return UnavailableConversationMemoryPort("MEM0_INITIALIZATION_FAILED")
+        return UnavailableConversationMemoryPort(
+            "MEM0_INITIALIZATION_FAILED", config=active
+        )
 
 
 __all__ = [

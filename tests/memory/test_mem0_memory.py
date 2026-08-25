@@ -1183,7 +1183,9 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
         data_root=tmp_path / "broken",
         config_error="MEM0_LLM_CONFIG_INCOMPLETE",
     )
-    assert isinstance(create_mem0_adapter(broken), UnavailableConversationMemoryPort)
+    broken_port = create_mem0_adapter(broken)
+    assert isinstance(broken_port, UnavailableConversationMemoryPort)
+    assert broken_port.config is broken
 
     captured: dict[str, object] = {}
     backend = FakeMem0()
@@ -1209,6 +1211,7 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
     )
     assert isinstance(unavailable, UnavailableConversationMemoryPort)
     assert unavailable.reason_code == "MEM0_INITIALIZATION_FAILED"
+    assert unavailable.config.data_root == _config(tmp_path).data_root
 
 
 def test_manual_failure_uses_stable_error(tmp_path: Path) -> None:

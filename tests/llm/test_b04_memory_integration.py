@@ -291,7 +291,7 @@ def test_file_only_mem0_configuration_persists_canonical_state_for_the_outbox(
     from conversation_memory_runtime import stop_conversation_memory_runtime
     from local_memory import create_conversation_memory_adapter, load_memory_config
     import local_memory
-    from mem0_memory import load_mem0_config
+    from mem0_memory import create_mem0_adapter, load_mem0_config
 
     stop_conversation_memory_runtime()
     root = tmp_path / "file-only-data"
@@ -379,8 +379,10 @@ def test_file_only_mem0_configuration_persists_canonical_state_for_the_outbox(
         assert (root / "state.json").is_file()
         assert len(memory.calls) == 1
         assert memory.calls[0]["source_id"] == "reply:file-only-canonical:1"
-        unavailable = UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED")
-        unavailable.config = memory.config
+        def fail_mem0(_config):
+            raise RuntimeError("synthetic initialization failure")
+
+        unavailable = create_mem0_adapter(memory.config, memory_factory=fail_mem0)
         unavailable_letter = {**letter, "letter_id": "file-only-unavailable", "reply_text": ""}
         monkeypatch.setattr(local_server, "conversation_memory_adapter", unavailable)
         monkeypatch.setattr(local_server.letters_adapter, "conversation_memory", unavailable)
