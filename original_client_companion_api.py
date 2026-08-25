@@ -112,18 +112,40 @@ class CompanionCapability:
 
 
 @dataclass(frozen=True)
+class CompanionVideoReplySetting:
+    enabled: bool
+    default_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool or type(self.default_enabled) is not bool:
+            raise ValueError("video reply setting is invalid")
+
+    def to_dict(self) -> dict[str, bool]:
+        return {
+            "enabled": self.enabled,
+            "default_enabled": self.default_enabled,
+        }
+
+
+@dataclass(frozen=True)
 class CompanionReadStatus:
     memory: CompanionCapability
     private_world: CompanionCapability
     candidates: CompanionCapability
+    video_reply: CompanionVideoReplySetting | None = None
 
     def __post_init__(self) -> None:
         for value in (self.memory, self.private_world, self.candidates):
             if not isinstance(value, CompanionCapability):
                 raise ValueError("companion read status is invalid")
+        if self.video_reply is not None and not isinstance(
+            self.video_reply,
+            CompanionVideoReplySetting,
+        ):
+            raise ValueError("companion video reply setting is invalid")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": COMPANION_READ_SCHEMA,
             "status": "READY",
             "capabilities": {
@@ -132,6 +154,9 @@ class CompanionReadStatus:
                 "candidates": self.candidates.to_dict(),
             },
         }
+        if self.video_reply is not None:
+            payload["capabilities"]["video_reply"] = self.video_reply.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -503,6 +528,7 @@ __all__ = [
     "CompanionMemorySummary",
     "CompanionPrivateWorldSummary",
     "CompanionReadStatus",
+    "CompanionVideoReplySetting",
     "OriginalClientCompanionAPIError",
     "OriginalClientCompanionReadBackend",
     "mount_original_companion_read_api",

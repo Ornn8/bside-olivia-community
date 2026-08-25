@@ -558,6 +558,63 @@ def _persist_store_state() -> None:
     temporary.replace(root / "state.json")
 
 
+VIDEO_REPLY_SETTING_KEY = "video_reply_enabled"
+
+
+class _VideoReplySettings:
+    """Persist the original-client video preference with a compatible default."""
+
+    def read_video_reply_enabled(self) -> bool:
+        value = store.settings.get(VIDEO_REPLY_SETTING_KEY)
+        return value if type(value) is bool else True
+
+    def write_video_reply_enabled(self, enabled: bool) -> bool:
+        if type(enabled) is not bool:
+            raise ValueError("video reply setting must be boolean")
+        previous = store.settings.get(VIDEO_REPLY_SETTING_KEY)
+        had_previous = VIDEO_REPLY_SETTING_KEY in store.settings
+        changed = previous is not enabled
+        if not changed:
+            return False
+        store.settings[VIDEO_REPLY_SETTING_KEY] = enabled
+        try:
+            _persist_store_state()
+        except Exception:
+            if had_previous:
+                store.settings[VIDEO_REPLY_SETTING_KEY] = previous
+            else:
+                store.settings.pop(VIDEO_REPLY_SETTING_KEY, None)
+            raise
+        return True
+
+    def cancel_video_reply_jobs(self) -> None:
+        """Stop queued media work when the user disables future video replies."""
+
+        for task in tuple(media_tasks):
+            task.cancel()
+        media_jobs.clear()
+        changed = False
+        for letter in store.letters:
+            if letter.get("media_status") in {"PENDING", "QUEUED", "PROCESSING"}:
+                letter["media_status"] = "NOT_REQUESTED"
+                letter.pop("media_error_code", None)
+                letter.pop("reply_video_url", None)
+                changed = True
+        if changed:
+            _persist_media_state()
+
+
+video_reply_settings = _VideoReplySettings()
+
+
+def _video_reply_enabled() -> bool:
+    try:
+        value = video_reply_settings.read_video_reply_enabled()
+    except Exception:
+        return True
+    return value if type(value) is bool else True
+
+
 _memory_config = load_memory_config()
 _archive_memory_config = (
     replace(
@@ -622,7 +679,10 @@ private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
 # A file-only Mem0 profile owns the same canonical state root on restart; load
 # only after the validated conversation adapter has selected that root.
 _load_store_state()
-emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
+emotion_triage = LetterEmotionTriage(
+    letters_adapter.gateway,
+    video_reply_enabled=_video_reply_enabled,
+)
 media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
@@ -1854,7 +1914,19 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     letter = next((item for item in store.letters if item["letter_id"] == letter_id), None)
     if letter is None:
         return
+    if not _video_reply_enabled():
+        letter["media_status"] = "NOT_REQUESTED"
+        letter.pop("media_error_code", None)
+        letter.pop("reply_video_url", None)
+        _persist_media_state()
+        return
     async with media_semaphore:
+        if not _video_reply_enabled():
+            letter["media_status"] = "NOT_REQUESTED"
+            letter.pop("media_error_code", None)
+            letter.pop("reply_video_url", None)
+            _persist_media_state()
+            return
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
         data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
@@ -2036,6 +2108,18 @@ def _schedule_pending_reply_jobs() -> int:
 def _schedule_pending_media_jobs() -> int:
     """Resume only durable completed replies whose media render was interrupted."""
 
+    if not _video_reply_enabled():
+        changed = False
+        for letter in store.letters:
+            if letter.get("media_status") in {"PENDING", "QUEUED", "PROCESSING"}:
+                letter["media_status"] = "NOT_REQUESTED"
+                letter.pop("media_error_code", None)
+                letter.pop("reply_video_url", None)
+                changed = True
+        if changed:
+            _persist_media_state()
+        return 0
+
     scheduled = 0
     for letter in tuple(store.letters):
         if letter.get("media_status") not in {"PENDING", "QUEUED"}:
@@ -2206,8 +2290,17 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     letter["letter_status"] = "PROCESSING"
     _persist_store_state()
     decision = await emotion_triage.classify(content)
-    exact_mode = _exact_reply_mode(decision.reply_mode)
-    letter["triage"] = decision.to_dict()
+    video_enabled = _video_reply_enabled()
+    exact_mode = (
+        _exact_reply_mode(decision.reply_mode)
+        if video_enabled
+        else ReplyMode.TEXT_LETTER.value
+    )
+    triage = decision.to_dict()
+    if not video_enabled:
+        triage["reply_mode"] = ReplyMode.TEXT_LETTER.value
+        triage["reason_code"] = "video_replies_disabled"
+    letter["triage"] = triage
     letter["reply_mode"] = exact_mode
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,

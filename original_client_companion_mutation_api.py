@@ -22,6 +22,7 @@ COMPANION_MUTATION_SCHEMA = "p03.original-companion-mutation.v1"
 MEMORY_CORRECT_PATH = "/toy/companion/memory/correct"
 MEMORY_DELETE_PATH = "/toy/companion/memory/delete"
 CANDIDATE_DECISION_PATH = "/toy/companion/private-world/candidates/{candidate_id}/{decision}"
+VIDEO_REPLY_SETTING_PATH = "/toy/companion/settings/video-reply"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
 _MAX_BODY_BYTES = 8_192
@@ -345,6 +346,58 @@ async def _delete_memory(request: web.Request) -> web.Response:
         )
 
 
+async def _set_video_reply_setting(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _body(
+            request,
+            fields=frozenset({"enabled", "request_id", "reason"}),
+        )
+        enabled = value["enabled"]
+        if type(enabled) is not bool:
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_ENABLED_INVALID",
+                status=400,
+            )
+        setter = getattr(_backend(request), "set_video_reply_enabled", None)
+        if not callable(setter):
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+                status=503,
+            )
+        result = await asyncio.to_thread(
+            setter,
+            enabled=enabled,
+            request_id=_identifier(
+                value["request_id"],
+                code="COMPANION_REQUEST_ID_INVALID",
+                request=True,
+            ),
+            reason=_text(value["reason"], maximum=500, code="COMPANION_REASON_INVALID"),
+        )
+        if not enabled:
+            cancel = getattr(_backend(request), "cancel_video_reply_jobs", None)
+            if callable(cancel):
+                cancel()
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_INVALID",
+                status=503,
+            )
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+                status=503,
+            ),
+            origin,
+        )
+
+
 async def _decide_candidate(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
@@ -408,6 +461,8 @@ def mount_original_client_companion_mutation_api(
     app.router.add_options(MEMORY_CORRECT_PATH, _preflight)
     app.router.add_post(MEMORY_DELETE_PATH, _delete_memory)
     app.router.add_options(MEMORY_DELETE_PATH, _preflight)
+    app.router.add_post(VIDEO_REPLY_SETTING_PATH, _set_video_reply_setting)
+    app.router.add_options(VIDEO_REPLY_SETTING_PATH, _preflight)
     app.router.add_post(CANDIDATE_DECISION_PATH, _decide_candidate)
     app.router.add_options(CANDIDATE_DECISION_PATH, _preflight)
 
@@ -420,6 +475,7 @@ __all__ = [
     "CompanionMutationResult",
     "MEMORY_CORRECT_PATH",
     "MEMORY_DELETE_PATH",
+    "VIDEO_REPLY_SETTING_PATH",
     "OriginalClientCompanionMutationBackend",
     "OriginalClientCompanionMutationError",
     "mount_original_client_companion_mutation_api",

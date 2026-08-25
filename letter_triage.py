@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from llm_gateway import GatewayError
 from music_reply import musical_reply_configured
@@ -347,6 +347,7 @@ class LetterReplyRouter:
         timeout_seconds: float | None = None,
         routing_context: RoutingContext | None = None,
         environ: Mapping[str, str] | None = None,
+        video_reply_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.gateway = gateway
         if timeout_seconds is None:
@@ -362,6 +363,7 @@ class LetterReplyRouter:
             self.timeout_seconds = max(0.05, float(timeout_seconds))
         self.routing_context = routing_context
         self.environ = environ
+        self.video_reply_enabled = video_reply_enabled
 
     async def classify(self, content: str) -> TriageResult:
         if not isinstance(content, str) or not content.strip():
@@ -369,6 +371,12 @@ class LetterReplyRouter:
         context = self.routing_context or routing_context_from_environment(
             self.environ
         )
+        try:
+            disabled = self.video_reply_enabled is not None and not self.video_reply_enabled()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            disabled = False
+        if disabled:
+            context = RoutingContext(False, False, context.current_music_work)
         payload = {
             "routing_context": context.to_model_dict(),
             "current_letter": content.strip(),

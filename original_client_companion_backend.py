@@ -20,6 +20,7 @@ from original_client_companion_api import (
     CompanionMemorySummary,
     CompanionPrivateWorldSummary,
     CompanionReadStatus,
+    CompanionVideoReplySetting,
     OriginalClientCompanionReadBackend,
 )
 from private_world_candidates import (
@@ -133,6 +134,7 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         memory_admin: MemoryAdminReadPort | None = None,
         private_world: PrivateWorldReadPort | None = None,
         candidates: CandidateReadPort | None = None,
+        video_reply_settings: object | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         for value, protocol, name in (
@@ -145,6 +147,7 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         self._memory_admin = memory_admin
         self._private_world = private_world
         self._candidates = candidates
+        self._video_reply_settings = video_reply_settings
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def _memory_status(self) -> CompanionCapability:
@@ -194,11 +197,28 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         except (OSError, RuntimeError, TypeError, ValueError):
             return _capability_failure("COMPANION_CANDIDATES_UNAVAILABLE")
 
+    def _video_reply_setting(self) -> CompanionVideoReplySetting | None:
+        if self._video_reply_settings is None:
+            return None
+        reader = getattr(
+            self._video_reply_settings,
+            "read_video_reply_enabled",
+            None,
+        )
+        if not callable(reader):
+            return CompanionVideoReplySetting(True)
+        try:
+            value = reader()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return CompanionVideoReplySetting(True)
+        return CompanionVideoReplySetting(value if type(value) is bool else True)
+
     def read_status(self) -> CompanionReadStatus:
         return CompanionReadStatus(
             memory=self._memory_status(),
             private_world=self._private_world_status(),
             candidates=self._candidate_status(),
+            video_reply=self._video_reply_setting(),
         )
 
     def list_memories(

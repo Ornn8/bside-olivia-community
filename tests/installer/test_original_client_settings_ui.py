@@ -49,6 +49,13 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
 
 
+def test_original_settings_management_ui_exposes_video_reply_toggle() -> None:
+    assert 'const VIDEO_REPLY_SETTING_PATH = "/toy/companion/settings/video-reply";' in BOOTSTRAP_JAVASCRIPT
+    assert "capabilities.video_reply" in BOOTSTRAP_JAVASCRIPT
+    assert "视频回信" in BOOTSTRAP_JAVASCRIPT
+    assert "enabled: nextEnabled" in BOOTSTRAP_JAVASCRIPT
+
+
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     assert "textContent" in source

@@ -310,6 +310,7 @@ def create_original_client_server_runtime(
     private_world: PrivateWorldPort | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
     candidate_decisions: CandidateReviewBackend | None = None,
+    video_reply_settings: object | None = None,
     letter_collection: LetterCollection | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
@@ -326,6 +327,7 @@ def create_original_client_server_runtime(
         memory_admin=memory_admin,
         private_world=private_read,
         candidates=candidates,
+        video_reply_settings=video_reply_settings,
     )
     mutation_memory = (
         memory_admin
@@ -335,6 +337,7 @@ def create_original_client_server_runtime(
     mutation_backend = DirectOriginalClientCompanionMutationBackend(
         memory_admin=mutation_memory,
         candidate_decisions=candidate_decisions,
+        video_reply_settings=video_reply_settings,
     )
     app = web.Application()
     origins = tuple(trusted_origins)
@@ -479,6 +482,7 @@ def create_configured_original_client_server_runtime(
         server_module,
         values,
     )
+    video_reply_settings = getattr(server_module, "video_reply_settings", None)
     collection = getattr(server_module, "_letter_collection", None)
     runtime = create_original_client_server_runtime(
         fallback,
@@ -486,6 +490,7 @@ def create_configured_original_client_server_runtime(
         private_world=private_world,
         candidates=candidates,
         candidate_decisions=candidate_decisions,
+        video_reply_settings=video_reply_settings,
         letter_collection=collection if callable(collection) else None,
         trusted_origins=origins,
     )

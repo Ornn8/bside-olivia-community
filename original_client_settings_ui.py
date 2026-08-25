@@ -18,6 +18,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
+  const VIDEO_REPLY_SETTING_PATH = "/toy/companion/settings/video-reply";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const LETTER_CHARACTER_LIMIT = 1200;
@@ -679,6 +680,55 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     await load();
   };
 
+  const renderVideoReplyPanel = (panel, setting) => {
+    let currentEnabled = !(setting && setting.enabled === false);
+    const heading = text("h3", "视频回信", "text-text-title text-title-m");
+    const description = text(
+      "p",
+      "关闭后，新的回信只保留文字链路；已有回信不会被删除。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const state = text("p", "", "text-text-secondary text-body-m font-regular");
+    state.setAttribute("aria-live", "polite");
+    const toggle = button("", async () => {
+      const nextEnabled = !currentEnabled;
+      if (!window.confirm(nextEnabled ? "确认开启视频回信？" : "确认关闭视频回信？")) {
+        return;
+      }
+      setButtonsBusy([toggle], true);
+      state.textContent = "正在保存视频回信设置……";
+      try {
+        const payload = await requestMutation(VIDEO_REPLY_SETTING_PATH, {
+          enabled: nextEnabled,
+          request_id: requestId("video-reply"),
+          reason: nextEnabled
+            ? "用户在原版 Olivia 设置中开启视频回信"
+            : "用户在原版 Olivia 设置中关闭视频回信",
+        });
+        if (payload.status === "APPLIED" || payload.status === "NOOP") {
+          currentEnabled = nextEnabled;
+          state.textContent = currentEnabled
+            ? "视频回信已开启；系统将继续使用现有资格判断。"
+            : "视频回信已关闭；新的回信将继续使用文字链路。";
+          toggle.textContent = currentEnabled ? "关闭" : "开启";
+          toggle.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
+          return;
+        }
+        throw new Error("setting-not-applied");
+      } catch (_error) {
+        state.textContent = "视频回信设置保存失败，当前状态保持不变。";
+      } finally {
+        setButtonsBusy([toggle], false);
+      }
+    });
+    toggle.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
+    toggle.textContent = currentEnabled ? "关闭" : "开启";
+    state.textContent = currentEnabled
+      ? "视频回信已开启；系统将继续使用现有资格判断。"
+      : "视频回信已关闭；新的回信将继续使用文字链路。";
+    panel.replaceChildren(heading, description, state, toggle);
+  };
+
   const loadDialogData = async (statusNode, panels) => {
     statusNode.textContent = "正在连接本机陪伴服务……";
     try {
@@ -689,6 +739,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       statusNode.textContent = "本机陪伴服务已连接。";
       statusNode.dataset.state = "available";
       await Promise.allSettled([
+        renderVideoReplyPanel(panels.videoReply, capabilities.video_reply),
         renderMemoryPanel(panels.memory, capabilities.memory),
         renderPrivateWorldPanel(
           panels.privateWorld,
@@ -794,6 +845,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const panels = document.createElement("div");
     const panelNodes = {};
     const definitions = [
+      { id: "video-reply", label: "视频回信", key: "videoReply" },
       { id: "memory", label: "长期记忆", key: "memory" },
       { id: "private-world", label: "私人世界", key: "privateWorld" },
     ];

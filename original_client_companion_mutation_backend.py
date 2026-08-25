@@ -128,6 +128,7 @@ class DirectOriginalClientCompanionMutationBackend:
         *,
         memory_admin: MemoryAdminMutationService | None = None,
         candidate_decisions: CandidateDecisionService | None = None,
+        video_reply_settings: object | None = None,
     ) -> None:
         if memory_admin is not None and not isinstance(
             memory_admin,
@@ -141,6 +142,7 @@ class DirectOriginalClientCompanionMutationBackend:
             raise TypeError("an explicit candidate decision service is required")
         self.memory_admin = memory_admin
         self.candidate_decisions = candidate_decisions
+        self.video_reply_settings = video_reply_settings
 
     def correct_memory(
         self,
@@ -187,6 +189,48 @@ class DirectOriginalClientCompanionMutationBackend:
         except ConversationMemoryAdminError as exc:
             raise _memory_error(exc) from exc
         return _memory_result(result)
+
+    def set_video_reply_enabled(
+        self,
+        *,
+        enabled: bool,
+        request_id: str,
+        reason: str,
+    ) -> CompanionMutationResult:
+        service = self.video_reply_settings
+        setter = getattr(service, "write_video_reply_enabled", None)
+        if not callable(setter):
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+                status=503,
+            )
+        if type(enabled) is not bool:
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_ENABLED_INVALID",
+                status=400,
+            )
+        try:
+            changed = setter(enabled)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+                status=503,
+            ) from exc
+        if type(changed) is not bool:
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_INVALID",
+                status=503,
+            )
+        return CompanionMutationResult(
+            request_id=request_id,
+            status="APPLIED" if changed else "NOOP",
+            affected_count=1 if changed else 0,
+        )
+
+    def cancel_video_reply_jobs(self) -> None:
+        callback = getattr(self.video_reply_settings, "cancel_video_reply_jobs", None)
+        if callable(callback):
+            callback()
 
     def decide_candidate(
         self,
