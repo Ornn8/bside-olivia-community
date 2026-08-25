@@ -210,27 +210,26 @@ class DirectOriginalClientCompanionMutationBackend:
                 status=400,
             )
         try:
-            changed = setter(enabled)
+            result = setter(enabled, request_id=request_id, reason=reason)
+        except OriginalClientCompanionMutationError:
+            raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise OriginalClientCompanionMutationError(
                 "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
                 status=503,
             ) from exc
-        if type(changed) is not bool:
+        if isinstance(result, CompanionMutationResult):
+            return result
+        if type(result) is not bool:
             raise OriginalClientCompanionMutationError(
                 "VIDEO_REPLY_SETTINGS_INVALID",
                 status=503,
             )
         return CompanionMutationResult(
             request_id=request_id,
-            status="APPLIED" if changed else "NOOP",
-            affected_count=1 if changed else 0,
+            status="APPLIED" if result else "NOOP",
+            affected_count=1 if result else 0,
         )
-
-    def cancel_video_reply_jobs(self) -> None:
-        callback = getattr(self.video_reply_settings, "cancel_video_reply_jobs", None)
-        if callable(callback):
-            callback()
 
     def decide_candidate(
         self,

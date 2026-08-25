@@ -376,10 +376,6 @@ async def _set_video_reply_setting(request: web.Request) -> web.Response:
             ),
             reason=_text(value["reason"], maximum=500, code="COMPANION_REASON_INVALID"),
         )
-        if not enabled:
-            cancel = getattr(_backend(request), "cancel_video_reply_jobs", None)
-            if callable(cancel):
-                cancel()
         if not isinstance(result, CompanionMutationResult):
             raise OriginalClientCompanionMutationError(
                 "COMPANION_MUTATION_INVALID",

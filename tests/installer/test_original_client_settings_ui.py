@@ -22,6 +22,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const CANDIDATES_PATH = "/toy/companion/private-world/candidates";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
+        'const VIDEO_REPLY_SETTING_PATH = "/toy/companion/settings/video-reply";',
         'const CONFIRM_HEADER = "X-Olivia-Companion-Action";',
         'const CONFIRM_VALUE = "confirmed";',
     ):
@@ -47,13 +48,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'panel.style.display = active ? "grid" : "none";' in BOOTSTRAP_JAVASCRIPT
     assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
-
-
-def test_original_settings_management_ui_exposes_video_reply_toggle() -> None:
-    assert 'const VIDEO_REPLY_SETTING_PATH = "/toy/companion/settings/video-reply";' in BOOTSTRAP_JAVASCRIPT
-    assert "capabilities.video_reply" in BOOTSTRAP_JAVASCRIPT
-    assert "视频回信" in BOOTSTRAP_JAVASCRIPT
-    assert "enabled: nextEnabled" in BOOTSTRAP_JAVASCRIPT
+    assert "capabilities.video_reply" in BOOTSTRAP_JAVASCRIPT and "enabled: nextEnabled" in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:

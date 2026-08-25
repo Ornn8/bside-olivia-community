@@ -683,18 +683,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const renderVideoReplyPanel = (panel, setting) => {
     let currentEnabled = !(setting && setting.enabled === false);
     const heading = text("h3", "视频回信", "text-text-title text-title-m");
-    const description = text(
-      "p",
-      "关闭后，新的回信只保留文字链路；已有回信不会被删除。",
-      "text-text-secondary text-body-m font-regular"
-    );
+    const description = text("p", "关闭后，新的回信只保留文字链路；已有回信不会被删除。", "text-text-secondary text-body-m font-regular");
     const state = text("p", "", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     const toggle = button("", async () => {
       const nextEnabled = !currentEnabled;
-      if (!window.confirm(nextEnabled ? "确认开启视频回信？" : "确认关闭视频回信？")) {
-        return;
-      }
+      if (!window.confirm(nextEnabled ? "确认开启视频回信？" : "确认关闭视频回信？")) return;
       setButtonsBusy([toggle], true);
       state.textContent = "正在保存视频回信设置……";
       try {
@@ -707,9 +701,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         });
         if (payload.status === "APPLIED" || payload.status === "NOOP") {
           currentEnabled = nextEnabled;
-          state.textContent = currentEnabled
-            ? "视频回信已开启；系统将继续使用现有资格判断。"
-            : "视频回信已关闭；新的回信将继续使用文字链路。";
+          state.textContent = currentEnabled ? "视频回信已开启；系统将继续使用现有资格判断。" : "视频回信已关闭；新的回信将继续使用文字链路。";
           toggle.textContent = currentEnabled ? "关闭" : "开启";
           toggle.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
           return;
@@ -723,9 +715,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     toggle.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
     toggle.textContent = currentEnabled ? "关闭" : "开启";
-    state.textContent = currentEnabled
-      ? "视频回信已开启；系统将继续使用现有资格判断。"
-      : "视频回信已关闭；新的回信将继续使用文字链路。";
+    state.textContent = currentEnabled ? "视频回信已开启；系统将继续使用现有资格判断。" : "视频回信已关闭；新的回信将继续使用文字链路。";
     panel.replaceChildren(heading, description, state, toggle);
   };
 

@@ -1,8 +1,8 @@
-# P03 原版客户端陪伴读取运行时
+# P03 原版客户端陪伴读取与视频开关运行时
 
 ## 1. 目标
 
-把已经合入的原版设置弹窗、只读 HTTP Contract 和现有 Memory / PrivateWorld Service 真正接到同一个本机进程中。
+把已经合入的原版设置弹窗、读取/mutation HTTP Contract 和现有 Memory / PrivateWorld Service 真正接到同一个本机进程中。
 
 发布运行结构：
 
@@ -80,7 +80,8 @@ ConversationMemoryAdminService
 2. /toy/companion/memory
 3. /toy/companion/private-world
 4. /toy/companion/private-world/candidates
-5. /{tail:.*} 既有 toy API
+5. /toy/companion/settings/video-reply (POST)
+6. /{tail:.*} 既有 toy API
 ```
 
 如果顺序反过来，catch-all 会截获原版设置请求。本顺序由测试锁定。
@@ -107,7 +108,7 @@ ConversationMemoryAdminService
 
 ## 8. 验收
 
-- 原版设置四个 GET 路由在同一进程可访问；
+- 原版设置四个 GET 读取路由和视频开关 POST 在同一进程可访问；
 - `/health` 和既有 toy API 仍进入原 handler；
 - Memory、PrivateWorld、候选复用已有 Service/Store；
 - PrivateWorld 输出没有隐藏数值；
@@ -120,7 +121,7 @@ ConversationMemoryAdminService
 
 ```text
 CLIENT-SETTINGS-05  原版设置弹窗渲染真实只读数据
-CLIENT-SETTINGS-06  原版内受控写操作
+CLIENT-SETTINGS-06  原版内受控写操作（含视频开关 replay/conflict）
 CLIENT-INSTALL-01   安装器自动应用设置与播放器补丁
 CLIENT-CONTRACT-02  原版 Collection 数据格式生产接线
 ```

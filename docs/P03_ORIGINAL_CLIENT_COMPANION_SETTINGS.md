@@ -66,15 +66,20 @@ border-grey-5
 
 ## 5. 后端契约
 
-本 PR 只预留只读状态路径：
+本地陪伴状态和视频回信开关共用同一 loopback 服务：
 
 ```text
 GET /toy/companion/status
+POST /toy/companion/settings/video-reply
 ```
 
-如果该路径尚未接线，界面显示“本机陪伴服务暂不可用”，不会伪造成功。
+状态响应使用 `p03.original-companion-read.v1`，其中 `capabilities.video_reply` 为 `{enabled, default_enabled}`。开关 mutation 使用 `p03.original-companion-mutation.v1`，请求为 `{enabled, request_id, reason}`，成功返回 `APPLIED`、`NOOP` 或 `DUPLICATE`。
 
-后续 PR 依次接入：
+同一 `request_id` 与相同 payload 重放原始结果；不同 payload 返回 `409 VIDEO_REPLY_REQUEST_CONFLICT` 且不改变状态。稳定错误包括 `VIDEO_REPLY_ENABLED_INVALID`、`VIDEO_REPLY_REQUEST_CONFLICT`、`VIDEO_REPLY_REPLAY_INVALID`、`VIDEO_REPLY_SETTINGS_INVALID`、`VIDEO_REPLY_SETTINGS_UNAVAILABLE` 和 `COMPANION_REQUEST_ID_INVALID`。
+
+如果状态或 mutation 尚未接线，界面显示“本机陪伴服务暂不可用”，不会伪造成功。开关在信件接收边界冻结资格：关闭后的新信只能文字、不排队媒体；已接收信不受之后切换影响。
+
+现有已接线能力包括：
 
 ```text
 CLIENT-SETTINGS-02  状态与只读数据 API

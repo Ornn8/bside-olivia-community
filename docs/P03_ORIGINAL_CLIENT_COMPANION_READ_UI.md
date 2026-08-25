@@ -14,16 +14,19 @@
 
 ## 2. 接口
 
-界面只调用四个 GET 接口：
+界面调用四个 GET 读取接口，并对用户明确切换的视频回信偏好发出一个 POST：
 
 ```text
 /toy/companion/status
 /toy/companion/memory
 /toy/companion/private-world
 /toy/companion/private-world/candidates
+POST /toy/companion/settings/video-reply
 ```
 
-本 PR 不发出 POST、PUT、PATCH 或 DELETE 请求。
+视频开关请求体为 `enabled`、`request_id`、`reason`，带确认 header；同一 request ID 重放原始结果，不同 payload 显示稳定冲突错误。UI 只把 `capabilities.video_reply.enabled` 作为当前状态，默认/旧配置缺失时显示开启。
+
+切换只影响之后进入服务端的新信。接收边界记录的资格不随之后切换改变；关闭资格的信件纯文字且不显示媒体等待，开启资格的信件继续原有视频流程。
 
 ## 3. 长期记忆
 
@@ -62,13 +65,12 @@ PrivateWorld 面板只显示：
 
 ## 5. 失败与降级
 
-四类数据分别降级：
+读取能力分别降级，视频开关写入失败也不影响 Collection、文字回信或媒体播放：
 
 - Memory 不可用时，只显示长期记忆暂不可用；
 - PrivateWorld 不可用时，不影响 Memory；
 - 候选不可用时，不影响 PrivateWorld 摘要；
 - 整体状态接口不可用时，两个面板都显示暂不可用；
-- 任何设置读取失败都不影响 Collection、文字回信或媒体播放。
 
 ## 6. 客户端补丁升级
 
