@@ -294,6 +294,107 @@ def test_post_promotion_verifier_failure_restores_the_previously_damaged_pair(
     assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
 
 
+@pytest.mark.parametrize(
+    "cleanup_error", [OSError("synthetic cleanup failure"), RuntimeError("synthetic cleanup failure")]
+)
+def test_snapshot_backup_cleanup_fault_after_commit_keeps_the_new_cache_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_error: Exception
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    (config.embedding_snapshot / "config.json").write_bytes(b"damaged")
+    assert not verified_embedding_cache(config)
+
+    remove_path = install_module._remove_path
+
+    def fail_snapshot_backup_cleanup(path: Path) -> None:
+        if path.name == "rollback-model":
+            raise cleanup_error
+        remove_path(path)
+
+    monkeypatch.setattr(install_module, "_remove_path", fail_snapshot_backup_cleanup)
+
+    installed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert installed.status == "APPLIED"
+    assert installed.reason_code is None
+    assert verified_embedding_cache(config)
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
+def test_manifest_backup_cleanup_fault_after_commit_keeps_the_new_cache_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    (config.embedding_snapshot / "config.json").write_bytes(b"damaged")
+    assert not verified_embedding_cache(config)
+
+    remove_path = install_module._remove_path
+
+    def fail_manifest_backup_cleanup(path: Path) -> None:
+        if path.name == "rollback-manifest.json":
+            raise OSError("synthetic manifest backup cleanup failure")
+        remove_path(path)
+
+    monkeypatch.setattr(install_module, "_remove_path", fail_manifest_backup_cleanup)
+
+    installed = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install()
+
+    assert installed.status == "APPLIED"
+    assert installed.reason_code is None
+    assert verified_embedding_cache(config)
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
+@pytest.mark.parametrize("restore_name", ["snapshot", "manifest"])
+def test_restore_fault_preserves_recoverable_staging_without_fake_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_name: str
+) -> None:
+    config = _config(tmp_path)
+    files = _files()
+    assert Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files)).install().status == "APPLIED"
+    (config.embedding_snapshot / "config.json").write_bytes(b"damaged")
+    assert not verified_embedding_cache(config)
+
+    replace = install_module.os.replace
+
+    def fail_final_manifest_and_one_restore(source: Path | str, destination: Path | str) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            source_path.name == "olivia-mem0-embedding-manifest.json"
+            and source_path.parent.name.startswith(".olivia-mem0-embedding-stage-")
+        ):
+            raise OSError("synthetic final manifest failure")
+        is_snapshot_restore = source_path.name == "rollback-model" and destination_path == config.embedding_snapshot
+        is_manifest_restore = (
+            source_path.name == "rollback-manifest.json"
+            and destination_path == config.model_cache / "olivia-mem0-embedding-manifest.json"
+        )
+        if (restore_name == "snapshot" and is_snapshot_restore) or (
+            restore_name == "manifest" and is_manifest_restore
+        ):
+            raise OSError("synthetic restore failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(install_module.os, "replace", fail_final_manifest_and_one_restore)
+
+    installer = Mem0EmbeddingInstaller(config, downloader=SyntheticDownloader(files))
+    failed = installer.install()
+
+    assert failed.status == "REJECTED"
+    assert failed.reason_code == "MEM0_EMBEDDING_INSTALL_FAILED"
+    assert installer.status().state is EmbeddingInstallStatus.ERROR
+    assert not verified_embedding_cache(config)
+    stages = list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+    assert len(stages) == 1
+    expected_backup = "rollback-model" if restore_name == "snapshot" else "rollback-manifest.json"
+    assert (stages[0] / expected_backup).exists()
+
+
 def test_read_and_mutation_share_fast_background_install_state(tmp_path: Path) -> None:
     class SharedInstaller:
         def __init__(self) -> None:
