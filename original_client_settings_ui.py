@@ -905,25 +905,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   let scheduled = false;
   const constrainLetterInputs = () => {
-    const matches = Array.from(
-      document.querySelectorAll('[role="dialog"], .el-dialog')
-    ).filter((dialog) => {
-      if (dialog.closest(`[${DIALOG_ATTR}]`)) {
-        return false;
-      }
-      const textareas = dialog.querySelectorAll("textarea");
-      const titles = Array.from(
-        dialog.querySelectorAll('h1,h2,h3,[class*="title"]')
-      ).filter((item) => item.textContent.trim() === LETTER_COMPOSER_TITLE);
-      const submitButtons = Array.from(
-        dialog.querySelectorAll("button")
-      ).filter((item) => item.textContent.trim() === LETTER_SUBMIT_LABEL);
-      return textareas.length === 1 && titles.length === 1 && submitButtons.length === 1;
-    });
-    if (matches.length !== 1) {
+    const matches = new Set(
+      Array.from(
+        document.querySelectorAll('[role="dialog"], .el-dialog')
+      ).filter((dialog) => {
+        if (dialog.closest(`[${DIALOG_ATTR}]`)) {
+          return false;
+        }
+        const textareas = dialog.querySelectorAll("textarea");
+        const titles = Array.from(
+          dialog.querySelectorAll('h1,h2,h3,[class*="title"]')
+        ).filter((item) => item.textContent.trim() === LETTER_COMPOSER_TITLE);
+        const submitButtons = Array.from(
+          dialog.querySelectorAll("button")
+        ).filter((item) => item.textContent.trim() === LETTER_SUBMIT_LABEL);
+        return textareas.length === 1 && titles.length === 1 && submitButtons.length === 1;
+      }).map((dialog) => dialog.querySelector("textarea"))
+    );
+    if (matches.size !== 1) {
       return;
     }
-    matches[0].querySelector("textarea").maxLength = LETTER_CHARACTER_LIMIT;
+    matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;
   };
 
   const schedule = () => {

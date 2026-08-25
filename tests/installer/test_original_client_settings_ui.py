@@ -32,8 +32,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
     assert (
-        'matches[0].querySelector("textarea").maxLength = '
-        "LETTER_CHARACTER_LIMIT;"
+        "matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;"
     ) in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
@@ -112,8 +111,13 @@ const vm = require("vm");
 const source = fs.readFileSync(0, "utf8");
 
 const run = (spec) => {
+  const sharedAreas = new Map();
   const makeDialog = (item) => {
-    const areas = Array.from({ length: item.textareas }, () => ({ maxLength: null }));
+    let areas = item.shared ? sharedAreas.get(item.shared) : null;
+    if (!areas) {
+      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null }));
+      if (item.shared) sharedAreas.set(item.shared, areas);
+    }
     const nodes = (values) => values.map((textContent) => ({ textContent }));
     return {
       areas,
@@ -164,6 +168,10 @@ process.stdout.write(JSON.stringify([
   run({ initial: [], late: [letter] }),
   run({ initial: [{ ...letter, title: "其他弹窗" }] }),
   run({ initial: [letter, letter] }),
+  run({ initial: [
+    { ...letter, shared: "nested" },
+    { ...letter, shared: "nested" },
+  ] }),
   run({ initial: [letter, { ...letter, companion: true }] }),
 ]));
 '''
@@ -180,5 +188,6 @@ process.stdout.write(JSON.stringify([
         [[1200]],
         [[None]],
         [[None], [None]],
+        [[1200], [1200]],
         [[1200], [None]],
     ]
