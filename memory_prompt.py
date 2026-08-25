@@ -160,7 +160,10 @@ class MemoryPromptBuilder:
             record
             for record in records
             if record.domain in {CONVERSATION_MEMORY, LEGACY_LETTERS}
-            and _record_source_id(record) not in excluded
+            and (
+                record.domain != CONVERSATION_MEMORY
+                or _record_source_id(record) not in excluded
+            )
         ]
         if not records:
             return MemoryPrompt(status=status)

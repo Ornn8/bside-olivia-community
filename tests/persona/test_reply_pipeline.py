@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm_gateway import GatewayResponse
+from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
+from llm_gateway import GatewayConfig, GatewayResponse
 from memory_port import NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from reply_context import ReplyContext, ReplyMode, TrustedTime
@@ -159,6 +160,33 @@ class CompatibilityBridge:
         )
 
 
+class SourceAwareConversationMemory:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.config = SimpleNamespace(user_id="local-user")
+
+    def status(self) -> ConversationMemoryStatus:
+        return ConversationMemoryStatus("available", True, "mem0", "synthetic")
+
+    def search_context(self, query, *, user_id, limit):
+        del query
+        return (
+            ConversationMemoryRecord(
+                memory_id="memory.current",
+                text="same synthetic memory text",
+                user_id=user_id,
+                source_id="reply:current-letter:1",
+            ),
+            ConversationMemoryRecord(
+                memory_id="memory.older",
+                text="same synthetic memory text",
+                user_id=user_id,
+                source_id="reply:older-letter:1",
+            ),
+        )[:limit]
+
+
 @pytest.mark.parametrize(
     ("mode", "style_id"),
     [
@@ -212,6 +240,51 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
     assert f'"mode":"{mode.value}"' in system
     assert style_id in system
     assert "林离 Olivia" in system
+
+
+def test_configured_persona_v2_preparation_excludes_current_memory_source() -> None:
+    """Release-default Persona v2 must use the production source selector."""
+
+    import local_server
+
+    memory = SourceAwareConversationMemory()
+    provider = RecordingProvider()
+    adapter = local_server.LetterAdapter(
+        GatewayConfig(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            model="synthetic",
+            persona_v2_enabled=True,
+        ),
+        memory_port=NullMemoryPort(),
+        conversation_memory=memory,
+    )
+    adapter.gateway = provider
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(CompatibilityBridge(adapter), timeout_seconds=1),  # type: ignore[arg-type]
+        reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+    token = local_server._CURRENT_LETTER_MEMORY_SOURCE.set(
+        "reply:current-letter:1"
+    )
+    try:
+        result = asyncio.run(
+            pipeline.run(
+                ReplyRequest(
+                    content="synthetic current letter",
+                    request_id="current-letter-request",
+                ),
+                _context(),
+            )
+        )
+    finally:
+        local_server._CURRENT_LETTER_MEMORY_SOURCE.reset(token)
+
+    assert result.state is ReplyState.COMPLETED
+    rendered = "\n".join(message["content"] for message in provider.messages)
+    assert "reply:current-letter:1" not in rendered
+    assert "reply:older-letter:1" in rendered
 
 
 class FakeTriage:

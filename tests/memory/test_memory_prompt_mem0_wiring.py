@@ -18,6 +18,9 @@ NOW = datetime(2026, 8, 23, 4, 30, tzinfo=timezone.utc)
 class ArchiveMemory:
     enabled = True
 
+    def __init__(self, *, source_id: str = "legacy-1") -> None:
+        self.source_id = source_id
+
     def status(self):
         return {"status": "available", "enabled": True, "provider": "sqlite"}
 
@@ -41,7 +44,7 @@ class ArchiveMemory:
                 provenance={
                     "domain": LEGACY_LETTERS,
                     "source": "archive",
-                    "source_record_id": "legacy-1",
+                    "source_record_id": self.source_id,
                     "read_only": True,
                 },
             ),
@@ -126,6 +129,20 @@ def test_explicit_none_keeps_internal_builder_from_recursively_loading_mem0(monk
 
     assert "旧 SQLite 当前事实" in prompt.text
     assert "旧信只读证据" in prompt.text
+
+
+def test_archive_source_id_collision_is_not_filtered_by_current_selector() -> None:
+    prompt = MemoryPromptBuilder(
+        ArchiveMemory(source_id="reply:letter-1:1"),
+        conversation_memory=None,
+    ).build(
+        "东京",
+        max_chars=2400,
+        exclude_source_ids=("reply:letter-1:1",),
+    )
+
+    assert "旧信只读证据" in prompt.text
+    assert any(record.domain == LEGACY_LETTERS for record in prompt.references)
 
 
 def test_configured_but_unavailable_mem0_does_not_restore_stale_sqlite_current_facts() -> None:
