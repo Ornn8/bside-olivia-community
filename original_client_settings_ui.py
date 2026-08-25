@@ -20,6 +20,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
+  const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const LETTER_CHARACTER_LIMIT = 1200;
@@ -410,6 +411,44 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const renderMemoryPanel = async (panel, capability) => {
     const state = capabilityState(capability);
     if (state === "disabled" || state === "unavailable") {
+      if (state === "unavailable" && capability && capability.reason_code === "MEM0_EMBEDDING_CACHE_UNAVAILABLE") {
+        const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+        const summary = text(
+          "p",
+          "Embedding 尚未安装，长期记忆暂不可用。",
+          "text-text-secondary text-body-m font-regular"
+        );
+        const resultState = text(
+          "p",
+          "",
+          "text-text-secondary text-body-m font-regular"
+        );
+        resultState.setAttribute("aria-live", "polite");
+        const install = button("安装 Embedding", async () => {
+          if (!window.confirm("确认下载本地 Embedding 模型？下载仅在此次确认后开始。")) {
+            return;
+          }
+          setButtonsBusy([install], true);
+          resultState.textContent = "正在安装 Embedding……";
+          try {
+            const payload = await requestMutation(MEMORY_EMBEDDING_INSTALL_PATH, {
+              request_id: requestId("memory.embedding.install"),
+              reason: "用户在原版 Olivia 设置中明确安装 Mem0 Embedding。",
+            });
+            if (payload.status === "APPLIED" || payload.status === "NOOP") {
+              resultState.textContent = "Embedding 已就绪。重启本机服务后，长期记忆会离线运行。";
+            } else {
+              resultState.textContent = "Embedding 安装失败，请重试。";
+            }
+          } catch (_error) {
+            resultState.textContent = "Embedding 安装失败，请重试。";
+          } finally {
+            setButtonsBusy([install], false);
+          }
+        });
+        panel.replaceChildren(heading, summary, install, resultState);
+        return;
+      }
       renderUnavailable(panel, state, "长期记忆");
       return;
     }
