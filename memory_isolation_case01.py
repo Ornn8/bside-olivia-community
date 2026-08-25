@@ -9,6 +9,7 @@ out reference for comparison.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -24,7 +25,11 @@ def _reference_text(manifest_root: Path, item: Mapping[str, Any]) -> str:
 
 
 def _is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 def _persona_summary(result: Mapping[str, object]) -> dict[str, object]:
@@ -64,7 +69,14 @@ def _write_report(output_path: Path, report: Mapping[str, object]) -> None:
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        json.dumps(
+            report,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
     )
 
 

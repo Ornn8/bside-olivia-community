@@ -209,6 +209,76 @@ def test_case01_rejects_a_non_synthetic_validation_mode(tmp_path: Path) -> None:
         _run(tmp_path, manifest_path=tmp_path / "not-read.json", validation_mode="real_validation")
 
 
+def test_case01_report_schema_rejects_non_synthetic_mode_in_both_branches(
+    tmp_path: Path,
+) -> None:
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "memory_isolation_case01_report.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    validator = Draft202012Validator(schema)
+    completed = _run(tmp_path)
+    completed["validation_mode"] = "real_validation"
+    unavailable = {
+        key: value
+        for key, value in completed.items()
+        if key
+        in {
+            "case_id",
+            "prefix_case",
+            "validation_mode",
+            "namespace",
+            "train_original_count",
+            "test_original_count",
+            "private_world_arm",
+        }
+    }
+    unavailable.update(
+        status="unavailable",
+        error_code="CASE01_GENERATOR_UNAVAILABLE",
+    )
+
+    assert list(validator.iter_errors(completed))
+    assert list(validator.iter_errors(unavailable))
+
+
+@pytest.mark.parametrize(
+    ("evaluator_name", "result", "error_code"),
+    [
+        (
+            "persona_evaluator",
+            {"score": float("nan"), "hard_violations": []},
+            "CASE01_PERSONA_EVALUATION_UNAVAILABLE",
+        ),
+        (
+            "reference_evaluator",
+            {"style_score": float("inf")},
+            "CASE01_REFERENCE_EVALUATION_UNAVAILABLE",
+        ),
+    ],
+)
+def test_case01_rejects_non_finite_evaluator_results(
+    tmp_path: Path,
+    evaluator_name: str,
+    result: dict[str, object],
+    error_code: str,
+) -> None:
+    output_path = tmp_path / "local-only-report.json"
+
+    with pytest.raises(ValueError, match="_EVALUATION_INVALID$"):
+        _run(tmp_path, **{evaluator_name: lambda **_: result})
+
+    report_text = output_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert report["status"] == "unavailable"
+    assert report["error_code"] == error_code
+    assert "NaN" not in report_text
+    assert "Infinity" not in report_text
+
+
 def test_case01_writes_a_redacted_unavailable_report_when_generator_fails(tmp_path: Path) -> None:
     def generator(**_: object) -> str:
         raise RuntimeError("synthetic callback detail must not reach the report")
