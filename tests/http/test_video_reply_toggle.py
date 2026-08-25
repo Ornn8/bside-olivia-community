@@ -86,6 +86,115 @@ def test_video_reply_setting_is_visible_persistent_and_idempotent(monkeypatch, t
     local_server.store.settings.clear()
     local_server._load_store_state()
     assert local_server._video_reply_enabled() is False
+
+
+def test_unavailable_durable_store_is_not_fault_open_or_applied(monkeypatch, tmp_path) -> None:
+    import local_server
+
+    monkeypatch.delenv("OLIVIA_LOCAL_DATA_ROOT", raising=False)
+    runtime = create_configured_original_client_server_runtime(server_module=local_server)
+
+    async def exercise() -> None:
+        async with TestClient(TestServer(runtime.app)) as client:
+            read_headers = {"Origin": "http://127.0.0.1:8899"}
+            status = await client.get("/toy/companion/status", headers=read_headers)
+            assert (await status.json())["capabilities"]["video_reply"] == {
+                "state": "unavailable",
+                "reason_code": "VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+            }
+            response = await client.post(
+                "/toy/companion/settings/video-reply",
+                json={"enabled": False, "request_id": "unavailable-root", "reason": "test"},
+                headers=_headers(),
+            )
+            assert response.status == 503
+            assert (await response.json())["error_code"] == "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+
+    asyncio.run(exercise())
+    assert local_server.VIDEO_REPLY_SETTING_KEY not in local_server.store.settings
+
+
+def test_corrupt_durable_store_is_unavailable(monkeypatch, tmp_path) -> None:
+    import local_server
+
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / "state.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(state_root))
+    local_server._load_store_state()
+    assert local_server._durable_store_available() is False
+    assert local_server._video_reply_enabled() is False
+    healthy_root = tmp_path / "unwritable"
+    healthy_root.mkdir()
+    (healthy_root / "state.json").write_text("{}", encoding="utf-8")
+    (healthy_root / ".state.json.tmp").mkdir()
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(healthy_root))
+    local_server._load_store_state()
+    assert local_server._durable_store_available() is False
+
+
+def test_unavailable_store_forces_new_letter_to_text(monkeypatch, tmp_path) -> None:
+    import local_server
+
+    monkeypatch.delenv("OLIVIA_LOCAL_DATA_ROOT", raising=False)
+    _stub_reply(monkeypatch, requested_mode=ReplyMode.SPOKEN_VIDEO.value, tmp_path=tmp_path)
+
+    async def exercise() -> dict:
+        sent = await local_server.route(
+            "POST", "/toy/letter/send", {"content": "unavailable root"}, {}, defer_reply=True
+        )
+        await asyncio.gather(*tuple(local_server.reply_tasks))
+        if local_server.media_tasks:
+            await asyncio.gather(*tuple(local_server.media_tasks))
+        return next(item for item in local_server.store.letters if item["letter_id"] == sent["data"]["letter_id"])
+
+    letter = asyncio.run(exercise())
+    assert letter["video_reply_enabled_at_receive"] is False
+    assert letter["reply_mode"] == ReplyMode.TEXT_LETTER.value
+    assert letter.get("media_status", "NOT_REQUESTED") == "NOT_REQUESTED"
+
+
+def test_video_reply_request_id_is_atomic_across_concurrent_http_mutations(monkeypatch, tmp_path) -> None:
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    runtime = create_configured_original_client_server_runtime(
+        server_module=local_server, environ={"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)}
+    )
+
+    async def exercise() -> None:
+        async with TestClient(TestServer(runtime.app)) as client:
+            async def mutate(enabled: bool, request_id: str) -> tuple[int, dict]:
+                response = await client.post(
+                    "/toy/companion/settings/video-reply",
+                    json={"enabled": enabled, "request_id": request_id, "reason": "test"},
+                    headers=_headers(),
+                )
+                return response.status, await response.json()
+
+            same = await asyncio.gather(mutate(False, "concurrent-video"), mutate(False, "concurrent-video"))
+            assert same[0] == same[1]
+            assert same[0][0] == 200
+            assert same[0][1]["status"] == "APPLIED"
+
+            conflict = await asyncio.gather(
+                mutate(False, "concurrent-video-conflict"),
+                client.post(
+                    "/toy/companion/settings/video-reply",
+                    json={"enabled": True, "request_id": "concurrent-video-conflict", "reason": "test"},
+                    headers=_headers(),
+                ),
+            )
+            left_status, left_payload = conflict[0]
+            right_status = conflict[1].status
+            right_payload = await conflict[1].json()
+            assert sorted((left_status, right_status)) == [200, 409]
+            applied = left_payload if left_status == 200 else right_payload
+            rejected = right_payload if right_status == 409 else left_payload
+            assert applied["status"] in {"APPLIED", "NOOP"}
+            assert rejected["error_code"] == "VIDEO_REPLY_REQUEST_CONFLICT"
+
+    asyncio.run(exercise())
 @pytest.mark.parametrize(("received_enabled", "later_enabled", "expected_mode"), [(False, True, ReplyMode.TEXT_LETTER.value), (True, False, ReplyMode.SPOKEN_VIDEO.value)])
 def test_receive_time_freezes_video_eligibility(monkeypatch, tmp_path, received_enabled, later_enabled, expected_mode) -> None:
     import local_server

@@ -716,7 +716,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderVideoReplyPanel = (panel, setting) => {
-    let currentEnabled = !(setting && setting.enabled === false);
+    const unavailable = !setting || setting.state === "unavailable" || typeof setting.enabled !== "boolean";
+    let currentEnabled = !unavailable && setting.enabled;
     const heading = text("h3", "视频回信", "text-text-title text-title-m");
     const description = text("p", "关闭后，新的回信只保留文字链路；已有回信不会被删除。", "text-text-secondary text-body-m font-regular");
     const state = text("p", "", "text-text-secondary text-body-m font-regular");
@@ -734,7 +735,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             ? "用户在原版 Olivia 设置中开启视频回信"
             : "用户在原版 Olivia 设置中关闭视频回信",
         });
-        if (payload.status === "APPLIED" || payload.status === "NOOP") {
+        if (payload.status === "APPLIED" || payload.status === "NOOP" || payload.status === "DUPLICATE") {
           currentEnabled = nextEnabled;
           state.textContent = currentEnabled ? "视频回信已开启；系统将继续使用现有资格判断。" : "视频回信已关闭；新的回信将继续使用文字链路。";
           toggle.textContent = currentEnabled ? "关闭" : "开启";
@@ -750,8 +751,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     toggle.setAttribute("aria-pressed", currentEnabled ? "true" : "false");
     toggle.textContent = currentEnabled ? "关闭" : "开启";
-    state.textContent = currentEnabled ? "视频回信已开启；系统将继续使用现有资格判断。" : "视频回信已关闭；新的回信将继续使用文字链路。";
-    panel.replaceChildren(heading, description, state, toggle);
+    if (unavailable) {
+      toggle.disabled = true;
+      state.textContent = "视频回信设置暂时不可用，当前状态未改变。";
+      panel.replaceChildren(heading, description, state);
+    } else {
+      state.textContent = currentEnabled ? "视频回信已开启；系统将继续使用现有资格判断。" : "视频回信已关闭；新的回信将继续使用文字链路。";
+      panel.replaceChildren(heading, description, state, toggle);
+    }
   };
 
   const loadDialogData = async (statusNode, panels) => {

@@ -24,7 +24,7 @@
 POST /toy/companion/settings/video-reply
 ```
 
-视频开关请求体为 `enabled`、`request_id`、`reason`，带确认 header；同一 request ID 重放原始结果，不同 payload 显示稳定冲突错误。UI 只把 `capabilities.video_reply.enabled` 作为当前状态，默认/旧配置缺失时显示开启。
+视频开关请求体为 `enabled`、`request_id`、`reason`，带确认 header；同一 request ID 重放原始结果（包括 `DUPLICATE`），不同 payload 显示稳定冲突错误。UI 只把可用的 `capabilities.video_reply.enabled` 作为当前状态；不可用状态显示失败并保持原值，默认/旧配置缺失时显示开启。
 
 切换只影响之后进入服务端的新信。接收边界记录的资格不随之后切换改变；关闭资格的信件纯文字且不显示媒体等待，开启资格的信件继续原有视频流程。
 

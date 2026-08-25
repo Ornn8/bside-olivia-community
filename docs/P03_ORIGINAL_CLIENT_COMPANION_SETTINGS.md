@@ -73,7 +73,7 @@ GET /toy/companion/status
 POST /toy/companion/settings/video-reply
 ```
 
-状态响应使用 `p03.original-companion-read.v1`，其中 `capabilities.video_reply` 为 `{enabled, default_enabled}`。开关 mutation 使用 `p03.original-companion-mutation.v1`，请求为 `{enabled, request_id, reason}`，成功返回 `APPLIED`、`NOOP` 或 `DUPLICATE`。
+状态响应使用 `p03.original-companion-read.v1`，其中可用的 `capabilities.video_reply` 为 `{enabled, default_enabled}`；持久化不可用时为 `{state: "unavailable", reason_code: "VIDEO_REPLY_SETTINGS_UNAVAILABLE"}`。开关 mutation 使用 `p03.original-companion-mutation.v1`，请求为 `{enabled, request_id, reason}`，成功返回 `APPLIED`、`NOOP` 或 `DUPLICATE`。
 
 同一 `request_id` 与相同 payload 重放原始结果；不同 payload 返回 `409 VIDEO_REPLY_REQUEST_CONFLICT` 且不改变状态。稳定错误包括 `VIDEO_REPLY_ENABLED_INVALID`、`VIDEO_REPLY_REQUEST_CONFLICT`、`VIDEO_REPLY_REPLAY_INVALID`、`VIDEO_REPLY_SETTINGS_INVALID`、`VIDEO_REPLY_SETTINGS_UNAVAILABLE` 和 `COMPANION_REQUEST_ID_INVALID`。
 

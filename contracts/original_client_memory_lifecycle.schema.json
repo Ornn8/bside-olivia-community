@@ -18,7 +18,8 @@
       "properties": {
         "memory": {"$ref": "#/$defs/memory"},
         "private_world": {"$ref": "#/$defs/capability"},
-        "candidates": {"$ref": "#/$defs/capability"}
+        "candidates": {"$ref": "#/$defs/capability"},
+        "video_reply": {"$ref": "#/$defs/video_reply"}
       }
     }
   },
@@ -44,6 +45,24 @@
         {
           "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_AUDIT_UNAVAILABLE"}}, "required": ["reason_code"]},
           "then": {"properties": {"state": {"const": "unavailable"}}}
+        }
+      ]
+    },
+    "video_reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "default_enabled": {"type": "boolean"},
+        "state": {"const": "unavailable"},
+        "reason_code": {"const": "VIDEO_REPLY_SETTINGS_UNAVAILABLE"}
+      },
+      "oneOf": [
+        {
+          "required": ["enabled", "default_enabled"]
+        },
+        {
+          "required": ["state", "reason_code"]
         }
       ]
     }

@@ -113,14 +113,27 @@ class CompanionCapability:
 
 @dataclass(frozen=True)
 class CompanionVideoReplySetting:
-    enabled: bool
+    enabled: bool | None
     default_enabled: bool = True
+    state: str = "available"
+    reason_code: str | None = None
 
     def __post_init__(self) -> None:
-        if type(self.enabled) is not bool or type(self.default_enabled) is not bool:
+        if self.state not in {"available", "unavailable"}:
+            raise ValueError("video reply setting state is invalid")
+        if self.state == "available" and (
+            type(self.enabled) is not bool or type(self.default_enabled) is not bool
+        ):
             raise ValueError("video reply setting is invalid")
+        if self.state == "unavailable" and (
+            self.enabled is not None
+            or self.reason_code != "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        ):
+            raise ValueError("video reply setting unavailable state is invalid")
 
-    def to_dict(self) -> dict[str, bool]:
+    def to_dict(self) -> dict[str, object]:
+        if self.state == "unavailable":
+            return {"state": self.state, "reason_code": self.reason_code}
         return {
             "enabled": self.enabled,
             "default_enabled": self.default_enabled,

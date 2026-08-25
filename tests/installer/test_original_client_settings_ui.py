@@ -51,6 +51,8 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
     assert "capabilities.video_reply" in BOOTSTRAP_JAVASCRIPT and "enabled: nextEnabled" in BOOTSTRAP_JAVASCRIPT
+    assert 'payload.status === "APPLIED" || payload.status === "NOOP" || payload.status === "DUPLICATE"' in BOOTSTRAP_JAVASCRIPT
+    assert 'setting.state === "unavailable"' in BOOTSTRAP_JAVASCRIPT and 'toggle.disabled = true' in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:

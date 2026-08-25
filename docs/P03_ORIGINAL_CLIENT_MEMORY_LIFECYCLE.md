@@ -6,11 +6,29 @@ operations:
 
 - `/toy/companion/memory/pause`
 - `/toy/companion/memory/resume`
+- `/toy/companion/settings/video-reply`
 
-Both use the existing `p03.original-companion-mutation.v1` envelope, require a
+These operations use the existing `p03.original-companion-mutation.v1` envelope, require a
 loopback origin and `X-Olivia-Companion-Action: confirmed`, and are idempotent
 by request ID. There is no clear operation in this contract; data deletion is a
 separate, independently reviewable change.
+
+The video-reply setting uses the same envelope and request replay ledger. Its
+`enabled` value is a receive-boundary preference: a newly received letter
+freezes the value once, so turning the setting off does not cancel video work
+already received or queued, and turning it on does not upgrade an already
+received text-only letter. Missing `video_reply_enabled` in a valid older
+store means enabled by default; an unavailable, corrupt, or unwritable store
+reports `VIDEO_REPLY_SETTINGS_UNAVAILABLE` and never claims `APPLIED`.
+An exact request replay returns the original result; reusing a request ID with
+a different payload returns `VIDEO_REPLY_REQUEST_CONFLICT` without changing
+state.
+The versioned `GET /toy/companion/status` payload may include
+`capabilities.video_reply` as `{enabled, default_enabled}` or, when durable
+settings are unavailable, `{state: "unavailable", reason_code:
+"VIDEO_REPLY_SETTINGS_UNAVAILABLE"}`. Mutation errors are stable
+`VIDEO_REPLY_ENABLED_INVALID`, `VIDEO_REPLY_REQUEST_CONFLICT`,
+`VIDEO_REPLY_SETTINGS_UNAVAILABLE`, or `VIDEO_REPLY_SETTINGS_INVALID`.
 
 ## Pause and resume boundary
 

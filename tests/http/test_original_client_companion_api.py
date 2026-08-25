@@ -17,6 +17,7 @@ from original_client_companion_api import (
     CompanionMemorySummary,
     CompanionPrivateWorldSummary,
     CompanionReadStatus,
+    CompanionVideoReplySetting,
     mount_original_companion_read_api,
 )
 
@@ -153,6 +154,7 @@ def test_paused_memory_is_never_reported_as_ready() -> None:
         ),
         private_world=CompanionCapability("available"),
         candidates=CompanionCapability("available"),
+        video_reply=CompanionVideoReplySetting(False),
     ).to_dict()
 
     assert payload["status"] == "PAUSED"
@@ -165,6 +167,15 @@ def test_paused_memory_is_never_reported_as_ready() -> None:
         ).read_text(encoding="utf-8")
     )
     assert not list(Draft202012Validator(schema).iter_errors(payload))
+
+    unavailable = dict(payload)
+    unavailable["capabilities"] = dict(payload["capabilities"])
+    unavailable["capabilities"]["video_reply"] = CompanionVideoReplySetting(
+        None,
+        state="unavailable",
+        reason_code="VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+    ).to_dict()
+    assert not list(Draft202012Validator(schema).iter_errors(unavailable))
 
 
 def test_read_contract_requires_original_or_loopback_origin_and_loopback_host() -> None:

@@ -81,6 +81,9 @@ disabled
 ```
 
 未配置或故障不能伪造成 `available`。
+当持久化根缺失、损坏或不可写时，`video_reply` 改为
+`{"state":"unavailable","reason_code":"VIDEO_REPLY_SETTINGS_UNAVAILABLE"}`；
+这不等同于合法旧 store 中缺少 `video_reply_enabled`（后者默认开启）。
 
 ## 5. 长期记忆读取
 

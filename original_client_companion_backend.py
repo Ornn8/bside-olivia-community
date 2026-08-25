@@ -206,12 +206,26 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
             None,
         )
         if not callable(reader):
-            return CompanionVideoReplySetting(True)
+            return CompanionVideoReplySetting(
+                None,
+                state="unavailable",
+                reason_code="VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+            )
         try:
             value = reader()
         except (OSError, RuntimeError, TypeError, ValueError):
-            return CompanionVideoReplySetting(True)
-        return CompanionVideoReplySetting(value if type(value) is bool else True)
+            return CompanionVideoReplySetting(
+                None,
+                state="unavailable",
+                reason_code="VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+            )
+        if type(value) is not bool:
+            return CompanionVideoReplySetting(
+                None,
+                state="unavailable",
+                reason_code="VIDEO_REPLY_SETTINGS_UNAVAILABLE",
+            )
+        return CompanionVideoReplySetting(value)
 
     def read_status(self) -> CompanionReadStatus:
         return CompanionReadStatus(

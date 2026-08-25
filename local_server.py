@@ -11,6 +11,7 @@ import json
 import os as _os
 import re as _re
 import random
+import threading
 import time
 import uuid
 import hashlib
@@ -497,8 +498,11 @@ class Store:
         self.midi_jobs = []    # {job_id, state, filename, created_at}
         self.settings = {}
         self.request_keys = {}
+        self.video_reply_mutation_lock = threading.Lock()
 
 store = Store()
+_store_state_root: Path | None = None
+_store_state_error: str | None = None
 
 
 def _conversation_state_root() -> Path | None:
@@ -533,14 +537,24 @@ def _state_root() -> Path | None:
 
 
 def _load_store_state() -> None:
+    global _store_state_root, _store_state_error
     root = _state_root()
     if root is None:
+        _store_state_root = None
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return
+    _store_state_root = root
+    _store_state_error = None
+    state_path = root / "state.json"
+    if not state_path.exists():
         return
     try:
-        loaded = json.loads((root / "state.json").read_text(encoding="utf-8"))
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
         return
     if not isinstance(loaded, dict):
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
         return
     needs_persist = False
     for name in ("letters", "legacy_letters", "midi_jobs"):
@@ -568,20 +582,62 @@ def _load_store_state() -> None:
 
 
 def _persist_store_state() -> None:
+    global _store_state_root, _store_state_error
     root = _state_root()
     if root is None:
         return
-    root.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "letters": store.letters,
-        "legacy_letters": store.legacy_letters,
-        "midi_jobs": store.midi_jobs,
-        "settings": store.settings,
-        "request_keys": store.request_keys,
-    }
-    temporary = root / ".state.json.tmp"
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    temporary.replace(root / "state.json")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "letters": store.letters,
+            "legacy_letters": store.legacy_letters,
+            "midi_jobs": store.midi_jobs,
+            "settings": store.settings,
+            "request_keys": store.request_keys,
+        }
+        temporary = root / ".state.json.tmp"
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        temporary.replace(root / "state.json")
+    except (OSError, UnicodeError, TypeError, ValueError):
+        _store_state_root = root
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        raise
+    _store_state_root = root
+    _store_state_error = None
+
+
+def _durable_store_available() -> bool:
+    """Report durable state health without treating a missing legacy key as failure."""
+
+    global _store_state_root, _store_state_error
+    root = _state_root()
+    if root is None:
+        _store_state_root = None
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return False
+    if _store_state_root != root:
+        _store_state_root = root
+        _store_state_error = None
+    if _store_state_error is not None:
+        return False
+    if root.exists() and (not root.is_dir() or not _os.access(root, _os.W_OK)):
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return False
+    if (root / ".state.json.tmp").exists() and not (root / ".state.json.tmp").is_file():
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return False
+    state_path = root / "state.json"
+    if not state_path.exists():
+        return True
+    try:
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return False
+    if not isinstance(loaded, dict):
+        _store_state_error = "VIDEO_REPLY_SETTINGS_UNAVAILABLE"
+        return False
+    return True
 
 
 VIDEO_REPLY_SETTING_KEY = "video_reply_enabled"
@@ -591,6 +647,10 @@ class _VideoReplySettings:
     """Persist the original-client video preference with a compatible default."""
 
     def read_video_reply_enabled(self) -> bool:
+        if not _durable_store_available():
+            raise OriginalClientCompanionMutationError(
+                "VIDEO_REPLY_SETTINGS_UNAVAILABLE", status=503
+            )
         value = store.settings.get(VIDEO_REPLY_SETTING_KEY)
         return value if type(value) is bool else True
 
@@ -603,22 +663,45 @@ class _VideoReplySettings:
     ) -> bool | CompanionMutationResult:
         if type(enabled) is not bool:
             raise ValueError("video reply setting must be boolean")
-        payload = {"enabled": enabled, "reason": reason or ""}
-        if request_id and (replay := store.request_keys.get(request_id)) is not None:
-            if not isinstance(replay, dict) or replay.get("kind") != "video_reply_setting" or replay.get("payload") != payload:
-                raise OriginalClientCompanionMutationError("VIDEO_REPLY_REQUEST_CONFLICT", status=409)
-            result = replay.get("result")
-            if not isinstance(result, dict):
-                raise OriginalClientCompanionMutationError("VIDEO_REPLY_REPLAY_INVALID", status=503)
-            return CompanionMutationResult(request_id=request_id, status=str(result.get("status")), affected_count=int(result.get("affected_count", 0)))
-        previous = store.settings.get(VIDEO_REPLY_SETTING_KEY)
-        had_previous = VIDEO_REPLY_SETTING_KEY in store.settings
-        changed = previous is not enabled
-        if changed:
-            store.settings[VIDEO_REPLY_SETTING_KEY] = enabled
-        if request_id is None:
-            if not changed:
-                return False
+        with store.video_reply_mutation_lock:
+            if not _durable_store_available():
+                raise OriginalClientCompanionMutationError(
+                    "VIDEO_REPLY_SETTINGS_UNAVAILABLE", status=503
+                )
+            payload = {"enabled": enabled, "reason": reason or ""}
+            if request_id and (replay := store.request_keys.get(request_id)) is not None:
+                if not isinstance(replay, dict) or replay.get("kind") != "video_reply_setting" or replay.get("payload") != payload:
+                    raise OriginalClientCompanionMutationError("VIDEO_REPLY_REQUEST_CONFLICT", status=409)
+                result = replay.get("result")
+                if not isinstance(result, dict):
+                    raise OriginalClientCompanionMutationError("VIDEO_REPLY_REPLAY_INVALID", status=503)
+                return CompanionMutationResult(request_id=request_id, status=str(result.get("status")), affected_count=int(result.get("affected_count", 0)))
+            previous = store.settings.get(VIDEO_REPLY_SETTING_KEY)
+            had_previous = VIDEO_REPLY_SETTING_KEY in store.settings
+            changed = previous is not enabled
+            if changed:
+                store.settings[VIDEO_REPLY_SETTING_KEY] = enabled
+            if request_id is None:
+                if not changed:
+                    return False
+                try:
+                    _persist_store_state()
+                except Exception:
+                    if had_previous:
+                        store.settings[VIDEO_REPLY_SETTING_KEY] = previous
+                    else:
+                        store.settings.pop(VIDEO_REPLY_SETTING_KEY, None)
+                    raise
+                return True
+            result = CompanionMutationResult(request_id=request_id, status="APPLIED" if changed else "NOOP", affected_count=1 if changed else 0)
+            store.request_keys[request_id] = {
+                "kind": "video_reply_setting",
+                "payload": payload,
+                "result": {
+                    "status": result.status,
+                    "affected_count": result.affected_count,
+                },
+            }
             try:
                 _persist_store_state()
             except Exception:
@@ -626,27 +709,9 @@ class _VideoReplySettings:
                     store.settings[VIDEO_REPLY_SETTING_KEY] = previous
                 else:
                     store.settings.pop(VIDEO_REPLY_SETTING_KEY, None)
+                store.request_keys.pop(request_id, None)
                 raise
-            return True
-        result = CompanionMutationResult(request_id=request_id, status="APPLIED" if changed else "NOOP", affected_count=1 if changed else 0)
-        store.request_keys[request_id] = {
-            "kind": "video_reply_setting",
-            "payload": payload,
-            "result": {
-                "status": result.status,
-                "affected_count": result.affected_count,
-            },
-        }
-        try:
-            _persist_store_state()
-        except Exception:
-            if had_previous:
-                store.settings[VIDEO_REPLY_SETTING_KEY] = previous
-            else:
-                store.settings.pop(VIDEO_REPLY_SETTING_KEY, None)
-            store.request_keys.pop(request_id, None)
-            raise
-        return result
+            return result
 
 video_reply_settings = _VideoReplySettings()
 
@@ -655,8 +720,8 @@ def _video_reply_enabled() -> bool:
     try:
         value = video_reply_settings.read_video_reply_enabled()
     except Exception:
-        return True
-    return value if type(value) is bool else True
+        return False
+    return value if type(value) is bool else False
 
 
 _memory_config = load_memory_config()
