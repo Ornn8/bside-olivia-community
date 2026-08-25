@@ -468,6 +468,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
 
     const lifecycleControls = actions();
+    const refreshLifecyclePanel = async () => {
+      const payload = await requestJson(STATUS_PATH);
+      const capabilities = payload.capabilities && typeof payload.capabilities === "object"
+        ? payload.capabilities
+        : {};
+      await renderMemoryPanel(panel, capabilities.memory);
+    };
     const toggle = button(paused ? "恢复长期记忆" : "暂停长期记忆", async () => {
       const action = paused ? "恢复" : "暂停";
       if (!window.confirm(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
@@ -484,7 +491,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           }
         );
         resultState.textContent = mutationMessage(payload, `长期记忆已${action}。`);
-        await load();
+        await refreshLifecyclePanel();
       } catch (_error) {
         resultState.textContent = `长期记忆${action}失败。`;
       } finally {

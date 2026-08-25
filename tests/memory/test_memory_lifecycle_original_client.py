@@ -12,7 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from companion_memory_context import CompanionMemoryPromptBuilder
-from conversation_memory_admin import ConversationMemoryAdminError, ConversationMemoryAdminService
+from conversation_memory_admin import (
+    ConversationMemoryAdminError,
+    ConversationMemoryAdminService,
+    MemoryAdminMutationStatus,
+)
 from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
 from conversation_memory_delivery import CanonicalMemoryDelivery, ConversationMemoryDeliveryCommitter
 from conversation_memory_runtime import (
@@ -229,6 +233,77 @@ def test_pause_blocks_preexisting_canonical_delivery_until_it_is_recorded_termin
     time.sleep(0.35)
     assert memory.writes == []
     stop_conversation_memory_runtime()
+
+
+def test_fast_pause_resume_tombstones_an_undelivered_old_canonical_reply(
+    tmp_path: Path,
+) -> None:
+    memory = Mem0()
+    admin = ConversationMemoryAdminService(memory, tmp_path / "memory_admin_audit.sqlite3")
+    delivery = CanonicalMemoryDelivery(
+        "letter.prepause.fast-resume",
+        1,
+        "synthetic user",
+        "synthetic reply",
+        datetime.now(timezone.utc),
+    )
+    admin.pause(request_id="memory.pause.fast.1", reason="用户暂停长期记忆。")
+    admin.resume(request_id="memory.resume.fast.1", reason="用户恢复长期记忆。")
+
+    result = asyncio.run(
+        ConversationMemoryDeliveryCommitter(memory, memory_lifecycle=admin).commit(delivery)
+    )
+
+    assert result.status.value == "skipped"
+    assert memory.writes == []
+
+
+def test_pause_windows_are_isolated_by_normalized_user_id(tmp_path: Path) -> None:
+    memory = Mem0()
+    audit = tmp_path / "memory_admin_audit.sqlite3"
+    user_a = ConversationMemoryAdminService(memory, audit, user_id="User-A")
+    same_user_a = ConversationMemoryAdminService(memory, audit, user_id="user-a")
+    user_b = ConversationMemoryAdminService(memory, audit, user_id="user-b")
+    delivery_time = datetime.now(timezone.utc)
+
+    user_a.pause(request_id="memory.pause.user-a.1", reason="用户 A 暂停长期记忆。")
+
+    assert user_a.is_paused() is True
+    assert same_user_a.is_paused() is True
+    assert user_b.is_paused() is False
+    assert user_b.blocks_delivery(delivery_time) is False
+
+
+def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> None:
+    memory = Mem0()
+    audit = tmp_path / "memory_admin_audit.sqlite3"
+    admin = ConversationMemoryAdminService(memory, audit)
+    assert admin.pause(
+        request_id="memory.pause.active.1", reason="用户暂停长期记忆。"
+    ).status is MemoryAdminMutationStatus.APPLIED
+    assert admin.pause(
+        request_id="memory.pause.noop.1", reason="用户再次暂停长期记忆。"
+    ).status is MemoryAdminMutationStatus.NOOP
+
+    restarted = ConversationMemoryAdminService(memory, audit)
+    assert restarted.pause(
+        request_id="memory.pause.noop.1", reason="重试同一暂停请求。"
+    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        restarted.resume(
+            request_id="memory.pause.noop.1", reason="不能跨 operation 复用请求。"
+        )
+
+    assert restarted.resume(
+        request_id="memory.resume.active.1", reason="用户恢复长期记忆。"
+    ).status is MemoryAdminMutationStatus.APPLIED
+    assert restarted.resume(
+        request_id="memory.resume.noop.1", reason="用户再次恢复长期记忆。"
+    ).status is MemoryAdminMutationStatus.NOOP
+    restarted = ConversationMemoryAdminService(memory, audit)
+    assert restarted.resume(
+        request_id="memory.resume.noop.1", reason="重试同一恢复请求。"
+    ).status is MemoryAdminMutationStatus.DUPLICATE
 
 
 def test_pause_waits_for_a_provider_write_already_past_the_final_gate(tmp_path: Path) -> None:

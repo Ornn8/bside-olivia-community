@@ -25,7 +25,7 @@ from conversation_memory_port import (
 )
 
 
-MEMORY_ADMIN_AUDIT_SCHEMA = 2
+MEMORY_ADMIN_AUDIT_SCHEMA = 4
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _ERROR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _OPERATIONS = frozenset({"add", "delete", "correct", "clear", "pause", "resume"})
@@ -150,7 +150,7 @@ class ConversationMemoryAdminService:
         path = Path(audit_path)
         if str(path) in {"", "."} or path.exists() and path.is_dir():
             raise ValueError("an explicit memory admin audit file is required")
-        _identifier(user_id, field_name="user_id")
+        user_id = _normalized_user_id(user_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.memory = memory
         self.audit_path = path
@@ -173,12 +173,14 @@ class ConversationMemoryAdminService:
                     raise ConversationMemoryAdminError(
                         "MEMORY_ADMIN_SCHEMA_UNSUPPORTED"
                     )
+                if version == 1:
+                    self._upgrade_operations_for_lifecycle(connection)
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS memory_admin_operations (
                         request_id TEXT PRIMARY KEY,
                         operation TEXT NOT NULL CHECK (
-                            operation IN ('add', 'delete', 'correct', 'clear')
+                            operation IN ('add', 'delete', 'correct', 'clear', 'pause', 'resume')
                         ),
                         target_memory_id TEXT,
                         replacement_memory_id TEXT,
@@ -196,10 +198,13 @@ class ConversationMemoryAdminService:
                         updated_at TEXT NOT NULL
                     );
                     CREATE TABLE IF NOT EXISTS memory_admin_pause_windows (
-                        pause_request_id TEXT PRIMARY KEY,
-                        resume_request_id TEXT UNIQUE,
+                        user_id TEXT NOT NULL,
+                        pause_request_id TEXT NOT NULL,
+                        resume_request_id TEXT,
                         started_at TEXT NOT NULL,
-                        resumed_at TEXT
+                        resumed_at TEXT,
+                        PRIMARY KEY (user_id, pause_request_id),
+                        UNIQUE (user_id, resume_request_id)
                     );
                     """
                 )
@@ -212,6 +217,44 @@ class ConversationMemoryAdminService:
             raise ConversationMemoryAdminError(
                 "MEMORY_ADMIN_INITIALIZATION_FAILED"
             ) from exc
+
+    @staticmethod
+    def _upgrade_operations_for_lifecycle(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            ALTER TABLE memory_admin_operations RENAME TO memory_admin_operations_v1;
+            CREATE TABLE memory_admin_operations (
+                request_id TEXT PRIMARY KEY,
+                operation TEXT NOT NULL CHECK (
+                    operation IN ('add', 'delete', 'correct', 'clear', 'pause', 'resume')
+                ),
+                target_memory_id TEXT,
+                replacement_memory_id TEXT,
+                replacement_source_id TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'completed',
+                        'noop',
+                        'replacement_written_delete_pending'
+                    )
+                ),
+                affected_count INTEGER NOT NULL CHECK (affected_count >= 0),
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO memory_admin_operations (
+                request_id, operation, target_memory_id, replacement_memory_id,
+                replacement_source_id, status, affected_count, reason,
+                created_at, updated_at
+            ) SELECT
+                request_id, operation, target_memory_id, replacement_memory_id,
+                replacement_source_id, status, affected_count, reason,
+                created_at, updated_at
+            FROM memory_admin_operations_v1;
+            DROP TABLE memory_admin_operations_v1;
+            """
+        )
 
     def list_memories(
         self,
@@ -508,32 +551,37 @@ class ConversationMemoryAdminService:
         reason: str,
     ) -> MemoryAdminMutationResult:
         request_id = _identifier(request_id, field_name="request_id")
-        _text(reason, field_name="reason", maximum=500)
+        reason = _text(reason, field_name="reason", maximum=500)
         with self._lifecycle_lock, self._lock:
+            existing = self._existing_result(request_id, "pause")
+            if existing is not None:
+                return existing
             try:
                 with self._connect() as connection:
-                    existing = connection.execute(
-                        "SELECT 1 FROM memory_admin_pause_windows WHERE pause_request_id = ?",
-                        (request_id,),
-                    ).fetchone()
-                    if existing is not None:
-                        return MemoryAdminMutationResult(
-                            MemoryAdminMutationStatus.DUPLICATE, request_id, "pause"
-                        )
                     active = connection.execute(
-                        "SELECT 1 FROM memory_admin_pause_windows WHERE resumed_at IS NULL"
+                        "SELECT 1 FROM memory_admin_pause_windows "
+                        "WHERE user_id = ? AND resumed_at IS NULL",
+                        (self.user_id,),
                     ).fetchone()
                     if active is not None:
-                        return MemoryAdminMutationResult(
-                            MemoryAdminMutationStatus.NOOP, request_id, "pause"
+                        status = MemoryAdminMutationStatus.NOOP
+                    else:
+                        connection.execute(
+                            "INSERT INTO memory_admin_pause_windows "
+                            "(user_id, pause_request_id, started_at) VALUES (?, ?, ?)",
+                            (self.user_id, request_id, datetime.now(timezone.utc).isoformat()),
                         )
-                    connection.execute(
-                        "INSERT INTO memory_admin_pause_windows (pause_request_id, started_at) VALUES (?, ?)",
-                        (request_id, datetime.now(timezone.utc).isoformat()),
-                    )
+                        status = MemoryAdminMutationStatus.APPLIED
             except (OSError, sqlite3.Error, ValueError) as exc:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
-        return MemoryAdminMutationResult(MemoryAdminMutationStatus.APPLIED, request_id, "pause")
+            self._write_audit(
+                request_id=request_id,
+                operation="pause",
+                status="noop" if status is MemoryAdminMutationStatus.NOOP else "completed",
+                reason=reason,
+                affected_count=0,
+            )
+        return MemoryAdminMutationResult(status, request_id, "pause")
 
     def resume(
         self,
@@ -542,34 +590,43 @@ class ConversationMemoryAdminService:
         reason: str,
     ) -> MemoryAdminMutationResult:
         request_id = _identifier(request_id, field_name="request_id")
-        _text(reason, field_name="reason", maximum=500)
+        reason = _text(reason, field_name="reason", maximum=500)
         with self._lifecycle_lock, self._lock:
+            existing = self._existing_result(request_id, "resume")
+            if existing is not None:
+                return existing
             try:
                 with self._connect() as connection:
-                    existing = connection.execute(
-                        "SELECT 1 FROM memory_admin_pause_windows WHERE resume_request_id = ?",
-                        (request_id,),
-                    ).fetchone()
-                    if existing is not None:
-                        return MemoryAdminMutationResult(
-                            MemoryAdminMutationStatus.DUPLICATE, request_id, "resume"
-                        )
                     active = connection.execute(
                         "SELECT pause_request_id FROM memory_admin_pause_windows "
-                        "WHERE resumed_at IS NULL ORDER BY started_at DESC LIMIT 1"
+                        "WHERE user_id = ? AND resumed_at IS NULL "
+                        "ORDER BY started_at DESC LIMIT 1",
+                        (self.user_id,),
                     ).fetchone()
                     if active is None:
-                        return MemoryAdminMutationResult(
-                            MemoryAdminMutationStatus.NOOP, request_id, "resume"
+                        status = MemoryAdminMutationStatus.NOOP
+                    else:
+                        connection.execute(
+                            "UPDATE memory_admin_pause_windows SET resume_request_id = ?, resumed_at = ? "
+                            "WHERE user_id = ? AND pause_request_id = ?",
+                            (
+                                request_id,
+                                datetime.now(timezone.utc).isoformat(),
+                                self.user_id,
+                                str(active[0]),
+                            ),
                         )
-                    connection.execute(
-                        "UPDATE memory_admin_pause_windows SET resume_request_id = ?, resumed_at = ? "
-                        "WHERE pause_request_id = ?",
-                        (request_id, datetime.now(timezone.utc).isoformat(), str(active[0])),
-                    )
+                        status = MemoryAdminMutationStatus.APPLIED
             except (OSError, sqlite3.Error, ValueError) as exc:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
-        return MemoryAdminMutationResult(MemoryAdminMutationStatus.APPLIED, request_id, "resume")
+            self._write_audit(
+                request_id=request_id,
+                operation="resume",
+                status="noop" if status is MemoryAdminMutationStatus.NOOP else "completed",
+                reason=reason,
+                affected_count=0,
+            )
+        return MemoryAdminMutationResult(status, request_id, "resume")
 
     def is_paused(self) -> bool:
         with self._lifecycle_lock:
@@ -579,7 +636,9 @@ class ConversationMemoryAdminService:
         try:
             with self._connect() as connection:
                 return connection.execute(
-                    "SELECT 1 FROM memory_admin_pause_windows WHERE resumed_at IS NULL"
+                    "SELECT 1 FROM memory_admin_pause_windows "
+                    "WHERE user_id = ? AND resumed_at IS NULL",
+                    (self.user_id,),
                 ).fetchone() is not None
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
@@ -595,8 +654,10 @@ class ConversationMemoryAdminService:
                 with self._connect() as connection:
                     return connection.execute(
                         "SELECT 1 FROM memory_admin_pause_windows "
-                        "WHERE started_at <= ? AND (resumed_at IS NULL OR resumed_at >= ?) LIMIT 1",
-                        (timestamp, timestamp),
+                        "WHERE user_id = ? AND ((started_at <= ? AND "
+                        "(resumed_at IS NULL OR resumed_at >= ?)) OR "
+                        "(resumed_at IS NOT NULL AND resumed_at >= ?)) LIMIT 1",
+                        (self.user_id, timestamp, timestamp, timestamp),
                     ).fetchone() is not None
             except (OSError, sqlite3.Error) as exc:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
@@ -828,6 +889,12 @@ def _identifier(value: object, *, field_name: str) -> str:
     if not isinstance(value, str) or not _ID_RE.fullmatch(value):
         raise ConversationMemoryAdminError("MEMORY_ADMIN_IDENTIFIER_INVALID")
     return value
+
+
+def _normalized_user_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ConversationMemoryAdminError("MEMORY_ADMIN_IDENTIFIER_INVALID")
+    return _identifier(value.strip().casefold(), field_name="user_id")
 
 
 def _text(value: object, *, field_name: str, maximum: int) -> str:

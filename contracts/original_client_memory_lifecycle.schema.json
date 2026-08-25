@@ -7,7 +7,10 @@
   "required": ["schema_version", "status", "capabilities"],
   "properties": {
     "schema_version": {"const": "p03.original-companion-read.v1"},
-    "status": {"enum": ["READY", "PAUSED"]},
+    "status": {
+      "description": "PAUSED is scoped to the normalized local user represented by this original-client session.",
+      "enum": ["READY", "PAUSED"]
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -37,6 +40,10 @@
         {
           "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_PAUSED"}}, "required": ["reason_code"]},
           "then": {"properties": {"state": {"const": "degraded"}}}
+        },
+        {
+          "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_AUDIT_UNAVAILABLE"}}, "required": ["reason_code"]},
+          "then": {"properties": {"state": {"const": "unavailable"}}}
         }
       ]
     }

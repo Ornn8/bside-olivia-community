@@ -175,6 +175,17 @@ def test_memory_health_keeps_lifecycle_audit_failure_fail_closed(
         UnavailableLifecycle(),
     )
     monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {
+            "status": "degraded",
+            "enabled": True,
+            "provider": "mem0-outbox",
+            "worker_running": True,
+            "reason_code": "MEMORY_OUTBOX_DELIVERY_FAILED",
+        },
+    )
+    monkeypatch.setattr(
         local_server,
         "conversation_memory_runtime_status",
         lambda: ConversationMemoryRuntimeStatus(

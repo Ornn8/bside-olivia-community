@@ -1083,7 +1083,11 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                     "status": "unavailable",
                     "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE",
                 }
-    if conversation_info.get("status") != "disabled" and isinstance(runtime_info, dict):
+    if (
+        conversation_info.get("status") != "disabled"
+        and not lifecycle_unavailable
+        and isinstance(runtime_info, dict)
+    ):
         runtime_status = str(runtime_info.get("status", "unavailable"))
         if runtime_status not in {"available", "degraded", "unavailable", "disabled"}:
             runtime_status = "unavailable"
