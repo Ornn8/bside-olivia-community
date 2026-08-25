@@ -260,7 +260,7 @@ def _duration(value: object, default: float, *, maximum: float = 300.0) -> float
 
 
 def _verified_embedding_cache(config: Mem0Config) -> bool:
-    """Accept only the pinned, manifest-verified Hugging Face snapshot."""
+    """Accept only the pinned, manifest-verified local embedding files."""
 
     if config.embedding_model != MEM0_EMBEDDING_MODEL:
         return False
