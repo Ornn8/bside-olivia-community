@@ -8,7 +8,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from reply_context import ReplyContext
 from reply_policy import scan_reply
-from reply_reviewer import ReviewResult, ReviewVerdict
+from reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 
 class QualityGateStatus(StrEnum):
@@ -65,6 +65,19 @@ def run_reply_quality_gate(
         item.code.value for item in deterministic.violations
     )
     review_codes = tuple(item.code for item in review.violations)
+    if (
+        review.verdict is ReviewVerdict.UNAVAILABLE
+        and review.status is not ReviewStatus.DISABLED
+    ):
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            candidate,
+            deterministic_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=0,
+            error_code=review.error_code,
+        )
     if deterministic.passed and review.verdict is ReviewVerdict.UNAVAILABLE:
         return QualityGateResult(
             QualityGateStatus.ACCEPTED_DEGRADED,
@@ -81,7 +94,11 @@ def run_reply_quality_gate(
     }
     if not rewrite_required:
         return QualityGateResult(
-            QualityGateStatus.ACCEPTED,
+            (
+                QualityGateStatus.ACCEPTED_WITH_WARNINGS
+                if review.violations
+                else QualityGateStatus.ACCEPTED
+            ),
             candidate,
             deterministic_codes + review_codes,
             deterministic_checks=1,
@@ -132,7 +149,11 @@ def run_reply_quality_gate(
     ):
         status = QualityGateStatus.BLOCKED
     elif final_review.verdict is ReviewVerdict.UNAVAILABLE:
-        status = QualityGateStatus.ACCEPTED_DEGRADED
+        status = (
+            QualityGateStatus.ACCEPTED_DEGRADED
+            if final_review.status is ReviewStatus.DISABLED
+            else QualityGateStatus.BLOCKED
+        )
     elif final_review.verdict is ReviewVerdict.REWRITE:
         has_hard_review = any(
             item.severity == "hard" for item in final_review.violations
