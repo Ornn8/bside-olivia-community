@@ -99,6 +99,7 @@ def test_legacy_video_mapping_is_preserved_and_future_im_requires_opt_in() -> No
     )
     assert context.to_dict()["wire_mode"] is None
     assert context.to_dict()["output_constraints"]["channel"] == "instant_message"
+    assert context.output_constraints.max_characters == 12000
 
 
 def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:

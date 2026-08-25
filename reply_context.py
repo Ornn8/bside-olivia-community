@@ -211,7 +211,7 @@ class PrivateBehaviorView:
 @dataclass(frozen=True)
 class OutputConstraints:
     channel: OutputChannel
-    max_characters: int = 1_200
+    max_characters: int = 12_000
     plain_text_only: bool = True
     allow_stage_directions: bool = False
     allow_control_markup: bool = False
@@ -246,7 +246,7 @@ class OutputConstraints:
     @classmethod
     def for_mode(cls, mode: ReplyMode) -> "OutputConstraints":
         if mode is ReplyMode.TEXT_LETTER:
-            return cls(OutputChannel.LETTER)
+            return cls(OutputChannel.LETTER, max_characters=1_200)
         if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO}:
             return cls(OutputChannel.SPOKEN_TEXT)
         if mode is ReplyMode.FUTURE_IM:
