@@ -23,7 +23,7 @@ dev = [
 ]
 memory-mem0 = [
     "mem0ai==2.0.18",
-    "sentence-transformers>=5.2,<6",
+    "sentence-transformers==5.7.0",
 ]
 
 [tool.setuptools]
