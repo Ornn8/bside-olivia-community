@@ -1,4 +1,4 @@
-"""Atomic, fail-closed video-reply preference and receive snapshot."""
+"""Atomic, fail-closed video-reply preference and receive eligibility."""
 from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
