@@ -19,11 +19,31 @@ function Update-ManagedPythonPath {
         [Parameter(Mandatory)]
         [string]$PthPath,
         [Parameter(Mandatory)]
-        [string]$SitePackages
+        [string]$SitePackages,
+        [Parameter(Mandatory)]
+        [string]$PayloadRoot,
+        [Parameter(Mandatory)]
+        [string]$OwnershipPath
     )
 
     $pthDirectory = Split-Path -Parent $PthPath
     $sitePackagesFull = [IO.Path]::GetFullPath($SitePackages)
+    $ownedPayloadRoots = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $currentPayloadRoot = [IO.Path]::GetFullPath($PayloadRoot)
+    $ownedPayloadRoots.Add($currentPayloadRoot) | Out-Null
+    if (Test-Path -LiteralPath $OwnershipPath) {
+        foreach ($ownedRoot in @(Get-Content -LiteralPath $OwnershipPath)) {
+            $ownedRoot = $ownedRoot.Trim()
+            if (-not [IO.Path]::IsPathRooted($ownedRoot)) { continue }
+            try {
+                $ownedPayloadRoots.Add([IO.Path]::GetFullPath($ownedRoot)) | Out-Null
+            } catch {
+                continue
+            }
+        }
+    }
     $keptLines = New-Object 'System.Collections.Generic.List[string]'
     $hasSitePackages = $false
     $hasImportSite = $false
@@ -56,7 +76,7 @@ function Update-ManagedPythonPath {
             }
             continue
         }
-        if ([IO.Path]::IsPathRooted($trimmed)) { continue }
+        if ($candidate -and $ownedPayloadRoots.Contains($candidate)) { continue }
         $keptLines.Add($line)
     }
 
@@ -64,6 +84,11 @@ function Update-ManagedPythonPath {
     if (-not $hasImportSite) { $keptLines.Add('import site') }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllLines($PthPath, $keptLines.ToArray(), $utf8NoBom)
+    [IO.File]::WriteAllLines(
+        $OwnershipPath,
+        [string[]]@($currentPayloadRoot),
+        $utf8NoBom
+    )
 }
 
 $runner = @{ File = $runtimeExe; Args = @() }
@@ -83,9 +108,16 @@ if (-not (Test-Path -LiteralPath $runtimeExe)) {
 
 if ($runner.File -eq $runtimeExe) {
     $sitePackages = Join-Path $runtimeRoot 'site-packages'
+    $payloadRootOwnership = Join-Path $runtimeRoot '.bside-owned-payload-root'
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     $pth = Get-ChildItem -LiteralPath $runtimeRoot -Filter '*._pth' | Select-Object -First 1
-    if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -SitePackages $sitePackages }
+    if ($pth) {
+        Update-ManagedPythonPath `
+            -PthPath $pth.FullName `
+            -SitePackages $sitePackages `
+            -PayloadRoot $PayloadRoot `
+            -OwnershipPath $payloadRootOwnership
+    }
     & $runner.File '-c' 'import aiohttp,jsonschema' 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'The local server needs aiohttp, jsonschema, and their fixed Windows/Python 3.12 dependency closure.'

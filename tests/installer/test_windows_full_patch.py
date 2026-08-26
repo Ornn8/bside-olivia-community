@@ -157,22 +157,135 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
     assert "rpds-py==2026.6.3" in requirements
 
 
-def test_managed_runtime_pth_does_not_persist_payload_root() -> None:
+def _run_managed_python_path_helper(
+    *,
+    pth_path: Path,
+    site_packages: Path,
+    payload_root: Path,
+    ownership_path: Path,
+) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).parents[2]
-    script = (repo_root / "installer" / "Install.ps1").read_text(
-        encoding="utf-8-sig"
+    command = (
+        "$tokens=$null;$errors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:BSIDE_INSTALL_SCRIPT,[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){throw 'INSTALL_SCRIPT_PARSE_FAILED'};"
+        "$function=$ast.Find({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]"
+        " -and $node.Name -eq 'Update-ManagedPythonPath'},$true);"
+        "if(-not $function){throw 'MANAGED_PYTHON_PATH_HELPER_MISSING'};"
+        ". ([scriptblock]::Create($function.Extent.Text));"
+        "Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH "
+        "-SitePackages $env:BSIDE_SITE_PACKAGES "
+        "-PayloadRoot $env:BSIDE_PAYLOAD_ROOT "
+        "-OwnershipPath $env:BSIDE_OWNERSHIP_PATH"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
+            "BSIDE_PTH_PATH": str(pth_path),
+            "BSIDE_SITE_PACKAGES": str(site_packages),
+            "BSIDE_PAYLOAD_ROOT": str(payload_root),
+            "BSIDE_OWNERSHIP_PATH": str(ownership_path),
+        }
+    )
+    powershell = (
+        Path(os.environ.get("WINDIR", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
     )
 
-    assert "function Update-ManagedPythonPath" in script
-    assert (
-        "Update-ManagedPythonPath -PthPath $pth.FullName "
-        "-SitePackages $sitePackages"
-    ) in script
-    assert "Add-Content -LiteralPath $pth.FullName -Value $PayloadRoot" not in script
-    assert "foreach ($entry in @($PayloadRoot, $sitePackages, 'import site'))" not in script
-    assert "[IO.Path]::IsPathRooted($trimmed)" in script
-    assert "'site-packages'" in script
-    assert "'import site'" in script
+
+def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    pth_path = runtime_root / "python312._pth"
+    site_packages = runtime_root / "site-packages"
+    first_payload = tmp_path / "first payload"
+    ownership_path = runtime_root / ".bside-owned-payload-root"
+    pth_path.write_text(
+        "python312.zip\n.\n#import site\n",
+        encoding="utf-8",
+    )
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+        site_packages=site_packages,
+        payload_root=first_payload,
+        ownership_path=ownership_path,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert pth_path.read_text(encoding="utf-8").splitlines() == [
+        "python312.zip",
+        ".",
+        "#import site",
+        "site-packages",
+        "import site",
+    ]
+    assert ownership_path.read_text(encoding="utf-8").splitlines() == [
+        str(first_payload)
+    ]
+
+    current_payload = tmp_path / "current payload"
+    unrelated_root = tmp_path / "user python modules"
+    pth_path.write_text(
+        "\n".join(
+            (
+                "python312.zip",
+                ".",
+                str(current_payload),
+                str(first_payload),
+                str(unrelated_root),
+                str(site_packages),
+                "import site",
+                "import site",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+        site_packages=site_packages,
+        payload_root=current_payload,
+        ownership_path=ownership_path,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert pth_path.read_text(encoding="utf-8").splitlines() == [
+        "python312.zip",
+        ".",
+        str(unrelated_root),
+        "site-packages",
+        "import site",
+    ]
+    assert ownership_path.read_text(encoding="utf-8").splitlines() == [
+        str(current_payload)
+    ]
 
 
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
