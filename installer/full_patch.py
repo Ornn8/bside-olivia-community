@@ -294,6 +294,7 @@ def _git_tracked_payload_files(payload_root: Path) -> set[str] | None:
             ["git", "-C", str(payload_root), "ls-files", "-z"],
             check=True,
             capture_output=True,
+            timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise PatchInstallError("PATCH_PAYLOAD_GIT_QUERY_FAILED") from exc

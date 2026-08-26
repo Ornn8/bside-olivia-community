@@ -568,6 +568,31 @@ def test_copy_payload_git_query_failure_is_stable(
     assert not destination.exists()
 
 
+def test_copy_payload_git_query_timeout_is_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    source = _make_payload(repo_root, tmp_path / "payload")
+    (source / ".git").mkdir()
+    observed: dict[str, object] = {}
+
+    def timeout_git_query(command, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(full_patch.subprocess, "run", timeout_git_query)
+    destination = tmp_path / "installed" / "local_backend"
+
+    with pytest.raises(
+        PatchInstallError,
+        match="PATCH_PAYLOAD_GIT_QUERY_FAILED",
+    ):
+        copy_project_payload(source, destination)
+    assert observed["timeout"] == 10
+    assert not destination.exists()
+
+
 def test_copy_payload_rejects_missing_original_client_runtime(
     tmp_path: Path,
 ) -> None:
