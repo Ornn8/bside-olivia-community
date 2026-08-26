@@ -389,6 +389,12 @@ def test_copy_payload_excludes_non_runtime_project_files(
     assert "control_center/" in copied
     assert (destination / "control_center" / "runtime.py").is_file()
     assert (destination / "contracts" / "letter_status.py").is_file()
+    assert (
+        destination / "contracts" / "third_party_manifest.example.json"
+    ).is_file()
+    assert (
+        destination / "contracts" / "third_party_manifest.schema.json"
+    ).is_file()
     assert (destination / "runtime" / "original_client_media_http.py").is_file()
     assert (destination / "runtime" / "video_reply_settings.py").is_file()
     assert not (destination / "runtime" / "packaging").exists()
