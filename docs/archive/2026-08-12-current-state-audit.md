@@ -1,5 +1,7 @@
 # CURRENT STATE AUDIT
 
+> 历史快照：本文件记录 2026-08-12 的初始公开基线，已不代表当前产品状态。当前入口见 [`README.md`](../../README.md) 与 [`STATUS.md`](../STATUS.md)。
+
 审计分支：`feature/baseline-hardening`。本文件只按实际文件、可运行命令和不回显内容的扫描记录判断；README 自述、单项冒烟或存在目录都不能自动升级为完成。
 
 ## 状态定义

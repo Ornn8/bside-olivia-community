@@ -1,5 +1,7 @@
 # Release candidate audit
 
+> 历史快照：本文件对应旧私有仓库的一次发布候选审计，不是当前公开仓库的 Release 状态。
+
 Status: `READY_FOR_REVIEW` (not an automatic merge approval)
 
 Audit date: 2026-08-18
