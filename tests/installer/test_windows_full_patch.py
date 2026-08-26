@@ -160,9 +160,6 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
 def _run_managed_python_path_helper(
     *,
     pth_path: Path,
-    site_packages: Path,
-    payload_root: Path,
-    ownership_path: Path,
 ) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).parents[2]
     command = (
@@ -175,19 +172,13 @@ def _run_managed_python_path_helper(
         " -and $node.Name -eq 'Update-ManagedPythonPath'},$true);"
         "if(-not $function){throw 'MANAGED_PYTHON_PATH_HELPER_MISSING'};"
         ". ([scriptblock]::Create($function.Extent.Text));"
-        "Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH "
-        "-SitePackages $env:BSIDE_SITE_PACKAGES "
-        "-PayloadRoot $env:BSIDE_PAYLOAD_ROOT "
-        "-OwnershipPath $env:BSIDE_OWNERSHIP_PATH"
+        "Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH"
     )
     env = os.environ.copy()
     env.update(
         {
             "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
             "BSIDE_PTH_PATH": str(pth_path),
-            "BSIDE_SITE_PACKAGES": str(site_packages),
-            "BSIDE_PAYLOAD_ROOT": str(payload_root),
-            "BSIDE_OWNERSHIP_PATH": str(ownership_path),
         }
     )
     powershell = (
@@ -213,7 +204,7 @@ def _run_managed_python_path_helper(
     )
 
 
-def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
+def test_managed_runtime_pth_never_writes_payload_and_preserves_existing_paths(
     tmp_path: Path,
 ) -> None:
     if os.name != "nt":
@@ -222,9 +213,7 @@ def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
     pth_path = runtime_root / "python312._pth"
-    site_packages = runtime_root / "site-packages"
-    first_payload = tmp_path / "first payload"
-    ownership_path = runtime_root / ".bside-owned-payload-root"
+    payload_root = tmp_path / "fresh payload"
     pth_path.write_text(
         "python312.zip\n.\n#import site\n",
         encoding="utf-8",
@@ -232,9 +221,6 @@ def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
 
     result = _run_managed_python_path_helper(
         pth_path=pth_path,
-        site_packages=site_packages,
-        payload_root=first_payload,
-        ownership_path=ownership_path,
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
@@ -245,21 +231,21 @@ def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
         "site-packages",
         "import site",
     ]
-    assert ownership_path.read_text(encoding="utf-8").splitlines() == [
-        str(first_payload)
-    ]
+    assert str(payload_root) not in pth_path.read_text(encoding="utf-8")
 
-    current_payload = tmp_path / "current payload"
-    unrelated_root = tmp_path / "user python modules"
+    current_payload = tmp_path / "当前解压目录"
+    legacy_payload = tmp_path / "旧版解压目录"
+    unrelated_root = tmp_path / "用户 Python 模块"
     pth_path.write_text(
         "\n".join(
             (
                 "python312.zip",
                 ".",
                 str(current_payload),
-                str(first_payload),
+                str(legacy_payload),
                 str(unrelated_root),
-                str(site_packages),
+                "site-packages",
+                "site-packages",
                 "import site",
                 "import site",
             )
@@ -270,21 +256,17 @@ def test_managed_runtime_pth_stays_portable_across_install_and_upgrade(
 
     result = _run_managed_python_path_helper(
         pth_path=pth_path,
-        site_packages=site_packages,
-        payload_root=current_payload,
-        ownership_path=ownership_path,
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert pth_path.read_text(encoding="utf-8").splitlines() == [
         "python312.zip",
         ".",
+        str(current_payload),
+        str(legacy_payload),
         str(unrelated_root),
         "site-packages",
         "import site",
-    ]
-    assert ownership_path.read_text(encoding="utf-8").splitlines() == [
-        str(current_payload)
     ]
 
 

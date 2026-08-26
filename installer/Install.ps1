@@ -17,38 +17,22 @@ $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3
 function Update-ManagedPythonPath {
     param(
         [Parameter(Mandatory)]
-        [string]$PthPath,
-        [Parameter(Mandatory)]
-        [string]$SitePackages,
-        [Parameter(Mandatory)]
-        [string]$PayloadRoot,
-        [Parameter(Mandatory)]
-        [string]$OwnershipPath
+        [string]$PthPath
     )
 
-    $pthDirectory = Split-Path -Parent $PthPath
-    $sitePackagesFull = [IO.Path]::GetFullPath($SitePackages)
-    $ownedPayloadRoots = [System.Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::OrdinalIgnoreCase
-    )
-    $currentPayloadRoot = [IO.Path]::GetFullPath($PayloadRoot)
-    $ownedPayloadRoots.Add($currentPayloadRoot) | Out-Null
-    if (Test-Path -LiteralPath $OwnershipPath) {
-        foreach ($ownedRoot in @(Get-Content -LiteralPath $OwnershipPath)) {
-            $ownedRoot = $ownedRoot.Trim()
-            if (-not [IO.Path]::IsPathRooted($ownedRoot)) { continue }
-            try {
-                $ownedPayloadRoots.Add([IO.Path]::GetFullPath($ownedRoot)) | Out-Null
-            } catch {
-                continue
-            }
-        }
-    }
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $keptLines = New-Object 'System.Collections.Generic.List[string]'
     $hasSitePackages = $false
     $hasImportSite = $false
-    foreach ($line in @(Get-Content -LiteralPath $PthPath)) {
+    foreach ($line in @([IO.File]::ReadAllLines($PthPath, $utf8NoBom))) {
         $trimmed = $line.Trim()
+        if ($trimmed -eq 'site-packages') {
+            if (-not $hasSitePackages) {
+                $keptLines.Add('site-packages')
+                $hasSitePackages = $true
+            }
+            continue
+        }
         if ($trimmed -eq 'import site') {
             if (-not $hasImportSite) {
                 $keptLines.Add('import site')
@@ -56,39 +40,12 @@ function Update-ManagedPythonPath {
             }
             continue
         }
-
-        $candidate = $null
-        if ($trimmed -and -not $trimmed.StartsWith('#')) {
-            try {
-                $candidate = if ([IO.Path]::IsPathRooted($trimmed)) {
-                    [IO.Path]::GetFullPath($trimmed)
-                } else {
-                    [IO.Path]::GetFullPath((Join-Path $pthDirectory $trimmed))
-                }
-            } catch {
-                $candidate = $null
-            }
-        }
-        if ($candidate -and [StringComparer]::OrdinalIgnoreCase.Equals($candidate, $sitePackagesFull)) {
-            if (-not $hasSitePackages) {
-                $keptLines.Add('site-packages')
-                $hasSitePackages = $true
-            }
-            continue
-        }
-        if ($candidate -and $ownedPayloadRoots.Contains($candidate)) { continue }
         $keptLines.Add($line)
     }
 
     if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
     if (-not $hasImportSite) { $keptLines.Add('import site') }
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllLines($PthPath, $keptLines.ToArray(), $utf8NoBom)
-    [IO.File]::WriteAllLines(
-        $OwnershipPath,
-        [string[]]@($currentPayloadRoot),
-        $utf8NoBom
-    )
 }
 
 $runner = @{ File = $runtimeExe; Args = @() }
@@ -108,16 +65,9 @@ if (-not (Test-Path -LiteralPath $runtimeExe)) {
 
 if ($runner.File -eq $runtimeExe) {
     $sitePackages = Join-Path $runtimeRoot 'site-packages'
-    $payloadRootOwnership = Join-Path $runtimeRoot '.bside-owned-payload-root'
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     $pth = Get-ChildItem -LiteralPath $runtimeRoot -Filter '*._pth' | Select-Object -First 1
-    if ($pth) {
-        Update-ManagedPythonPath `
-            -PthPath $pth.FullName `
-            -SitePackages $sitePackages `
-            -PayloadRoot $PayloadRoot `
-            -OwnershipPath $payloadRootOwnership
-    }
+    if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName }
     & $runner.File '-c' 'import aiohttp,jsonschema' 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'The local server needs aiohttp, jsonschema, and their fixed Windows/Python 3.12 dependency closure.'
