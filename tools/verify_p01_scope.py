@@ -31,7 +31,7 @@ ALLOWED = frozenset(
         "docs/P01_PERSONA_EVIDENCE.md",
         "docs/B03_LLM_GATEWAY.md",
         "docs/STATUS.md",
-        "llm_config.example.json",
+        "contracts/llm_config.example.json",
         "llm_gateway.py",
         "local_server.py",
         "linli_character/persona_config.json",
