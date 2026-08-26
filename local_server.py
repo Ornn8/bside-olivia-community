@@ -508,6 +508,10 @@ class Store:
 store = Store()
 
 
+def _local_data_root() -> Path | None:
+    return configured_media_path(_os.environ, "OLIVIA_LOCAL_DATA_ROOT")
+
+
 def _conversation_state_root() -> Path | None:
     """Return the validated Mem0-owned canonical state root, when selected."""
 
@@ -535,8 +539,7 @@ def _state_root() -> Path | None:
     configured = _conversation_state_root()
     if configured is not None:
         return configured
-    configured = _os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "")
-    return Path(configured).expanduser().resolve() if configured else None
+    return _local_data_root()
 
 
 def _load_store_state() -> None:
@@ -883,8 +886,8 @@ _MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.mp4$")
 
 
 def _media_root() -> Path | None:
-    configured = _os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "")
-    return (Path(configured).expanduser().resolve() / "media") if configured else None
+    configured = _local_data_root()
+    return configured / "media" if configured is not None else None
 
 
 async def _media_handler(request: web.Request) -> web.StreamResponse:
@@ -2031,8 +2034,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     async with media_semaphore:
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
-        data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
-        output_dir = data_root / "media" if data_root.is_absolute() else None
+        data_root = _local_data_root()
+        output_dir = data_root / "media" if data_root is not None else None
         if output_dir is None:
             letter["media_status"] = "UNAVAILABLE"
             letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"

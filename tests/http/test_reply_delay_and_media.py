@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
 import local_server
 from letter_triage import TriageResult
@@ -186,6 +187,66 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     assert observed["worker_path"] == worker
     assert observed["latentsync_python_path"] == latentsync_python
     assert observed["latentsync_root"] == latentsync_root
+
+
+def test_relative_local_data_root_drives_state_and_media_from_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "app"
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    scene = project_root / "assets" / "scene.mp4"
+    scene.parent.mkdir(parents=True)
+    scene.write_bytes(b"scene")
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", "data")
+    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", "assets/scene.mp4")
+
+    letter = {
+        "letter_id": "relative-data-root",
+        "content": "letter",
+        "reply_text": "reply",
+        "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+        "letter_status": "COMPLETED",
+        "media_status": "PENDING",
+        "reply_not_before": 0.0,
+    }
+    local_server.store.letters[:] = [letter]
+
+    async def voice_plan(_letter, text):
+        return VoicePerformancePlan(
+            reply_text=text,
+            overall_emotion="steady",
+            global_speed=1.0,
+            energy=0.5,
+            breath_before_sentences=(),
+            emphasize_sentences=(),
+        )
+
+    def render(_reply, output, **_kwargs):
+        Path(output).write_bytes(b"video")
+
+    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
+    monkeypatch.setattr(local_server, "render_reply_video", render)
+
+    asyncio.run(
+        local_server._render_media_job(
+            letter["letter_id"], letter["content"], letter["reply_text"], letter["reply_mode"]
+        )
+    )
+
+    data_root = project_root / "data"
+    media_path = data_root / "media" / f"{letter['letter_id']}.mp4"
+    assert media_path.read_bytes() == b"video"
+    assert (data_root / "state.json").is_file()
+    assert not (unrelated_cwd / "data").exists()
+    response = asyncio.run(
+        local_server.handler(make_mocked_request("GET", f"/toy/media/{media_path.name}"))
+    )
+    assert isinstance(response, web.FileResponse)
+    assert response._path == media_path
 
 
 @pytest.mark.parametrize(

@@ -39,6 +39,10 @@ class MusicReplyError(RuntimeError):
     """Stable product error raised when a song stage cannot complete."""
 
 
+def _configured_provider_path(name: str) -> Path | None:
+    return configured_media_path(os.environ, name)
+
+
 def normalize_music_duration(value: object) -> int:
     """Return one of the two product durations; intermediate values are invalid."""
 
@@ -417,11 +421,11 @@ def prepare_official_spoken_base(reference_path: Path, destination: Path) -> Pat
 
 
 def separate_vocals(song_path: Path, vocals_path: Path) -> None:
-    executable = os.environ.get("OLIVIA_ROFORMER_EXE", "").strip()
-    model_path = os.environ.get("OLIVIA_ROFORMER_MODEL_PATH", "").strip()
-    config_path = os.environ.get("OLIVIA_ROFORMER_CONFIG_PATH", "").strip()
+    executable = _configured_provider_path("OLIVIA_ROFORMER_EXE")
+    model_path = _configured_provider_path("OLIVIA_ROFORMER_MODEL_PATH")
+    config_path = _configured_provider_path("OLIVIA_ROFORMER_CONFIG_PATH")
     if any(
-        not value or not Path(value).is_file()
+        value is None or not value.is_file()
         for value in (executable, model_path, config_path)
     ):
         raise MusicReplyError("ROFORMER_UNAVAILABLE")
@@ -448,15 +452,15 @@ def separate_vocals(song_path: Path, vocals_path: Path) -> None:
         )
         _run(
             [
-                executable,
+                str(executable),
                 "--input_folder",
                 str(inputs),
                 "--store_dir",
                 str(outputs),
                 "--model_path",
-                model_path,
+                str(model_path),
                 "--config_path",
-                config_path,
+                str(config_path),
             ],
             "ROFORMER_FAILED",
             env={
@@ -479,6 +483,10 @@ def render_full_face_performance(
     output_path: Path,
 ) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    latentsync_python = _configured_provider_path("OLIVIA_LATENTSYNC_PYTHON")
+    latentsync_root = _configured_provider_path("OLIVIA_LATENTSYNC_ROOT")
+    if latentsync_python is None or latentsync_root is None:
+        raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     with tempfile.TemporaryDirectory(prefix="olivia-music-face-", dir=output_path.parent) as temporary:
         raw_video = Path(temporary) / "latentsync-vocals.mp4"
         try:
@@ -486,8 +494,8 @@ def render_full_face_performance(
                 performance_video_path,
                 vocals_path,
                 raw_video,
-                python_path=Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                python_path=latentsync_python,
+                latentsync_root=latentsync_root,
             )
         except LatentSyncReplyError as exc:
             raise MusicReplyError(str(exc)) from exc
@@ -703,10 +711,10 @@ def _build_music_stage_manifest(
 ) -> dict[str, object]:
     """Bind resumable stages to canonical text, inputs, and provider revisions."""
 
-    latentsync_root = _optional_path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", ""))
-    roformer_executable = _optional_path(os.environ.get("OLIVIA_ROFORMER_EXE", ""))
-    roformer_model = _optional_path(os.environ.get("OLIVIA_ROFORMER_MODEL_PATH", ""))
-    roformer_config = _optional_path(os.environ.get("OLIVIA_ROFORMER_CONFIG_PATH", ""))
+    latentsync_root = _configured_provider_path("OLIVIA_LATENTSYNC_ROOT")
+    roformer_executable = _configured_provider_path("OLIVIA_ROFORMER_EXE")
+    roformer_model = _configured_provider_path("OLIVIA_ROFORMER_MODEL_PATH")
+    roformer_config = _configured_provider_path("OLIVIA_ROFORMER_CONFIG_PATH")
     return {
         "schema_version": _MUSIC_STAGE_MANIFEST_VERSION,
         "inputs": {
@@ -741,7 +749,7 @@ def _build_music_stage_manifest(
             "music": {
                 "name": "MiniMax-Music-3",
                 "python": _file_fingerprint(
-                    _optional_path(os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", ""))
+                    _configured_provider_path("OLIVIA_MINIMAX_COMFY_PYTHON")
                 ),
                 "worker": _file_fingerprint(minimax_worker_path),
                 "entry": _file_fingerprint(minimax_root / "main.py"),
@@ -778,7 +786,7 @@ def _build_music_stage_manifest(
             "face_sync": {
                 "name": "LatentSync-1.5",
                 "python": _file_fingerprint(
-                    _optional_path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", ""))
+                    _configured_provider_path("OLIVIA_LATENTSYNC_PYTHON")
                 ),
                 "inference": _file_fingerprint(
                     latentsync_root / "scripts" / "inference.py"
@@ -888,11 +896,10 @@ def render_musical_reply(
 
     duration_seconds = normalize_music_duration(duration_seconds)
     transition_reference = _official_transition_reference()
-    minimax_python = os.environ.get("OLIVIA_MINIMAX_COMFY_PYTHON", "").strip()
-    minimax_root = os.environ.get("OLIVIA_MINIMAX_COMFY_ROOT", "").strip()
-    minimax_worker = os.environ.get("OLIVIA_MINIMAX_WORKER", "").strip()
-    use_minimax = bool(minimax_python and minimax_root and minimax_worker)
-    if not use_minimax:
+    minimax_python = _configured_provider_path("OLIVIA_MINIMAX_COMFY_PYTHON")
+    minimax_root = _configured_provider_path("OLIVIA_MINIMAX_COMFY_ROOT")
+    minimax_worker = _configured_provider_path("OLIVIA_MINIMAX_WORKER")
+    if any(path is None for path in (minimax_python, minimax_root, minimax_worker)):
         raise MusicReplyError("MINIMAX_MUSIC3_UNAVAILABLE")
     try:
         song_plan = plan_song_content(content, reply_text, duration_seconds)
@@ -914,8 +921,8 @@ def render_musical_reply(
         tts_config_path=tts_config_path,
         visual_config_path=visual_config_path,
         worker_path=worker_path,
-        minimax_worker_path=Path(minimax_worker),
-        minimax_root=Path(minimax_root),
+        minimax_worker_path=minimax_worker,
+        minimax_root=minimax_root,
         voice_performance_plan=voice_performance_plan,
     )
     try:
@@ -950,8 +957,10 @@ def render_musical_reply(
             visual_config_path=visual_config_path,
             worker_path=worker_path,
             scene_path=spoken_base,
-            latentsync_python_path=Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-            latentsync_root=Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+            latentsync_python_path=_configured_provider_path(
+                "OLIVIA_LATENTSYNC_PYTHON"
+            ),
+            latentsync_root=_configured_provider_path("OLIVIA_LATENTSYNC_ROOT"),
             adaptive_delivery=True,
             voice_performance_plan=voice_performance_plan,
         )
@@ -976,9 +985,9 @@ def render_musical_reply(
         partial_song = stage_root / "song.partial.flac"
         partial_song.unlink(missing_ok=True)
         song_metadata = MiniMaxMusic3Worker(
-            python_path=Path(minimax_python),
-            worker_path=Path(minimax_worker),
-            comfy_root=Path(minimax_root),
+            python_path=minimax_python,
+            worker_path=minimax_worker,
+            comfy_root=minimax_root,
         ).generate(
             content,
             reply_text,
