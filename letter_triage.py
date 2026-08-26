@@ -153,7 +153,6 @@ class RoutingContext:
     spoken_video_available: bool = False
     musical_video_available: bool = False
     current_music_work: tuple[str, ...] = ()
-
     def to_model_dict(self) -> dict[str, object]:
         current_work: list[str] = []
         for item in self.current_music_work[:_MAX_CONTEXT_ITEMS]:

@@ -83,6 +83,13 @@ CLIENT-SETTINGS-04  PrivateWorld 快照、候选和受控修改
 CLIENT-SETTINGS-05  安装器接线与原版客户端真实验收
 ```
 
+视频回信设置补充契约：
+
+- `GET/POST /toy/settings/video-reply` 读写原版 Settings 中的“视频回信”开关；
+- POST 必须携带布尔 `enabled` 与独立命名空间的 `request_id`；同 ID 同 payload 重放原结果，不同 payload 返回冲突；
+- GET 使用闭合的 `available {state, enabled}` / `unavailable {state, reason_code}` variant；mutation result 只允许 `APPLIED/NOOP/DUPLICATE`，不可用或冲突不得伪造成功；
+- 新信在服务端接收边界冻结开关快照；后续恢复、重试和媒体处理只读该信件快照，历史媒体不受设置变化影响。
+
 所有写操作必须继续经过现有 Memory Service、PrivateWorld Command Service、Reducer 和 Ledger，前端不能直接写 SQLite 或 Qdrant。
 
 ## 6. 安全与回滚

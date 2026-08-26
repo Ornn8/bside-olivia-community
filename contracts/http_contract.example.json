@@ -18,6 +18,14 @@
       "read_only": false,
       "error_code": null,
       "evidence": "local-extension"
+    },
+    "/toy/settings/video-reply": {
+      "methods": ["GET", "POST"],
+      "capability": "settings.video_reply",
+      "state": "available",
+      "read_only": false,
+      "error_code": null,
+      "evidence": "local-extension"
     }
   },
   "capabilities": {
@@ -41,6 +49,11 @@
       "provider": "sqlite",
       "probe": "in-process",
       "mode": "read-only-atomic-import"
+    },
+    "settings.video_reply": {
+      "status": "available",
+      "provider": "local-atomic-state",
+      "probe": "startup"
     }
   },
   "profiles": {

@@ -35,6 +35,10 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "MIDI_JOB_NOT_FOUND": {"http_status": 404, "retryable": False},
     "METHOD_NOT_ALLOWED": {"http_status": 405, "retryable": False},
     "IDEMPOTENCY_CONFLICT": {"http_status": 409, "retryable": False},
+    "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID": {"http_status": 400, "retryable": False},
+    "VIDEO_REPLY_SETTING_PAYLOAD_INVALID": {"http_status": 400, "retryable": False},
+    "VIDEO_REPLY_SETTING_REQUEST_CONFLICT": {"http_status": 409, "retryable": False},
+    "VIDEO_REPLY_SETTING_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "LETTER_SUPERSEDED": {"http_status": 410, "retryable": False},
     "INTERNAL_ERROR": {"http_status": 500, "retryable": False},
     "LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
@@ -93,6 +97,9 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),
     "/toy/getUserInfo": _route(["GET", "POST"], "core.session", read_only=True),
     "/toy/getPreferenceSurvey": _route(["GET"], "profile.preference.read", read_only=True),
+    "/toy/settings/video-reply": _route(
+        ["GET", "POST"], "settings.video_reply", evidence="local-extension"
+    ),
     "/toy/submitPreferenceSurvey": _route(
         ["POST"],
         "profile.preference.write",
@@ -294,6 +301,11 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "reason_code": "MIDI_IMPORT_NOT_IMPLEMENTED",
     },
     "profile.preference.read": {"status": "available", "provider": "local-empty-fixture"},
+    "settings.video_reply": {
+        "status": "available",
+        "provider": "local-atomic-state",
+        "probe": "startup",
+    },
     "profile.preference.write": {
         "status": "unavailable",
         "provider": "none",
