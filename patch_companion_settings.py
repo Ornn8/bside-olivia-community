@@ -333,8 +333,6 @@ def _verify_archive(
     bootstrap_required = (
         'const STATUS_PATH = "/toy/companion/status";',
         'const MEMORY_PATH = "/toy/companion/memory";',
-        'const PRIVATE_WORLD_PATH = "/toy/companion/private-world";',
-        'const CANDIDATES_PATH = "/toy/companion/private-world/candidates";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
@@ -348,13 +346,10 @@ def _verify_archive(
         "panel.dataset.oliviaCompanionPanel",
         "长期记忆",
         "私人世界",
-        "待确认的关系建议",
         "纠正",
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "批准",
-        "拒绝",
         "new MutationObserver",
         "replaceChildren",
     )
@@ -370,6 +365,14 @@ def _verify_archive(
         'method: "DELETE"',
         "eval(",
         "new Function",
+        "PRIVATE_WORLD_PATH",
+        "CANDIDATES_PATH",
+        "待确认的关系建议",
+        "批准",
+        "拒绝",
+        "本地世界线",
+        "approve",
+        "reject",
     )
     if (
         any(value not in index for value in required)

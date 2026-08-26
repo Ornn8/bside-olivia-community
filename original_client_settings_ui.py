@@ -14,14 +14,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const DIALOG_ATTR = "data-olivia-companion-settings-dialog";
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
-  // Kept for archive-patch compatibility; this Settings surface no longer calls them.
-  const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
-  const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
-  const legacyPrivateWorldLabels = ["待确认的关系建议", "批准", "拒绝", "本地世界线"];
-  const legacyCandidateRoute = (candidateId, decision) =>
-    `${CANDIDATES_PATH}/${encodeURIComponent(candidateId)}/${decision}`;
-  void legacyPrivateWorldLabels;
-  void legacyCandidateRoute;
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
@@ -154,6 +146,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const capabilityState = (value) => {
     const state = value && typeof value.state === "string" ? value.state : "unavailable";
     return Object.hasOwn(stateLabels, state) ? state : "unavailable";
+  };
+
+  const privateWorldState = (value) => {
+    const state = value && typeof value.state === "string" ? value.state : "unavailable";
+    return state === "available" || state === "disabled" || state === "unavailable"
+      ? state
+      : "unavailable";
   };
 
   const requestId = (prefix) => {
@@ -610,7 +609,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderPrivateWorldPanel = async (panel, privateCapability) => {
-    const privateState = capabilityState(privateCapability);
+    const privateState = privateWorldState(privateCapability);
     const heading = text("h3", "私人世界状态", "text-text-title text-title-m");
     const summary = text(
       "p",

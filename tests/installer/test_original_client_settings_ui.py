@@ -40,7 +40,6 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
-    assert "encodeURIComponent" in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.webkitAppRegion = "no-drag";' in BOOTSTRAP_JAVASCRIPT
     assert 'backdrop.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
@@ -53,16 +52,91 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
 def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert 'requestJson(PRIVATE_WORLD_PATH)' not in source
-    assert 'requestJson(CANDIDATES_PATH)' not in source
     assert "私人世界状态" in source
     assert "原因代码" in source
     for forbidden in (
+        "PRIVATE_WORLD_PATH",
+        "CANDIDATES_PATH",
+        "legacyPrivateWorldLabels",
+        "legacyCandidateRoute",
+        "encodeURIComponent",
+        "待确认的关系建议",
+        "批准",
+        "拒绝",
+        "本地世界线",
         "renderPrivateSummary",
         "renderCandidateList",
         "renderPrivateWorldPanel(\n          panels.privateWorld,\n          capabilities.private_world,",
     ):
         assert forbidden not in source
+
+
+def test_original_settings_private_world_status_fails_closed() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+let source = fs.readFileSync(0, "utf8");
+source = source.replace(/\}\)\(\);\s*$/, `
+  globalThis.renderPrivateWorldStatus = renderPrivateWorldPanel;
+})();\n`);
+
+class Element {
+  constructor(tag) { this.tagName = tag; this.children = []; this.style = {}; this.textContent = ""; }
+  append(...items) { this.children.push(...items); }
+  replaceChildren(...items) { this.children = items; }
+  setAttribute() {}
+  addEventListener() {}
+}
+
+const document = {
+  currentScript: { dataset: { apiBase: "http://127.0.0.1:8899" } },
+  createElement: (tag) => new Element(tag),
+  querySelectorAll: () => [],
+  querySelector: () => null,
+  documentElement: new Element("html"),
+};
+const context = {
+  URL, AbortController, document,
+  MutationObserver: class { constructor() {} observe() {} },
+  window: { requestAnimationFrame: () => {}, addEventListener: () => {} },
+};
+vm.runInNewContext(source, context);
+(async () => {
+  const render = context.renderPrivateWorldStatus;
+  const result = [];
+  for (const value of [
+    { state: "available" },
+    { state: "disabled" },
+    { state: "unavailable", reason_code: "PRIVATE_WORLD_STORAGE_UNAVAILABLE" },
+    { state: "degraded" }, { state: "unknown" }, {}, null,
+    { state: "unavailable", reason_code: "C:/private/world.sqlite3" },
+  ]) {
+    const panel = new Element("section");
+    await render(panel, value);
+    result.push(panel.children.map((item) => item.textContent));
+  }
+  process.stdout.write(JSON.stringify(result));
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+'''
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+    assert result.returncode == 0, output
+    rendered = json.loads(result.stdout.decode("utf-8"))
+    assert [item[1] for item in rendered] == [
+        "状态：可用", "状态：未启用", "状态：暂不可用", "状态：暂不可用",
+        "状态：暂不可用", "状态：暂不可用", "状态：暂不可用", "状态：暂不可用",
+    ]
+    assert rendered[2][2] == "原因代码：PRIVATE_WORLD_STORAGE_UNAVAILABLE"
+    assert rendered[7][2] == "原因代码：无"
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
