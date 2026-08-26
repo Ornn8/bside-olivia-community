@@ -62,7 +62,7 @@ from voice_direction import (
     direct_music_voice_performance,
     direct_voice_performance,
 )
-from video_reply_settings import (
+from runtime.video_reply_settings import (
     VideoReplySettingsError,
     VideoReplySettingsStore,
     receive_eligibility_from_letter,

@@ -39,9 +39,9 @@ py-modules = [
     "conversation_memory_runtime",
     "extract_player",
     "http_contract",
+    "letter_status",
     "letter_triage",
     "llm_gateway",
-    "letter_status",
     "local_memory",
     "local_server",
     "latentsync_reply",
@@ -89,8 +89,8 @@ py-modules = [
     "reply_quality_gate",
     "reply_reviewer",
     "song_content",
-    "voice_direction",
     "video_reply_settings",
+    "voice_direction",
 ]
 
 [tool.setuptools.packages.find]

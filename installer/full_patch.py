@@ -37,6 +37,11 @@ PAYLOAD_DIRS = (
     "linli_character",
 )
 PAYLOAD_EXTRA_DIRS = ("runtime/visual",)
+PAYLOAD_EXTRA_FILES = (
+    "runtime/__init__.py",
+    "runtime/original_client_media_http.py",
+    "runtime/video_reply_settings.py",
+)
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 PAYLOAD_ROOT_FILES = {
     "local_server.py",
@@ -57,14 +62,18 @@ PAYLOAD_ROOT_FILES = {
     "third_party_manifest.schema.json",
 }
 PAYLOAD_REQUIRED_ROOT_FILES = {
+    "letter_status.py",
     "local_server.py",
+    "original_client_media_http.py",
     "original_client_server.py",
     "original_client_settings_ui.py",
     "patch_companion_settings.py",
     "patch_feapp.py",
     "patch_webplayer.py",
+    "video_reply_settings.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "contracts/letter_status.py",
     "control_center/__init__.py",
     "control_center/app.py",
     "control_center/auth.py",
@@ -74,6 +83,9 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_backend.py",
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
+    "runtime/__init__.py",
+    "runtime/original_client_media_http.py",
+    "runtime/video_reply_settings.py",
 }
 PAYLOAD_EXCLUDED_ROOT_FILES = {
     "letter_pairs.json",
@@ -319,6 +331,12 @@ def copy_project_payload(
                 ignore=_ignore_payload_copy,
             )
             copied.append(relative + "/")
+    for relative in PAYLOAD_EXTRA_FILES:
+        source_file = payload_root / Path(*relative.split("/"))
+        if source_file.is_file():
+            target_file = destination / Path(*relative.split("/"))
+            _copy_file(source_file, target_file)
+            copied.append(relative)
     if any(
         not (destination / name).is_file()
         for name in PAYLOAD_REQUIRED_ROOT_FILES
