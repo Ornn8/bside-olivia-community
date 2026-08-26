@@ -41,7 +41,6 @@ py-modules = [
     "http_contract",
     "letter_triage",
     "llm_gateway",
-    "letter_status",
     "local_memory",
     "local_server",
     "latentsync_reply",
@@ -59,7 +58,6 @@ py-modules = [
     "original_client_companion_mutation_api",
     "original_client_companion_mutation_backend",
     "original_client_letter_contract",
-    "original_client_media_http",
     "original_client_server",
     "original_client_settings_ui",
     "patch_companion_settings",
@@ -90,7 +88,6 @@ py-modules = [
     "reply_reviewer",
     "song_content",
     "voice_direction",
-    "video_reply_settings",
 ]
 
 [tool.setuptools.packages.find]

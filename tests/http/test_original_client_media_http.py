@@ -7,7 +7,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
-from original_client_media_http import (
+from runtime.original_client_media_http import (
     OriginalClientMediaError,
     ResolvedReplyMedia,
     mount_reply_media_route,

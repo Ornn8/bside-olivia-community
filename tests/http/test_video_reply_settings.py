@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 
-from video_reply_settings import VideoReplySettingsError, VideoReplySettingsStore
+from runtime.video_reply_settings import VideoReplySettingsError, VideoReplySettingsStore
 @pytest.mark.parametrize("legacy", [False, True])
 def test_default_and_valid_legacy_store_are_enabled(tmp_path, legacy):
     if legacy:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from letter_status import (
+from contracts.letter_status import (
     LetterStatusError,
     OriginalLetterStatus,
     original_letter_status,
