@@ -610,12 +610,12 @@ conversation_memory_adapter: ConversationMemoryPort = (
 
 
 def _create_video_reply_settings_store() -> VideoReplySettingsStore:
-    root = _state_root()
-    if root is None:
-        return VideoReplySettingsStore.unavailable()
     try:
+        root = _state_root()
+        if root is None:
+            return VideoReplySettingsStore.unavailable()
         return VideoReplySettingsStore.initialize(root)
-    except VideoReplySettingsError:
+    except (OSError, RuntimeError, TypeError, ValueError, VideoReplySettingsError):
         return VideoReplySettingsStore.unavailable()
 
 
@@ -1302,6 +1302,7 @@ def _missing_field(field: str) -> dict:
         {
             "status": "FAILED",
             "error_code": "MISSING_FIELD",
+            "retryable": False,
             "field": field,
         },
     )
@@ -1609,9 +1610,11 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
     if p == "/toy/settings/video-reply":
         if method == "GET":
             return ok(video_reply_settings_store.snapshot().to_dict())
-        request_id = body.get("request_id") if "request_id" in body and len(body) == 2 else None
         if "enabled" not in body:
             return _missing_field("enabled")
+        if "request_id" not in body:
+            return _missing_field("request_id")
+        request_id = body.get("request_id") if len(body) == 2 else None
         try:
             result = video_reply_settings_store.mutate(request_id, body["enabled"])
         except VideoReplySettingsError as exc:
@@ -1621,6 +1624,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 {
                     "status": "UNAVAILABLE" if exc.status == 503 else "FAILED",
                     "error_code": exc.code,
+                    "retryable": contract.error_metadata(exc.code)["retryable"],
                 },
             )
         return ok(result.to_dict())

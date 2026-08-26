@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -35,7 +34,6 @@ def test_mutation_is_atomic_namespaced_and_replayed_after_restart(tmp_path):
         results = list(pool.map(lambda _: store.mutate("video_reply_setting:concurrent", False), range(4)))
     assert {result.status for result in results} == {"NOOP"}
 
-
 def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(tmp_path):
     calls = 0
     def writer(path, payload):
@@ -56,7 +54,6 @@ def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(t
     (tmp_path / "video_reply_settings.json").write_text("not-json", encoding="utf-8")
     assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
 
-
 def test_initialize_marker_failure_and_deleted_state_stay_unavailable(tmp_path):
     calls = 0
     def writer(path, payload):
@@ -72,8 +69,6 @@ def test_initialize_marker_failure_and_deleted_state_stay_unavailable(tmp_path):
     store.mutate("video_reply_setting:off", False)
     (tmp_path / "ok" / "video_reply_settings.json").unlink()
     assert VideoReplySettingsStore(tmp_path / "ok").snapshot().state == "unavailable"
-
-
 @pytest.mark.parametrize("value", ["yes", 1, None])
 def test_non_boolean_store_is_unavailable(tmp_path, value):
     (tmp_path / "video_reply_settings.json").write_text(
@@ -81,8 +76,6 @@ def test_non_boolean_store_is_unavailable(tmp_path, value):
         encoding="utf-8",
     )
     assert VideoReplySettingsStore(tmp_path).snapshot().state == "unavailable"
-
-
 def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     from jsonschema import Draft202012Validator
     schema = json.loads(Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8"))
@@ -92,11 +85,10 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "status": "DUPLICATE", "enabled": False}))
-    assert not list(validator.iter_errors({"code": 409, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT"}}))
-    for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}):
+    for value in ({"code": 400, "message": "missing", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "enabled"}}, {"code": 400, "message": "missing", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "request_id"}}, {"code": 400, "message": "payload", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", "retryable": False}}, {"code": 400, "message": "request", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID", "retryable": False}}, {"code": 409, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": True}}):
+        assert not list(validator.iter_errors(value))
+    for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}, {"code": 400, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": False}}):
         assert list(validator.iter_errors(value))
-
-
 @pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
 def test_request_namespace_is_enforced(tmp_path, value):
     with pytest.raises(VideoReplySettingsError) as invalid:
@@ -108,6 +100,10 @@ def test_route_accepts_only_body_request_id_and_surfaces_unavailable(monkeypatch
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     async def calls():
         alias = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "idempotency_key": "letter:shared"}, {"request_id": "video_reply_setting:query"})
+        missing_enabled = await local_server.route("POST", "/toy/settings/video-reply", {}, {})
+        assert missing_enabled == {"code": 400, "message": "MISSING_FIELD", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "enabled"}}
+        missing_request_id = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False}, {})
+        assert missing_request_id == {"code": 400, "message": "MISSING_FIELD", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "request_id"}}
         bad = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": "false", "request_id": "video_reply_setting:type"}, {})
         await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:conflict"}, {})
         conflict = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": True, "request_id": "video_reply_setting:conflict"}, {})
@@ -117,8 +113,6 @@ def test_route_accepts_only_body_request_id_and_surfaces_unavailable(monkeypatch
         return alias, bad, conflict, unavailable
     alias, bad, conflict, unavailable = asyncio.run(calls())
     assert [alias["code"], bad["code"], conflict["code"], unavailable["code"]] == [400, 400, 409, 503]
-
-
 def test_factory_init_failure_returns_stable_unavailable(monkeypatch):
     import local_server
     def fail(_root):
@@ -126,6 +120,10 @@ def test_factory_init_failure_returns_stable_unavailable(monkeypatch):
     monkeypatch.setattr(local_server.VideoReplySettingsStore, "initialize", fail)
     store = local_server._create_video_reply_settings_store()
     assert store.snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
+def test_factory_path_resolution_failure_is_fail_closed(monkeypatch):
+    import local_server
+    monkeypatch.setattr(local_server, "_state_root", lambda: (_ for _ in ()).throw(OSError("path")))
+    assert local_server._create_video_reply_settings_store().snapshot().state == "unavailable"
 def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatch):
     import local_server
     from reply_orchestrator import ReplyState
