@@ -130,7 +130,9 @@ def test_logs_and_committed_example_do_not_leak_paths_or_media(tmp_path: Path, c
     assert secret_name not in log
     assert secret_content not in log
 
-    example_text = (REPO_ROOT / "asset_manifest.example.json").read_text(encoding="utf-8")
+    example_text = (
+        REPO_ROOT / "contracts" / "asset_baseline" / "asset_manifest.example.json"
+    ).read_text(encoding="utf-8")
     assert secret_name not in example_text
     assert "relative_path" not in example_text
     assert "sha256" not in example_text
@@ -194,8 +196,8 @@ def test_bad_media_is_recorded_and_missing_file_is_validated(tmp_path: Path, cap
 
 
 def test_schema_and_example_match_cli_documents() -> None:
-    schema_path = REPO_ROOT / "asset_manifest.schema.json"
-    example_path = REPO_ROOT / "asset_manifest.example.json"
+    schema_path = REPO_ROOT / "contracts" / "asset_baseline" / "asset_manifest.schema.json"
+    example_path = REPO_ROOT / "contracts" / "asset_baseline" / "asset_manifest.example.json"
     assert json.loads(schema_path.read_text(encoding="utf-8")) == asset_manifest.schema_document()
     assert json.loads(example_path.read_text(encoding="utf-8")) == asset_manifest.example_document()
 

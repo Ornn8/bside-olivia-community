@@ -7,7 +7,7 @@ repository `.evidence/` directory:
 ```text
 rtk python tools/asset_manifest.py scan --root original=<local-root> --output .evidence/b01/private-manifest.json
 rtk python tools/asset_manifest.py validate --manifest .evidence/b01/private-manifest.json --root original=<local-root>
-rtk python tools/asset_manifest.py summary --manifest .evidence/b01/private-manifest.json --output asset_manifest.summary.json
+rtk python tools/asset_manifest.py summary --manifest .evidence/b01/private-manifest.json --output contracts/asset_baseline/asset_manifest.summary.json
 ```
 
 The private manifest has hashes, source-relative paths, and optional media
