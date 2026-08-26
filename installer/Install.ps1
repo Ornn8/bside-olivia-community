@@ -20,11 +20,12 @@ function Update-ManagedPythonPath {
         [string]$PthPath
     )
 
+    $pthFullPath = [IO.Path]::GetFullPath($PthPath)
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $keptLines = New-Object 'System.Collections.Generic.List[string]'
     $hasSitePackages = $false
     $hasImportSite = $false
-    foreach ($line in @([IO.File]::ReadAllLines($PthPath, $utf8NoBom))) {
+    foreach ($line in @([IO.File]::ReadAllLines($pthFullPath, $utf8NoBom))) {
         $trimmed = $line.Trim()
         if ($trimmed -eq 'site-packages') {
             if (-not $hasSitePackages) {
@@ -45,7 +46,22 @@ function Update-ManagedPythonPath {
 
     if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
     if (-not $hasImportSite) { $keptLines.Add('import site') }
-    [IO.File]::WriteAllLines($PthPath, $keptLines.ToArray(), $utf8NoBom)
+    $transactionId = [guid]::NewGuid().ToString('N')
+    $tempName = '.' + [IO.Path]::GetFileName($pthFullPath) + '.' + $transactionId + '.tmp'
+    $backupName = '.' + [IO.Path]::GetFileName($pthFullPath) + '.' + $transactionId + '.bak'
+    $tempPath = Join-Path ([IO.Path]::GetDirectoryName($pthFullPath)) $tempName
+    $backupPath = Join-Path ([IO.Path]::GetDirectoryName($pthFullPath)) $backupName
+    try {
+        [IO.File]::WriteAllLines($tempPath, $keptLines.ToArray(), $utf8NoBom)
+        [IO.File]::Replace($tempPath, $pthFullPath, $backupPath)
+    } finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 $runner = @{ File = $runtimeExe; Args = @() }

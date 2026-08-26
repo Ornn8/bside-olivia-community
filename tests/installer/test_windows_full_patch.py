@@ -161,6 +161,7 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
 def _run_managed_python_path_helper(
     *,
     pth_path: Path,
+    deny_replace: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).parents[2]
     command = (
@@ -173,13 +174,19 @@ def _run_managed_python_path_helper(
         " -and $node.Name -eq 'Update-ManagedPythonPath'},$true);"
         "if(-not $function){throw 'MANAGED_PYTHON_PATH_HELPER_MISSING'};"
         ". ([scriptblock]::Create($function.Extent.Text));"
-        "Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH"
+        "$lock=$null;"
+        "if($env:BSIDE_DENY_REPLACE -eq '1'){"
+        "$lock=[IO.File]::Open($env:BSIDE_PTH_PATH,[IO.FileMode]::Open,"
+        "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)};"
+        "try{Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH}"
+        "finally{if($lock){$lock.Dispose()}}"
     )
     env = os.environ.copy()
     env.update(
         {
             "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
             "BSIDE_PTH_PATH": str(pth_path),
+            "BSIDE_DENY_REPLACE": "1" if deny_replace else "0",
         }
     )
     powershell = (
@@ -233,6 +240,24 @@ def test_managed_runtime_pth_never_writes_payload_and_preserves_existing_paths(
         "import site",
     ]
     assert str(payload_root) not in pth_path.read_text(encoding="utf-8")
+    assert not pth_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert not list(runtime_root.glob(f".{pth_path.name}.*"))
+
+    original = (
+        "python312.zip\n.\n"
+        f"{tmp_path / '替换失败时保留'}\n"
+        "site-packages\nsite-packages\n"
+    ).encode("utf-8")
+    pth_path.write_bytes(original)
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+        deny_replace=True,
+    )
+
+    assert result.returncode != 0
+    assert pth_path.read_bytes() == original
+    assert not list(runtime_root.glob(f".{pth_path.name}.*"))
 
     current_payload = tmp_path / "当前解压目录"
     legacy_payload = tmp_path / "旧版解压目录"
