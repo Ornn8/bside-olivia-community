@@ -488,7 +488,7 @@ def test_handler_cors_allows_pinned_official_frontend_preflight() -> None:
     import local_server
 
     requested_headers = (
-        "content-type,x-bundle_id,x-client_type,x-device_id,x-device_model,"
+        "content-type,x-bundle_id,x-client_type,x-device_id,x-device_model,x-olivia-companion-action,"
         "x-language,x-level,x-lifecycle_id,x-pkg_version,x-platform,x-sys_version,x-token,x-uid"
     )
 

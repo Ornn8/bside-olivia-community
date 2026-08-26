@@ -878,13 +878,13 @@ async def handler(request: web.Request):
                     body_error = err(
                         400,
                         "INVALID_BODY",
-                        {"status": "FAILED", "error_code": "INVALID_BODY"},
+                        {"status": "FAILED", "error_code": "INVALID_BODY", "retryable": False},
                     )
         except (UnicodeDecodeError, json.JSONDecodeError):
             body_error = err(
                 400,
                 "INVALID_JSON",
-                {"status": "FAILED", "error_code": "INVALID_JSON"},
+                {"status": "FAILED", "error_code": "INVALID_JSON", "retryable": False},
             )
     query = dict(request.query)
 
@@ -923,6 +923,7 @@ TRUSTED_FRONTEND_ORIGINS = frozenset({
 })
 ALLOWED_HEADERS = ', '.join((
     'Content-Type',
+    'X-Olivia-Companion-Action',
     'X-Requested-With',
     'Authorization',
     'X-Bundle_Id',
@@ -2153,7 +2154,7 @@ def _schedule_pending_media_jobs() -> int:
             continue
         if letter.get("letter_status") != "COMPLETED":
             continue
-        if letter.get("video_reply_enabled", True) is False:
+        if not receive_eligibility_from_letter(letter).enabled:
             continue
         letter_id = str(letter.get("letter_id", "")).strip()
         content = letter.get("content")
