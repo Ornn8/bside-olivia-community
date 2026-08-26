@@ -7,12 +7,17 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
+import original_client_media_http as legacy_media_http
 from runtime.original_client_media_http import (
     OriginalClientMediaError,
     ResolvedReplyMedia,
     mount_reply_media_route,
     original_webplayer_uid,
 )
+
+
+def test_legacy_module_reexports_canonical_adapter() -> None:
+    assert legacy_media_http.original_webplayer_uid is original_webplayer_uid
 
 
 class MappingResolver:

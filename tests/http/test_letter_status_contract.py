@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import pytest
 
+import letter_status as legacy_letter_status
 from contracts.letter_status import (
     LetterStatusError,
     OriginalLetterStatus,
     original_letter_status,
     original_letter_status_or_failed,
 )
+
+
+def test_legacy_module_reexports_canonical_contract() -> None:
+    assert legacy_letter_status.original_letter_status is original_letter_status
 
 
 @pytest.mark.parametrize(

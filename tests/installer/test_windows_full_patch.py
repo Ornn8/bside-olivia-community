@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from installer.full_patch import (
+    PAYLOAD_REQUIRED_RELATIVE_FILES,
     PAYLOAD_REQUIRED_ROOT_FILES,
     PatchInstallError,
     copy_project_payload,
@@ -330,7 +331,9 @@ def _make_payload(repo_root: Path, root: Path) -> Path:
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
         shutil.copy2(repo_root / name, root / name)
     shutil.copytree(repo_root / "control_center", root / "control_center")
+    shutil.copytree(repo_root / "contracts", root / "contracts")
     shutil.copytree(repo_root / "installer", root / "installer")
+    shutil.copytree(repo_root / "runtime", root / "runtime")
     return root
 
 
@@ -372,11 +375,19 @@ def test_copy_payload_excludes_non_runtime_project_files(
             "# runtime fixture",
             encoding="utf-8",
         )
+    for relative in PAYLOAD_REQUIRED_RELATIVE_FILES:
+        required = source / Path(*relative.split("/"))
+        required.parent.mkdir(parents=True, exist_ok=True)
+        if not required.exists():
+            required.write_text("# runtime fixture", encoding="utf-8")
 
     copied = copy_project_payload(source, destination)
 
     assert "control_center/" in copied
     assert (destination / "control_center" / "runtime.py").is_file()
+    assert (destination / "contracts" / "letter_status.py").is_file()
+    assert (destination / "runtime" / "original_client_media_http.py").is_file()
+    assert (destination / "runtime" / "video_reply_settings.py").is_file()
     assert "dynamic_renderer.py" in copied
     assert (destination / "dynamic_renderer.py").is_file()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
