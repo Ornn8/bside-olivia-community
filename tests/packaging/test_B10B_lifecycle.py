@@ -13,6 +13,7 @@ from runtime.packaging.b10b.errors import B10BError
 from runtime.packaging.b10b.manifest import DEFAULT_MANIFEST_PATH, load_manifest
 from runtime.packaging.b10b.manager import B10BManager
 from runtime.packaging.b10b.profiles import verified_local_provenance
+from runtime.packaging.b10b.security import is_external_reference
 
 
 def _verified_profile_settings() -> dict[str, dict[str, object]]:
@@ -267,7 +268,7 @@ def test_customize_revalidates_sensitive_fields_in_existing_config(tmp_path: Pat
     assert exc_info.value.code == "CONFIG_INVALID"
 
 
-def test_customize_revalidates_external_drive_policy_in_existing_config(tmp_path: Path) -> None:
+def test_customize_accepts_local_c_drive_and_revalidates_unsafe_existing_config(tmp_path: Path) -> None:
     project, data_root = _project(tmp_path)
     manager = B10BManager(project_root=project, data_root=data_root)
     manager.install(["core/http", "asr-local"], dry_run=False)
@@ -277,7 +278,7 @@ def test_customize_revalidates_external_drive_policy_in_existing_config(tmp_path
             {
                 "schema_version": "b10b.module-config.v1",
                 "module_id": "asr-local",
-                "settings": {"provider": "text-fallback", "model_root": "C:/escape"},
+                "settings": {"provider": "text-fallback", "model_root": "C:/allowed/models"},
                 "external_assets_copied": False,
                 "managed_by": "B10B lifecycle",
             }
@@ -285,6 +286,21 @@ def test_customize_revalidates_external_drive_policy_in_existing_config(tmp_path
         encoding="utf-8",
     )
 
+    result = manager.customize("asr-local", {"provider": "text-fallback"})
+    assert result["status"] == "CUSTOMIZED"
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "b10b.module-config.v1",
+                "module_id": "asr-local",
+                "settings": {"provider": "text-fallback", "model_root": "C:relative/models"},
+                "external_assets_copied": False,
+                "managed_by": "B10B lifecycle",
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(B10BError) as exc_info:
         manager.customize("asr-local", {"provider": "text-fallback"})
     assert exc_info.value.code == "CONFIG_INVALID"
@@ -302,7 +318,7 @@ def test_health_revalidates_existing_config_before_provider_status(tmp_path: Pat
             {
                 "schema_version": "b10b.module-config.v1",
                 "module_id": "asr-local",
-                "settings": {"provider": "text-fallback", "model_root": "C:/escape"},
+                "settings": {"provider": "text-fallback", "model_root": "C:relative/models"},
                 "external_assets_copied": False,
                 "managed_by": "B10B lifecycle",
             }
@@ -372,8 +388,35 @@ def test_customize_validates_external_references_without_copying_them(tmp_path: 
     assert not (project / "D:/Bside/external/asr/runtime").exists()
 
     with pytest.raises(B10BError) as exc_info:
-        manager.customize("asr-local", {"model_root": "C:/not-allowed"})
+        manager.customize("asr-local", {"model_root": "C:/"})
     assert exc_info.value.code == "EXTERNAL_REFERENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C:/provider/runtime",
+        "D:/provider/runtime",
+        "F:/provider/runtime",
+    ],
+)
+def test_external_reference_accepts_any_non_root_local_drive(value: str) -> None:
+    assert is_external_reference(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C:/",
+        "C:provider/runtime",
+        "relative/provider/runtime",
+        "C:/provider/../runtime",
+        r"\\server\share\runtime",
+        "https://example.invalid/runtime",
+    ],
+)
+def test_external_reference_rejects_non_local_or_unsafe_paths(value: str) -> None:
+    assert is_external_reference(value) is False
 
 
 def test_b06_tts_is_lifecycle_managed_when_composed_and_fail_closed_before_merge(tmp_path: Path) -> None:

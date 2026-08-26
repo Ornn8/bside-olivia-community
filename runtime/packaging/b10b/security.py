@@ -143,15 +143,26 @@ def is_sensitive_key(value: str) -> bool:
 
 
 def is_external_reference(value: str, *, policy: str = "absolute") -> bool:
-    """Validate a reference without resolving or copying the referenced asset."""
+    """Validate a reference without resolving or copying the referenced asset.
+
+    External provider assets may reside on any local Windows volume.  This
+    helper deliberately validates syntax only; callers retain ownership and
+    must apply their existing copy/hash/delete rules before touching a path.
+    """
 
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         return False
     candidate = PureWindowsPath(value)
     if policy == "logical_asset":
         return bool(re.fullmatch(r"asset_[0-9a-f]{32}", value))
-    if not candidate.is_absolute() or not candidate.drive or candidate.drive.upper() not in {"D:", "F:"}:
+    # A local absolute path has one drive letter and a non-root component.
+    # This excludes relative and drive-relative paths, UNC/device paths and
+    # URL-like strings without depending on the host OS path flavour.
+    if (
+        not candidate.is_absolute()
+        or not re.fullmatch(r"[A-Za-z]:", candidate.drive)
+        or len(candidate.parts) <= 1
+        or any(part in {".", ".."} for part in candidate.parts)
+    ):
         return False
-    if any(part in {".", ".."} for part in candidate.parts) or value.rstrip("/\\").endswith(":"):
-        return False
-    return len(candidate.parts) > 1
+    return True

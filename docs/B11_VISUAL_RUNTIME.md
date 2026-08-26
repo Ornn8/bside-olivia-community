@@ -4,7 +4,7 @@ B11 adds a replaceable LiveTalking candidate behind the existing B07 visual
 driver and B10B lifecycle. The repository contains only the adapter, tests,
 manifest metadata and the official-upstream delegation worker. The LiveTalking
 checkout, Python environment, checkpoint, avatar payload, original Olivia
-reference and generated evidence remain external D:/ or F:/ references.
+reference and generated evidence remain external local Windows references.
 
 ## Fixed boundary
 
@@ -33,12 +33,12 @@ an accepted source.
 ```text
 install core/http + visual-driver + visual-livetalking
 enable dependencies in order
-customize only D:/ or F:/ runtime/model/avatar/original/evidence references;
+customize only absolute local Windows runtime/model/avatar/original/evidence references;
 optional managed copies record exact source, destination and SHA-256
 health -> official dependency, path, payload and checkpoint hash checks
 capture -> worker delegates to LiveTalking and writes external PNG evidence
 disable -> uninstall -> remove only hash-verified managed destinations recorded
-by B10B, while retaining F:/ downloads, original media, avatar payloads and
+by B10B, while retaining download sources, original media, avatar payloads and
 all other external assets
 ```
 
@@ -46,7 +46,7 @@ The visual-livetalking health result is fail-closed until every external input
 is ready. `external_assets_copied` and `generated_media_committed` remain
 false by contract. `external_assets_deleted` is true only when uninstall
 removes an exact, SHA-256-verified destination listed in
-`managed_external_copies`; `preserve_source=true` keeps the F:/ download and
+`managed_external_copies`; `preserve_source=true` keeps the download source and
 original Olivia source untouched.
 
 ## Avatar preparation

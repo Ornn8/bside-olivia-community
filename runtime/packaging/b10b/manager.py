@@ -1093,11 +1093,11 @@ class B10BManager:
             valid_external = is_external_reference(value)
             valid_logical = is_external_reference(value, policy="logical_asset")
             if drive_policy == "D-or-F" and not valid_external:
-                raise B10BError("EXTERNAL_REFERENCE_INVALID", "External model/runtime references must be absolute D:/ or F:/ paths.", {"field": key})
+                raise B10BError("EXTERNAL_REFERENCE_INVALID", "External model/runtime references must be absolute local Windows paths.", {"field": key})
             if path_policy == "logical-or-external" and not (valid_external or valid_logical):
-                raise B10BError("EXTERNAL_REFERENCE_INVALID", "Visual references must be logical asset IDs or absolute D:/ or F:/ paths.", {"field": key})
+                raise B10BError("EXTERNAL_REFERENCE_INVALID", "Visual references must be logical asset IDs or absolute local Windows paths.", {"field": key})
             if drive_policy is None and path_policy is None and not valid_external:
-                raise B10BError("EXTERNAL_REFERENCE_INVALID", "External asset references must be absolute D:/ or F:/ paths.", {"field": key})
+                raise B10BError("EXTERNAL_REFERENCE_INVALID", "External asset references must be absolute local Windows paths.", {"field": key})
         current = self._module_config(module)
         settings = {**current, **changes}
         self._validate_existing_settings(module, settings)
@@ -1213,20 +1213,20 @@ class B10BManager:
             if drive_policy == "D-or-F" and not valid_external:
                 raise B10BError(
                     "CONFIG_INVALID",
-                    "Existing external references must be absolute D:/ or F:/ paths.",
+                    "Existing external references must be absolute local Windows paths.",
                     {"field": key},
                 )
             if path_policy == "logical-or-external" and not (valid_external or valid_logical):
                 raise B10BError(
                     "CONFIG_INVALID",
-                    "Existing visual references must be logical asset IDs or absolute D:/ or F:/ paths.",
+                    "Existing visual references must be logical asset IDs or absolute local Windows paths.",
                     {"field": key},
 
                 )
             if drive_policy is None and path_policy is None and not valid_external:
                 raise B10BError(
                     "CONFIG_INVALID",
-                    "Existing external references must be absolute D:/ or F:/ paths.",
+                    "Existing external references must be absolute local Windows paths.",
                     {"field": key},
                 )
         self._validate_managed_external_copies(module, settings)
@@ -1247,9 +1247,9 @@ class B10BManager:
             destination = item["destination"]
             digest = item["sha256"]
             if not isinstance(source, str) or not is_external_reference(source):
-                raise B10BError("CONFIG_INVALID", "Managed copy sources must be absolute D:/ or F:/ paths.", {"index": index})
+                raise B10BError("CONFIG_INVALID", "Managed copy sources must be absolute local Windows paths.", {"index": index})
             if not isinstance(destination, str) or not is_external_reference(destination):
-                raise B10BError("CONFIG_INVALID", "Managed copy destinations must be absolute D:/ or F:/ paths.", {"index": index})
+                raise B10BError("CONFIG_INVALID", "Managed copy destinations must be absolute local Windows paths.", {"index": index})
             source_key = os.path.normcase(os.path.normpath(source))
             destination_key = os.path.normcase(os.path.normpath(destination))
             if source_key == destination_key or destination_key in destinations:

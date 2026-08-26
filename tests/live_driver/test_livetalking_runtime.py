@@ -71,15 +71,24 @@ def _dependencies(_config: LiveTalkingConfig) -> dict[str, bool]:
     }
 
 
-def test_config_rejects_c_drive_and_relative_runtime_references(tmp_path: Path) -> None:
+def test_config_accepts_any_local_drive_and_rejects_unsafe_runtime_references(tmp_path: Path) -> None:
     config = _config(tmp_path)
     object.__setattr__(config, "runtime_root", Path("C:/models/LiveTalking"))
-    with pytest.raises(LiveTalkingConfigError, match="D:/ or F:/"):
-        config.validate()
+    object.__setattr__(config, "avatar_payload", Path("C:/models/LiveTalking/data/avatars/b11_olivia"))
+    config.validate()
 
-    object.__setattr__(config, "runtime_root", Path("relative/LiveTalking"))
-    with pytest.raises(LiveTalkingConfigError, match="D:/ or F:/"):
-        config.validate()
+    for unsafe in (
+        "relative/LiveTalking",
+        "C:relative/LiveTalking",
+        "C:/",
+        "C:/models/../escape",
+        r"\\server\share\LiveTalking",
+        "https://example.invalid/LiveTalking",
+    ):
+        object.__setattr__(config, "runtime_root", Path(unsafe))
+        object.__setattr__(config, "avatar_payload", Path(unsafe) / "data" / "avatars" / "b11_olivia")
+        with pytest.raises(LiveTalkingConfigError, match="absolute local Windows"):
+            config.validate()
 
 
 def test_health_is_fail_closed_when_checkpoint_or_payload_is_missing(tmp_path: Path) -> None:

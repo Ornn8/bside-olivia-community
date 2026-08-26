@@ -49,13 +49,21 @@ class LiveTalkingRuntimeError(RuntimeError):
 
 def _external_path(value: Path | str) -> bool:
     candidate = PureWindowsPath(str(value))
-    return candidate.is_absolute() and candidate.drive.upper() in {"D:", "F:"} and len(candidate.parts) > 1
+    # Provider assets may live on any local Windows volume.  Keep the
+    # reference-only boundary strict: no relative/drive-relative paths, UNC
+    # shares, URLs, device paths, traversal, or a bare drive root.
+    return (
+        candidate.is_absolute()
+        and bool(re.fullmatch(r"[A-Za-z]:", candidate.drive))
+        and len(candidate.parts) > 1
+        and not any(part in {".", ".."} for part in candidate.parts)
+    )
 
 
 def _path(value: Path | str, field: str) -> Path:
     result = Path(value).expanduser()
     if not _external_path(result):
-        raise LiveTalkingConfigError(f"{field} must be an absolute D:/ or F:/ reference")
+        raise LiveTalkingConfigError(f"{field} must be an absolute local Windows path")
     return result
 
 
@@ -322,9 +330,7 @@ def build_worker_command(
     config.validate()
     audio = _path(audio_path, "audio_path")
     output = _path(output_dir, "output_dir")
-    worker = Path(worker_path).expanduser()
-    if not worker.is_absolute():
-        raise LiveTalkingConfigError("worker_path must be absolute")
+    worker = _path(worker_path, "worker_path")
     indices = tuple(frame_indices)
     if not indices or any(not isinstance(index, int) or index < 0 for index in indices):
         raise LiveTalkingConfigError("frame_indices must contain non-negative integers")
