@@ -609,6 +609,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderPrivateWorldPanel = async (panel, privateCapability) => {
+    const rawPrivateWorldState = privateCapability
+      && typeof privateCapability.state === "string"
+      ? privateCapability.state
+      : null;
     const privateState = privateWorldState(privateCapability);
     const heading = text("h3", "私人世界状态", "text-text-title text-title-m");
     const summary = text(
@@ -616,7 +620,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       `状态：${stateLabels[privateState]}`,
       "text-text-secondary text-body-m font-regular"
     );
-    const reasonCode = privateCapability
+    const reasonCode = rawPrivateWorldState === "unavailable"
+      && privateCapability
       && typeof privateCapability.reason_code === "string"
       && /^[A-Z][A-Z0-9_]{0,95}$/.test(privateCapability.reason_code)
       ? privateCapability.reason_code

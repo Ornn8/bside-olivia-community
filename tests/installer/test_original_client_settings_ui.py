@@ -111,7 +111,9 @@ vm.runInNewContext(source, context);
     { state: "available" },
     { state: "disabled" },
     { state: "unavailable", reason_code: "PRIVATE_WORLD_STORAGE_UNAVAILABLE" },
-    { state: "degraded" }, { state: "unknown" }, {}, null,
+    { state: "degraded", reason_code: "PRIVATE_WORLD_STORAGE_UNAVAILABLE" },
+    { state: "unknown", reason_code: "PRIVATE_WORLD_STORAGE_UNAVAILABLE" },
+    {}, null,
     { state: "unavailable", reason_code: "C:/private/world.sqlite3" },
   ]) {
     const panel = new Element("section");
@@ -136,6 +138,8 @@ vm.runInNewContext(source, context);
         "状态：暂不可用", "状态：暂不可用", "状态：暂不可用", "状态：暂不可用",
     ]
     assert rendered[2][2] == "原因代码：PRIVATE_WORLD_STORAGE_UNAVAILABLE"
+    assert rendered[3][2] == "原因代码：无"
+    assert rendered[4][2] == "原因代码：无"
     assert rendered[7][2] == "原因代码：无"
 
 
