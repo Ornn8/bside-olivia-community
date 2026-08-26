@@ -217,14 +217,19 @@ def test_sanitized_summary_does_not_leak_path_filename_or_hash(tmp_path: Path) -
 
 
 def test_schema_and_synthetic_example_match_code_contract() -> None:
-    schema = json.loads((ROOT / "visual_state_matrix.schema.json").read_text(encoding="utf-8"))
-    example = json.loads((ROOT / "visual_state_matrix.example.json").read_text(encoding="utf-8"))
+    contract_root = ROOT / "contracts" / "asset_baseline"
+    schema = json.loads((contract_root / "visual_state_matrix.schema.json").read_text(encoding="utf-8"))
+    example = json.loads((contract_root / "visual_state_matrix.example.json").read_text(encoding="utf-8"))
     assert schema == visual_baseline.state_matrix_schema_document()
     assert example == visual_baseline.synthetic_state_matrix_document()
 
 
 def test_schema_explicitly_requires_every_expected_state() -> None:
-    schema = json.loads((ROOT / "visual_state_matrix.schema.json").read_text(encoding="utf-8"))
+    schema = json.loads(
+        (ROOT / "contracts" / "asset_baseline" / "visual_state_matrix.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
     covered = {
         block["contains"]["properties"]["state_id"]["const"]
         for block in schema["allOf"]

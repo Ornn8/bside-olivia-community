@@ -129,13 +129,13 @@ linli_character/message_templates.json
 **/*.pfx
 **/*.crt
 
-# Ignore documentation by default; explicitly allow only the formal documents
-# in this baseline and the single review evidence file.
+# Ignore documentation by default; explicitly allow formal documents, the
+# public index, and sanitized historical snapshots.
 docs/*
 docs/reviews/*
+!docs/README.md
 !docs/B11_VISUAL_RUNTIME.md
 !docs/ACCEPTANCE.md
-!docs/CURRENT_STATE_AUDIT.md
 !docs/DELEGATION_BOARD.md
 !docs/MASTER_PLAN.md
 !docs/PERSONA_DISTILLATION_TASK.md
@@ -168,8 +168,11 @@ docs/reviews/*
 !docs/RELEASE_CHECKLIST.md
 !docs/REPOSITORY_LAYOUT.md
 !docs/EXPERIMENTAL_MODULES.md
-!docs/RELEASE_CANDIDATE_AUDIT.md
 !docs/THIRD_PARTY_DOWNLOADS.md
+!docs/archive/
+!docs/archive/README.md
+!docs/archive/2026-08-12-current-state-audit.md
+!docs/archive/2026-08-18-release-candidate-audit.md
 !llm_config.example.json
 !memory_config.example.json
 !linli_character/system_prompt.md

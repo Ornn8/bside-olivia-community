@@ -107,6 +107,7 @@ include = [
 
 [tool.setuptools.package-data]
 contracts = ["*.json"]
+"contracts.asset_baseline" = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
 linli_character = [
     "persona_release_v2.json",
