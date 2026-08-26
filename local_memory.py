@@ -1046,7 +1046,7 @@ def load_memory_config(
             config_error = "MEMORY_CONTEXT_LIMIT_INVALID"
     user_id = str(data.get("user_id", "local-user")).strip()
     if not _MEMORY_USER_ID_RE.fullmatch(user_id):
-        user_id = "local-user"
+        user_id = ""
         config_error = "MEMORY_USER_ID_INVALID"
     write_timeout = _duration(data.get("write_timeout_seconds", 30), default=30.0)
     if write_timeout is None:

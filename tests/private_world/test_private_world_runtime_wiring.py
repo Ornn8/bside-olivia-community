@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
 import sys
 
 import pytest
+
+from private_world_delivery import DeliveryEvent, DeliveryStatus
+from private_world_reducer import ReducerEventKind
+from private_world_runtime import create_private_world_runtime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -304,6 +309,37 @@ def test_local_server_import_degrades_a_corrupt_sqlite_database(
     assert payload["health"]["status"] == "unavailable"
     assert payload["health"]["provider"] == "none"
     assert payload["health"]["reason_code"] == "PRIVATE_WORLD_STORAGE_UNAVAILABLE"
+
+
+def test_invalid_configured_current_user_never_opens_legacy_private_world(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "local-data"
+    legacy = create_private_world_runtime(
+        {"OLIVIA_LOCAL_DATA_ROOT": str(data_root)}
+    )
+    assert legacy.committer is not None
+    assert legacy.committer.commit(
+        DeliveryEvent(
+            delivery_id="legacy-local-user:1",
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+            occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+            semantic_key="legacy.local-user:1",
+        )
+    ) is DeliveryStatus.COMMITTED
+
+    payload = _fresh_local_server_payload(
+        data_root,
+        private_world_environment={"OLIVIA_MEMORY_USER_ID": "invalid user"},
+    )
+
+    assert payload["runtime_port_type"] == "NullPrivateWorldPort"
+    assert payload["runtime_committer_type"] == "NoneType"
+    assert payload["delivery_committed"] is False
+    assert payload["delivery_status"] == "PENDING"
+    assert payload["health"]["status"] == "unavailable"
+    assert payload["health"]["reason_code"] == "PRIVATE_WORLD_STORAGE_UNAVAILABLE"
+    assert legacy.port.health()["event_count"] == 1
 
 
 def test_available_sqlite_private_world_reaches_gateway_only_as_character_view(

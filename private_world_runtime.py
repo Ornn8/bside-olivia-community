@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -19,6 +20,29 @@ from private_world_port import NullPrivateWorldPort, PrivateWorldPort
 PRIVATE_WORLD_DEFAULT_RELATIVE_PATH = Path(
     "private_world/private_world.sqlite3"
 )
+_DEFAULT_USER_ID = "local-user"
+
+
+def _normalized_user_id(value: object) -> str:
+    from conversation_memory_identity import (
+        ConversationMemoryIdentityError,
+        normalize_conversation_memory_user_id,
+    )
+
+    try:
+        return normalize_conversation_memory_user_id(value)
+    except ConversationMemoryIdentityError as exc:
+        raise ValueError("private world user_id is invalid") from exc
+
+
+def _user_database(path: Path, user_id: object) -> Path:
+    """Keep non-default users in an opaque namespace below the state root."""
+
+    normalized = _normalized_user_id(user_id)
+    if normalized == _DEFAULT_USER_ID:
+        return path
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return path.parent / "users" / digest / path.name
 
 
 @dataclass(frozen=True)
@@ -88,6 +112,8 @@ def _enabled(value: object, *, default: bool) -> bool | None:
 
 def resolve_private_world_database(
     environ: Mapping[str, str] | None = None,
+    *,
+    user_id: str = _DEFAULT_USER_ID,
 ) -> tuple[Path | None, str | None, bool]:
     """Resolve an explicit DB or the data-root default without creating it."""
 
@@ -106,23 +132,31 @@ def resolve_private_world_database(
         path = Path(explicit).expanduser()
         if not path.is_absolute():
             return None, "PRIVATE_WORLD_DB_MUST_BE_ABSOLUTE", True
-        return path.resolve(), None, True
+        return _user_database(path.resolve(), user_id), None, True
 
     root_value = str(values.get("OLIVIA_LOCAL_DATA_ROOT", "")).strip()
     if not root_value:
         return None, "PRIVATE_WORLD_DATA_ROOT_NOT_CONFIGURED", True
     root = Path(root_value).expanduser().resolve()
-    return (root / PRIVATE_WORLD_DEFAULT_RELATIVE_PATH), None, True
+    return _user_database(
+        root / PRIVATE_WORLD_DEFAULT_RELATIVE_PATH,
+        user_id,
+    ), None, True
 
 
 def create_private_world_runtime(
     environ: Mapping[str, str] | None = None,
+    *,
+    user_id: str = _DEFAULT_USER_ID,
 ) -> PrivateWorldRuntime:
     """Create the optional local ledger without blocking the reply runtime."""
 
     try:
-        path, reason, enabled = resolve_private_world_database(environ)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error):
+        path, reason, enabled = resolve_private_world_database(
+            environ,
+            user_id=user_id,
+        )
+    except (OSError, TypeError, ValueError, RuntimeError, sqlite3.Error):
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
             None,

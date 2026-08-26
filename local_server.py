@@ -620,7 +620,9 @@ def _create_video_reply_settings_store() -> VideoReplySettingsStore:
 
 
 video_reply_settings_store = _create_video_reply_settings_store()
-private_world_runtime: PrivateWorldRuntime = create_private_world_runtime()
+private_world_runtime: PrivateWorldRuntime = create_private_world_runtime(
+    user_id=_memory_config.user_id,
+)
 private_world_port: PrivateWorldPort = private_world_runtime.port
 private_world_committer: PrivateWorldDeliveryCommitter | None = (
     private_world_runtime.committer
