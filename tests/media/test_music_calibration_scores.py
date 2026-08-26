@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import music_calibration
-from music_calibration_scores import (
+from tools import music_calibration
+from tools.music_calibration_scores import (
     MusicCalibrationScore,
     MusicCalibrationScoreError,
     music_calibration_progress,
