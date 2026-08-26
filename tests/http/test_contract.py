@@ -1172,7 +1172,6 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
             "music_duration.py",
             "music_renderer.py",
             "music_reply.py",
-            "minimax_profile.py",
             "patch_feapp.py",
             "pyproject.toml",
             "reply_delivery.py",
@@ -1195,7 +1194,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
 
     def fake_git(*args: str) -> str:
         if args[:2] == ("diff", "--name-only"):
-            return "\n".join(sorted(expected))
+            return "\n".join(sorted(expected | {"minimax_profile.py"}))
         if args[:2] == ("status", "--short"):
             return ""
         return ""
@@ -1208,6 +1207,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
     )
 
     assert b02_scope.current_b02_paths() == expected
+    assert "minimax_profile.py" not in b02_scope.ALLOWED_MUTATIONS
 
 
 def test_b02_current_candidates_include_exact_ci_dependency_owner(monkeypatch) -> None:
