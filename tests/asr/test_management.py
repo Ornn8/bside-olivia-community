@@ -32,6 +32,40 @@ def test_install_plan_is_offline_and_records_fixed_transfer_closure() -> None:
     assert plan["provenance"]["replacement_boundary"]
 
 
+def test_install_plan_accepts_any_local_drive_for_external_roots() -> None:
+    config = AsrConfig(
+        runtime_root=Path("C:/bside/asr/runtime"),
+        model_root=Path("E:/bside/asr/models"),
+        cache_root=Path("C:/bside/asr/cache"),
+    )
+
+    assert install_plan(config)["paths_are_external"] is True
+
+
+@pytest.mark.parametrize("value", (Path("relative/asr"), Path("https://example.invalid/asr")))
+def test_install_rejects_non_local_storage_roots(value: Path) -> None:
+    config = AsrConfig(
+        runtime_root=value,
+        model_root=Path("C:/bside/asr/models"),
+        cache_root=Path("E:/bside/asr/cache"),
+        strict_storage=False,
+    )
+
+    with pytest.raises(AsrError, match="absolute local Windows paths"):
+        install(config, apply=True, transfer_root=Path("C:/bside/transfer"))
+
+
+def test_install_rejects_non_local_transfer_root() -> None:
+    config = AsrConfig(
+        runtime_root=Path("C:/bside/asr/runtime"),
+        model_root=Path("E:/bside/asr/models"),
+        cache_root=Path("C:/bside/asr/cache"),
+    )
+
+    with pytest.raises(AsrError, match="absolute local Windows path"):
+        install_plan(config, transfer_root=Path("relative/transfer"))
+
+
 def test_apply_requires_explicit_offline_transfer_root(tmp_path: Path) -> None:
     config = AsrConfig(provider="nemotron-speech-cpp").with_test_paths(tmp_path)
 

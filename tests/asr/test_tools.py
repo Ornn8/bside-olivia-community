@@ -28,3 +28,12 @@ def test_asr_manage_switch_cli_writes_only_config(capsys, tmp_path: Path) -> Non
     assert asr_manage.main(["switch", "--config", str(config_path), "--provider", "text-fallback"]) == 0
     json.loads(capsys.readouterr().out)
     assert AsrConfig.from_json(config_path).provider == "text-fallback"
+
+
+def test_asr_manage_default_config_follows_localappdata(monkeypatch, capsys, tmp_path: Path) -> None:
+    local_appdata = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+
+    assert asr_manage.main(["switch", "--provider", "text-fallback"]) == 0
+    json.loads(capsys.readouterr().out)
+    assert (local_appdata / "BSideOliviaLocal" / "asr" / "config.json").is_file()

@@ -1,8 +1,8 @@
 """Manifest-driven, portable CUDA 13.3 assembly for the B05 build boundary.
 
 This module never downloads anything.  It verifies NVIDIA redistributable
-archives supplied through an explicit D:/ or F:/ transfer root, assembles an
-owned toolchain under D:/ or F:/, and returns diagnostics suitable for the
+archives supplied through an explicit local absolute transfer root, assembles an
+owned toolchain under a local absolute root, and returns diagnostics suitable for the
 management CLI.  A ready toolchain is only build-ready; it is not native ASR
 acceptance evidence.
 """
@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urljoin
 
 from .errors import AsrError
+from .config import is_local_absolute_path
 
 
 CUDA_REDIST_MANIFEST_URL = (
@@ -78,10 +79,10 @@ class CudaPackage:
 
 def _external_root(path: Path | str, label: str) -> Path:
     root = Path(path)
-    if not root.is_absolute() or root.drive.upper() not in {"D:", "F:"}:
+    if not is_local_absolute_path(root):
         raise AsrError(
             "ASR_CONFIG_INVALID",
-            f"{label} must be an absolute D:/ or F:/ path",
+            f"{label} must be an absolute local Windows path",
             {"path": str(root), "label": label},
         )
     return root

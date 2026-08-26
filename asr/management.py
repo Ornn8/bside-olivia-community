@@ -19,6 +19,7 @@ from .config import (
     RUNTIME_REPO,
     RUNTIME_REVISION,
     AsrConfig,
+    is_local_absolute_path,
 )
 from .errors import AsrError
 
@@ -31,13 +32,13 @@ HTTP_SNAPSHOT_PATCH = "tools/b05_native_http_snapshot.patch"
 
 def _external_paths(config: AsrConfig) -> bool:
     paths = [config.runtime_root, config.model_root, config.cache_root]
-    return all(Path(path).is_absolute() and Path(path).drive.upper() in {"D:", "F:"} for path in paths)
+    return all(is_local_absolute_path(path) for path in paths)
 
 
 def _external_path(path: Path, *, label: str) -> Path:
-    path = Path(path).absolute()
-    if not path.is_absolute() or path.drive.upper() not in {"D:", "F:"}:
-        raise AsrError("ASR_CONFIG_INVALID", f"{label} must be an absolute D:/ or F:/ path", {"path": str(path)})
+    path = Path(path)
+    if not is_local_absolute_path(path):
+        raise AsrError("ASR_CONFIG_INVALID", f"{label} must be an absolute local Windows path", {"path": str(path)})
     return path
 
 
@@ -183,11 +184,11 @@ def install(config: AsrConfig, *, apply: bool = False, transfer_root: Path | Non
     if not apply:
         return plan
     if not plan["paths_are_external"]:
-        raise AsrError("ASR_CONFIG_INVALID", "install roots must be on D:/ or F:/")
+        raise AsrError("ASR_CONFIG_INVALID", "install roots must be absolute local Windows paths")
     if transfer_root is None:
         raise AsrError(
             "ASR_CONFIG_INVALID",
-            "apply requires an explicit D:/ or F:/ transfer_root; network downloads are disabled",
+            "apply requires an explicit local absolute transfer_root; network downloads are disabled",
         )
     source = _validate_transfer_source(transfer_root)
     model = _validate_model(config.effective_model_path)
@@ -252,7 +253,7 @@ def uninstall(config: AsrConfig, *, apply: bool = False) -> dict[str, Any]:
     if not plan["owned"]:
         raise AsrError("ASR_CONFIG_INVALID", "refusing to delete paths without the B05 ownership manifest")
     if not _external_paths(config):
-        raise AsrError("ASR_CONFIG_INVALID", "uninstall roots must be on D:/ or F:/")
+        raise AsrError("ASR_CONFIG_INVALID", "uninstall roots must be absolute local Windows paths")
     deleted: list[str] = []
     for path in (config.runtime_root, config.model_root, config.cache_root):
         if Path(path).exists():

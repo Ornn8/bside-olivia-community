@@ -13,6 +13,7 @@ from asr.cuda_toolchain import (
     build_command,
     build_environment,
     inspect_cuda_transfer,
+    cuda_toolchain_status,
     load_manifest,
     select_cuda_packages,
     uninstall_cuda_toolchain,
@@ -106,6 +107,19 @@ def test_manifest_selection_returns_the_pinned_windows_build_closure(tmp_path: P
     assert packages[0].relative_path == "cccl/windows-x86_64/cccl.zip"
     assert packages[-1].license_path == "libnvvm/LICENSE.txt"
     assert packages[0].size == 7
+
+
+@pytest.mark.parametrize("drive", ("C:", "E:"))
+def test_cuda_status_accepts_any_local_drive(drive: str) -> None:
+    report = cuda_toolchain_status(Path(f"{drive}/bside/cuda"))
+
+    assert report["toolchain_root"] == str(Path(f"{drive}/bside/cuda"))
+
+
+@pytest.mark.parametrize("value", (Path("relative/cuda"), Path("https://example.invalid/cuda")))
+def test_cuda_status_rejects_non_local_roots(value: Path) -> None:
+    with pytest.raises(AsrError, match="absolute local Windows path"):
+        cuda_toolchain_status(value)
 
 
 def test_strict_manifest_pin_rejects_size_or_hash_mismatch(tmp_path: Path) -> None:

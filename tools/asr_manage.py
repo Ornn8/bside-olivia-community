@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from asr.config import AsrConfig  # noqa: E402
+from asr.config import AsrConfig, default_asr_root  # noqa: E402
 from asr.cuda_toolchain import (  # noqa: E402
     assemble_cuda_toolchain,
     build_environment,
@@ -24,20 +24,24 @@ from asr.management import install, switch_provider, uninstall  # noqa: E402
 from asr.provider import NemotronProvider, create_provider  # noqa: E402
 
 
-DEFAULT_CONFIG = Path("F:/Bside-olivia-local/asr/config.json")
+DEFAULT_CONFIG = default_asr_root() / "config.json"
+
+
+def _default_config_path() -> Path:
+    return default_asr_root() / "config.json"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Manage the optional local B05 ASR runtime")
     parser.add_argument("command", choices=["status", "install", "uninstall", "switch", "cuda-toolchain"])
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--provider", choices=["text-fallback", "nemotron-speech-cpp"])
     parser.add_argument(
         "--data-root",
         type=Path,
-        help="explicit D:/ or F:/ root for runtime, model, cache, and acceptance evidence",
+        help="explicit local absolute root for runtime, model, cache, and acceptance evidence",
     )
-    parser.add_argument("--transfer-root", type=Path, help="verified offline D:/ or F:/ transfer root")
+    parser.add_argument("--transfer-root", type=Path, help="verified offline local absolute transfer root")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--action", choices=["status", "assemble", "uninstall"], default="status")
     parser.add_argument("--cuda-root", type=Path)
@@ -48,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vswhere", type=Path)
     parser.add_argument("--cuda-arch", default="86")
     args = parser.parse_args(argv)
+    config_path = args.config or _default_config_path()
 
     if args.command == "cuda-toolchain":
         if not args.cuda_root:
@@ -77,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "switch":
         if not args.provider:
             parser.error("switch requires --provider")
-        seed = AsrConfig.from_json(args.config) if args.config.is_file() else AsrConfig.from_env()
+        seed = AsrConfig.from_json(config_path) if config_path.is_file() else AsrConfig.from_env()
         if args.data_root:
             data_root = args.data_root.absolute()
             seed = replace(
@@ -88,9 +93,9 @@ def main(argv: list[str] | None = None) -> int:
                 model_path=data_root / "models" / "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
             )
             seed.validate_storage_roots()
-        result = switch_provider(args.config, args.provider, base_config=seed).to_dict()
+        result = switch_provider(config_path, args.provider, base_config=seed).to_dict()
     else:
-        config = AsrConfig.from_json(args.config) if args.config.is_file() else AsrConfig.from_env()
+        config = AsrConfig.from_json(config_path) if config_path.is_file() else AsrConfig.from_env()
         if args.command == "status":
             provider = create_provider(config)
             result = {"config": config.to_dict(include_paths=False), "status": provider.status()}
