@@ -158,6 +158,144 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
     assert "rpds-py==2026.6.3" in requirements
 
 
+def _run_managed_python_path_helper(
+    *,
+    pth_path: Path,
+    deny_replace: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).parents[2]
+    command = (
+        "$tokens=$null;$errors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:BSIDE_INSTALL_SCRIPT,[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){throw 'INSTALL_SCRIPT_PARSE_FAILED'};"
+        "$function=$ast.Find({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]"
+        " -and $node.Name -eq 'Update-ManagedPythonPath'},$true);"
+        "if(-not $function){throw 'MANAGED_PYTHON_PATH_HELPER_MISSING'};"
+        ". ([scriptblock]::Create($function.Extent.Text));"
+        "$lock=$null;"
+        "if($env:BSIDE_DENY_REPLACE -eq '1'){"
+        "$lock=[IO.File]::Open($env:BSIDE_PTH_PATH,[IO.FileMode]::Open,"
+        "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)};"
+        "try{Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH}"
+        "finally{if($lock){$lock.Dispose()}}"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
+            "BSIDE_PTH_PATH": str(pth_path),
+            "BSIDE_DENY_REPLACE": "1" if deny_replace else "0",
+        }
+    )
+    powershell = (
+        Path(os.environ.get("WINDIR", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
+def test_managed_runtime_pth_never_writes_payload_and_preserves_existing_paths(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    pth_path = runtime_root / "python312._pth"
+    payload_root = tmp_path / "fresh payload"
+    pth_path.write_text(
+        "python312.zip\n.\n#import site\n",
+        encoding="utf-8",
+    )
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert pth_path.read_text(encoding="utf-8").splitlines() == [
+        "python312.zip",
+        ".",
+        "#import site",
+        "site-packages",
+        "import site",
+    ]
+    assert str(payload_root) not in pth_path.read_text(encoding="utf-8")
+    assert not pth_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert not list(runtime_root.glob(f".{pth_path.name}.*"))
+
+    original = (
+        "python312.zip\n.\n"
+        f"{tmp_path / '替换失败时保留'}\n"
+        "site-packages\nsite-packages\n"
+    ).encode("utf-8")
+    pth_path.write_bytes(original)
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+        deny_replace=True,
+    )
+
+    assert result.returncode != 0
+    assert pth_path.read_bytes() == original
+    assert not list(runtime_root.glob(f".{pth_path.name}.*"))
+
+    current_payload = tmp_path / "当前解压目录"
+    legacy_payload = tmp_path / "旧版解压目录"
+    unrelated_root = tmp_path / "用户 Python 模块"
+    pth_path.write_text(
+        "\n".join(
+            (
+                "python312.zip",
+                ".",
+                str(current_payload),
+                str(legacy_payload),
+                str(unrelated_root),
+                "site-packages",
+                "site-packages",
+                "import site",
+                "import site",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert pth_path.read_text(encoding="utf-8").splitlines() == [
+        "python312.zip",
+        ".",
+        str(current_payload),
+        str(legacy_payload),
+        str(unrelated_root),
+        "site-packages",
+        "import site",
+    ]
+
+
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
     repo_root = Path(__file__).parents[2]
     for relative in (

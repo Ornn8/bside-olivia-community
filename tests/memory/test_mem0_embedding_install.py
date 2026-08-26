@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import sys
 import threading
 import time
@@ -548,6 +549,37 @@ def test_huggingface_download_call_shape_uses_only_supported_pinned_arguments(
     inspect.signature(hf_hub_download).bind(**observed)
     assert observed["revision"] == MEM0_EMBEDDING_MODEL_REVISION
     assert observed["token"] is False
+    assert destination.read_bytes() == b"synthetic"
+
+
+def test_huggingface_downloader_skips_copy_for_physical_file_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "stage" / "1_Pooling" / "config.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"synthetic")
+    fetched = tmp_path / "hf-cache" / "config.json"
+
+    def hf_hub_download(**kwargs: object) -> str:
+        del kwargs
+        fetched.parent.mkdir(parents=True)
+        os.link(destination, fetched)
+        return str(fetched)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(hf_hub_download=hf_hub_download),
+    )
+
+    HuggingFaceEmbeddingDownloader().download(
+        revision=MEM0_EMBEDDING_MODEL_REVISION,
+        relative_path="1_Pooling/config.json",
+        destination=destination,
+    )
+
+    assert fetched.resolve() != destination.resolve()
+    assert os.path.samefile(fetched, destination)
     assert destination.read_bytes() == b"synthetic"
 
 
