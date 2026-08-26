@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/third_party_manifest.schema.json",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/third_party_manifest.schema.json",
   "title": "BSide Olivia Local third-party download manifest",
   "type": "object",
   "additionalProperties": false,

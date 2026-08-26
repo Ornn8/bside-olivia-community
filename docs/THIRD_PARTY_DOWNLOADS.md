@@ -4,7 +4,7 @@
 
 ## 准备清单
 
-复制 [`third_party_manifest.example.json`](../third_party_manifest.example.json)，它默认是空清单，不会形成可安装的假条目。维护者新增条目时，必须填写真实上游的 `source_url`、`version` 或 `revision`、`license`、`target_path`、`sha256`（以及可选 `size_bytes`）。URL 必须是 HTTPS 且不能包含账号、密钥、token、查询参数或 fragment；本地测试才允许 loopback HTTP。
+复制 [`third_party_manifest.example.json`](../contracts/third_party_manifest.example.json)，它默认是空清单，不会形成可安装的假条目。维护者新增条目时，必须填写真实上游的 `source_url`、`version` 或 `revision`、`license`、`target_path`、`sha256`（以及可选 `size_bytes`）。URL 必须是 HTTPS 且不能包含账号、密钥、token、查询参数或 fragment；本地测试才允许 loopback HTTP。
 
 ## Windows 用法
 
@@ -33,7 +33,7 @@ $thirdPartyRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\third-party'
 
 ## 清单字段
 
-机器校验规则见 [`third_party_manifest.schema.json`](../third_party_manifest.schema.json)。`id` 必须唯一；`target_path` 是相对于外部 `DataRoot` 的路径，不能是绝对路径或包含 `..`；`sha256` 必须是 64 位十六进制；`version` 与 `revision` 至少提供一个。
+机器校验规则见 [`third_party_manifest.schema.json`](../contracts/third_party_manifest.schema.json)。`id` 必须唯一；`target_path` 是相对于外部 `DataRoot` 的路径，不能是绝对路径或包含 `..`；`sha256` 必须是 64 位十六进制；`version` 与 `revision` 至少提供一个。
 
 本地 fixture 测试使用 loopback HTTP，不代表项目会替用户下载任何真实第三方内容。
 

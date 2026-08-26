@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $DataRoot,
-    [string] $Manifest = (Join-Path $PSScriptRoot '..\third_party_manifest.example.json'),
+    [string] $Manifest = (Join-Path $PSScriptRoot '..\contracts\third_party_manifest.example.json'),
     [string] $Python = 'python',
     [switch] $Install,
     [switch] $AcceptLicenses,
