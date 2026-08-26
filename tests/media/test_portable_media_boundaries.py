@@ -534,3 +534,139 @@ def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Pa
             ),
         }
     ) == (first, second)
+
+
+def test_musical_renderer_resolves_all_provider_paths_from_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "app"
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"synthetic")
+    performance = project_root / "assets" / "performance.mp4"
+    reference = project_root / "assets" / "reference.mp4"
+    for path in (performance, reference):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+
+    provider_paths = {
+        "OLIVIA_MINIMAX_COMFY_PYTHON": project_root / "providers" / "minimax" / "python.exe",
+        "OLIVIA_MINIMAX_COMFY_ROOT": project_root / "providers" / "minimax",
+        "OLIVIA_MINIMAX_WORKER": project_root / "providers" / "minimax" / "worker.py",
+        "OLIVIA_ROFORMER_EXE": project_root / "providers" / "roformer" / "roformer.exe",
+        "OLIVIA_ROFORMER_MODEL_PATH": project_root / "providers" / "roformer" / "model.ckpt",
+        "OLIVIA_ROFORMER_CONFIG_PATH": project_root / "providers" / "roformer" / "config.yaml",
+        "OLIVIA_LATENTSYNC_PYTHON": project_root / "providers" / "latentsync" / "python.exe",
+        "OLIVIA_LATENTSYNC_ROOT": project_root / "providers" / "latentsync",
+    }
+    provider_roots = {
+        provider_paths["OLIVIA_MINIMAX_COMFY_ROOT"],
+        provider_paths["OLIVIA_LATENTSYNC_ROOT"],
+    }
+    for path in provider_paths.values():
+        path.mkdir(parents=True, exist_ok=True) if path in provider_roots else path.parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        if path not in provider_roots:
+            path.write_bytes(b"synthetic")
+
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(ffmpeg))
+    monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", "assets/reference.mp4")
+    for name, path in provider_paths.items():
+        monkeypatch.setenv(name, path.relative_to(project_root).as_posix())
+
+    observed: dict[str, object] = {}
+
+    class FakeMiniMaxWorker:
+        def __init__(self, *, python_path, worker_path, comfy_root, **_kwargs):
+            observed["minimax_paths"] = (python_path, worker_path, comfy_root)
+
+        def generate(self, _content, _reply_text, destination, **_kwargs):
+            Path(destination).write_bytes(b"song")
+            return {"audio_model": "synthetic"}
+
+    def fake_run(command, error_code, **_kwargs):
+        observed.setdefault("commands", []).append((command, error_code))
+        if error_code == "ROFORMER_FAILED":
+            output_root = Path(command[command.index("--store_dir") + 1])
+            (output_root / "synthetic_vocals.wav").write_bytes(b"vocals")
+        elif error_code == "ROFORMER_INPUT_CONVERSION_FAILED":
+            Path(command[-1]).write_bytes(b"wav")
+        elif error_code == "MUSIC_REPLY_AUDIO_MUX_FAILED":
+            Path(command[-1]).write_bytes(b"song-video")
+
+    def fake_render_reply(_reply_text, output, **kwargs):
+        observed["ordinary_kwargs"] = kwargs
+        Path(output).write_bytes(b"normal-video")
+        return {}
+
+    def fake_latentsync(_source, _audio, output, *, python_path, latentsync_root):
+        observed["latentsync_paths"] = (python_path, latentsync_root)
+        Path(output).write_bytes(b"face-video")
+        return {}
+
+    def fake_prepare(_reference, destination):
+        Path(destination).write_bytes(b"spoken-base")
+        return destination
+
+    monkeypatch.setattr(music_reply, "MiniMaxMusic3Worker", FakeMiniMaxWorker)
+    monkeypatch.setattr(music_reply, "_run", fake_run)
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: str(ffmpeg))
+    monkeypatch.setattr(music_reply, "render_reply_video", fake_render_reply)
+    monkeypatch.setattr(music_reply, "render_latentsync_video", fake_latentsync)
+    monkeypatch.setattr(music_reply, "prepare_official_spoken_base", fake_prepare)
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SimpleNamespace(lyrics="lyrics", caption="caption", emotion="steady"),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "concat_videos",
+        lambda _normal, _song, output, **_kwargs: Path(output).write_bytes(b"final-video"),
+    )
+
+    output = tmp_path / "out" / "reply.mp4"
+    render_musical_reply(
+        "letter",
+        "reply",
+        output,
+        normal_video_path=tmp_path / "out" / "normal.mp4",
+        official_reply_reference_path=reference,
+        song_video_path=tmp_path / "out" / "song.mp4",
+        tts_config_path=tmp_path / "tts.json",
+        visual_config_path=tmp_path / "visual.json",
+        worker_path=tmp_path / "worker.py",
+        performance_video_path=performance,
+        duration_seconds=40,
+    )
+
+    assert observed["minimax_paths"] == (
+        provider_paths["OLIVIA_MINIMAX_COMFY_PYTHON"],
+        provider_paths["OLIVIA_MINIMAX_WORKER"],
+        provider_paths["OLIVIA_MINIMAX_COMFY_ROOT"],
+    )
+    assert observed["ordinary_kwargs"]["latentsync_python_path"] == provider_paths[
+        "OLIVIA_LATENTSYNC_PYTHON"
+    ]
+    assert observed["ordinary_kwargs"]["latentsync_root"] == provider_paths[
+        "OLIVIA_LATENTSYNC_ROOT"
+    ]
+    assert observed["latentsync_paths"] == (
+        provider_paths["OLIVIA_LATENTSYNC_PYTHON"],
+        provider_paths["OLIVIA_LATENTSYNC_ROOT"],
+    )
+    roformer_commands = [
+        command for command, error_code in observed["commands"] if error_code == "ROFORMER_FAILED"
+    ]
+    assert roformer_commands[0][-4:] == [
+        "--model_path",
+        str(provider_paths["OLIVIA_ROFORMER_MODEL_PATH"]),
+        "--config_path",
+        str(provider_paths["OLIVIA_ROFORMER_CONFIG_PATH"]),
+    ]
+    assert roformer_commands[0][0] == str(provider_paths["OLIVIA_ROFORMER_EXE"])
+    assert output.read_bytes() == b"final-video"
