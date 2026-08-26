@@ -125,6 +125,69 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
 
 
+def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "app"
+    scene = project_root / "assets" / "scene.mp4"
+    tts_config = project_root / "config" / "tts.json"
+    visual_config = project_root / "config" / "visual.json"
+    worker = project_root / "workers" / "visual.py"
+    latentsync_python = project_root / "providers" / "latentsync" / "python.exe"
+    latentsync_root = project_root / "providers" / "latentsync"
+    for path in (scene, tts_config, visual_config, worker, latentsync_python):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+
+    data_root = tmp_path / "data"
+    letter = {"letter_id": "relative-media", "media_status": "PENDING"}
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("OLIVIA_TTS_CONFIG", "config/tts.json")
+    monkeypatch.setenv("OLIVIA_VISUAL_CONFIG", "config/visual.json")
+    monkeypatch.setenv("OLIVIA_LIVETALKING_WORKER", "workers/visual.py")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "providers/latentsync/python.exe")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "providers/latentsync")
+    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", "assets/scene.mp4")
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    async def voice_plan(_letter, text):
+        return VoicePerformancePlan(
+            reply_text=text,
+            overall_emotion="steady",
+            global_speed=1.0,
+            energy=0.5,
+            breath_before_sentences=(),
+            emphasize_sentences=(),
+        )
+
+    observed: dict[str, Path] = {}
+
+    def render(_reply, output, **kwargs):
+        observed.update(kwargs)
+        Path(output).write_bytes(b"video")
+
+    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
+    monkeypatch.setattr(local_server, "render_reply_video", render)
+
+    asyncio.run(
+        local_server._render_media_job(
+            "relative-media", "letter", "reply", ReplyMode.SPOKEN_VIDEO.value
+        )
+    )
+
+    assert letter["media_status"] == "COMPLETED"
+    assert observed["scene_path"] == scene
+    assert observed["tts_config_path"] == tts_config
+    assert observed["visual_config_path"] == visual_config
+    assert observed["worker_path"] == worker
+    assert observed["latentsync_python_path"] == latentsync_python
+    assert observed["latentsync_root"] == latentsync_root
+
+
 @pytest.mark.parametrize(
     ("error_code", "expected_status", "expected_retryable"),
     [
