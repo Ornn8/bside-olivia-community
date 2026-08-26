@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from pathlib import PureWindowsPath
 
 import pytest
 
@@ -55,7 +57,18 @@ def test_install_rejects_non_local_storage_roots(value: Path) -> None:
         install(config, apply=True, transfer_root=Path("C:/bside/transfer"))
 
 
-def test_install_rejects_non_local_transfer_root() -> None:
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/transfer/../asr"),
+        Path("C:transfer"),
+        Path("relative/transfer"),
+        Path("https://example.invalid/transfer"),
+        Path("//server/share/transfer"),
+    ),
+)
+def test_install_rejects_unsafe_transfer_root(value: Path) -> None:
     config = AsrConfig(
         runtime_root=Path("C:/bside/asr/runtime"),
         model_root=Path("E:/bside/asr/models"),
@@ -63,7 +76,7 @@ def test_install_rejects_non_local_transfer_root() -> None:
     )
 
     with pytest.raises(AsrError, match="absolute local Windows path"):
-        install_plan(config, transfer_root=Path("relative/transfer"))
+        install_plan(config, transfer_root=value)
 
 
 def test_apply_requires_explicit_offline_transfer_root(tmp_path: Path) -> None:
@@ -93,6 +106,22 @@ def test_uninstall_plan_does_not_delete_without_apply(tmp_path: Path) -> None:
     assert plan["deleted"] == []
 
 
+def test_uninstall_apply_rejects_legacy_runtime_only_manifest(tmp_path: Path) -> None:
+    config = AsrConfig(provider="nemotron-speech-cpp").with_test_paths(tmp_path)
+    roots = (config.runtime_root, config.model_root, config.cache_root)
+    for root in roots:
+        root.mkdir(parents=True)
+    config.runtime_root.joinpath(".b05-install.json").write_text(
+        json.dumps({"owner": "b05-streaming-asr"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AsrError, match="ownership marker"):
+        uninstall(config, apply=True)
+
+    assert all(root.is_dir() for root in roots)
+
+
 def test_install_and_uninstall_apply_roundtrip_removes_only_owned_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -114,6 +143,32 @@ def test_install_and_uninstall_apply_roundtrip_removes_only_owned_roots(
     applied = install(config, apply=True, transfer_root=Path("F:/fixture-transfer"))
     assert applied["mode"] == "applied"
     assert (config.runtime_root / ".b05-install.json").is_file()
+    roots = {
+        "runtime": config.runtime_root,
+        "model": config.model_root,
+        "cache": config.cache_root,
+    }
+    markers = {
+        kind: json.loads((root / ".b05-owned-root.json").read_text(encoding="utf-8"))
+        for kind, root in roots.items()
+    }
+    assert {marker["operation_id"] for marker in markers.values()} == {
+        applied["manifest"]["operation_id"]
+    }
+    for kind, root in roots.items():
+        assert markers[kind]["kind"] == kind
+        assert markers[kind]["normalized_root"] == str(PureWindowsPath(root)).casefold()
+
+    cache_marker_path = config.cache_root / ".b05-owned-root.json"
+    for tampered in (
+        {**markers["cache"], "normalized_root": "C:\\wrong-root"},
+        {**markers["cache"], "operation_id": "different-install"},
+    ):
+        cache_marker_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(AsrError):
+            uninstall(config, apply=True)
+        assert all(root.is_dir() for root in roots.values())
+    cache_marker_path.write_text(json.dumps(markers["cache"]), encoding="utf-8")
 
     removed = uninstall(config, apply=True)
     assert removed["mode"] == "applied"

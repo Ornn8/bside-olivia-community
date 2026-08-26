@@ -39,7 +39,13 @@ def _default_root(name: str) -> Path:
 
 def is_local_absolute_path(path: Path | str) -> bool:
     windows = PureWindowsPath(str(path))
-    return windows.is_absolute() and len(windows.drive) == 2 and windows.drive[1] == ":"
+    return (
+        windows.is_absolute()
+        and len(windows.drive) == 2
+        and windows.drive[1] == ":"
+        and len(windows.parts) > 1
+        and ".." not in windows.parts
+    )
 
 
 @dataclass(frozen=True)

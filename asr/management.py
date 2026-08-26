@@ -6,8 +6,9 @@ import hashlib
 import json
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
+from uuid import uuid4
 
 from .config import (
     MODEL_FILENAME,
@@ -28,6 +29,56 @@ GGML_REVISION = "c03b4e2bcece5134827881af90242086daf75be5"
 CPP_HTTPLIB_REVISION = "62d899feac3cf9215a55f2b43da250fdd98d2156"
 TRANSFER_SOURCE_DIR = "NeMo-Speech.cpp"
 HTTP_SNAPSHOT_PATCH = "tools/b05_native_http_snapshot.patch"
+OWNER = "b05-streaming-asr"
+OWNERSHIP_MARKER = ".b05-owned-root.json"
+
+
+def _managed_roots(config: AsrConfig) -> dict[str, Path]:
+    return {
+        "runtime": Path(config.runtime_root),
+        "model": Path(config.model_root),
+        "cache": Path(config.cache_root),
+    }
+
+
+def _normalized_root(path: Path) -> str:
+    return str(PureWindowsPath(path)).casefold()
+
+
+def _read_owned_json(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AsrError("ASR_CONFIG_INVALID", f"refusing to delete without a valid {label}") from exc
+    if not isinstance(value, dict):
+        raise AsrError("ASR_CONFIG_INVALID", f"refusing to delete without a valid {label}")
+    return value
+
+
+def _validate_owned_roots(config: AsrConfig) -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    operation_ids: set[str] = set()
+    for kind, configured_root in _managed_roots(config).items():
+        root = _external_path(configured_root, label=f"{kind}_root")
+        marker = _read_owned_json(root / OWNERSHIP_MARKER, label=f"{kind} ownership marker")
+        operation_id = marker.get("operation_id")
+        if (
+            marker.get("owner") != OWNER
+            or marker.get("kind") != kind
+            or marker.get("normalized_root") != _normalized_root(root)
+            or not isinstance(operation_id, str)
+            or not operation_id
+        ):
+            raise AsrError("ASR_CONFIG_INVALID", f"refusing to delete without a matching {kind} ownership marker")
+        roots[kind] = root
+        operation_ids.add(operation_id)
+    if len(operation_ids) != 1:
+        raise AsrError("ASR_CONFIG_INVALID", "ownership markers do not share one install operation identity")
+    manifest = _read_owned_json(config.runtime_root / ".b05-install.json", label="B05 ownership manifest")
+    operation_id = next(iter(operation_ids))
+    if manifest.get("owner") != OWNER or manifest.get("operation_id") != operation_id:
+        raise AsrError("ASR_CONFIG_INVALID", "B05 ownership manifest does not match the install operation")
+    return roots
 
 
 def _external_paths(config: AsrConfig) -> bool:
@@ -198,8 +249,10 @@ def install(config: AsrConfig, *, apply: bool = False, transfer_root: Path | Non
     config.runtime_root.mkdir(parents=True, exist_ok=True)
     config.model_root.mkdir(parents=True, exist_ok=True)
     config.cache_root.mkdir(parents=True, exist_ok=True)
+    operation_id = uuid4().hex
     manifest = {
-        "owner": "b05-streaming-asr",
+        "owner": OWNER,
+        "operation_id": operation_id,
         "mode": "external-transfer-assembly",
         "runtime_repo": RUNTIME_REPO,
         "runtime_revision": RUNTIME_REVISION,
@@ -216,6 +269,14 @@ def install(config: AsrConfig, *, apply: bool = False, transfer_root: Path | Non
         "uninstall_boundary": plan["provenance"]["uninstall_boundary"],
     }
     config.runtime_root.joinpath(".b05-install.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    for kind, root in _managed_roots(config).items():
+        marker = {
+            "owner": OWNER,
+            "operation_id": operation_id,
+            "kind": kind,
+            "normalized_root": _normalized_root(root),
+        }
+        root.joinpath(OWNERSHIP_MARKER).write_text(json.dumps(marker, indent=2), encoding="utf-8")
     return {**plan, "mode": "applied", "manifest": manifest, "network": {"called": False}}
 
 
@@ -234,10 +295,12 @@ def switch_provider(
 
 def uninstall_plan(config: AsrConfig) -> dict[str, Any]:
     owned_manifest = config.runtime_root / ".b05-install.json"
-    owned = owned_manifest.is_file()
+    owned_markers = [root / OWNERSHIP_MARKER for root in _managed_roots(config).values()]
+    owned = owned_manifest.is_file() and all(marker.is_file() for marker in owned_markers)
     return {
         "mode": "dry-run",
         "owned_manifest": str(owned_manifest),
+        "owned_markers": [str(marker) for marker in owned_markers],
         "owned": owned,
         "paths": [str(config.runtime_root), str(config.model_root), str(config.cache_root)],
         "deleted": [],
@@ -251,12 +314,11 @@ def uninstall(config: AsrConfig, *, apply: bool = False) -> dict[str, Any]:
     if not apply:
         return plan
     if not plan["owned"]:
-        raise AsrError("ASR_CONFIG_INVALID", "refusing to delete paths without the B05 ownership manifest")
-    if not _external_paths(config):
-        raise AsrError("ASR_CONFIG_INVALID", "uninstall roots must be absolute local Windows paths")
+        raise AsrError("ASR_CONFIG_INVALID", "refusing to delete paths without complete B05 ownership markers")
+    owned_roots = _validate_owned_roots(config)
     deleted: list[str] = []
-    for path in (config.runtime_root, config.model_root, config.cache_root):
-        if Path(path).exists():
+    for path in sorted(owned_roots.values(), key=lambda value: len(PureWindowsPath(value).parts), reverse=True):
+        if path.exists():
             shutil.rmtree(path)
             deleted.append(str(path))
     return {**plan, "mode": "applied", "deleted": deleted}

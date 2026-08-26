@@ -51,8 +51,18 @@ def test_production_storage_accepts_any_local_drive(drive: str) -> None:
     assert config.runtime_root == Path(f"{drive}/asr/runtime")
 
 
-@pytest.mark.parametrize("value", (Path("relative/asr"), Path("http://example.invalid/asr")))
-def test_production_storage_rejects_relative_and_url_paths(value: Path) -> None:
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/bside/../asr"),
+        Path("C:asr/runtime"),
+        Path("relative/asr"),
+        Path("http://example.invalid/asr"),
+        Path("//server/share/asr"),
+    ),
+)
+def test_production_storage_rejects_unsafe_paths(value: Path) -> None:
     with pytest.raises(AsrError, match="absolute local Windows paths"):
         AsrConfig(runtime_root=value)
 

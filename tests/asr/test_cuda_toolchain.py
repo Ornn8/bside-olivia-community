@@ -116,8 +116,18 @@ def test_cuda_status_accepts_any_local_drive(drive: str) -> None:
     assert report["toolchain_root"] == str(Path(f"{drive}/bside/cuda"))
 
 
-@pytest.mark.parametrize("value", (Path("relative/cuda"), Path("https://example.invalid/cuda")))
-def test_cuda_status_rejects_non_local_roots(value: Path) -> None:
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/cuda/../toolchain"),
+        Path("C:cuda/toolchain"),
+        Path("relative/cuda"),
+        Path("https://example.invalid/cuda"),
+        Path("//server/share/cuda"),
+    ),
+)
+def test_cuda_status_rejects_unsafe_roots(value: Path) -> None:
     with pytest.raises(AsrError, match="absolute local Windows path"):
         cuda_toolchain_status(value)
 

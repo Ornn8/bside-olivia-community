@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from asr.config import AsrConfig, default_asr_root  # noqa: E402
+from asr.config import AsrConfig, default_asr_root, is_local_absolute_path  # noqa: E402
 from asr.cuda_toolchain import (  # noqa: E402
     assemble_cuda_toolchain,
     build_environment,
@@ -84,7 +84,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("switch requires --provider")
         seed = AsrConfig.from_json(config_path) if config_path.is_file() else AsrConfig.from_env()
         if args.data_root:
-            data_root = args.data_root.absolute()
+            if not is_local_absolute_path(args.data_root):
+                parser.error("--data-root must be an absolute local Windows path")
+            data_root = args.data_root
             seed = replace(
                 seed,
                 runtime_root=data_root / "runtime",
