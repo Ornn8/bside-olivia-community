@@ -17,7 +17,7 @@ SQLite 表、FTS 索引和配置都属于本机数据，位于被 `.gitignore` �
 
 ## 导入、去重与导出
 
-`LegacyLetterImporter` 支持 JSON、JSONL、CSV 和逐行文本。支持显式映射、BOM/UTF-8/常见本地编码、路径根限制、dry-run 和 checkpoint；格式、编码、JSON 行和字段错误返回稳定代码，不把正文或路径放入报告。默认 `atomic=true`，坏行或存储失败整批回滚；内容 SHA-256 用于幂等重复检测。
+`tools.memory_import.LegacyLetterImporter` 支持 JSON、JSONL、CSV 和逐行文本。支持显式映射、BOM/UTF-8/常见本地编码、路径根限制、dry-run 和 checkpoint；格式、编码、JSON 行和字段错误返回稳定代码，不把正文或路径放入报告。默认 `atomic=true`，坏行或存储失败整批回滚；内容 SHA-256 用于幂等重复检测。
 
 metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储；超过安全上限会拒绝整条记录，绝不会截断序列化后的 JSON。`export_records(domains=...)` 要求调用方显式选择域，并在返回前校验可以生成有效 JSON；未选择域会拒绝。
 

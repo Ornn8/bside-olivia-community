@@ -27,7 +27,7 @@ ALLOWED_EXACT = frozenset(
         "http_contract.py",
         "local_memory.py",
         "contracts/memory_config.example.json",
-        "memory_import.py",
+        "tools/memory_import.py",
         "memory_port.py",
         "memory_prompt.py",
         "local_server.py",

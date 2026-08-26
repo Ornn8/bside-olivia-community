@@ -28,7 +28,7 @@ ALLOWED = frozenset(
         "local_memory.py",
         "local_server.py",
         "contracts/memory_config.example.json",
-        "memory_import.py",
+        "tools/memory_import.py",
         "memory_port.py",
         "memory_prompt.py",
         "tests/llm/test_b04_memory_integration.py",

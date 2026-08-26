@@ -19,7 +19,7 @@ from local_memory import (
     load_memory_config,
 )
 from mem0_memory import MEM0_EMBEDDING_MODEL_REVISION, load_mem0_config
-from memory_import import ImportOptions, LegacyLetterImporter
+from tools.memory_import import ImportOptions, LegacyLetterImporter
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, LegacyLetter, MemoryUnavailable
 from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPromptBuilder
 
