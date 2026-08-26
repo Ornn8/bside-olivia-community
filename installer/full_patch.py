@@ -36,7 +36,12 @@ PAYLOAD_DIRS = (
     "tts",
     "linli_character",
 )
-PAYLOAD_EXTRA_DIRS = ("runtime",)
+PAYLOAD_EXTRA_DIRS = ("runtime/visual",)
+PAYLOAD_EXTRA_FILES = (
+    "runtime/__init__.py",
+    "runtime/original_client_media_http.py",
+    "runtime/video_reply_settings.py",
+)
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 PAYLOAD_ROOT_FILES = {
     "local_server.py",
@@ -326,6 +331,12 @@ def copy_project_payload(
                 ignore=_ignore_payload_copy,
             )
             copied.append(relative + "/")
+    for relative in PAYLOAD_EXTRA_FILES:
+        source_file = payload_root / Path(*relative.split("/"))
+        if source_file.is_file():
+            target_file = destination / Path(*relative.split("/"))
+            _copy_file(source_file, target_file)
+            copied.append(relative)
     if any(
         not (destination / name).is_file()
         for name in PAYLOAD_REQUIRED_ROOT_FILES

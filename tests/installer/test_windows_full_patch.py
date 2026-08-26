@@ -380,6 +380,9 @@ def test_copy_payload_excludes_non_runtime_project_files(
         required.parent.mkdir(parents=True, exist_ok=True)
         if not required.exists():
             required.write_text("# runtime fixture", encoding="utf-8")
+    experimental = source / "runtime" / "packaging" / "experimental.py"
+    experimental.parent.mkdir(parents=True)
+    experimental.write_text("# excluded experiment", encoding="utf-8")
 
     copied = copy_project_payload(source, destination)
 
@@ -388,6 +391,7 @@ def test_copy_payload_excludes_non_runtime_project_files(
     assert (destination / "contracts" / "letter_status.py").is_file()
     assert (destination / "runtime" / "original_client_media_http.py").is_file()
     assert (destination / "runtime" / "video_reply_settings.py").is_file()
+    assert not (destination / "runtime" / "packaging").exists()
     assert "dynamic_renderer.py" in copied
     assert (destination / "dynamic_renderer.py").is_file()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:

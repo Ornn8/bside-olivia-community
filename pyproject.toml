@@ -39,6 +39,7 @@ py-modules = [
     "conversation_memory_runtime",
     "extract_player",
     "http_contract",
+    "letter_status",
     "letter_triage",
     "llm_gateway",
     "local_memory",
@@ -58,6 +59,7 @@ py-modules = [
     "original_client_companion_mutation_api",
     "original_client_companion_mutation_backend",
     "original_client_letter_contract",
+    "original_client_media_http",
     "original_client_server",
     "original_client_settings_ui",
     "patch_companion_settings",
@@ -87,6 +89,7 @@ py-modules = [
     "reply_quality_gate",
     "reply_reviewer",
     "song_content",
+    "video_reply_settings",
     "voice_direction",
 ]
 
