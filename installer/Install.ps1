@@ -14,6 +14,58 @@ $runtimeZip = Join-Path $env:TEMP 'python-3.12.10-embed-amd64.zip'
 $runtimeUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
 $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
 
+function Update-ManagedPythonPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$PthPath,
+        [Parameter(Mandatory)]
+        [string]$SitePackages
+    )
+
+    $pthDirectory = Split-Path -Parent $PthPath
+    $sitePackagesFull = [IO.Path]::GetFullPath($SitePackages)
+    $keptLines = New-Object 'System.Collections.Generic.List[string]'
+    $hasSitePackages = $false
+    $hasImportSite = $false
+    foreach ($line in @(Get-Content -LiteralPath $PthPath)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq 'import site') {
+            if (-not $hasImportSite) {
+                $keptLines.Add('import site')
+                $hasImportSite = $true
+            }
+            continue
+        }
+
+        $candidate = $null
+        if ($trimmed -and -not $trimmed.StartsWith('#')) {
+            try {
+                $candidate = if ([IO.Path]::IsPathRooted($trimmed)) {
+                    [IO.Path]::GetFullPath($trimmed)
+                } else {
+                    [IO.Path]::GetFullPath((Join-Path $pthDirectory $trimmed))
+                }
+            } catch {
+                $candidate = $null
+            }
+        }
+        if ($candidate -and [StringComparer]::OrdinalIgnoreCase.Equals($candidate, $sitePackagesFull)) {
+            if (-not $hasSitePackages) {
+                $keptLines.Add('site-packages')
+                $hasSitePackages = $true
+            }
+            continue
+        }
+        if ([IO.Path]::IsPathRooted($trimmed)) { continue }
+        $keptLines.Add($line)
+    }
+
+    if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
+    if (-not $hasImportSite) { $keptLines.Add('import site') }
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllLines($PthPath, $keptLines.ToArray(), $utf8NoBom)
+}
+
 $runner = @{ File = $runtimeExe; Args = @() }
 if (-not (Test-Path -LiteralPath $runtimeExe)) {
     Write-Host 'The managed Python 3.12 runtime is not installed. The next step downloads the official PSF embeddable runtime.'
@@ -27,24 +79,13 @@ if (-not (Test-Path -LiteralPath $runtimeExe)) {
     if ($actual -ne $runtimeSha256) { Remove-Item -LiteralPath $runtimeZip -Force; throw 'PYTHON_RUNTIME_HASH_MISMATCH' }
     Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
     Remove-Item -LiteralPath $runtimeZip -Force
-    $pth = Get-ChildItem -LiteralPath $runtimeRoot -Filter '*._pth' | Select-Object -First 1
-    if ($pth) {
-        $pthLines = @(Get-Content -LiteralPath $pth.FullName)
-        if ($pthLines -notcontains $PayloadRoot) { Add-Content -LiteralPath $pth.FullName -Value $PayloadRoot }
-        if ($pthLines -notcontains 'import site') { Add-Content -LiteralPath $pth.FullName -Value 'import site' }
-    }
 }
 
 if ($runner.File -eq $runtimeExe) {
     $sitePackages = Join-Path $runtimeRoot 'site-packages'
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     $pth = Get-ChildItem -LiteralPath $runtimeRoot -Filter '*._pth' | Select-Object -First 1
-    if ($pth) {
-        $pthLines = @(Get-Content -LiteralPath $pth.FullName)
-        foreach ($entry in @($PayloadRoot, $sitePackages, 'import site')) {
-            if ($pthLines -notcontains $entry) { Add-Content -LiteralPath $pth.FullName -Value $entry }
-        }
-    }
+    if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -SitePackages $sitePackages }
     & $runner.File '-c' 'import aiohttp,jsonschema' 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'The local server needs aiohttp, jsonschema, and their fixed Windows/Python 3.12 dependency closure.'

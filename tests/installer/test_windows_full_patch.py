@@ -157,6 +157,24 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
     assert "rpds-py==2026.6.3" in requirements
 
 
+def test_managed_runtime_pth_does_not_persist_payload_root() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = (repo_root / "installer" / "Install.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "function Update-ManagedPythonPath" in script
+    assert (
+        "Update-ManagedPythonPath -PthPath $pth.FullName "
+        "-SitePackages $sitePackages"
+    ) in script
+    assert "Add-Content -LiteralPath $pth.FullName -Value $PayloadRoot" not in script
+    assert "foreach ($entry in @($PayloadRoot, $sitePackages, 'import site'))" not in script
+    assert "[IO.Path]::IsPathRooted($trimmed)" in script
+    assert "'site-packages'" in script
+    assert "'import site'" in script
+
+
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
     repo_root = Path(__file__).parents[2]
     for relative in (
