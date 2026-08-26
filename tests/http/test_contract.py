@@ -1170,7 +1170,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
             "letter_triage.py",
             "local_server.py",
             "music_duration.py",
-            "music_renderer.py",
+            "tools/music_renderer.py",
             "music_reply.py",
             "patch_feapp.py",
             "pyproject.toml",
