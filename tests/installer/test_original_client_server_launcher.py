@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import installer.start_local as start_local
 
 
@@ -31,7 +33,7 @@ def test_launcher_starts_combined_server_before_original_client(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     commands: list[list[str]] = []
     client_commands: list[list[str]] = []
 
@@ -80,3 +82,70 @@ def test_launcher_refuses_payload_without_combined_entrypoint(
 
     assert start_local.main(["--install-root", str(root)]) == 2
     assert capsys.readouterr().out.strip() == "PATCH_PAYLOAD_INCOMPLETE"
+
+
+def test_launcher_refuses_unrelated_http_health_payload(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "launcher must not start a backend when the port serves an unrelated JSON payload"
+        ),
+    )
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+
+
+def test_health_accepts_the_versioned_core_contract(monkeypatch) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "schema_version": 1,
+                        "contract_version": "b02.v1",
+                        "profile": "core",
+                        "status": "HEALTHY",
+                        "required_checks": {
+                            "core.health": "available",
+                            "core.session": "available",
+                            "letters.read": "available",
+                            "music.catalog": "available",
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+
+    assert start_local._health(8899) == "READY"
