@@ -15,6 +15,10 @@ from conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
 )
+from conversation_memory_identity import (
+    ConversationMemoryIdentityError,
+    normalize_conversation_memory_user_id,
+)
 from memory_port import (
     CONVERSATION_MEMORY,
     LEGACY_LETTERS,
@@ -128,13 +132,15 @@ class CompanionMemoryPromptBuilder:
         current_share: float = 0.6,
         memory_lifecycle: ConversationMemoryLifecycle | None = None,
     ) -> None:
-        if not isinstance(user_id, str) or not user_id.strip():
-            raise ValueError("conversation memory user_id is required")
+        try:
+            user_id = normalize_conversation_memory_user_id(user_id)
+        except ConversationMemoryIdentityError as exc:
+            raise ValueError("conversation memory user_id is required") from exc
         if not 0.2 <= float(current_share) <= 0.8:
             raise ValueError("current memory share must be bounded")
         self.archive_memory = archive_memory
         self.conversation_memory = conversation_memory
-        self.user_id = user_id.strip()
+        self.user_id = user_id
         self.max_results = max(1, min(32, int(max_results)))
         self.current_share = float(current_share)
         self.memory_lifecycle = memory_lifecycle

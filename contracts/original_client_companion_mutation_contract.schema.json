@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "original_client_companion_mutation_contract.schema.json",
+  "title": "P03 original-client companion mutation route contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "routes", "error_codes"],
+  "properties": {
+    "schema_version": {"const": "p03.original-companion-mutation-contract.v1"},
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["/toy/companion/memory/clear"],
+      "properties": {
+        "/toy/companion/memory/clear": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["methods", "confirmation"],
+          "properties": {
+            "methods": {"const": ["POST", "OPTIONS"]},
+            "confirmation": {"const": "header_and_body"}
+          }
+        }
+      }
+    },
+    "error_codes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["MEMORY_CLEAR_CONFIRMATION_REQUIRED"],
+      "properties": {
+        "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["http_status", "status"],
+          "properties": {
+            "http_status": {"const": 400},
+            "status": {"const": "FAILED"}
+          }
+        }
+      }
+    }
+  }
+}

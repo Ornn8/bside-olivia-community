@@ -341,6 +341,11 @@ def _conversation_status(memory: object) -> str:
 
 
 def _conversation_user_id(memory: object, explicit: str | None) -> str:
+    from conversation_memory_identity import (
+        ConversationMemoryIdentityError,
+        normalize_conversation_memory_user_id,
+    )
+
     candidates = (
         explicit,
         getattr(getattr(memory, "config", None), "user_id", None),
@@ -348,8 +353,10 @@ def _conversation_user_id(memory: object, explicit: str | None) -> str:
         "local-user",
     )
     for value in candidates:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        try:
+            return normalize_conversation_memory_user_id(value)
+        except ConversationMemoryIdentityError:
+            continue
     return "local-user"
 
 

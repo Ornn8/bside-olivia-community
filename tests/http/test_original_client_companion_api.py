@@ -167,6 +167,16 @@ def test_paused_memory_is_never_reported_as_ready() -> None:
     assert not list(Draft202012Validator(schema).iter_errors(payload))
 
 
+def test_unavailable_memory_is_never_reported_as_ready() -> None:
+    payload = CompanionReadStatus(
+        memory=CompanionCapability("unavailable", reason_code="MEM0_LIST_FAILED"),
+        private_world=CompanionCapability("available"),
+        candidates=CompanionCapability("available"),
+    ).to_dict()
+
+    assert payload["status"] == "UNAVAILABLE"
+
+
 def test_read_contract_requires_original_or_loopback_origin_and_loopback_host() -> None:
     async def scenario() -> None:
         client = await _client(FixtureBackend())

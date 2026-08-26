@@ -1,0 +1,15 @@
+{
+  "schema_version": "p03.original-companion-mutation-contract.v1",
+  "routes": {
+    "/toy/companion/memory/clear": {
+      "methods": ["POST", "OPTIONS"],
+      "confirmation": "header_and_body"
+    }
+  },
+  "error_codes": {
+    "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
+      "http_status": 400,
+      "status": "FAILED"
+    }
+  }
+}

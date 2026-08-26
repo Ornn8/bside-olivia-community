@@ -27,9 +27,12 @@
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |
 | 409 | `IDEMPOTENCY_CONFLICT` | FAILED | 否 | 同一幂等键重复提交了不同正文 |
 | 400 | `VIDEO_REPLY_SETTING_REQUEST_ID_INVALID` / `VIDEO_REPLY_SETTING_PAYLOAD_INVALID` | FAILED | 否 | 视频回信设置 request_id 必须为 `video_reply_setting:<opaque>`；enabled 必须为布尔值 |
+| 400 | `MEMORY_CLEAR_CONFIRMATION_REQUIRED` | FAILED | 否 | 原版客户端清空当前用户 Mem0 长期记忆时缺少 body 二次确认；不执行删除 |
 | 409 | `VIDEO_REPLY_SETTING_REQUEST_CONFLICT` | FAILED | 否 | 同一视频设置 request_id 重放了不同 enabled |
 | 503 | `VIDEO_REPLY_SETTING_UNAVAILABLE` | UNAVAILABLE | 是 | 设置 state root、持久化读取或原子写入不可用；服务端 fail-closed |
 | 410 | `LETTER_SUPERSEDED` | SUPERSEDED | 否 | 失败副本已由成功重试替代；仅返回替代信件 ID |
 | 200 detail | `LLM_PROVIDER_REJECTED` / `LLM_PROTOCOL_ERROR` | FAILED | 否 | 上游非重试 4xx、坏 JSON 或空响应；不回显 provider body |
 
-源实现和机器可读映射在 `http_contract.py`；新增错误码必须同时更新映射、schema、测试和本表。
+源实现和机器可读映射在 `http_contract.py`；原版客户端 companion mutation 的映射在
+`original_client_companion_mutation_api.py` 并由
+`contracts/original_client_companion_mutation_contract.json` 固定。新增错误码必须同时更新映射、schema、测试和本表。

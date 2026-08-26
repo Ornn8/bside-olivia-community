@@ -24,12 +24,17 @@ writes, or deletes Archive or PrivateWorld data.
 
 Clear uses the same audit-file lifecycle lock as the final Mem0 delivery gate.
 An in-flight canonical write therefore completes before clear starts, and clear
-removes that write rather than allowing it to reappear afterward. Each result,
-including `NOOP`, is recorded by normalized `(user_id, request_id)` in the
-existing operation ledger: replaying the same request is `DUPLICATE`, while
-the same request ID for another user remains independent. Provider, Qdrant, or
-audit failures fail closed with stable path-free errors; the canonical reply
-body path continues independently.
+removes that write rather than allowing it to reappear afterward. Before any
+delete, the ledger persists the normalized request payload fingerprint and the
+exact target IDs as a user-scoped pending intent. That intent blocks later
+Mem0 writes for the same user; restart or retry resumes only its recorded IDs,
+then re-reads the target domain before recording a terminal result. Each
+terminal result, including `NOOP`, is scoped by normalized `(user_id,
+request_id)` and its payload fingerprint: only the same payload is
+`DUPLICATE`, while a different payload is a conflict and the same request ID
+for another user remains independent. Provider, Qdrant, or audit failures fail
+closed with stable path-free errors; the canonical reply body path continues
+independently.
 
 ## Explicit embedding installation
 

@@ -307,7 +307,7 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
     assert result.affected_count == 2
     assert duplicate.status is MemoryAdminMutationStatus.DUPLICATE
     assert memory.records == {}
-    assert memory.operations == [("clear", "local-user")]
+    assert memory.operations == [("delete", "memory-1"), ("delete", "memory-2")]
 
 
 def test_clear_waits_for_an_inflight_lifecycle_write_before_deleting(tmp_path: Path) -> None:
@@ -399,7 +399,7 @@ def test_clear_request_ids_are_durable_per_normalized_user(tmp_path: Path) -> No
     )
     retry = ConversationMemoryAdminService(memory, audit, user_id="user-a").clear(
         request_id="clear.shared-request.1",
-        reason="同一用户重试已完成的清空。",
+        reason="用户 A 确认清空当前长期记忆。",
         confirmed=True,
     )
     other_user = user_b.clear(
@@ -412,8 +412,65 @@ def test_clear_request_ids_are_durable_per_normalized_user(tmp_path: Path) -> No
     assert retry.status is MemoryAdminMutationStatus.DUPLICATE
     assert other_user.status is MemoryAdminMutationStatus.APPLIED
     assert memory.records == {}
-    assert memory.operations.count(("clear", "user-a")) == 1
-    assert memory.operations.count(("clear", "user-b")) == 1
+    assert memory.operations.count(("delete", "memory-1")) == 1
+    assert memory.operations.count(("delete", "memory-2")) == 1
+
+
+def test_clear_recovers_durable_pending_intent_without_deleting_later_memory(
+    tmp_path: Path,
+) -> None:
+    memory = FakeMemory()
+    _seed(memory)
+    service = _service(tmp_path, memory)
+    with sqlite3.connect(service.audit_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_clear_terminal_audit
+            BEFORE INSERT ON memory_admin_operations
+            WHEN NEW.operation = 'clear' AND NEW.status = 'completed'
+            BEGIN SELECT RAISE(FAIL, 'synthetic clear terminal ledger failure'); END
+            """
+        )
+
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_AUDIT_UNAVAILABLE"):
+        service.clear(
+            request_id="clear.pending-recovery.1",
+            reason="用户确认清空当前长期记忆。",
+            confirmed=True,
+        )
+    assert service.run_write(lambda: "synthetic write must be blocked") is None
+    memory.add_manual_memory(
+        "synthetic fact added after the failed terminal audit",
+        user_id="local-user",
+        source_id="manual:after-clear-audit-failure",
+    )
+    with sqlite3.connect(service.audit_path) as connection:
+        connection.execute("DROP TRIGGER fail_clear_terminal_audit")
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_CLEAR_FAILED"):
+        ConversationMemoryAdminService(memory, service.audit_path).clear(
+            request_id="clear.pending-recovery.1",
+            reason="用户确认清空当前长期记忆。",
+            confirmed=True,
+        )
+
+    assert len(memory.records) == 1
+    assert next(iter(memory.records.values())).source_id == "manual:after-clear-audit-failure"
+
+
+def test_admin_request_id_is_bound_to_the_normalized_payload(tmp_path: Path) -> None:
+    service = _service(tmp_path, FakeMemory())
+    service.clear(
+        request_id="clear.payload-bound.1",
+        reason="synthetic confirmation one",
+        confirmed=True,
+    )
+
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        service.clear(
+            request_id="clear.payload-bound.1",
+            reason="synthetic confirmation two",
+            confirmed=True,
+        )
 
 
 def test_status_counts_only_the_normalized_current_user_audit_rows(tmp_path: Path) -> None:
@@ -426,15 +483,17 @@ def test_status_counts_only_the_normalized_current_user_audit_rows(tmp_path: Pat
         connection.execute(
             """
             INSERT INTO memory_admin_operations (
-                user_id, request_id, operation, target_memory_id,
+                user_id, request_id, operation, payload_fingerprint,
+                target_memory_id, target_memory_ids,
                 replacement_memory_id, replacement_source_id,
                 status, affected_count, reason, created_at, updated_at
-            ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, 0, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, ?, ?, ?)
             """,
             (
                 "user-a",
                 "correct.user-a.pending.1",
                 "correct",
+                "synthetic-fingerprint",
                 "replacement_written_delete_pending",
                 "synthetic pending correction",
                 "2026-08-26T00:00:00+00:00",

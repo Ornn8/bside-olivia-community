@@ -31,6 +31,10 @@ from conversation_memory_port import (
     NullConversationMemoryPort,
     UnavailableConversationMemoryPort,
 )
+from conversation_memory_identity import (
+    ConversationMemoryIdentityError,
+    normalize_conversation_memory_user_id,
+)
 
 
 MEM0_OSS_VERSION = "2.0.18"
@@ -114,8 +118,14 @@ class Mem0Config:
             if not outbox_root.is_absolute():
                 raise ValueError("outbox_data_root must be absolute")
             object.__setattr__(self, "outbox_data_root", outbox_root)
+        try:
+            object.__setattr__(
+                self, "user_id", normalize_conversation_memory_user_id(self.user_id)
+            )
+        except ConversationMemoryIdentityError as exc:
+            raise ValueError("user_id is invalid") from exc
         for value, field_name in (
-            (self.user_id, "user_id"),
+            (self.agent_id, "agent_id"),
             (self.agent_id, "agent_id"),
             (self.collection_name, "collection_name"),
         ):
@@ -532,13 +542,19 @@ class Mem0ConversationMemoryAdapter:
         self._last_error_code: str | None = None
 
     def _filters(self, user_id: str) -> dict[str, object]:
-        if not isinstance(user_id, str) or not _ID_RE.fullmatch(user_id):
-            raise Mem0AdapterError("MEM0_USER_ID_INVALID")
+        user_id = self._normalized_user_id(user_id)
         return {
             "user_id": user_id,
             "agent_id": self.config.agent_id,
             "domain": _DOMAIN,
         }
+
+    @staticmethod
+    def _normalized_user_id(user_id: object) -> str:
+        try:
+            return normalize_conversation_memory_user_id(user_id)
+        except ConversationMemoryIdentityError as exc:
+            raise Mem0AdapterError("MEM0_USER_ID_INVALID") from exc
 
     def _records(
         self,
@@ -568,8 +584,11 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         limit: int = 100,
     ) -> tuple[ConversationMemoryRecord, ...]:
+        user_id = self._normalized_user_id(user_id)
         records = self._list_records(user_id=user_id, limit=limit)
-        return () if records is None else records
+        if records is None:
+            raise Mem0AdapterError("MEM0_LIST_FAILED")
+        return records
 
     def _list_records(
         self,
@@ -577,6 +596,7 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         limit: int,
     ) -> tuple[ConversationMemoryRecord, ...] | None:
+        user_id = self._normalized_user_id(user_id)
         if not 1 <= limit <= 1000:
             return None
         value = self._read_with_timeout(
@@ -602,6 +622,7 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         limit: int,
     ) -> tuple[ConversationMemoryRecord, ...]:
+        user_id = self._normalized_user_id(user_id)
         if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 100:
             return ()
         value = self._read_with_timeout(
@@ -720,6 +741,7 @@ class Mem0ConversationMemoryAdapter:
         source_id: str,
         user_id: str,
     ) -> MemoryWriteResult:
+        user_id = self._normalized_user_id(user_id)
         try:
             exact_response = self.backend.get_all(
                 filters={**self._filters(user_id), "source_id": source_id},
@@ -789,6 +811,14 @@ class Mem0ConversationMemoryAdapter:
         source_id: str,
         user_id: str,
     ) -> MemoryWriteResult:
+        try:
+            user_id = self._normalized_user_id(user_id)
+        except Mem0AdapterError:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_EXCHANGE_INVALID",
+            )
         if not isinstance(occurred_at, datetime) or occurred_at.tzinfo is None:
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -835,6 +865,7 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         source_id: str,
     ) -> ConversationMemoryRecord:
+        user_id = self._normalized_user_id(user_id)
         metadata = {
             "source_id": source_id,
             "occurred_at": datetime.now(timezone.utc).isoformat(),
@@ -896,6 +927,7 @@ class Mem0ConversationMemoryAdapter:
             raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED") from exc
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        user_id = self._normalized_user_id(user_id)
         if self._write_call.inflight:
             self._last_error_code = "MEM0_DELETE_TIMEOUT"
             return False
@@ -916,37 +948,38 @@ class Mem0ConversationMemoryAdapter:
                 return False
             self._last_error_code = None
             return True
+        except Mem0AdapterError:
+            raise
         except Exception:
             self._last_error_code = "MEM0_DELETE_FAILED"
             return False
 
     def clear_user(self, *, user_id: str) -> int:
+        user_id = self._normalized_user_id(user_id)
         if self._write_call.inflight:
             self._last_error_code = "MEM0_CLEAR_TIMEOUT"
             return 0
         records = self.list_memories(user_id=user_id, limit=1000)
-        if not records:
-            return 0
+        deleted = 0
         try:
-            state, value = self._write_with_timeout(
-                lambda: self.backend.delete_all(
-                    user_id=user_id,
-                    agent_id=self.config.agent_id,
-                )
-            )
-            if state in {"timeout", "inflight"}:
-                self._last_error_code = "MEM0_CLEAR_TIMEOUT"
-                return 0
-            if state != "completed" or not _has_clear_acknowledgement(value):
+            for record in records:
+                if not self.delete_memory(record.memory_id, user_id=user_id):
+                    self._last_error_code = "MEM0_CLEAR_FAILED"
+                    return 0
+                deleted += 1
+            if self.list_memories(user_id=user_id, limit=1000):
                 self._last_error_code = "MEM0_CLEAR_FAILED"
                 return 0
             self._last_error_code = None
-            return len(records)
+            return deleted
+        except Mem0AdapterError:
+            raise
         except Exception:
             self._last_error_code = "MEM0_CLEAR_FAILED"
             return 0
 
     def export_user(self, *, user_id: str) -> dict[str, object]:
+        user_id = self._normalized_user_id(user_id)
         return {
             "schema_version": "p03.conversation-memory-export.v1",
             "user_id": user_id,
@@ -966,7 +999,7 @@ class Mem0ConversationMemoryAdapter:
                 "qdrant-local",
                 reason_code="MEM0_SEARCH_TIMEOUT",
             )
-        records = self.list_memories(user_id=self.config.user_id, limit=1000)
+        records = self._list_records(user_id=self.config.user_id, limit=1000)
         if self._last_error_code:
             return ConversationMemoryStatus(
                 "degraded",
@@ -980,7 +1013,7 @@ class Mem0ConversationMemoryAdapter:
             True,
             "mem0",
             "qdrant-local",
-            memory_count=len(records),
+            memory_count=len(records or ()),
         )
 
 

@@ -37,6 +37,18 @@ _BACKEND_KEY = web.AppKey("original_companion_mutation_backend", object)
 _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_mutation_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_companion_mutation_mounted", bool)
 _ALLOWED_DECISIONS = frozenset({"approve", "reject"})
+COMPANION_MUTATION_ROUTES = {
+    MEMORY_CLEAR_PATH: {
+        "methods": ("POST", "OPTIONS"),
+        "confirmation": "header_and_body",
+    },
+}
+COMPANION_MUTATION_ERROR_CODES = {
+    "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
+        "http_status": 400,
+        "status": "FAILED",
+    },
+}
 
 
 class OriginalClientCompanionMutationError(RuntimeError):
@@ -390,8 +402,11 @@ async def _clear_memory(request: web.Request) -> web.Response:
             fields=frozenset({"request_id", "reason", "confirmed"}),
         )
         if value["confirmed"] is not True:
+            error = COMPANION_MUTATION_ERROR_CODES[
+                "MEMORY_CLEAR_CONFIRMATION_REQUIRED"
+            ]
             raise OriginalClientCompanionMutationError(
-                "MEMORY_CLEAR_CONFIRMATION_REQUIRED", status=400
+                "MEMORY_CLEAR_CONFIRMATION_REQUIRED", status=int(error["http_status"])
             )
         result = await asyncio.to_thread(
             _backend(request).clear_memory,
@@ -565,6 +580,8 @@ def mount_original_client_companion_mutation_api(
 __all__ = [
     "CANDIDATE_DECISION_PATH",
     "COMPANION_MUTATION_SCHEMA",
+    "COMPANION_MUTATION_ERROR_CODES",
+    "COMPANION_MUTATION_ROUTES",
     "CONFIRM_HEADER",
     "CONFIRM_VALUE",
     "CompanionMutationResult",

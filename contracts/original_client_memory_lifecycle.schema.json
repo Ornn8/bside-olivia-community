@@ -9,7 +9,7 @@
     "schema_version": {"const": "p03.original-companion-read.v1"},
     "status": {
       "description": "PAUSED is scoped to the normalized local user represented by this original-client session.",
-      "enum": ["READY", "PAUSED"]
+      "enum": ["READY", "PAUSED", "UNAVAILABLE"]
     },
     "capabilities": {
       "type": "object",
@@ -66,6 +66,18 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "memory": {"properties": {"state": {"const": "unavailable"}}}
+            }
+          }
+        }
+      },
+      "then": {"properties": {"status": {"const": "UNAVAILABLE"}}}
+    },
     {
       "if": {"properties": {"status": {"const": "PAUSED"}}},
       "then": {

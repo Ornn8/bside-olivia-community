@@ -344,7 +344,7 @@ def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> N
 
     restarted = ConversationMemoryAdminService(memory, audit)
     assert restarted.pause(
-        request_id="memory.pause.noop.1", reason="重试同一暂停请求。"
+        request_id="memory.pause.noop.1", reason="用户再次暂停长期记忆。"
     ).status is MemoryAdminMutationStatus.DUPLICATE
     with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
         restarted.resume(
@@ -359,7 +359,7 @@ def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> N
     ).status is MemoryAdminMutationStatus.NOOP
     restarted = ConversationMemoryAdminService(memory, audit)
     assert restarted.resume(
-        request_id="memory.resume.noop.1", reason="重试同一恢复请求。"
+        request_id="memory.resume.noop.1", reason="用户再次恢复长期记忆。"
     ).status is MemoryAdminMutationStatus.DUPLICATE
 
 

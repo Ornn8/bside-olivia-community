@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,11 +16,13 @@ from control_center.private_world_candidate_backend import (
     SQLiteCandidateReviewBackend,
 )
 from conversation_memory_admin import (
+    ConversationMemoryAdminService,
     MemoryAdminMutationResult,
     MemoryAdminMutationStatus,
     MemoryAdminStatus,
 )
 from conversation_memory_port import NullConversationMemoryPort
+from mem0_memory import Mem0Config, Mem0ConversationMemoryAdapter
 from original_client_companion_mutation_api import (
     CONFIRM_HEADER,
     CONFIRM_VALUE,
@@ -99,6 +102,54 @@ class MemoryAdminFixture:
             "clear",
             affected_count=2,
         )
+
+
+class ProductionMem0Fixture:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, object]] = []
+        self.counter = 0
+
+    def get_all(self, **kwargs):
+        filters = kwargs["filters"]
+        assert isinstance(filters, dict)
+        return {
+            "results": [
+                row
+                for row in self.rows
+                if row["user_id"] == filters["user_id"]
+                and row["agent_id"] == filters["agent_id"]
+                and row["metadata"]["domain"] == filters["domain"]
+                and (
+                    "source_id" not in filters
+                    or row["metadata"]["source_id"] == filters["source_id"]
+                )
+            ][: kwargs["top_k"]]
+        }
+
+    def add(self, messages, **kwargs):
+        self.counter += 1
+        memory_id = f"memory.production.{self.counter}"
+        self.rows.append(
+            {
+                "id": memory_id,
+                "memory": "synthetic production memory",
+                "user_id": kwargs["user_id"],
+                "agent_id": kwargs["agent_id"],
+                "metadata": dict(kwargs["metadata"]),
+            }
+        )
+        return {"results": [{"id": memory_id, "memory": "synthetic production memory", "event": "ADD"}]}
+
+    def delete(self, memory_id):
+        self.rows[:] = [row for row in self.rows if row["id"] != memory_id]
+        return {"message": "Memory deleted successfully!"}
+
+    def search(self, query, **kwargs):
+        del query
+        return self.get_all(**kwargs)
+
+    def delete_all(self, **kwargs):
+        raise AssertionError("domain-unscoped delete_all must not be used")
 
 
 class CandidateDecisionFixture:
@@ -243,6 +294,100 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
                 decided_at="2026-08-23T12:00:00+00:00",
             )
         ]
+
+    asyncio.run(scenario())
+
+
+def test_production_mem0_write_then_public_clear_uses_the_same_normalized_user(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = ProductionMem0Fixture()
+        adapter = Mem0ConversationMemoryAdapter(
+            provider,
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                user_id="User-A",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        written = adapter.remember_exchange(
+            user_message="synthetic user message",
+            assistant_message="synthetic canonical reply",
+            occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+            source_id="reply:synthetic:case-normalization",
+            user_id="User-A",
+        )
+        assert written.status.value == "written"
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=ConversationMemoryAdminService(
+                adapter, tmp_path / "memory" / "admin.sqlite3", user_id="user-a"
+            ),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.case-clear.1",
+                    "reason": "synthetic user confirmation",
+                    "confirmed": True,
+                },
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    CONFIRM_HEADER: CONFIRM_VALUE,
+                },
+            )
+            assert response.status == 200
+            assert (await response.json())["status"] == "APPLIED"
+        assert provider.rows == []
+
+    asyncio.run(scenario())
+
+
+def test_public_clear_does_not_turn_an_unavailable_mem0_list_into_noop(
+    tmp_path: Path,
+) -> None:
+    class UnavailableMem0Fixture(ProductionMem0Fixture):
+        def get_all(self, **kwargs):
+            del kwargs
+            raise RuntimeError("synthetic provider failure")
+
+    async def scenario() -> None:
+        adapter = Mem0ConversationMemoryAdapter(
+            UnavailableMem0Fixture(),
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=ConversationMemoryAdminService(
+                adapter, tmp_path / "memory" / "admin.sqlite3"
+            ),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.provider-failure.1",
+                    "reason": "synthetic user confirmation",
+                    "confirmed": True,
+                },
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    CONFIRM_HEADER: CONFIRM_VALUE,
+                },
+            )
+            assert response.status == 503
+            assert (await response.json())["status"] == "UNAVAILABLE"
 
     asyncio.run(scenario())
 

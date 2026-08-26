@@ -19,6 +19,10 @@ from conversation_memory_port import (
     MemoryWriteResult,
     MemoryWriteStatus,
 )
+from conversation_memory_identity import (
+    ConversationMemoryIdentityError,
+    normalize_conversation_memory_user_id,
+)
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -46,12 +50,15 @@ class CanonicalMemoryDelivery:
     user_id: str = "local-user"
 
     def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.letter_id, "letter_id"),
-            (self.user_id, "user_id"),
-        ):
+        for value, field_name in ((self.letter_id, "letter_id"),):
             if not isinstance(value, str) or not _ID_RE.fullmatch(value):
                 raise CanonicalMemoryDeliveryError(f"{field_name} is invalid")
+        try:
+            object.__setattr__(
+                self, "user_id", normalize_conversation_memory_user_id(self.user_id)
+            )
+        except ConversationMemoryIdentityError as exc:
+            raise CanonicalMemoryDeliveryError("user_id is invalid") from exc
         if type(self.revision) is not int or self.revision < 1:
             raise CanonicalMemoryDeliveryError("revision must be positive")
         _message(self.user_message, field_name="user_message", maximum=10_000)
