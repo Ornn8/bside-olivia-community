@@ -67,8 +67,34 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "ASR_MODEL_CORRUPT": {"http_status": 503, "retryable": False},
     "ASR_PROVIDER_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "TTS_UNAVAILABLE": {"http_status": 501, "retryable": False},
+    "TTS_CONTENT_GATE_UNAVAILABLE": {"http_status": 200, "retryable": True},
+    "TTS_CONTENT_GATE_REJECTED": {"http_status": 200, "retryable": False},
     "LIVE_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ROUTE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
+}
+
+LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "TTS_CONTENT_GATE_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
+    "TTS_CONTENT_GATE_REJECTED": {
+        "status": "FAILED",
+        "retryable": False,
+    },
+}
+
+LETTER_DETAIL_MEDIA_CONTRACT: dict[str, Any] = {
+    "fields": ["media_status", "media_error_code", "media_retryable"],
+    "statuses": [
+        "NOT_REQUESTED",
+        "PENDING",
+        "PROCESSING",
+        "COMPLETED",
+        "FAILED",
+        "UNAVAILABLE",
+    ],
+    "error_codes": LETTER_DETAIL_MEDIA_ERROR_CODES,
 }
 
 
@@ -402,6 +428,7 @@ def contract_document() -> dict[str, Any]:
         "routes": deepcopy(ROUTES),
         "capabilities": deepcopy(CAPABILITIES),
         "profiles": deepcopy(PROFILES),
+        "letter_detail_media": deepcopy(LETTER_DETAIL_MEDIA_CONTRACT),
         "privacy": {
             "logs_include_request_body": False,
             "logs_include_query_values": False,
@@ -460,3 +487,10 @@ def error_metadata(error_code: str) -> dict[str, Any]:
     """Return stable retry metadata without exposing provider details."""
 
     return deepcopy(ERROR_CODES.get(error_code, {"http_status": 500, "retryable": False}))
+
+
+def letter_detail_media_error_metadata(error_code: str) -> dict[str, Any] | None:
+    """Return the registered media-detail terminal state, when applicable."""
+
+    metadata = LETTER_DETAIL_MEDIA_ERROR_CODES.get(error_code)
+    return deepcopy(metadata) if metadata is not None else None

@@ -1064,6 +1064,7 @@ def test_mem0_mode_can_incrementally_import_archive_after_restart(
 
 def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     import http_contract
+    from jsonschema import Draft202012Validator
 
     schema = json.loads(
         (ROOT / "contracts" / "http_contract.schema.json").read_text(encoding="utf-8")
@@ -1079,6 +1080,8 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
         (ROOT / "contracts" / "legacy_letter_import.example.json").read_text(encoding="utf-8")
     )
 
+    assert not list(Draft202012Validator(schema).iter_errors(document))
+
     assert schema["properties"]["contract_version"]["const"] == "b02.v1"
     assert legacy_schema["properties"]["mode"]["const"] == "read_only"
     assert document["contract_version"] == "b02.v1"
@@ -1086,6 +1089,35 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     assert http_contract.error_metadata("MEMORY_UNAVAILABLE") == {
         "http_status": 503,
         "retryable": True,
+    }
+    assert http_contract.error_metadata("TTS_CONTENT_GATE_UNAVAILABLE") == {
+        "http_status": 200,
+        "retryable": True,
+    }
+    assert http_contract.error_metadata("TTS_CONTENT_GATE_REJECTED") == {
+        "http_status": 200,
+        "retryable": False,
+    }
+    assert document["letter_detail_media"] == {
+        "fields": ["media_status", "media_error_code", "media_retryable"],
+        "statuses": [
+            "NOT_REQUESTED",
+            "PENDING",
+            "PROCESSING",
+            "COMPLETED",
+            "FAILED",
+            "UNAVAILABLE",
+        ],
+        "error_codes": {
+            "TTS_CONTENT_GATE_UNAVAILABLE": {
+                "status": "UNAVAILABLE",
+                "retryable": True,
+            },
+            "TTS_CONTENT_GATE_REJECTED": {
+                "status": "FAILED",
+                "retryable": False,
+            },
+        },
     }
     assert "LEGACY_IMPORT_NOT_IMPLEMENTED" not in http_contract.ERROR_CODES
     expected_import_mode = "read-only-atomic-import"

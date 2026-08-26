@@ -180,11 +180,15 @@ def assemble_complete_video_delivery(
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE") from exc
     worker = Path(worker_path)
     if (
-        not delivery_configured(tts, require_quality_gate=require_quality_gate)
+        not delivery_configured(tts)
         or not worker.is_file()
         or not media_runtime_available(env)
     ):
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE")
+    if require_quality_gate and not delivery_configured(
+        tts, require_quality_gate=True
+    ):
+        raise ReplyMediaError("TTS_CONTENT_GATE_UNAVAILABLE")
     return CompleteVideoDelivery(tts, visual, worker)
 
 

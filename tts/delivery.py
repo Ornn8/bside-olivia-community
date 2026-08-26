@@ -32,6 +32,8 @@ _SPOKEN_CONTROL_RE = re.compile(
 )
 _COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970"
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
+_WHISPER_DISTRIBUTION = "openai-whisper"
+_WHISPER_VERSION = "20250625"
 
 
 @dataclass(frozen=True)
@@ -227,16 +229,20 @@ def _verified_file(path: Path, expected_sha256: str) -> bool:
     )
 
 
-@lru_cache(maxsize=8)
 def _quality_runtime_available(
     executable_text: str,
     size: int,
     modified_ns: int,
 ) -> bool:
     del size, modified_ns
+    probe = (
+        "import importlib.metadata as m; import torch, whisper; "
+        f"raise SystemExit(0 if m.version('{_WHISPER_DISTRIBUTION}') == "
+        f"'{_WHISPER_VERSION}' else 3)"
+    )
     try:
         completed = subprocess.run(
-            [executable_text, "-I", "-c", "import torch, whisper"],
+            [executable_text, "-I", "-c", probe],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -261,11 +267,9 @@ def delivery_configured(
     base_checks = all((
         executable.is_file(),
         Path(__file__).with_name("external_cosyvoice_worker.py").is_file(),
-        Path(__file__).with_name("external_audio_quality_worker.py").is_file(),
         Path(config.runtime_root).is_dir(),
         Path(config.model_dir).is_dir(),
         Path(config.reference_audio).is_file(),
-        _verified_file(model_checkpoint, _COSYVOICE_BASE_LLM_SHA256),
     ))
     if not base_checks or not require_quality_gate:
         return base_checks
@@ -279,6 +283,8 @@ def delivery_configured(
     except OSError:
         return False
     return all((
+        Path(__file__).with_name("external_audio_quality_worker.py").is_file(),
+        _verified_file(model_checkpoint, _COSYVOICE_BASE_LLM_SHA256),
         _verified_file(checkpoint, _WHISPER_BASE_SHA256),
         _quality_runtime_available(
             str(executable.resolve()),
@@ -305,8 +311,13 @@ def render_delivery_wav(
         enforce_content_gate
         and request.get("voice_condition_mode") == "instruct2_single_pass"
     )
-    if not delivery_configured(config, require_quality_gate=require_quality_gate):
+    if not delivery_configured(config):
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
+    if require_quality_gate and not delivery_configured(
+        config, require_quality_gate=True
+    ):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    request["verify_accepted_base_model"] = require_quality_gate
     executable = Path(str(config.provider_options.get("external_python", "") or ""))
     worker = Path(__file__).with_name("external_cosyvoice_worker.py")
 
@@ -393,8 +404,11 @@ def render_delivery_wav(
 
         quality_report: dict[str, object] | None = None
         if require_quality_gate:
-            duration_candidate_seen = False
-            for attempt in range(max(1, min(3, int(request.get("max_attempts", 1))))):
+            quality_rejection_count = 0
+            synthesis_attempts = max(
+                1, min(3, int(request.get("max_attempts", 1)))
+            )
+            for attempt in range(synthesis_attempts):
                 candidate = dict(request)
                 candidate["seed"] = int(request.get("seed", 200717)) + attempt
                 candidate["max_attempts"] = 1
@@ -407,7 +421,6 @@ def render_delivery_wav(
                     validate_delivery_duration(frame_count / sample_rate)
                 except DeliveryAudioError:
                     continue
-                duration_candidate_seen = True
                 quality_report = run_quality_gate(candidate)
                 quality_report.update(
                     attempt=attempt + 1,
@@ -416,8 +429,9 @@ def render_delivery_wav(
                 )
                 if quality_report["passed"] is True:
                     break
+                quality_rejection_count += 1
             else:
-                if duration_candidate_seen:
+                if quality_rejection_count == synthesis_attempts:
                     raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
                 raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
         else:

@@ -107,7 +107,6 @@ from reply_context import (
 )
 from reply_pipeline import ReplyPipeline, UnavailableRewriter
 from reply_reviewer import NullReviewer
-from tts import DIRECTED_DELIVERY_ERROR_CODES
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
@@ -2052,7 +2051,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             OSError,
         ) as exc:
             error_code = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
-            error_contract = DIRECTED_DELIVERY_ERROR_CODES.get(error_code)
+            error_contract = contract.letter_detail_media_error_metadata(error_code)
             letter["media_status"] = (
                 str(error_contract["status"])
                 if error_contract is not None

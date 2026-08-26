@@ -75,6 +75,73 @@ def test_media_workers_fail_closed_without_external_provider(tmp_path):
         )
 
 
+def test_ordinary_quality_preflight_preserves_retryable_gate_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    worker = tmp_path / "worker.py"
+    worker.write_text("# synthetic", encoding="utf-8")
+    calls: list[bool] = []
+
+    monkeypatch.setattr(reply_media, "_tts_config", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        reply_media,
+        "_visual_config",
+        lambda *_args, **_kwargs: SimpleNamespace(validate=lambda: None),
+    )
+    monkeypatch.setattr(reply_media, "media_runtime_available", lambda *_args: True)
+
+    def configured(_config, *, require_quality_gate=False):
+        calls.append(require_quality_gate)
+        return not require_quality_gate
+
+    monkeypatch.setattr(reply_media, "delivery_configured", configured)
+
+    with pytest.raises(ReplyMediaError, match="TTS_CONTENT_GATE_UNAVAILABLE"):
+        reply_media.assemble_complete_video_delivery(
+            tmp_path / "tts.json",
+            tmp_path / "visual.json",
+            worker,
+            tmp_path,
+            require_quality_gate=True,
+        )
+
+    assert calls == [False, True]
+
+
+def test_shared_music_preflight_never_checks_ordinary_quality_gate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    worker = tmp_path / "worker.py"
+    worker.write_text("# synthetic", encoding="utf-8")
+    calls: list[bool] = []
+
+    monkeypatch.setattr(reply_media, "_tts_config", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        reply_media,
+        "_visual_config",
+        lambda *_args, **_kwargs: SimpleNamespace(validate=lambda: None),
+    )
+    monkeypatch.setattr(reply_media, "media_runtime_available", lambda *_args: True)
+
+    def configured(_config, *, require_quality_gate=False):
+        calls.append(require_quality_gate)
+        return True
+
+    monkeypatch.setattr(reply_media, "delivery_configured", configured)
+
+    reply_media.assemble_complete_video_delivery(
+        tmp_path / "tts.json",
+        tmp_path / "visual.json",
+        worker,
+        tmp_path,
+        require_quality_gate=False,
+    )
+
+    assert calls == [False]
+
+
 def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
     executable = tmp_path / "roformer.exe"
     model = tmp_path / "models" / "MelBandRoformer.ckpt"

@@ -57,7 +57,8 @@ def _synthesize(request: dict[str, object], output: Path) -> None:
     if request.get("voice_condition_mode") == "instruct2_single_pass":
         if str(request.get("llm_variant", "base")) != "base":
             raise RuntimeError("only the accepted base llm.pt variant is supported")
-        _validate_base_model(Path(str(request["model_dir"])))
+        if bool(request.get("verify_accepted_base_model", False)):
+            _validate_base_model(Path(str(request["model_dir"])))
     sys.path.insert(0, str(runtime_root))
     for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "MODELSCOPE_OFFLINE"):
         os.environ[key] = "1"

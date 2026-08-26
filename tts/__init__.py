@@ -7,7 +7,6 @@ the native HTTP capability claim that B02 deliberately keeps unavailable.
 
 from .contracts import (
     AudioChunk,
-    DIRECTED_DELIVERY_ERROR_CODES,
     TTSConfig,
     TTSResult,
     TTSRun,
@@ -22,7 +21,6 @@ from .service import TTSService
 
 __all__ = [
     "AudioChunk",
-    "DIRECTED_DELIVERY_ERROR_CODES",
     "TTSConfig",
     "TTSProfileManager",
     "TTSProviderRegistry",

@@ -9,6 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import tts.delivery as delivery
+import http_contract
 
 from reply_delivery import (
     build_ordinary_video_llm_content,
@@ -16,7 +17,7 @@ from reply_delivery import (
     ordinary_video_reply_length_ok,
     plan_reply_delivery,
 )
-from tts import DIRECTED_DELIVERY_ERROR_CODES, TTSConfig, external_cosyvoice_worker
+from tts import TTSConfig, external_cosyvoice_worker
 from tts.external_audio_quality_worker import assess_transcript, normalize_transcript
 from tts.delivery import (
     DeliveryAudioError,
@@ -43,7 +44,7 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
 
 
 def test_directed_delivery_error_schema_is_stable() -> None:
-    assert DIRECTED_DELIVERY_ERROR_CODES == {
+    assert http_contract.LETTER_DETAIL_MEDIA_ERROR_CODES == {
         "TTS_CONTENT_GATE_UNAVAILABLE": {
             "status": "UNAVAILABLE",
             "retryable": True,
@@ -510,6 +511,7 @@ def test_external_worker_rejects_unpinned_base_llm_before_model_load(
                 "reference_audio": str(tmp_path / "reference.wav"),
                 "voice_condition_mode": "instruct2_single_pass",
                 "llm_variant": "base",
+                "verify_accepted_base_model": True,
                 "text": "完整冻结回信",
                 "instruct_text": "声音柔软自然地承接，再缓缓托起给到力量",
             },
@@ -584,6 +586,53 @@ def test_directed_delivery_preflight_rejects_implicit_whisper_cache(
     assert delivery_configured(config, require_quality_gate=True) is False
 
 
+def test_non_quality_delivery_does_not_require_quality_worker_or_pinned_base(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    model = tmp_path / "model"
+    runtime.mkdir()
+    model.mkdir()
+    executable = tmp_path / "python.exe"
+    reference = tmp_path / "reference.wav"
+    executable.write_bytes(b"synthetic executable")
+    reference.write_bytes(b"synthetic reference")
+    (model / "llm.pt").write_bytes(b"unpinned model")
+    verified: list[str] = []
+    monkeypatch.setattr(
+        delivery,
+        "_verified_file",
+        lambda path, _expected: verified.append(path.name) or False,
+    )
+    config = TTSConfig(
+        runtime_root=str(runtime),
+        model_dir=str(model),
+        reference_audio=str(reference),
+        provider_options={"external_python": str(executable)},
+    )
+
+    assert delivery_configured(config) is True
+    assert verified == []
+
+
+def test_quality_runtime_preflight_enforces_pinned_distribution_version(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    observed: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        observed.append([str(item) for item in command])
+        return SimpleNamespace(returncode=3)
+
+    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+
+    assert delivery._quality_runtime_available(str(tmp_path / "python.exe"), 1, 1) is False
+    assert "m.version('openai-whisper')" in observed[0][-1]
+    assert "20250625" in observed[0][-1]
+
+
 def test_three_rejected_candidates_never_replace_existing_output(
     tmp_path,
     monkeypatch,
@@ -632,6 +681,58 @@ def test_three_rejected_candidates_never_replace_existing_output(
         render_delivery_wav(config, plan, output)
 
     assert calls == {"tts": 3, "quality": 3}
+    assert output.read_bytes() == b"existing-output"
+
+
+def test_mixed_duration_failures_do_not_fabricate_three_quality_rejections(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "reply.wav"
+    output.write_bytes(b"existing-output")
+    calls = {"tts": 0, "quality": 0}
+
+    def fake_run(command, **_kwargs):
+        command = [str(item) for item in command]
+        target = Path(command[command.index("--output") + 1])
+        if command[1].endswith("external_cosyvoice_worker.py"):
+            calls["tts"] += 1
+            frame_count = 4_500 if calls["tts"] == 1 else 3_000
+            with wave.open(str(target), "wb") as rendered:
+                rendered.setnchannels(1)
+                rendered.setsampwidth(2)
+                rendered.setframerate(100)
+                rendered.writeframes(array("h", [1] * frame_count).tobytes())
+        else:
+            calls["quality"] += 1
+            target.write_text(
+                json.dumps({"passed": False, "error_code": "TTS_CONTENT_MISMATCH"}),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(delivery, "delivery_configured", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    config = TTSConfig(
+        runtime_root=str(tmp_path),
+        model_dir=str(tmp_path),
+        reference_audio=str(tmp_path / "reference.wav"),
+        provider_options={"external_python": sys.executable},
+    )
+    plan = VoicePerformancePlan(
+        reply_text="林" * 190,
+        overall_emotion="声音柔软自然地承接，再缓缓托起给到力量",
+        global_speed=1.0,
+        energy=0.55,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+        short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
+    )
+
+    with pytest.raises(DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
+        render_delivery_wav(config, plan, output)
+
+    assert calls == {"tts": 3, "quality": 1}
     assert output.read_bytes() == b"existing-output"
 
 

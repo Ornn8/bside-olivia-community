@@ -44,6 +44,36 @@
         "additionalProperties": false
       }
     },
+    "letter_detail_media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "statuses", "error_codes"],
+      "properties": {
+        "fields": {
+          "const": ["media_status", "media_error_code", "media_retryable"]
+        },
+        "statuses": {
+          "type": "array",
+          "items": {
+            "enum": ["NOT_REQUESTED", "PENDING", "PROCESSING", "COMPLETED", "FAILED", "UNAVAILABLE"]
+          },
+          "uniqueItems": true
+        },
+        "error_codes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
+          "properties": {
+            "TTS_CONTENT_GATE_UNAVAILABLE": {
+              "$ref": "#/$defs/media_error"
+            },
+            "TTS_CONTENT_GATE_REJECTED": {
+              "$ref": "#/$defs/media_error"
+            }
+          }
+        }
+      }
+    },
     "privacy": {
       "type": "object",
       "additionalProperties": false,
@@ -57,6 +87,15 @@
     }
   },
   "$defs": {
+    "media_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "retryable"],
+      "properties": {
+        "status": {"enum": ["FAILED", "UNAVAILABLE"]},
+        "retryable": {"type": "boolean"}
+      }
+    },
     "route": {
       "type": "object",
       "additionalProperties": false,
