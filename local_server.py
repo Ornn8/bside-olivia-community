@@ -51,7 +51,11 @@ from letter_triage import LetterEmotionTriage, TriageResult, _current_music_perf
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
-from reply_delivery import build_ordinary_video_llm_content
+from reply_delivery import (
+    build_ordinary_video_llm_content,
+    build_ordinary_video_repair_content,
+    ordinary_video_reply_length_ok,
+)
 from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
@@ -711,6 +715,7 @@ async def _voice_plan_for_letter(
         direct_voice_performance(
             reply_text,
             letters_adapter.gateway,
+            letter_content=str(letter.get("content", "")),
             request_id=request_id,
         ),
         timeout=LLM_TIMEOUT_SECONDS,
@@ -2315,6 +2320,8 @@ async def _run_reply_pipeline_for_letter(
     exact_mode: str,
     *,
     idempotency_key: str | None,
+    reply_input_override: str | None = None,
+    request_suffix: str = "",
 ):
     letter_id = str(letter["letter_id"])
     revision = max(0, int(letter.get("reply_revision", 0))) + 1
@@ -2322,17 +2329,21 @@ async def _run_reply_pipeline_for_letter(
         f"reply:{letter_id}:{revision}"
     )
     try:
-        reply_input = (
-            build_ordinary_video_llm_content(content)
-            if exact_mode
-            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
-            else content
-        )
+        reply_input = reply_input_override
+        if reply_input is None:
+            reply_input = (
+                build_ordinary_video_llm_content(content)
+                if exact_mode
+                in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+                else content
+            )
         request = ReplyRequest(
             content=reply_input,
-            request_id=f"letter-reply:{letter_id}",
+            request_id=f"letter-reply:{letter_id}{request_suffix}",
             idempotency_key=(
-                f"{idempotency_key}:{letter_id}" if idempotency_key else None
+                f"{idempotency_key}:{letter_id}{request_suffix}"
+                if idempotency_key
+                else None
             ),
             max_input_chars=LLM_CONFIG.max_input_chars,
         )
@@ -2389,6 +2400,20 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             exact_mode,
             idempotency_key=idempotency_key,
         )
+        if (
+            result.state is ReplyState.COMPLETED
+            and exact_mode
+            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+            and not ordinary_video_reply_length_ok(result.text)
+        ):
+            result = await _run_reply_pipeline_for_letter(
+                letter,
+                content,
+                exact_mode,
+                idempotency_key=idempotency_key,
+                reply_input_override=build_ordinary_video_repair_content(result.text),
+                request_suffix=":duration-repair",
+            )
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_INTERRUPTED"
@@ -2417,6 +2442,16 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         letter["error_code"] = public_code
         _persist_store_state()
         _safe_log("letter_failed", error_code=public_code)
+        return False
+    if (
+        exact_mode
+        in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+        and not ordinary_video_reply_length_ok(result.text)
+    ):
+        letter["letter_status"] = "FAILED"
+        letter["error_code"] = "LLM_REPLY_LENGTH_INVALID"
+        _persist_store_state()
+        _safe_log("letter_failed", error_code="LLM_REPLY_LENGTH_INVALID")
         return False
 
     _prepare_private_world_delivery(letter, result.text)

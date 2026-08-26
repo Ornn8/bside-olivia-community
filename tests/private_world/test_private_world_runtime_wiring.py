@@ -397,7 +397,7 @@ def test_fresh_generate_reply_commits_once_and_media_retry_never_recommits(
         "recovery_count": 0,
         "event_count_after_canonical": 1,
         "event_count_after_media_retry": 1,
-        "media_status": "UNAVAILABLE",
+        "media_status": "COMPLETED",
     }
 
 
@@ -418,7 +418,7 @@ def test_fresh_generate_reply_keeps_canonical_reply_pending_when_sqlite_fails(
         "recovery_count": 0,
         "event_count_after_canonical": 0,
         "event_count_after_media_retry": 0,
-        "media_status": "UNAVAILABLE",
+        "media_status": "COMPLETED",
     }
 
 
@@ -439,7 +439,7 @@ def test_fresh_generate_reply_keeps_canonical_reply_pending_when_snapshot_is_cor
         "recovery_count": 0,
         "event_count_after_canonical": 0,
         "event_count_after_media_retry": 0,
-        "media_status": "UNAVAILABLE",
+        "media_status": "COMPLETED",
     }
 
 

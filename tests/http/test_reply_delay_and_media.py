@@ -148,9 +148,10 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
 
     directed_requests = []
 
-    async def direct_frozen_reply(text, gateway, *, request_id=None):
+    async def direct_frozen_reply(text, gateway, *, letter_content=None, request_id=None):
         assert text == reply_text
         assert gateway is local_server.letters_adapter.gateway
+        assert letter_content in {"ordinary video request", "spoken plus music request"}
         directed_requests.append(request_id)
         return plan
 
@@ -196,7 +197,7 @@ def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypat
     }
     provider_calls = []
 
-    async def direct(_text, _gateway, *, request_id=None):
+    async def direct(_text, _gateway, *, letter_content=None, request_id=None):
         provider_calls.append(request_id)
         raise AssertionError("corrupt state must not call the voice provider")
 
@@ -226,7 +227,7 @@ def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monke
     def persist():
         persisted_request_ids.append(letter.get("voice_direction_request_id"))
 
-    async def direct(_text, _gateway, *, request_id=None):
+    async def direct(_text, _gateway, *, letter_content=None, request_id=None):
         provider_calls.append(request_id)
         assert letter["voice_direction_request_id"] == request_id
         if len(provider_calls) == 1:
@@ -405,7 +406,7 @@ def test_generate_reply_preserves_the_router_selected_video_route(
         return PipelineResult(
             letter_id,
             ReplyState.COMPLETED,
-            text="synthetic canonical reply",
+            text="林" * 190,
             quality_status="accepted_degraded",
         )
 
@@ -439,3 +440,47 @@ def test_generate_reply_preserves_the_router_selected_video_route(
     assert public["reply_mode"] == (
         "text" if delivery_mode == ReplyMode.TEXT_LETTER.value else "video"
     )
+
+
+def test_generate_reply_repairs_then_rechecks_video_copy_length(monkeypatch):
+    letter_id = "synthetic-duration-repair"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic current letter",
+        "reply_text": "",
+        "reply_mode": ReplyMode.TEXT_LETTER.value,
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    requests = []
+
+    async def classify(_content):
+        return TriageResult(
+            "high",
+            ReplyMode.SPOKEN_VIDEO.value,
+            "voice_adds_presence",
+            "completed",
+            True,
+            direct_response_sufficient=True,
+            voice_materially_better=True,
+        )
+
+    async def run_pipeline(request, _context):
+        requests.append(request)
+        text = "林" * 190 if request.request_id.endswith(":duration-repair") else "太短"
+        return PipelineResult(letter_id, ReplyState.COMPLETED, text=text)
+
+    monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
+    monkeypatch.setattr(local_server.reply_pipeline, "run", run_pipeline)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_commit_private_world_letter", lambda _letter: False)
+    monkeypatch.setattr(local_server, "_schedule_media_job", lambda *_args: None)
+    monkeypatch.setattr(local_server.letters_adapter, "remember_conversation", lambda *_args: None)
+
+    assert asyncio.run(local_server.generate_reply(letter_id, letter["content"]))
+    assert [request.request_id for request in requests] == [
+        f"letter-reply:{letter_id}",
+        f"letter-reply:{letter_id}:duration-repair",
+    ]
+    assert "180到200个汉字" in requests[1].content
+    assert letter["reply_text"] == "林" * 190

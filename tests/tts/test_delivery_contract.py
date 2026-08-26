@@ -17,6 +17,7 @@ from reply_delivery import (
     plan_reply_delivery,
 )
 from tts import external_cosyvoice_worker
+from tts.external_audio_quality_worker import assess_transcript
 from tts.delivery import (
     DeliveryAudioError,
     _fit_overlong_wav,
@@ -66,10 +67,11 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     plan = VoicePerformancePlan(
         reply_text=reply_text,
         overall_emotion="restrained empathy becoming steady reassurance",
-        global_speed=1.06,
+        global_speed=1.0,
         energy=0.62,
-        breath_before_sentences=(2,),
-        emphasize_sentences=(1,),
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+        short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
     config = SimpleNamespace(
         runtime_root="runtime",
@@ -85,10 +87,14 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     assert request["text"] == reply_text
     assert "[breath]" not in str(request["text"])
     assert "<strong>" not in str(request["text"])
+    assert request["llm_variant"] == "base"
+    assert request["speed"] == 1.0
     assert request["instruct_text"].count("<|endofprompt|>") == 1
-    assert "natural silent breath before sentence 2" in str(request["instruct_text"])
-    assert "Gently emphasize sentence 1" in str(request["instruct_text"])
-    assert request["performance_control_mode"] == "single_pass_llm_instruct"
+    assert request["instruct_text"] == (
+        "You are a helpful assistant. "
+        "声音柔软自然地承接，再缓缓托起给到力量。<|endofprompt|>"
+    )
+    assert request["performance_control_mode"] == "single_pass_llm_short_instruct"
     assert request["duration_target_seconds"] == [40.0, 50.0]
     assert request["max_attempts"] == 3
     assert "blocks" not in request
@@ -398,3 +404,24 @@ def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() ->
     assert "24 kHz mono" in acceptance
     assert "863ef5185c448f189c46524fd8e87010bf353bc2bf8e3df9f59bdc0948ec14ce" in acceptance
     assert "Candidate 1" in acceptance
+
+
+def test_content_gate_accepts_small_asr_substitutions_but_rejects_control_or_omission() -> None:
+    expected = (
+        "这是完全合成的语音验收样例。"
+        "虚构的月面温室响起提示音，巡检员关闭报警器，再核对三组传感器。"
+        "设备稳定后，她把结果写入公开测试日志。"
+    )
+    instruction = "保持清楚自然，结尾平稳收住"
+
+    accepted = assess_transcript(
+        expected,
+        expected.replace("，", "。").replace("。", " "),
+        instruction,
+    )
+    contaminated = assess_transcript(expected, instruction + expected, instruction)
+    omitted = assess_transcript(expected, "这是完全合成的语音验收样例。", instruction)
+
+    assert accepted["passed"] is True
+    assert contaminated["checks"]["instruction_overlap"] is False
+    assert omitted["checks"]["length_ratio"] is False

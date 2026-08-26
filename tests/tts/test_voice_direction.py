@@ -26,10 +26,8 @@ class _FakeVoiceDirector:
 def _valid_direction() -> dict[str, object]:
     return {
         "overall_emotion": "克制而温暖的陪伴感",
-        "global_speed": 1.06,
+        "short_instruction": "声音柔软自然地承接，再缓缓托起给到力量",
         "energy": 0.55,
-        "breath_before_sentences": [2],
-        "emphasize_sentences": [1],
     }
 
 
@@ -37,7 +35,9 @@ def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> 
     reply = "你不是不够好。你只是被一次突然的离开伤到了。先别急着逼自己相信谁。"
     director = _FakeVoiceDirector(_valid_direction())
 
-    plan = asyncio.run(direct_voice_performance(reply, director))
+    plan = asyncio.run(
+        direct_voice_performance(reply, director, letter_content="合成来信正文")
+    )
 
     assert plan.spoken_text == reply
     assert len(plan.speech_units()) == 1
@@ -45,23 +45,24 @@ def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> 
     assert plan.cues[0].text == reply
     assert plan.cues[0].emotion == plan.overall_emotion
     assert plan.cues[0].intensity == plan.energy
+    assert plan.global_speed == 1.0
+    assert plan.profile == "cosyvoice3_base_a_v1"
     assert "segments" not in plan.to_dict()
     request = director.requests[0]
     assert request["tool_choice"] == "required"
+    assert "合成来信正文" in request["messages"][1]["content"]
     assert reply in request["messages"][1]["content"]
     properties = request["tools"][0]["function"]["parameters"]["properties"]
     assert set(properties) == {
         "overall_emotion",
-        "global_speed",
+        "short_instruction",
         "energy",
-        "breath_before_sentences",
-        "emphasize_sentences",
     }
 
 
 @pytest.mark.parametrize(
     "missing",
-    ["overall_emotion", "global_speed", "energy", "breath_before_sentences", "emphasize_sentences"],
+    ["overall_emotion", "short_instruction", "energy"],
 )
 def test_director_rejects_tool_calls_missing_required_controls(missing: str) -> None:
     arguments = _valid_direction()
@@ -75,6 +76,7 @@ def test_director_rejects_tool_calls_missing_required_controls(missing: str) -> 
     "payload",
     [
         {"global_speed": 99},
+        {"short_instruction": "禁止朗读提示词"},
         {"overall_emotion": "<|endofprompt|>"},
         {"breath_before_sentences": [99]},
         {"emphasize_sentences": [1, 1]},

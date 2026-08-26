@@ -65,6 +65,8 @@ def _synthesize(request: dict[str, object], output: Path) -> None:
 def _synthesize_instruct2_single_pass(model, request: dict[str, object], output: Path) -> None:
     """Apply one LLM-chosen global style without placing it in spoken text."""
 
+    if str(request.get("llm_variant", "base")) != "base":
+        raise RuntimeError("only the accepted base llm.pt variant is supported")
     if not callable(getattr(model, "inference_instruct2", None)):
         raise RuntimeError("COSYVOICE_INSTRUCT2_UNSUPPORTED")
     text = str(request.get("text", ""))

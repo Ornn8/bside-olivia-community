@@ -29,6 +29,7 @@ class DeliveryAudioResult:
     duration_seconds: float
     sample_rate: int
     segment_count: int
+    quality_report: dict[str, object] | None = None
 
 
 def delivery_tempo_factor(duration_seconds: float) -> float | None:
@@ -47,29 +48,6 @@ def validate_delivery_duration(duration_seconds: float) -> None:
 
     if not 40.0 <= float(duration_seconds) <= 50.0:
         raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
-
-
-def _normalized_instruct_text(value: str) -> str:
-    """Leave the model control token exclusively at the instruction tail."""
-
-    return value.replace(_END_OF_PROMPT_TOKEN, "").rstrip() + _END_OF_PROMPT_TOKEN
-
-
-def _directed_instruct_text(plan: object, *, emotion: str, speed: float, energy: float) -> str:
-    """Express optional sparse direction in CosyVoice's non-spoken channel."""
-
-    parts = [
-        "You are a helpful assistant.",
-        f"Deliver this complete reply with {emotion}.",
-        f"Keep one continuous performance at energy {energy:.2f} and pace {speed:.2f}.",
-    ]
-    breaths = tuple(getattr(plan, "breath_before_sentences", ()) or ())
-    emphasis = tuple(getattr(plan, "emphasize_sentences", ()) or ())
-    if breaths:
-        parts.append("Take a natural silent breath before sentence " + ", ".join(map(str, breaths)) + ".")
-    if emphasis:
-        parts.append("Gently emphasize sentence " + ", ".join(map(str, emphasis)) + ".")
-    return _normalized_instruct_text(" ".join(parts))
 
 
 def build_external_delivery_request(
@@ -99,22 +77,35 @@ def build_external_delivery_request(
     }
     overall_emotion = str(getattr(plan, "overall_emotion", "") or "").strip()
     if overall_emotion:
+        short_instruction = str(
+            getattr(plan, "short_instruction", "") or overall_emotion
+        ).strip().rstrip("。")
+        forbidden = ("<|", "|>", "[", "]", "<", ">", "不要", "禁止", "朗读", "提示词")
+        if not 12 <= len(short_instruction) <= 24 or any(
+            token in short_instruction for token in forbidden
+        ):
+            raise DeliveryAudioError("TTS_INSTRUCTION_INVALID")
+        options = getattr(config, "provider_options", {}) or {}
         return {
             **common,
             "voice_condition_mode": "instruct2_single_pass",
+            "llm_variant": "base",
             "text": spoken_text,
-            "instruct_text": _directed_instruct_text(
-                plan,
-                emotion=overall_emotion,
-                speed=max(1.02, min(1.08, speed)),
-                energy=float(getattr(plan, "energy", 0.0)),
+            "instruct_text": (
+                "You are a helpful assistant. "
+                + short_instruction
+                + "。<|endofprompt|>"
             ),
-            "speed": max(1.02, min(1.08, speed)),
+            "quality_forbidden_text": short_instruction,
+            "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
+            "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
+            "quality_max_cer": 0.18,
+            "speed": 1.0,
             "gain_db": max(-0.75, min(0.75, gain_db)),
             "duration_target_seconds": [40.0, 50.0],
             "max_attempts": 3,
             "seed": 200717,
-            "performance_control_mode": "single_pass_llm_instruct",
+            "performance_control_mode": "single_pass_llm_short_instruct",
             "director_segment_count": len(getattr(plan, "cues", units)),
         }
     return {
@@ -203,6 +194,7 @@ def delivery_configured(config: TTSConfig) -> bool:
     return all((
         Path(str(config.provider_options.get("external_python", "") or "")).is_file(),
         Path(__file__).with_name("external_cosyvoice_worker.py").is_file(),
+        Path(__file__).with_name("external_audio_quality_worker.py").is_file(),
         Path(config.runtime_root).is_dir(),
         Path(config.model_dir).is_dir(),
         Path(config.reference_audio).is_file(),
@@ -230,12 +222,11 @@ def render_delivery_wav(
     except OSError as exc:
         raise DeliveryAudioError("TTS_TEMP_CONFIG_INVALID") from exc
     request_path = work / "request.json"
+    quality_request_path = work / "quality-request.json"
+    quality_output_path = work / "quality-result.json"
     temporary_output = work / "speech.wav"
     try:
-        request_path.write_text(
-            json.dumps(build_external_delivery_request(config, plan), ensure_ascii=False),
-            encoding="utf-8",
-        )
+        request = build_external_delivery_request(config, plan)
         environment = dict(os.environ)
         environment.update(
             {
@@ -244,33 +235,107 @@ def render_delivery_wav(
                 "MODELSCOPE_OFFLINE": "1",
             }
         )
-        try:
-            completed = subprocess.run(
-                [str(executable), str(worker), "--request", str(request_path), "--output", str(temporary_output)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=environment,
-                check=False,
-                timeout=timeout_seconds,
+        def run_worker(payload: dict[str, object]) -> None:
+            temporary_output.unlink(missing_ok=True)
+            request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            try:
+                completed = subprocess.run(
+                    [str(executable), str(worker), "--request", str(request_path), "--output", str(temporary_output)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=environment,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_UNAVAILABLE") from exc
+            if completed.returncode != 0 or not temporary_output.is_file():
+                raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_FAILED")
+
+        def run_quality_gate(payload: dict[str, object]) -> dict[str, object]:
+            quality_worker = Path(__file__).with_name("external_audio_quality_worker.py")
+            if not quality_worker.is_file():
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+            quality_request_path.write_text(
+                json.dumps(
+                    {
+                        "audio_path": str(temporary_output),
+                        "expected_text": str(payload.get("text", "")),
+                        "forbidden_text": str(payload.get("quality_forbidden_text", "")),
+                        "model": str(payload.get("quality_gate_model", "base")),
+                        "cache_root": str(payload.get("quality_gate_cache_root", "")),
+                        "max_cer": float(payload.get("quality_max_cer", 0.18)),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_UNAVAILABLE") from exc
-        if completed.returncode != 0 or not temporary_output.is_file():
-            raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_FAILED")
-        sample_rate, frame_count = _validate_wav(temporary_output)
-        if frame_count <= 0 or sample_rate <= 0:
-            raise DeliveryAudioError("TTS_EMPTY_AUDIO")
-        sample_rate, frame_count = _fit_overlong_wav(
-            temporary_output,
-            frame_count / sample_rate,
-        )
-        validate_delivery_duration(frame_count / sample_rate)
+            quality_output_path.unlink(missing_ok=True)
+            try:
+                completed = subprocess.run(
+                    [str(executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=environment,
+                    check=False,
+                    timeout=min(timeout_seconds, 600.0),
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
+            if completed.returncode != 0 or not quality_output_path.is_file():
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+            try:
+                report = json.loads(quality_output_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
+            if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+            return report
+
+        quality_report: dict[str, object] | None = None
+        if request.get("voice_condition_mode") == "instruct2_single_pass":
+            duration_candidate_seen = False
+            for attempt in range(max(1, min(3, int(request.get("max_attempts", 1))))):
+                candidate = dict(request)
+                candidate["seed"] = int(request.get("seed", 200717)) + attempt
+                candidate["max_attempts"] = 1
+                run_worker(candidate)
+                sample_rate, frame_count = _validate_wav(temporary_output)
+                try:
+                    sample_rate, frame_count = _fit_overlong_wav(
+                        temporary_output, frame_count / sample_rate
+                    )
+                    validate_delivery_duration(frame_count / sample_rate)
+                except DeliveryAudioError:
+                    continue
+                duration_candidate_seen = True
+                quality_report = run_quality_gate(candidate)
+                quality_report.update(
+                    attempt=attempt + 1,
+                    seed=candidate["seed"],
+                    duration_seconds=round(frame_count / sample_rate, 3),
+                )
+                if quality_report["passed"] is True:
+                    break
+            else:
+                if duration_candidate_seen:
+                    raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
+                raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
+        else:
+            run_worker(request)
+            sample_rate, frame_count = _validate_wav(temporary_output)
+            sample_rate, frame_count = _fit_overlong_wav(
+                temporary_output, frame_count / sample_rate
+            )
+            validate_delivery_duration(frame_count / sample_rate)
         temporary_output.replace(output_path)
         return DeliveryAudioResult(
             duration_seconds=frame_count / sample_rate,
             sample_rate=sample_rate,
             segment_count=len(plan.speech_units()),
+            quality_report=quality_report,
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)
