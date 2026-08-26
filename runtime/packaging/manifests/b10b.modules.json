@@ -41,7 +41,7 @@
         "revision": "1c8deaecc64b91f034d73e08dd8b64625eb3395d",
         "license": "OpenMDW-1.1",
         "status": "composed",
-        "adapter_boundary": "B10B stores only a validated D:/ or F:/ reference and delegates inference to B05.",
+        "adapter_boundary": "B10B stores only a validated absolute local Windows reference and delegates inference to B05.",
         "uninstall_path": "B10B uninstall never copies or deletes the referenced model, cache, or acceptance evidence."
       },
       {
@@ -119,7 +119,7 @@
         "license": "Apache-2.0",
         "status": "not_composed",
         "adapter_boundary": "B11 validates external provenance and delegates frame generation to the fixed LiveTalking upstream; it does not implement a renderer, face model, lip model or training path.",
-        "uninstall_path": "B10B uninstall removes module metadata and only exact SHA-256-verified managed destination copies; it retains F:/ download sources, external runtime, avatar payload, original reference and evidence."
+        "uninstall_path": "B10B uninstall removes module metadata and only exact SHA-256-verified managed destination copies; it retains download sources, external runtime, avatar payload, original reference and evidence."
       }
     ]
   },
@@ -175,12 +175,12 @@
       "health": {"kind": "provider", "adapter": "asr", "required_files": []},
       "customizable": ["provider", "server_url", "runtime_root", "runtime_executable", "model_root", "model_path", "cache_root", "language", "upstream_source", "upstream_revision", "upstream_license", "runtime_sha256", "model_source", "model_revision", "model_license", "model_sha256", "acceptance_sha256"],
       "external_references": [
-        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "runtime_executable", "kind": "runtime-executable", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "model_root", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "model_path", "kind": "model-file", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "cache_root", "kind": "cache", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "acceptance_manifest", "kind": "evidence", "copy_policy": "reference-only", "drive_policy": "D-or-F"}
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "runtime_executable", "kind": "runtime-executable", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "model_root", "kind": "model", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "model_path", "kind": "model-file", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "cache_root", "kind": "cache", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "acceptance_manifest", "kind": "evidence", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"}
       ],
       "ownership": {
         "owned_paths": ["modules/asr_local/marker.json", "modules/asr_local/config.json"],
@@ -219,16 +219,16 @@
       "health": {"kind": "python_contract", "adapter": "visual-livetalking", "required_files": []},
         "customizable": ["runtime_root", "python_executable", "checkpoint_path", "checkpoint_sha256", "checkpoint_url", "checkpoint_revision", "checkpoint_license", "avatar_payload", "avatar_id", "original_reference", "work_root", "upstream_source", "upstream_revision", "upstream_license", "backend_name", "managed_external_copies"],
       "external_references": [
-        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "python_executable", "kind": "runtime-python", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "checkpoint_path", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "avatar_payload", "kind": "avatar-payload", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true},
-        {"name": "original_reference", "kind": "private-visual-reference", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true},
-        {"name": "work_root", "kind": "evidence-cache", "copy_policy": "reference-only", "drive_policy": "D-or-F", "preserve": true}
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "python_executable", "kind": "runtime-python", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "checkpoint_path", "kind": "model", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "avatar_payload", "kind": "avatar-payload", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root", "preserve": true},
+        {"name": "original_reference", "kind": "private-visual-reference", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root", "preserve": true},
+        {"name": "work_root", "kind": "evidence-cache", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root", "preserve": true}
       ],
       "ownership": {
         "owned_paths": ["modules/visual_livetalking/marker.json", "modules/visual_livetalking/config.json"],
-        "preserved_boundaries": ["fixed LiveTalking upstream runtime", "official checkpoint and avatar payload", "original Olivia reference and background", "external evidence and generated frames", "F:/ download sources for managed copies", "user data and legacy letters"],
+        "preserved_boundaries": ["fixed LiveTalking upstream runtime", "official checkpoint and avatar payload", "original Olivia reference and background", "external evidence and generated frames", "download sources for managed copies", "user data and legacy letters"],
         "processes": ["delegated LiveTalking worker"]
       }
     },
@@ -243,8 +243,8 @@
       "health": {"kind": "extension", "adapter": "tts", "required_files": []},
       "customizable": ["provider", "runtime_root", "model_dir", "reference_audio", "reference_text", "fallback", "fp16", "upstream_source", "upstream_revision", "upstream_license", "model_source", "model_revision", "model_license", "model_hashes", "reference_audio_sha256"],
       "external_references": [
-        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
-        {"name": "model_dir", "kind": "model", "copy_policy": "reference-only", "drive_policy": "D-or-F"},
+        {"name": "runtime_root", "kind": "runtime", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
+        {"name": "model_dir", "kind": "model", "copy_policy": "reference-only", "drive_policy": "local-absolute-non-root"},
         {"name": "reference_audio", "kind": "private-reference-audio", "copy_policy": "reference-only", "preserve": true}
       ],
       "extension": {"api_version": "b10b.provider.v1", "provider_id": "tts"},

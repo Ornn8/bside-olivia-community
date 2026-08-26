@@ -419,6 +419,22 @@ def test_external_reference_rejects_non_local_or_unsafe_paths(value: str) -> Non
     assert is_external_reference(value) is False
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "C:/NUL",
+        "C:/CON/runtime",
+        "C:/provider/PRN.txt",
+        "C:/provider/AUX.",
+        "C:/provider/CLOCK$.log",
+        "C:/provider/com1 ",
+        "C:/provider/LPT9.tar.gz",
+    ],
+)
+def test_external_reference_rejects_dos_device_name_segments(value: str) -> None:
+    assert is_external_reference(value) is False
+
+
 def test_b06_tts_is_lifecycle_managed_when_composed_and_fail_closed_before_merge(tmp_path: Path) -> None:
     project, data_root = _project(tmp_path)
     manager = B10BManager(project_root=project, data_root=data_root)

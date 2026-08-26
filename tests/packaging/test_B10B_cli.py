@@ -102,6 +102,23 @@ def test_cli_covers_manifest_dry_run_routing_customize_uninstall_and_rollback(
     assert (data / "modules/core_http/marker.json").is_file()
 
 
+def test_b10b_manifest_publishes_any_local_non_root_path_contract() -> None:
+    manifest = json.loads(DEFAULT_MANIFEST_PATH.read_text(encoding="utf-8"))
+    schema = json.loads(
+        (DEFAULT_MANIFEST_PATH.parents[1] / "schemas" / "b10b.modules.schema.json").read_text(encoding="utf-8")
+    )
+
+    references = [reference for module in manifest["modules"] for reference in module["external_references"]]
+    assert references
+    assert {reference["drive_policy"] for reference in references if "drive_policy" in reference} == {
+        "local-absolute-non-root"
+    }
+    assert (
+        schema["$defs"]["external_reference"]["properties"]["drive_policy"]["const"]
+        == "local-absolute-non-root"
+    )
+
+
 def test_cli_errors_are_sanitized_and_unknown_customization_is_atomic(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

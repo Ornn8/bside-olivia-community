@@ -56,6 +56,7 @@ _UPSTREAM_KEYS = {
 _UPSTREAM_KINDS = {"runtime", "model", "visual-runtime"}
 _UPSTREAM_STATUS = {"composed", "not_composed"}
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
+_LOCAL_ABSOLUTE_NON_ROOT = "local-absolute-non-root"
 
 
 def _object(value: Any, field: str, allowed: set[str], *, required: set[str] | None = None) -> dict[str, Any]:
@@ -217,7 +218,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             for policy in ("drive_policy", "path_policy"):
                 if policy in reference:
                     _string(reference[policy], f"{ref_field}.{policy}")
-            if reference.get("drive_policy") not in {None, "D-or-F"}:
+            if reference.get("drive_policy") not in {None, _LOCAL_ABSOLUTE_NON_ROOT}:
                 raise B10BError("INVALID_MANIFEST", f"{ref_field}.drive_policy is unsupported.")
             if reference.get("path_policy") not in {None, "logical-or-external"}:
                 raise B10BError("INVALID_MANIFEST", f"{ref_field}.path_policy is unsupported.")

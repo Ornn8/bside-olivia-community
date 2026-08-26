@@ -142,7 +142,7 @@
         "kind": {"$ref": "#/$defs/nonempty_string"},
         "copy_policy": {"const": "reference-only"},
         "preserve": {"type": "boolean"},
-        "drive_policy": {"const": "D-or-F"},
+        "drive_policy": {"const": "local-absolute-non-root"},
         "path_policy": {"const": "logical-or-external"}
       }
     },

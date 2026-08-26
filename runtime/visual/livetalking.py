@@ -37,6 +37,33 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _AVATAR_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 _FRAME_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
+_RESERVED_DEVICE_NAMES = frozenset(
+    {
+        "AUX",
+        "CLOCK$",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "CON",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "NUL",
+        "PRN",
+    }
+)
 
 
 class LiveTalkingConfigError(ValueError):
@@ -45,6 +72,11 @@ class LiveTalkingConfigError(ValueError):
 
 class LiveTalkingRuntimeError(RuntimeError):
     """Raised when the delegated LiveTalking process cannot be started safely."""
+
+
+def _is_reserved_device_segment(part: str) -> bool:
+    normalized = part.rstrip(" .")
+    return normalized.split(".", 1)[0].upper() in _RESERVED_DEVICE_NAMES
 
 
 def _external_path(value: Path | str) -> bool:
@@ -57,10 +89,14 @@ def _external_path(value: Path | str) -> bool:
         and bool(re.fullmatch(r"[A-Za-z]:", candidate.drive))
         and len(candidate.parts) > 1
         and not any(part in {".", ".."} for part in candidate.parts)
+        and not any(_is_reserved_device_segment(part) for part in candidate.parts)
     )
 
 
 def _path(value: Path | str, field: str) -> Path:
+    raw = str(value)
+    if raw.startswith("~") and (len(raw) == 1 or raw[1] in "/\\"):
+        raise LiveTalkingConfigError(f"{field} must be an absolute local Windows path")
     result = Path(value).expanduser()
     if not _external_path(result):
         raise LiveTalkingConfigError(f"{field} must be an absolute local Windows path")
@@ -94,9 +130,9 @@ class LiveTalkingConfig:
             "original_reference",
             "work_root",
         ):
-            object.__setattr__(self, field, Path(getattr(self, field)).expanduser())
+            object.__setattr__(self, field, Path(getattr(self, field)))
         if self.python_executable is not None:
-            object.__setattr__(self, "python_executable", Path(self.python_executable).expanduser())
+            object.__setattr__(self, "python_executable", Path(self.python_executable))
 
     def validate(self) -> None:
         for field in (

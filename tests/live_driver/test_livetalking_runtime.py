@@ -91,6 +91,44 @@ def test_config_accepts_any_local_drive_and_rejects_unsafe_runtime_references(tm
             config.validate()
 
 
+def test_config_rejects_tilde_backslash_paths_before_expanduser() -> None:
+    config = LiveTalkingConfig(
+        runtime_root=Path(r"~\LiveTalking"),
+        checkpoint_path=Path(r"~\models\wav2lip.pth"),
+        checkpoint_sha256="a" * 64,
+        avatar_payload=Path(r"~\LiveTalking\data\avatars\b11_olivia"),
+        original_reference=Path(r"~\original.mp4"),
+        work_root=Path(r"~\evidence"),
+        checkpoint_url="https://example.invalid/checkpoint",
+        checkpoint_revision="verified checkpoint",
+        checkpoint_license="verified checkpoint license",
+    )
+
+    with pytest.raises(LiveTalkingConfigError, match="absolute local Windows"):
+        config.validate()
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        r"C:\NUL",
+        r"C:\CON\runtime",
+        r"C:\provider\PRN.txt",
+        r"C:\provider\AUX.",
+        r"C:\provider\CLOCK$.log",
+        r"C:\provider\COM1 ",
+        r"C:\provider\LPT9.tar.gz",
+    ],
+)
+def test_config_rejects_dos_device_name_segments(tmp_path: Path, unsafe: str) -> None:
+    config = _config(tmp_path)
+    object.__setattr__(config, "runtime_root", Path(unsafe))
+    object.__setattr__(config, "avatar_payload", Path(unsafe) / "data" / "avatars" / "b11_olivia")
+
+    with pytest.raises(LiveTalkingConfigError, match="absolute local Windows"):
+        config.validate()
+
+
 def test_health_is_fail_closed_when_checkpoint_or_payload_is_missing(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.checkpoint_path.unlink()

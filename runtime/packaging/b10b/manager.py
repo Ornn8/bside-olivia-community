@@ -1092,7 +1092,7 @@ class B10BManager:
             path_policy = reference.get("path_policy")
             valid_external = is_external_reference(value)
             valid_logical = is_external_reference(value, policy="logical_asset")
-            if drive_policy == "D-or-F" and not valid_external:
+            if drive_policy == "local-absolute-non-root" and not valid_external:
                 raise B10BError("EXTERNAL_REFERENCE_INVALID", "External model/runtime references must be absolute local Windows paths.", {"field": key})
             if path_policy == "logical-or-external" and not (valid_external or valid_logical):
                 raise B10BError("EXTERNAL_REFERENCE_INVALID", "Visual references must be logical asset IDs or absolute local Windows paths.", {"field": key})
@@ -1210,7 +1210,7 @@ class B10BManager:
             path_policy = reference.get("path_policy")
             valid_external = is_external_reference(value)
             valid_logical = is_external_reference(value, policy="logical_asset")
-            if drive_policy == "D-or-F" and not valid_external:
+            if drive_policy == "local-absolute-non-root" and not valid_external:
                 raise B10BError(
                     "CONFIG_INVALID",
                     "Existing external references must be absolute local Windows paths.",
