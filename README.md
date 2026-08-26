@@ -39,7 +39,7 @@
 
 - Windows 10/11 x64；
 - 合法取得的原版客户端 `0.0.9.615`；
-- 可用的兼容 LLM API；
+- 可用的 DeepSeek API；其他 OpenAI-compatible 接口目前仅支持开发者通过环境变量配置；
 - 仅使用文字回信时不要求本地独立显卡；视频、TTS 和音乐模型有各自的显存与磁盘要求。
 
 ### 安装与启动
@@ -53,7 +53,7 @@ cd bside-olivia-community
 
 首次安装会在获得同意后下载经过哈希校验的 Python 3.12 嵌入式运行时和固定依赖，并自动查找 Steam AppID `4532590`。如果没有自动发现，可以按提示选择原版安装目录。
 
-首次启动后可在原版客户端的本地设置页配置模型与记忆功能；也可以运行安装目录中的 `CONFIGURE.cmd`。API key 使用当前 Windows 用户的 DPAPI 加密保存，不写入仓库、安装包或日志。
+首次启动后可在原版客户端的本地设置页管理记忆和视频回信开关；安装目录中的 `CONFIGURE.cmd` 用于保存 DeepSeek API key 和可选参考文件。API key 使用当前 Windows 用户的 DPAPI 加密保存，不写入仓库、安装包或日志。
 
 安装、升级、目录和卸载边界详见 [Windows 完整版补丁说明](docs/WINDOWS_FULL_PATCH.md)。第三方模型请从 [官方或维护方下载入口](docs/THIRD_PARTY_DOWNLOADS.md) 获取。
 
