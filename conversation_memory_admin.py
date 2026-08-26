@@ -609,7 +609,6 @@ class ConversationMemoryAdminService:
             row,
             user_id=self.user_id,
         )
-        captured_affected = affected
         current = {record.memory_id for record in self._records_for_clear()}
         for memory_id in memory_ids:
             if memory_id not in current:
@@ -634,7 +633,7 @@ class ConversationMemoryAdminService:
                     target_memory_ids=memory_ids,
                 )
                 current.discard(memory_id)
-        remaining = self._records_for_clear() if captured_affected < len(memory_ids) else ()
+        remaining = self._records_for_clear()
         if remaining:
             self._write_audit(
                 request_id=request_id,

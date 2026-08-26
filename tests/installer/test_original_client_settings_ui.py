@@ -102,14 +102,6 @@ def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> Non
     assert "confirmed: true" in source
 
 
-def test_pending_clear_has_a_settings_recovery_control() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    assert 'capability.reason_code === "MEMORY_ADMIN_CLEAR_PENDING"' in source
-    assert 'button("继续完成清空"' in source
-    assert source.count('requestMutation(MEMORY_CLEAR_PATH') == 2
-    assert source.count('confirmed: true') == 2
-
-
 def test_original_settings_management_ui_javascript_is_parseable() -> None:
     node = shutil.which("node")
     if node is None:

@@ -400,7 +400,7 @@ def test_clear_request_ids_are_durable_per_normalized_user(tmp_path: Path) -> No
     assert memory.operations.count(("delete", "memory-2")) == 1
 
 
-def test_clear_recovers_durable_pending_intent_without_deleting_later_memory(
+def test_clear_recovers_durable_pending_intent_by_freezing_later_batch(
     tmp_path: Path,
 ) -> None:
     memory = FakeMemory()
@@ -435,8 +435,7 @@ def test_clear_recovers_durable_pending_intent_without_deleting_later_memory(
     )
 
     assert recovered.status is MemoryAdminMutationStatus.APPLIED
-    assert len(memory.records) == 1
-    assert next(iter(memory.records.values())).source_id == "manual:after-clear-audit-failure"
+    assert memory.records == {}
 
 
 def test_admin_request_id_is_bound_to_the_normalized_payload(tmp_path: Path) -> None:

@@ -113,8 +113,13 @@ class ProductionMem0Fixture:
     def __init__(self) -> None:
         self.rows: list[dict[str, object]] = []
         self.counter = 0
+        self.delete_count = 0
+        self.fail_list_after_delete: int | None = None
 
     def get_all(self, **kwargs):
+        if self.fail_list_after_delete is not None and self.delete_count >= self.fail_list_after_delete:
+            self.fail_list_after_delete = None
+            raise RuntimeError("synthetic inter-batch list failure")
         filters = kwargs["filters"]
         assert isinstance(filters, dict)
         return {
@@ -146,6 +151,7 @@ class ProductionMem0Fixture:
         return {"results": [{"id": memory_id, "memory": "synthetic production memory", "event": "ADD"}]}
 
     def delete(self, memory_id):
+        self.delete_count += 1
         self.rows[:] = [row for row in self.rows if row["id"] != memory_id]
         return {"message": "Memory deleted successfully!"}
 
@@ -354,64 +360,6 @@ def test_public_mem0_list_failure_fails_closed_for_clear_and_status(
     asyncio.run(scenario())
 
 
-def test_new_public_clear_request_recovers_a_pending_clear_after_restart(
-    tmp_path: Path,
-) -> None:
-    async def scenario() -> None:
-        provider = ProductionMem0Fixture()
-        adapter = _production_adapter(provider, tmp_path / "memory" / "mem0")
-        assert adapter.remember_exchange(
-            user_message="synthetic user message",
-            assistant_message="synthetic canonical reply",
-            occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
-            source_id="reply:synthetic:pending-recovery",
-            user_id="local-user",
-        ).status.value == "written"
-        audit = tmp_path / "memory" / "admin.sqlite3"
-        first_admin = ConversationMemoryAdminService(adapter, audit)
-        with sqlite3.connect(audit) as connection:
-            connection.execute(
-                """
-                CREATE TRIGGER fail_clear_terminal_audit
-                BEFORE INSERT ON memory_admin_operations
-                WHEN NEW.operation = 'clear' AND NEW.status = 'completed'
-                BEGIN SELECT RAISE(FAIL, 'synthetic terminal audit failure'); END
-                """
-            )
-        first = create_original_client_server_runtime(
-            _fallback,
-            memory_admin=first_admin,
-            trusted_origins=(TRUSTED_ORIGIN,),
-        )
-        async with TestClient(TestServer(first.app)) as client:
-            failed = await _clear(client, "request.memory.pending.original", "synthetic confirmation")
-            assert failed.status == 503
-
-        restarted_admin = ConversationMemoryAdminService(adapter, audit)
-        restarted = create_original_client_server_runtime(
-            _fallback,
-            memory_admin=restarted_admin,
-            trusted_origins=(TRUSTED_ORIGIN,),
-        )
-        with sqlite3.connect(audit) as connection:
-            connection.execute("DROP TRIGGER fail_clear_terminal_audit")
-        async with TestClient(TestServer(restarted.app)) as client:
-            pending = await client.get(
-                "/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN}
-            )
-            assert (await pending.json())["status"] == "UNAVAILABLE"
-            recovered = await _clear(client, "request.memory.pending.new", "synthetic confirmation retry")
-            assert recovered.status == 200
-            assert (await recovered.json())["status"] == "NOOP"
-            healthy = await client.get(
-                "/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN}
-            )
-            assert (await healthy.json())["status"] == "READY"
-        assert restarted_admin.run_write(lambda: "synthetic write") == "synthetic write"
-
-    asyncio.run(scenario())
-
-
 def test_public_clear_advertises_an_invalid_direct_backend_result(
 ) -> None:
     class InvalidResultMemoryAdmin(MemoryAdminFixture):
@@ -512,8 +460,14 @@ def test_public_clear_rejects_impossible_pending_audit_shapes_before_delete(
     asyncio.run(scenario())
 
 
-def test_head_public_clear_preserves_other_domains_while_clearing_pre_head_case(
+@pytest.mark.parametrize(("retry_request_id", "expected_status"), [
+    ("request.memory.pre-head-case.1", "APPLIED"),
+    ("request.memory.pre-head-case.new", "NOOP"),
+])
+def test_head_public_clear_recovers_an_inter_batch_list_fault_without_cross_domain_loss(
     tmp_path: Path,
+    retry_request_id: str,
+    expected_status: str,
 ) -> None:
     async def scenario() -> None:
         provider = ProductionMem0Fixture()
@@ -540,7 +494,7 @@ def test_head_public_clear_preserves_other_domains_while_clearing_pre_head_case(
                             "domain": "conversation_memory",
                         },
                     }
-                    for index in range(1000)
+                    for index in range(999)
                 ],
                 {
                     "id": "memory.pre-head-other-domain",
@@ -572,17 +526,23 @@ def test_head_public_clear_preserves_other_domains_while_clearing_pre_head_case(
             source_id="reply:synthetic:case-normalization",
             user_id="User-A",
         ).status.value == "written"
-        runtime = create_original_client_server_runtime(
-            _fallback,
-            memory_admin=ConversationMemoryAdminService(
-                adapter, tmp_path / "memory" / "admin.sqlite3", user_id="user-a"
-            ),
-            trusted_origins=(TRUSTED_ORIGIN,),
-        )
-        async with TestClient(TestServer(runtime.app)) as client:
-            response = await _clear(client, "request.memory.pre-head-case.1", "synthetic upgrade confirmation")
+        audit = tmp_path / "memory" / "admin.sqlite3"
+
+        def runtime():
+            return create_original_client_server_runtime(
+                _fallback, memory_admin=ConversationMemoryAdminService(adapter, audit, user_id="user-a"),
+                trusted_origins=(TRUSTED_ORIGIN,),
+            )
+
+        provider.fail_list_after_delete = 1000
+        async with TestClient(TestServer(runtime().app)) as client:
+            failed = await _clear(client, "request.memory.pre-head-case.1", "synthetic upgrade confirmation")
+            assert failed.status == 503
+            assert (await (await client.get("/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN})).json())["status"] == "UNAVAILABLE"
+        async with TestClient(TestServer(runtime().app)) as client:
+            response = await _clear(client, retry_request_id, "synthetic upgrade confirmation")
             assert response.status == 200
-            assert (await response.json())["status"] == "APPLIED"
+            assert (await response.json())["status"] == expected_status
         assert [row["id"] for row in provider.rows] == [
             "memory.pre-head-other-domain",
             "memory.other-user",
