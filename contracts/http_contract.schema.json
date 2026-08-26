@@ -4,7 +4,7 @@
   "title": "B02 local HTTP contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "privacy"],
+  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "letter_detail_media", "privacy"],
   "properties": {
     "schema_version": {"const": 1},
     "contract_version": {"const": "b02.v1"},

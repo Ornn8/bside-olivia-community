@@ -12,6 +12,7 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 
 from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
@@ -34,6 +35,14 @@ _COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded775
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 _WHISPER_DISTRIBUTION = "openai-whisper"
 _WHISPER_VERSION = "20250625"
+_QUALITY_CHECKS = frozenset(
+    "cer length_ratio instruction_overlap extra_speech contiguous_omission repetition".split()
+)
+_QUALITY_REPORT_FIELDS = frozenset(
+    "passed error_code transcript cer length_ratio instruction_overlap_chars "
+    "longest_extra_insertion_chars longest_contiguous_omission_chars added_repetition checks".split()
+)
+_QUALITY_REJECTION_CODES = {"TTS_CONTENT_EMPTY", "TTS_CONTENT_MISMATCH"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,40 @@ class DeliveryAudioResult:
     sample_rate: int
     segment_count: int
     quality_report: dict[str, object] | None = None
+
+
+def _validated_quality_report(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != _QUALITY_REPORT_FIELDS:
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    checks = value["checks"]
+    if (
+        not isinstance(checks, dict)
+        or set(checks) != _QUALITY_CHECKS
+        or any(not isinstance(item, bool) for item in checks.values())
+        or not isinstance(value["passed"], bool)
+        or not isinstance(value["transcript"], str)
+        or not isinstance(value["added_repetition"], bool)
+    ):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    metrics = (value["cer"], value["length_ratio"])
+    counts = tuple(value[field] for field in (
+        "instruction_overlap_chars", "longest_extra_insertion_chars", "longest_contiguous_omission_chars"
+    ))
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(item) or item < 0 for item in metrics):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    passed = value["passed"]
+    error_code = value["error_code"]
+    if error_code is not None and not isinstance(error_code, str):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    if passed is not all(checks.values()):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    if (passed and error_code is not None) or (
+        not passed and error_code not in _QUALITY_REJECTION_CODES
+    ):
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    return dict(value)
 
 
 def delivery_tempo_factor(duration_seconds: float) -> float | None:
@@ -60,6 +103,29 @@ def validate_delivery_duration(duration_seconds: float) -> None:
 
     if not 40.0 <= float(duration_seconds) <= 50.0:
         raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
+
+
+def _normalized_instruct_text(value: str) -> str:
+    """Leave the model control token exclusively at the instruction tail."""
+
+    return value.replace("<|endofprompt|>", "").rstrip() + "<|endofprompt|>"
+
+
+def _directed_instruct_text(plan: object, *, emotion: str, speed: float, energy: float) -> str:
+    """Express optional sparse direction in CosyVoice's non-spoken channel."""
+
+    parts = [
+        "You are a helpful assistant.",
+        f"Deliver this complete reply with {emotion}.",
+        f"Keep one continuous performance at energy {energy:.2f} and pace {speed:.2f}.",
+    ]
+    breaths = tuple(getattr(plan, "breath_before_sentences", ()) or ())
+    emphasis = tuple(getattr(plan, "emphasize_sentences", ()) or ())
+    if breaths:
+        parts.append("Take a natural silent breath before sentence " + ", ".join(map(str, breaths)) + ".")
+    if emphasis:
+        parts.append("Gently emphasize sentence " + ", ".join(map(str, emphasis)) + ".")
+    return _normalized_instruct_text(" ".join(parts))
 
 
 def build_external_delivery_request(
@@ -88,7 +154,7 @@ def build_external_delivery_request(
         "fp16": bool(config.fp16),
     }
     overall_emotion = str(getattr(plan, "overall_emotion", "") or "").strip()
-    if overall_emotion:
+    if overall_emotion and getattr(plan, "profile", "") == "cosyvoice3_base_a_v1":
         try:
             short_instruction = validate_short_instruction(
                 getattr(plan, "short_instruction", "") or overall_emotion
@@ -116,6 +182,25 @@ def build_external_delivery_request(
             "max_attempts": 3,
             "seed": 200717,
             "performance_control_mode": "single_pass_llm_short_instruct",
+            "director_segment_count": len(getattr(plan, "cues", units)),
+        }
+    if overall_emotion:
+        return {
+            **common,
+            "voice_condition_mode": "instruct2_single_pass",
+            "text": spoken_text,
+            "instruct_text": _directed_instruct_text(
+                plan,
+                emotion=overall_emotion,
+                speed=max(1.02, min(1.08, speed)),
+                energy=float(getattr(plan, "energy", 0.0)),
+            ),
+            "speed": max(1.02, min(1.08, speed)),
+            "gain_db": max(-0.75, min(0.75, gain_db)),
+            "duration_target_seconds": [40.0, 50.0],
+            "max_attempts": 3,
+            "seed": 200717,
+            "performance_control_mode": "single_pass_llm_instruct",
             "director_segment_count": len(getattr(plan, "cues", units)),
         }
     return {
@@ -398,9 +483,7 @@ def render_delivery_wav(
                 report = json.loads(quality_output_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
-            if not isinstance(report, dict) or not isinstance(report.get("passed"), bool):
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-            return report
+            return _validated_quality_report(report)
 
         quality_report: dict[str, object] | None = None
         if require_quality_gate:

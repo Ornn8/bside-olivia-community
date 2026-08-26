@@ -55,8 +55,12 @@ class VoicePerformanceSegment:
 _SOURCE = "llm_tool_call"
 _CONTROL_CHANNEL = "non_spoken"
 _PROFILE = "cosyvoice3_base_a_v1"
+_MUSIC_PROFILE = "legacy_music_global_direction_v1"
 _DURATION_TARGET = (40.0, 50.0)
 _TOOL_FIELDS = frozenset({"short_instruction"})
+_MUSIC_TOOL_FIELDS = frozenset(
+    {"overall_emotion", "global_speed", "energy", "breath_before_sentences", "emphasize_sentences"}
+)
 _PERSISTED_FIELDS = frozenset({
     "reply_text",
     "overall_emotion",
@@ -70,6 +74,12 @@ _PERSISTED_FIELDS = frozenset({
     "profile",
     "duration_target_seconds",
 })
+_LEGACY_MUSIC_PERSISTED_FIELDS = _MUSIC_TOOL_FIELDS | {
+    "reply_text",
+    "source",
+    "control_channel",
+    "duration_target_seconds",
+}
 _ALLOWED_INSTRUCTION_RE = re.compile(r"[\u3400-\u9fff，。！？、；：…—]+")
 
 
@@ -148,32 +158,57 @@ class VoicePerformancePlan:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "VoicePerformancePlan":
-        fields = set(value)
-        if fields != _PERSISTED_FIELDS:
-            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-        reply_text = value["reply_text"]
-        overall_emotion = value["overall_emotion"]
-        source = value["source"]
-        channel = value["control_channel"]
-        if not all(isinstance(item, str) for item in (reply_text, overall_emotion, source, channel)):
-            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-        return cls(
-            reply_text=reply_text,
-            overall_emotion=overall_emotion,
-            global_speed=_number(value["global_speed"], minimum=1.0, maximum=1.08),
-            energy=_number(value["energy"], minimum=0.35, maximum=0.8),
-            breath_before_sentences=_sentence_marks(
-                value["breath_before_sentences"], sentence_count=len(_sentences(reply_text)), minimum=2, maximum_items=2
-            ),
-            emphasize_sentences=_sentence_marks(
-                value["emphasize_sentences"], sentence_count=len(_sentences(reply_text)), minimum=1, maximum_items=1
-            ),
-            short_instruction=validate_short_instruction(value["short_instruction"]),
-            source=source,
-            control_channel=channel,
-            profile=str(value["profile"]),
-            duration_target_seconds=_duration_target(value["duration_target_seconds"]),
+        return _persisted_plan(cls, value, profile=_PROFILE, minimum_speed=1.0)
+
+    @classmethod
+    def from_music_dict(cls, value: Mapping[str, object]) -> "VoicePerformancePlan":
+        if set(value) == _LEGACY_MUSIC_PERSISTED_FIELDS:
+            value = {**value, "short_instruction": "", "profile": _MUSIC_PROFILE}
+        return _persisted_plan(
+            cls, value, profile=_MUSIC_PROFILE, minimum_speed=1.02
         )
+
+
+def _persisted_plan(
+    cls: type[VoicePerformancePlan],
+    value: Mapping[str, object],
+    *,
+    profile: str,
+    minimum_speed: float,
+) -> VoicePerformancePlan:
+    if set(value) != _PERSISTED_FIELDS:
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    reply_text, emotion = value["reply_text"], value["overall_emotion"]
+    source, channel = value["source"], value["control_channel"]
+    if not all(isinstance(item, str) for item in (reply_text, emotion, source, channel)):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    if profile != _PROFILE and value["short_instruction"] != "":
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    sentence_count = len(_sentences(reply_text))
+    plan = cls(
+        reply_text=reply_text,
+        overall_emotion=emotion,
+        global_speed=_number(value["global_speed"], minimum=minimum_speed, maximum=1.08),
+        energy=_number(value["energy"], minimum=0.35, maximum=0.8),
+        breath_before_sentences=_sentence_marks(
+            value["breath_before_sentences"], sentence_count=sentence_count, minimum=2, maximum_items=2
+        ),
+        emphasize_sentences=_sentence_marks(
+            value["emphasize_sentences"], sentence_count=sentence_count, minimum=1, maximum_items=1
+        ),
+        short_instruction=(
+            validate_short_instruction(value["short_instruction"])
+            if profile == _PROFILE
+            else ""
+        ),
+        source=source,
+        control_channel=channel,
+        profile=str(value["profile"]),
+        duration_target_seconds=_duration_target(value["duration_target_seconds"]),
+    )
+    if plan.profile != profile:
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    return plan
 
 
 _TOOL = {
@@ -192,6 +227,32 @@ _TOOL = {
                     "maxLength": 24,
                     "pattern": "^[\\u3400-\\u9fff，。！？、；：…—]+$",
                     "description": "一条正向具体的中文表演指令，不复述正文。",
+                },
+            },
+        },
+    },
+}
+
+_MUSIC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "apply_voice_performance",
+        "description": "Direct one frozen utterance with global, non-spoken controls only.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_MUSIC_TOOL_FIELDS),
+            "properties": {
+                "overall_emotion": {"type": "string", "description": "One concise whole-utterance acting intention."},
+                "global_speed": {"type": "number", "minimum": 1.02, "maximum": 1.08},
+                "energy": {"type": "number", "minimum": 0.35, "maximum": 0.8},
+                "breath_before_sentences": {
+                    "type": "array", "maxItems": 2, "uniqueItems": True,
+                    "items": {"type": "integer", "minimum": 2},
+                },
+                "emphasize_sentences": {
+                    "type": "array", "maxItems": 1, "uniqueItems": True,
+                    "items": {"type": "integer", "minimum": 1},
                 },
             },
         },
@@ -286,11 +347,16 @@ def _validate_plan(plan: VoicePerformancePlan) -> None:
         or any(token in plan.overall_emotion for token in ("<|", "|>", "[", "]", "<", ">"))
         or plan.source != _SOURCE
         or plan.control_channel != _CONTROL_CHANNEL
-        or plan.profile != _PROFILE
+        or plan.profile not in {_PROFILE, _MUSIC_PROFILE}
     ):
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-    validate_short_instruction(plan.short_instruction)
-    _number(plan.global_speed, minimum=1.0, maximum=1.08)
+    if plan.profile == _PROFILE:
+        validate_short_instruction(plan.short_instruction)
+        _number(plan.global_speed, minimum=1.0, maximum=1.08)
+    else:
+        if plan.short_instruction:
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+        _number(plan.global_speed, minimum=1.02, maximum=1.08)
     _number(plan.energy, minimum=0.35, maximum=0.8)
     sentence_count = len(_sentences(plan.reply_text))
     if _sentence_marks(list(plan.breath_before_sentences), sentence_count=sentence_count, minimum=2, maximum_items=2) != plan.breath_before_sentences:
@@ -303,6 +369,28 @@ def _validate_plan(plan: VoicePerformancePlan) -> None:
 
 def _gain_db(energy: float) -> float:
     return max(-0.75, min(0.75, (energy - 0.5) * 1.5))
+
+
+async def _tool_arguments(
+    gateway: VoiceToolGateway,
+    messages: list[dict[str, str]],
+    tool: Mapping[str, object],
+    fields: frozenset[str],
+    request_id: str | None,
+) -> Mapping[str, Any]:
+    kwargs = {"messages": messages, "tools": [tool], "tool_choice": "required"}
+    try:
+        calls = await gateway.complete_with_tools(**kwargs, request_id=request_id)
+    except TypeError as exc:
+        if request_id is not None:
+            raise VoiceDirectionError("VOICE_DIRECTION_GATEWAY_INVALID") from exc
+        calls = await gateway.complete_with_tools(**kwargs)
+    if len(calls) != 1 or calls[0].name != "apply_voice_performance":
+        raise VoiceDirectionError("VOICE_DIRECTION_TOOL_INVALID")
+    arguments = calls[0].arguments
+    if not isinstance(arguments, Mapping) or set(arguments) != fields:
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    return arguments
 
 
 async def direct_voice_performance(
@@ -338,17 +426,9 @@ async def direct_voice_performance(
             ),
         },
     ]
-    try:
-        calls = await gateway.complete_with_tools(messages=messages, tools=[_TOOL], tool_choice="required", request_id=request_id)
-    except TypeError as exc:
-        if request_id is not None:
-            raise VoiceDirectionError("VOICE_DIRECTION_GATEWAY_INVALID") from exc
-        calls = await gateway.complete_with_tools(messages=messages, tools=[_TOOL], tool_choice="required")
-    if len(calls) != 1 or calls[0].name != "apply_voice_performance":
-        raise VoiceDirectionError("VOICE_DIRECTION_TOOL_INVALID")
-    arguments = calls[0].arguments
-    if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    arguments = await _tool_arguments(
+        gateway, messages, _TOOL, _TOOL_FIELDS, request_id
+    )
     short_instruction = validate_short_instruction(arguments["short_instruction"])
     return VoicePerformancePlan(
         reply_text=reply_text,
@@ -358,4 +438,56 @@ async def direct_voice_performance(
         breath_before_sentences=(),
         emphasize_sentences=(),
         short_instruction=short_instruction,
+    )
+
+
+async def direct_music_voice_performance(
+    reply_text: str,
+    gateway: VoiceToolGateway,
+    *,
+    request_id: str | None = None,
+) -> VoicePerformancePlan:
+    """Preserve the pre-A global director contract for the musical prelude."""
+
+    sentences = _sentences(reply_text)
+    indexed = "\n".join(f"S{index}: {text}" for index, text in enumerate(sentences, 1))
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 Olivia 普通视频回信的声音导演。正文已定稿，禁止改字、补字或复述台词。"
+                "必须调用 apply_voice_performance。只提供整篇 overall_emotion、global_speed、energy，"
+                "以及极少的句前呼吸和一句重音标记；不得输出逐段情绪、强度、速度、停顿或响度。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": "以下冻结正文仅供表演理解。不要复述正文。\n\n【完整冻结正文】\n" + reply_text + "\n\n【句子编号】\n" + indexed,
+        },
+    ]
+    arguments = await _tool_arguments(
+        gateway, messages, _MUSIC_TOOL, _MUSIC_TOOL_FIELDS, request_id
+    )
+    overall_emotion = arguments["overall_emotion"]
+    if not isinstance(overall_emotion, str):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    return VoicePerformancePlan(
+        reply_text=reply_text,
+        overall_emotion=overall_emotion,
+        global_speed=_number(arguments["global_speed"], minimum=1.02, maximum=1.08),
+        energy=_number(arguments["energy"], minimum=0.35, maximum=0.8),
+        breath_before_sentences=_sentence_marks(
+            arguments["breath_before_sentences"],
+            sentence_count=len(sentences),
+            minimum=2,
+            maximum_items=2,
+        ),
+        emphasize_sentences=_sentence_marks(
+            arguments["emphasize_sentences"],
+            sentence_count=len(sentences),
+            minimum=1,
+            maximum_items=1,
+        ),
+        short_instruction="",
+        profile=_MUSIC_PROFILE,
     )

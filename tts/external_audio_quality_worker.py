@@ -1,8 +1,4 @@
-"""Offline ASR content gate for an ordinary-reply TTS candidate.
-
-This worker runs after the CosyVoice process exits, so the two models never
-compete for GPU memory.  It deliberately has no product-package imports.
-"""
+"""Offline ASR gate run after CosyVoice exits, without product imports."""
 
 from __future__ import annotations
 
@@ -40,25 +36,13 @@ def _edit_distance(left: str, right: str) -> int:
     return previous[-1]
 
 
-def _longest_extra_insertion(expected: str, actual: str) -> int:
+def _longest_change(expected: str, actual: str, tag: str) -> int:
     matcher = difflib.SequenceMatcher(a=expected, b=actual, autojunk=False)
     return max(
         (
-            actual_end - actual_start
-            for tag, _expected_start, _expected_end, actual_start, actual_end in matcher.get_opcodes()
-            if tag == "insert"
-        ),
-        default=0,
-    )
-
-
-def _longest_contiguous_omission(expected: str, actual: str) -> int:
-    matcher = difflib.SequenceMatcher(a=expected, b=actual, autojunk=False)
-    return max(
-        (
-            expected_end - expected_start
-            for tag, expected_start, expected_end, actual_start, actual_end in matcher.get_opcodes()
-            if tag == "delete"
+            (actual_end - actual_start) if tag == "insert" else (expected_end - expected_start)
+            for operation, expected_start, expected_end, actual_start, actual_end in matcher.get_opcodes()
+            if operation == tag
         ),
         default=0,
     )
@@ -118,44 +102,32 @@ def assess_transcript(
     actual = normalize_transcript(transcript)
     forbidden = normalize_transcript(forbidden_text)
     if not expected or not actual:
-        return {
-            "passed": False,
-            "error_code": "TTS_CONTENT_EMPTY",
-            "transcript": str(transcript).strip(),
-        }
-
-    cer = _edit_distance(expected, actual) / len(expected)
-    length_ratio = len(actual) / len(expected)
-    instruction_overlap = max(
-        (
-            block.size
-            for block in difflib.SequenceMatcher(
-                a=forbidden,
-                b=actual,
-                autojunk=False,
-            ).get_matching_blocks()
-        ),
-        default=0,
-    )
-    longest_extra = _longest_extra_insertion(expected, actual)
-    longest_omission = _longest_contiguous_omission(expected, actual)
-    repeated = _has_added_repetition(expected, actual)
-    checks = {
-        "cer": cer <= max_cer,
-        "length_ratio": len(actual) == len(expected),
-        "instruction_overlap": instruction_overlap < 4,
-        "extra_speech": longest_extra == 0,
-        "contiguous_omission": longest_omission == 0,
-        "repetition": not repeated,
-    }
+        cer, length_ratio = 1.0, 0.0
+        instruction_overlap = longest_extra = 0
+        longest_omission, repeated = len(expected), False
+        checks = dict(cer=False, length_ratio=False, instruction_overlap=True,
+                      extra_speech=True, contiguous_omission=False, repetition=True)
+        error_code = "TTS_CONTENT_EMPTY"
+    else:
+        cer = _edit_distance(expected, actual) / len(expected)
+        length_ratio = len(actual) / len(expected)
+        instruction_overlap = max((block.size for block in difflib.SequenceMatcher(
+            a=forbidden, b=actual, autojunk=False
+        ).get_matching_blocks()), default=0)
+        longest_extra = _longest_change(expected, actual, "insert")
+        longest_omission = _longest_change(expected, actual, "delete")
+        repeated = _has_added_repetition(expected, actual)
+        checks = dict(cer=cer <= max_cer, length_ratio=len(actual) == len(expected),
+                      instruction_overlap=instruction_overlap < 4, extra_speech=longest_extra == 0,
+                      contiguous_omission=longest_omission == 0, repetition=not repeated)
+        error_code = None if all(checks.values()) else "TTS_CONTENT_MISMATCH"
     return {
         "passed": all(checks.values()),
-        "error_code": None if all(checks.values()) else "TTS_CONTENT_MISMATCH",
+        "error_code": error_code,
         "transcript": str(transcript).strip(),
         "cer": round(cer, 4),
         "length_ratio": round(length_ratio, 4),
-        "instruction_overlap_chars": instruction_overlap,
-        "longest_extra_insertion_chars": longest_extra,
+        "instruction_overlap_chars": instruction_overlap, "longest_extra_insertion_chars": longest_extra,
         "longest_contiguous_omission_chars": longest_omission,
         "added_repetition": repeated,
         "checks": checks,
@@ -164,8 +136,8 @@ def assess_transcript(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--request", required=True)
-    parser.add_argument("--output", required=True)
+    for option in ("--request", "--output"):
+        parser.add_argument(option, required=True)
     args = parser.parse_args(argv)
     request = json.loads(Path(args.request).read_text(encoding="utf-8"))
 
@@ -199,10 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         str(request.get("forbidden_text", "")),
         max_cer=float(request.get("max_cer", 0.18)),
     )
-    Path(args.output).write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 

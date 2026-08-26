@@ -59,6 +59,7 @@ from reply_delivery import (
 from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
+    direct_music_voice_performance,
     direct_voice_performance,
 )
 from video_reply_settings import (
@@ -725,6 +726,58 @@ async def _voice_plan_for_letter(
     letter["voice_performance_plan"] = plan.to_dict()
     _persist_media_state()
     return plan
+
+
+async def _music_voice_plan_for_letter(
+    letter: dict,
+    reply_text: str,
+) -> VoicePerformancePlan:
+    """Keep the musical prelude on its pre-A director and persistence lane."""
+
+    for key in ("music_voice_performance_plan", "voice_performance_plan"):
+        stored = letter.get(key)
+        if stored is None:
+            continue
+        try:
+            if not isinstance(stored, dict):
+                raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+            plan = VoicePerformancePlan.from_music_dict(stored)
+        except VoiceDirectionError:
+            if key == "voice_performance_plan":
+                continue
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
+        if plan.reply_text != reply_text:
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
+        if key == "voice_performance_plan":
+            letter["music_voice_performance_plan"] = plan.to_dict()
+            _persist_media_state()
+        return plan
+
+    letter_id = str(letter.get("letter_id", "")).strip()
+    if not letter_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    request_id = f"letter-reply:{letter_id}:music-voice-direction"
+    persisted_request_id = letter.get("music_voice_direction_request_id")
+    if persisted_request_id is not None and persisted_request_id != request_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    if persisted_request_id is None:
+        letter["music_voice_direction_request_id"] = request_id
+        _persist_media_state()
+    plan = await asyncio.wait_for(
+        direct_music_voice_performance(
+            reply_text,
+            letters_adapter.gateway,
+            request_id=request_id,
+        ),
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
+    if plan.reply_text != reply_text:
+        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
+    letter["music_voice_performance_plan"] = plan.to_dict()
+    _persist_media_state()
+    return plan
+
+
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
@@ -1705,6 +1758,11 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
         reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
         error_code, retryable = _public_llm_error(l.get("error_code"))
+        media_detail = contract.project_letter_detail_media(
+            l.get("media_status", "NOT_REQUESTED"),
+            l.get("media_error_code"),
+            l.get("media_retryable", False),
+        )
         return ok({
             "letter_id": l["letter_id"],
             "letter_status": l.get("letter_status", 4),
@@ -1728,9 +1786,9 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 else ReplyMode.TEXT_LETTER.value
             ),
             "triage": l.get("triage", {"status": "unavailable"}),
-            "media_status": l.get("media_status", "NOT_REQUESTED"),
-            "media_error_code": l.get("media_error_code"),
-            "media_retryable": bool(l.get("media_retryable", False)),
+            "media_status": media_detail["status"],
+            "media_error_code": media_detail["error_code"],
+            "media_retryable": media_detail["retryable"],
             "is_read": 1 if l.get("is_read") else 0,
             "replied_at": l.get("replied_at"),
             "created_at": l.get("created_at", int(time.time())),
@@ -1982,7 +2040,10 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
         output_dir = data_root / "media" if data_root.is_absolute() else None
         if output_dir is None:
-            letter["media_status"] = "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED"
+            letter["media_status"] = "UNAVAILABLE"
+            letter["media_error_code"] = "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED"
+            letter["media_retryable"] = True
+            _persist_media_state()
             return
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{letter_id}.mp4"
@@ -1990,8 +2051,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
-            voice_plan = await _voice_plan_for_letter(letter, reply_text)
             if reply_mode == "musical_video":
+                voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(_os.environ)
                 if performance_scene is None or not performance_scene.is_file():
@@ -2015,6 +2076,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     voice_performance_plan=voice_plan,
                 )
             else:
+                voice_plan = await _voice_plan_for_letter(letter, reply_text)
                 from datetime import datetime
 
                 hour = datetime.now().hour
@@ -2403,7 +2465,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
     }:
-        letter["media_status"] = "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED"
+        letter["media_status"] = "UNAVAILABLE"
+        letter["media_error_code"] = "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED"
+        letter["media_retryable"] = True
     _schedule_text_reply_delay(letter, exact_mode)
     _persist_store_state()
 

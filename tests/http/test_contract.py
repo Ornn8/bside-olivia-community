@@ -1081,6 +1081,10 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     )
 
     assert not list(Draft202012Validator(schema).iter_errors(document))
+    assert not list(Draft202012Validator(schema).iter_errors(example))
+    missing_media_contract = dict(document)
+    missing_media_contract.pop("letter_detail_media")
+    assert list(Draft202012Validator(schema).iter_errors(missing_media_contract))
 
     assert schema["properties"]["contract_version"]["const"] == "b02.v1"
     assert legacy_schema["properties"]["mode"]["const"] == "read_only"

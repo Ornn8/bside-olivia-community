@@ -494,3 +494,28 @@ def letter_detail_media_error_metadata(error_code: str) -> dict[str, Any] | None
 
     metadata = LETTER_DETAIL_MEDIA_ERROR_CODES.get(error_code)
     return deepcopy(metadata) if metadata is not None else None
+
+
+def project_letter_detail_media(
+    status: object,
+    error_code: object,
+    retryable: object,
+) -> dict[str, object]:
+    """Project internal/recovery states onto the stable public detail contract."""
+
+    raw_status = str(status or "NOT_REQUESTED")
+    raw_error = str(error_code).strip() if error_code is not None else ""
+    public_status, default_error, public_retryable = {
+        "QUEUED": ("PENDING", "", bool(retryable)),
+        "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED": ("UNAVAILABLE", "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", True),
+        "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED": ("UNAVAILABLE", "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", True),
+    }.get(raw_status, (raw_status, "", bool(retryable)))
+    if public_status not in LETTER_DETAIL_MEDIA_CONTRACT["statuses"]:
+        public_status, default_error, public_retryable = (
+            "UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", False
+        )
+    return {
+        "status": public_status,
+        "error_code": raw_error or default_error or None,
+        "retryable": public_retryable,
+    }

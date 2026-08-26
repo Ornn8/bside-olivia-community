@@ -22,12 +22,19 @@ from tts.external_audio_quality_worker import assess_transcript, normalize_trans
 from tts.delivery import (
     DeliveryAudioError,
     _fit_overlong_wav,
+    _validated_quality_report,
     build_external_delivery_request,
     delivery_configured,
     delivery_tempo_factor,
     render_delivery_wav,
 )
 from voice_direction import VoicePerformancePlan
+
+
+def _quality_report(*, passed: bool = False) -> dict[str, object]:
+    expected = "这是完整的冻结语音内容，必须原样说完。"
+    transcript = expected if passed else "这是完全不同的内容。"
+    return assess_transcript(expected, transcript, "声音柔软自然地承接")
 
 
 def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() -> None:
@@ -496,6 +503,29 @@ def test_content_gate_accepts_small_asr_substitutions_but_rejects_control_or_omi
     assert repeated["checks"]["repetition"] is False
 
 
+def test_empty_asr_report_keeps_the_complete_rejection_schema() -> None:
+    report = assess_transcript("完整冻结正文", "", "声音柔软自然地承接")
+
+    assert _validated_quality_report(report)["error_code"] == "TTS_CONTENT_EMPTY"
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"passed": True},
+        {"passed": False},
+        {**_quality_report(), "error_code": {}},
+        {**_quality_report(), "error_code": "UNKNOWN_REJECTION"},
+        {**_quality_report(passed=True), "checks": {"cer": True}},
+    ],
+)
+def test_quality_gate_rejects_incomplete_or_unknown_reports(
+    report: dict[str, object],
+) -> None:
+    with pytest.raises(DeliveryAudioError, match="TTS_CONTENT_GATE_UNAVAILABLE"):
+        _validated_quality_report(report)
+
+
 def test_external_worker_rejects_unpinned_base_llm_before_model_load(
     tmp_path,
 ) -> None:
@@ -654,7 +684,7 @@ def test_three_rejected_candidates_never_replace_existing_output(
         else:
             calls["quality"] += 1
             target.write_text(
-                json.dumps({"passed": False, "error_code": "TTS_CONTENT_MISMATCH"}),
+                json.dumps(_quality_report()),
                 encoding="utf-8",
             )
         return SimpleNamespace(returncode=0)
@@ -706,7 +736,7 @@ def test_mixed_duration_failures_do_not_fabricate_three_quality_rejections(
         else:
             calls["quality"] += 1
             target.write_text(
-                json.dumps({"passed": False, "error_code": "TTS_CONTENT_MISMATCH"}),
+                json.dumps(_quality_report()),
                 encoding="utf-8",
             )
         return SimpleNamespace(returncode=0)
