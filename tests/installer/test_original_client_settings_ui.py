@@ -16,10 +16,8 @@ from original_client_settings_ui import (
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v1"
     for declaration in (
-        'const STATUS_PATH = "/toy/companion/status";',
-        'const MEMORY_PATH = "/toy/companion/memory";',
-        'const PRIVATE_WORLD_PATH = "/toy/companion/private-world";',
-        'const CANDIDATES_PATH = "/toy/companion/private-world/candidates";',
+            'const STATUS_PATH = "/toy/companion/status";',
+            'const MEMORY_PATH = "/toy/companion/memory";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
         'const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";',
@@ -52,6 +50,21 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
 
 
+def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert 'requestJson(PRIVATE_WORLD_PATH)' not in source
+    assert 'requestJson(CANDIDATES_PATH)' not in source
+    assert "私人世界状态" in source
+    assert "原因代码" in source
+    for forbidden in (
+        "renderPrivateSummary",
+        "renderCandidateList",
+        "renderPrivateWorldPanel(\n          panels.privateWorld,\n          capabilities.private_world,",
+    ):
+        assert forbidden not in source
+
+
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     assert "textContent" in source
@@ -76,12 +89,10 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
     ):
         assert forbidden not in source
     for required in (
-        "memory_id",
-        "replacement_text",
-        "request_id",
-        "批准",
-        "拒绝",
-        "纠正",
+            "memory_id",
+            "replacement_text",
+            "request_id",
+            "纠正",
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
