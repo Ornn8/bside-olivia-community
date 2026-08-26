@@ -10,6 +10,7 @@ from original_client_companion_mutation_api import (
     CONFIRM_HEADER,
     CONFIRM_VALUE,
     CompanionMutationResult,
+    MEMORY_CLEAR_PATH,
     MEMORY_CORRECT_PATH,
     MEMORY_DELETE_PATH,
     MEMORY_PAUSE_PATH,
@@ -37,6 +38,14 @@ class RecordingBackend:
             request_id=str(kwargs["request_id"]),
             status="APPLIED",
             affected_count=1,
+        )
+
+    def clear_memory(self, **kwargs) -> CompanionMutationResult:
+        self.calls.append(("clear_memory", kwargs))
+        return CompanionMutationResult(
+            request_id=str(kwargs["request_id"]),
+            status="APPLIED",
+            affected_count=2,
         )
 
     def pause_memory(self, **kwargs) -> CompanionMutationResult:
@@ -123,6 +132,48 @@ def test_memory_correction_and_delete_delegate_exact_confirmed_requests() -> Non
                         "reason": "用户确认该事实错误。",
                     },
                 ),
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_memory_clear_requires_the_second_confirmation_and_delegates_once() -> None:
+    async def scenario() -> None:
+        client, backend, origin = await _client()
+        body = {
+            "request_id": "request.memory.clear.1",
+            "reason": "用户在原版设置中明确清空当前长期记忆。",
+            "confirmed": True,
+        }
+        try:
+            missing_second_confirmation = await client.post(
+                MEMORY_CLEAR_PATH,
+                json={**body, "confirmed": False},
+                headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert missing_second_confirmation.status == 400
+            assert (await missing_second_confirmation.json())["error_code"] == (
+                "MEMORY_CLEAR_CONFIRMATION_REQUIRED"
+            )
+
+            cleared = await client.post(
+                MEMORY_CLEAR_PATH,
+                json=body,
+                headers={"Origin": origin, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert cleared.status == 200
+            assert (await cleared.json())["affected_count"] == 2
+            assert backend.calls == [
+                (
+                    "clear_memory",
+                    {
+                        "request_id": "request.memory.clear.1",
+                        "reason": "用户在原版设置中明确清空当前长期记忆。",
+                        "confirmed": True,
+                    },
+                )
             ]
         finally:
             await client.close()

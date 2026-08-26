@@ -6,13 +6,14 @@ operations:
 
 - `/toy/companion/memory/pause`
 - `/toy/companion/memory/resume`
+- `/toy/companion/memory/clear`
 - `/toy/companion/memory/embedding/install`
 
 All use the existing `p03.original-companion-mutation.v1` envelope and require
 a loopback origin plus `X-Olivia-Companion-Action: confirmed`. Pause and resume
 are idempotent by request ID; embedding installation is single-flight per cache
-and returns `NOOP` after verified readiness. There is no clear operation in this
-contract; data deletion is a separate, independently reviewable change.
+and returns `NOOP` after verified readiness. `clear` is double-confirmed in
+Settings and records only exact Mem0 `CONVERSATION_MEMORY` IDs, never Archive or PrivateWorld.
 
 ## Explicit embedding installation
 

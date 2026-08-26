@@ -150,9 +150,12 @@ class CompanionReadStatus:
 
     def to_dict(self) -> dict[str, object]:
         paused = self.memory.reason_code == "MEMORY_ADMIN_PAUSED"
+        unavailable = self.memory.state == "unavailable"
         return {
             "schema_version": COMPANION_READ_SCHEMA,
-            "status": "PAUSED" if paused else "READY",
+            "status": (
+                "PAUSED" if paused else "UNAVAILABLE" if unavailable else "READY"
+            ),
             "capabilities": {
                 "memory": self.memory.to_dict(),
                 "private_world": self.private_world.to_dict(),

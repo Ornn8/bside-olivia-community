@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -15,11 +20,14 @@ from control_center.private_world_candidate_backend import (
     SQLiteCandidateReviewBackend,
 )
 from conversation_memory_admin import (
+    ConversationMemoryAdminError,
+    ConversationMemoryAdminService,
     MemoryAdminMutationResult,
     MemoryAdminMutationStatus,
     MemoryAdminStatus,
 )
 from conversation_memory_port import NullConversationMemoryPort
+from mem0_memory import Mem0Config, Mem0ConversationMemoryAdapter
 from original_client_companion_mutation_api import (
     CONFIRM_HEADER,
     CONFIRM_VALUE,
@@ -43,6 +51,7 @@ class MemoryAdminFixture:
     def __init__(self) -> None:
         self.corrected: list[tuple[str, str, str, str]] = []
         self.deleted: list[tuple[str, str, str]] = []
+        self.cleared: list[tuple[str, str, bool]] = []
 
     def status(self) -> MemoryAdminStatus:
         return MemoryAdminStatus("available", "fixture", True, 0, 0, 0)
@@ -83,6 +92,90 @@ class MemoryAdminFixture:
             affected_count=1,
             target_memory_id=memory_id,
         )
+
+    def clear(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool,
+    ) -> MemoryAdminMutationResult:
+        self.cleared.append((request_id, reason, confirmed))
+        return MemoryAdminMutationResult(
+            MemoryAdminMutationStatus.APPLIED,
+            request_id,
+            "clear",
+            affected_count=2,
+        )
+
+
+class ProductionMem0Fixture:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, object]] = []
+        self.counter = 0
+        self.delete_count = 0
+        self.fail_list_after_delete: int | None = None
+
+    def get_all(self, **kwargs):
+        if self.fail_list_after_delete is not None and self.delete_count >= self.fail_list_after_delete:
+            self.fail_list_after_delete = None
+            raise RuntimeError("synthetic inter-batch list failure")
+        filters = kwargs["filters"]
+        assert isinstance(filters, dict)
+        return {
+            "results": [
+                row
+                for row in self.rows
+                if row["user_id"] == filters["user_id"]
+                and row["agent_id"] == filters["agent_id"]
+                and row["metadata"]["domain"] == filters["domain"]
+                and (
+                    "source_id" not in filters
+                    or row["metadata"]["source_id"] == filters["source_id"]
+                )
+            ][: kwargs["top_k"]]
+        }
+
+    def add(self, messages, **kwargs):
+        self.counter += 1
+        memory_id = f"memory.production.{self.counter}"
+        self.rows.append(
+            {
+                "id": memory_id,
+                "memory": "synthetic production memory",
+                "user_id": kwargs["user_id"],
+                "agent_id": kwargs["agent_id"],
+                "metadata": dict(kwargs["metadata"]),
+            }
+        )
+        return {"results": [{"id": memory_id, "memory": "synthetic production memory", "event": "ADD"}]}
+
+    def delete(self, memory_id):
+        self.delete_count += 1
+        self.rows[:] = [row for row in self.rows if row["id"] != memory_id]
+        return {"message": "Memory deleted successfully!"}
+
+    def search(self, query, **kwargs):
+        del query
+        return self.get_all(**kwargs)
+
+    def delete_all(self, **kwargs):
+        raise AssertionError("domain-unscoped delete_all must not be used")
+
+
+def _production_adapter(provider, data_root: Path, *, user_id: str = "local-user"):
+    return Mem0ConversationMemoryAdapter(
+        provider, Mem0Config(enabled=True, data_root=data_root, user_id=user_id,
+                             llm_base_url="http://fixture.invalid/v1", llm_model="fixture-model"),
+    )
+
+
+async def _clear(client, request_id: str, reason: str):
+    return await client.post(
+        "/toy/companion/memory/clear",
+        json={"request_id": request_id, "reason": reason, "confirmed": True},
+        headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+    )
 
 
 class CandidateDecisionFixture:
@@ -162,6 +255,21 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
             assert deleted.status == 200
             assert (await deleted.json())["affected_count"] == 1
 
+            cleared = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.clear.1",
+                    "reason": "用户明确清空当前长期记忆。",
+                    "confirmed": True,
+                },
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    CONFIRM_HEADER: CONFIRM_VALUE,
+                },
+            )
+            assert cleared.status == 200
+            assert (await cleared.json())["affected_count"] == 2
+
             approved = await client.post(
                 "/toy/companion/private-world/candidates/candidate.fixture.1/approve",
                 json={
@@ -196,6 +304,13 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
                 "用户明确删除。",
             )
         ]
+        assert memory.cleared == [
+            (
+                "request.memory.clear.1",
+                "用户明确清空当前长期记忆。",
+                True,
+            )
+        ]
         assert candidates.requests == [
             CandidateDecisionRequest(
                 candidate_id="candidate.fixture.1",
@@ -204,6 +319,233 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
                 reason="用户明确确认。",
                 decided_at="2026-08-23T12:00:00+00:00",
             )
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_public_mem0_list_failure_fails_closed_for_clear_and_status(
+    tmp_path: Path,
+) -> None:
+    class UnavailableMem0Fixture(ProductionMem0Fixture):
+        def get_all(self, **kwargs):
+            del kwargs
+            raise RuntimeError("synthetic provider failure")
+
+    async def scenario() -> None:
+        adapter = _production_adapter(UnavailableMem0Fixture(), tmp_path / "memory" / "mem0")
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=ConversationMemoryAdminService(
+                adapter, tmp_path / "memory" / "admin.sqlite3"
+            ),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            clear = await _clear(client, "request.memory.provider-failure.1", "synthetic user confirmation")
+            assert clear.status == 503
+            assert (await clear.json())["status"] == "UNAVAILABLE"
+            status = await client.get(
+                "/toy/companion/status",
+                headers={"Origin": TRUSTED_ORIGIN},
+            )
+            assert status.status == 200
+            payload = await status.json()
+            assert payload["status"] == "UNAVAILABLE"
+            assert payload["capabilities"]["memory"] == {
+                "state": "unavailable",
+                "reason_code": "MEM0_LIST_FAILED",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_public_clear_advertises_an_invalid_direct_backend_result(
+) -> None:
+    class InvalidResultMemoryAdmin(MemoryAdminFixture):
+        def clear(self, **kwargs):
+            del kwargs
+            return object()
+
+    async def scenario() -> None:
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=InvalidResultMemoryAdmin(),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.invalid-result",
+                    "reason": "synthetic confirmation",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert response.status == 503
+            assert (await response.json())["error_code"] == "MEMORY_MUTATION_RESULT_INVALID"
+
+    asyncio.run(scenario())
+
+
+def test_public_clear_rejects_impossible_pending_audit_shapes_before_delete(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        for name, pending_rows in (
+            ("invalid", (("request.memory.pending.invalid", ("invalid memory id",), 0),)),
+            ("duplicate", (("request.memory.pending.duplicate", ("memory.pending.one", "memory.pending.one"), 0),)),
+            ("affected", (("request.memory.pending.affected", ("memory.pending.one",), 2),)),
+            (
+                "multiple",
+                (
+                    ("request.memory.pending.one", ("memory.pending.one",), 0),
+                    ("request.memory.pending.two", ("memory.pending.two",), 0),
+                ),
+            ),
+        ):
+            provider = ProductionMem0Fixture()
+            provider.rows.extend(
+                {
+                    "id": memory_id,
+                    "memory": "synthetic pending memory",
+                    "user_id": "local-user",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": f"reply:synthetic:{name}:{memory_id}",
+                        "domain": "conversation_memory",
+                    },
+                }
+                for _, memory_ids, _ in pending_rows
+                for memory_id in memory_ids
+            )
+            adapter = _production_adapter(provider, tmp_path / name / "mem0")
+            audit = tmp_path / name / "admin.sqlite3"
+            admin = ConversationMemoryAdminService(adapter, audit)
+            reason = "synthetic confirmation"
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {"operation": "clear", "payload": {"reason": reason}},
+                    ensure_ascii=True, separators=(",", ":"), sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            with sqlite3.connect(audit) as connection:
+                for request_id, memory_ids, affected_count in pending_rows:
+                    connection.execute(
+                        "INSERT INTO memory_admin_operations "
+                        "(user_id,request_id,operation,payload_fingerprint,target_memory_id,"
+                        "target_memory_ids,replacement_memory_id,replacement_source_id,status,"
+                        "affected_count,reason,created_at,updated_at) "
+                        "VALUES (?,?,'clear',?,NULL,?,NULL,NULL,'pending_clear',?,?,?,?)",
+                        (
+                            "local-user", request_id, fingerprint,
+                            json.dumps(memory_ids, separators=(",", ":")), affected_count,
+                            reason, "2026-08-26T00:00:00+00:00", "2026-08-26T00:00:00+00:00",
+                        ),
+                    )
+            runtime = create_original_client_server_runtime(
+                _fallback, memory_admin=admin, trusted_origins=(TRUSTED_ORIGIN,)
+            )
+            async with TestClient(TestServer(runtime.app)) as client:
+                response = await _clear(client, f"request.memory.{name}.retry", reason)
+                assert response.status == 503
+                assert (await response.json())["error_code"] == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+                health = await client.get("/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN})
+                assert (await health.json())["status"] == "UNAVAILABLE"
+            assert len(provider.rows) == sum(len(ids) for _, ids, _ in pending_rows)
+            with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_AUDIT_UNAVAILABLE"):
+                admin.run_write(lambda: pytest.fail("corrupt pending clear must block writes"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("retry_request_id", "expected_status"), [
+    ("request.memory.pre-head-case.1", "APPLIED"),
+    ("request.memory.pre-head-case.new", "NOOP"),
+])
+def test_head_public_clear_recovers_an_inter_batch_list_fault_without_cross_domain_loss(
+    tmp_path: Path,
+    retry_request_id: str,
+    expected_status: str,
+) -> None:
+    async def scenario() -> None:
+        provider = ProductionMem0Fixture()
+        provider.rows.extend(
+            [
+                {
+                    "id": "memory.pre-head-case",
+                    "memory": "synthetic pre-head memory",
+                    "user_id": "User-A",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "reply:synthetic:pre-head",
+                        "domain": "conversation_memory",
+                    },
+                },
+                *[
+                    {
+                        "id": f"memory.pre-head-batch.{index}",
+                        "memory": "synthetic batched memory",
+                        "user_id": "User-A",
+                        "agent_id": "linli",
+                        "metadata": {
+                            "source_id": f"reply:synthetic:batch:{index}",
+                            "domain": "conversation_memory",
+                        },
+                    }
+                    for index in range(999)
+                ],
+                {
+                    "id": "memory.pre-head-other-domain",
+                    "memory": "synthetic other domain",
+                    "user_id": "User-A",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "other:synthetic:pre-head",
+                        "domain": "other_domain",
+                    },
+                },
+                {
+                    "id": "memory.other-user",
+                    "memory": "synthetic other user",
+                    "user_id": "user-b",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "reply:synthetic:other-user",
+                        "domain": "conversation_memory",
+                    },
+                },
+            ]
+        )
+        adapter = _production_adapter(provider, tmp_path / "memory" / "mem0", user_id="User-A")
+        assert adapter.remember_exchange(
+            user_message="synthetic user message",
+            assistant_message="synthetic canonical reply",
+            occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+            source_id="reply:synthetic:case-normalization",
+            user_id="User-A",
+        ).status.value == "written"
+        audit = tmp_path / "memory" / "admin.sqlite3"
+
+        def runtime():
+            return create_original_client_server_runtime(
+                _fallback, memory_admin=ConversationMemoryAdminService(adapter, audit, user_id="user-a"),
+                trusted_origins=(TRUSTED_ORIGIN,),
+            )
+
+        provider.fail_list_after_delete = 1000
+        async with TestClient(TestServer(runtime().app)) as client:
+            failed = await _clear(client, "request.memory.pre-head-case.1", "synthetic upgrade confirmation")
+            assert failed.status == 503
+            assert (await (await client.get("/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN})).json())["status"] == "UNAVAILABLE"
+        async with TestClient(TestServer(runtime().app)) as client:
+            response = await _clear(client, retry_request_id, "synthetic upgrade confirmation")
+            assert response.status == 200
+            assert (await response.json())["status"] == expected_status
+        assert [row["id"] for row in provider.rows] == [
+            "memory.pre-head-other-domain",
+            "memory.other-user",
         ]
 
     asyncio.run(scenario())

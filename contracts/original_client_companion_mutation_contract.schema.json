@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "original_client_companion_mutation_contract.schema.json",
+  "title": "P03 original-client companion mutation route contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "routes", "error_codes", "read_states"],
+  "properties": {
+    "schema_version": {"const": "p03.original-companion-mutation-contract.v1"},
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["/toy/companion/memory/clear"],
+      "properties": {
+        "/toy/companion/memory/clear": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["methods", "confirmation", "request_fields", "success_statuses"],
+          "properties": {
+            "methods": {"const": ["POST", "OPTIONS"]},
+            "confirmation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["header", "body"],
+              "properties": {
+                "header": {"const": {"name": "X-Olivia-Companion-Action", "value": "confirmed"}},
+                "body": {"const": {"field": "confirmed", "value": true}}
+              }
+            },
+            "request_fields": {"const": ["request_id", "reason", "confirmed"]},
+            "success_statuses": {"const": ["APPLIED", "DUPLICATE", "NOOP"]}
+          }
+        }
+      }
+    },
+    "read_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statuses", "pending"],
+      "properties": {
+        "statuses": {"const": ["READY", "PAUSED", "UNAVAILABLE"]},
+        "pending": {
+          "const": {
+            "reason_code": "MEMORY_ADMIN_CLEAR_PENDING",
+            "memory_state": "unavailable",
+            "top_level_status": "UNAVAILABLE"
+          }
+        }
+      }
+    },
+    "error_codes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "COMPANION_JSON_INVALID", "COMPANION_FIELDS_INVALID",
+        "COMPANION_REQUEST_ID_INVALID", "COMPANION_REASON_INVALID",
+        "MEMORY_CLEAR_CONFIRMATION_REQUIRED", "COMPANION_HOST_FORBIDDEN",
+        "COMPANION_ORIGIN_FORBIDDEN", "COMPANION_CONFIRMATION_REQUIRED",
+        "COMPANION_REQUEST_TOO_LARGE", "COMPANION_CONTENT_TYPE_INVALID",
+        "MEMORY_ADMIN_REQUEST_CONFLICT", "COMPANION_MUTATION_UNAVAILABLE",
+        "COMPANION_MUTATION_INVALID", "MEMORY_MUTATION_DISABLED",
+        "MEMORY_ADMIN_DISABLED", "MEMORY_ADMIN_UNAVAILABLE",
+        "MEMORY_ADMIN_READ_FAILED", "MEMORY_ADMIN_CLEAR_FAILED",
+        "MEMORY_ADMIN_AUDIT_UNAVAILABLE", "MEMORY_MUTATION_RESULT_INVALID"
+      ],
+      "properties": {
+        "COMPANION_JSON_INVALID": {"const": {"http_status": 400, "status": "FAILED", "retryable": false}},
+        "COMPANION_FIELDS_INVALID": {"const": {"http_status": 400, "status": "FAILED", "retryable": false}},
+        "COMPANION_REQUEST_ID_INVALID": {"const": {"http_status": 400, "status": "FAILED", "retryable": false}},
+        "COMPANION_REASON_INVALID": {"const": {"http_status": 400, "status": "FAILED", "retryable": false}},
+        "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {"const": {"http_status": 400, "status": "FAILED", "retryable": false}},
+        "COMPANION_HOST_FORBIDDEN": {"const": {"http_status": 403, "status": "FAILED", "retryable": false}},
+        "COMPANION_ORIGIN_FORBIDDEN": {"const": {"http_status": 403, "status": "FAILED", "retryable": false}},
+        "COMPANION_CONFIRMATION_REQUIRED": {"const": {"http_status": 403, "status": "FAILED", "retryable": false}},
+        "COMPANION_REQUEST_TOO_LARGE": {"const": {"http_status": 413, "status": "FAILED", "retryable": false}},
+        "COMPANION_CONTENT_TYPE_INVALID": {"const": {"http_status": 415, "status": "FAILED", "retryable": false}},
+        "MEMORY_ADMIN_REQUEST_CONFLICT": {"const": {"http_status": 409, "status": "FAILED", "retryable": false}},
+        "COMPANION_MUTATION_UNAVAILABLE": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "COMPANION_MUTATION_INVALID": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_MUTATION_DISABLED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_DISABLED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_UNAVAILABLE": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_READ_FAILED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_CLEAR_FAILED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_MUTATION_RESULT_INVALID": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}}
+      }
+    }
+  }
+}

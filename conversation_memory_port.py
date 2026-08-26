@@ -13,6 +13,11 @@ from enum import StrEnum
 import re
 from typing import Mapping, Protocol, runtime_checkable
 
+from conversation_memory_identity import (
+    ConversationMemoryIdentityError,
+    normalize_conversation_memory_user_id,
+)
+
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _DOMAIN = "conversation_memory"
@@ -104,11 +109,14 @@ class ConversationMemoryRecord:
             "text",
             _plain_text(self.text, field_name="memory text", maximum=2000),
         )
-        object.__setattr__(
-            self,
-            "user_id",
-            _identifier(self.user_id, field_name="user_id"),
-        )
+        try:
+            object.__setattr__(
+                self,
+                "user_id",
+                normalize_conversation_memory_user_id(self.user_id),
+            )
+        except ConversationMemoryIdentityError as exc:
+            raise ConversationMemoryError("user_id is invalid") from exc
         object.__setattr__(
             self,
             "source_id",

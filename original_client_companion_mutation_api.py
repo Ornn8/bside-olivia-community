@@ -21,6 +21,7 @@ from aiohttp import web
 COMPANION_MUTATION_SCHEMA = "p03.original-companion-mutation.v1"
 MEMORY_CORRECT_PATH = "/toy/companion/memory/correct"
 MEMORY_DELETE_PATH = "/toy/companion/memory/delete"
+MEMORY_CLEAR_PATH = "/toy/companion/memory/clear"
 MEMORY_PAUSE_PATH = "/toy/companion/memory/pause"
 MEMORY_RESUME_PATH = "/toy/companion/memory/resume"
 MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install"
@@ -36,6 +37,61 @@ _BACKEND_KEY = web.AppKey("original_companion_mutation_backend", object)
 _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_mutation_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_companion_mutation_mounted", bool)
 _ALLOWED_DECISIONS = frozenset({"approve", "reject"})
+COMPANION_MUTATION_ROUTES = {
+    MEMORY_CLEAR_PATH: {
+        "methods": ("POST", "OPTIONS"),
+        "confirmation": {
+            "header": {"name": CONFIRM_HEADER, "value": CONFIRM_VALUE},
+            "body": {"field": "confirmed", "value": True},
+        },
+        "request_fields": ("request_id", "reason", "confirmed"),
+        "success_statuses": ("APPLIED", "DUPLICATE", "NOOP"),
+    },
+}
+CLEAR_MUTATION_READ_STATES = {
+    "statuses": ("READY", "PAUSED", "UNAVAILABLE"),
+    "pending": {
+        "reason_code": "MEMORY_ADMIN_CLEAR_PENDING",
+        "memory_state": "unavailable",
+        "top_level_status": "UNAVAILABLE",
+    },
+}
+CLEAR_MUTATION_ERROR_CODES = {
+    **{code: {"http_status": 400, "status": "FAILED", "retryable": False} for code in (
+        "COMPANION_JSON_INVALID", "COMPANION_FIELDS_INVALID", "COMPANION_REQUEST_ID_INVALID",
+        "COMPANION_REASON_INVALID", "MEMORY_CLEAR_CONFIRMATION_REQUIRED",
+    )},
+    **{code: {"http_status": 403, "status": "FAILED", "retryable": False} for code in (
+        "COMPANION_HOST_FORBIDDEN", "COMPANION_ORIGIN_FORBIDDEN", "COMPANION_CONFIRMATION_REQUIRED",
+    )},
+    "COMPANION_REQUEST_TOO_LARGE": {"http_status": 413, "status": "FAILED", "retryable": False},
+    "COMPANION_CONTENT_TYPE_INVALID": {"http_status": 415, "status": "FAILED", "retryable": False},
+    "MEMORY_ADMIN_REQUEST_CONFLICT": {"http_status": 409, "status": "FAILED", "retryable": False},
+    **{code: {"http_status": 503, "status": "UNAVAILABLE", "retryable": True} for code in (
+        "COMPANION_MUTATION_UNAVAILABLE", "COMPANION_MUTATION_INVALID", "MEMORY_MUTATION_DISABLED",
+        "MEMORY_ADMIN_DISABLED", "MEMORY_ADMIN_UNAVAILABLE", "MEMORY_ADMIN_READ_FAILED",
+        "MEMORY_ADMIN_CLEAR_FAILED", "MEMORY_ADMIN_AUDIT_UNAVAILABLE",
+        "MEMORY_MUTATION_RESULT_INVALID",
+    )},
+}
+# This independently mirrors public handler/backend branches; it is deliberately
+# not derived from the contract registry above.
+_CLEAR_TRANSPORT_ERROR_CODES = frozenset({
+    "COMPANION_JSON_INVALID", "COMPANION_FIELDS_INVALID", "COMPANION_REQUEST_ID_INVALID",
+    "COMPANION_REASON_INVALID", "MEMORY_CLEAR_CONFIRMATION_REQUIRED",
+    "COMPANION_HOST_FORBIDDEN", "COMPANION_ORIGIN_FORBIDDEN", "COMPANION_CONFIRMATION_REQUIRED",
+    "COMPANION_REQUEST_TOO_LARGE", "COMPANION_CONTENT_TYPE_INVALID",
+    "COMPANION_MUTATION_UNAVAILABLE", "COMPANION_MUTATION_INVALID",
+})
+_CLEAR_BACKEND_ERROR_CODES = frozenset({
+    "MEMORY_MUTATION_DISABLED", "MEMORY_ADMIN_REQUEST_CONFLICT", "MEMORY_ADMIN_DISABLED",
+    "MEMORY_ADMIN_UNAVAILABLE", "MEMORY_ADMIN_READ_FAILED", "MEMORY_ADMIN_CLEAR_FAILED",
+    "MEMORY_ADMIN_AUDIT_UNAVAILABLE", "MEMORY_MUTATION_RESULT_INVALID",
+})
+CLEAR_MUTATION_REACHABLE_ERROR_CODES = (
+    _CLEAR_TRANSPORT_ERROR_CODES | _CLEAR_BACKEND_ERROR_CODES
+)
+COMPANION_MUTATION_ERROR_CODES = CLEAR_MUTATION_ERROR_CODES
 
 
 class OriginalClientCompanionMutationError(RuntimeError):
@@ -111,6 +167,14 @@ class OriginalClientCompanionMutationBackend(Protocol):
         memory_id: str,
         request_id: str,
         reason: str,
+    ) -> CompanionMutationResult: ...
+
+    def clear_memory(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool,
     ) -> CompanionMutationResult: ...
 
     def decide_candidate(
@@ -372,6 +436,45 @@ async def _delete_memory(request: web.Request) -> web.Response:
         )
 
 
+async def _clear_memory(request: web.Request) -> web.Response:
+    origin: str | None = None
+    try:
+        origin = _authorize(request, require_confirm=True)
+        value = await _body(
+            request,
+            fields=frozenset({"request_id", "reason", "confirmed"}),
+        )
+        if value["confirmed"] is not True:
+            error = COMPANION_MUTATION_ERROR_CODES[
+                "MEMORY_CLEAR_CONFIRMATION_REQUIRED"
+            ]
+            raise OriginalClientCompanionMutationError(
+                "MEMORY_CLEAR_CONFIRMATION_REQUIRED", status=int(error["http_status"])
+            )
+        result = await asyncio.to_thread(
+            _backend(request).clear_memory,
+            request_id=_identifier(
+                value["request_id"], code="COMPANION_REQUEST_ID_INVALID", request=True
+            ),
+            reason=_text(value["reason"], maximum=500, code="COMPANION_REASON_INVALID"),
+            confirmed=True,
+        )
+        if not isinstance(result, CompanionMutationResult):
+            raise OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_INVALID", status=503
+            )
+        return web.json_response(result.to_dict(), headers=_headers(origin))
+    except OriginalClientCompanionMutationError as exc:
+        return _error(exc, origin)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return _error(
+            OriginalClientCompanionMutationError(
+                "COMPANION_MUTATION_UNAVAILABLE", status=503
+            ),
+            origin,
+        )
+
+
 async def _lifecycle_memory(request: web.Request, operation: str) -> web.Response:
     origin: str | None = None
     try:
@@ -504,6 +607,8 @@ def mount_original_client_companion_mutation_api(
     app.router.add_options(MEMORY_CORRECT_PATH, _preflight)
     app.router.add_post(MEMORY_DELETE_PATH, _delete_memory)
     app.router.add_options(MEMORY_DELETE_PATH, _preflight)
+    app.router.add_post(MEMORY_CLEAR_PATH, _clear_memory)
+    app.router.add_options(MEMORY_CLEAR_PATH, _preflight)
     for path, handler in (
         (MEMORY_PAUSE_PATH, _pause_memory),
         (MEMORY_RESUME_PATH, _resume_memory),
@@ -518,11 +623,17 @@ def mount_original_client_companion_mutation_api(
 __all__ = [
     "CANDIDATE_DECISION_PATH",
     "COMPANION_MUTATION_SCHEMA",
+    "COMPANION_MUTATION_ERROR_CODES",
+    "CLEAR_MUTATION_ERROR_CODES",
+    "CLEAR_MUTATION_READ_STATES",
+    "CLEAR_MUTATION_REACHABLE_ERROR_CODES",
+    "COMPANION_MUTATION_ROUTES",
     "CONFIRM_HEADER",
     "CONFIRM_VALUE",
     "CompanionMutationResult",
     "EmbeddingInstallMutationBackend",
     "MEMORY_CORRECT_PATH",
+    "MEMORY_CLEAR_PATH",
     "MEMORY_DELETE_PATH",
     "MEMORY_EMBEDDING_INSTALL_PATH",
     "MEMORY_PAUSE_PATH",

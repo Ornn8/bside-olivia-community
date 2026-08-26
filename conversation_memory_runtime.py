@@ -376,13 +376,20 @@ def _user_id(
     memory: ConversationMemoryPort,
     environment: Mapping[str, str],
 ) -> str:
+    from conversation_memory_identity import (
+        ConversationMemoryIdentityError,
+        normalize_conversation_memory_user_id,
+    )
+
     for value in (
         getattr(getattr(memory, "config", None), "user_id", None),
         environment.get("OLIVIA_MEMORY_USER_ID"),
         "local-user",
     ):
-        if isinstance(value, str) and re.fullmatch(r"^[A-Za-z0-9._:-]{1,128}$", value.strip()):
-            return value.strip()
+        try:
+            return normalize_conversation_memory_user_id(value)
+        except ConversationMemoryIdentityError:
+            continue
     return "local-user"
 
 

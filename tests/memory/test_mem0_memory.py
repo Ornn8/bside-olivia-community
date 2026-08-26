@@ -13,6 +13,7 @@ import time
 import tomllib
 from types import SimpleNamespace
 
+import pytest
 from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
 from conversation_memory_outbox import CanonicalMemoryOutbox
 from conversation_memory_port import (
@@ -50,11 +51,9 @@ class FakeMem0:
     @staticmethod
     def _assert_filters(filters: object) -> None:
         assert isinstance(filters, dict)
-        assert {
-            "user_id": "local-user",
-            "agent_id": "linli",
-            "domain": "conversation_memory",
-        }.items() <= filters.items()
+        assert isinstance(filters.get("user_id"), str)
+        assert filters.get("agent_id") == "linli"
+        assert filters.get("domain") == "conversation_memory"
         assert set(filters) <= {
             "user_id",
             "agent_id",
@@ -103,7 +102,10 @@ class FakeMem0:
         rows = [
             row
             for row in self.rows
-            if source_id is None or row.get("metadata", {}).get("source_id") == source_id
+            if row.get("user_id") == filters.get("user_id")
+            and row.get("agent_id") == filters.get("agent_id")
+            and row.get("metadata", {}).get("domain") == filters.get("domain")
+            and (source_id is None or row.get("metadata", {}).get("source_id") == source_id)
         ]
         return {"results": rows[: kwargs["top_k"]]}
 
@@ -169,6 +171,9 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     assert MEM0_OSS_VERSION == "2.0.18"
     config = _config(tmp_path)
     mapping = config.provider_config({"DEEPSEEK_API_KEY": "fixture-secret"})
+    assert replace(config, user_id="u" * 128).user_id == "u" * 128
+    with pytest.raises(ValueError, match="user_id is invalid"):
+        replace(config, user_id="u" * 129)
 
     assert mapping["vector_store"] == {
         "provider": "qdrant",
@@ -338,7 +343,7 @@ def test_exchange_search_export_delete_and_clear(tmp_path: Path) -> None:
         user_id="local-user",
     )
     assert adapter.clear_user(user_id="local-user") == 1
-    assert any(name == "delete_all" for name, _value in backend.calls)
+    assert not any(name == "delete_all" for name, _value in backend.calls)
 
 
 def test_manual_memory_uses_exact_infer_false(tmp_path: Path) -> None:
@@ -376,7 +381,7 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     backend.fail.clear()
     backend.fail.add("get_all")
     status = adapter.status().to_dict()
-    assert status["status"] == "degraded"
+    assert status["status"] == "unavailable"
     assert status["reason_code"] == "MEM0_LIST_FAILED"
 
 
@@ -452,8 +457,12 @@ def test_status_and_list_fail_closed_for_malformed_provider_pages(tmp_path: Path
     )
     for page in pages:
         adapter = Mem0ConversationMemoryAdapter(PageMem0(page), _config(tmp_path))
-        assert adapter.list_memories(user_id="local-user", limit=1) == ()
-        assert adapter._last_error_code == "MEM0_LIST_FAILED"
+        try:
+            adapter.list_memories(user_id="local-user", limit=1)
+        except Mem0AdapterError as exc:
+            assert exc.code == "MEM0_LIST_FAILED"
+        else:
+            raise AssertionError("malformed list page must not become an empty list")
         assert adapter.status().to_dict()["reason_code"] == "MEM0_LIST_FAILED"
 
 
@@ -537,8 +546,12 @@ def test_list_fails_closed_when_limited_page_contains_mixed_valid_and_invalid_ro
 
     adapter = Mem0ConversationMemoryAdapter(MixedRowsMem0(), _config(tmp_path))
 
-    assert adapter.list_memories(user_id="local-user", limit=1) == ()
-    assert adapter._last_error_code == "MEM0_LIST_FAILED"
+    try:
+        adapter.list_memories(user_id="local-user", limit=1)
+    except Mem0AdapterError as exc:
+        assert exc.code == "MEM0_LIST_FAILED"
+    else:
+        raise AssertionError("mixed list page must not become an empty list")
 
 
 def test_list_fails_closed_when_result_row_is_not_fully_scoped(tmp_path: Path) -> None:
@@ -558,8 +571,12 @@ def test_list_fails_closed_when_result_row_is_not_fully_scoped(tmp_path: Path) -
 
     adapter = Mem0ConversationMemoryAdapter(UnscopedRowMem0(), _config(tmp_path))
 
-    assert adapter.list_memories(user_id="local-user", limit=1) == ()
-    assert adapter._last_error_code == "MEM0_LIST_FAILED"
+    try:
+        adapter.list_memories(user_id="local-user", limit=1)
+    except Mem0AdapterError as exc:
+        assert exc.code == "MEM0_LIST_FAILED"
+    else:
+        raise AssertionError("unscoped list page must not become an empty list")
 
 
 def test_search_fails_closed_for_malformed_provider_pages(tmp_path: Path) -> None:
@@ -1503,12 +1520,9 @@ def test_clear_user_fails_closed_when_provider_acknowledgement_is_malformed(
     tmp_path: Path,
 ) -> None:
     class MalformedClearMem0(FakeMem0):
-        def delete_all(self, user_id=None, agent_id=None, run_id=None):
-            self._raise("delete_all")
-            assert user_id == "local-user"
-            assert agent_id == "linli"
-            assert run_id is None
-            self.calls.append(("delete_all", {"user_id": user_id, "agent_id": agent_id}))
+        def delete(self, memory_id):
+            self._raise("delete")
+            self.calls.append(("delete", memory_id))
             return None
 
     backend = MalformedClearMem0()
@@ -1563,6 +1577,43 @@ def test_delete_and_clear_accept_pinned_success_acknowledgements(tmp_path: Path)
     assert adapter.clear_user(user_id="local-user") == 1
     assert adapter._last_error_code is None
     assert backend.rows == []
+
+
+def test_clear_user_deletes_only_conversation_memory_ids_and_verifies_empty(
+    tmp_path: Path,
+) -> None:
+    backend = FakeMem0()
+    backend.rows.extend(
+        [
+            {
+                "id": "memory.clear-domain",
+                "memory": "synthetic conversation fact",
+                "user_id": "local-user",
+                "agent_id": "linli",
+                "metadata": {
+                    "source_id": "manual:clear-domain:1",
+                    "domain": "conversation_memory",
+                },
+            },
+            {
+                "id": "memory.other-domain",
+                "memory": "synthetic other-domain fact",
+                "user_id": "local-user",
+                "agent_id": "linli",
+                "metadata": {
+                    "source_id": "other:domain:1",
+                    "domain": "other_domain",
+                },
+            },
+        ]
+    )
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+
+    assert adapter.clear_user(user_id="local-user") == 1
+    assert [row["id"] for row in backend.rows] == ["memory.other-domain"]
+    assert [value for name, value in backend.calls if name == "delete"] == [
+        "memory.clear-domain"
+    ]
 
 
 def test_manual_add_timeout_is_bounded_and_retry_does_not_accumulate_workers(
@@ -1697,10 +1748,10 @@ def test_manual_clear_timeout_is_bounded_and_retry_does_not_accumulate_workers(
     existing_threads = set(threading.enumerate())
 
     class BlockingManualClearMem0(FakeMem0):
-        def delete_all(self, user_id=None, agent_id=None, run_id=None):
+        def delete(self, memory_id):
             entered.set()
             release.wait()
-            return super().delete_all(user_id, agent_id, run_id)
+            return super().delete(memory_id)
 
     backend = BlockingManualClearMem0()
     backend.rows.append(

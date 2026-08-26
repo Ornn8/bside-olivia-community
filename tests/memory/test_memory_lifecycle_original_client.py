@@ -344,7 +344,7 @@ def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> N
 
     restarted = ConversationMemoryAdminService(memory, audit)
     assert restarted.pause(
-        request_id="memory.pause.noop.1", reason="重试同一暂停请求。"
+        request_id="memory.pause.noop.1", reason="用户再次暂停长期记忆。"
     ).status is MemoryAdminMutationStatus.DUPLICATE
     with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
         restarted.resume(
@@ -359,7 +359,7 @@ def test_lifecycle_noops_are_persisted_as_terminal_requests(tmp_path: Path) -> N
     ).status is MemoryAdminMutationStatus.NOOP
     restarted = ConversationMemoryAdminService(memory, audit)
     assert restarted.resume(
-        request_id="memory.resume.noop.1", reason="重试同一恢复请求。"
+        request_id="memory.resume.noop.1", reason="用户再次恢复长期记忆。"
     ).status is MemoryAdminMutationStatus.DUPLICATE
 
 
@@ -428,9 +428,10 @@ def test_operation_ledger_migrates_legacy_rows_to_default_user_and_isolates_requ
     default_user = ConversationMemoryAdminService(memory, audit)
     other_user = ConversationMemoryAdminService(memory, audit, user_id="user-b")
 
-    assert default_user.pause(
-        request_id="memory.pause.shared.1", reason="重试旧本地请求。"
-    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        default_user.pause(
+            request_id="memory.pause.shared.1", reason="重试旧本地请求。"
+        )
     assert other_user.pause(
         request_id="memory.pause.shared.1", reason="另一位用户暂停长期记忆。"
     ).status is MemoryAdminMutationStatus.APPLIED
@@ -530,9 +531,10 @@ def test_operation_ledger_migration_rolls_back_copy_fault_and_retries_after_rest
         ).fetchone()[0] == "memory.pause.migration.1"
 
     restarted = ConversationMemoryAdminService(memory, audit)
-    assert restarted.pause(
-        request_id="memory.pause.migration.1", reason="重试旧本地请求。"
-    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        restarted.pause(
+            request_id="memory.pause.migration.1", reason="重试旧本地请求。"
+        )
     with sqlite3.connect(audit) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == MEMORY_ADMIN_AUDIT_SCHEMA
 
