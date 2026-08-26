@@ -569,11 +569,11 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     )
     minimax_models = [
         _write(
-            minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
+            minimax_root / "models" / "diffusion_models" / "minimax_music3_dit_int8_convrot.safetensors",
             b"unet-v1",
         ),
         _write(
-            minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+            minimax_root / "models" / "text_encoders" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
             b"text-v1",
         ),
         _write(
