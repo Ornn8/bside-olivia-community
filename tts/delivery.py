@@ -42,7 +42,6 @@ _QUALITY_REPORT_FIELDS = frozenset(
     "passed error_code transcript cer length_ratio instruction_overlap_chars "
     "longest_extra_insertion_chars longest_contiguous_omission_chars added_repetition checks".split()
 )
-_QUALITY_REJECTION_CODES = {"TTS_CONTENT_EMPTY", "TTS_CONTENT_MISMATCH"}
 
 
 @dataclass(frozen=True)
@@ -53,7 +52,7 @@ class DeliveryAudioResult:
     quality_report: dict[str, object] | None = None
 
 
-def _validated_quality_report(value: object) -> dict[str, object]:
+def _validated_quality_report(value: object, *, max_cer: float = 0.18) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _QUALITY_REPORT_FIELDS:
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     checks = value["checks"]
@@ -74,15 +73,17 @@ def _validated_quality_report(value: object) -> dict[str, object]:
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+    expected_checks = dict(cer=value["cer"] <= max_cer, length_ratio=value["length_ratio"] == 1.0,
+                           instruction_overlap=value["instruction_overlap_chars"] < 4, extra_speech=value["longest_extra_insertion_chars"] == 0,
+                           contiguous_omission=value["longest_contiguous_omission_chars"] == 0, repetition=not value["added_repetition"])
+    if checks != expected_checks:
+        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     passed = value["passed"]
     error_code = value["error_code"]
-    if error_code is not None and not isinstance(error_code, str):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     if passed is not all(checks.values()):
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    if (passed and error_code is not None) or (
-        not passed and error_code not in _QUALITY_REJECTION_CODES
-    ):
+    expected_error = None if passed else ("TTS_CONTENT_EMPTY" if not value["transcript"].strip() else "TTS_CONTENT_MISMATCH")
+    if error_code != expected_error:
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     return dict(value)
 
@@ -483,7 +484,9 @@ def render_delivery_wav(
                 report = json.loads(quality_output_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
-            return _validated_quality_report(report)
+            return _validated_quality_report(
+                report, max_cer=float(payload.get("quality_max_cer", 0.18))
+            )
 
         quality_report: dict[str, object] | None = None
         if require_quality_gate:

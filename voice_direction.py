@@ -142,19 +142,20 @@ class VoicePerformancePlan:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value = {
             "reply_text": self.reply_text,
             "overall_emotion": self.overall_emotion,
             "global_speed": self.global_speed,
             "energy": self.energy,
             "breath_before_sentences": list(self.breath_before_sentences),
             "emphasize_sentences": list(self.emphasize_sentences),
-            "short_instruction": self.short_instruction,
             "source": self.source,
             "control_channel": self.control_channel,
-            "profile": self.profile,
             "duration_target_seconds": list(self.duration_target_seconds),
         }
+        if self.profile != _MUSIC_PROFILE:
+            value.update(short_instruction=self.short_instruction, profile=self.profile)
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "VoicePerformancePlan":

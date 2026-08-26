@@ -1113,6 +1113,7 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "UNAVAILABLE",
         ],
         "error_codes": {
+            "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
                 "status": "UNAVAILABLE",
                 "retryable": True,

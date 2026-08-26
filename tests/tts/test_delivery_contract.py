@@ -52,6 +52,7 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
 
 def test_directed_delivery_error_schema_is_stable() -> None:
     assert http_contract.LETTER_DETAIL_MEDIA_ERROR_CODES == {
+        "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
         "TTS_CONTENT_GATE_UNAVAILABLE": {
             "status": "UNAVAILABLE",
             "retryable": True,
@@ -517,6 +518,7 @@ def test_empty_asr_report_keeps_the_complete_rejection_schema() -> None:
         {**_quality_report(), "error_code": {}},
         {**_quality_report(), "error_code": "UNKNOWN_REJECTION"},
         {**_quality_report(passed=True), "checks": {"cer": True}},
+        {**_quality_report(), "cer": 0.0},
     ],
 )
 def test_quality_gate_rejects_incomplete_or_unknown_reports(

@@ -62,8 +62,9 @@
         "error_codes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
+          "required": ["MEDIA_PROVIDER_UNAVAILABLE", "TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
           "properties": {
+            "MEDIA_PROVIDER_UNAVAILABLE": {"$ref": "#/$defs/media_error"},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
               "$ref": "#/$defs/media_error"
             },

@@ -101,9 +101,7 @@ def test_music_director_preserves_the_pre_a_tool_and_plan_profile() -> None:
         "emphasize_sentences",
     }
     legacy = plan.to_dict()
-    del legacy["short_instruction"]
-    del legacy["profile"]
-
+    assert "short_instruction" not in legacy and "profile" not in legacy
     assert VoicePerformancePlan.from_music_dict(legacy) == plan
     with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_INVALID"):
         VoicePerformancePlan.from_dict(plan.to_dict())

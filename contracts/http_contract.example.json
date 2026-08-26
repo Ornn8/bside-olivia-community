@@ -77,6 +77,7 @@
       "UNAVAILABLE"
     ],
     "error_codes": {
+      "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
       "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",
         "retryable": true

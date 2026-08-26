@@ -113,6 +113,7 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     [
         ("TTS_CONTENT_GATE_REJECTED", "FAILED", False),
         ("TTS_CONTENT_GATE_UNAVAILABLE", "UNAVAILABLE", True),
+        (r"D:\private\voice.wav", "UNAVAILABLE", True),
     ],
 )
 def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
@@ -174,7 +175,7 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
     )["data"]
 
     assert detail["media_status"] == expected_status
-    assert detail["media_error_code"] == error_code
+    assert detail["media_error_code"] == (error_code if error_code.startswith("TTS_") else "MEDIA_PROVIDER_UNAVAILABLE")
     assert detail["media_retryable"] is expected_retryable
 
 
@@ -182,8 +183,9 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
     ("stored_status", "expected"),
     [
         ("QUEUED", ("PENDING", None, False)),
-        ("UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", ("UNAVAILABLE", "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", True)),
-        ("UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", ("UNAVAILABLE", "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", True)),
+        ("UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
+        ("UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
+        ("INTERNAL_CRASH", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
     ],
 )
 def test_public_detail_projects_every_legacy_internal_media_status(
@@ -199,6 +201,7 @@ def test_public_detail_projects_every_legacy_internal_media_status(
             "reply_text": "synthetic",
             "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
             "media_status": stored_status,
+            "media_error_code": r"D:\private\voice.wav" if stored_status == "INTERNAL_CRASH" else None,
             "reply_not_before": 0.0,
         }
     ]
@@ -308,11 +311,10 @@ def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
     assert received == {"spoken_video": plan, "musical_video": music_plan}
     assert directed_requests == [
         "letter-reply:spoken-entry:voice-direction",
-        "letter-reply:musical-entry:music-voice-direction",
+        "letter-reply:musical-entry:voice-direction",
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
-    assert "voice_performance_plan" not in letters[1]
-    assert letters[1]["music_voice_performance_plan"] == music_plan.to_dict()
+    assert letters[1]["voice_performance_plan"] == music_plan.to_dict()
 
 
 def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypatch):

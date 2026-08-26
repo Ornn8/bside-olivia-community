@@ -734,34 +734,27 @@ async def _music_voice_plan_for_letter(
 ) -> VoicePerformancePlan:
     """Keep the musical prelude on its pre-A director and persistence lane."""
 
-    for key in ("music_voice_performance_plan", "voice_performance_plan"):
-        stored = letter.get(key)
-        if stored is None:
-            continue
+    stored = letter.get("voice_performance_plan")
+    if stored is not None:
         try:
             if not isinstance(stored, dict):
                 raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
             plan = VoicePerformancePlan.from_music_dict(stored)
         except VoiceDirectionError:
-            if key == "voice_performance_plan":
-                continue
             raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
         if plan.reply_text != reply_text:
             raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        if key == "voice_performance_plan":
-            letter["music_voice_performance_plan"] = plan.to_dict()
-            _persist_media_state()
         return plan
 
     letter_id = str(letter.get("letter_id", "")).strip()
     if not letter_id:
         raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    request_id = f"letter-reply:{letter_id}:music-voice-direction"
-    persisted_request_id = letter.get("music_voice_direction_request_id")
+    request_id = f"letter-reply:{letter_id}:voice-direction"
+    persisted_request_id = letter.get("voice_direction_request_id")
     if persisted_request_id is not None and persisted_request_id != request_id:
         raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
     if persisted_request_id is None:
-        letter["music_voice_direction_request_id"] = request_id
+        letter["voice_direction_request_id"] = request_id
         _persist_media_state()
     plan = await asyncio.wait_for(
         direct_music_voice_performance(
@@ -773,7 +766,7 @@ async def _music_voice_plan_for_letter(
     )
     if plan.reply_text != reply_text:
         raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
-    letter["music_voice_performance_plan"] = plan.to_dict()
+    letter["voice_performance_plan"] = plan.to_dict()
     _persist_media_state()
     return plan
 
@@ -2041,7 +2034,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_dir = data_root / "media" if data_root.is_absolute() else None
         if output_dir is None:
             letter["media_status"] = "UNAVAILABLE"
-            letter["media_error_code"] = "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED"
+            letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
             letter["media_retryable"] = True
             _persist_media_state()
             return
@@ -2112,7 +2105,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             ValueError,
             OSError,
         ) as exc:
-            error_code = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
+            candidate = str(exc)[:80]
+            error_contract = contract.letter_detail_media_error_metadata(candidate)
+            error_code = candidate if error_contract is not None else "MEDIA_PROVIDER_UNAVAILABLE"
             error_contract = contract.letter_detail_media_error_metadata(error_code)
             letter["media_status"] = (
                 str(error_contract["status"])
@@ -2466,7 +2461,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.MUSICAL_VIDEO.value,
     }:
         letter["media_status"] = "UNAVAILABLE"
-        letter["media_error_code"] = "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED"
+        letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
         letter["media_retryable"] = True
     _schedule_text_reply_delay(letter, exact_mode)
     _persist_store_state()

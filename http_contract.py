@@ -69,11 +69,13 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "TTS_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "TTS_CONTENT_GATE_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "TTS_CONTENT_GATE_REJECTED": {"http_status": 200, "retryable": False},
+    "MEDIA_PROVIDER_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "LIVE_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ROUTE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
 }
 
 LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
     "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",
         "retryable": True,
@@ -503,19 +505,19 @@ def project_letter_detail_media(
 ) -> dict[str, object]:
     """Project internal/recovery states onto the stable public detail contract."""
 
+    del retryable
     raw_status = str(status or "NOT_REQUESTED")
     raw_error = str(error_code).strip() if error_code is not None else ""
-    public_status, default_error, public_retryable = {
-        "QUEUED": ("PENDING", "", bool(retryable)),
-        "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED": ("UNAVAILABLE", "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", True),
-        "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED": ("UNAVAILABLE", "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", True),
-    }.get(raw_status, (raw_status, "", bool(retryable)))
-    if public_status not in LETTER_DETAIL_MEDIA_CONTRACT["statuses"]:
-        public_status, default_error, public_retryable = (
-            "UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", False
-        )
+    metadata = letter_detail_media_error_metadata(raw_error)
+    if metadata is not None:
+        return {"status": metadata["status"], "error_code": raw_error,
+                "retryable": metadata["retryable"]}
+    public_status = "PENDING" if raw_status == "QUEUED" else raw_status
+    if not raw_error and public_status in {"NOT_REQUESTED", "PENDING", "PROCESSING", "COMPLETED"}:
+        return {"status": public_status, "error_code": None, "retryable": False}
+    fallback = LETTER_DETAIL_MEDIA_ERROR_CODES["MEDIA_PROVIDER_UNAVAILABLE"]
     return {
-        "status": public_status,
-        "error_code": raw_error or default_error or None,
-        "retryable": public_retryable,
+        "status": fallback["status"],
+        "error_code": "MEDIA_PROVIDER_UNAVAILABLE",
+        "retryable": fallback["retryable"],
     }
