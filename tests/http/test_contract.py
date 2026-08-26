@@ -1172,6 +1172,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
             "music_duration.py",
             "music_renderer.py",
             "music_reply.py",
+            "minimax_profile.py",
             "patch_feapp.py",
             "pyproject.toml",
             "reply_delivery.py",
@@ -1186,6 +1187,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
             "requirements-ci.txt",
             "tools/Install-ThirdParty.ps1",
             "tools/minimax_music3_worker.py",
+            "tools/minimax_profile.py",
             "tools/verify_b02_scope.py",
             "tts/delivery.py",
         }

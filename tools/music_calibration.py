@@ -10,7 +10,7 @@ from pathlib import Path
 import secrets
 from typing import Iterable, Sequence
 
-from minimax_profile import (
+from tools.minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     MiniMaxInferenceProfile,
     OFFICIAL_COMFY_MINIMAX_PROFILE,

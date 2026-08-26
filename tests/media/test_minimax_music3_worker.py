@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from music_reply import MiniMaxMusic3Worker
-from minimax_profile import (
+from tools.minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     MINIMAX_INFERENCE_PROFILE_SCHEMA_VERSION,
     MiniMaxInferenceProfile,
