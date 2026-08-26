@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tools import music_calibration
-from minimax_profile import (
+from tools.minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     OFFICIAL_COMFY_MINIMAX_PROFILE,
 )
