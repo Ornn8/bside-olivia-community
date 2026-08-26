@@ -1095,7 +1095,7 @@ def test_extract_player_rejects_zip_slip_and_outside_output_root(tmp_path: Path)
     import zipfile
 
     import pytest
-    import extract_player
+    from tools import extract_player
 
     archive = tmp_path / "malicious.zip"
     with zipfile.ZipFile(archive, "w") as package:

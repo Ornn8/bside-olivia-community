@@ -18,7 +18,7 @@
 | `local_server.py` | 仅原型 | HTTP 路由和可配置 LLM 适配存在；运行时代码中的官方转发路径已移除，包含官方 host、token 日志读取、官方请求/轮询/下载的标记均未命中；没有 WS/ASR/TTS/Live。 |
 | `memory.py` | 仅原型 | 明确标为 legacy；默认 `persist=False`，支持清空；Mem0 未接入。 |
 | `patch_feapp.py` | 仅原型 | 只接受显式本地 WS，已移除 API 注入参数；输入/备份 hash、临时目录、原子替换和失败回滚只在合成压缩包测试。 |
-| `extract_player.py` | 仅原型 | zip-slip 和输出根约束存在；只在临时恶意 zip 测试，未处理真实资产。 |
+| `tools/extract_player.py` | 仅原型 | zip-slip 和输出根约束存在；只在临时恶意 zip 测试，未处理真实资产。 |
 | `tests/test_baseline_hardening.py` | 已存在 | 25 项本批回归测试，覆盖实际 handler HTTP 状态、CORS、未实现音乐写操作、MIDI 终态、超时/事件循环、日志隐私、ignore、patch、zip-slip 和人格 fallback。 |
 | `linli_character/system_prompt.md` | 仅原型 | 明确 `DRAFT`、未完成公开资料蒸馏、不得作为最终官方人格。 |
 | `llm_config.example.json` | 已存在 | 只含安全模板，不含真实 provider 值或官方采集开关。 |

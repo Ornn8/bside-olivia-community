@@ -37,7 +37,6 @@ py-modules = [
     "conversation_memory_outbox",
     "conversation_memory_port",
     "conversation_memory_runtime",
-    "extract_player",
     "http_contract",
     "letter_status",
     "letter_triage",
