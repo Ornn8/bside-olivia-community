@@ -25,9 +25,7 @@ class _FakeVoiceDirector:
 
 def _valid_direction() -> dict[str, object]:
     return {
-        "overall_emotion": "克制而温暖的陪伴感",
         "short_instruction": "声音柔软自然地承接，再缓缓托起给到力量",
-        "energy": 0.55,
     }
 
 
@@ -53,20 +51,14 @@ def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> 
     assert "合成来信正文" in request["messages"][1]["content"]
     assert reply in request["messages"][1]["content"]
     properties = request["tools"][0]["function"]["parameters"]["properties"]
-    assert set(properties) == {
-        "overall_emotion",
-        "short_instruction",
-        "energy",
-    }
+    assert set(properties) == {"short_instruction"}
+    assert plan.overall_emotion == plan.short_instruction
+    assert plan.energy == 0.55
 
 
-@pytest.mark.parametrize(
-    "missing",
-    ["overall_emotion", "short_instruction", "energy"],
-)
-def test_director_rejects_tool_calls_missing_required_controls(missing: str) -> None:
+def test_director_rejects_tool_calls_missing_required_controls() -> None:
     arguments = _valid_direction()
-    del arguments[missing]
+    del arguments["short_instruction"]
 
     with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_INVALID"):
         asyncio.run(direct_voice_performance("第一句。第二句。", _FakeVoiceDirector(arguments)))

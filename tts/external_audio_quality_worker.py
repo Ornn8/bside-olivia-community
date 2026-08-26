@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import re
 import wave
 from pathlib import Path
+
+
+_WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 
 
 def normalize_transcript(text: str) -> str:
@@ -42,7 +46,7 @@ def _longest_extra_insertion(expected: str, actual: str) -> int:
         (
             actual_end - actual_start
             for tag, _expected_start, _expected_end, actual_start, actual_end in matcher.get_opcodes()
-            if tag in {"insert", "replace"}
+            if tag == "insert"
         ),
         default=0,
     )
@@ -54,13 +58,13 @@ def _longest_contiguous_omission(expected: str, actual: str) -> int:
         (
             expected_end - expected_start
             for tag, expected_start, expected_end, actual_start, actual_end in matcher.get_opcodes()
-            if tag in {"delete", "replace"}
+            if tag == "delete"
         ),
         default=0,
     )
 
 
-def _has_added_repetition(expected: str, actual: str, width: int = 8) -> bool:
+def _has_added_repetition(expected: str, actual: str, width: int = 2) -> bool:
     if len(actual) < width * 2:
         return False
     for start in range(len(actual) - width + 1):
@@ -68,6 +72,14 @@ def _has_added_repetition(expected: str, actual: str, width: int = 8) -> bool:
         if actual.count(phrase) > max(1, expected.count(phrase)):
             return True
     return False
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _read_pcm16_for_whisper(path: Path):
@@ -130,10 +142,10 @@ def assess_transcript(
     repeated = _has_added_repetition(expected, actual)
     checks = {
         "cer": cer <= max_cer,
-        "length_ratio": 0.80 <= length_ratio <= 1.18,
-        "instruction_overlap": instruction_overlap < 6,
-        "extra_speech": longest_extra < 8,
-        "contiguous_omission": longest_omission < 12,
+        "length_ratio": len(actual) == len(expected),
+        "instruction_overlap": instruction_overlap < 4,
+        "extra_speech": longest_extra == 0,
+        "contiguous_omission": longest_omission == 0,
         "repetition": not repeated,
     }
     return {
@@ -162,8 +174,11 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("only the pinned Whisper base gate is supported")
     cache_value = str(request.get("cache_root", "") or "").strip()
     cache_root = Path(cache_value) if cache_value else Path.home() / ".cache" / "whisper"
-    if not (cache_root / "base.pt").is_file():
+    checkpoint = cache_root / "base.pt"
+    if not checkpoint.is_file():
         raise RuntimeError("offline Whisper base checkpoint unavailable")
+    if _sha256(checkpoint) != _WHISPER_BASE_SHA256:
+        raise RuntimeError("offline Whisper base checkpoint hash mismatch")
 
     import torch
     import whisper

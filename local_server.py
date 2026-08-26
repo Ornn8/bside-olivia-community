@@ -1459,6 +1459,8 @@ def _letter_list_payload(scope: str) -> dict:
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
     if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
         return "REPLY_QUALITY_BLOCKED", False
+    if code == "LLM_REPLY_LENGTH_INVALID":
+        return "LLM_REPLY_LENGTH_INVALID", False
     if code in {"LLM_TIMEOUT", "PROVIDER_TIMEOUT"}:
         return "LLM_TIMEOUT", True
     if code == "LLM_INTERRUPTED":
@@ -2402,8 +2404,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         )
         if (
             result.state is ReplyState.COMPLETED
-            and exact_mode
-            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+            and exact_mode == ReplyMode.SPOKEN_VIDEO.value
             and not ordinary_video_reply_length_ok(result.text)
         ):
             result = await _run_reply_pipeline_for_letter(
@@ -2444,8 +2445,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _safe_log("letter_failed", error_code=public_code)
         return False
     if (
-        exact_mode
-        in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+        exact_mode == ReplyMode.SPOKEN_VIDEO.value
         and not ordinary_video_reply_length_ok(result.text)
     ):
         letter["letter_status"] = "FAILED"

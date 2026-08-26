@@ -299,6 +299,20 @@ class FakeTriageService:
         return FakeTriage()
 
 
+def test_reply_length_error_is_terminal_and_not_provider_unavailable() -> None:
+    import http_contract
+    import local_server
+
+    assert local_server._public_llm_error("LLM_REPLY_LENGTH_INVALID") == (
+        "LLM_REPLY_LENGTH_INVALID",
+        False,
+    )
+    assert http_contract.ERROR_CODES["LLM_REPLY_LENGTH_INVALID"] == {
+        "http_status": 503,
+        "retryable": False,
+    }
+
+
 class FakePipeline:
     def __init__(self, result: PipelineResult) -> None:
         self.result = result

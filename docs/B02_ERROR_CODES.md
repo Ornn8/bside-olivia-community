@@ -32,6 +32,7 @@
 | 503 | `VIDEO_REPLY_SETTING_UNAVAILABLE` | UNAVAILABLE | 是 | 设置 state root、持久化读取或原子写入不可用；服务端 fail-closed |
 | 410 | `LETTER_SUPERSEDED` | SUPERSEDED | 否 | 失败副本已由成功重试替代；仅返回替代信件 ID |
 | 200 detail | `LLM_PROVIDER_REJECTED` / `LLM_PROTOCOL_ERROR` | FAILED | 否 | 上游非重试 4xx、坏 JSON 或空响应；不回显 provider body |
+| 200 detail | `LLM_REPLY_LENGTH_INVALID` | FAILED | 否 | 普通说话视频正文经一次独立修复后仍不在 180–200 个紧凑字符内；不得伪装成 provider 不可用 |
 
 ## P03 clear mutation registry
 

@@ -11,6 +11,18 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+DIRECTED_DELIVERY_ERROR_CODES: Mapping[str, Mapping[str, object]] = {
+    "TTS_CONTENT_GATE_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
+    "TTS_CONTENT_GATE_REJECTED": {
+        "status": "FAILED",
+        "retryable": False,
+    },
+}
+
+
 class TTSError(RuntimeError):
     """Sanitized, machine-readable TTS failure."""
 

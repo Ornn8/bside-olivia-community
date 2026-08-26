@@ -93,3 +93,19 @@ Real profile lifecycle evidence covered `doctor` (`HEALTHY`), `disable`, disable
 - B02, B04, B06, P01, and B10A scope scanners: all PASS with B06 composition enabled. Clean-state simulation PASS; unrelated dirty-path simulation FAIL; forced B06 failure propagates FAIL to P01 and B10A.
 
 No model weights, reference audio, generated media, credentials, or absolute private asset paths are included in this note.
+
+## Directed ordinary-reply quality boundary
+
+The accepted A profile renders one frozen ordinary spoken-video reply in one
+CosyVoice `inference_instruct2` call. The LLM tool emits only one positive
+12–24 Chinese-character non-spoken instruction; pace is fixed at `1.0` and the
+worker verifies the pinned base `llm.pt` SHA-256 before model load.
+
+Up to three seeds may be attempted. A duration-valid candidate is published
+only after the offline pinned Whisper `base` checkpoint passes its own SHA-256
+check and ASR rejects instruction contamination, any detected insertion or
+omission, added repetition, or excessive substitutions. Missing runtime,
+checkpoint, invalid report, timeout, or subprocess failure is
+`TTS_CONTENT_GATE_UNAVAILABLE`; three duration-valid ASR rejections end as
+`TTS_CONTENT_GATE_REJECTED`. Candidate files remain temporary and are never
+atomically moved onto the destination until every gate passes.

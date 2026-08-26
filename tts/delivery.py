@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
 import wave
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
@@ -22,6 +24,8 @@ class DeliveryAudioError(RuntimeError):
 
 
 _END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+_COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970"
+_WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 
 
 @dataclass(frozen=True)
@@ -188,16 +192,93 @@ def _fit_overlong_wav(path: Path, duration_seconds: float) -> tuple[int, int]:
     return sample_rate, frame_count
 
 
-def delivery_configured(config: TTSConfig) -> bool:
+@lru_cache(maxsize=16)
+def _pinned_file_matches(
+    path_text: str,
+    size: int,
+    modified_ns: int,
+    expected_sha256: str,
+) -> bool:
+    del size, modified_ns
+    digest = hashlib.sha256()
+    try:
+        with Path(path_text).open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return False
+    return digest.hexdigest() == expected_sha256
+
+
+def _verified_file(path: Path, expected_sha256: str) -> bool:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    return _pinned_file_matches(
+        str(path.resolve()),
+        stat.st_size,
+        stat.st_mtime_ns,
+        expected_sha256,
+    )
+
+
+@lru_cache(maxsize=8)
+def _quality_runtime_available(
+    executable_text: str,
+    size: int,
+    modified_ns: int,
+) -> bool:
+    del size, modified_ns
+    try:
+        completed = subprocess.run(
+            [executable_text, "-I", "-c", "import torch, whisper"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def delivery_configured(
+    config: TTSConfig,
+    *,
+    require_quality_gate: bool = False,
+) -> bool:
     """Read-only closure check shared by delivery preflight and rendering."""
 
-    return all((
-        Path(str(config.provider_options.get("external_python", "") or "")).is_file(),
+    options = config.provider_options or {}
+    executable = Path(str(options.get("external_python", "") or ""))
+    model_checkpoint = Path(config.model_dir) / "llm.pt"
+    base_checks = all((
+        executable.is_file(),
         Path(__file__).with_name("external_cosyvoice_worker.py").is_file(),
         Path(__file__).with_name("external_audio_quality_worker.py").is_file(),
         Path(config.runtime_root).is_dir(),
         Path(config.model_dir).is_dir(),
         Path(config.reference_audio).is_file(),
+        _verified_file(model_checkpoint, _COSYVOICE_BASE_LLM_SHA256),
+    ))
+    if not base_checks or not require_quality_gate:
+        return base_checks
+    cache_value = str(options.get("quality_gate_cache_root", "") or "").strip()
+    cache_root = Path(cache_value) if cache_value else Path.home() / ".cache" / "whisper"
+    checkpoint = cache_root / "base.pt"
+    try:
+        executable_stat = executable.stat()
+    except OSError:
+        return False
+    return all((
+        _verified_file(checkpoint, _WHISPER_BASE_SHA256),
+        _quality_runtime_available(
+            str(executable.resolve()),
+            executable_stat.st_size,
+            executable_stat.st_mtime_ns,
+        ),
     ))
 
 
@@ -210,7 +291,11 @@ def render_delivery_wav(
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""
 
-    if not delivery_configured(config) or not plan.cues:
+    if not plan.cues:
+        raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
+    request = build_external_delivery_request(config, plan)
+    require_quality_gate = request.get("voice_condition_mode") == "instruct2_single_pass"
+    if not delivery_configured(config, require_quality_gate=require_quality_gate):
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     executable = Path(str(config.provider_options.get("external_python", "") or ""))
     worker = Path(__file__).with_name("external_cosyvoice_worker.py")
@@ -226,7 +311,6 @@ def render_delivery_wav(
     quality_output_path = work / "quality-result.json"
     temporary_output = work / "speech.wav"
     try:
-        request = build_external_delivery_request(config, plan)
         environment = dict(os.environ)
         environment.update(
             {

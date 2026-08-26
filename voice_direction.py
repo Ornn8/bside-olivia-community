@@ -55,23 +55,20 @@ _SOURCE = "llm_tool_call"
 _CONTROL_CHANNEL = "non_spoken"
 _PROFILE = "cosyvoice3_base_a_v1"
 _DURATION_TARGET = (40.0, 50.0)
-_TOOL_FIELDS = frozenset(
-    {
-        "overall_emotion",
-        "short_instruction",
-        "energy",
-    }
-)
-_PERSISTED_FIELDS = _TOOL_FIELDS | {
+_TOOL_FIELDS = frozenset({"short_instruction"})
+_PERSISTED_FIELDS = frozenset({
     "reply_text",
+    "overall_emotion",
     "global_speed",
+    "energy",
     "breath_before_sentences",
     "emphasize_sentences",
+    "short_instruction",
     "source",
     "control_channel",
     "profile",
     "duration_target_seconds",
-}
+})
 _LEGACY_PERSISTED_FIELDS = _PERSISTED_FIELDS - {"short_instruction", "profile"}
 
 
@@ -193,14 +190,12 @@ _TOOL = {
             "additionalProperties": False,
             "required": sorted(_TOOL_FIELDS),
             "properties": {
-                "overall_emotion": {"type": "string", "description": "One concise whole-utterance acting intention."},
                 "short_instruction": {
                     "type": "string",
                     "minLength": 12,
                     "maxLength": 24,
                     "description": "一条正向具体的中文表演指令，不复述正文。",
                 },
-                "energy": {"type": "number", "minimum": 0.35, "maximum": 0.8},
             },
         },
     },
@@ -334,15 +329,12 @@ async def direct_voice_performance(
     arguments = calls[0].arguments
     if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-    overall_emotion = arguments["overall_emotion"]
-    if not isinstance(overall_emotion, str):
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
     short_instruction = str(arguments["short_instruction"]).strip().rstrip("。")
     return VoicePerformancePlan(
         reply_text=reply_text,
-        overall_emotion=overall_emotion,
+        overall_emotion=short_instruction,
         global_speed=1.0,
-        energy=_number(arguments["energy"], minimum=0.35, maximum=0.8),
+        energy=0.55,
         breath_before_sentences=(),
         emphasize_sentences=(),
         short_instruction=short_instruction,

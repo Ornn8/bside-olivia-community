@@ -46,6 +46,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "LLM_INTERRUPTED": {"http_status": 503, "retryable": True},
     "LLM_PROVIDER_REJECTED": {"http_status": 503, "retryable": False},
     "LLM_PROTOCOL_ERROR": {"http_status": 503, "retryable": False},
+    "LLM_REPLY_LENGTH_INVALID": {"http_status": 503, "retryable": False},
     "LETTER_RESEND_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "LETTER_SHARE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "PREFERENCE_SURVEY_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
