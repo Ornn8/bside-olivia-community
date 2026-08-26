@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,32 @@ def test_install_plan_is_offline_and_records_fixed_transfer_closure() -> None:
     assert plan["provenance"]["replacement_boundary"]
 
 
+def test_install_plan_accepts_any_local_drive_for_external_roots() -> None:
+    config = AsrConfig(
+        runtime_root=Path("C:/bside/asr/runtime"),
+        model_root=Path("E:/bside/asr/models"),
+        cache_root=Path("C:/bside/asr/cache"),
+    )
+
+    assert install_plan(config)["paths_are_external"] is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/transfer/../asr"),
+        Path("C:transfer"),
+        Path("relative/transfer"),
+        Path("https://example.invalid/transfer"),
+        Path("//server/share/transfer"),
+    ),
+)
+def test_install_plan_rejects_unsafe_transfer_root(value: Path) -> None:
+    with pytest.raises(AsrError, match="absolute local Windows path"):
+        install_plan(AsrConfig(), transfer_root=value)
+
+
 def test_apply_requires_explicit_offline_transfer_root(tmp_path: Path) -> None:
     config = AsrConfig(provider="nemotron-speech-cpp").with_test_paths(tmp_path)
 
@@ -59,6 +86,22 @@ def test_uninstall_plan_does_not_delete_without_apply(tmp_path: Path) -> None:
     assert plan["deleted"] == []
 
 
+def test_uninstall_removes_only_trusted_manifest_and_preserves_external_content(tmp_path: Path) -> None:
+    config = AsrConfig(provider="nemotron-speech-cpp").with_test_paths(tmp_path)
+    for root in (config.runtime_root, config.model_root, config.cache_root):
+        root.mkdir(parents=True)
+    preserved = config.runtime_root / "nemo-speech.exe"
+    preserved.write_bytes(b"external-runtime")
+    manifest_path = config.runtime_root / ".b05-install.json"
+    manifest_path.write_text(json.dumps({"owner": "b05-streaming-asr"}), encoding="utf-8")
+
+    removed = uninstall(config, apply=True)
+
+    assert removed["deleted"] == [str(manifest_path)]
+    assert preserved.is_file()
+    assert all(root.is_dir() for root in (config.runtime_root, config.model_root, config.cache_root))
+
+
 def test_install_and_uninstall_apply_roundtrip_removes_only_owned_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -83,11 +126,8 @@ def test_install_and_uninstall_apply_roundtrip_removes_only_owned_roots(
 
     removed = uninstall(config, apply=True)
     assert removed["mode"] == "applied"
-    assert set(removed["deleted"]) == {
-        str(config.runtime_root),
-        str(config.model_root),
-        str(config.cache_root),
-    }
-    assert not config.runtime_root.exists()
-    assert not config.model_root.exists()
-    assert not config.cache_root.exists()
+    assert removed["deleted"] == [str(config.runtime_root / ".b05-install.json")]
+    assert runtime_executable.is_file()
+    assert config.runtime_root.is_dir()
+    assert config.model_root.is_dir()
+    assert config.cache_root.is_dir()
