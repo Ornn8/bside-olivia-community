@@ -38,7 +38,7 @@ rtk python tools/visual_baseline.py candidates --manifest .evidence/b01b/run/pri
 
 rtk python tools/visual_baseline.py extract-batch --manifest .evidence/b01b/run/private-manifest.json --root game=<local-root> --root olivia=<local-root> --root unpacked=<local-root> --root player=<local-root> --shot day=asset_<id>@0.0 --shot dusk=asset_<id>@0.0 --output-dir .evidence/b01b/run/frames --frame-index .evidence/b01b/run/frame-index.json --contact-sheet .evidence/b01b/run/contact-sheet.png
 
-rtk python tools/visual_baseline.py matrix --manifest .evidence/b01b/run/private-manifest.json --root game=<local-root> --root olivia=<local-root> --root unpacked=<local-root> --root player=<local-root> --frame-index .evidence/b01b/run/frame-index.json --output .evidence/b01b/run/state-matrix.json --summary visual_baseline.summary.json
+rtk python tools/visual_baseline.py matrix --manifest .evidence/b01b/run/private-manifest.json --root game=<local-root> --root olivia=<local-root> --root unpacked=<local-root> --root player=<local-root> --frame-index .evidence/b01b/run/frame-index.json --output .evidence/b01b/run/state-matrix.json --summary contracts/asset_baseline/visual_baseline.summary.json
 
 rtk python tools/visual_compare.py compare --reference .evidence/b01b/run/frames/frame_0001.png --candidate .evidence/b01b/run/frames/frame_0002.png --output .evidence/b01b/run/comparison.json
 ```
