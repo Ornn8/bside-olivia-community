@@ -12,7 +12,6 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
-from math import isfinite
 from pathlib import Path
 
 from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
@@ -20,6 +19,7 @@ from reply_delivery import ReplyDeliveryPlan
 from voice_direction import VoiceDirectionError, validate_short_instruction
 
 from .contracts import TTSConfig
+from .external_audio_quality_worker import assess_transcript
 
 
 class DeliveryAudioError(RuntimeError):
@@ -35,15 +35,6 @@ _COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded775
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 _WHISPER_DISTRIBUTION = "openai-whisper"
 _WHISPER_VERSION = "20250625"
-_QUALITY_CHECKS = frozenset(
-    "cer length_ratio instruction_overlap extra_speech contiguous_omission repetition".split()
-)
-_QUALITY_REPORT_FIELDS = frozenset(
-    "passed error_code transcript cer length_ratio instruction_overlap_chars "
-    "longest_extra_insertion_chars longest_contiguous_omission_chars added_repetition checks".split()
-)
-
-
 @dataclass(frozen=True)
 class DeliveryAudioResult:
     duration_seconds: float
@@ -52,38 +43,21 @@ class DeliveryAudioResult:
     quality_report: dict[str, object] | None = None
 
 
-def _validated_quality_report(value: object, *, max_cer: float = 0.18) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != _QUALITY_REPORT_FIELDS:
+def _validated_quality_report(
+    value: object, *, expected_text: str, forbidden_text: str, max_cer: float = 0.18
+) -> dict[str, object]:
+    if not isinstance(value, dict) or not isinstance(value.get("transcript"), str):
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    checks = value["checks"]
-    if (
-        not isinstance(checks, dict)
-        or set(checks) != _QUALITY_CHECKS
-        or any(not isinstance(item, bool) for item in checks.values())
-        or not isinstance(value["passed"], bool)
-        or not isinstance(value["transcript"], str)
-        or not isinstance(value["added_repetition"], bool)
-    ):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    metrics = (value["cer"], value["length_ratio"])
-    counts = tuple(value[field] for field in (
-        "instruction_overlap_chars", "longest_extra_insertion_chars", "longest_contiguous_omission_chars"
-    ))
-    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not isfinite(item) or item < 0 for item in metrics):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    expected_checks = dict(cer=value["cer"] <= max_cer, length_ratio=value["length_ratio"] == 1.0,
-                           instruction_overlap=value["instruction_overlap_chars"] < 4, extra_speech=value["longest_extra_insertion_chars"] == 0,
-                           contiguous_omission=value["longest_contiguous_omission_chars"] == 0, repetition=not value["added_repetition"])
-    if checks != expected_checks:
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    passed = value["passed"]
-    error_code = value["error_code"]
-    if passed is not all(checks.values()):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    expected_error = None if passed else ("TTS_CONTENT_EMPTY" if not value["transcript"].strip() else "TTS_CONTENT_MISMATCH")
-    if error_code != expected_error:
+    expected = assess_transcript(
+        expected_text, value["transcript"], forbidden_text, max_cer=max_cer
+    )
+    try:
+        matches = json.dumps(value, ensure_ascii=False, sort_keys=True) == json.dumps(
+            expected, ensure_ascii=False, sort_keys=True
+        )
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
         raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
     return dict(value)
 
@@ -485,7 +459,10 @@ def render_delivery_wav(
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
             return _validated_quality_report(
-                report, max_cer=float(payload.get("quality_max_cer", 0.18))
+                report,
+                expected_text=str(payload.get("text", "")),
+                forbidden_text=str(payload.get("quality_forbidden_text", "")),
+                max_cer=float(payload.get("quality_max_cer", 0.18)),
             )
 
         quality_report: dict[str, object] | None = None

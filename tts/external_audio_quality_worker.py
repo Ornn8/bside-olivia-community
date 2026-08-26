@@ -13,10 +13,8 @@ from pathlib import Path
 
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 
-
 def normalize_transcript(text: str) -> str:
     return re.sub(r"[^\u3400-\u9fffA-Za-z0-9]+", "", str(text)).casefold()
-
 
 def _edit_distance(left: str, right: str) -> int:
     if len(left) < len(right):
@@ -35,7 +33,6 @@ def _edit_distance(left: str, right: str) -> int:
         previous = current
     return previous[-1]
 
-
 def _longest_change(expected: str, actual: str, tag: str) -> int:
     matcher = difflib.SequenceMatcher(a=expected, b=actual, autojunk=False)
     return max(
@@ -46,7 +43,6 @@ def _longest_change(expected: str, actual: str, tag: str) -> int:
         ),
         default=0,
     )
-
 
 def _has_added_repetition(expected: str, actual: str, width: int = 2) -> bool:
     if len(actual) < width * 2:

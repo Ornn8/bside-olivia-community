@@ -2038,9 +2038,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             letter["media_retryable"] = True
             _persist_media_state()
             return
-        output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{letter_id}.mp4"
         try:
+            output_dir.mkdir(parents=True, exist_ok=True)
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))

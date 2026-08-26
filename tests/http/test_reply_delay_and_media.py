@@ -46,6 +46,23 @@ def test_exact_modes_keep_legacy_wire_compatibility():
     assert local_server._exact_reply_mode("video") == "musical_video"
 
 
+def test_media_output_directory_failure_is_normalized(tmp_path: Path, monkeypatch):
+    blocked_root = tmp_path / "blocked"
+    blocked_root.write_text("not a directory", encoding="utf-8")
+    letter = {"letter_id": "mkdir-failure", "media_status": "PENDING"}
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(blocked_root))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    asyncio.run(local_server._render_media_job(
+        "mkdir-failure", "letter", "reply", ReplyMode.SPOKEN_VIDEO.value
+    ))
+
+    assert (letter["media_status"], letter["media_error_code"], letter["media_retryable"]) == (
+        "UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True
+    )
+
+
 def test_successful_media_retry_clears_the_previous_failure_code(
     tmp_path: Path,
     monkeypatch,
