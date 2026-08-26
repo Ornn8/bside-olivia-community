@@ -970,6 +970,97 @@ def test_uninstall_is_dry_run_then_removes_only_owned_paths(
     assert (target / "third-party").is_dir()
 
 
+def test_uninstall_ignores_marker_owned_paths_and_preserves_outside_sentinel(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    outside = tmp_path / "sentinel"
+    outside.write_text("keep", encoding="utf-8")
+    unknown = target / "user-file.txt"
+    unknown.write_text("keep", encoding="utf-8")
+    marker_path = target / ".olivia-full-patch.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["owned_paths"] = ["..\\sentinel", "../sentinel"]
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    result = uninstall_full_patch(target, apply=True)
+
+    assert result["status"] == "UNINSTALLED"
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert unknown.read_text(encoding="utf-8") == "keep"
+
+
+def test_uninstall_fails_closed_for_owned_symlink(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    app = target / "app"
+    shutil.rmtree(app)
+    try:
+        app.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(PatchInstallError, match="PATCH_MARKER_INVALID"):
+        uninstall_full_patch(target, apply=True)
+
+    assert outside.is_dir()
+
+
+def test_standalone_uninstall_ignores_marker_owned_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "installed"
+    root.mkdir()
+    for name in (
+        "app",
+        "local_backend",
+        "START.cmd",
+        "CONFIGURE.cmd",
+        "UNINSTALL.cmd",
+    ):
+        path = root / name
+        if "." in name:
+            path.write_text("managed", encoding="utf-8")
+        else:
+            path.mkdir()
+    outside = tmp_path / "sentinel"
+    outside.write_text("keep", encoding="utf-8")
+    marker = {
+        "schema_version": "olivia.full-patch.install.v2",
+        "owned_root": str(root.resolve()),
+        "owned_paths": ["..\\sentinel", "../sentinel"],
+    }
+    marker_path = root / ".olivia-full-patch.json"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    script = Path(__file__).parents[2] / "installer" / "uninstall.py"
+
+    result = subprocess.run(
+        [
+            os.fspath(Path(os.sys.executable)),
+            str(script),
+            "--installation",
+            str(root),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert not (root / "app").exists()
+
+
 def test_start_resolves_isolated_client_and_never_launcher(
     fixture_inputs,
     tmp_path: Path,
