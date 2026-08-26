@@ -2042,11 +2042,15 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_path = output_dir / f"{letter_id}.mp4"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            tts_config = configured_media_path(_os.environ, "OLIVIA_TTS_CONFIG")
-            visual_config = configured_media_path(_os.environ, "OLIVIA_VISUAL_CONFIG")
-            worker = configured_media_path(_os.environ, "OLIVIA_LIVETALKING_WORKER")
-            if tts_config is None or visual_config is None or worker is None:
-                raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
+            def runtime_path(name: str) -> Path:
+                configured = configured_media_path(_os.environ, name)
+                if configured is None and _os.environ.get(name, "").strip():
+                    raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
+                return configured if configured is not None else Path()
+
+            tts_config = runtime_path("OLIVIA_TTS_CONFIG")
+            visual_config = runtime_path("OLIVIA_VISUAL_CONFIG")
+            worker = runtime_path("OLIVIA_LIVETALKING_WORKER")
             if reply_mode == "musical_video":
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
@@ -2082,14 +2086,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 )
                 if normal_scene is None or not normal_scene.is_file():
                     raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
-                latentsync_python = configured_media_path(
-                    _os.environ, "OLIVIA_LATENTSYNC_PYTHON"
-                )
-                latentsync_root = configured_media_path(
-                    _os.environ, "OLIVIA_LATENTSYNC_ROOT"
-                )
-                if latentsync_python is None or latentsync_root is None:
-                    raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
+                latentsync_python = runtime_path("OLIVIA_LATENTSYNC_PYTHON")
+                latentsync_root = runtime_path("OLIVIA_LATENTSYNC_ROOT")
                 await asyncio.to_thread(render_reply_video,
                     reply_text,
                     output_path,
