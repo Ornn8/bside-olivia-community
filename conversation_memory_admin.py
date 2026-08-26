@@ -608,7 +608,10 @@ class ConversationMemoryAdminService:
         request_id = str(row["request_id"])
         reason = str(row["reason"])
         fingerprint = str(row["payload_fingerprint"])
-        memory_ids = _target_memory_ids(row["target_memory_ids"])
+        try:
+            memory_ids = _target_memory_ids(row["target_memory_ids"])
+        except ConversationMemoryAdminError as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
         affected = int(row["affected_count"])
         current = {record.memory_id for record in self._records_for_clear()}
         for memory_id in memory_ids:

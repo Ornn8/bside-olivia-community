@@ -51,6 +51,7 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
         packaged_paths = frozenset(archive.namelist())
     assert "private_world_runtime.py" in packaged_paths
     assert "music_caption.py" in packaged_paths
+    assert "conversation_memory_identity.py" in packaged_paths
     assert {
         "linli_character/persona_release_v2.json",
         "linli_character/persona_release_provenance_v2.json",
@@ -82,6 +83,7 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
         [
             str(interpreter),
             "-c",
+            "import conversation_memory_identity, conversation_memory_admin, mem0_memory; "
             "import music_caption, song_content; import local_server",
         ],
         cwd=tmp_path,

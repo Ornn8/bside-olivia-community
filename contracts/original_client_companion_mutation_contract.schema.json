@@ -18,31 +18,54 @@
           "required": ["methods", "confirmation", "request_fields", "success_statuses"],
           "properties": {
             "methods": {"const": ["POST", "OPTIONS"]},
-            "confirmation": {"const": "header_and_body"},
+            "confirmation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["header", "body"],
+              "properties": {
+                "header": {"const": {"name": "X-Olivia-Companion-Action", "value": "confirmed"}},
+                "body": {"const": {"field": "confirmed", "value": true}}
+              }
+            },
             "request_fields": {"const": ["request_id", "reason", "confirmed"]},
             "success_statuses": {"const": ["APPLIED", "DUPLICATE", "NOOP"]}
           }
         }
       }
     },
-    "read_states": {"type":"object","additionalProperties":false,"required":["statuses","pending_reason"],"properties":{"statuses":{"const":["READY","PAUSED","UNAVAILABLE"]},"pending_reason":{"const":"MEMORY_ADMIN_CLEAR_PENDING"}}},
+    "read_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statuses", "pending"],
+      "properties": {
+        "statuses": {"const": ["READY", "PAUSED", "UNAVAILABLE"]},
+        "pending": {
+          "const": {
+            "reason_code": "MEMORY_ADMIN_CLEAR_PENDING",
+            "memory_state": "unavailable",
+            "top_level_status": "UNAVAILABLE"
+          }
+        }
+      }
+    },
     "error_codes": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["http_status", "status"],
-        "properties": {"http_status": {"enum": [400, 403, 409, 413, 415, 503]}, "status": {"enum": ["FAILED", "UNAVAILABLE"]}}
+        "required": ["http_status", "status", "retryable"],
+        "properties": {"http_status": {"enum": [400, 403, 409, 413, 415, 503]}, "status": {"enum": ["FAILED", "UNAVAILABLE"]}, "retryable": {"type": "boolean"}}
       },
       "minProperties": 1,
       "properties": {
         "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["http_status", "status"],
+          "required": ["http_status", "status", "retryable"],
           "properties": {
             "http_status": {"const": 400},
-            "status": {"const": "FAILED"}
+            "status": {"const": "FAILED"},
+            "retryable": {"const": false}
           }
         }
       }

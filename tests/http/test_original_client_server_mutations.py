@@ -516,6 +516,64 @@ def test_new_public_clear_request_recovers_a_pending_clear_after_restart(
     asyncio.run(scenario())
 
 
+def test_public_clear_maps_corrupt_pending_intent_to_auditable_unavailable(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        adapter = Mem0ConversationMemoryAdapter(
+            ProductionMem0Fixture(),
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        audit = tmp_path / "memory" / "admin.sqlite3"
+        admin = ConversationMemoryAdminService(adapter, audit)
+        with sqlite3.connect(audit) as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_admin_operations (
+                    user_id, request_id, operation, payload_fingerprint,
+                    target_memory_id, target_memory_ids, replacement_memory_id,
+                    replacement_source_id, status, affected_count, reason,
+                    created_at, updated_at
+                ) VALUES (?, ?, 'clear', ?, NULL, ?, NULL, NULL, 'pending_clear', 0, ?, ?, ?)
+                """,
+                (
+                    "local-user",
+                    "request.memory.corrupt.pending",
+                    "synthetic-fingerprint",
+                    '["invalid memory id"]',
+                    "synthetic confirmation",
+                    "2026-08-26T00:00:00+00:00",
+                    "2026-08-26T00:00:00+00:00",
+                ),
+            )
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=admin,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.corrupt.retry",
+                    "reason": "synthetic confirmation retry",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            payload = await response.json()
+            assert response.status == 503
+            assert payload["error_code"] == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+            assert "IDENTIFIER" not in payload["error_code"]
+
+    asyncio.run(scenario())
+
+
 def test_head_public_clear_preserves_other_domains_while_clearing_pre_head_case(
     tmp_path: Path,
 ) -> None:

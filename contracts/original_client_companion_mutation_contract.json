@@ -3,13 +3,41 @@
   "routes": {
     "/toy/companion/memory/clear": {
       "methods": ["POST", "OPTIONS"],
-      "confirmation": "header_and_body",
+      "confirmation": {
+        "header": {"name": "X-Olivia-Companion-Action", "value": "confirmed"},
+        "body": {"field": "confirmed", "value": true}
+      },
       "request_fields": ["request_id", "reason", "confirmed"],
       "success_statuses": ["APPLIED", "DUPLICATE", "NOOP"]
     }
   },
   "error_codes": {
-    "COMPANION_JSON_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_FIELDS_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_REQUEST_ID_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_REASON_INVALID":{"http_status":400,"status":"FAILED"},"MEMORY_CLEAR_CONFIRMATION_REQUIRED":{"http_status":400,"status":"FAILED"},"COMPANION_HOST_FORBIDDEN":{"http_status":403,"status":"FAILED"},"COMPANION_ORIGIN_FORBIDDEN":{"http_status":403,"status":"FAILED"},"COMPANION_CONFIRMATION_REQUIRED":{"http_status":403,"status":"FAILED"},"COMPANION_REQUEST_TOO_LARGE":{"http_status":413,"status":"FAILED"},"COMPANION_CONTENT_TYPE_INVALID":{"http_status":415,"status":"FAILED"},"MEMORY_ADMIN_REQUEST_CONFLICT":{"http_status":409,"status":"FAILED"},"COMPANION_MUTATION_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"COMPANION_MUTATION_INVALID":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_MUTATION_DISABLED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_DISABLED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_READ_FAILED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_CLEAR_FAILED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_AUDIT_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_AUDIT_INVALID":{"http_status":503,"status":"UNAVAILABLE"}
+    "COMPANION_JSON_INVALID": {"http_status": 400, "status": "FAILED", "retryable": false},
+    "COMPANION_FIELDS_INVALID": {"http_status": 400, "status": "FAILED", "retryable": false},
+    "COMPANION_REQUEST_ID_INVALID": {"http_status": 400, "status": "FAILED", "retryable": false},
+    "COMPANION_REASON_INVALID": {"http_status": 400, "status": "FAILED", "retryable": false},
+    "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {"http_status": 400, "status": "FAILED", "retryable": false},
+    "COMPANION_HOST_FORBIDDEN": {"http_status": 403, "status": "FAILED", "retryable": false},
+    "COMPANION_ORIGIN_FORBIDDEN": {"http_status": 403, "status": "FAILED", "retryable": false},
+    "COMPANION_CONFIRMATION_REQUIRED": {"http_status": 403, "status": "FAILED", "retryable": false},
+    "COMPANION_REQUEST_TOO_LARGE": {"http_status": 413, "status": "FAILED", "retryable": false},
+    "COMPANION_CONTENT_TYPE_INVALID": {"http_status": 415, "status": "FAILED", "retryable": false},
+    "MEMORY_ADMIN_REQUEST_CONFLICT": {"http_status": 409, "status": "FAILED", "retryable": false},
+    "COMPANION_MUTATION_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "COMPANION_MUTATION_INVALID": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_MUTATION_DISABLED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_DISABLED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_READ_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_CLEAR_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}
   },
-  "read_states": {"statuses": ["READY", "PAUSED", "UNAVAILABLE"], "pending_reason": "MEMORY_ADMIN_CLEAR_PENDING"}
+  "read_states": {
+    "statuses": ["READY", "PAUSED", "UNAVAILABLE"],
+    "pending": {
+      "reason_code": "MEMORY_ADMIN_CLEAR_PENDING",
+      "memory_state": "unavailable",
+      "top_level_status": "UNAVAILABLE"
+    }
+  }
 }

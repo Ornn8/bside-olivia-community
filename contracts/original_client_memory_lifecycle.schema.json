@@ -61,6 +61,10 @@
         {
           "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_AUDIT_UNAVAILABLE"}}, "required": ["reason_code"]},
           "then": {"properties": {"state": {"const": "unavailable"}}}
+        },
+        {
+          "if": {"properties": {"reason_code": {"const": "MEMORY_ADMIN_CLEAR_PENDING"}}, "required": ["reason_code"]},
+          "then": {"properties": {"state": {"const": "unavailable"}}}
         }
       ]
     }
@@ -72,6 +76,21 @@
           "capabilities": {
             "properties": {
               "memory": {"properties": {"state": {"const": "unavailable"}}}
+            }
+          }
+        }
+      },
+      "then": {"properties": {"status": {"const": "UNAVAILABLE"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "memory": {
+                "required": ["reason_code"],
+                "properties": {"reason_code": {"const": "MEMORY_ADMIN_CLEAR_PENDING"}}
+              }
             }
           }
         }
