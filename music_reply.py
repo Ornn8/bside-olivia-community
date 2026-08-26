@@ -101,8 +101,8 @@ def musical_reply_configured(
         configured_path("OLIVIA_MINIMAX_WORKER"),
         minimax_root / "main.py",
         minimax_root / "comfy_extras" / "nodes_minimax_music.py",
-        minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
-        minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        minimax_root / "models" / "diffusion_models" / "minimax_music3_dit_int8_convrot.safetensors",
+        minimax_root / "models" / "text_encoders" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
         minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
         configured_path("OLIVIA_LATENTSYNC_PYTHON"),
         latentsync_root / "scripts" / "inference.py",
@@ -734,13 +734,13 @@ def _build_music_stage_manifest(
                     "unet": _file_fingerprint(
                         minimax_root
                         / "models"
-                        / "unet"
+                        / "diffusion_models"
                         / "minimax_music3_dit_int8_convrot.safetensors"
                     ),
                     "text_encoder": _file_fingerprint(
                         minimax_root
                         / "models"
-                        / "clip"
+                        / "text_encoders"
                         / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
                     ),
                     "vae": _file_fingerprint(
