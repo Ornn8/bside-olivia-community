@@ -28,7 +28,7 @@
 ### B00 — 治理基线与秘密边界
 
 - 输入：当前目录、现有源码/文档/原版资产、敏感扫描结果。
-- 输出：`.gitignore`、`llm_config.example.json`、正式文档、初始 Git 基线和跟踪体积清单。
+- 输出：`.gitignore`、`contracts/llm_config.example.json`、正式文档、初始 Git 基线和跟踪体积清单。
 - 依赖：无；不需要模型或官方服务。
 - 测试命令：`rtk git status --short`、`rtk git diff --check`、脱敏 secrets scan、`rtk git ls-files`、大文件体积扫描。
 - 视觉证据：记录原版资产目录和未来 manifest 边界，媒体不复制；当前批次 `N/A`。
