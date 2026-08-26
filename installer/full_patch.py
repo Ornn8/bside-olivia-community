@@ -58,8 +58,6 @@ PAYLOAD_ROOT_FILES = {
     "local_memory.py",
     "persona_provider.py",
     "reply_orchestrator.py",
-    "third_party_manifest.example.json",
-    "third_party_manifest.schema.json",
 }
 PAYLOAD_REQUIRED_ROOT_FILES = {
     "letter_status.py",
@@ -74,6 +72,8 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "contracts/letter_status.py",
+    "contracts/third_party_manifest.example.json",
+    "contracts/third_party_manifest.schema.json",
     "control_center/__init__.py",
     "control_center/app.py",
     "control_center/auth.py",

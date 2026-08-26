@@ -58,6 +58,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
         "linli_character/persona_release_provenance_v2.json",
         "contracts/persona_v2.schema.json",
         "contracts/persona_v2_provenance.schema.json",
+        "contracts/third_party_manifest.example.json",
+        "contracts/third_party_manifest.schema.json",
     } <= packaged_paths
     assert not {
         "linli_character/persona_v2.json",
