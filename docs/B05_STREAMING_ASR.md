@@ -42,9 +42,9 @@ manifest, `redistrib_13.3.0.json`, read from an ignored local transfer root,
 for example `.evidence/b05-runtime-transfer/redistrib_13.3.0.json`.
 The verified manifest is 47,431 bytes with SHA-256
 `507EDDAAB1360336BC0FE17B77552E0B7DFE1E74DA888671C3A2F5FAD7775DB1`.
-The manager performs no download: it accepts a D:/ or F:/ transfer root,
-checks size, SHA-256, ZIP CRC, and safe members, then assembles an owned
-prefix under D:/ or F:/.
+The manager performs no download: it accepts any non-root local absolute
+Windows drive path as the transfer root, checks size, SHA-256, ZIP CRC, and
+safe members, then assembles an owned prefix under that selected local root.
 
 The static Windows x86_64 compile closure is the following.  It is deliberately
 recorded as a build-toolchain closure, not as native ASR acceptance evidence.
@@ -86,7 +86,7 @@ VS/MSVC, CMake, Ninja, NVCC 13.3.33, CUDA ABI, and `sm_86` build cache was
 incrementally rebuilt only for the affected `nemo_speech_cli` target after the
 upstream HTTP patch below.  CUDA and model assets were reused; no duplicate
 build or model download was performed.  The resulting executable and model
-remain outside Git under the ignored D:/F: evidence boundary.
+remain outside Git under the ignored external evidence boundary.
 
 ### Fixed upstream HTTP inventory patch
 
@@ -141,14 +141,18 @@ The default provider is `text-fallback`.  Native selection is explicit through
 `ASR_PROVIDER=nemotron-speech-cpp` or the external JSON configuration written by
 `tools/asr_manage.py switch --provider nemotron-speech-cpp`.
 
-All runtime, model, cache, and acceptance-evidence roots must be absolute D:/
-or F:/ paths in production.  Installation is an idempotent offline assembly
-from an explicit, verified D:/ or F:/ transfer root: it validates the fixed
+All runtime, model, cache, and acceptance-evidence roots must be non-root local
+absolute Windows drive paths in production. Relative, drive-relative, URL,
+UNC, drive-root, and parent-traversal paths are rejected. Installation is an
+idempotent offline assembly from an explicit, verified local absolute transfer
+root: it validates the fixed
 NeMo-Speech.cpp/ggml/cpp-httplib revisions, the fixed model SHA-256, and the
 official HTTP snapshot patch, then registers the already-built external
 runtime.  It does not download weights or invent an ASR implementation; no
 weights are vendored.  Uninstall requires the B05 ownership manifest and
-`--apply`; a dry run never deletes external runtime/model assets.  The runtime
+`--apply`; it removes only that manifest and never recursively deletes the
+configured runtime, model, or cache directories. A dry run never deletes
+external runtime/model assets.  The runtime
 has no release artifact to pin, so the source commit, upstream submodule pins,
 patch, and provenance are part of the install manifest.
 
@@ -157,20 +161,20 @@ Useful commands:
 ```text
 rtk python tools/asr_manage.py status
 rtk python tools/asr_manage.py install
-rtk python tools/asr_manage.py install --transfer-root D:/transfer
-rtk python tools/asr_manage.py install --apply --transfer-root D:/transfer
+rtk python tools/asr_manage.py install --transfer-root C:/transfer
+rtk python tools/asr_manage.py install --apply --transfer-root C:/transfer
 rtk python tools/asr_manage.py uninstall
 rtk python tools/asr_manage.py uninstall --apply
-rtk python tools/asr_manage.py cuda-toolchain --action status --cuda-root F:/Bside-olivia-local/asr/cuda-toolchain
-rtk python tools/asr_manage.py cuda-toolchain --action assemble --apply --cuda-root F:/Bside-olivia-local/asr/cuda-toolchain --cuda-manifest D:/transfer/redistrib_13.3.0.json --cuda-transfer-root D:/transfer/cuda-13.3-zips
-rtk python tools/asr_manage.py cuda-toolchain --action uninstall --cuda-root F:/Bside-olivia-local/asr/cuda-toolchain --apply
+rtk python tools/asr_manage.py cuda-toolchain --action status --cuda-root "$env:LOCALAPPDATA/BSideOliviaLocal/asr/cuda-toolchain"
+rtk python tools/asr_manage.py cuda-toolchain --action assemble --apply --cuda-root "$env:LOCALAPPDATA/BSideOliviaLocal/asr/cuda-toolchain" --cuda-manifest "$env:LOCALAPPDATA/BSideOliviaLocal/asr-transfer/redistrib_13.3.0.json" --cuda-transfer-root "$env:LOCALAPPDATA/BSideOliviaLocal/asr-transfer/cuda-13.3-zips"
+rtk python tools/asr_manage.py cuda-toolchain --action uninstall --cuda-root "$env:LOCALAPPDATA/BSideOliviaLocal/asr/cuda-toolchain" --apply
 rtk python tools/asr_healthcheck.py
 rtk python tools/asr_healthcheck.py --probe --require-ready
 rtk python tools/healthcheck.py --profile asr
 ```
 
 The first install command is a plan.  Actual downloads/builds are intentionally
-not part of default CI and must remain on D:/F:.
+not part of default CI and must remain in an external local absolute directory.
 
 ## Truthful readiness gate
 

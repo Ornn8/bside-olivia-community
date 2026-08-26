@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlparse
 
 from .errors import AsrError
@@ -26,8 +26,36 @@ RUNTIME_REVISION = "1118951337094db3b362fbf1b27e871696f10590"
 RUNTIME_LICENSE = "Apache-2.0"
 
 
+def is_local_absolute_path(path: Path | str) -> bool:
+    """Return whether *path* is a non-root local Windows drive path."""
+
+    windows = PureWindowsPath(str(path))
+    return (
+        windows.is_absolute()
+        and len(windows.drive) == 2
+        and windows.drive[1] == ":"
+        and len(windows.parts) > 1
+        and ".." not in windows.parts
+    )
+
+
+def default_asr_root() -> Path:
+    """Use per-user local storage without binding the product to one drive."""
+
+    configured = os.environ.get("LOCALAPPDATA", "").strip()
+    if configured and is_local_absolute_path(configured):
+        return Path(configured) / "BSideOliviaLocal" / "asr"
+    profile = os.environ.get("USERPROFILE", "").strip()
+    if profile and is_local_absolute_path(profile):
+        return Path(profile) / "AppData" / "Local" / "BSideOliviaLocal" / "asr"
+    home = Path.home()
+    if is_local_absolute_path(home):
+        return home / "AppData" / "Local" / "BSideOliviaLocal" / "asr"
+    return Path("C:/Users/Default/AppData/Local/BSideOliviaLocal/asr")
+
+
 def _default_root(name: str) -> Path:
-    return Path("F:/Bside-olivia-local/asr") / name
+    return default_asr_root() / name
 
 
 @dataclass(frozen=True)
@@ -44,9 +72,9 @@ class AsrConfig:
     endpointing_ms: int = 600
     word_timestamps: bool = False
     connect_timeout_ms: int = 3_000
-    runtime_root: Path = _default_root("runtime")
-    model_root: Path = _default_root("models")
-    cache_root: Path = _default_root("cache")
+    runtime_root: Path = field(default_factory=lambda: _default_root("runtime"))
+    model_root: Path = field(default_factory=lambda: _default_root("models"))
+    cache_root: Path = field(default_factory=lambda: _default_root("cache"))
     runtime_executable: Path | None = None
     model_path: Path | None = None
     strict_storage: bool = True
@@ -78,10 +106,10 @@ class AsrConfig:
             paths.append(self.model_path)
         for path in paths:
             path = Path(path)
-            if not path.is_absolute() or path.drive.upper() not in {"D:", "F:"}:
+            if not is_local_absolute_path(path):
                 raise AsrError(
                     "ASR_CONFIG_INVALID",
-                    "runtime, model, cache, and evidence paths must be absolute D:/ or F:/ paths",
+                    "runtime, model, cache, and evidence paths must be absolute local Windows paths",
                     {"path": str(path)},
                 )
 

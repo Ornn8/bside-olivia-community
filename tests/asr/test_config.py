@@ -17,15 +17,45 @@ def test_default_is_text_fallback_and_provenance_is_pinned() -> None:
     assert config.to_dict(include_paths=False)["runtime_revision"] == RUNTIME_REVISION
 
 
+def test_default_storage_roots_follow_localappdata(monkeypatch, tmp_path: Path) -> None:
+    local_appdata = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+
+    config = AsrConfig()
+
+    expected = local_appdata / "BSideOliviaLocal" / "asr"
+    assert config.runtime_root == expected / "runtime"
+    assert config.model_root == expected / "models"
+    assert config.cache_root == expected / "cache"
+
+
 def test_config_accepts_explicit_test_paths_without_changing_production_policy(tmp_path: Path) -> None:
     config = AsrConfig().with_test_paths(tmp_path)
     assert config.strict_storage is False
     assert config.effective_model_path.name.endswith(".gguf")
 
 
-def test_production_storage_must_be_d_or_f_drive() -> None:
-    with pytest.raises(AsrError, match="D:/ or F:/"):
-        AsrConfig(runtime_root=Path("C:/not-allowed"))
+@pytest.mark.parametrize("drive", ("C:", "D:", "E:", "F:"))
+def test_production_storage_accepts_any_local_drive(drive: str) -> None:
+    config = AsrConfig(runtime_root=Path(f"{drive}/bside/asr/runtime"))
+
+    assert config.runtime_root == Path(f"{drive}/bside/asr/runtime")
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/bside/../asr"),
+        Path("C:asr/runtime"),
+        Path("relative/asr"),
+        Path("http://example.invalid/asr"),
+        Path("//server/share/asr"),
+    ),
+)
+def test_production_storage_rejects_unsafe_paths(value: Path) -> None:
+    with pytest.raises(AsrError, match="absolute local Windows paths"):
+        AsrConfig(runtime_root=value)
 
 
 def test_server_must_be_loopback() -> None:
