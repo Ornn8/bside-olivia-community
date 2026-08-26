@@ -458,7 +458,7 @@ def test_schema_allows_embedding_only_under_memory() -> None:
     def payload() -> dict[str, object]:
         return {
             "schema_version": "p03.original-companion-read.v1",
-            "status": "READY",
+            "status": "UNAVAILABLE",
             "capabilities": {
                 "memory": {"state": "unavailable"},
                 "private_world": {"state": "available"},
