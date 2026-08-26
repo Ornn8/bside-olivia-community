@@ -428,9 +428,10 @@ def test_operation_ledger_migrates_legacy_rows_to_default_user_and_isolates_requ
     default_user = ConversationMemoryAdminService(memory, audit)
     other_user = ConversationMemoryAdminService(memory, audit, user_id="user-b")
 
-    assert default_user.pause(
-        request_id="memory.pause.shared.1", reason="重试旧本地请求。"
-    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        default_user.pause(
+            request_id="memory.pause.shared.1", reason="重试旧本地请求。"
+        )
     assert other_user.pause(
         request_id="memory.pause.shared.1", reason="另一位用户暂停长期记忆。"
     ).status is MemoryAdminMutationStatus.APPLIED
@@ -530,9 +531,10 @@ def test_operation_ledger_migration_rolls_back_copy_fault_and_retries_after_rest
         ).fetchone()[0] == "memory.pause.migration.1"
 
     restarted = ConversationMemoryAdminService(memory, audit)
-    assert restarted.pause(
-        request_id="memory.pause.migration.1", reason="重试旧本地请求。"
-    ).status is MemoryAdminMutationStatus.DUPLICATE
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_REQUEST_CONFLICT"):
+        restarted.pause(
+            request_id="memory.pause.migration.1", reason="重试旧本地请求。"
+        )
     with sqlite3.connect(audit) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == MEMORY_ADMIN_AUDIT_SCHEMA
 

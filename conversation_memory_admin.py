@@ -567,6 +567,9 @@ class ConversationMemoryAdminService:
                 if str(existing["status"]) != "pending_clear":
                     return self._result_from_row(existing, duplicate=True)
                 return self._complete_pending_clear(existing)
+            pending = self._pending_clear_row()
+            if pending is not None:
+                self._complete_pending_clear(pending)
             records = self._records_for_clear()
             if not records:
                 self._write_audit(
@@ -592,10 +595,10 @@ class ConversationMemoryAdminService:
                 affected_count=0,
                 target_memory_ids=memory_ids,
             )
-            pending = self._audit_row(request_id)
-            if pending is None:
+            current_pending = self._audit_row(request_id)
+            if current_pending is None:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE")
-            return self._complete_pending_clear(pending)
+            return self._complete_pending_clear(current_pending)
 
     def _complete_pending_clear(
         self,
@@ -827,6 +830,11 @@ class ConversationMemoryAdminService:
                         (self.user_id,),
                     ).fetchone()[0]
                 )
+                pending_clear = connection.execute(
+                    "SELECT 1 FROM memory_admin_operations "
+                    "WHERE user_id = ? AND status = 'pending_clear' LIMIT 1",
+                    (self.user_id,),
+                ).fetchone() is not None
         except (OSError, sqlite3.Error, ValueError):
             return MemoryAdminStatus(
                 "unavailable",
@@ -838,6 +846,16 @@ class ConversationMemoryAdminService:
                 reason_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
             )
         paused = self.is_paused()
+        if pending_clear:
+            return MemoryAdminStatus(
+                "unavailable",
+                provider.provider,
+                False,
+                None,
+                audit_count,
+                pending_count,
+                reason_code="MEMORY_ADMIN_CLEAR_PENDING",
+            )
         return MemoryAdminStatus(
             "degraded" if paused else provider.status,
             provider.provider,
@@ -851,6 +869,7 @@ class ConversationMemoryAdminService:
 
     def _require_available(self) -> None:
         self._require_provider_available()
+        self._require_no_pending_clear()
         if self.is_paused():
             raise ConversationMemoryAdminError("MEMORY_ADMIN_PAUSED")
 
@@ -933,22 +952,20 @@ class ConversationMemoryAdminService:
     ) -> None:
         if str(row["operation"]) != operation:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_REQUEST_CONFLICT")
-        # Rows created before fingerprinting cannot be reconstructed safely.
-        # They retain operation-only replay; new rows bind the request payload.
-        if (
-            str(row["payload_fingerprint"]) != "legacy"
-            and str(row["payload_fingerprint"]) != payload_fingerprint
-        ):
+        if str(row["payload_fingerprint"]) != payload_fingerprint:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_REQUEST_CONFLICT")
 
     def _has_pending_clear(self) -> bool:
+        return self._pending_clear_row() is not None
+
+    def _pending_clear_row(self) -> sqlite3.Row | None:
         try:
             with self._connect() as connection:
                 return connection.execute(
-                    "SELECT 1 FROM memory_admin_operations "
+                    "SELECT * FROM memory_admin_operations "
                     "WHERE user_id = ? AND status = 'pending_clear' LIMIT 1",
                     (self.user_id,),
-                ).fetchone() is not None
+                ).fetchone()
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
 

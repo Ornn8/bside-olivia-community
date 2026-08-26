@@ -377,7 +377,7 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     backend.fail.clear()
     backend.fail.add("get_all")
     status = adapter.status().to_dict()
-    assert status["status"] == "degraded"
+    assert status["status"] == "unavailable"
     assert status["reason_code"] == "MEM0_LIST_FAILED"
 
 

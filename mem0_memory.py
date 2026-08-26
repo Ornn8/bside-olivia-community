@@ -7,7 +7,7 @@ provider failures collapse to stable, privacy-safe states.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import importlib
@@ -105,6 +105,7 @@ class Mem0Config:
     outbox_data_root: Path | None = None
     outbox_enabled: bool = True
     outbox_interval_seconds: float = 5.0
+    configured_user_id: str = field(init=False)
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -118,6 +119,10 @@ class Mem0Config:
             if not outbox_root.is_absolute():
                 raise ValueError("outbox_data_root must be absolute")
             object.__setattr__(self, "outbox_data_root", outbox_root)
+        raw_user_id = self.user_id.strip() if isinstance(self.user_id, str) else ""
+        if not _ID_RE.fullmatch(raw_user_id):
+            raise ValueError("user_id is invalid")
+        object.__setattr__(self, "configured_user_id", raw_user_id)
         try:
             object.__setattr__(
                 self, "user_id", normalize_conversation_memory_user_id(self.user_id)
@@ -543,6 +548,11 @@ class Mem0ConversationMemoryAdapter:
 
     def _filters(self, user_id: str) -> dict[str, object]:
         user_id = self._normalized_user_id(user_id)
+        return self._provider_filters(user_id)
+
+    def _provider_filters(self, user_id: object) -> dict[str, object]:
+        if not isinstance(user_id, str) or not _ID_RE.fullmatch(user_id):
+            raise Mem0AdapterError("MEM0_USER_ID_INVALID")
         return {
             "user_id": user_id,
             "agent_id": self.config.agent_id,
@@ -555,6 +565,13 @@ class Mem0ConversationMemoryAdapter:
             return normalize_conversation_memory_user_id(user_id)
         except ConversationMemoryIdentityError as exc:
             raise Mem0AdapterError("MEM0_USER_ID_INVALID") from exc
+
+    def _configured_user_aliases(self, user_id: str) -> tuple[str, ...]:
+        normalized = self._normalized_user_id(user_id)
+        alias = self.config.configured_user_id
+        if normalized == self.config.user_id and alias != normalized:
+            return normalized, alias
+        return (normalized,)
 
     def _records(
         self,
@@ -599,21 +616,24 @@ class Mem0ConversationMemoryAdapter:
         user_id = self._normalized_user_id(user_id)
         if not 1 <= limit <= 1000:
             return None
-        value = self._read_with_timeout(
-            lambda: self.backend.get_all(
-                filters=self._filters(user_id),
-                top_k=limit,
-            ),
-            failure_code="MEM0_LIST_FAILED",
-        )
-        if value is None:
-            return None
-        records = self._records(value, user_id=user_id, limit=limit)
-        if records is None:
-            self._last_error_code = "MEM0_LIST_FAILED"
-            return None
+        records_by_id: dict[str, ConversationMemoryRecord] = {}
+        for alias in self._configured_user_aliases(user_id):
+            value = self._read_with_timeout(
+                lambda alias=alias: self.backend.get_all(
+                    filters=self._provider_filters(alias),
+                    top_k=limit,
+                ),
+                failure_code="MEM0_LIST_FAILED",
+            )
+            if value is None:
+                return None
+            records = self._records(value, user_id=alias, limit=limit)
+            if records is None:
+                self._last_error_code = "MEM0_LIST_FAILED"
+                return None
+            records_by_id.update({record.memory_id: record for record in records})
         self._last_error_code = None
-        return records
+        return tuple(records_by_id.values())[:limit]
 
     def search_context(
         self,
@@ -625,22 +645,25 @@ class Mem0ConversationMemoryAdapter:
         user_id = self._normalized_user_id(user_id)
         if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 100:
             return ()
-        value = self._read_with_timeout(
-            lambda: self.backend.search(
-                query.strip(),
-                filters=self._filters(user_id),
-                top_k=limit,
-            ),
-            failure_code="MEM0_SEARCH_FAILED",
-        )
-        if value is None:
-            return ()
-        records = self._records(value, user_id=user_id, limit=limit)
-        if records is None:
-            self._last_error_code = "MEM0_SEARCH_FAILED"
-            return ()
+        records_by_id: dict[str, ConversationMemoryRecord] = {}
+        for alias in self._configured_user_aliases(user_id):
+            value = self._read_with_timeout(
+                lambda alias=alias: self.backend.search(
+                    query.strip(),
+                    filters=self._provider_filters(alias),
+                    top_k=limit,
+                ),
+                failure_code="MEM0_SEARCH_FAILED",
+            )
+            if value is None:
+                return ()
+            records = self._records(value, user_id=alias, limit=limit)
+            if records is None:
+                self._last_error_code = "MEM0_SEARCH_FAILED"
+                return ()
+            records_by_id.update({record.memory_id: record for record in records})
         self._last_error_code = None
-        return records
+        return tuple(records_by_id.values())[:limit]
 
     def _read_with_timeout(
         self,
@@ -742,30 +765,31 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
     ) -> MemoryWriteResult:
         user_id = self._normalized_user_id(user_id)
-        try:
-            exact_response = self.backend.get_all(
-                filters={**self._filters(user_id), "source_id": source_id},
-                top_k=1,
+        for alias in self._configured_user_aliases(user_id):
+            try:
+                exact_response = self.backend.get_all(
+                    filters={**self._provider_filters(alias), "source_id": source_id},
+                    top_k=1,
+                )
+            except Exception:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+                )
+            source_exists = self._source_id_exists_in_exact_response(
+                exact_response,
+                user_id=alias,
+                source_id=source_id,
             )
-        except Exception:
-            return MemoryWriteResult(
-                MemoryWriteStatus.UNAVAILABLE,
-                source_id,
-                error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
-            )
-        source_exists = self._source_id_exists_in_exact_response(
-            exact_response,
-            user_id=user_id,
-            source_id=source_id,
-        )
-        if source_exists is None:
-            return MemoryWriteResult(
-                MemoryWriteStatus.UNAVAILABLE,
-                source_id,
-                error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
-            )
-        if source_exists:
-            return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+            if source_exists is None:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+                )
+            if source_exists:
+                return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
         metadata = {
             "source_id": source_id,
             "occurred_at": occurred_at.isoformat(),
@@ -993,7 +1017,7 @@ class Mem0ConversationMemoryAdapter:
     def status(self) -> ConversationMemoryStatus:
         if self._provider_call.inflight:
             return ConversationMemoryStatus(
-                "degraded",
+                "unavailable",
                 True,
                 "mem0",
                 "qdrant-local",
@@ -1002,7 +1026,7 @@ class Mem0ConversationMemoryAdapter:
         records = self._list_records(user_id=self.config.user_id, limit=1000)
         if self._last_error_code:
             return ConversationMemoryStatus(
-                "degraded",
+                "unavailable",
                 True,
                 "mem0",
                 "qdrant-local",

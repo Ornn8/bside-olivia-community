@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 from aiohttp import web
@@ -388,6 +389,205 @@ def test_public_clear_does_not_turn_an_unavailable_mem0_list_into_noop(
             )
             assert response.status == 503
             assert (await response.json())["status"] == "UNAVAILABLE"
+
+    asyncio.run(scenario())
+
+
+def test_public_status_fails_closed_for_a_production_mem0_list_failure(
+    tmp_path: Path,
+) -> None:
+    class UnavailableMem0Fixture(ProductionMem0Fixture):
+        def get_all(self, **kwargs):
+            del kwargs
+            raise RuntimeError("synthetic provider failure")
+
+    async def scenario() -> None:
+        adapter = Mem0ConversationMemoryAdapter(
+            UnavailableMem0Fixture(),
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=ConversationMemoryAdminService(
+                adapter, tmp_path / "memory" / "admin.sqlite3"
+            ),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.get(
+                "/toy/companion/status",
+                headers={"Origin": TRUSTED_ORIGIN},
+            )
+            assert response.status == 200
+            payload = await response.json()
+            assert payload["status"] == "UNAVAILABLE"
+            assert payload["capabilities"]["memory"] == {
+                "state": "unavailable",
+                "reason_code": "MEM0_LIST_FAILED",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_new_public_clear_request_recovers_a_pending_clear_after_restart(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = ProductionMem0Fixture()
+        adapter = Mem0ConversationMemoryAdapter(
+            provider,
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        assert adapter.remember_exchange(
+            user_message="synthetic user message",
+            assistant_message="synthetic canonical reply",
+            occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
+            source_id="reply:synthetic:pending-recovery",
+            user_id="local-user",
+        ).status.value == "written"
+        audit = tmp_path / "memory" / "admin.sqlite3"
+        first_admin = ConversationMemoryAdminService(adapter, audit)
+        with sqlite3.connect(audit) as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER fail_clear_terminal_audit
+                BEFORE INSERT ON memory_admin_operations
+                WHEN NEW.operation = 'clear' AND NEW.status = 'completed'
+                BEGIN SELECT RAISE(FAIL, 'synthetic terminal audit failure'); END
+                """
+            )
+        first = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=first_admin,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(first.app)) as client:
+            failed = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.pending.original",
+                    "reason": "synthetic confirmation",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert failed.status == 503
+
+        restarted_admin = ConversationMemoryAdminService(adapter, audit)
+        restarted = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=restarted_admin,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        with sqlite3.connect(audit) as connection:
+            connection.execute("DROP TRIGGER fail_clear_terminal_audit")
+        async with TestClient(TestServer(restarted.app)) as client:
+            pending = await client.get(
+                "/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert (await pending.json())["status"] == "UNAVAILABLE"
+            recovered = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.pending.new",
+                    "reason": "synthetic confirmation retry",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert recovered.status == 200
+            assert (await recovered.json())["status"] == "NOOP"
+            healthy = await client.get(
+                "/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert (await healthy.json())["status"] == "READY"
+        assert restarted_admin.run_write(lambda: "synthetic write") == "synthetic write"
+
+    asyncio.run(scenario())
+
+
+def test_head_public_clear_preserves_other_domains_while_clearing_pre_head_case(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = ProductionMem0Fixture()
+        provider.rows.extend(
+            [
+                {
+                    "id": "memory.pre-head-case",
+                    "memory": "synthetic pre-head memory",
+                    "user_id": "User-A",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "reply:synthetic:pre-head",
+                        "domain": "conversation_memory",
+                    },
+                },
+                {
+                    "id": "memory.pre-head-other-domain",
+                    "memory": "synthetic other domain",
+                    "user_id": "User-A",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "other:synthetic:pre-head",
+                        "domain": "other_domain",
+                    },
+                },
+                {
+                    "id": "memory.other-user",
+                    "memory": "synthetic other user",
+                    "user_id": "user-b",
+                    "agent_id": "linli",
+                    "metadata": {
+                        "source_id": "reply:synthetic:other-user",
+                        "domain": "conversation_memory",
+                    },
+                },
+            ]
+        )
+        adapter = Mem0ConversationMemoryAdapter(
+            provider,
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                user_id="User-A",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=ConversationMemoryAdminService(
+                adapter, tmp_path / "memory" / "admin.sqlite3", user_id="user-a"
+            ),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.pre-head-case.1",
+                    "reason": "synthetic upgrade confirmation",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert response.status == 200
+            assert (await response.json())["status"] == "APPLIED"
+        assert [row["id"] for row in provider.rows] == [
+            "memory.pre-head-other-domain",
+            "memory.other-user",
+        ]
 
     asyncio.run(scenario())
 

@@ -3,13 +3,13 @@
   "routes": {
     "/toy/companion/memory/clear": {
       "methods": ["POST", "OPTIONS"],
-      "confirmation": "header_and_body"
+      "confirmation": "header_and_body",
+      "request_fields": ["request_id", "reason", "confirmed"],
+      "success_statuses": ["APPLIED", "DUPLICATE", "NOOP"]
     }
   },
   "error_codes": {
-    "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
-      "http_status": 400,
-      "status": "FAILED"
-    }
-  }
+    "COMPANION_JSON_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_FIELDS_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_REQUEST_ID_INVALID":{"http_status":400,"status":"FAILED"},"COMPANION_REASON_INVALID":{"http_status":400,"status":"FAILED"},"MEMORY_CLEAR_CONFIRMATION_REQUIRED":{"http_status":400,"status":"FAILED"},"COMPANION_HOST_FORBIDDEN":{"http_status":403,"status":"FAILED"},"COMPANION_ORIGIN_FORBIDDEN":{"http_status":403,"status":"FAILED"},"COMPANION_CONFIRMATION_REQUIRED":{"http_status":403,"status":"FAILED"},"COMPANION_REQUEST_TOO_LARGE":{"http_status":413,"status":"FAILED"},"COMPANION_CONTENT_TYPE_INVALID":{"http_status":415,"status":"FAILED"},"MEMORY_ADMIN_REQUEST_CONFLICT":{"http_status":409,"status":"FAILED"},"COMPANION_MUTATION_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"COMPANION_MUTATION_INVALID":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_MUTATION_DISABLED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_DISABLED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_READ_FAILED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_CLEAR_FAILED":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_AUDIT_UNAVAILABLE":{"http_status":503,"status":"UNAVAILABLE"},"MEMORY_ADMIN_AUDIT_INVALID":{"http_status":503,"status":"UNAVAILABLE"}
+  },
+  "read_states": {"statuses": ["READY", "PAUSED", "UNAVAILABLE"], "pending_reason": "MEMORY_ADMIN_CLEAR_PENDING"}
 }

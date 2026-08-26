@@ -4,7 +4,7 @@
   "title": "P03 original-client companion mutation route contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "routes", "error_codes"],
+  "required": ["schema_version", "routes", "error_codes", "read_states"],
   "properties": {
     "schema_version": {"const": "p03.original-companion-mutation-contract.v1"},
     "routes": {
@@ -15,18 +15,26 @@
         "/toy/companion/memory/clear": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["methods", "confirmation"],
+          "required": ["methods", "confirmation", "request_fields", "success_statuses"],
           "properties": {
             "methods": {"const": ["POST", "OPTIONS"]},
-            "confirmation": {"const": "header_and_body"}
+            "confirmation": {"const": "header_and_body"},
+            "request_fields": {"const": ["request_id", "reason", "confirmed"]},
+            "success_statuses": {"const": ["APPLIED", "DUPLICATE", "NOOP"]}
           }
         }
       }
     },
+    "read_states": {"type":"object","additionalProperties":false,"required":["statuses","pending_reason"],"properties":{"statuses":{"const":["READY","PAUSED","UNAVAILABLE"]},"pending_reason":{"const":"MEMORY_ADMIN_CLEAR_PENDING"}}},
     "error_codes": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["MEMORY_CLEAR_CONFIRMATION_REQUIRED"],
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["http_status", "status"],
+        "properties": {"http_status": {"enum": [400, 403, 409, 413, 415, 503]}, "status": {"enum": ["FAILED", "UNAVAILABLE"]}}
+      },
+      "minProperties": 1,
       "properties": {
         "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
           "type": "object",

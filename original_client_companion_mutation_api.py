@@ -41,14 +41,33 @@ COMPANION_MUTATION_ROUTES = {
     MEMORY_CLEAR_PATH: {
         "methods": ("POST", "OPTIONS"),
         "confirmation": "header_and_body",
+        "request_fields": ("request_id", "reason", "confirmed"),
+        "success_statuses": ("APPLIED", "DUPLICATE", "NOOP"),
     },
 }
-COMPANION_MUTATION_ERROR_CODES = {
-    "MEMORY_CLEAR_CONFIRMATION_REQUIRED": {
-        "http_status": 400,
-        "status": "FAILED",
-    },
+CLEAR_MUTATION_READ_STATES = {
+    "statuses": ("READY", "PAUSED", "UNAVAILABLE"),
+    "pending_reason": "MEMORY_ADMIN_CLEAR_PENDING",
 }
+CLEAR_MUTATION_ERROR_CODES = {
+    **{code: {"http_status": 400, "status": "FAILED"} for code in (
+        "COMPANION_JSON_INVALID", "COMPANION_FIELDS_INVALID", "COMPANION_REQUEST_ID_INVALID",
+        "COMPANION_REASON_INVALID", "MEMORY_CLEAR_CONFIRMATION_REQUIRED",
+    )},
+    **{code: {"http_status": 403, "status": "FAILED"} for code in (
+        "COMPANION_HOST_FORBIDDEN", "COMPANION_ORIGIN_FORBIDDEN", "COMPANION_CONFIRMATION_REQUIRED",
+    )},
+    "COMPANION_REQUEST_TOO_LARGE": {"http_status": 413, "status": "FAILED"},
+    "COMPANION_CONTENT_TYPE_INVALID": {"http_status": 415, "status": "FAILED"},
+    "MEMORY_ADMIN_REQUEST_CONFLICT": {"http_status": 409, "status": "FAILED"},
+    **{code: {"http_status": 503, "status": "UNAVAILABLE"} for code in (
+        "COMPANION_MUTATION_UNAVAILABLE", "COMPANION_MUTATION_INVALID", "MEMORY_MUTATION_DISABLED",
+        "MEMORY_ADMIN_DISABLED", "MEMORY_ADMIN_UNAVAILABLE", "MEMORY_ADMIN_READ_FAILED",
+        "MEMORY_ADMIN_CLEAR_FAILED", "MEMORY_ADMIN_AUDIT_UNAVAILABLE", "MEMORY_ADMIN_AUDIT_INVALID",
+    )},
+}
+CLEAR_MUTATION_REACHABLE_ERROR_CODES = frozenset(CLEAR_MUTATION_ERROR_CODES)
+COMPANION_MUTATION_ERROR_CODES = CLEAR_MUTATION_ERROR_CODES
 
 
 class OriginalClientCompanionMutationError(RuntimeError):
@@ -581,6 +600,9 @@ __all__ = [
     "CANDIDATE_DECISION_PATH",
     "COMPANION_MUTATION_SCHEMA",
     "COMPANION_MUTATION_ERROR_CODES",
+    "CLEAR_MUTATION_ERROR_CODES",
+    "CLEAR_MUTATION_READ_STATES",
+    "CLEAR_MUTATION_REACHABLE_ERROR_CODES",
     "COMPANION_MUTATION_ROUTES",
     "CONFIRM_HEADER",
     "CONFIRM_VALUE",
