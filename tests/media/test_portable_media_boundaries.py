@@ -526,3 +526,11 @@ def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Pa
     assert candidates == (first, second)
     assert music_reply.select_speaking_scene(candidates) == first
     assert music_reply.speaking_scene_candidates({"OLIVIA_OFFICIAL_REPLY_REFERENCE": str(second)}) == (second,)
+    assert music_reply.speaking_scene_candidates(
+        {
+            "OLIVIA_PROJECT_ROOT": str(tmp_path),
+            "OLIVIA_SPOKEN_SCENE_CANDIDATES": os.pathsep.join(
+                ("first.mp4", "second.mp4")
+            ),
+        }
+    ) == (first, second)

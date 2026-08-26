@@ -48,6 +48,7 @@ from persona_provider import (
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
+from media_paths import configured_media_path
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
@@ -2041,9 +2042,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_path = output_dir / f"{letter_id}.mp4"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
-            visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
-            worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
+            tts_config = configured_media_path(_os.environ, "OLIVIA_TTS_CONFIG")
+            visual_config = configured_media_path(_os.environ, "OLIVIA_VISUAL_CONFIG")
+            worker = configured_media_path(_os.environ, "OLIVIA_LIVETALKING_WORKER")
+            if tts_config is None or visual_config is None or worker is None:
+                raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
             if reply_mode == "musical_video":
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
@@ -2074,10 +2077,19 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
 
                 hour = datetime.now().hour
                 scene_key = "morning" if 5 <= hour < 10 else "day" if 10 <= hour < 17 else "dusk" if 17 <= hour < 20 else "night"
-                normal_scene_value = _os.environ.get(f"OLIVIA_SCENE_{scene_key.upper()}", "")
-                normal_scene = Path(normal_scene_value).expanduser() if normal_scene_value else None
+                normal_scene = configured_media_path(
+                    _os.environ, f"OLIVIA_SCENE_{scene_key.upper()}"
+                )
                 if normal_scene is None or not normal_scene.is_file():
                     raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
+                latentsync_python = configured_media_path(
+                    _os.environ, "OLIVIA_LATENTSYNC_PYTHON"
+                )
+                latentsync_root = configured_media_path(
+                    _os.environ, "OLIVIA_LATENTSYNC_ROOT"
+                )
+                if latentsync_python is None or latentsync_root is None:
+                    raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
                 await asyncio.to_thread(render_reply_video,
                     reply_text,
                     output_path,
@@ -2085,8 +2097,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     visual_config_path=visual_config,
                     worker_path=worker,
                     scene_path=normal_scene,
-                    latentsync_python_path=Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                    latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                    latentsync_python_path=latentsync_python,
+                    latentsync_root=latentsync_root,
                     adaptive_delivery=True,
                     voice_performance_plan=voice_plan,
                     enforce_content_gate=True,

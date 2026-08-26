@@ -20,6 +20,7 @@ from latentsync_reply import (
     render_latentsync_video,
     resolve_ffmpeg_executable,
 )
+from media_paths import configured_media_path
 from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from reply_media import (
     ReplyMediaError,
@@ -54,7 +55,9 @@ def speaking_scene_candidates(env: Mapping[str, str]) -> tuple[Path, ...]:
     values = raw.split(os.pathsep) if raw else [str(env.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", ""))]
     result: list[Path] = []
     for value in values:
-        candidate = Path(value.strip()).expanduser() if value.strip() else None
+        candidate_env = dict(env)
+        candidate_env["_OLIVIA_SCENE_CANDIDATE"] = value
+        candidate = configured_media_path(candidate_env, "_OLIVIA_SCENE_CANDIDATE")
         if candidate is not None and candidate not in result:
             result.append(candidate)
     return tuple(result)
@@ -76,35 +79,50 @@ def musical_reply_configured(
 ) -> bool:
     """Return whether the renderer's complete musical delivery closure exists."""
 
-    def configured_path(name: str) -> Path:
-        return Path(str(env.get(name, ""))).expanduser()
+    def configured_path(name: str) -> Path | None:
+        return configured_media_path(env, name)
 
     minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
     latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
     speaking_scene = select_speaking_scene(speaking_scene_candidates(env))
+    delivery_paths = (
+        configured_path("OLIVIA_TTS_CONFIG"),
+        configured_path("OLIVIA_VISUAL_CONFIG"),
+        configured_path("OLIVIA_LIVETALKING_WORKER"),
+        configured_path("OLIVIA_LOCAL_DATA_ROOT"),
+    )
+    if minimax_root is None or latentsync_root is None or any(
+        path is None for path in delivery_paths
+    ):
+        return False
     try:
         assemble_complete_video_delivery(
-            configured_path("OLIVIA_TTS_CONFIG"),
-            configured_path("OLIVIA_VISUAL_CONFIG"),
-            configured_path("OLIVIA_LIVETALKING_WORKER"),
-            configured_path("OLIVIA_LOCAL_DATA_ROOT"),
+            delivery_paths[0],
+            delivery_paths[1],
+            delivery_paths[2],
+            delivery_paths[3],
             env,
         )
     except ReplyMediaError:
         return False
-    required = (
-        speaking_scene or Path(""),
+    configured_files = (
         configured_path("OLIVIA_ROFORMER_EXE"),
         configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
         configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
         configured_path("OLIVIA_MINIMAX_COMFY_PYTHON"),
         configured_path("OLIVIA_MINIMAX_WORKER"),
+        configured_path("OLIVIA_LATENTSYNC_PYTHON"),
+    )
+    if speaking_scene is None or any(path is None for path in configured_files):
+        return False
+    required = (
+        speaking_scene,
+        *configured_files[:6],
         minimax_root / "main.py",
         minimax_root / "comfy_extras" / "nodes_minimax_music.py",
         minimax_root / "models" / "unet" / "minimax_music3_dit_int8_convrot.safetensors",
         minimax_root / "models" / "clip" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
         minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
-        configured_path("OLIVIA_LATENTSYNC_PYTHON"),
         latentsync_root / "scripts" / "inference.py",
         latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
         latentsync_root / "checkpoints" / "latentsync_unet.pt",
