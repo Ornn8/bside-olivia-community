@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+import threading
 
 import pytest
 
@@ -307,6 +308,112 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
     assert duplicate.status is MemoryAdminMutationStatus.DUPLICATE
     assert memory.records == {}
     assert memory.operations == [("clear", "local-user")]
+
+
+def test_clear_waits_for_an_inflight_lifecycle_write_before_deleting(tmp_path: Path) -> None:
+    memory = FakeMemory()
+    _seed(memory)
+    service = _service(tmp_path, memory)
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    clear_finished = threading.Event()
+
+    def write() -> None:
+        write_entered.set()
+        assert release_write.wait(2.0)
+        memory.add_manual_memory(
+            "synthetic canonical fact",
+            user_id="local-user",
+            source_id="reply:synthetic:1",
+        )
+
+    writer = threading.Thread(target=lambda: service.run_write(write))
+    cleared: list[object] = []
+
+    def clear() -> None:
+        cleared.append(
+            service.clear(
+                request_id="clear.lifecycle.1",
+                reason="用户确认清空当前长期记忆。",
+                confirmed=True,
+            )
+        )
+        clear_finished.set()
+
+    writer.start()
+    assert write_entered.wait(2.0)
+    clearer = threading.Thread(target=clear)
+    clearer.start()
+    assert not clear_finished.wait(0.1)
+    release_write.set()
+    writer.join(2.0)
+    clearer.join(2.0)
+
+    assert not writer.is_alive()
+    assert not clearer.is_alive()
+    assert clear_finished.is_set()
+    assert cleared[0].status is MemoryAdminMutationStatus.APPLIED
+    assert memory.records == {}
+
+
+def test_clear_works_while_memory_writes_are_paused(tmp_path: Path) -> None:
+    memory = FakeMemory()
+    _seed(memory)
+    service = _service(tmp_path, memory)
+    service.pause(
+        request_id="pause.before.clear.1",
+        reason="用户先暂停长期记忆写入。",
+    )
+
+    cleared = service.clear(
+        request_id="clear.while-paused.1",
+        reason="用户确认清空当前长期记忆。",
+        confirmed=True,
+    )
+
+    assert cleared.status is MemoryAdminMutationStatus.APPLIED
+    assert memory.records == {}
+    assert service.is_paused() is True
+
+
+def test_clear_request_ids_are_durable_per_normalized_user(tmp_path: Path) -> None:
+    memory = FakeMemory()
+    memory.add_manual_memory(
+        "synthetic fact for user A",
+        user_id="user-a",
+        source_id="manual:user-a",
+    )
+    memory.add_manual_memory(
+        "synthetic fact for user B",
+        user_id="user-b",
+        source_id="manual:user-b",
+    )
+    audit = tmp_path / "memory" / "admin.sqlite3"
+    user_a = ConversationMemoryAdminService(memory, audit, user_id="User-A")
+    user_b = ConversationMemoryAdminService(memory, audit, user_id="user-b")
+
+    first = user_a.clear(
+        request_id="clear.shared-request.1",
+        reason="用户 A 确认清空当前长期记忆。",
+        confirmed=True,
+    )
+    retry = ConversationMemoryAdminService(memory, audit, user_id="user-a").clear(
+        request_id="clear.shared-request.1",
+        reason="同一用户重试已完成的清空。",
+        confirmed=True,
+    )
+    other_user = user_b.clear(
+        request_id="clear.shared-request.1",
+        reason="用户 B 使用相同请求编号确认清空。",
+        confirmed=True,
+    )
+
+    assert first.status is MemoryAdminMutationStatus.APPLIED
+    assert retry.status is MemoryAdminMutationStatus.DUPLICATE
+    assert other_user.status is MemoryAdminMutationStatus.APPLIED
+    assert memory.records == {}
+    assert memory.operations.count(("clear", "user-a")) == 1
+    assert memory.operations.count(("clear", "user-b")) == 1
 
 
 def test_status_counts_only_the_normalized_current_user_audit_rows(tmp_path: Path) -> None:

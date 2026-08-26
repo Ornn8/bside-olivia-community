@@ -509,11 +509,11 @@ class ConversationMemoryAdminService:
             raise ConversationMemoryAdminError(
                 "MEMORY_ADMIN_CONFIRMATION_REQUIRED"
             )
-        with self._lock:
+        with self._lifecycle_lock, self._lock:
             existing = self._existing_result(request_id, "clear")
             if existing is not None:
                 return existing
-            records = self.list_memories(limit=1000)
+            records = self._records_for_clear()
             if not records:
                 self._write_audit(
                     request_id=request_id,
@@ -533,7 +533,7 @@ class ConversationMemoryAdminService:
                 raise ConversationMemoryAdminError(
                     "MEMORY_ADMIN_CLEAR_FAILED"
                 ) from exc
-            if count <= 0 and self.list_memories(limit=1):
+            if count <= 0 and self._records_for_clear()[:1]:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_CLEAR_FAILED")
             affected = max(count, len(records))
             self._write_audit(
@@ -744,13 +744,16 @@ class ConversationMemoryAdminService:
         )
 
     def _require_available(self) -> None:
+        self._require_provider_available()
+        if self.is_paused():
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_PAUSED")
+
+    def _require_provider_available(self) -> None:
         status = self._provider_status()
         if status.status == "disabled":
             raise ConversationMemoryAdminError("MEMORY_ADMIN_DISABLED")
         if status.status == "unavailable":
             raise ConversationMemoryAdminError("MEMORY_ADMIN_UNAVAILABLE")
-        if self.is_paused():
-            raise ConversationMemoryAdminError("MEMORY_ADMIN_PAUSED")
 
     def _provider_status(self) -> ConversationMemoryStatus:
         try:
@@ -765,6 +768,10 @@ class ConversationMemoryAdminService:
 
     def _records(self) -> tuple[ConversationMemoryRecord, ...]:
         self._require_available()
+        return self._records_for_clear()
+
+    def _records_for_clear(self) -> tuple[ConversationMemoryRecord, ...]:
+        self._require_provider_available()
         try:
             return self.memory.list_memories(
                 user_id=self.user_id,

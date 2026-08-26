@@ -22,6 +22,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const CANDIDATES_PATH = "/toy/companion/private-world/candidates";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
+        'const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
         'const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";',
         'const CONFIRM_HEADER = "X-Olivia-Companion-Action";',
@@ -84,10 +85,21 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
+        "清空当前用户记忆",
     ):
         assert required in source
     assert "http://" not in source
     assert "https://" not in source
+
+
+def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    assert source.count('const clear = button("清空当前用户记忆"') == 1
+    assert "确认清空当前用户的 Mem0 长期记忆？" in source
+    assert "清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？" in source
+    assert "requestMutation(MEMORY_CLEAR_PATH" in source
+    assert 'request_id: requestId("memory.clear")' in source
+    assert "confirmed: true" in source
 
 
 def test_original_settings_management_ui_javascript_is_parseable() -> None:

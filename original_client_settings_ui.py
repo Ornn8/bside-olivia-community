@@ -19,6 +19,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
+  const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
   const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";
@@ -565,7 +566,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!window.confirm(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
         return;
       }
-      setButtonsBusy([toggle], true);
+      setButtonsBusy([toggle, clear], true);
       resultState.textContent = `正在${action}长期记忆……`;
       try {
         const payload = await requestMutation(
@@ -580,10 +581,34 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         resultState.textContent = `长期记忆${action}失败。`;
       } finally {
-        setButtonsBusy([toggle], false);
+        setButtonsBusy([toggle, clear], false);
       }
     });
-    lifecycleControls.append(toggle);
+    const clear = button("清空当前用户记忆", async () => {
+      if (!window.confirm("确认清空当前用户的 Mem0 长期记忆？")) {
+        return;
+      }
+      if (!window.confirm("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？")) {
+        return;
+      }
+      setButtonsBusy([toggle, clear], true);
+      resultState.textContent = "正在清空当前用户记忆……";
+      try {
+        const payload = await requestMutation(MEMORY_CLEAR_PATH, {
+          request_id: requestId("memory.clear"),
+          reason: "用户在原版 Olivia 设置中明确清空当前长期记忆。",
+          confirmed: true,
+        });
+        resultState.textContent = mutationMessage(payload, "当前用户长期记忆已清空。"
+        );
+        await refreshLifecyclePanel();
+      } catch (_error) {
+        resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+      } finally {
+        setButtonsBusy([toggle, clear], false);
+      }
+    });
+    lifecycleControls.append(toggle, clear);
     panel.replaceChildren(heading, summary, lifecycleControls, controls, resultState, list);
     await load();
   };

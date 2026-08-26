@@ -43,6 +43,7 @@ class MemoryAdminFixture:
     def __init__(self) -> None:
         self.corrected: list[tuple[str, str, str, str]] = []
         self.deleted: list[tuple[str, str, str]] = []
+        self.cleared: list[tuple[str, str, bool]] = []
 
     def status(self) -> MemoryAdminStatus:
         return MemoryAdminStatus("available", "fixture", True, 0, 0, 0)
@@ -82,6 +83,21 @@ class MemoryAdminFixture:
             "delete",
             affected_count=1,
             target_memory_id=memory_id,
+        )
+
+    def clear(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool,
+    ) -> MemoryAdminMutationResult:
+        self.cleared.append((request_id, reason, confirmed))
+        return MemoryAdminMutationResult(
+            MemoryAdminMutationStatus.APPLIED,
+            request_id,
+            "clear",
+            affected_count=2,
         )
 
 
@@ -162,6 +178,21 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
             assert deleted.status == 200
             assert (await deleted.json())["affected_count"] == 1
 
+            cleared = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.clear.1",
+                    "reason": "用户明确清空当前长期记忆。",
+                    "confirmed": True,
+                },
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    CONFIRM_HEADER: CONFIRM_VALUE,
+                },
+            )
+            assert cleared.status == 200
+            assert (await cleared.json())["affected_count"] == 2
+
             approved = await client.post(
                 "/toy/companion/private-world/candidates/candidate.fixture.1/approve",
                 json={
@@ -194,6 +225,13 @@ def test_original_runtime_mounts_direct_memory_and_candidate_mutations() -> None
                 "memory.fixture.2",
                 "request.memory.delete.1",
                 "用户明确删除。",
+            )
+        ]
+        assert memory.cleared == [
+            (
+                "request.memory.clear.1",
+                "用户明确清空当前长期记忆。",
+                True,
             )
         ]
         assert candidates.requests == [

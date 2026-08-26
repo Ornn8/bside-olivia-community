@@ -71,6 +71,31 @@ class MemoryAdminFixture:
             target_memory_id=memory_id,
         )
 
+    def clear(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool,
+    ) -> MemoryAdminMutationResult:
+        self.calls.append(
+            (
+                "clear",
+                (),
+                {
+                    "request_id": request_id,
+                    "reason": reason,
+                    "confirmed": confirmed,
+                },
+            )
+        )
+        return MemoryAdminMutationResult(
+            MemoryAdminMutationStatus.APPLIED,
+            request_id,
+            "clear",
+            affected_count=2,
+        )
+
 
 class CandidateDecisionFixture:
     def __init__(self, status: str = "approved") -> None:
@@ -111,11 +136,18 @@ def test_memory_operations_call_exact_existing_service_methods() -> None:
         request_id="request.memory.delete.1",
         reason="用户明确删除。",
     )
+    cleared = backend.clear_memory(
+        request_id="request.memory.clear.1",
+        reason="用户明确清空当前长期记忆。",
+        confirmed=True,
+    )
 
     assert corrected.status == "APPLIED"
     assert corrected.affected_count == 2
     assert deleted.status == "NOOP"
     assert deleted.affected_count == 0
+    assert cleared.status == "APPLIED"
+    assert cleared.affected_count == 2
     assert memory.calls == [
         (
             "correct",
@@ -131,6 +163,15 @@ def test_memory_operations_call_exact_existing_service_methods() -> None:
             {
                 "request_id": "request.memory.delete.1",
                 "reason": "用户明确删除。",
+            },
+        ),
+        (
+            "clear",
+            (),
+            {
+                "request_id": "request.memory.clear.1",
+                "reason": "用户明确清空当前长期记忆。",
+                "confirmed": True,
             },
         ),
     ]

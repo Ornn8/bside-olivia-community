@@ -6,13 +6,30 @@ operations:
 
 - `/toy/companion/memory/pause`
 - `/toy/companion/memory/resume`
+- `/toy/companion/memory/clear`
 - `/toy/companion/memory/embedding/install`
 
 All use the existing `p03.original-companion-mutation.v1` envelope and require
 a loopback origin plus `X-Olivia-Companion-Action: confirmed`. Pause and resume
 are idempotent by request ID; embedding installation is single-flight per cache
-and returns `NOOP` after verified readiness. There is no clear operation in this
-contract; data deletion is a separate, independently reviewable change.
+and returns `NOOP` after verified readiness.
+
+`clear` is the independently reviewed destructive operation for the normalized
+current local user. It is available only in the existing original Settings
+memory panel, first requires the confirmed mutation header, then requires an
+explicit `confirmed: true` request field after a second user confirmation. Its
+default is never to execute. The operation deletes only that user's Mem0
+`CONVERSATION_MEMORY` records through the existing adapter; it never reads,
+writes, or deletes Archive or PrivateWorld data.
+
+Clear uses the same audit-file lifecycle lock as the final Mem0 delivery gate.
+An in-flight canonical write therefore completes before clear starts, and clear
+removes that write rather than allowing it to reappear afterward. Each result,
+including `NOOP`, is recorded by normalized `(user_id, request_id)` in the
+existing operation ledger: replaying the same request is `DUPLICATE`, while
+the same request ID for another user remains independent. Provider, Qdrant, or
+audit failures fail closed with stable path-free errors; the canonical reply
+body path continues independently.
 
 ## Explicit embedding installation
 
