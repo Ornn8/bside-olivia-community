@@ -12,29 +12,8 @@ operations:
 All use the existing `p03.original-companion-mutation.v1` envelope and require
 a loopback origin plus `X-Olivia-Companion-Action: confirmed`. Pause and resume
 are idempotent by request ID; embedding installation is single-flight per cache
-and returns `NOOP` after verified readiness.
-
-`clear` is the independently reviewed destructive operation for the normalized
-current local user. It is available only in the existing original Settings
-memory panel, first requires the confirmed mutation header, then requires an
-explicit `confirmed: true` request field after a second user confirmation. Its
-default is never to execute. The operation deletes only that user's Mem0
-`CONVERSATION_MEMORY` records through the existing adapter; it never reads,
-writes, or deletes Archive or PrivateWorld data.
-
-Clear uses the same audit-file lifecycle lock as the final Mem0 delivery gate.
-An in-flight canonical write therefore completes before clear starts, and clear
-removes that write rather than allowing it to reappear afterward. Before any
-delete, the ledger persists the normalized request payload fingerprint and the
-exact target IDs as a user-scoped pending intent. That intent blocks later
-Mem0 writes for the same user; restart or retry resumes only its recorded IDs,
-then re-reads the target domain before recording a terminal result. Each
-terminal result, including `NOOP`, is scoped by normalized `(user_id,
-request_id)` and its payload fingerprint: only the same payload is
-`DUPLICATE`, while a different payload is a conflict and the same request ID
-for another user remains independent. Provider, Qdrant, or audit failures fail
-closed with stable path-free errors; the canonical reply body path continues
-independently.
+and returns `NOOP` after verified readiness. `clear` is double-confirmed in
+Settings and records only exact Mem0 `CONVERSATION_MEMORY` IDs, never Archive or PrivateWorld.
 
 ## Explicit embedding installation
 

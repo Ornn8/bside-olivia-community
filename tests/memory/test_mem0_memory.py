@@ -13,6 +13,7 @@ import time
 import tomllib
 from types import SimpleNamespace
 
+import pytest
 from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
 from conversation_memory_outbox import CanonicalMemoryOutbox
 from conversation_memory_port import (
@@ -170,6 +171,9 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     assert MEM0_OSS_VERSION == "2.0.18"
     config = _config(tmp_path)
     mapping = config.provider_config({"DEEPSEEK_API_KEY": "fixture-secret"})
+    assert replace(config, user_id="u" * 128).user_id == "u" * 128
+    with pytest.raises(ValueError, match="user_id is invalid"):
+        replace(config, user_id="u" * 129)
 
     assert mapping["vector_store"] == {
         "provider": "qdrant",

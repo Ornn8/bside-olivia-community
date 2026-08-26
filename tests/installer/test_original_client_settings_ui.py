@@ -102,6 +102,14 @@ def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> Non
     assert "confirmed: true" in source
 
 
+def test_pending_clear_has_a_settings_recovery_control() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    assert 'capability.reason_code === "MEMORY_ADMIN_CLEAR_PENDING"' in source
+    assert 'button("继续完成清空"' in source
+    assert source.count('requestMutation(MEMORY_CLEAR_PATH') == 2
+    assert source.count('confirmed: true') == 2
+
+
 def test_original_settings_management_ui_javascript_is_parseable() -> None:
     node = shutil.which("node")
     if node is None:
@@ -215,7 +223,9 @@ const statuses = ["READY", "PAUSED", "READY"];
 const statusPayload = (status) => ({
   status,
   capabilities: {
-    memory: status === "PAUSED"
+    memory: status === "UNAVAILABLE"
+      ? { state: "unavailable", reason_code: "MEMORY_ADMIN_CLEAR_PENDING" }
+      : status === "PAUSED"
       ? { state: "degraded", reason_code: "MEMORY_ADMIN_PAUSED", count: 0 }
       : { state: "available", count: 0 },
     private_world: { state: "available" },
@@ -232,7 +242,11 @@ const fetch = async (endpoint, options) => {
       : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
   }
   if (endpoint.pathname === "/toy/companion/status") {
-    currentStatus = statuses[Math.min(statusIndex++, statuses.length - 1)];
+    currentStatus = mutationPaths.length === 3
+      ? "UNAVAILABLE"
+      : mutationPaths.length > 3
+      ? "READY"
+      : statuses[Math.min(statusIndex++, statuses.length - 1)];
     return { ok: true, json: async () => statusPayload(currentStatus) };
   }
   if (endpoint.pathname === "/toy/companion/memory") {
@@ -283,7 +297,14 @@ vm.runInNewContext(source, context);
   await flush();
   const pause = findButton("暂停长期记忆");
   if (!pause) throw new Error("pause button was not rendered after resume");
-      process.stdout.write(JSON.stringify({ mutationPaths, videoMethods, statusIndex }));
+  await pause.click();
+  await flush();
+  const pending = findButton("继续完成清空");
+  if (!pending) throw new Error("pending clear recovery was not rendered");
+  await pending.click();
+  await flush();
+  if (!findButton("暂停长期记忆")) throw new Error("clear recovery did not refresh status");
+  process.stdout.write(JSON.stringify({ mutationPaths, videoMethods, statusIndex }));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 '''
     result = subprocess.run(
@@ -299,6 +320,8 @@ vm.runInNewContext(source, context);
         "mutationPaths": [
             "/toy/companion/memory/pause",
             "/toy/companion/memory/resume",
+            "/toy/companion/memory/pause",
+            "/toy/companion/memory/clear",
         ],
         "videoMethods": ["GET", "POST", "POST"],
         "statusIndex": 3,

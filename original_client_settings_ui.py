@@ -220,7 +220,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const valid = path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
           || payload.state === "unavailable" && typeof payload.reason_code === "string")
-        : payload && ["READY", "PAUSED"].includes(payload.status);
+        : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         throw new Error("unavailable");
       }
@@ -424,7 +424,35 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const renderMemoryPanel = async (panel, capability) => {
     const state = capabilityState(capability);
+    const confirmClear = () => window.confirm("确认清空当前用户的 Mem0 长期记忆？")
+      && window.confirm("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
     if (state === "disabled" || state === "unavailable") {
+      if (state === "unavailable" && capability && capability.reason_code === "MEMORY_ADMIN_CLEAR_PENDING") {
+        const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+        const summary = text("p", "上次清空尚未完成。", "text-text-secondary text-body-m font-regular");
+        const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
+        const resume = button("继续完成清空", async () => {
+          if (!confirmClear()) return;
+          setButtonsBusy([resume], true);
+          resultState.textContent = "正在继续清空当前用户记忆……";
+          try {
+            const payload = await requestMutation(MEMORY_CLEAR_PATH, {
+              request_id: requestId("memory.clear"),
+              reason: "用户在原版 Olivia 设置中确认继续清空当前长期记忆。",
+              confirmed: true,
+            });
+            resultState.textContent = mutationMessage(payload, "当前用户长期记忆已清空。");
+            const status = await requestJson(STATUS_PATH);
+            await renderMemoryPanel(panel, status.capabilities.memory);
+          } catch (_error) {
+            resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+          } finally {
+            setButtonsBusy([resume], false);
+          }
+        });
+        panel.replaceChildren(heading, summary, resume, resultState);
+        return;
+      }
       if (state === "unavailable" && capability && capability.reason_code === "MEM0_EMBEDDING_CACHE_UNAVAILABLE") {
         const heading = text("h3", "长期记忆", "text-text-title text-title-m");
         const embedding = capability.embedding && typeof capability.embedding === "object"
@@ -585,12 +613,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     const clear = button("清空当前用户记忆", async () => {
-      if (!window.confirm("确认清空当前用户的 Mem0 长期记忆？")) {
-        return;
-      }
-      if (!window.confirm("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？")) {
-        return;
-      }
+      if (!confirmClear()) return;
       setButtonsBusy([toggle, clear], true);
       resultState.textContent = "正在清空当前用户记忆……";
       try {

@@ -292,6 +292,9 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
             confirmed=False,
         )
     assert unconfirmed.value.code == "MEMORY_ADMIN_CONFIRMATION_REQUIRED"
+    service.pause(
+        request_id="pause.before.clear.1", reason="用户先暂停长期记忆写入。"
+    )
 
     result = service.clear(
         request_id="clear.request-1",
@@ -308,6 +311,7 @@ def test_clear_requires_confirmation_and_is_idempotent(tmp_path: Path) -> None:
     assert duplicate.status is MemoryAdminMutationStatus.DUPLICATE
     assert memory.records == {}
     assert memory.operations == [("delete", "memory-1"), ("delete", "memory-2")]
+    assert service.is_paused() is True
 
 
 def test_clear_waits_for_an_inflight_lifecycle_write_before_deleting(tmp_path: Path) -> None:
@@ -354,26 +358,6 @@ def test_clear_waits_for_an_inflight_lifecycle_write_before_deleting(tmp_path: P
     assert clear_finished.is_set()
     assert cleared[0].status is MemoryAdminMutationStatus.APPLIED
     assert memory.records == {}
-
-
-def test_clear_works_while_memory_writes_are_paused(tmp_path: Path) -> None:
-    memory = FakeMemory()
-    _seed(memory)
-    service = _service(tmp_path, memory)
-    service.pause(
-        request_id="pause.before.clear.1",
-        reason="用户先暂停长期记忆写入。",
-    )
-
-    cleared = service.clear(
-        request_id="clear.while-paused.1",
-        reason="用户确认清空当前长期记忆。",
-        confirmed=True,
-    )
-
-    assert cleared.status is MemoryAdminMutationStatus.APPLIED
-    assert memory.records == {}
-    assert service.is_paused() is True
 
 
 def test_clear_request_ids_are_durable_per_normalized_user(tmp_path: Path) -> None:
@@ -446,13 +430,11 @@ def test_clear_recovers_durable_pending_intent_without_deleting_later_memory(
     )
     with sqlite3.connect(service.audit_path) as connection:
         connection.execute("DROP TRIGGER fail_clear_terminal_audit")
-    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_CLEAR_FAILED"):
-        ConversationMemoryAdminService(memory, service.audit_path).clear(
-            request_id="clear.pending-recovery.1",
-            reason="用户确认清空当前长期记忆。",
-            confirmed=True,
-        )
+    recovered = ConversationMemoryAdminService(memory, service.audit_path).clear(
+        request_id="clear.pending-recovery.1", reason="用户确认清空当前长期记忆。", confirmed=True
+    )
 
+    assert recovered.status is MemoryAdminMutationStatus.APPLIED
     assert len(memory.records) == 1
     assert next(iter(memory.records.values())).source_id == "manual:after-clear-audit-failure"
 

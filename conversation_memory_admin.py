@@ -609,6 +609,7 @@ class ConversationMemoryAdminService:
             row,
             user_id=self.user_id,
         )
+        captured_affected = affected
         current = {record.memory_id for record in self._records_for_clear()}
         for memory_id in memory_ids:
             if memory_id not in current:
@@ -633,8 +634,21 @@ class ConversationMemoryAdminService:
                     target_memory_ids=memory_ids,
                 )
                 current.discard(memory_id)
-        if self._records_for_clear():
-            raise ConversationMemoryAdminError("MEMORY_ADMIN_CLEAR_FAILED")
+        remaining = self._records_for_clear() if captured_affected < len(memory_ids) else ()
+        if remaining:
+            self._write_audit(
+                request_id=request_id,
+                operation="clear",
+                payload_fingerprint=fingerprint,
+                status="pending_clear",
+                reason=reason,
+                affected_count=0,
+                target_memory_ids=tuple(record.memory_id for record in remaining),
+            )
+            next_pending = self._audit_row(request_id)
+            if next_pending is None:
+                raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE")
+            return self._complete_pending_clear(next_pending)
         self._write_audit(
             request_id=request_id,
             operation="clear",
@@ -829,11 +843,6 @@ class ConversationMemoryAdminService:
                         (self.user_id,),
                     ).fetchone()[0]
                 )
-                pending_clear = connection.execute(
-                    "SELECT 1 FROM memory_admin_operations "
-                    "WHERE user_id = ? AND status = 'pending_clear' LIMIT 1",
-                    (self.user_id,),
-                ).fetchone() is not None
         except (OSError, sqlite3.Error, ValueError):
             return MemoryAdminStatus(
                 "unavailable",
@@ -844,8 +853,15 @@ class ConversationMemoryAdminService:
                 0,
                 reason_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
             )
+        try:
+            pending_clear = self._pending_clear_row()
+        except ConversationMemoryAdminError:
+            return MemoryAdminStatus(
+                "unavailable", provider.provider, False, provider.memory_count,
+                audit_count, pending_count, reason_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
+            )
         paused = self.is_paused()
-        if pending_clear:
+        if pending_clear is not None:
             return MemoryAdminStatus(
                 "unavailable",
                 provider.provider,
@@ -960,11 +976,16 @@ class ConversationMemoryAdminService:
     def _pending_clear_row(self) -> sqlite3.Row | None:
         try:
             with self._connect() as connection:
-                return connection.execute(
+                rows = connection.execute(
                     "SELECT * FROM memory_admin_operations "
-                    "WHERE user_id = ? AND status = 'pending_clear' LIMIT 1",
+                    "WHERE user_id = ? AND status = 'pending_clear' LIMIT 2",
                     (self.user_id,),
-                ).fetchone()
+                ).fetchall()
+                if len(rows) > 1:
+                    raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE")
+                if rows:
+                    _pending_clear_values(rows[0], user_id=self.user_id)
+                return rows[0] if rows else None
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
 
@@ -1059,17 +1080,23 @@ class ConversationMemoryAdminService:
     ) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         existing = connection.execute(
-            "SELECT operation, payload_fingerprint, target_memory_id, "
+            "SELECT operation, payload_fingerprint, status, target_memory_id, "
             "target_memory_ids, replacement_source_id "
             "FROM memory_admin_operations WHERE user_id = ? AND request_id = ?",
             (self.user_id, request_id),
         ).fetchone()
-        if existing is not None and (
+        serialized_memory_ids = _serialized_memory_ids(target_memory_ids)
+        if existing is not None and not (
+            operation == "clear"
+            and str(existing["status"]) == "pending_clear"
+            and str(existing["operation"]) == operation
+            and str(existing["payload_fingerprint"]) == payload_fingerprint
+        ) and (
             str(existing["operation"]) != operation
             or str(existing["payload_fingerprint"]) != payload_fingerprint
             or (existing["target_memory_id"] or None) != target_memory_id
             or (existing["target_memory_ids"] or None)
-            != _serialized_memory_ids(target_memory_ids)
+            != serialized_memory_ids
             or (existing["replacement_source_id"] or None) != replacement_source_id
         ):
             raise ConversationMemoryAdminError("MEMORY_ADMIN_REQUEST_CONFLICT")
@@ -1083,6 +1110,7 @@ class ConversationMemoryAdminService:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, request_id) DO UPDATE SET
                 replacement_memory_id = excluded.replacement_memory_id,
+                target_memory_ids = excluded.target_memory_ids,
                 status = excluded.status,
                 affected_count = excluded.affected_count,
                 reason = excluded.reason,
@@ -1094,7 +1122,7 @@ class ConversationMemoryAdminService:
                 operation,
                 target_memory_id,
                 payload_fingerprint,
-                _serialized_memory_ids(target_memory_ids),
+                serialized_memory_ids,
                 replacement_memory_id,
                 replacement_source_id,
                 status,
@@ -1184,7 +1212,7 @@ def _pending_clear_values(
         if not memory_ids or len(set(memory_ids)) != len(memory_ids):
             raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
         affected = row["affected_count"]
-        if type(affected) is not int or affected < 0:
+        if type(affected) is not int or not 0 <= affected <= len(memory_ids):
             raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
     except (ConversationMemoryAdminError, IndexError, KeyError, TypeError, ValueError) as exc:
         raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc

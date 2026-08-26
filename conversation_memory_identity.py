@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 
-_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 class ConversationMemoryIdentityError(ValueError):
