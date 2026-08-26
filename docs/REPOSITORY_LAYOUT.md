@@ -1,32 +1,53 @@
 # Repository layout
 
-这份说明帮助维护者判断哪些目录属于公开基线，哪些目录仍是本机实验代码。
+仓库当前采用“扁平产品运行时＋分目录适配层”的结构。根目录 Python 模块较多，但它们已经被安装器、测试和公开导入路径使用；在形成兼容迁移计划前，不做仅为美观的大规模搬家。
 
-## 公开基线
+## 产品入口
 
-| 路径 | 责任 | 公开条件 |
+| 路径 | 职责 |
+| --- | --- |
+| `local_server.py` | 本机 HTTP 服务、信件主流程和后台媒体任务入口 |
+| `reply_pipeline.py`、`reply_*.py` | canonical reply 装配、审校、持久化和媒体投影 |
+| `llm_gateway.py`、`voice_direction.py` | 可配置模型调用与语音导演计划 |
+| `conversation_memory_*.py`、`mem0_memory.py` | 长期记忆、outbox、管理和运行时适配 |
+| `private_world_*.py` | 私有关系事件、ledger、reducer、投影和管理 |
+| `original_client_*.py`、`patch_*.py` | 原版客户端兼容接口、设置页和本机补丁 |
+| `music_*.py`、`reply_media.py` | 视频、音乐和媒体编排 |
+
+## 目录
+
+| 路径 | 内容 | 默认发布边界 |
 | --- | --- | --- |
-| `http_contract.py`, `local_server.py` | 本地 HTTP 契约与服务 | 不依赖官方安装、模型或真实凭据 |
-| `media_state/` | 媒体状态与资源引用边界 | 只使用逻辑 ID、manifest 和合成 fixture |
-| `contracts/` | JSON schema 与接口样例 | 不包含真实请求、签名或用户数据 |
-| `tests/http/`, `tests/media/` | 公开基线回归 | 可在干净 Windows + Python 3.12 环境运行 |
-| `docs/`, `README.md` | 维护与发布说明 | 不记录机器绝对路径、密钥或抓包内容 |
+| `installer/` | Windows 隔离安装、启动、配置、升级和卸载 | 核心入口 |
+| `linli_character/` | 公开人格配置、风格特征和 provenance | 核心数据 |
+| `control_center/` | Memory 与 PrivateWorld 本地管理界面 | 核心入口 |
+| `contracts/` | JSON Schema 和接口契约 | 公共契约 |
+| `tts/`, `asr/` | 语音 provider 适配器 | provider 可选 |
+| `live/`, `visual_driver/` | Live 与视觉驱动接口 | 实验性、默认暂停 |
+| `runtime/` | 可选模块和视觉运行时装配 | 按 profile 启用 |
+| `media_state/` | 媒体状态与资源引用边界 | 公共契约 |
+| `tests/` | 合成 fixture、契约和回归测试 | 不含真实数据 |
+| `tools/` | 审计、健康检查、provider worker 和维护命令 | 维护入口 |
+| `docs/` | 用户、实现、验收、治理与历史文档 | 入口见 `docs/README.md` |
 
-## 实验模块
+## 本机内容
 
-以下路径当前仍在研发或组合验证阶段。它们可以保留在工作树中供本地开发，但在通过独立的干净克隆门禁前，不应被当作默认安装目标：
+以下内容永不进入公开提交：
 
-- `asr/`、`tests/asr/`、`tools/asr_manage.py`：ASR provider 与 native/fallback 路径；
-- `runtime/packaging/`、`tests/packaging/`、`tools/verify_*.py`：模块安装、scope 和跨 tranche 组合验证；
-- `tests/live/`、`tests/live_driver/`、`tools/livetalking_*.py`：Live 编排与视觉运行时；
-- `docs/B05_STREAMING_ASR.md`、`docs/B11_VISUAL_RUNTIME.md`：实验模块的设计和证据边界。
+- 原版安装目录、`feapp.dat`、提取后的前端和官方媒体；
+- `CosyVoice/`、`LiveTalking/`、MiniMax 等第三方运行时、权重和缓存；
+- API key、抓包、协议秘密、真实信件、用户数据库和声音参考；
+- `.evidence/`、生成音视频、日志和机器专属绝对路径。
 
-这些模块的共同要求是：无硬编码本机路径、无凭据、provider 缺失时 fail-closed，并能在无官方资源的环境中完成 fixture 测试。当前 packaging/scope 组合仍有历史基线与 child contract 的失败项，因此不放入 `public-smoke` 默认门禁。
+需要这些内容的功能只能提交配置接口、逻辑 ID、哈希校验、脱敏 manifest 和合成 fixture。详细规则见 [`PUBLIC_REPOSITORY.md`](PUBLIC_REPOSITORY.md)。
 
-## 永不进入公开提交
+## 未来整理原则
 
-`.gitignore` 中的官方安装目录、`CosyVoice/`、`LiveTalking/`、模型/缓存/媒体、`.evidence/`、`PROTOCOL.md`、`llm_config.json`、真实 letter 与用户数据库，均属于本机或私有发布边界。若某项功能需要这些内容，公开代码只能提供配置接口、校验器和脱敏 fixture。
+根目录模块只有在满足下列条件时才迁入正式 package：
 
-## 维护入口
+1. 有明确的模块边界和单一归属；
+2. 保留旧导入路径的兼容层或提供版本化迁移；
+3. 安装器、provider worker、测试和第三方调用方可在同一个小 PR 中验证；
+4. 迁移能删除旧代码，而不是同时长期维护两套目录。
 
-新贡献先读 [`CONTRIBUTING.md`](../CONTRIBUTING.md)、[`SECURITY.md`](../SECURITY.md) 和 [`PUBLIC_REPOSITORY.md`](PUBLIC_REPOSITORY.md)。发布前按 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) 复核依赖、许可证、路径和测试边界。
+当前优先级是完成功能和真实验收，不为目录观感进行大规模重构。

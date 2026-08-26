@@ -1,0 +1,57 @@
+# 文档索引
+
+README 只提供项目入口。本目录保存用户安装、产品边界、实现契约和历史证据；动态进度仍以 GitHub Issues 与 Milestones 为准。
+
+## 用户入口
+
+- [`WINDOWS_FULL_PATCH.md`](WINDOWS_FULL_PATCH.md)：安装、启动、配置、升级和卸载。
+- [`THIRD_PARTY_DOWNLOADS.md`](THIRD_PARTY_DOWNLOADS.md)：第三方模型与运行时的官方下载入口。
+- [`PUBLIC_REPOSITORY.md`](PUBLIC_REPOSITORY.md)：原版资源、私人数据和公开代码边界。
+- [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)：发布前检查。
+- [`REPOSITORY_LAYOUT.md`](REPOSITORY_LAYOUT.md)：代码与目录职责。
+
+## 产品与架构
+
+- [`P03_IMPLEMENTATION_INDEX.md`](P03_IMPLEMENTATION_INDEX.md)：当前书信陪伴阶段的总索引。
+- [`B02_HTTP_CONTRACT.md`](B02_HTTP_CONTRACT.md)：本机 HTTP 契约。
+- [`B03_LLM_GATEWAY.md`](B03_LLM_GATEWAY.md)：模型调用与回信编排。
+- [`B04_LOCAL_MEMORY.md`](B04_LOCAL_MEMORY.md)：本地记忆基础边界。
+- [`P03_02_PRIVATE_WORLD_RUNTIME.md`](P03_02_PRIVATE_WORLD_RUNTIME.md)：PrivateWorld 运行时。
+- [`P03_03_LONG_TERM_MEMORY_MEM0.md`](P03_03_LONG_TERM_MEMORY_MEM0.md)：Mem0 长期记忆。
+- [`P03_03A_COMPANION_CONTROL_CENTER.md`](P03_03A_COMPANION_CONTROL_CENTER.md)：本地管理界面。
+- [`P03_04_CLIENT_COMPAT_AND_CLEANUP.md`](P03_04_CLIENT_COMPAT_AND_CLEANUP.md)：原版客户端兼容。
+- [`P03_05_INSTALLATION_AND_DEFAULTS.md`](P03_05_INSTALLATION_AND_DEFAULTS.md)：Windows 安装与默认配置。
+- [`P03_06_END_TO_END_ACCEPTANCE.md`](P03_06_END_TO_END_ACCEPTANCE.md)：真实全链验收边界。
+
+## Persona 与回信质量
+
+- [`P01_PERSONA_EVIDENCE.md`](P01_PERSONA_EVIDENCE.md)：人格证据与公开边界。
+- [`P02_PERSONA_V2_RELEASE.md`](P02_PERSONA_V2_RELEASE.md)：Persona 2.0 激活说明。
+- [`P02_PERSONA_ASSEMBLY.md`](P02_PERSONA_ASSEMBLY.md)：Persona 装配。
+- [`P02_REPLY_CONTEXT.md`](P02_REPLY_CONTEXT.md)：回信上下文契约。
+- [`P02_REPLY_QUALITY_GATE.md`](P02_REPLY_QUALITY_GATE.md)：确定性与模型审校门禁。
+- [`PERSONA_DISTILLATION_TASK.md`](PERSONA_DISTILLATION_TASK.md)：人格蒸馏任务边界。
+
+## 媒体与实验模块
+
+- [`P03_01C_MINIMAX_MUSIC_STABILIZATION.md`](P03_01C_MINIMAX_MUSIC_STABILIZATION.md)：音乐回信稳定化。
+- [`B05_STREAMING_ASR.md`](B05_STREAMING_ASR.md)：ASR 契约。
+- [`B06_LOCAL_TTS_ACCEPTANCE.md`](B06_LOCAL_TTS_ACCEPTANCE.md)：TTS 验收。
+- [`B07_VISUAL_DRIVER.md`](B07_VISUAL_DRIVER.md)：视觉驱动边界。
+- [`B08_LIVE_ORCHESTRATION.md`](B08_LIVE_ORCHESTRATION.md)：Live 编排；当前暂停。
+- [`B09_MEDIA_STATE.md`](B09_MEDIA_STATE.md)：媒体状态契约。
+- [`EXPERIMENTAL_MODULES.md`](EXPERIMENTAL_MODULES.md)：实验模块共同边界。
+
+## 治理与验收
+
+- [`STATUS.md`](STATUS.md)：状态语义和动态队列入口。
+- [`PROJECT_MANAGEMENT.md`](PROJECT_MANAGEMENT.md)：仓库治理规则。
+- [`OPS_REQUIRED_CI.md`](OPS_REQUIRED_CI.md)：CI 门禁。
+- [`ACCEPTANCE.md`](ACCEPTANCE.md)：总验收矩阵。
+- [`B11_ACCEPTANCE_STANDARD.md`](B11_ACCEPTANCE_STANDARD.md)：验收证据标准。
+- [`MASTER_PLAN.md`](MASTER_PLAN.md)：长期技术背景，不作为当前完成度。
+- [`DELEGATION_BOARD.md`](DELEGATION_BOARD.md)：历史批次格式，不作为当前工作队列。
+
+## 历史资料
+
+阶段性审计和已经失效的发布候选记录移至 [`archive/`](archive/README.md)。它们只用于追溯，不能作为当前能力声明。
