@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
-from music_calibration import MUSIC_CALIBRATION_SCHEMA_VERSION
+from tools.music_calibration import MUSIC_CALIBRATION_SCHEMA_VERSION
 
 
 MUSIC_CALIBRATION_SCORE_SCHEMA_VERSION = "p03.music-calibration-score.v1"
