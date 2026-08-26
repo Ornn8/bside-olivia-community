@@ -90,8 +90,6 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     for path_value in (
         "/toy/companion/status",
         "/toy/companion/memory",
-        "/toy/companion/private-world",
-        "/toy/companion/private-world/candidates",
         "/toy/companion/memory/correct",
         "/toy/companion/memory/delete",
         "/toy/companion/memory/pause",
@@ -101,17 +99,27 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     for visible_text in (
         "长期记忆",
         "私人世界",
-        "待确认的关系建议",
         "搜索长期记忆",
-        "本地世界线",
         "保存更正",
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "批准",
-        "拒绝",
     ):
         assert visible_text in bootstrap
+    for hidden_artifact in (
+        "/toy/companion/private-world",
+        "/toy/companion/private-world/candidates",
+        "PRIVATE_WORLD_PATH",
+        "CANDIDATES_PATH",
+        "待确认的关系建议",
+        "批准",
+        "拒绝",
+        "本地世界线",
+        "approve",
+        "reject",
+        "encodeURIComponent",
+    ):
+        assert hidden_artifact not in bootstrap
     assert "MutationObserver" in bootstrap
     assert "replaceChildren" in bootstrap
     assert 'method: "GET"' in bootstrap
@@ -119,7 +127,6 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     assert "X-Olivia-Companion-Action" in bootstrap
     assert "window.confirm" in bootstrap
     assert "crypto.randomUUID" in bootstrap
-    assert "encodeURIComponent" in bootstrap
     assert "<iframe" not in bootstrap.casefold()
     assert "window.open" not in bootstrap
     assert "innerHTML" not in bootstrap

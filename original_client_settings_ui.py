@@ -14,8 +14,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const DIALOG_ATTR = "data-olivia-companion-settings-dialog";
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
-  const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
-  const CANDIDATES_PATH = "/toy/companion/private-world/candidates";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
@@ -145,42 +143,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     disabled: "未启用",
   };
 
-  const levelLabels = {
-    unknown: "未知",
-    low: "低",
-    medium: "中",
-    high: "高",
-  };
-
-  const stageLabels = {
-    unknown: "尚未确认",
-    acquaintance: "认识",
-    familiar: "熟悉",
-    close: "亲近",
-  };
-
-  const homeLabels = {
-    no_access: "未授权",
-    visit_access: "可到访",
-    errand_access: "可代办日常事项",
-    domestic_access: "可参与居家日常",
-  };
-
-  const awarenessLabels = {
-    control_only: "仅本机记录",
-    pending: "等待确认",
-    character_known: "林离已经知道",
-  };
-
-  const candidateLabels = {
-    boundary_respected: "边界被尊重",
-    conflict: "发生冲突",
-    repair: "完成修复",
-  };
-
   const capabilityState = (value) => {
     const state = value && typeof value.state === "string" ? value.state : "unavailable";
     return Object.hasOwn(stateLabels, state) ? state : "unavailable";
+  };
+
+  const privateWorldState = (value) => {
+    const state = value && typeof value.state === "string" ? value.state : "unavailable";
+    return state === "available" || state === "disabled" || state === "unavailable"
+      ? state
+      : "unavailable";
   };
 
   const requestId = (prefix) => {
@@ -636,215 +608,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     await load();
   };
 
-  const renderPrivateSummary = (container, payload) => {
-    const levels = payload && payload.levels && typeof payload.levels === "object"
-      ? payload.levels
-      : {};
-    const nicknames = Array.isArray(payload.nickname_permissions)
-      ? payload.nickname_permissions.filter((value) => typeof value === "string")
-      : [];
-    container.append(
-      field("关系阶段", stageLabels[payload.relationship_stage] || "尚未确认"),
-      field("熟悉程度", levelLabels[levels.familiarity] || "未知"),
-      field("信任", levelLabels[levels.trust] || "未知"),
-      field("自在程度", levelLabels[levels.comfort] || "未知"),
-      field("亲近程度", levelLabels[levels.closeness] || "未知"),
-      field("紧张程度", levelLabels[levels.tension] || "未知"),
-      field("私人称呼", nicknames.length ? nicknames.join("、") : "未授权"),
-      field("住所权限", homeLabels[payload.home_access] || "未授权")
-    );
-
-    const continuationTitle = text(
-      "h4",
-      "本地世界线",
-      "text-text-title text-label-l font-medium"
-    );
-    continuationTitle.style.marginTop = "8px";
-    container.append(continuationTitle);
-    const facts = Array.isArray(payload.continuation_facts)
-      ? payload.continuation_facts
-      : [];
-    if (!facts.length) {
-      container.append(
-        text("p", "暂无本地世界线记录。", "text-text-secondary text-body-m font-regular")
-      );
-      return;
-    }
-    const factList = stack();
-    for (const fact of facts) {
-      if (!fact || typeof fact.statement !== "string") {
-        continue;
-      }
-      const item = card();
-      item.append(
-        text("p", fact.statement, "text-text-body text-body-m font-regular"),
-        text(
-          "p",
-          awarenessLabels[fact.awareness] || "状态未知",
-          "text-text-secondary text-caption-m font-regular"
-        )
-      );
-      factList.append(item);
-    }
-    container.append(factList);
-  };
-
-  const renderCandidateList = (
-    container,
-    payload,
-    capability,
-    reload,
-    resultState
-  ) => {
-    const state = capabilityState(capability);
-    const title = text(
-      "h4",
-      "待确认的关系建议",
-      "text-text-title text-label-l font-medium"
-    );
-    title.style.marginTop = "14px";
-    container.append(title);
-    if (state === "disabled" || state === "unavailable") {
-      container.append(
-        text(
-          "p",
-          `关系建议${state === "disabled" ? "未启用。" : "暂时不可用。"}`,
-          "text-text-secondary text-body-m font-regular"
-        )
-      );
-      return;
-    }
-    const candidates = payload && Array.isArray(payload.candidates)
-      ? payload.candidates
-      : [];
-    if (!candidates.length) {
-      container.append(
-        text("p", "暂无待确认建议。", "text-text-secondary text-body-m font-regular")
-      );
-      return;
-    }
-    const list = stack();
-    for (const candidate of candidates) {
-      if (!candidate || typeof candidate.summary !== "string") {
-        continue;
-      }
-      const item = card();
-      item.append(
-        text(
-          "h5",
-          candidateLabels[candidate.candidate_type] || "关系建议",
-          "text-text-title text-label-l font-medium"
-        ),
-        text("p", candidate.summary, "text-text-body text-body-m font-regular")
-      );
-      const created = formatTime(candidate.created_at);
-      if (created) {
-        item.append(
-          text("p", created, "text-text-secondary text-caption-m font-regular")
-        );
-      }
-
-      if (typeof candidate.candidate_id === "string" && candidate.candidate_id) {
-        const controls = actions();
-        const decide = async (decision, approve, reject) => {
-          const actionLabel = decision === "approve" ? "批准" : "拒绝";
-          const explanation = decision === "approve"
-            ? "批准后，这条建议会通过现有 PrivateWorld 命令服务写入关系记录。"
-            : "拒绝后，关系状态不会发生变化。";
-          if (!window.confirm(`${explanation}\n\n确认${actionLabel}这条建议？`)) {
-            return;
-          }
-          setButtonsBusy([approve, reject], true);
-          resultState.textContent = `正在${actionLabel}关系建议……`;
-          const path = `${CANDIDATES_PATH}/${encodeURIComponent(candidate.candidate_id)}/${decision}`;
-          try {
-            const mutation = await requestMutation(path, {
-              request_id: requestId(`candidate.${decision}`),
-              reason: decision === "approve"
-                ? "用户在原版 Olivia 设置中明确批准关系建议。"
-                : "用户在原版 Olivia 设置中明确拒绝关系建议。",
-              decided_at: new Date().toISOString(),
-            });
-            await reload();
-            resultState.textContent = mutationMessage(
-              mutation,
-              decision === "approve" ? "关系建议已批准。" : "关系建议已拒绝。"
-            );
-          } catch (_error) {
-            resultState.textContent = "关系建议处理失败，关系状态保持不变。";
-          } finally {
-            setButtonsBusy([approve, reject], false);
-          }
-        };
-        const approve = button("批准", () => decide("approve", approve, reject));
-        const reject = button("拒绝", () => decide("reject", approve, reject));
-        controls.append(approve, reject);
-        item.append(controls);
-      }
-      list.append(item);
-    }
-    container.append(list);
-  };
-
-  const renderPrivateWorldPanel = async (panel, privateCapability, candidateCapability) => {
-    const privateState = capabilityState(privateCapability);
-    const heading = text("h3", "私人世界", "text-text-title text-title-m");
+  const renderPrivateWorldPanel = async (panel, privateCapability) => {
+    const rawPrivateWorldState = privateCapability
+      && typeof privateCapability.state === "string"
+      ? privateCapability.state
+      : null;
+    const privateState = privateWorldState(privateCapability);
+    const heading = text("h3", "私人世界状态", "text-text-title text-title-m");
     const summary = text(
       "p",
       `状态：${stateLabels[privateState]}`,
       "text-text-secondary text-body-m font-regular"
     );
-    const resultState = text(
-      "p",
-      "正在读取私人世界……",
-      "text-text-secondary text-body-m font-regular"
+    const reasonCode = rawPrivateWorldState === "unavailable"
+      && privateCapability
+      && typeof privateCapability.reason_code === "string"
+      && /^[A-Z][A-Z0-9_]{0,95}$/.test(privateCapability.reason_code)
+      ? privateCapability.reason_code
+      : null;
+    panel.replaceChildren(
+      heading,
+      summary,
+      text(
+        "p",
+        reasonCode ? `原因代码：${reasonCode}` : "原因代码：无",
+        "text-text-secondary text-body-m font-regular"
+      )
     );
-    resultState.setAttribute("aria-live", "polite");
-    const content = stack();
-    panel.replaceChildren(heading, summary, resultState, content);
-
-    const load = async () => {
-      content.replaceChildren();
-      resultState.textContent = "正在读取私人世界……";
-      if (privateState !== "disabled" && privateState !== "unavailable") {
-        try {
-          const privatePayload = await requestJson(PRIVATE_WORLD_PATH);
-          renderPrivateSummary(content, privatePayload);
-        } catch (_error) {
-          content.append(
-            text("p", "私人世界暂时无法读取。", "text-text-secondary text-body-m font-regular")
-          );
-        }
-      } else {
-        content.append(
-          text(
-            "p",
-            `私人世界${privateState === "disabled" ? "未启用。" : "暂时不可用。"}`,
-            "text-text-secondary text-body-m font-regular"
-          )
-        );
-      }
-
-      let candidatePayload = null;
-      const candidateState = capabilityState(candidateCapability);
-      if (candidateState !== "disabled" && candidateState !== "unavailable") {
-        try {
-          candidatePayload = await requestJson(CANDIDATES_PATH, { limit: 50 });
-        } catch (_error) {
-          candidatePayload = null;
-        }
-      }
-      renderCandidateList(
-        content,
-        candidatePayload,
-        candidateCapability,
-        load,
-        resultState
-      );
-      resultState.textContent = "已读取本机私人世界。";
-    };
-
-    await load();
   };
 
   const loadDialogData = async (statusNode, panels) => {
@@ -858,11 +648,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       statusNode.dataset.state = "available";
       await Promise.allSettled([
         renderMemoryPanel(panels.memory, capabilities.memory),
-        renderPrivateWorldPanel(
-          panels.privateWorld,
-          capabilities.private_world,
-          capabilities.candidates
-        ),
+        renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),
       ]);
     } catch (_error) {
       statusNode.textContent = "本机陪伴服务暂不可用。";
