@@ -358,7 +358,7 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     quality_cache.mkdir()
     quality_checkpoint = quality_cache / "base.pt"
     quality_checkpoint.write_bytes(b"synthetic")
-    required.extend((tts_llm, quality_checkpoint))
+    required.append(tts_llm)
     tts_reference = write("tts/reference.wav")
     Path(env["OLIVIA_TTS_CONFIG"]).write_text(json.dumps({"settings": {
         "runtime_root": str(tts_runtime), "model_dir": str(tts_model),
@@ -395,6 +395,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     )
 
     assert routing_context_from_environment(env) == RoutingContext(True, True)
+
+    quality_checkpoint.unlink()
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    quality_checkpoint.write_bytes(b"synthetic")
 
     for missing in required:
         missing.unlink()

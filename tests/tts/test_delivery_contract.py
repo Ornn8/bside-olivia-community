@@ -17,7 +17,7 @@ from reply_delivery import (
     plan_reply_delivery,
 )
 from tts import DIRECTED_DELIVERY_ERROR_CODES, TTSConfig, external_cosyvoice_worker
-from tts.external_audio_quality_worker import assess_transcript
+from tts.external_audio_quality_worker import assess_transcript, normalize_transcript
 from tts.delivery import (
     DeliveryAudioError,
     _fit_overlong_wav,
@@ -108,6 +108,10 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     assert request["instruct_text"] == (
         "You are a helpful assistant. "
         "声音柔软自然地承接，再缓缓托起给到力量。<|endofprompt|>"
+    )
+    assert request["quality_forbidden_text"] == (
+        "You are a helpful assistant. "
+        "声音柔软自然地承接，再缓缓托起给到力量"
     )
     assert request["performance_control_mode"] == "single_pass_llm_short_instruct"
     assert request["duration_target_seconds"] == [40.0, 50.0]
@@ -358,7 +362,14 @@ def test_external_worker_rejects_runtime_without_pinned_instruct2_api(
         )
 
 
-def test_external_worker_rejects_frozen_text_with_model_control_token(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "control_text",
+    ["<|endofprompt|>", "[breath]", "<strong>强调</strong>", "**强调**"],
+)
+def test_external_worker_rejects_frozen_text_with_model_control_token(
+    tmp_path,
+    control_text: str,
+) -> None:
     calls: list[object] = []
 
     class Model:
@@ -373,7 +384,7 @@ def test_external_worker_rejects_frozen_text_with_model_control_token(tmp_path) 
             Model(),
             {
                 "reference_audio": str(tmp_path / "reference.wav"),
-                "text": "frozen reply <|endofprompt|>",
+                "text": f"frozen reply {control_text}",
                 "instruct_text": "steady reassurance<|endofprompt|>",
             },
             tmp_path / "directed.wav",
@@ -382,9 +393,15 @@ def test_external_worker_rejects_frozen_text_with_model_control_token(tmp_path) 
     assert calls == []
 
 
-def test_directed_request_rejects_frozen_text_with_model_control_token() -> None:
+@pytest.mark.parametrize(
+    "control_text",
+    ["<|endofprompt|>", "[breath]", "<strong>强调</strong>", "**强调**"],
+)
+def test_directed_request_rejects_frozen_text_with_model_control_token(
+    control_text: str,
+) -> None:
     plan = VoicePerformancePlan(
-        reply_text="frozen reply <|endofprompt|>",
+        reply_text=f"frozen reply {control_text}",
         overall_emotion="steady reassurance",
         global_speed=1.06,
         energy=0.62,
@@ -414,6 +431,8 @@ def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() ->
     }
     runtime = upstreams["b06-cosyvoice-runtime"]
     model = upstreams["b06-cosyvoice-model"]
+    quality_runtime = upstreams["b06-whisper-quality-runtime"]
+    quality_model = upstreams["b06-whisper-base-model"]
     acceptance = (root / "docs/B06_LOCAL_TTS_ACCEPTANCE.md").read_text(
         encoding="utf-8"
     )
@@ -424,6 +443,14 @@ def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() ->
     assert runtime["adapter_boundary"] in normalized_acceptance
     assert runtime["uninstall_path"] in normalized_acceptance
     assert model["revision"] == "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
+    assert quality_runtime["revision"] == "31243bad24cc746f07d4c8bfdd2d974872cb1803"
+    assert quality_runtime["license"] == "MIT"
+    assert quality_model["revision"] == "31243bad24cc746f07d4c8bfdd2d974872cb1803"
+    assert (
+        "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
+        in quality_model["version"]
+    )
+    assert quality_model["license"] == "MIT"
     assert "inference_instruct2" in acceptance
     assert "41.28 seconds" in acceptance
     assert "24 kHz mono" in acceptance
@@ -445,6 +472,15 @@ def test_content_gate_accepts_small_asr_substitutions_but_rejects_control_or_omi
         instruction,
     )
     contaminated = assess_transcript(expected, instruction + expected, instruction)
+    fixed_prefix = "You are a helpful assistant"
+    normalized_expected = normalize_transcript(expected)
+    normalized_prefix = normalize_transcript(fixed_prefix)
+    equal_length_prefix = normalized_prefix + normalized_expected[len(normalized_prefix) :]
+    prefix_contaminated = assess_transcript(
+        normalized_expected,
+        equal_length_prefix,
+        fixed_prefix + instruction,
+    )
     omitted = assess_transcript(expected, "这是完全合成的语音验收样例。", instruction)
     one_missing = assess_transcript(expected, expected.replace("月", "", 1), instruction)
     one_extra = assess_transcript(expected, expected + "啊", instruction)
@@ -452,6 +488,7 @@ def test_content_gate_accepts_small_asr_substitutions_but_rejects_control_or_omi
 
     assert accepted["passed"] is True
     assert contaminated["checks"]["instruction_overlap"] is False
+    assert prefix_contaminated["checks"]["instruction_overlap"] is False
     assert omitted["checks"]["length_ratio"] is False
     assert one_missing["checks"]["contiguous_omission"] is False
     assert one_extra["checks"]["extra_speech"] is False
@@ -523,6 +560,30 @@ def test_directed_delivery_preflight_requires_pinned_model_and_asr_runtime(
     assert all(len(expected) == 64 for _name, expected in verified)
 
 
+def test_directed_delivery_preflight_rejects_implicit_whisper_cache(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    model = tmp_path / "model"
+    runtime.mkdir()
+    model.mkdir()
+    executable = tmp_path / "python.exe"
+    reference = tmp_path / "reference.wav"
+    executable.write_bytes(b"synthetic executable")
+    reference.write_bytes(b"synthetic reference")
+    (model / "llm.pt").write_bytes(b"synthetic model")
+    monkeypatch.setattr(delivery, "_verified_file", lambda *_args: True)
+    config = TTSConfig(
+        runtime_root=str(runtime),
+        model_dir=str(model),
+        reference_audio=str(reference),
+        provider_options={"external_python": str(executable)},
+    )
+
+    assert delivery_configured(config, require_quality_gate=True) is False
+
+
 def test_three_rejected_candidates_never_replace_existing_output(
     tmp_path,
     monkeypatch,
@@ -571,4 +632,54 @@ def test_three_rejected_candidates_never_replace_existing_output(
         render_delivery_wav(config, plan, output)
 
     assert calls == {"tts": 3, "quality": 3}
+    assert output.read_bytes() == b"existing-output"
+
+
+def test_quality_request_write_failure_is_sanitized_and_atomic(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "reply.wav"
+    output.write_bytes(b"existing-output")
+    original_write_text = Path.write_text
+
+    def guarded_write_text(path: Path, *args, **kwargs):
+        if path.name == "quality-request.json":
+            raise OSError("private-path-must-not-escape")
+        return original_write_text(path, *args, **kwargs)
+
+    def fake_run(command, **_kwargs):
+        command = [str(item) for item in command]
+        target = Path(command[command.index("--output") + 1])
+        with wave.open(str(target), "wb") as rendered:
+            rendered.setnchannels(1)
+            rendered.setsampwidth(2)
+            rendered.setframerate(100)
+            rendered.writeframes(array("h", [1] * 4_500).tobytes())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(delivery, "delivery_configured", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    monkeypatch.setattr(Path, "write_text", guarded_write_text)
+    config = TTSConfig(
+        runtime_root=str(tmp_path),
+        model_dir=str(tmp_path),
+        reference_audio=str(tmp_path / "reference.wav"),
+        provider_options={"external_python": sys.executable},
+    )
+    plan = VoicePerformancePlan(
+        reply_text="林" * 190,
+        overall_emotion="声音柔软自然地承接，再缓缓托起给到力量",
+        global_speed=1.0,
+        energy=0.55,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+        short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
+    )
+
+    with pytest.raises(DeliveryAudioError) as exc_info:
+        render_delivery_wav(config, plan, output)
+
+    assert str(exc_info.value) == "TTS_CONTENT_GATE_UNAVAILABLE"
+    assert "private-path" not in str(exc_info.value)
     assert output.read_bytes() == b"existing-output"

@@ -67,6 +67,28 @@
         "uninstall_path": "B10B uninstall never copies or deletes the referenced model, reference audio, or generated audio."
       },
       {
+        "id": "b06-whisper-quality-runtime",
+        "kind": "runtime",
+        "source": "https://github.com/openai/whisper",
+        "version": "openai-whisper 20250625",
+        "revision": "31243bad24cc746f07d4c8bfdd2d974872cb1803",
+        "license": "MIT",
+        "status": "composed",
+        "adapter_boundary": "The ordinary spoken-video adapter invokes the external openai-whisper runtime only after CosyVoice exits; it does not reimplement ASR.",
+        "uninstall_path": "B10B and the reply pipeline never copy or delete the external Whisper runtime or cache."
+      },
+      {
+        "id": "b06-whisper-base-model",
+        "kind": "model",
+        "source": "https://github.com/openai/whisper",
+        "version": "Whisper base.pt SHA-256 ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+        "revision": "31243bad24cc746f07d4c8bfdd2d974872cb1803",
+        "license": "MIT",
+        "status": "composed",
+        "adapter_boundary": "The ordinary spoken-video quality gate reads only an explicitly configured external cache and verifies base.pt by SHA-256 before inference.",
+        "uninstall_path": "The reply pipeline never downloads, copies, overwrites, or deletes the external Whisper checkpoint."
+      },
+      {
         "id": "b07-livetalking-candidate",
         "kind": "visual-runtime",
         "source": "https://github.com/lipku/LiveTalking",

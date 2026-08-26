@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+import re
 from typing import Any, Mapping, Protocol, Sequence
 
 
@@ -69,7 +70,7 @@ _PERSISTED_FIELDS = frozenset({
     "profile",
     "duration_target_seconds",
 })
-_LEGACY_PERSISTED_FIELDS = _PERSISTED_FIELDS - {"short_instruction", "profile"}
+_ALLOWED_INSTRUCTION_RE = re.compile(r"[\u3400-\u9fff，。！？、；：…—]+")
 
 
 @dataclass(frozen=True)
@@ -148,7 +149,7 @@ class VoicePerformancePlan:
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "VoicePerformancePlan":
         fields = set(value)
-        if fields not in {_PERSISTED_FIELDS, _LEGACY_PERSISTED_FIELDS}:
+        if fields != _PERSISTED_FIELDS:
             raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
         reply_text = value["reply_text"]
         overall_emotion = value["overall_emotion"]
@@ -167,15 +168,10 @@ class VoicePerformancePlan:
             emphasize_sentences=_sentence_marks(
                 value["emphasize_sentences"], sentence_count=len(_sentences(reply_text)), minimum=1, maximum_items=1
             ),
-            short_instruction=str(
-                value.get(
-                    "short_instruction",
-                    "声音柔软自然地承接，再缓缓托起给到力量",
-                )
-            ),
+            short_instruction=validate_short_instruction(value["short_instruction"]),
             source=source,
             control_channel=channel,
-            profile=str(value.get("profile", "legacy_global_direction_v1")),
+            profile=str(value["profile"]),
             duration_target_seconds=_duration_target(value["duration_target_seconds"]),
         )
 
@@ -194,6 +190,7 @@ _TOOL = {
                     "type": "string",
                     "minLength": 12,
                     "maxLength": 24,
+                    "pattern": "^[\\u3400-\\u9fff，。！？、；：…—]+$",
                     "description": "一条正向具体的中文表演指令，不复述正文。",
                 },
             },
@@ -254,6 +251,33 @@ def _duration_target(value: object) -> tuple[float, float]:
     return parsed
 
 
+def validate_short_instruction(value: object) -> str:
+    if not isinstance(value, str):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    instruction = value.strip().rstrip("。")
+    han_count = len(re.findall(r"[\u3400-\u9fff]", instruction))
+    forbidden = (
+        "不要",
+        "禁止",
+        "避免",
+        "不能",
+        "不可",
+        "别",
+        "勿",
+        "不",
+        "无",
+        "朗读",
+        "提示词",
+    )
+    if (
+        not 12 <= han_count <= 24
+        or _ALLOWED_INSTRUCTION_RE.fullmatch(instruction) is None
+        or any(token in instruction for token in forbidden)
+    ):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    return instruction
+
+
 def _validate_plan(plan: VoicePerformancePlan) -> None:
     _sentences(plan.reply_text)
     if (
@@ -262,14 +286,10 @@ def _validate_plan(plan: VoicePerformancePlan) -> None:
         or any(token in plan.overall_emotion for token in ("<|", "|>", "[", "]", "<", ">"))
         or plan.source != _SOURCE
         or plan.control_channel != _CONTROL_CHANNEL
-        or plan.profile not in {_PROFILE, "legacy_global_direction_v1"}
+        or plan.profile != _PROFILE
     ):
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-    forbidden = ("<|", "|>", "[", "]", "<", ">", "不要", "禁止", "朗读", "提示词")
-    if not 12 <= len(plan.short_instruction.strip().rstrip("。")) <= 24 or any(
-        token in plan.short_instruction for token in forbidden
-    ):
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    validate_short_instruction(plan.short_instruction)
     _number(plan.global_speed, minimum=1.0, maximum=1.08)
     _number(plan.energy, minimum=0.35, maximum=0.8)
     sentence_count = len(_sentences(plan.reply_text))
@@ -329,7 +349,7 @@ async def direct_voice_performance(
     arguments = calls[0].arguments
     if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-    short_instruction = str(arguments["short_instruction"]).strip().rstrip("。")
+    short_instruction = validate_short_instruction(arguments["short_instruction"])
     return VoicePerformancePlan(
         reply_text=reply_text,
         overall_emotion=short_instruction,

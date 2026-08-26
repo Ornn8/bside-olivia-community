@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sys
 import wave
 from array import array
@@ -19,6 +20,10 @@ from pathlib import Path
 
 
 _END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+_SPOKEN_CONTROL_RE = re.compile(
+    r"<\|[^\r\n]{1,120}?\|>|</?[A-Za-z][^>\r\n]{0,120}>|\[[^\]\r\n]{1,80}\]|\*\*[^*\r\n]{1,120}\*\*",
+    re.IGNORECASE,
+)
 _COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970"
 
 
@@ -93,7 +98,7 @@ def _synthesize_instruct2_single_pass(model, request: dict[str, object], output:
     instruction = str(request.get("instruct_text", "")).strip()
     if not text.strip() or not instruction:
         raise RuntimeError("single-pass text or instruction missing")
-    if _END_OF_PROMPT_TOKEN in text:
+    if _SPOKEN_CONTROL_RE.search(text):
         raise RuntimeError("TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN")
     instruction = instruction.replace(_END_OF_PROMPT_TOKEN, "").rstrip()
     instruction += _END_OF_PROMPT_TOKEN

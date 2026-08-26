@@ -107,6 +107,7 @@ from reply_context import (
 )
 from reply_pipeline import ReplyPipeline, UnavailableRewriter
 from reply_reviewer import NullReviewer
+from tts import DIRECTED_DELIVERY_ERROR_CODES
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
@@ -1730,6 +1731,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             "triage": l.get("triage", {"status": "unavailable"}),
             "media_status": l.get("media_status", "NOT_REQUESTED"),
             "media_error_code": l.get("media_error_code"),
+            "media_retryable": bool(l.get("media_retryable", False)),
             "is_read": 1 if l.get("is_read") else 0,
             "replied_at": l.get("replied_at"),
             "created_at": l.get("created_at", int(time.time())),
@@ -2033,10 +2035,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
                     adaptive_delivery=True,
                     voice_performance_plan=voice_plan,
+                    enforce_content_gate=True,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
+            letter["media_retryable"] = False
             _persist_media_state()
         except (
             ReplyMediaError,
@@ -2047,8 +2051,17 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             ValueError,
             OSError,
         ) as exc:
-            letter["media_status"] = "UNAVAILABLE"
-            letter["media_error_code"] = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
+            error_code = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
+            error_contract = DIRECTED_DELIVERY_ERROR_CODES.get(error_code)
+            letter["media_status"] = (
+                str(error_contract["status"])
+                if error_contract is not None
+                else "UNAVAILABLE"
+            )
+            letter["media_error_code"] = error_code
+            letter["media_retryable"] = bool(
+                error_contract and error_contract["retryable"]
+            )
             _persist_media_state()
 
 

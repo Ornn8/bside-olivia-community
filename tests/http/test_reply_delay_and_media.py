@@ -106,6 +106,76 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
 
 
+@pytest.mark.parametrize(
+    ("error_code", "expected_status", "expected_retryable"),
+    [
+        ("TTS_CONTENT_GATE_REJECTED", "FAILED", False),
+        ("TTS_CONTENT_GATE_UNAVAILABLE", "UNAVAILABLE", True),
+    ],
+)
+def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
+    tmp_path: Path,
+    monkeypatch,
+    error_code: str,
+    expected_status: str,
+    expected_retryable: bool,
+) -> None:
+    letter_id = f"media-{error_code.casefold()}"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic letter",
+        "reply_text": "林" * 190,
+        "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+        "letter_status": "COMPLETED",
+        "media_status": "PENDING",
+        "reply_not_before": 0.0,
+    }
+    local_server.store.letters[:] = [letter]
+    scene = tmp_path / "scene.mp4"
+    scene.write_bytes(b"synthetic scene")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", str(scene))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    async def voice_plan(_letter, text):
+        return VoicePerformancePlan(
+            reply_text=text,
+            overall_emotion="声音柔软自然地承接，再缓缓托起给到力量",
+            global_speed=1.0,
+            energy=0.55,
+            breath_before_sentences=(),
+            emphasize_sentences=(),
+        )
+
+    def fail_render(*_args, **_kwargs):
+        raise local_server.ReplyMediaError(error_code)
+
+    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
+    monkeypatch.setattr(local_server, "render_reply_video", fail_render)
+
+    asyncio.run(
+        local_server._render_media_job(
+            letter_id,
+            letter["content"],
+            letter["reply_text"],
+            ReplyMode.SPOKEN_VIDEO.value,
+        )
+    )
+    detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"letter_id": letter_id},
+        )
+    )["data"]
+
+    assert detail["media_status"] == expected_status
+    assert detail["media_error_code"] == error_code
+    assert detail["media_retryable"] is expected_retryable
+
+
 def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
     tmp_path: Path,
     monkeypatch,

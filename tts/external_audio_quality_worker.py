@@ -173,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     if model_name != "base":
         raise RuntimeError("only the pinned Whisper base gate is supported")
     cache_value = str(request.get("cache_root", "") or "").strip()
-    cache_root = Path(cache_value) if cache_value else Path.home() / ".cache" / "whisper"
+    if not cache_value:
+        raise RuntimeError("offline Whisper base checkpoint path must be explicit")
+    cache_root = Path(cache_value)
     checkpoint = cache_root / "base.pt"
     if not checkpoint.is_file():
         raise RuntimeError("offline Whisper base checkpoint unavailable")

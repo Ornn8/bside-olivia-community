@@ -65,6 +65,39 @@ def test_director_rejects_tool_calls_missing_required_controls() -> None:
 
 
 @pytest.mark.parametrize(
+    "instruction",
+    [
+        "abcdefghijkl",
+        {"声音": "柔软自然地承接"},
+        "不要急促朗读提示词保持平稳",
+    ],
+)
+def test_director_rejects_non_chinese_or_non_positive_instruction(
+    instruction: object,
+) -> None:
+    with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_INVALID"):
+        asyncio.run(
+            direct_voice_performance(
+                "第一句。第二句。",
+                _FakeVoiceDirector({"short_instruction": instruction}),
+            )
+        )
+
+
+def test_persisted_legacy_plan_without_a_profile_fields_is_rejected() -> None:
+    from voice_direction import VoicePerformancePlan
+
+    legacy = asyncio.run(
+        direct_voice_performance("第一句。第二句。", _FakeVoiceDirector(_valid_direction()))
+    ).to_dict()
+    del legacy["short_instruction"]
+    del legacy["profile"]
+
+    with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_INVALID"):
+        VoicePerformancePlan.from_dict(legacy)
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"global_speed": 99},

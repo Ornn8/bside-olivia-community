@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
 from reply_delivery import ReplyDeliveryPlan
+from voice_direction import VoiceDirectionError, validate_short_instruction
 
 from .contracts import TTSConfig
 
@@ -23,7 +25,11 @@ class DeliveryAudioError(RuntimeError):
     """Stable ordinary-reply audio rendering failure."""
 
 
-_END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+_INSTRUCT_PREFIX = "You are a helpful assistant. "
+_SPOKEN_CONTROL_RE = re.compile(
+    r"<\|[^\r\n]{1,120}?\|>|</?[A-Za-z][^>\r\n]{0,120}>|\[[^\]\r\n]{1,80}\]|\*\*[^*\r\n]{1,120}\*\*",
+    re.IGNORECASE,
+)
 _COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970"
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 
@@ -62,7 +68,7 @@ def build_external_delivery_request(
 
     units = tuple(plan.speech_units())
     spoken_text = str(getattr(plan, "spoken_text", "") or "".join(unit.text for unit in units))
-    if _END_OF_PROMPT_TOKEN in spoken_text:
+    if _SPOKEN_CONTROL_RE.search(spoken_text):
         raise DeliveryAudioError("TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN")
     if len(units) == 1:
         speed = float(units[0].speed)
@@ -81,13 +87,11 @@ def build_external_delivery_request(
     }
     overall_emotion = str(getattr(plan, "overall_emotion", "") or "").strip()
     if overall_emotion:
-        short_instruction = str(
-            getattr(plan, "short_instruction", "") or overall_emotion
-        ).strip().rstrip("。")
-        forbidden = ("<|", "|>", "[", "]", "<", ">", "不要", "禁止", "朗读", "提示词")
-        if not 12 <= len(short_instruction) <= 24 or any(
-            token in short_instruction for token in forbidden
-        ):
+        try:
+            short_instruction = validate_short_instruction(
+                getattr(plan, "short_instruction", "") or overall_emotion
+            )
+        except VoiceDirectionError:
             raise DeliveryAudioError("TTS_INSTRUCTION_INVALID")
         options = getattr(config, "provider_options", {}) or {}
         return {
@@ -96,11 +100,11 @@ def build_external_delivery_request(
             "llm_variant": "base",
             "text": spoken_text,
             "instruct_text": (
-                "You are a helpful assistant. "
+                _INSTRUCT_PREFIX
                 + short_instruction
                 + "。<|endofprompt|>"
             ),
-            "quality_forbidden_text": short_instruction,
+            "quality_forbidden_text": _INSTRUCT_PREFIX + short_instruction,
             "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
             "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
             "quality_max_cer": 0.18,
@@ -266,7 +270,9 @@ def delivery_configured(
     if not base_checks or not require_quality_gate:
         return base_checks
     cache_value = str(options.get("quality_gate_cache_root", "") or "").strip()
-    cache_root = Path(cache_value) if cache_value else Path.home() / ".cache" / "whisper"
+    if not cache_value:
+        return False
+    cache_root = Path(cache_value)
     checkpoint = cache_root / "base.pt"
     try:
         executable_stat = executable.stat()
@@ -288,13 +294,17 @@ def render_delivery_wav(
     output_path: Path,
     *,
     timeout_seconds: float = 3600.0,
+    enforce_content_gate: bool = True,
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""
 
     if not plan.cues:
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     request = build_external_delivery_request(config, plan)
-    require_quality_gate = request.get("voice_condition_mode") == "instruct2_single_pass"
+    require_quality_gate = bool(
+        enforce_content_gate
+        and request.get("voice_condition_mode") == "instruct2_single_pass"
+    )
     if not delivery_configured(config, require_quality_gate=require_quality_gate):
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     executable = Path(str(config.provider_options.get("external_python", "") or ""))
@@ -341,21 +351,24 @@ def render_delivery_wav(
             quality_worker = Path(__file__).with_name("external_audio_quality_worker.py")
             if not quality_worker.is_file():
                 raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-            quality_request_path.write_text(
-                json.dumps(
-                    {
-                        "audio_path": str(temporary_output),
-                        "expected_text": str(payload.get("text", "")),
-                        "forbidden_text": str(payload.get("quality_forbidden_text", "")),
-                        "model": str(payload.get("quality_gate_model", "base")),
-                        "cache_root": str(payload.get("quality_gate_cache_root", "")),
-                        "max_cer": float(payload.get("quality_max_cer", 0.18)),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            quality_output_path.unlink(missing_ok=True)
+            try:
+                quality_request_path.write_text(
+                    json.dumps(
+                        {
+                            "audio_path": str(temporary_output),
+                            "expected_text": str(payload.get("text", "")),
+                            "forbidden_text": str(payload.get("quality_forbidden_text", "")),
+                            "model": str(payload.get("quality_gate_model", "base")),
+                            "cache_root": str(payload.get("quality_gate_cache_root", "")),
+                            "max_cer": float(payload.get("quality_max_cer", 0.18)),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                quality_output_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
             try:
                 completed = subprocess.run(
                     [str(executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
@@ -379,7 +392,7 @@ def render_delivery_wav(
             return report
 
         quality_report: dict[str, object] | None = None
-        if request.get("voice_condition_mode") == "instruct2_single_pass":
+        if require_quality_gate:
             duration_candidate_seen = False
             for attempt in range(max(1, min(3, int(request.get("max_attempts", 1))))):
                 candidate = dict(request)

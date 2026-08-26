@@ -47,6 +47,8 @@ $thirdPartyRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\third-party'
 | Nemotron 3.5 ASR Streaming 0.6B | [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | `1c8deaecc64b91f034d73e08dd8b64625eb3395d` | OpenMDW-1.1 | 上游来源页/手动下载 |
 | CosyVoice runtime | [FunAudioLLM/CosyVoice](https://github.com/FunAudioLLM/CosyVoice) | `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc` | Apache-2.0 | 上游来源页/手动下载 |
 | Fun-CosyVoice3-0.5B-2512 | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | `29e01c4e8d000f4bcd70751be16fa94bf3d85a18` | Apache-2.0 | 上游来源页/手动下载 |
+| openai-whisper runtime | [openai/whisper](https://github.com/openai/whisper) | `31243bad24cc746f07d4c8bfdd2d974872cb1803` (`v20250625`) | MIT | 安装到外部 CosyVoice Python 环境 |
+| Whisper base.pt | [OpenAI official artifact](https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt) | `ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e` (SHA-256) | MIT | 手动下载到显式配置的外部 cache |
 | LiveTalking runtime | [lipku/LiveTalking](https://github.com/lipku/LiveTalking) | `a97f01ba366e55eeed94e88d6bae38ed77b3a1b9` | Apache-2.0 | 上游来源页/手动下载 |
 
 这些条目不会带入原版游戏素材、私有参考音频、模型权重或任何生成媒体。只有维护者取得稳定、无凭据的直接 artifact URL，并完成许可证确认和 SHA-256 固定后，才允许把条目加入自动下载 manifest。

@@ -109,3 +109,13 @@ checkpoint, invalid report, timeout, or subprocess failure is
 `TTS_CONTENT_GATE_UNAVAILABLE`; three duration-valid ASR rejections end as
 `TTS_CONTENT_GATE_REJECTED`. Candidate files remain temporary and are never
 atomically moved onto the destination until every gate passes.
+
+The quality runtime is the external `openai-whisper==20250625` package at
+upstream tag `v20250625` / commit
+`31243bad24cc746f07d4c8bfdd2d974872cb1803` (MIT). Install it into the same
+external Python environment used by the CosyVoice worker, following the
+upstream instructions. The official `base.pt` artifact is pinned to SHA-256
+`ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e`.
+The cache directory must be set explicitly in `provider_options` as
+`quality_gate_cache_root`, or through
+`OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT`; no home-directory fallback is used.
