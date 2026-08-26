@@ -933,9 +933,8 @@ class ConversationMemoryAdminService:
     ) -> None:
         if str(row["operation"]) != operation:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_REQUEST_CONFLICT")
-        # Pre-fingerprint audit rows cannot be reconstructed safely. They retain
-        # their historical operation-only replay behavior; all new rows bind the
-        # request to the normalized payload.
+        # Rows created before fingerprinting cannot be reconstructed safely.
+        # They retain operation-only replay; new rows bind the request payload.
         if (
             str(row["payload_fingerprint"]) != "legacy"
             and str(row["payload_fingerprint"]) != payload_fingerprint
