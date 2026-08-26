@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import tempfile
 from typing import Sequence
 
+from conversation_memory_identity import normalize_conversation_memory_user_id
 from private_world_ledger import SQLitePrivateWorldLedger
 
 
@@ -22,12 +26,27 @@ class AdminOperationError(RuntimeError):
     code = "PRIVATE_WORLD_ADMIN_FAILED"
 
 
+class AdminRequestConflict(AdminOperationError):
+    code = "PRIVATE_WORLD_ADMIN_REQUEST_CONFLICT"
+
+
+@dataclass(frozen=True)
+class CurrentUserResetResult:
+    status: str
+    affected_event_count: int
+
+
 class PrivateWorldAdmin:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, *, user_id: str = "local-user") -> None:
         path = Path(database_path)
         if str(path) in {"", "."} or path.exists() and path.is_dir():
             raise ValueError("an explicit database file path is required")
+        try:
+            user_id = normalize_conversation_memory_user_id(user_id)
+        except ValueError as exc:
+            raise ValueError("private world user_id is invalid") from exc
         self._database_path = path
+        self._user_id = user_id
 
     @staticmethod
     def _confirm(confirmed: bool) -> None:
@@ -93,6 +112,76 @@ class PrivateWorldAdmin:
                 connection.execute("DELETE FROM private_world_events")
         except sqlite3.Error as exc:
             raise AdminOperationError("private world reset failed") from exc
+
+    def reset_current_user(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool = False,
+    ) -> CurrentUserResetResult:
+        """Reset only this already user-scoped ledger, once per request."""
+
+        self._confirm(confirmed)
+        self._require_database()
+        if (
+            not isinstance(request_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id)
+        ):
+            raise ValueError("request_id is invalid")
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 500:
+            raise ValueError("reason is invalid")
+        normalized_reason = reason.strip()
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"operation": "reset_current_user", "reason": normalized_reason},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        try:
+            with closing(sqlite3.connect(self._database_path, timeout=5)) as connection:
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS private_world_admin_operations (
+                    user_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    payload_fingerprint TEXT NOT NULL,
+                    affected_event_count INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, request_id)
+                    )"""
+                )
+                existing = connection.execute(
+                    """SELECT payload_fingerprint, affected_event_count
+                    FROM private_world_admin_operations
+                    WHERE user_id = ? AND request_id = ?""",
+                    (self._user_id, request_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing[0] != fingerprint:
+                        connection.rollback()
+                        raise AdminRequestConflict("reset request conflicts")
+                    connection.commit()
+                    return CurrentUserResetResult("DUPLICATE", int(existing[1]))
+                affected_event_count = int(
+                    connection.execute("SELECT COUNT(*) FROM private_world_events").fetchone()[0]
+                )
+                connection.execute("DELETE FROM private_world_snapshots")
+                connection.execute("DELETE FROM private_world_events")
+                connection.execute(
+                    """INSERT INTO private_world_admin_operations
+                    (user_id, request_id, payload_fingerprint, affected_event_count)
+                    VALUES (?, ?, ?, ?)""",
+                    (self._user_id, request_id, fingerprint, affected_event_count),
+                )
+                connection.commit()
+        except AdminRequestConflict:
+            raise
+        except sqlite3.Error as exc:
+            raise AdminOperationError("private world current-user reset failed") from exc
+        return CurrentUserResetResult("APPLIED", affected_event_count)
 
     def delete(self, *, confirmed: bool = False) -> None:
         self._confirm(confirmed)
