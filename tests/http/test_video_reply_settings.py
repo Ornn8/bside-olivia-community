@@ -3,11 +3,9 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
 import pytest
 
 from video_reply_settings import VideoReplySettingsError, VideoReplySettingsStore
-
 @pytest.mark.parametrize("legacy", [False, True])
 def test_default_and_valid_legacy_store_are_enabled(tmp_path, legacy):
     if legacy:
@@ -33,7 +31,6 @@ def test_mutation_is_atomic_namespaced_and_replayed_after_restart(tmp_path):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: store.mutate("video_reply_setting:concurrent", False), range(4)))
     assert {result.status for result in results} == {"NOOP"}
-
 def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(tmp_path):
     calls = 0
     def writer(path, payload):
@@ -97,7 +94,6 @@ def test_handler_errors_match_video_reply_schema(monkeypatch, tmp_path):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
     from jsonschema import Draft202012Validator
-
     settings = VideoReplySettingsStore.initialize(tmp_path)
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     validator = Draft202012Validator(json.loads(Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8")))
@@ -112,12 +108,13 @@ def test_handler_errors_match_video_reply_schema(monkeypatch, tmp_path):
                 client.post("/toy/settings/video-reply", json={"enabled": False}),
                 client.post("/toy/settings/video-reply", json={"enabled": False, "request_id": "letter:shared"}),
             ]
-            responses = []
+            responses = []; preflight = await client.options("/toy/settings/video-reply", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "X-Olivia-Companion-Action"})
             for request in requests:
                 response = await request
                 responses.append((response.status, await response.json()))
-            return responses
-    responses = asyncio.run(calls())
+            return responses, preflight
+    responses, preflight = asyncio.run(calls())
+    assert preflight.status == 204 and "x-olivia-companion-action" in preflight.headers["Access-Control-Allow-Headers"].lower()
     assert [status for status, _ in responses] == [405, 400, 400, 400, 400, 400]
     assert [response["data"]["error_code"] for _, response in responses] == ["METHOD_NOT_ALLOWED", "INVALID_JSON", "INVALID_BODY", "MISSING_FIELD", "MISSING_FIELD", "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID"]
     for status, response in responses:
@@ -161,8 +158,6 @@ def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatc
         assert letter["video_reply_enabled"] is False and "media_status" not in letter
     finally:
         local_server.store.letters.remove(letter)
-
-
 def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch):
     import local_server
     off = {"letter_id": "off", "content": "x", "reply_text": "r", "letter_status": "COMPLETED", "reply_mode": "spoken_video", "media_status": "QUEUED", "video_reply_enabled": False}
