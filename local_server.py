@@ -1568,6 +1568,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             {
                 "status": "FAILED",
                 "error_code": "METHOD_NOT_ALLOWED",
+                "retryable": contract.error_metadata("METHOD_NOT_ALLOWED")["retryable"],
                 "allowed_methods": spec["methods"],
             },
         )
@@ -1577,6 +1578,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
         return err(400, "INVALID_BODY", {
             "status": "FAILED",
             "error_code": "INVALID_BODY",
+            "retryable": contract.error_metadata("INVALID_BODY")["retryable"],
         })
     if query is None:
         query = {}

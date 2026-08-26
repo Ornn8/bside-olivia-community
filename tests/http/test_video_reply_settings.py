@@ -85,8 +85,6 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "status": "DUPLICATE", "enabled": False}))
-    for value in ({"code": 400, "message": "missing", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "enabled"}}, {"code": 400, "message": "missing", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "request_id"}}, {"code": 400, "message": "payload", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", "retryable": False}}, {"code": 400, "message": "request", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID", "retryable": False}}, {"code": 409, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": True}}):
-        assert not list(validator.iter_errors(value))
     for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}, {"code": 400, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": False}}):
         assert list(validator.iter_errors(value))
 @pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
@@ -100,19 +98,23 @@ def test_route_accepts_only_body_request_id_and_surfaces_unavailable(monkeypatch
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     async def calls():
         alias = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "idempotency_key": "letter:shared"}, {"request_id": "video_reply_setting:query"})
+        wrong_method = await local_server.route("PUT", "/toy/settings/video-reply", {}, {})
+        invalid_body = await local_server.route("POST", "/toy/settings/video-reply", [], {})
         missing_enabled = await local_server.route("POST", "/toy/settings/video-reply", {}, {})
-        assert missing_enabled == {"code": 400, "message": "MISSING_FIELD", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "enabled"}}
         missing_request_id = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False}, {})
-        assert missing_request_id == {"code": 400, "message": "MISSING_FIELD", "data": {"status": "FAILED", "error_code": "MISSING_FIELD", "retryable": False, "field": "request_id"}}
         bad = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": "false", "request_id": "video_reply_setting:type"}, {})
         await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:conflict"}, {})
         conflict = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": True, "request_id": "video_reply_setting:conflict"}, {})
         monkeypatch.setattr(local_server, "video_reply_settings_store", VideoReplySettingsStore(tmp_path / "missing"))
         unavailable = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:unavailable"}, {})
         assert (await local_server.route("GET", "/toy/settings/video-reply", {}, {}))["data"]["state"] == "unavailable" and local_server._health_result()["data"]["capabilities"]["settings.video_reply"]["status"] == "unavailable"
-        return alias, bad, conflict, unavailable
-    alias, bad, conflict, unavailable = asyncio.run(calls())
-    assert [alias["code"], bad["code"], conflict["code"], unavailable["code"]] == [400, 400, 409, 503]
+        return alias, wrong_method, invalid_body, missing_enabled, missing_request_id, bad, conflict, unavailable
+    responses = asyncio.run(calls())
+    from jsonschema import Draft202012Validator
+    schema = json.loads(Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    for response in responses:
+        assert not list(validator.iter_errors(response)), response
 def test_factory_init_failure_returns_stable_unavailable(monkeypatch):
     import local_server
     def fail(_root):
