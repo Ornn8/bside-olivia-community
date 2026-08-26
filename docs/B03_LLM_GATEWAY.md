@@ -16,7 +16,7 @@ B03 没有模型权重安装步骤，也没有新的强制依赖；仓库已有�
 
 B04 的 SQLite memory 是独立可选 profile；默认不创建数据库，不依赖 AIRI Memory Alaya WIP、Mem0 包或云端调用。安装、导入、清空、卸载和资料边界见 [`B04_LOCAL_MEMORY.md`](B04_LOCAL_MEMORY.md)。
 
-1. 复制 `llm_config.example.json` 为被 `.gitignore` 忽略的 `llm_config.json`，把无效示例域、模型占位符和 `requires_api_key` 替换为自己的设置。
+1. 复制 `contracts/llm_config.example.json` 为被 `.gitignore` 忽略的 `llm_config.json`，把无效示例域、模型占位符和 `requires_api_key` 替换为自己的设置。
 2. 在进程环境中设置 `OLIVIA_LLM_API_KEY`，或把 `api_key_env` 改成另一个环境变量名。配置文件永远不应出现 key 值。
 3. 使用 `provider=openai_compatible` 启用 API，`provider=mock` 启用离线回信，`provider=none` 停用。
 4. 停用只需改 `provider=none` 或 `feature_enabled=false`；卸载不需要删除原版资产、用户数据或 `linli_character`，只删除本批新增的 Python 文件和配置登记即可。
@@ -33,7 +33,7 @@ rtk python tools/healthcheck.py --profile llm
 
 ## 配置与自定义 provider
 
-机器可读配置在 `contracts/llm_config.schema.json`，安全模板在 `llm_config.example.json`。关键字段：
+机器可读配置在 `contracts/llm_config.schema.json`，安全模板在 `contracts/llm_config.example.json`。关键字段：
 
 | 字段 | 作用 |
 |---|---|
