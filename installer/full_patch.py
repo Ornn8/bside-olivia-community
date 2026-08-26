@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -282,6 +283,91 @@ def _ignore_payload_copy(directory: str, names: list[str]) -> set[str]:
     return excluded
 
 
+def _git_tracked_payload_files(payload_root: Path) -> set[str] | None:
+    """Return tracked paths for a clone/worktree, or None for an archive."""
+
+    git_marker = payload_root / ".git"
+    if not git_marker.is_dir() and not git_marker.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(payload_root), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise PatchInstallError("PATCH_PAYLOAD_GIT_QUERY_FAILED") from exc
+    output = result.stdout
+    try:
+        if isinstance(output, bytes):
+            values = output.decode("utf-8").split("\0")
+        elif isinstance(output, str):
+            values = output.split("\0")
+        else:
+            raise TypeError("git ls-files returned no text")
+    except (UnicodeError, TypeError) as exc:
+        raise PatchInstallError("PATCH_PAYLOAD_GIT_QUERY_FAILED") from exc
+    return {value for value in values if value}
+
+
+def _payload_path_is_tracked(
+    payload_root: Path,
+    path: Path,
+    tracked_files: set[str] | None,
+) -> bool:
+    if tracked_files is None:
+        return True
+    try:
+        relative = path.resolve().relative_to(payload_root.resolve())
+    except ValueError:
+        return False
+    return relative.as_posix() in tracked_files
+
+
+def _payload_tree_contains_tracked(
+    payload_root: Path,
+    directory: Path,
+    tracked_files: set[str] | None,
+) -> bool:
+    if tracked_files is None:
+        return True
+    try:
+        relative = directory.resolve().relative_to(payload_root.resolve())
+    except ValueError:
+        return False
+    prefix = relative.as_posix().rstrip("/") + "/"
+    return any(path.startswith(prefix) for path in tracked_files)
+
+
+def _ignore_tracked_payload_copy(
+    payload_root: Path,
+    tracked_files: set[str] | None,
+):
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        excluded = _ignore_payload_copy(directory, names)
+        if tracked_files is None:
+            return excluded
+        directory_path = Path(directory)
+        for name in names:
+            source = directory_path / name
+            if source.is_dir():
+                if not _payload_tree_contains_tracked(
+                    payload_root,
+                    source,
+                    tracked_files,
+                ):
+                    excluded.add(name)
+            elif not _payload_path_is_tracked(
+                payload_root,
+                source,
+                tracked_files,
+            ):
+                excluded.add(name)
+        return excluded
+
+    return ignore
+
+
 def copy_project_payload(
     payload_root: Path,
     destination: Path,
@@ -289,6 +375,7 @@ def copy_project_payload(
     """Copy project source/config scripts, never original or model payloads."""
 
     copied: list[str] = []
+    tracked_files = _git_tracked_payload_files(payload_root)
     destination.mkdir(parents=True, exist_ok=True)
     for child in payload_root.iterdir():
         if child.name in {
@@ -311,29 +398,43 @@ def copy_project_payload(
                 child,
                 target,
                 dirs_exist_ok=True,
-                ignore=_ignore_payload_copy,
+                ignore=_ignore_tracked_payload_copy(
+                    payload_root,
+                    tracked_files,
+                ),
             )
             copied.append(child.name + "/")
         elif child.is_file() and (
             child.name in PAYLOAD_ROOT_FILES
             or child.suffix.lower() in PAYLOAD_SUFFIXES
-        ):
+        ) and _payload_path_is_tracked(payload_root, child, tracked_files):
             _copy_file(child, target)
             copied.append(child.name)
     for relative in PAYLOAD_EXTRA_DIRS:
         source_dir = payload_root / Path(*relative.split("/"))
-        if source_dir.is_dir():
+        if source_dir.is_dir() and _payload_tree_contains_tracked(
+            payload_root,
+            source_dir,
+            tracked_files,
+        ):
             target_dir = destination / Path(*relative.split("/"))
             shutil.copytree(
                 source_dir,
                 target_dir,
                 dirs_exist_ok=True,
-                ignore=_ignore_payload_copy,
+                ignore=_ignore_tracked_payload_copy(
+                    payload_root,
+                    tracked_files,
+                ),
             )
             copied.append(relative + "/")
     for relative in PAYLOAD_EXTRA_FILES:
         source_file = payload_root / Path(*relative.split("/"))
-        if source_file.is_file():
+        if source_file.is_file() and _payload_path_is_tracked(
+            payload_root,
+            source_file,
+            tracked_files,
+        ):
             target_file = destination / Path(*relative.split("/"))
             _copy_file(source_file, target_file)
             copied.append(relative)
