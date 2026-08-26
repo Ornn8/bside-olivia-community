@@ -30,7 +30,8 @@
     "MEMORY_ADMIN_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_READ_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_CLEAR_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
-    "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}
+    "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_MUTATION_RESULT_INVALID": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}
   },
   "read_states": {
     "statuses": ["READY", "PAUSED", "UNAVAILABLE"],

@@ -605,14 +605,10 @@ class ConversationMemoryAdminService:
         row: sqlite3.Row,
     ) -> MemoryAdminMutationResult:
         """Finish only the IDs durably captured before this clear started."""
-        request_id = str(row["request_id"])
-        reason = str(row["reason"])
-        fingerprint = str(row["payload_fingerprint"])
-        try:
-            memory_ids = _target_memory_ids(row["target_memory_ids"])
-        except ConversationMemoryAdminError as exc:
-            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
-        affected = int(row["affected_count"])
+        request_id, reason, fingerprint, memory_ids, affected = _pending_clear_values(
+            row,
+            user_id=self.user_id,
+        )
         current = {record.memory_id for record in self._records_for_clear()}
         for memory_id in memory_ids:
             if memory_id not in current:
@@ -1153,6 +1149,46 @@ def _target_memory_ids(value: object) -> tuple[str, ...]:
     if not isinstance(parsed, list):
         raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
     return tuple(_identifier(item, field_name="memory_id") for item in parsed)
+
+
+def _pending_clear_values(
+    row: sqlite3.Row,
+    *,
+    user_id: str,
+) -> tuple[str, str, str, tuple[str, ...], int]:
+    """Validate every persisted clear intent before touching provider state."""
+    try:
+        if (
+            row["user_id"] != user_id
+            or row["operation"] != "clear"
+            or row["status"] != "pending_clear"
+            or any(
+                row[field] is not None
+                for field in (
+                    "target_memory_id",
+                    "replacement_memory_id",
+                    "replacement_source_id",
+                )
+            )
+        ):
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
+        request_id = _identifier(row["request_id"], field_name="request_id")
+        reason = _text(row["reason"], field_name="reason", maximum=500)
+        fingerprint = row["payload_fingerprint"]
+        if (
+            not isinstance(fingerprint, str)
+            or fingerprint != _payload_fingerprint("clear", {"reason": reason})
+        ):
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
+        memory_ids = _target_memory_ids(row["target_memory_ids"])
+        if not memory_ids or len(set(memory_ids)) != len(memory_ids):
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
+        affected = row["affected_count"]
+        if type(affected) is not int or affected < 0:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_INVALID")
+    except (ConversationMemoryAdminError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ConversationMemoryAdminError("MEMORY_ADMIN_AUDIT_UNAVAILABLE") from exc
+    return request_id, reason, fingerprint, memory_ids, affected
 
 
 def _text(value: object, *, field_name: str, maximum: int) -> str:

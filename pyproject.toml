@@ -46,6 +46,7 @@ py-modules = [
     "local_server",
     "latentsync_reply",
     "mem0_memory",
+    "mem0_embedding_install",
     "memory_isolation_case01",
     "memory",
     "memory_port",

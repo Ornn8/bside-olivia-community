@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
@@ -570,6 +572,124 @@ def test_public_clear_maps_corrupt_pending_intent_to_auditable_unavailable(
             assert response.status == 503
             assert payload["error_code"] == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
             assert "IDENTIFIER" not in payload["error_code"]
+
+    asyncio.run(scenario())
+
+
+def test_public_clear_rejects_duplicate_pending_ids_before_any_delete(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = ProductionMem0Fixture()
+        provider.rows.append(
+            {
+                "id": "memory.corrupt.duplicate",
+                "memory": "synthetic pending memory",
+                "user_id": "local-user",
+                "agent_id": "linli",
+                "metadata": {
+                    "source_id": "reply:synthetic:corrupt-pending",
+                    "domain": "conversation_memory",
+                },
+            }
+        )
+        adapter = Mem0ConversationMemoryAdapter(
+            provider,
+            Mem0Config(
+                enabled=True,
+                data_root=tmp_path / "memory" / "mem0",
+                llm_base_url="http://fixture.invalid/v1",
+                llm_model="fixture-model",
+            ),
+        )
+        audit = tmp_path / "memory" / "admin.sqlite3"
+        admin = ConversationMemoryAdminService(adapter, audit)
+        reason = "synthetic confirmation"
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"operation": "clear", "payload": {"reason": reason}},
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        with sqlite3.connect(audit) as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_admin_operations (
+                    user_id, request_id, operation, payload_fingerprint,
+                    target_memory_id, target_memory_ids, replacement_memory_id,
+                    replacement_source_id, status, affected_count, reason,
+                    created_at, updated_at
+                ) VALUES (?, ?, 'clear', ?, NULL, ?, NULL, NULL, 'pending_clear', 0, ?, ?, ?)
+                """,
+                (
+                    "local-user",
+                    "request.memory.duplicate.pending",
+                    fingerprint,
+                    '["memory.corrupt.duplicate","memory.corrupt.duplicate"]',
+                    reason,
+                    "2026-08-26T00:00:00+00:00",
+                    "2026-08-26T00:00:00+00:00",
+                ),
+            )
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=admin,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.duplicate.retry",
+                    "reason": "synthetic confirmation retry",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            payload = await response.json()
+            assert response.status == 503
+            assert payload["error_code"] == "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
+            assert [row["id"] for row in provider.rows] == ["memory.corrupt.duplicate"]
+            health = await client.get(
+                "/toy/companion/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            health_payload = await health.json()
+            assert health_payload["status"] == "UNAVAILABLE"
+            assert health_payload["capabilities"]["memory"] == {
+                "state": "unavailable",
+                "reason_code": "MEMORY_ADMIN_CLEAR_PENDING",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_public_clear_advertises_an_invalid_direct_backend_result(
+) -> None:
+    class InvalidResultMemoryAdmin(MemoryAdminFixture):
+        def clear(self, **kwargs):
+            del kwargs
+            return object()
+
+    async def scenario() -> None:
+        runtime = create_original_client_server_runtime(
+            _fallback,
+            memory_admin=InvalidResultMemoryAdmin(),
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/companion/memory/clear",
+                json={
+                    "request_id": "request.memory.invalid-result",
+                    "reason": "synthetic confirmation",
+                    "confirmed": True,
+                },
+                headers={"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: CONFIRM_VALUE},
+            )
+            assert response.status == 503
+            assert (await response.json())["error_code"] == "MEMORY_MUTATION_RESULT_INVALID"
 
     asyncio.run(scenario())
 

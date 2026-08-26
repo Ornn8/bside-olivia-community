@@ -52,6 +52,7 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "private_world_runtime.py" in packaged_paths
     assert "music_caption.py" in packaged_paths
     assert "conversation_memory_identity.py" in packaged_paths
+    assert "mem0_embedding_install.py" in packaged_paths
     assert {
         "linli_character/persona_release_v2.json",
         "linli_character/persona_release_provenance_v2.json",
@@ -84,7 +85,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             str(interpreter),
             "-c",
             "import conversation_memory_identity, conversation_memory_admin, mem0_memory; "
-            "import music_caption, song_content; import local_server",
+            "import mem0_embedding_install, original_client_companion_mutation_backend; "
+            "import original_client_server, music_caption, song_content; import local_server",
         ],
         cwd=tmp_path,
         env=installed_environment,

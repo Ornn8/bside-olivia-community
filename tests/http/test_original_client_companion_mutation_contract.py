@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 import re
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
+import pytest
 
 from original_client_companion_mutation_api import (
     CLEAR_MUTATION_ERROR_CODES,
@@ -80,3 +81,32 @@ def test_pending_clear_read_state_is_bound_to_the_public_lifecycle_schema() -> N
         },
     }
     Draft202012Validator(schema).validate(payload)
+
+
+def test_clear_error_schema_rejects_missing_and_fabricated_public_codes() -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "original_client_companion_mutation_contract.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    contract = json.loads(
+        (ROOT / "contracts" / "original_client_companion_mutation_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert contract["error_codes"]["MEMORY_MUTATION_RESULT_INVALID"] == {
+        "http_status": 503,
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    }
+    for mutation in (
+        lambda errors: errors.pop("MEMORY_MUTATION_RESULT_INVALID"),
+        lambda errors: errors.update(
+            {"BOGUS_REVIEW_CODE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": True}}
+        ),
+        lambda errors: errors["MEMORY_MUTATION_RESULT_INVALID"].update({"retryable": False}),
+    ):
+        candidate = json.loads(json.dumps(contract))
+        mutation(candidate["error_codes"])
+        with pytest.raises(ValidationError):
+            Draft202012Validator(schema).validate(candidate)
