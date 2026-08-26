@@ -46,6 +46,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "LLM_INTERRUPTED": {"http_status": 503, "retryable": True},
     "LLM_PROVIDER_REJECTED": {"http_status": 503, "retryable": False},
     "LLM_PROTOCOL_ERROR": {"http_status": 503, "retryable": False},
+    "LLM_REPLY_LENGTH_INVALID": {"http_status": 503, "retryable": False},
     "LETTER_RESEND_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "LETTER_SHARE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "PREFERENCE_SURVEY_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
@@ -66,8 +67,36 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "ASR_MODEL_CORRUPT": {"http_status": 503, "retryable": False},
     "ASR_PROVIDER_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "TTS_UNAVAILABLE": {"http_status": 501, "retryable": False},
+    "TTS_CONTENT_GATE_UNAVAILABLE": {"http_status": 200, "retryable": True},
+    "TTS_CONTENT_GATE_REJECTED": {"http_status": 200, "retryable": False},
+    "MEDIA_PROVIDER_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "LIVE_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ROUTE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
+}
+
+LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+    "TTS_CONTENT_GATE_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
+    "TTS_CONTENT_GATE_REJECTED": {
+        "status": "FAILED",
+        "retryable": False,
+    },
+}
+
+LETTER_DETAIL_MEDIA_CONTRACT: dict[str, Any] = {
+    "fields": ["media_status", "media_error_code", "media_retryable"],
+    "statuses": [
+        "NOT_REQUESTED",
+        "PENDING",
+        "PROCESSING",
+        "COMPLETED",
+        "FAILED",
+        "UNAVAILABLE",
+    ],
+    "error_codes": LETTER_DETAIL_MEDIA_ERROR_CODES,
 }
 
 
@@ -401,6 +430,7 @@ def contract_document() -> dict[str, Any]:
         "routes": deepcopy(ROUTES),
         "capabilities": deepcopy(CAPABILITIES),
         "profiles": deepcopy(PROFILES),
+        "letter_detail_media": deepcopy(LETTER_DETAIL_MEDIA_CONTRACT),
         "privacy": {
             "logs_include_request_body": False,
             "logs_include_query_values": False,
@@ -459,3 +489,35 @@ def error_metadata(error_code: str) -> dict[str, Any]:
     """Return stable retry metadata without exposing provider details."""
 
     return deepcopy(ERROR_CODES.get(error_code, {"http_status": 500, "retryable": False}))
+
+
+def letter_detail_media_error_metadata(error_code: str) -> dict[str, Any] | None:
+    """Return the registered media-detail terminal state, when applicable."""
+
+    metadata = LETTER_DETAIL_MEDIA_ERROR_CODES.get(error_code)
+    return deepcopy(metadata) if metadata is not None else None
+
+
+def project_letter_detail_media(
+    status: object,
+    error_code: object,
+    retryable: object,
+) -> dict[str, object]:
+    """Project internal/recovery states onto the stable public detail contract."""
+
+    del retryable
+    raw_status = str(status or "NOT_REQUESTED")
+    raw_error = str(error_code).strip() if error_code is not None else ""
+    metadata = letter_detail_media_error_metadata(raw_error)
+    if metadata is not None:
+        return {"status": metadata["status"], "error_code": raw_error,
+                "retryable": metadata["retryable"]}
+    public_status = "PENDING" if raw_status == "QUEUED" else raw_status
+    if not raw_error and public_status in {"NOT_REQUESTED", "PENDING", "PROCESSING", "COMPLETED"}:
+        return {"status": public_status, "error_code": None, "retryable": False}
+    fallback = LETTER_DETAIL_MEDIA_ERROR_CODES["MEDIA_PROVIDER_UNAVAILABLE"]
+    return {
+        "status": fallback["status"],
+        "error_code": "MEDIA_PROVIDER_UNAVAILABLE",
+        "retryable": fallback["retryable"],
+    }

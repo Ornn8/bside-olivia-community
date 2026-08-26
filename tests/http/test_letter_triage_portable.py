@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import latentsync_reply
+import tts.delivery as tts_delivery
 from letter_triage import (
     LetterReplyRouter,
     RoutingContext,
@@ -351,10 +352,18 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     (tts_runtime / "venv/Scripts/python.exe").write_bytes(b"synthetic")
     tts_model = tmp_path / "tts-model"
     tts_model.mkdir()
+    tts_llm = tts_model / "llm.pt"
+    tts_llm.write_bytes(b"synthetic")
+    quality_cache = tmp_path / "whisper"
+    quality_cache.mkdir()
+    quality_checkpoint = quality_cache / "base.pt"
+    quality_checkpoint.write_bytes(b"synthetic")
+    required.append(tts_llm)
     tts_reference = write("tts/reference.wav")
     Path(env["OLIVIA_TTS_CONFIG"]).write_text(json.dumps({"settings": {
         "runtime_root": str(tts_runtime), "model_dir": str(tts_model),
         "reference_audio": tts_reference,
+        "provider_options": {"quality_gate_cache_root": str(quality_cache)},
     }}), encoding="utf-8")
     visual_runtime = tmp_path / "visual-runtime"
     visual_runtime.mkdir()
@@ -374,7 +383,22 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         "upstream_license": "Apache-2.0",
     }}), encoding="utf-8")
 
+    monkeypatch.setattr(
+        tts_delivery,
+        "_verified_file",
+        lambda path, _expected: Path(path).is_file(),
+    )
+    monkeypatch.setattr(
+        tts_delivery,
+        "_quality_runtime_available",
+        lambda *_args: True,
+    )
+
     assert routing_context_from_environment(env) == RoutingContext(True, True)
+
+    quality_checkpoint.unlink()
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    quality_checkpoint.write_bytes(b"synthetic")
 
     for missing in required:
         missing.unlink()

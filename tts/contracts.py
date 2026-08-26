@@ -76,6 +76,7 @@ def _public_provider_options(options: Mapping[str, Any]) -> dict[str, Any]:
 
     path_keys = {
         "numba_cache_dir",
+        "quality_gate_cache_root",
         "temp_root",
         "wetext_fst_root",
     }

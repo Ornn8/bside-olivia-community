@@ -109,6 +109,11 @@ def _tts_config(
             )
             settings["leading_trim_seconds"] = 0.0
         provider_options["voice_condition_mode"] = "cross_lingual_audio_only"
+        quality_cache_root = environment.get(
+            "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"
+        )
+        if quality_cache_root is not None:
+            provider_options["quality_gate_cache_root"] = quality_cache_root
     reference_audio = Path(str(settings.get("reference_audio", "")))
     leading_trim = settings.get("leading_trim_seconds")
     if leading_trim is None and reference_audio.is_file():
@@ -162,6 +167,8 @@ def assemble_complete_video_delivery(
     worker_path: Path,
     temporary_root: Path,
     env: Mapping[str, str] | None = None,
+    *,
+    require_quality_gate: bool = False,
 ) -> CompleteVideoDelivery:
     """Pure configuration seam shared by availability and the real renderer."""
 
@@ -172,8 +179,16 @@ def assemble_complete_video_delivery(
     except (ReplyMediaError, ValueError, TypeError) as exc:
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE") from exc
     worker = Path(worker_path)
-    if not delivery_configured(tts) or not worker.is_file() or not media_runtime_available(env):
+    if (
+        not delivery_configured(tts)
+        or not worker.is_file()
+        or not media_runtime_available(env)
+    ):
         raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE")
+    if require_quality_gate and not delivery_configured(
+        tts, require_quality_gate=True
+    ):
+        raise ReplyMediaError("TTS_CONTENT_GATE_UNAVAILABLE")
     return CompleteVideoDelivery(tts, visual, worker)
 
 
@@ -230,12 +245,17 @@ def render_reply_video(
     latentsync_root: Path | None = None,
     adaptive_delivery: bool = False,
     voice_performance_plan: VoicePerformancePlan | None = None,
+    enforce_content_gate: bool = False,
 ) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
         root = Path(temporary)
         delivery = assemble_complete_video_delivery(
-            tts_config_path, visual_config_path, worker_path, root
+            tts_config_path,
+            visual_config_path,
+            worker_path,
+            root,
+            require_quality_gate=enforce_content_gate,
         )
         audio_path = root / "reply.wav"
         frames = root / "frames"
@@ -249,6 +269,7 @@ def render_reply_video(
                     delivery.tts,
                     delivery_plan,
                     audio_path,
+                    enforce_content_gate=enforce_content_gate,
                 )
             except DeliveryAudioError as exc:
                 raise ReplyMediaError(str(exc)) from exc

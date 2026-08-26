@@ -51,10 +51,15 @@ from letter_triage import LetterEmotionTriage, TriageResult, _current_music_perf
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
-from reply_delivery import build_ordinary_video_llm_content
+from reply_delivery import (
+    build_ordinary_video_llm_content,
+    build_ordinary_video_repair_content,
+    ordinary_video_reply_length_ok,
+)
 from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
+    direct_music_voice_performance,
     direct_voice_performance,
 )
 from video_reply_settings import (
@@ -711,6 +716,7 @@ async def _voice_plan_for_letter(
         direct_voice_performance(
             reply_text,
             letters_adapter.gateway,
+            letter_content=str(letter.get("content", "")),
             request_id=request_id,
         ),
         timeout=LLM_TIMEOUT_SECONDS,
@@ -720,6 +726,51 @@ async def _voice_plan_for_letter(
     letter["voice_performance_plan"] = plan.to_dict()
     _persist_media_state()
     return plan
+
+
+async def _music_voice_plan_for_letter(
+    letter: dict,
+    reply_text: str,
+) -> VoicePerformancePlan:
+    """Keep the musical prelude on its pre-A director and persistence lane."""
+
+    stored = letter.get("voice_performance_plan")
+    if stored is not None:
+        try:
+            if not isinstance(stored, dict):
+                raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+            plan = VoicePerformancePlan.from_music_dict(stored)
+        except VoiceDirectionError:
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
+        if plan.reply_text != reply_text:
+            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
+        return plan
+
+    letter_id = str(letter.get("letter_id", "")).strip()
+    if not letter_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    request_id = f"letter-reply:{letter_id}:voice-direction"
+    persisted_request_id = letter.get("voice_direction_request_id")
+    if persisted_request_id is not None and persisted_request_id != request_id:
+        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
+    if persisted_request_id is None:
+        letter["voice_direction_request_id"] = request_id
+        _persist_media_state()
+    plan = await asyncio.wait_for(
+        direct_music_voice_performance(
+            reply_text,
+            letters_adapter.gateway,
+            request_id=request_id,
+        ),
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
+    if plan.reply_text != reply_text:
+        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
+    letter["voice_performance_plan"] = plan.to_dict()
+    _persist_media_state()
+    return plan
+
+
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
@@ -1454,6 +1505,8 @@ def _letter_list_payload(scope: str) -> dict:
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
     if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
         return "REPLY_QUALITY_BLOCKED", False
+    if code == "LLM_REPLY_LENGTH_INVALID":
+        return "LLM_REPLY_LENGTH_INVALID", False
     if code in {"LLM_TIMEOUT", "PROVIDER_TIMEOUT"}:
         return "LLM_TIMEOUT", True
     if code == "LLM_INTERRUPTED":
@@ -1698,6 +1751,11 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
         reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
         error_code, retryable = _public_llm_error(l.get("error_code"))
+        media_detail = contract.project_letter_detail_media(
+            l.get("media_status", "NOT_REQUESTED"),
+            l.get("media_error_code"),
+            l.get("media_retryable", False),
+        )
         return ok({
             "letter_id": l["letter_id"],
             "letter_status": l.get("letter_status", 4),
@@ -1721,8 +1779,9 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 else ReplyMode.TEXT_LETTER.value
             ),
             "triage": l.get("triage", {"status": "unavailable"}),
-            "media_status": l.get("media_status", "NOT_REQUESTED"),
-            "media_error_code": l.get("media_error_code"),
+            "media_status": media_detail["status"],
+            "media_error_code": media_detail["error_code"],
+            "media_retryable": media_detail["retryable"],
             "is_read": 1 if l.get("is_read") else 0,
             "replied_at": l.get("replied_at"),
             "created_at": l.get("created_at", int(time.time())),
@@ -1974,16 +2033,19 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
         output_dir = data_root / "media" if data_root.is_absolute() else None
         if output_dir is None:
-            letter["media_status"] = "UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED"
+            letter["media_status"] = "UNAVAILABLE"
+            letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
+            letter["media_retryable"] = True
+            _persist_media_state()
             return
-        output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{letter_id}.mp4"
         try:
+            output_dir.mkdir(parents=True, exist_ok=True)
             tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
             visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
             worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
-            voice_plan = await _voice_plan_for_letter(letter, reply_text)
             if reply_mode == "musical_video":
+                voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(_os.environ)
                 if performance_scene is None or not performance_scene.is_file():
@@ -2007,6 +2069,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     voice_performance_plan=voice_plan,
                 )
             else:
+                voice_plan = await _voice_plan_for_letter(letter, reply_text)
                 from datetime import datetime
 
                 hour = datetime.now().hour
@@ -2026,10 +2089,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
                     adaptive_delivery=True,
                     voice_performance_plan=voice_plan,
+                    enforce_content_gate=True,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
+            letter["media_retryable"] = False
             _persist_media_state()
         except (
             ReplyMediaError,
@@ -2040,8 +2105,19 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             ValueError,
             OSError,
         ) as exc:
-            letter["media_status"] = "UNAVAILABLE"
-            letter["media_error_code"] = str(exc)[:80] or "MEDIA_PROVIDER_UNAVAILABLE"
+            candidate = str(exc)[:80]
+            error_contract = contract.letter_detail_media_error_metadata(candidate)
+            error_code = candidate if error_contract is not None else "MEDIA_PROVIDER_UNAVAILABLE"
+            error_contract = contract.letter_detail_media_error_metadata(error_code)
+            letter["media_status"] = (
+                str(error_contract["status"])
+                if error_contract is not None
+                else "UNAVAILABLE"
+            )
+            letter["media_error_code"] = error_code
+            letter["media_retryable"] = bool(
+                error_contract and error_contract["retryable"]
+            )
             _persist_media_state()
 
 
@@ -2315,6 +2391,8 @@ async def _run_reply_pipeline_for_letter(
     exact_mode: str,
     *,
     idempotency_key: str | None,
+    reply_input_override: str | None = None,
+    request_suffix: str = "",
 ):
     letter_id = str(letter["letter_id"])
     revision = max(0, int(letter.get("reply_revision", 0))) + 1
@@ -2322,17 +2400,21 @@ async def _run_reply_pipeline_for_letter(
         f"reply:{letter_id}:{revision}"
     )
     try:
-        reply_input = (
-            build_ordinary_video_llm_content(content)
-            if exact_mode
-            in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
-            else content
-        )
+        reply_input = reply_input_override
+        if reply_input is None:
+            reply_input = (
+                build_ordinary_video_llm_content(content)
+                if exact_mode
+                in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+                else content
+            )
         request = ReplyRequest(
             content=reply_input,
-            request_id=f"letter-reply:{letter_id}",
+            request_id=f"letter-reply:{letter_id}{request_suffix}",
             idempotency_key=(
-                f"{idempotency_key}:{letter_id}" if idempotency_key else None
+                f"{idempotency_key}:{letter_id}{request_suffix}"
+                if idempotency_key
+                else None
             ),
             max_input_chars=LLM_CONFIG.max_input_chars,
         )
@@ -2378,7 +2460,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
     }:
-        letter["media_status"] = "UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED"
+        letter["media_status"] = "UNAVAILABLE"
+        letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
+        letter["media_retryable"] = True
     _schedule_text_reply_delay(letter, exact_mode)
     _persist_store_state()
 
@@ -2389,6 +2473,19 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             exact_mode,
             idempotency_key=idempotency_key,
         )
+        if (
+            result.state is ReplyState.COMPLETED
+            and exact_mode == ReplyMode.SPOKEN_VIDEO.value
+            and not ordinary_video_reply_length_ok(result.text)
+        ):
+            result = await _run_reply_pipeline_for_letter(
+                letter,
+                content,
+                exact_mode,
+                idempotency_key=idempotency_key,
+                reply_input_override=build_ordinary_video_repair_content(result.text),
+                request_suffix=":duration-repair",
+            )
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_INTERRUPTED"
@@ -2417,6 +2514,15 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         letter["error_code"] = public_code
         _persist_store_state()
         _safe_log("letter_failed", error_code=public_code)
+        return False
+    if (
+        exact_mode == ReplyMode.SPOKEN_VIDEO.value
+        and not ordinary_video_reply_length_ok(result.text)
+    ):
+        letter["letter_status"] = "FAILED"
+        letter["error_code"] = "LLM_REPLY_LENGTH_INVALID"
+        _persist_store_state()
+        _safe_log("letter_failed", error_code="LLM_REPLY_LENGTH_INVALID")
         return False
 
     _prepare_private_world_delivery(letter, result.text)

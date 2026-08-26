@@ -93,3 +93,11 @@ Real profile lifecycle evidence covered `doctor` (`HEALTHY`), `disable`, disable
 - B02, B04, B06, P01, and B10A scope scanners: all PASS with B06 composition enabled. Clean-state simulation PASS; unrelated dirty-path simulation FAIL; forced B06 failure propagates FAIL to P01 and B10A.
 
 No model weights, reference audio, generated media, credentials, or absolute private asset paths are included in this note.
+
+## Directed ordinary-reply quality boundary
+
+The accepted A profile renders one frozen ordinary spoken-video reply in one CosyVoice `inference_instruct2` call. The LLM tool emits only one positive 12–24 Chinese-character non-spoken instruction; pace is fixed at `1.0` and the worker verifies the pinned base `llm.pt` SHA-256 before model load.
+
+Up to three seeds may be attempted. A duration-valid candidate is published only after the offline pinned Whisper `base` checkpoint passes its own SHA-256 check and ASR rejects instruction contamination, any detected insertion or omission, added repetition, or excessive substitutions. Missing runtime, checkpoint, invalid report, timeout, or subprocess failure is `TTS_CONTENT_GATE_UNAVAILABLE`; three duration-valid ASR rejections end as `TTS_CONTENT_GATE_REJECTED`. Candidate files remain temporary and are never atomically moved onto the destination until every gate passes.
+
+The quality runtime is the external `openai-whisper==20250625` package at upstream tag `v20250625` / commit `31243bad24cc746f07d4c8bfdd2d974872cb1803` (MIT). Install it into the same external Python environment used by the CosyVoice worker, following the upstream instructions. The official `base.pt` artifact is pinned to SHA-256 `ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e`. The cache directory must be set explicitly in `provider_options` as `quality_gate_cache_root`, or through `OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT`; no home-directory fallback is used.

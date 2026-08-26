@@ -66,6 +66,28 @@
       "optional_capabilities": ["llm.gateway", "llm.streaming"]
     }
   },
+  "letter_detail_media": {
+    "fields": ["media_status", "media_error_code", "media_retryable"],
+    "statuses": [
+      "NOT_REQUESTED",
+      "PENDING",
+      "PROCESSING",
+      "COMPLETED",
+      "FAILED",
+      "UNAVAILABLE"
+    ],
+    "error_codes": {
+      "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
+      "TTS_CONTENT_GATE_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "TTS_CONTENT_GATE_REJECTED": {
+        "status": "FAILED",
+        "retryable": false
+      }
+    }
+  },
   "privacy": {
     "logs_include_request_body": false,
     "logs_include_query_values": false,

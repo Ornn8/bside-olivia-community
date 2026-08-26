@@ -8,9 +8,11 @@ references supplied in a private temporary request file.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
+import re
 import sys
 import wave
 from array import array
@@ -18,6 +20,25 @@ from pathlib import Path
 
 
 _END_OF_PROMPT_TOKEN = "<|endofprompt|>"
+_SPOKEN_CONTROL_RE = re.compile(
+    r"<\|[^\r\n]{1,120}?\|>|</?[A-Za-z][^>\r\n]{0,120}>|\[[^\]\r\n]{1,80}\]|\*\*[^*\r\n]{1,120}\*\*",
+    re.IGNORECASE,
+)
+_COSYVOICE_BASE_LLM_SHA256 = "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _validate_base_model(model_dir: Path) -> None:
+    checkpoint = model_dir / "llm.pt"
+    if not checkpoint.is_file() or _sha256(checkpoint) != _COSYVOICE_BASE_LLM_SHA256:
+        raise RuntimeError("COSYVOICE_BASE_MODEL_HASH_MISMATCH")
 
 
 def _write_wav(path: Path, sample_rate: int, samples: list[float]) -> None:
@@ -33,6 +54,11 @@ def _write_wav(path: Path, sample_rate: int, samples: list[float]) -> None:
 
 def _synthesize(request: dict[str, object], output: Path) -> None:
     runtime_root = Path(str(request["runtime_root"]))
+    if request.get("voice_condition_mode") == "instruct2_single_pass":
+        if str(request.get("llm_variant", "base")) != "base":
+            raise RuntimeError("only the accepted base llm.pt variant is supported")
+        if bool(request.get("verify_accepted_base_model", False)):
+            _validate_base_model(Path(str(request["model_dir"])))
     sys.path.insert(0, str(runtime_root))
     for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "MODELSCOPE_OFFLINE"):
         os.environ[key] = "1"
@@ -65,13 +91,15 @@ def _synthesize(request: dict[str, object], output: Path) -> None:
 def _synthesize_instruct2_single_pass(model, request: dict[str, object], output: Path) -> None:
     """Apply one LLM-chosen global style without placing it in spoken text."""
 
+    if str(request.get("llm_variant", "base")) != "base":
+        raise RuntimeError("only the accepted base llm.pt variant is supported")
     if not callable(getattr(model, "inference_instruct2", None)):
         raise RuntimeError("COSYVOICE_INSTRUCT2_UNSUPPORTED")
     text = str(request.get("text", ""))
     instruction = str(request.get("instruct_text", "")).strip()
     if not text.strip() or not instruction:
         raise RuntimeError("single-pass text or instruction missing")
-    if _END_OF_PROMPT_TOKEN in text:
+    if _SPOKEN_CONTROL_RE.search(text):
         raise RuntimeError("TTS_DIRECTED_TEXT_CONTAINS_CONTROL_TOKEN")
     instruction = instruction.replace(_END_OF_PROMPT_TOKEN, "").rstrip()
     instruction += _END_OF_PROMPT_TOKEN

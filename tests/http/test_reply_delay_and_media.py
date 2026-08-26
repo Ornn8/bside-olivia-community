@@ -46,6 +46,23 @@ def test_exact_modes_keep_legacy_wire_compatibility():
     assert local_server._exact_reply_mode("video") == "musical_video"
 
 
+def test_media_output_directory_failure_is_normalized(tmp_path: Path, monkeypatch):
+    blocked_root = tmp_path / "blocked"
+    blocked_root.write_text("not a directory", encoding="utf-8")
+    letter = {"letter_id": "mkdir-failure", "media_status": "PENDING"}
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(blocked_root))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    asyncio.run(local_server._render_media_job(
+        "mkdir-failure", "letter", "reply", ReplyMode.SPOKEN_VIDEO.value
+    ))
+
+    assert (letter["media_status"], letter["media_error_code"], letter["media_retryable"]) == (
+        "UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True
+    )
+
+
 def test_successful_media_retry_clears_the_previous_failure_code(
     tmp_path: Path,
     monkeypatch,
@@ -81,6 +98,8 @@ def test_successful_media_retry_clears_the_previous_failure_code(
             energy=0.5,
             breath_before_sentences=(),
             emphasize_sentences=(),
+            short_instruction="",
+            profile="legacy_music_global_direction_v1",
         )
 
     def render(_content, _reply, output, **kwargs):
@@ -89,7 +108,7 @@ def test_successful_media_retry_clears_the_previous_failure_code(
         return {}
 
     monkeypatch.setattr(local_server, "render_musical_reply", render)
-    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
+    monkeypatch.setattr(local_server, "_music_voice_plan_for_letter", voice_plan)
 
     asyncio.run(
         local_server._render_media_job(
@@ -106,7 +125,111 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
 
 
-def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
+@pytest.mark.parametrize(
+    ("error_code", "expected_status", "expected_retryable"),
+    [
+        ("TTS_CONTENT_GATE_REJECTED", "FAILED", False),
+        ("TTS_CONTENT_GATE_UNAVAILABLE", "UNAVAILABLE", True),
+        (r"D:\private\voice.wav", "UNAVAILABLE", True),
+    ],
+)
+def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
+    tmp_path: Path,
+    monkeypatch,
+    error_code: str,
+    expected_status: str,
+    expected_retryable: bool,
+) -> None:
+    letter_id = f"media-{error_code.casefold()}"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic letter",
+        "reply_text": "林" * 190,
+        "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+        "letter_status": "COMPLETED",
+        "media_status": "PENDING",
+        "reply_not_before": 0.0,
+    }
+    local_server.store.letters[:] = [letter]
+    scene = tmp_path / "scene.mp4"
+    scene.write_bytes(b"synthetic scene")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
+        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", str(scene))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    async def voice_plan(_letter, text):
+        return VoicePerformancePlan(
+            reply_text=text,
+            overall_emotion="声音柔软自然地承接，再缓缓托起给到力量",
+            global_speed=1.0,
+            energy=0.55,
+            breath_before_sentences=(),
+            emphasize_sentences=(),
+        )
+
+    def fail_render(*_args, **_kwargs):
+        raise local_server.ReplyMediaError(error_code)
+
+    monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
+    monkeypatch.setattr(local_server, "render_reply_video", fail_render)
+
+    asyncio.run(
+        local_server._render_media_job(
+            letter_id,
+            letter["content"],
+            letter["reply_text"],
+            ReplyMode.SPOKEN_VIDEO.value,
+        )
+    )
+    detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"letter_id": letter_id},
+        )
+    )["data"]
+
+    assert detail["media_status"] == expected_status
+    assert detail["media_error_code"] == (error_code if error_code.startswith("TTS_") else "MEDIA_PROVIDER_UNAVAILABLE")
+    assert detail["media_retryable"] is expected_retryable
+
+
+@pytest.mark.parametrize(
+    ("stored_status", "expected"),
+    [
+        ("QUEUED", ("PENDING", None, False)),
+        ("UNAVAILABLE_DATA_ROOT_NOT_CONFIGURED", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
+        ("UNAVAILABLE_THIRD_PARTY_NOT_INSTALLED", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
+        ("INTERNAL_CRASH", ("UNAVAILABLE", "MEDIA_PROVIDER_UNAVAILABLE", True)),
+    ],
+)
+def test_public_detail_projects_every_legacy_internal_media_status(
+    stored_status: str,
+    expected: tuple[str, str | None, bool],
+) -> None:
+    letter_id = f"status-{stored_status.casefold()}"
+    local_server.store.letters[:] = [
+        {
+            "letter_id": letter_id,
+            "content": "synthetic",
+            "letter_status": "COMPLETED",
+            "reply_text": "synthetic",
+            "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+            "media_status": stored_status,
+            "media_error_code": r"D:\private\voice.wav" if stored_status == "INTERNAL_CRASH" else None,
+            "reply_not_before": 0.0,
+        }
+    ]
+
+    detail = asyncio.run(local_server.route(
+        "GET", "/toy/letter/detail", {}, {"letter_id": letter_id}
+    ))["data"]
+    assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == expected
+
+
+def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -118,6 +241,16 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
         energy=0.62,
         breath_before_sentences=(),
         emphasize_sentences=(1,),
+    )
+    music_plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        overall_emotion="restrained empathy becoming steady reassurance",
+        global_speed=1.06,
+        energy=0.62,
+        breath_before_sentences=(),
+        emphasize_sentences=(1,),
+        short_instruction="",
+        profile="legacy_music_global_direction_v1",
     )
     scene = tmp_path / "scene.mp4"
     scene.write_bytes(b"scene")
@@ -148,11 +281,18 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
 
     directed_requests = []
 
-    async def direct_frozen_reply(text, gateway, *, request_id=None):
+    async def direct_frozen_reply(text, gateway, *, letter_content=None, request_id=None):
+        assert text == reply_text
+        assert gateway is local_server.letters_adapter.gateway
+        assert letter_content == "ordinary video request"
+        directed_requests.append(request_id)
+        return plan
+
+    async def direct_music_reply(text, gateway, *, request_id=None):
         assert text == reply_text
         assert gateway is local_server.letters_adapter.gateway
         directed_requests.append(request_id)
-        return plan
+        return music_plan
 
     received = {}
 
@@ -167,6 +307,11 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
         return {}
 
     monkeypatch.setattr(local_server, "direct_voice_performance", direct_frozen_reply)
+    monkeypatch.setattr(
+        local_server,
+        "direct_music_voice_performance",
+        direct_music_reply,
+    )
     monkeypatch.setattr(local_server, "render_reply_video", render_spoken)
     monkeypatch.setattr(local_server, "render_musical_reply", render_musical)
 
@@ -180,13 +325,13 @@ def test_both_product_video_renderers_receive_the_persisted_llm_voice_plan(
 
     asyncio.run(exercise())
 
-    assert received == {"spoken_video": plan, "musical_video": plan}
+    assert received == {"spoken_video": plan, "musical_video": music_plan}
     assert directed_requests == [
         "letter-reply:spoken-entry:voice-direction",
         "letter-reply:musical-entry:voice-direction",
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
-    assert letters[1]["voice_performance_plan"] == plan.to_dict()
+    assert letters[1]["voice_performance_plan"] == music_plan.to_dict()
 
 
 def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypatch):
@@ -196,7 +341,7 @@ def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypat
     }
     provider_calls = []
 
-    async def direct(_text, _gateway, *, request_id=None):
+    async def direct(_text, _gateway, *, letter_content=None, request_id=None):
         provider_calls.append(request_id)
         raise AssertionError("corrupt state must not call the voice provider")
 
@@ -226,7 +371,7 @@ def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monke
     def persist():
         persisted_request_ids.append(letter.get("voice_direction_request_id"))
 
-    async def direct(_text, _gateway, *, request_id=None):
+    async def direct(_text, _gateway, *, letter_content=None, request_id=None):
         provider_calls.append(request_id)
         assert letter["voice_direction_request_id"] == request_id
         if len(provider_calls) == 1:
@@ -405,7 +550,7 @@ def test_generate_reply_preserves_the_router_selected_video_route(
         return PipelineResult(
             letter_id,
             ReplyState.COMPLETED,
-            text="synthetic canonical reply",
+            text="林" * 190,
             quality_status="accepted_degraded",
         )
 
@@ -439,3 +584,47 @@ def test_generate_reply_preserves_the_router_selected_video_route(
     assert public["reply_mode"] == (
         "text" if delivery_mode == ReplyMode.TEXT_LETTER.value else "video"
     )
+
+
+def test_generate_reply_repairs_then_rechecks_video_copy_length(monkeypatch):
+    letter_id = "synthetic-duration-repair"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic current letter",
+        "reply_text": "",
+        "reply_mode": ReplyMode.TEXT_LETTER.value,
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    requests = []
+
+    async def classify(_content):
+        return TriageResult(
+            "high",
+            ReplyMode.SPOKEN_VIDEO.value,
+            "voice_adds_presence",
+            "completed",
+            True,
+            direct_response_sufficient=True,
+            voice_materially_better=True,
+        )
+
+    async def run_pipeline(request, _context):
+        requests.append(request)
+        text = "林" * 190 if request.request_id.endswith(":duration-repair") else "太短"
+        return PipelineResult(letter_id, ReplyState.COMPLETED, text=text)
+
+    monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
+    monkeypatch.setattr(local_server.reply_pipeline, "run", run_pipeline)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_commit_private_world_letter", lambda _letter: False)
+    monkeypatch.setattr(local_server, "_schedule_media_job", lambda *_args: None)
+    monkeypatch.setattr(local_server.letters_adapter, "remember_conversation", lambda *_args: None)
+
+    assert asyncio.run(local_server.generate_reply(letter_id, letter["content"]))
+    assert [request.request_id for request in requests] == [
+        f"letter-reply:{letter_id}",
+        f"letter-reply:{letter_id}:duration-repair",
+    ]
+    assert "180到200个汉字" in requests[1].content
+    assert letter["reply_text"] == "林" * 190
