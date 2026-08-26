@@ -6,10 +6,7 @@ import pytest
 from private_world_admin import AdminOperationError, PrivateWorldAdmin
 from private_world_delivery import DeliveryEvent, DeliveryStatus
 from private_world_reducer import ReducerEventKind
-from private_world_runtime import (
-    create_private_world_runtime,
-    resolve_private_world_database,
-)
+from private_world_runtime import create_private_world_runtime
 
 
 NOW = datetime(2026, 8, 26, tzinfo=timezone.utc)
@@ -39,24 +36,24 @@ def test_current_user_reset_is_isolated_idempotent_and_persists(
     assert user_b.port.snapshot().trust == 1
     events_before_reset = user_b.port.events()
 
-    database, reason, enabled = resolve_private_world_database(
-        environment, user_id="USER-A"
-    )
-    assert database is not None and reason is None and enabled is True
-    admin = PrivateWorldAdmin(database, user_id="user-a")
-
-    first = admin.reset_current_user(
+    first = PrivateWorldAdmin.reset_current_user(
+        environ=environment,
+        user_id="USER-A",
         request_id="reset.current-user:1",
         reason="synthetic reset",
         confirmed=True,
     )
-    duplicate = admin.reset_current_user(
+    duplicate = PrivateWorldAdmin.reset_current_user(
+        environ=environment,
+        user_id="user-a",
         request_id="reset.current-user:1",
         reason="synthetic reset",
         confirmed=True,
     )
     with pytest.raises(AdminOperationError) as conflict:
-        admin.reset_current_user(
+        PrivateWorldAdmin.reset_current_user(
+            environ=environment,
+            user_id="user-a",
             request_id="reset.current-user:1",
             reason="synthetic conflicting reset",
             confirmed=True,
@@ -72,12 +69,9 @@ def test_current_user_reset_is_isolated_idempotent_and_persists(
     assert restarted_b.port.events() == events_before_reset
     assert restarted_b.port.snapshot().trust == 1
 
-    database_b, reason_b, enabled_b = resolve_private_world_database(
-        environment, user_id="user-b"
-    )
-    assert database_b is not None and reason_b is None and enabled_b is True
-    other_user = PrivateWorldAdmin(database_b, user_id="user-b")
-    assert other_user.reset_current_user(
+    assert PrivateWorldAdmin.reset_current_user(
+        environ=environment,
+        user_id="user-b",
         request_id="reset.current-user:1",
         reason="synthetic reset",
         confirmed=True,

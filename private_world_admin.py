@@ -12,10 +12,11 @@ from pathlib import Path
 import re
 import sqlite3
 import tempfile
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from conversation_memory_identity import normalize_conversation_memory_user_id
 from private_world_ledger import SQLitePrivateWorldLedger
+from private_world_runtime import resolve_private_world_database
 
 
 class AdminConfirmationRequired(RuntimeError):
@@ -113,14 +114,41 @@ class PrivateWorldAdmin:
         except sqlite3.Error as exc:
             raise AdminOperationError("private world reset failed") from exc
 
+    @classmethod
     def reset_current_user(
-        self,
+        cls,
         *,
+        environ: Mapping[str, str],
+        user_id: str,
         request_id: str,
         reason: str,
         confirmed: bool = False,
     ) -> CurrentUserResetResult:
-        """Reset only this already user-scoped ledger, once per request."""
+        """Resolve and reset only the normalized current-user ledger."""
+
+        try:
+            database_path, resolution_reason, enabled = resolve_private_world_database(
+                environ,
+                user_id=user_id,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            raise AdminOperationError("private world current-user scope is unavailable") from exc
+        if not enabled or resolution_reason is not None or database_path is None:
+            raise AdminOperationError("private world current-user scope is unavailable")
+        return cls(database_path, user_id=user_id)._reset_selected_user(
+            request_id=request_id,
+            reason=reason,
+            confirmed=confirmed,
+        )
+
+    def _reset_selected_user(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        confirmed: bool,
+    ) -> CurrentUserResetResult:
+        """Reset the ledger selected by reset_current_user."""
 
         self._confirm(confirmed)
         self._require_database()
