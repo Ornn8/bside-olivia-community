@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from installer import full_patch
 from installer.full_patch import (
     PAYLOAD_REQUIRED_RELATIVE_FILES,
     PAYLOAD_REQUIRED_ROOT_FILES,
@@ -345,6 +346,10 @@ def test_copy_payload_excludes_non_runtime_project_files(
     source.mkdir()
     for name in PAYLOAD_REQUIRED_ROOT_FILES | {"dynamic_renderer.py"}:
         (source / name).write_text("# fixture", encoding="utf-8")
+    (source / "archive_config.json").write_text(
+        "archive fixture",
+        encoding="utf-8",
+    )
     for name in (
         "test_fixture.py",
         "pytest.ini",
@@ -400,6 +405,8 @@ def test_copy_payload_excludes_non_runtime_project_files(
     assert not (destination / "runtime" / "packaging").exists()
     assert "dynamic_renderer.py" in copied
     assert (destination / "dynamic_renderer.py").is_file()
+    assert "archive_config.json" in copied
+    assert (destination / "archive_config.json").is_file()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
         assert name in copied
         assert (destination / name).is_file()
@@ -413,6 +420,177 @@ def test_copy_payload_excludes_non_runtime_project_files(
         assert not (destination / name).exists()
     assert not (destination / ".evidence").exists()
     assert not (destination / "__pycache__").exists()
+
+
+def test_copy_payload_from_git_tree_excludes_untracked_files(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    source = _make_payload(repo_root, tmp_path / "payload")
+    (source / "dynamic_renderer.py").write_text(
+        "# tracked runtime fixture",
+        encoding="utf-8",
+    )
+    (source / ".gitignore").write_text(
+        "ignored_config.json\ncontrol_center/ignored_config.json\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "init"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (source / "untracked_config.json").write_text(
+        "untracked",
+        encoding="utf-8",
+    )
+    (source / "ignored_config.json").write_text(
+        "ignored",
+        encoding="utf-8",
+    )
+    (source / "control_center" / "untracked_config.json").write_text(
+        "untracked",
+        encoding="utf-8",
+    )
+    (source / "control_center" / "ignored_config.json").write_text(
+        "ignored",
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "installed" / "local_backend"
+    copied = copy_project_payload(source, destination)
+
+    assert "dynamic_renderer.py" in copied
+    assert not (destination / "untracked_config.json").exists()
+    assert not (destination / "ignored_config.json").exists()
+    assert not (
+        destination / "control_center" / "untracked_config.json"
+    ).exists()
+    assert not (
+        destination / "control_center" / "ignored_config.json"
+    ).exists()
+
+
+def test_copy_payload_from_linked_worktree_uses_tracked_files(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    repository = _make_payload(repo_root, tmp_path / "repository")
+    (repository / ".gitignore").write_text(
+        "ignored_config.json\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "init"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=payload-test",
+            "-c",
+            "user.email=payload-test@example.invalid",
+            "commit",
+            "-m",
+            "payload",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(source), "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (source / ".git").is_file()
+    (source / "untracked_config.json").write_text(
+        "untracked",
+        encoding="utf-8",
+    )
+    (source / "ignored_config.json").write_text(
+        "ignored",
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "installed" / "local_backend"
+    copy_project_payload(source, destination)
+
+    assert not (destination / "untracked_config.json").exists()
+    assert not (destination / "ignored_config.json").exists()
+    for name in PAYLOAD_REQUIRED_ROOT_FILES:
+        assert (destination / name).is_file()
+
+
+def test_copy_payload_git_query_failure_is_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    source = _make_payload(repo_root, tmp_path / "payload")
+    (source / ".git").mkdir()
+
+    def fail_git_query(*args, **kwargs):
+        raise OSError("host-specific git failure")
+
+    monkeypatch.setattr(full_patch.subprocess, "run", fail_git_query)
+    destination = tmp_path / "installed" / "local_backend"
+
+    with pytest.raises(
+        PatchInstallError,
+        match="PATCH_PAYLOAD_GIT_QUERY_FAILED",
+    ):
+        copy_project_payload(source, destination)
+    assert not destination.exists()
+
+
+def test_copy_payload_git_query_timeout_is_stable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    source = _make_payload(repo_root, tmp_path / "payload")
+    (source / ".git").mkdir()
+    observed: dict[str, object] = {}
+
+    def timeout_git_query(command, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(full_patch.subprocess, "run", timeout_git_query)
+    destination = tmp_path / "installed" / "local_backend"
+
+    with pytest.raises(
+        PatchInstallError,
+        match="PATCH_PAYLOAD_GIT_QUERY_FAILED",
+    ):
+        copy_project_payload(source, destination)
+    assert observed["timeout"] == 10
+    assert not destination.exists()
 
 
 def test_copy_payload_rejects_missing_original_client_runtime(
