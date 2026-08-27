@@ -11,7 +11,7 @@ from typing import Mapping, Protocol
 
 from jsonschema import Draft202012Validator
 
-from reply_context import ReplyContext
+from runtime.reply.reply_context import ReplyContext
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "contracts" / "reply_review.schema.json"

@@ -1,6 +1,6 @@
 # P02-04 ReplyContext contract
 
-`reply_context.py` defines the immutable, provider-free input shared by reply
+`runtime/reply/reply_context.py` defines the immutable, provider-free input shared by reply
 pipeline stages. It does not call a provider, render media, load a persona,
 review a reply, or commit private state. The matching JSON Schema is
 `contracts/reply_context.schema.json` with id `p02.reply-context.v1`.

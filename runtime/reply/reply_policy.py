@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import re
 
-from reply_context import OutputConstraints, ReplyContext, ReplyMode
+from runtime.reply.reply_context import OutputConstraints, ReplyContext, ReplyMode
 
 
 class ViolationSeverity(StrEnum):

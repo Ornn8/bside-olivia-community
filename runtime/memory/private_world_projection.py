@@ -9,7 +9,7 @@ from private_world_port import (
     LocalContinuationFact,
     PrivateWorldSnapshot,
 )
-from reply_context import (
+from runtime.reply.reply_context import (
     BehaviorLevel,
     KnownContinuationFact,
     NicknamePermission,
