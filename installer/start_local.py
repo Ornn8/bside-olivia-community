@@ -22,7 +22,7 @@ def _load_dpapi_key(path: Path) -> str:
         script = "$s=ConvertTo-SecureString ([Console]::In.ReadToEnd()); $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); try {[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)} finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}"
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            input=protected + "\n", text=True, capture_output=True, check=False,
+            input=protected, text=True, capture_output=True, check=False,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, UnicodeError):
@@ -111,26 +111,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ready else 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
-    environment = os.environ.copy()
+    client_environment = os.environ.copy()
+    backend_environment = client_environment.copy()
     configured_key = _load_dpapi_key(data_root / "config" / "deepseek_api_key.dpapi")
-    if configured_key and not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        environment["DEEPSEEK_API_KEY"] = configured_key
-    environment.update(
-        {
-            "OLIVIA_INSTALL_ROOT": str(root),
-            "OLIVIA_PROJECT_ROOT": str(root / "app"),
-            "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
-            "OLIVIA_MEMORY_ROOT": str(data_root / "memory"),
-            "OLIVIA_PRIVATE_WORLD_ENABLED": "1",
-            "OLIVIA_PRIVATE_WORLD_DB": str(
-                data_root / "private_world" / "private_world.sqlite3"
-            ),
-            "OLIVIA_REPLY_DELAY_ENABLED": "1",
-            "OLIVIA_REPLY_DELAY_MINUTES_MIN": "5",
-            "OLIVIA_REPLY_DELAY_MINUTES_MAX": "10",
-            "OLIVIA_PORT": str(args.port),
-        }
-    )
+    if configured_key and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
+        backend_environment["DEEPSEEK_API_KEY"] = configured_key
+    runtime_environment = {
+        "OLIVIA_INSTALL_ROOT": str(root),
+        "OLIVIA_PROJECT_ROOT": str(root / "app"),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_MEMORY_ROOT": str(data_root / "memory"),
+        "OLIVIA_PRIVATE_WORLD_ENABLED": "1",
+        "OLIVIA_PRIVATE_WORLD_DB": str(
+            data_root / "private_world" / "private_world.sqlite3"
+        ),
+        "OLIVIA_REPLY_DELAY_ENABLED": "1",
+        "OLIVIA_REPLY_DELAY_MINUTES_MIN": "5",
+        "OLIVIA_REPLY_DELAY_MINUTES_MAX": "10",
+        "OLIVIA_PORT": str(args.port),
+    }
+    backend_environment.update(runtime_environment)
+    client_environment.update(runtime_environment)
     for name, value in {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
         "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
@@ -141,8 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
         "OLIVIA_LLM_MAX_RETRIES": "0",
     }.items():
-        environment.setdefault(name, value)
-    if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
+        backend_environment.setdefault(name, value)
+        client_environment.setdefault(name, value)
+    if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
     if not _health(args.port):
@@ -156,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                 str(entrypoint),
             ],
             cwd=backend,
-            env=environment,
+            env=backend_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=detached,
@@ -178,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     local = profile / "Local"
     roaming.mkdir(parents=True, exist_ok=True)
     local.mkdir(parents=True, exist_ok=True)
-    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(environment, roaming, local))
+    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(client_environment, roaming, local))
 
 
 if __name__ == "__main__":
