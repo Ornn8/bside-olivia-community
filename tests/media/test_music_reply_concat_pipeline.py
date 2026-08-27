@@ -210,6 +210,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     order: list[str] = []
     observed: dict[str, object] = {}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
@@ -374,9 +375,12 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"spoken": 0, "minimax": 0, "separate": 0}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
-    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv(
+        "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
+    )
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -480,9 +484,12 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"minimax": 0, "separate": 0, "performance": 0}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
-    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv(
+        "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
+    )
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
