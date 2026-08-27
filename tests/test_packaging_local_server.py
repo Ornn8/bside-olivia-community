@@ -54,6 +54,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/memory/private_world_projection.py" in packaged_paths
     assert "runtime/memory/conversation_memory_identity.py" in packaged_paths
     assert "runtime/media/music_caption.py" in packaged_paths
+    assert "runtime/media/latentsync_reply.py" in packaged_paths
+    assert "runtime/media/song_content.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
     assert "runtime/reply/reply_delivery.py" in packaged_paths
     assert "runtime/reply/reply_media.py" in packaged_paths
@@ -112,6 +114,11 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import runtime.memory.private_world_projection; "
             "import runtime.memory.private_world_runtime; "
             "import original_client_server, runtime.media.music_caption, song_content; "
+            "import latentsync_reply; "
+            "from runtime.media import latentsync_reply as canonical_latentsync_reply; "
+            "from runtime.media import song_content as canonical_song_content; "
+            "assert latentsync_reply is canonical_latentsync_reply; "
+            "assert song_content is canonical_song_content; "
             "import reply_delivery, reply_media; "
             "from runtime.reply import reply_delivery as canonical_delivery; "
             "from runtime.reply import reply_media as canonical_media; "

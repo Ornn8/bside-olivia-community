@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from runtime.media.music_duration import normalize_music_duration
-from song_content import (
+from runtime.media.song_content import (
     PianoTexture,
     SongDynamicArc,
     SongEmotionArc,

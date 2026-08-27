@@ -11,7 +11,7 @@ from tools.minimax_profile import (
     OFFICIAL_COMFY_MINIMAX_PROFILE,
 )
 from runtime.media.music_caption import MINIMAX_CAPTION_VERSION, validate_minimax_caption
-from song_content import SongSemanticPlan
+from runtime.media.song_content import SongSemanticPlan
 
 
 def test_calibration_provenance_binds_the_new_short_song_contract(
