@@ -17,7 +17,7 @@ from llm_gateway import Gateway, GatewayDelta, GatewayResponse
 from local_memory import LocalMemoryAdapter, UnavailableMemoryPort
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, LegacyLetter, NullMemoryPort
 from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPromptBuilder
-from private_world_delivery import DeliveryStatus
+from runtime.memory.private_world_delivery import DeliveryStatus
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from reply_pipeline import PipelineResult

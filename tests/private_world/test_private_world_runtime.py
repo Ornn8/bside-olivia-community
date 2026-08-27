@@ -9,8 +9,8 @@ import sqlite3
 import pytest
 from jsonschema import Draft202012Validator
 
-import private_world_runtime
-from private_world_delivery import (
+from runtime.memory import private_world_runtime
+from runtime.memory.private_world_delivery import (
     DeliveryEvent,
     DeliveryStatus,
 )
@@ -30,7 +30,7 @@ from private_world_port import (
     NullPrivateWorldPort,
     PrivateWorldSnapshot,
 )
-from private_world_runtime import (
+from runtime.memory.private_world_runtime import (
     PRIVATE_WORLD_DEFAULT_RELATIVE_PATH,
     create_private_world_runtime,
     resolve_private_world_database,

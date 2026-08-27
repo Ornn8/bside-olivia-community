@@ -19,7 +19,7 @@ from private_world_candidates import (
     SQLitePrivateWorldCandidateStore,
     candidate_identity,
 )
-from private_world_delivery import PrivateWorldDeliveryCommitter
+from runtime.memory.private_world_delivery import PrivateWorldDeliveryCommitter
 from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldSnapshot
 from reply_context import ReplyMode

@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 
 from private_world_admin import AdminOperationError, PrivateWorldAdmin
-from private_world_delivery import DeliveryEvent, DeliveryStatus
+from runtime.memory.private_world_delivery import DeliveryEvent, DeliveryStatus
 from private_world_reducer import ReducerEventKind
-from private_world_runtime import create_private_world_runtime
+from runtime.memory.private_world_runtime import create_private_world_runtime
 
 
 NOW = datetime(2026, 8, 26, tzinfo=timezone.utc)
