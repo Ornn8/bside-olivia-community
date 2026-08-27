@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import music_reply
-from music_caption import render_minimax_caption
+from runtime.media.music_caption import render_minimax_caption
 from song_content import (
     PianoTexture,
     SongContentPlan,

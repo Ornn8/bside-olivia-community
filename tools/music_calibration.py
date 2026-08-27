@@ -15,7 +15,7 @@ from tools.minimax_profile import (
     MiniMaxInferenceProfile,
     OFFICIAL_COMFY_MINIMAX_PROFILE,
 )
-from music_caption import MINIMAX_CAPTION_VERSION, render_minimax_caption
+from runtime.media.music_caption import MINIMAX_CAPTION_VERSION, render_minimax_caption
 from song_content import (
     PianoTexture,
     SongDynamicArc,
