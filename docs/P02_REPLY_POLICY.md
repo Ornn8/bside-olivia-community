@@ -1,6 +1,6 @@
 # P02-07 deterministic ReplyPolicy
 
-`reply_policy.py` performs narrow, deterministic checks on a reply candidate
+`runtime/reply/reply_policy.py` performs narrow, deterministic checks on a reply candidate
 and a typed `ReplyContext`. It returns stable `ViolationCode` values, hard/soft
 severity, and character spans. It does not call a model, rewrite text, persist
 state, or attempt broad semantic hallucination detection.
