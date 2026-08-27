@@ -287,11 +287,39 @@ def test_capability_installs_only_after_explicit_start_and_publishes_progress() 
     assert public["license_summary"] == "fixture licenses"
     assert public["requires_gpu"] is False
     assert public["status"] == "READY"
+    assert public["schema_version"] == "olivia.capability-status.v2"
+    assert public["remaining_bytes"] == 0
+    assert public["installed_bytes"] == 0
+    assert public["install_locations"] == [
+        "runtime/mem0-site-packages",
+        "data/memory/model-cache",
+    ]
     status_schema = json.loads(
         (CONTRACTS / "mem0_capability_status.schema.json").read_text(encoding="utf-8")
     )
     Draft202012Validator(status_schema).validate(public)
     assert "path" not in json.dumps(public).casefold()
+
+
+def test_ready_status_reports_actual_managed_disk_usage(tmp_path: Path) -> None:
+    runtime = _Layer(ready=True)
+    runtime.target = tmp_path / "runtime"
+    runtime.target.mkdir()
+    (runtime.target / "runtime.bin").write_bytes(b"abc")
+    model = _Layer(ready=True)
+    model.config = SimpleNamespace(model_cache=tmp_path / "model")
+    model.config.model_cache.mkdir()
+    (model.config.model_cache / "model.bin").write_bytes(b"12345")
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime,
+        model=model,
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+
+    assert installer.status().to_dict()["installed_bytes"] == 8
 
 
 def test_capability_start_returns_before_background_install_finishes() -> None:

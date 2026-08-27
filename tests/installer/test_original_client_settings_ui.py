@@ -14,7 +14,7 @@ from original_client_settings_ui import (
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v4"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v5"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -349,6 +349,9 @@ const statusPayload = (status) => ({
           phase: "idle",
           downloaded_bytes: 0,
           total_bytes: 337000000,
+          remaining_bytes: 337000000,
+          installed_bytes: 0,
+          install_locations: ["runtime/mem0-site-packages", "data/memory/model-cache"],
           version: "fixture",
           license_summary: "fixture",
           requires_gpu: false,

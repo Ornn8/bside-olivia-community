@@ -79,10 +79,12 @@ def test_successful_sign_in_authorizes_on_demand_capability_install(tmp_path: Pa
     class Status:
         def to_dict(self):
             return {
-                "schema_version": "olivia.capability-status.v1",
+                "schema_version": "olivia.capability-status.v2",
                 "status": "UNAVAILABLE", "capability": "long_term_memory",
                 "state": "missing", "phase": "idle", "downloaded_bytes": 0,
-                "total_bytes": 100, "version": "fixture", "license_summary": "fixture",
+                "total_bytes": 100, "remaining_bytes": 100, "installed_bytes": 0,
+                "install_locations": ["runtime/mem0-site-packages", "data/memory/model-cache"],
+                "version": "fixture", "license_summary": "fixture",
                 "requires_gpu": False,
             }
 

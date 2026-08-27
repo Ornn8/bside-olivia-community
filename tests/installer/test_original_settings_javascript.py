@@ -58,11 +58,19 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "DeepSeek 官方" in source
     assert "自动选择（国内源优先）" in source
     assert "仅官方源" in source
-    assert "导入离线包" not in source
+    assert "导入离线包（暂不可用）" in source
+    assert "等待可信签名与受限导入校验完成" in source
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
     assert "暂停下载" in source
     assert "继续下载" in source
     assert "约 317 MiB" in source
     assert "无需 GPU" in source
     assert "完成初始设置" in source
+    assert "未配置大模型时无法进行真实对话" in source
+    assert "可在设置 > 本地陪伴中继续" in source
+    assert "剩余" in source
+    assert "安装后占用" in source
+    assert "实际来源" in source
+    assert "精确位置" in source
+    assert "|| isSettingsRoute()" not in source
     assert "innerHTML" not in source

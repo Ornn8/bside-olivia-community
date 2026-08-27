@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v4"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v5"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -911,19 +911,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "text-text-secondary text-body-m font-regular"
     );
     const metadata = stack();
+    const locations = Array.isArray(payload.install_locations)
+      ? payload.install_locations.filter((value) => typeof value === "string")
+      : [];
     metadata.append(
       field("状态", labels[stateValue]),
       field("版本", typeof payload.version === "string" ? payload.version : "未知"),
       field("下载量", formatBytes(payload.total_bytes)),
+      field("剩余", formatBytes(payload.remaining_bytes)),
+      field("安装后占用", formatBytes(payload.installed_bytes)),
+      field("实际来源", typeof payload.source === "string" ? payload.source : "尚未选择"),
       field("许可证", typeof payload.license_summary === "string" ? payload.license_summary : "请查看第三方许可证"),
       field("运行设备", payload.requires_gpu === false ? "CPU（无需 GPU）" : "请查看兼容说明"),
-      field("安装位置", "Olivia 本地受管目录")
+      field("精确位置", locations.length ? locations.join("；") : "Olivia 本地受管目录")
     );
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
       const current = typeof payload.current_file === "string" ? `，当前：${payload.current_file}` : "";
-      result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}${current}`;
+      result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;
     } else if (stateValue === "repair") {
       result.textContent = "上次安装未完成，可保留已下载内容并重试。";
     }
@@ -934,13 +940,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (["missing", "repair", "paused"].includes(stateValue)) {
       const source = document.createElement("select");
       source.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-      for (const [value, label] of [
-        ["auto", "自动选择（国内源优先）"],
-        ["official", "仅官方源"],
+      for (const [value, label, disabled] of [
+        ["auto", "自动选择（国内源优先）", false],
+        ["official", "仅官方源", false],
+        ["offline", "导入离线包（暂不可用）", true],
       ]) {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = label;
+        option.disabled = disabled;
         source.append(option);
       }
       const install = button(stateValue === "paused" ? "继续下载" : "下载并启用", async () => {
@@ -990,7 +998,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       controls.append(uninstall, removeAll);
     }
-    panel.replaceChildren(heading, summary, metadata, controls, result);
+    const offlineNote = text(
+      "p",
+      "离线包等待可信签名与受限导入校验完成后开放。",
+      "text-text-secondary text-caption-m font-regular"
+    );
+    panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
   };
 
   const loadDialogData = async (statusNode, panels, initialMode) => {
@@ -999,7 +1012,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       renderMem0CapabilityPanel(panels.capability),
     ];
     if (initialMode) {
-      statusNode.textContent = "先连接大模型；长期记忆可以稍后按需安装。";
+      statusNode.textContent = "先连接大模型；未配置大模型时无法进行真实对话。长期记忆可以稍后按需安装，可在设置 > 本地陪伴中继续。";
       await Promise.allSettled(tasks);
       return;
     }
@@ -1354,7 +1367,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const maybeOpenInitialSetup = async () => {
     if (
       setupCheckPending
-      || isSettingsRoute()
       || document.querySelector(`[${DIALOG_ATTR}]`)
     ) {
       return;

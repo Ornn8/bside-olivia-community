@@ -1070,17 +1070,22 @@ class CapabilityStatus:
     version: str
     license_summary: str
     requires_gpu: bool
+    installed_bytes: int
+    install_locations: tuple[str, ...]
     reason_code: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
-            "schema_version": "olivia.capability-status.v1",
+            "schema_version": "olivia.capability-status.v2",
             "status": "READY" if self.state is CapabilityState.READY else "UNAVAILABLE",
             "capability": "long_term_memory",
             "state": self.state.value,
             "phase": self.phase,
             "downloaded_bytes": self.downloaded_bytes,
             "total_bytes": self.total_bytes,
+            "remaining_bytes": max(0, self.total_bytes - self.downloaded_bytes),
+            "installed_bytes": self.installed_bytes,
+            "install_locations": list(self.install_locations),
             "version": self.version,
             "license_summary": self.license_summary,
             "requires_gpu": self.requires_gpu,
@@ -1124,6 +1129,12 @@ class Mem0CapabilityInstaller:
         self._lock = threading.Lock()
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
+        self._installed_bytes = 0
+        self._installed_measurement_complete = False
+        self._install_locations = (
+            "runtime/mem0-site-packages",
+            "data/memory/model-cache",
+        )
         self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
 
     def _new_status(
@@ -1146,8 +1157,31 @@ class Mem0CapabilityInstaller:
             self.version,
             self.license_summary,
             self.requires_gpu,
-            reason,
+            self._installed_bytes,
+            self._install_locations,
+            reason_code=reason,
         )
+
+    def _measure_installed_bytes(self) -> int:
+        paths: list[Path] = []
+        runtime_target = getattr(self.runtime, "target", None)
+        if isinstance(runtime_target, Path):
+            paths.append(runtime_target)
+        model_config = getattr(self.model, "config", None)
+        model_target = getattr(model_config, "model_cache", None)
+        if isinstance(model_target, Path):
+            paths.append(model_target)
+        total = 0
+        for root in paths:
+            try:
+                for directory, _children, files in os.walk(root, followlinks=False):
+                    for name in files:
+                        candidate = Path(directory) / name
+                        if not candidate.is_symlink():
+                            total += candidate.stat().st_size
+            except OSError:
+                continue
+        return total
 
     def status(self) -> CapabilityStatus:
         try:
@@ -1175,6 +1209,9 @@ class Mem0CapabilityInstaller:
         return ";".join(dict.fromkeys(value for value in values if value)) or fallback
 
     def _set_ready(self, source: str | None) -> None:
+        if not self._installed_measurement_complete:
+            self._installed_bytes = self._measure_installed_bytes()
+            self._installed_measurement_complete = True
         self._status = self._new_status(
             CapabilityState.READY, "complete", self.total,
             source=self._actual_source(source),
@@ -1218,6 +1255,7 @@ class Mem0CapabilityInstaller:
     ) -> str:
         if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
+        self._installed_measurement_complete = False
         if self._ready_after_migration():
             with self._lock:
                 self._set_ready(source_mode)
@@ -1376,6 +1414,8 @@ class Mem0CapabilityInstaller:
                 )
             return "REJECTED"
         with self._lock:
+            self._installed_bytes = self._measure_installed_bytes()
+            self._installed_measurement_complete = True
             self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
         return "APPLIED" if changed else "NOOP"
 

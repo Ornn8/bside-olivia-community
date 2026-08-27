@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 import json
 import re
@@ -21,9 +22,45 @@ _LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}
 _ORIGINS_KEY = web.AppKey("original_client_capability_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_capability_mounted", bool)
 
+PUBLIC_ROUTE_CONTRACT = {
+    STATUS_PATH: {
+        "methods": ["GET", "OPTIONS"],
+        "status_values": ["READY", "UNAVAILABLE"],
+        "request_fields": [],
+        "response_fields": [
+            "schema_version", "status", "capability", "state", "phase",
+            "downloaded_bytes", "total_bytes", "remaining_bytes",
+            "installed_bytes", "install_locations", "current_file?", "source?",
+            "version", "license_summary", "requires_gpu", "reason_code?",
+        ],
+    },
+    ACTION_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["APPLIED", "NOOP", "REJECTED"],
+        "request_fields": ["action", "source?", "remove_model?"],
+        "response_fields": ["status"],
+    },
+}
+ERROR_HTTP_STATUSES = {
+    "CAPABILITY_ACTION_UNAVAILABLE": [503],
+    "CAPABILITY_CONFIRMATION_REQUIRED": [403],
+    "CAPABILITY_CONTENT_TYPE_INVALID": [415],
+    "CAPABILITY_FIELDS_INVALID": [400],
+    "CAPABILITY_HOST_FORBIDDEN": [403],
+    "CAPABILITY_JSON_INVALID": [400],
+    "CAPABILITY_LOGIN_REQUIRED": [403],
+    "CAPABILITY_ORIGIN_FORBIDDEN": [403],
+    "CAPABILITY_REQUEST_TOO_LARGE": [413],
+    "CAPABILITY_RESULT_INVALID": [503],
+    "CAPABILITY_STATUS_INVALID": [503],
+    "CAPABILITY_STATUS_UNAVAILABLE": [503],
+}
+
 
 class CapabilityAPIError(RuntimeError):
     def __init__(self, code: str, *, status: int) -> None:
+        if code not in ERROR_HTTP_STATUSES or status not in ERROR_HTTP_STATUSES[code]:
+            raise ValueError("capability API error contract is invalid")
         self.code = code
         self.status = status
         super().__init__(code)
@@ -153,7 +190,7 @@ def mount_original_client_capability_api(
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
         try:
-            payload = installer.status().to_dict()
+            payload = await asyncio.to_thread(lambda: installer.status().to_dict())
         except Exception as exc:
             raise CapabilityAPIError("CAPABILITY_STATUS_UNAVAILABLE", status=503) from exc
         if not isinstance(payload, dict) or payload.get("capability") != "long_term_memory":
@@ -172,21 +209,29 @@ def mount_original_client_capability_api(
             source = payload.get("source")
             if source not in {"auto", "official"}:
                 raise CapabilityAPIError("CAPABILITY_FIELDS_INVALID", status=400)
-            result = installer.start(source_mode=str(source))
+            call = installer.start
+            kwargs = {"source_mode": str(source)}
         elif action_name == "pause" and set(payload) == {"action"}:
-            result = installer.pause()
+            call = installer.pause
+            kwargs = {}
         elif action_name == "resume" and set(payload) == {"action", "source"}:
             source = payload.get("source")
             if source not in {"auto", "official"}:
                 raise CapabilityAPIError("CAPABILITY_FIELDS_INVALID", status=400)
-            result = installer.resume(source_mode=str(source))
+            call = installer.resume
+            kwargs = {"source_mode": str(source)}
         elif action_name == "uninstall" and set(payload) == {"action", "remove_model"}:
             remove_model = payload.get("remove_model")
             if type(remove_model) is not bool:
                 raise CapabilityAPIError("CAPABILITY_FIELDS_INVALID", status=400)
-            result = installer.uninstall(remove_model=remove_model)
+            call = installer.uninstall
+            kwargs = {"remove_model": remove_model}
         else:
             raise CapabilityAPIError("CAPABILITY_FIELDS_INVALID", status=400)
+        try:
+            result = await asyncio.to_thread(call, **kwargs)
+        except Exception as exc:
+            raise CapabilityAPIError("CAPABILITY_ACTION_UNAVAILABLE", status=503) from exc
         return web.json_response({"status": _result(result)}, headers=_headers(origin))
 
     app.router.add_get(STATUS_PATH, status)
@@ -195,4 +240,11 @@ def mount_original_client_capability_api(
         app.router.add_options(path, options)
 
 
-__all__ = ["CapabilityAPIError", "mount_original_client_capability_api"]
+__all__ = [
+    "ACTION_PATH",
+    "CapabilityAPIError",
+    "ERROR_HTTP_STATUSES",
+    "PUBLIC_ROUTE_CONTRACT",
+    "STATUS_PATH",
+    "mount_original_client_capability_api",
+]
