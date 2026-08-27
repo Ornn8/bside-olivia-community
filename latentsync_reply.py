@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-from media_paths import resolve_media_path
+from runtime.media.media_paths import resolve_media_path
 
 
 class LatentSyncReplyError(RuntimeError):
