@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
 from reply_context import ReplyContext
-from reply_policy import scan_reply
+from runtime.reply.reply_policy import scan_reply
 from reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 

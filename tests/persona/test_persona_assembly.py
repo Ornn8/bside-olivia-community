@@ -4,7 +4,7 @@ import pytest
 
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
-from prompt_budget import PromptBudgetExceeded
+from runtime.reply.prompt_budget import PromptBudgetExceeded
 from reply_context import ReplyContext, ReplyMode, TrustedTime, TrustedWorldFact
 
 
