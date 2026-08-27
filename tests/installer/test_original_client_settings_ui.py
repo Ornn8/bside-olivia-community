@@ -14,7 +14,7 @@ from original_client_settings_ui import (
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v3"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v4"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -175,7 +175,6 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         "source_id",
         "user_id",
         "database_path",
-        "api_key",
         "0–100",
     ):
         assert forbidden not in source
@@ -191,7 +190,10 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
     ):
         assert required in source
     assert "http://" not in source
-    assert "https://" not in source
+    assert "setup.llm.api_key" not in source
+    assert 'key.input.value = ""' in source
+    assert "https://api.deepseek.com" in source
+    assert "https://opencode.ai/zen/go/v1" in source
 
 
 def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> None:
@@ -326,8 +328,33 @@ const statusPayload = (status) => ({
     candidates: { state: "available" },
   },
 });
-const fetch = async (endpoint, options) => {
-  if (endpoint.pathname === "/toy/settings/video-reply") {
+    const fetch = async (endpoint, options) => {
+      if (endpoint.pathname === "/toy/setup/status") {
+        return { ok: true, json: async () => ({
+          status: "READY",
+          setup_completed: true,
+          show_initial_setup: false,
+          llm: {
+            base_url: "https://api.deepseek.com",
+            model: "deepseek-v4-flash",
+            key_configured: false,
+          },
+          }) };
+      }
+      if (endpoint.pathname === "/toy/capabilities/mem0") {
+        return { ok: true, json: async () => ({
+          status: "READY",
+          capability: "long_term_memory",
+          state: "missing",
+          phase: "idle",
+          downloaded_bytes: 0,
+          total_bytes: 337000000,
+          version: "fixture",
+          license_summary: "fixture",
+          requires_gpu: false,
+        }) };
+      }
+      if (endpoint.pathname === "/toy/settings/video-reply") {
     videoMethods.push(options.method);
     if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
     videoWrites += 1;

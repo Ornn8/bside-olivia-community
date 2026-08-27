@@ -40,3 +40,29 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert "<iframe" not in source.casefold()
     assert 'method: "DELETE"' not in source
     assert 'method: "PUT"' not in source
+
+
+def test_original_settings_reuses_llm_setup_after_login() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    assert 'const SETUP_STATUS_PATH = "/toy/setup/status"' in source
+    assert 'const LLM_TEST_PATH = "/toy/setup/llm/test"' in source
+    assert 'const LLM_SAVE_PATH = "/toy/setup/llm/save"' in source
+    assert 'const SETUP_COMPLETE_PATH = "/toy/setup/complete"' in source
+    assert 'const LLM_DELETE_PATH = "/toy/setup/llm/delete"' in source
+    assert 'const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0"' in source
+    assert 'const MEM0_CAPABILITY_ACTION_PATH = "/toy/capabilities/mem0/action"' in source
+    assert "/toy/capabilities/mem0/import" not in source
+    assert "show_initial_setup" in source
+    assert "API key" in source
+    assert "OpenCode Go" in source
+    assert "DeepSeek 官方" in source
+    assert "自动选择（国内源优先）" in source
+    assert "仅官方源" in source
+    assert "导入离线包" not in source
+    assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
+    assert "暂停下载" in source
+    assert "继续下载" in source
+    assert "约 317 MiB" in source
+    assert "无需 GPU" in source
+    assert "完成初始设置" in source
+    assert "innerHTML" not in source

@@ -526,6 +526,7 @@ class ManagedMem0Runtime:
         requirements: Path,
         sources: tuple[str, str],
         download_bytes: int,
+        backend_root: Path | None = None,
         verifier: RuntimeVerifier | None = None,
         runner: CommandRunner = _run_command,
     ) -> None:
@@ -533,6 +534,11 @@ class ManagedMem0Runtime:
         self.install_root = install_root.resolve()
         self.python_executable = python_executable.resolve()
         self.requirements = requirements.resolve()
+        self.backend_root = (
+            backend_root.resolve()
+            if backend_root is not None
+            else self.install_root / "local_backend"
+        )
         self.sources = sources
         self.download_bytes = download_bytes
         self.verifier = verifier
@@ -545,7 +551,7 @@ class ManagedMem0Runtime:
         self.last_source: str | None = None
         try:
             self.python_executable.relative_to(self.install_root / "runtime")
-            self.requirements.relative_to(self.install_root / "local_backend")
+            self.requirements.relative_to(self.backend_root)
         except ValueError as exc:
             raise ValueError("managed Mem0 paths are invalid") from exc
 
@@ -1024,6 +1030,7 @@ def create_mem0_capability_installer(
         requirements=requirements,
         sources=bom.runtime.sources,
         download_bytes=bom.runtime.estimated_download_bytes,
+        backend_root=backend_root,
     )
     model = ManagedEmbeddingModel(
         data_root=data_root,

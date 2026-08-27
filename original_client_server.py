@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import sys
 from types import ModuleType
 from typing import Any
 
@@ -27,6 +28,10 @@ from conversation_memory_admin import (
     ConversationMemoryAdminService,
 )
 from conversation_memory_port import ConversationMemoryPort
+from mem0_capability_install import (
+    Mem0CapabilityInstaller,
+    create_mem0_capability_installer,
+)
 from mem0_embedding_install import Mem0EmbeddingInstaller
 from mem0_memory import Mem0Config
 from original_client_companion_api import mount_original_companion_read_api
@@ -40,6 +45,7 @@ from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
     MemoryAdminMutationService,
 )
+from original_client_capability_api import mount_original_client_capability_api
 from original_client_setup_api import (
     LLMSetupService,
     mount_original_client_setup_api,
@@ -295,6 +301,7 @@ class OriginalClientServerRuntime:
     candidate_store: SQLitePrivateWorldCandidateStore | None
     candidate_decisions: CandidateReviewBackend | None
     mutation_backend: DirectOriginalClientCompanionMutationBackend
+    capability_installer: Mem0CapabilityInstaller | None
 
     def public_status(self) -> dict[str, object]:
         """Return component presence only; never paths, content, or hidden scores."""
@@ -306,6 +313,7 @@ class OriginalClientServerRuntime:
             "memory_admin_mounted": self.memory_admin is not None,
             "private_world_mounted": self.private_world_read is not None,
             "candidate_store_mounted": self.candidate_store is not None,
+            "capability_installer_mounted": self.capability_installer is not None,
         }
 
 
@@ -319,6 +327,7 @@ def create_original_client_server_runtime(
     embedding_installer: Mem0EmbeddingInstaller | None = None,
     letter_collection: LetterCollection | None = None,
     setup_service: LLMSetupService | None = None,
+    capability_installer: Mem0CapabilityInstaller | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
@@ -365,6 +374,13 @@ def create_original_client_server_runtime(
             setup_service,
             trusted_origins=origins,
         )
+        if capability_installer is not None:
+            mount_original_client_capability_api(
+                app,
+                capability_installer,
+                trusted_origins=origins,
+                authorize_session=setup_service.require_session,
+            )
     mount_original_companion_read_api(
         app,
         backend,
@@ -391,6 +407,7 @@ def create_original_client_server_runtime(
         candidates,
         candidate_decisions,
         mutation_backend,
+        capability_installer,
     )
     app[_RUNTIME_KEY] = runtime
     return runtime
@@ -404,6 +421,26 @@ def _absolute_data_root(environ: Mapping[str, str]) -> Path | None:
     if not path.is_absolute() or path.exists() and not path.is_dir():
         return None
     return path.resolve()
+
+
+def _configured_capability_installer(
+    environ: Mapping[str, str], data_root: Path | None,
+) -> Mem0CapabilityInstaller | None:
+    raw = str(environ.get("OLIVIA_INSTALL_ROOT", "")).strip()
+    if data_root is None or not raw:
+        return None
+    patch_root = Path(raw).expanduser()
+    if not patch_root.is_absolute() or not patch_root.is_dir():
+        return None
+    try:
+        return create_mem0_capability_installer(
+            install_root=patch_root.resolve().parent,
+            data_root=data_root,
+            python_executable=Path(sys.executable),
+            backend_root=Path(__file__).resolve().parent,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
 
 
 def _configured_memory_admin(
@@ -546,6 +583,7 @@ def create_configured_original_client_server_runtime(
     collection = getattr(server_module, "_letter_collection", None)
     data_root = _absolute_data_root(values)
     setup_service = LLMSetupService(data_root) if data_root is not None else None
+    capability_installer = _configured_capability_installer(values, data_root)
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -555,6 +593,7 @@ def create_configured_original_client_server_runtime(
         embedding_installer=embedding_installer,
         letter_collection=collection if callable(collection) else None,
         setup_service=setup_service,
+        capability_installer=capability_installer,
         trusted_origins=origins,
     )
     install_reply_task_lifecycle = getattr(

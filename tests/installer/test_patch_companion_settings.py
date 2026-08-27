@@ -135,7 +135,11 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     assert 'method: "PUT"' not in bootstrap
     assert 'method: "DELETE"' not in bootstrap
     assert "http://" not in bootstrap
-    assert "https://" not in bootstrap
+    without_provider_presets = bootstrap.replace(
+        "https://api.deepseek.com", ""
+    ).replace("https://opencode.ai/zen/go/v1", "")
+    assert "https://" not in without_provider_presets
+    assert "/toy/capabilities/mem0/import" not in bootstrap
 
 
 def test_patch_supports_original_client_0_0_9_627_main_module(
