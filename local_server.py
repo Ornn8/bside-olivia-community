@@ -176,6 +176,10 @@ _CURRENT_LETTER_MEMORY_SOURCE: ContextVar[str | None] = ContextVar(
     "current_letter_memory_source",
     default=None,
 )
+_CURRENT_REPLY_MODE: ContextVar[ReplyMode] = ContextVar(
+    "current_reply_mode",
+    default=ReplyMode.TEXT_LETTER,
+)
 
 
 class _LetterGateway(Gateway):
@@ -347,7 +351,7 @@ class LetterAdapter:
     ) -> tuple[dict[str, str], ...]:
         user_content = content + ("\n\n" + context if context else "")
         loaded = load_persona(self.persona_v2_path)
-        reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
+        reply_context = self.build_reply_context(_CURRENT_REPLY_MODE.get())
         memory_context = self._build_memory_prompt(
             content,
             max_chars=min(
@@ -2420,6 +2424,7 @@ async def _run_reply_pipeline_for_letter(
     source_token = _CURRENT_LETTER_MEMORY_SOURCE.set(
         f"reply:{letter_id}:{revision}"
     )
+    mode_token = _CURRENT_REPLY_MODE.set(ReplyMode(exact_mode))
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -2447,6 +2452,7 @@ async def _run_reply_pipeline_for_letter(
             timeout=_reply_pipeline_timeout_seconds(),
         )
     finally:
+        _CURRENT_REPLY_MODE.reset(mode_token)
         _CURRENT_LETTER_MEMORY_SOURCE.reset(source_token)
 
 

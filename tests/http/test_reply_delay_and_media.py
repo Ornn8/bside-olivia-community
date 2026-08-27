@@ -757,6 +757,9 @@ def test_generate_reply_preserves_the_router_selected_video_route(
     async def run_pipeline(request, context):
         observed["request_content"] = request.content
         observed["context_mode"] = context.mode.value
+        observed["generation_messages"] = local_server.letters_adapter._messages(
+            request.content
+        )
         return PipelineResult(
             letter_id,
             ReplyState.COMPLETED,
@@ -783,6 +786,7 @@ def test_generate_reply_preserves_the_router_selected_video_route(
         local_server.generate_reply(letter_id, "synthetic current letter")
     )
     assert observed["context_mode"] == delivery_mode
+    assert f'"mode":"{delivery_mode}"' in observed["generation_messages"][0]["content"]
     assert ("<ordinary_video_reply_constraints>" in observed["request_content"]) is (
         delivery_mode != ReplyMode.TEXT_LETTER.value
     )
