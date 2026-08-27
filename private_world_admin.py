@@ -14,9 +14,9 @@ import sqlite3
 import tempfile
 from typing import Mapping, Sequence
 
-from conversation_memory_identity import normalize_conversation_memory_user_id
+from runtime.memory.conversation_memory_identity import normalize_conversation_memory_user_id
 from private_world_ledger import SQLitePrivateWorldLedger
-from private_world_runtime import resolve_private_world_database
+from runtime.memory.private_world_runtime import resolve_private_world_database
 
 
 class AdminConfirmationRequired(RuntimeError):
