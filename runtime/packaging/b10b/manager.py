@@ -1281,6 +1281,7 @@ class B10BManager:
         declarations = self._validate_managed_external_copies(module, settings)
         plan: list[dict[str, Any]] = []
         for item in declarations:
+            source = Path(item["source"])
             destination = Path(item["destination"])
             entry = dict(item)
             if not managed_copy_paths_are_distinct(source, destination):
