@@ -76,6 +76,10 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_reply_settings.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "contracts/component_update_package.example.json",
+    "contracts/component_update_package.schema.json",
+    "contracts/component_update_state.example.json",
+    "contracts/component_update_state.schema.json",
     "contracts/letter_status.py",
     "contracts/third_party_manifest.example.json",
     "contracts/third_party_manifest.schema.json",
@@ -88,6 +92,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_backend.py",
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
+    "installer/version_launcher.py",
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
@@ -476,16 +481,19 @@ def copy_official_runtime(
 
 
 def _write_start_scripts(root: Path, port: int) -> None:
+    launcher = root / "launcher" / "version_launcher.py"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    _copy_file(root / "local_backend" / "installer" / "version_launcher.py", launcher)
     (root / "START.cmd").write_text(
-        f"@echo off\nsetlocal\nset ROOT=%~dp0\nset OLIVIA_PORT={port}\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%local_backend\\installer\\start_local.py\" --install-root \"%ROOT%.\" --port %OLIVIA_PORT%\nexit /b %ERRORLEVEL%\n",
+        f"@echo off\nsetlocal\nset ROOT=%~dp0\nset OLIVIA_PORT={port}\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" start --port %OLIVIA_PORT%\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
     )
     (root / "UNINSTALL.cmd").write_text(
-        "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%local_backend\\installer\\uninstall.py\" --installation \"%ROOT%.\" --apply\nexit /b %ERRORLEVEL%\n",
+        "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" uninstall --apply\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
     )
     (root / "CONFIGURE.cmd").write_text(
-        "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%local_backend\\installer\\configure.py\" --installation \"%ROOT%.\"\nexit /b %ERRORLEVEL%\n",
+        "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%LOCALAPPDATA%\\BSideOliviaLocal\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" configure\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
     )
 
@@ -502,7 +510,14 @@ def _refresh_existing_install(
     rollback = staging / ".rollback"
     published: list[Path] = []
     backed_up: list[tuple[Path, Path]] = []
-    names = ("local_backend", "START.cmd", "CONFIGURE.cmd", "UNINSTALL.cmd", MARKER_NAME)
+    names = (
+        "local_backend",
+        "launcher",
+        "START.cmd",
+        "CONFIGURE.cmd",
+        "UNINSTALL.cmd",
+        MARKER_NAME,
+    )
     try:
         copied = copy_project_payload(payload, staging / "local_backend")
         _write_start_scripts(staging, port)
