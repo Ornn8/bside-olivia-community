@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -155,9 +156,7 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-    probe_match = re.search(r"\$probe = @'\n(.*?)\n'@", script, re.DOTALL)
-    assert probe_match is not None
+    verifier = root / "installer" / "verify_mem0_runtime.py"
 
     runtime = tmp_path / "mem0-site-packages"
     runtime.mkdir()
@@ -170,14 +169,62 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
         package = runtime / module
         package.mkdir()
         (package / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "win32" / "lib").mkdir(parents=True)
+    (runtime / "win32" / "lib" / "pywintypes.py").write_text("", encoding="utf-8")
     requirements = tmp_path / "mem0-runtime-requirements.txt"
     requirements.write_text(
         "annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101\n",
         encoding="utf-8",
     )
+    (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
+        json.dumps(
+            {"requirements_sha256": hashlib.sha256(requirements.read_bytes()).hexdigest()}
+        ),
+        encoding="utf-8",
+    )
 
     result = subprocess.run(
-        [sys.executable, "-c", probe_match.group(1), str(runtime), str(requirements)],
+        [sys.executable, str(verifier), str(runtime), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_windows_installer_runtime_probe_survives_native_argument_quoting(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    verifier = root / "installer" / "verify_mem0_runtime.py"
+    runtime = tmp_path / "mem0-site-packages"
+    runtime.mkdir()
+    (runtime / "annotated_doc-0.0.5.dist-info").mkdir()
+    (runtime / "annotated_doc-0.0.5.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: annotated-doc\nVersion: 0.0.5\n",
+        encoding="utf-8",
+    )
+    for module in ("mem0", "sentence_transformers", "huggingface_hub"):
+        package = runtime / module
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "win32" / "lib").mkdir(parents=True)
+    (runtime / "win32" / "lib" / "pywintypes.py").write_text("", encoding="utf-8")
+    requirements = tmp_path / "mem0-runtime-requirements.txt"
+    requirements.write_text(
+        "annotated-doc==0.0.5 --hash=sha256:fixture\n",
+        encoding="utf-8",
+    )
+    (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
+        json.dumps(
+            {"requirements_sha256": hashlib.sha256(requirements.read_bytes()).hexdigest()}
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(verifier), str(runtime), str(requirements)],
         capture_output=True,
         text=True,
         check=False,
@@ -217,6 +264,9 @@ def test_embeddable_python_registers_the_managed_memory_runtime_without_pythonpa
 
     assert "[string]$MemoryRuntimePath" in script
     assert "-MemoryRuntimePath $memoryRuntime" in script
+    assert "$memoryDependenciesReady -and $pth" in script
+    assert "win32\\lib" in script
+    assert "Join-Path $memoryRuntimeFullPath 'win32'" in script
     assert "$env:PYTHONPATH" not in runtime_probe
 
 
@@ -230,9 +280,13 @@ def test_managed_memory_runtime_is_preferred_and_verified_against_its_lock_manif
     assert "$keptLines.Insert(0, $memoryRuntimeFullPath)" in script
     assert "mem0-runtime-manifest.json" in script
     assert "[string]$RequirementsPath" in runtime_probe
-    assert "importlib.metadata" in runtime_probe
-    assert "spec.origin" in runtime_probe
-    assert "MEM0_RUNTIME_MANIFEST_INVALID" in runtime_probe
+    verifier = (root / "installer" / "verify_mem0_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    assert "verify_mem0_runtime.py" in runtime_probe
+    assert "importlib.metadata" in verifier
+    assert "spec.origin" in verifier
+    assert "requirements_sha256" in verifier
 
 
 def test_installer_disables_mem0_telemetry_before_every_probe_import() -> None:
@@ -242,7 +296,7 @@ def test_installer_disables_mem0_telemetry_before_every_probe_import() -> None:
 
     telemetry_setting = "$env:MEM0_TELEMETRY = 'False'"
     assert telemetry_setting in script
-    assert script.index(telemetry_setting) < script.index("import importlib.metadata")
+    assert script.index(telemetry_setting) < script.index("verify_mem0_runtime.py")
     assert '"MEM0_TELEMETRY": "False"' in launcher
 
 
