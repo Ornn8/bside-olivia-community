@@ -482,6 +482,26 @@ class OfflineDeterministicAdapter(Gateway):
             raise ProviderProtocolError()
         return GatewayResponse(text, request, self.config.provider, self.config.model or "offline")
 
+    async def complete_with_tools(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
+        request_id: str | None = None,
+    ) -> Sequence[GatewayToolCall]:
+        validate_messages(messages, max_input_chars=self.config.max_input_chars)
+        if tool_choice != "required":
+            raise InvalidGatewayInput("REQUIRED_TOOL_CHOICE")
+        configured = self.config.provider_options.get("tool_call")
+        if not isinstance(configured, Mapping):
+            raise ProviderProtocolError()
+        name = configured.get("name")
+        arguments = configured.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(arguments, Mapping):
+            raise ProviderProtocolError()
+        return (GatewayToolCall(name=name, arguments=dict(arguments)),)
+
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
         response = await self.complete(messages, request_id=request_id)
         width = _bounded_int(self.config.provider_options.get("chunk_size", 12), 12, 1, 256)

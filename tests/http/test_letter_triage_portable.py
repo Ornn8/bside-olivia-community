@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 import latentsync_reply
 import tts.delivery as tts_delivery
 from letter_triage import (
@@ -13,7 +15,7 @@ from letter_triage import (
     _current_music_performance,
     routing_context_from_environment,
 )
-from llm_gateway import GatewayToolCall
+from llm_gateway import GatewayConfig, GatewayToolCall, create_gateway
 
 
 class _Gateway:
@@ -73,7 +75,7 @@ def test_music_performance_uses_system_tod_with_day_morning_fallback(tmp_path):
     assert _current_music_performance(environ, hour=4) == night
 
 
-def _route(*, context=None, **overrides):
+def _route_arguments(**overrides) -> dict[str, object]:
     payload = {
         "mode": "text_letter",
         "reason_code": "direct_words_are_enough",
@@ -88,6 +90,11 @@ def _route(*, context=None, **overrides):
         "character_willing": True,
     }
     payload.update(overrides)
+    return payload
+
+
+def _route(*, context=None, **overrides):
+    payload = _route_arguments(**overrides)
     gateway = _Gateway(payload)
     result = asyncio.run(
         LetterReplyRouter(
@@ -225,6 +232,65 @@ def test_router_accepts_one_offline_structured_musical_tool_call():
     assert gateway.requests[0]["tool_choice"] == "required"
     assert gateway.requests[0]["request_id"] == "letter-reply-mode-router"
     assert gateway.requests[0]["tools"][0]["function"]["name"] == "select_reply_mode"
+
+
+@pytest.mark.parametrize(
+    ("expected_mode", "overrides"),
+    [
+        ("text_letter", {}),
+        (
+            "spoken_video",
+            {
+                "mode": "spoken_video",
+                "reason_code": "voice_adds_presence",
+                "emotion_level": "high",
+                "direct_response_sufficient": True,
+                "voice_materially_better": True,
+            },
+        ),
+        (
+            "musical_video",
+            {
+                "mode": "musical_video",
+                "reason_code": "performance_carries_this_reply",
+                "emotion_level": "mixed",
+                "music_contexts": ["explicit_performance_or_adaptation_request"],
+                "music_role": "performance",
+                "music_intent": "perform",
+                "request_disposition": "fulfill",
+                "direct_response_sufficient": False,
+                "music_materially_better": True,
+            },
+        ),
+    ],
+)
+def test_public_mock_gateway_routes_configured_tool_result(
+    expected_mode: str,
+    overrides: dict[str, object],
+):
+    arguments = _route_arguments(**overrides)
+    gateway = create_gateway(
+        GatewayConfig(
+            provider="mock",
+            provider_options={
+                "tool_call": {
+                    "name": "select_reply_mode",
+                    "arguments": arguments,
+                }
+            },
+        )
+    )
+
+    result = asyncio.run(
+        LetterReplyRouter(
+            gateway,
+            routing_context=RoutingContext(True, True),
+        ).classify("synthetic current letter")
+    )
+
+    assert result.reply_mode == expected_mode
+    assert result.status == "completed"
+    assert gateway.network_call_count == 0
 
 
 def test_current_work_relevance_requires_trusted_current_work():
