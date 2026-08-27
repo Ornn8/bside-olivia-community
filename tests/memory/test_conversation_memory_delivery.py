@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from conversation_memory_delivery import (
+from runtime.memory.conversation_memory_delivery import (
     CanonicalMemoryDelivery,
     CanonicalMemoryDeliveryError,
     CanonicalMemoryDeliveryStatus,

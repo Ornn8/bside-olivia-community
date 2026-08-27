@@ -8,12 +8,12 @@ import sqlite3
 
 import pytest
 
-from conversation_memory_delivery import (
+from runtime.memory.conversation_memory_delivery import (
     CanonicalMemoryDelivery,
     CanonicalMemoryDeliveryResult,
     CanonicalMemoryDeliveryStatus,
 )
-from conversation_memory_outbox import (
+from runtime.memory.conversation_memory_outbox import (
     CanonicalMemoryOutbox,
     ConversationMemoryOutboxError,
     OUTBOX_SCHEMA_VERSION,

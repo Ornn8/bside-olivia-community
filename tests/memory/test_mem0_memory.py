@@ -14,8 +14,8 @@ import tomllib
 from types import SimpleNamespace
 
 import pytest
-from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
-from conversation_memory_outbox import CanonicalMemoryOutbox
+from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
 from conversation_memory_port import (
     MemoryWriteStatus,
     NullConversationMemoryPort,
