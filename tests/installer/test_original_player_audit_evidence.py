@@ -11,7 +11,7 @@ EVIDENCE = (
     ROOT
     / "docs"
     / "evidence"
-    / "original-player-audit.0.0.9.615.json"
+    / "original-player-audit.0.0.9.627.json"
 )
 MANIFEST = ROOT / "installer" / "full-patch-manifest.json"
 
@@ -45,7 +45,7 @@ def test_original_player_evidence_is_for_supported_client_and_both_archives() ->
     assert report["status"] == "AUDITED"
     assert report["source"] == {
         "archive_names": ["feplayer.dat", "webplayer.dat"],
-        "client_version_hint": "0.0.9.615",
+        "client_version_hint": "0.0.9.627",
     }
 
     players = report["players"]
@@ -54,7 +54,7 @@ def test_original_player_evidence_is_for_supported_client_and_both_archives() ->
         "0289b883a62c391f0f1d24b6088a7fb07d592a98c5b0f6eff3ab931561be0848"
     )
     assert players["webplayer"]["archive_sha256"] == (
-        "504b59876af2f04c4902f8c8e6811018d36a2da4394e20cf74f22d13d394b636"
+        "565b5e3e113c2a9dfb90d5fa4f2a0ccda9b0151c118ae3365e6ee0c8624a451d"
     )
 
 

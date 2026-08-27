@@ -13,6 +13,10 @@ from patch_feapp import (
     MAILBOX_LOGIN_ANCHOR,
     MAILBOX_LOGIN_REPLACEMENT,
     MAIN_JS,
+    HE_ANCHOR_0627,
+    INJECT_ANCHOR_0627,
+    MAILBOX_LOGIN_ANCHOR_0627,
+    MAIN_JS_0627,
 )
 from tools.audit_original_client import (
     OriginalClientAuditError,
@@ -82,6 +86,22 @@ def test_audit_reports_sanitized_original_client_evidence(tmp_path: Path) -> Non
     assert private_marker not in encoded
     assert HE_ANCHOR not in encoded
     assert MAILBOX_LOGIN_ANCHOR not in encoded
+
+
+def test_audit_supports_original_client_0_0_9_627(tmp_path: Path) -> None:
+    archive = tmp_path / "0.0.9.627" / "resources" / "feapp.dat"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        output.writestr(
+            MAIN_JS_0627,
+            HE_ANCHOR_0627 + INJECT_ANCHOR_0627 + MAILBOX_LOGIN_ANCHOR_0627,
+        )
+
+    report = audit_original_client(archive)
+
+    assert report["source"]["client_version_hint"] == "0.0.9.627"
+    assert report["main_bundle"]["member"] == MAIN_JS_0627
+    assert report["patch_contract"]["safe_to_apply_existing_patch"] is True
 
 
 def test_audit_identifies_an_already_patched_archive_without_repatching(tmp_path: Path) -> None:

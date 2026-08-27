@@ -19,13 +19,7 @@ import tempfile
 from typing import Any
 import zipfile
 
-from patch_feapp import (
-    HE_ANCHOR,
-    INJECT_ANCHOR,
-    MAILBOX_LOGIN_ANCHOR,
-    MAILBOX_LOGIN_REPLACEMENT,
-    MAIN_JS,
-)
+from patch_feapp import patch_profile_for_members
 
 
 AUDIT_SCHEMA_VERSION = "p03.original-client-audit.v1"
@@ -113,10 +107,13 @@ def _normalize_route_reference(value: str) -> str:
     return value
 
 
-def _read_main_javascript(archive: zipfile.ZipFile) -> tuple[str, zipfile.ZipInfo]:
+def _read_main_javascript(
+    archive: zipfile.ZipFile,
+) -> tuple[str, zipfile.ZipInfo, Any]:
     try:
-        info = archive.getinfo(MAIN_JS)
-    except KeyError as exc:
+        profile = patch_profile_for_members(archive.namelist())
+        info = archive.getinfo(profile.main_js)
+    except (KeyError, ValueError) as exc:
         raise OriginalClientAuditError("CLIENT_MAIN_BUNDLE_MISSING") from exc
     if info.is_dir() or info.file_size > MAX_MAIN_JS_BYTES:
         raise OriginalClientAuditError("CLIENT_MAIN_BUNDLE_TOO_LARGE")
@@ -128,7 +125,7 @@ def _read_main_javascript(archive: zipfile.ZipFile) -> tuple[str, zipfile.ZipInf
     if len(raw) > MAX_MAIN_JS_BYTES:
         raise OriginalClientAuditError("CLIENT_MAIN_BUNDLE_TOO_LARGE")
     try:
-        return raw.decode("utf-8"), info
+        return raw.decode("utf-8"), info, profile
     except UnicodeDecodeError as exc:
         raise OriginalClientAuditError("CLIENT_MAIN_BUNDLE_ENCODING_INVALID") from exc
 
@@ -167,7 +164,7 @@ def audit_original_client(
                 raise OriginalClientAuditError("CLIENT_ARCHIVE_TOO_MANY_MEMBERS")
             if any(not _safe_member_name(info.filename) for info in members):
                 raise OriginalClientAuditError("CLIENT_ARCHIVE_UNSAFE")
-            javascript, main_info = _read_main_javascript(archive)
+            javascript, main_info, profile = _read_main_javascript(archive)
     except OriginalClientAuditError:
         raise
     except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
@@ -189,10 +186,10 @@ def audit_original_client(
     toy_api_paths = set(_TOY_API_PATH_RE.findall(javascript))
     action_names = set(_ACTION_RE.findall(javascript))
     anchor_counts = {
-        "response_dispatch": javascript.count(HE_ANCHOR),
-        "local_endpoint_injection": javascript.count(INJECT_ANCHOR),
-        "mailbox_original": javascript.count(MAILBOX_LOGIN_ANCHOR),
-        "mailbox_patched": javascript.count(MAILBOX_LOGIN_REPLACEMENT),
+        "response_dispatch": javascript.count(profile.bridge_anchor),
+        "local_endpoint_injection": javascript.count(profile.inject_anchor),
+        "mailbox_original": javascript.count(profile.mailbox_anchor),
+        "mailbox_patched": javascript.count(profile.mailbox_replacement),
     }
     expected_match = (
         None
@@ -229,7 +226,7 @@ def audit_original_client(
             "extension_counts": dict(sorted(extensions.items())),
         },
         "main_bundle": {
-            "member": MAIN_JS,
+            "member": profile.main_js,
             "sha256": hashlib.sha256(javascript.encode("utf-8")).hexdigest(),
             "bytes": int(main_info.file_size),
         },
