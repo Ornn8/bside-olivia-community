@@ -28,7 +28,7 @@ from private_world_service import (
     PrivateWorldCommandService,
     PrivateWorldCommandServiceError,
 )
-from reply_context import RelationshipStage
+from runtime.reply.reply_context import RelationshipStage
 
 
 NOW = datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc)

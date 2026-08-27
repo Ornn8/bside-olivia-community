@@ -4,7 +4,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from reply_context import (
+from runtime.reply.reply_context import (
     KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,

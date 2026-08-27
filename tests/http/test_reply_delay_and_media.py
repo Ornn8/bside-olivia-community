@@ -10,7 +10,7 @@ from aiohttp.test_utils import make_mocked_request
 
 import local_server
 from letter_triage import TriageResult
-from reply_context import ReplyMode
+from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
 from voice_direction import VoiceDirectionError, VoicePerformancePlan

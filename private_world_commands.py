@@ -8,7 +8,7 @@ from enum import StrEnum
 import re
 from typing import ClassVar, TypeAlias
 
-from reply_context import RelationshipStage
+from runtime.reply.reply_context import RelationshipStage
 
 from private_world_port import (
     ContinuationAwareness,

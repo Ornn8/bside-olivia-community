@@ -56,8 +56,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/media/music_caption.py" in packaged_paths
     assert "runtime/reply/reply_pipeline.py" in packaged_paths
     assert "runtime/reply/reply_reviewer.py" in packaged_paths
+    assert "runtime/reply/reply_context.py" in packaged_paths
     assert "reply_pipeline.py" in packaged_paths
     assert "reply_reviewer.py" in packaged_paths
+    assert "reply_context.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
     assert "runtime/reply/reply_delivery.py" in packaged_paths
     assert "runtime/reply/reply_media.py" in packaged_paths
@@ -115,8 +117,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import runtime.memory.private_world_delivery; "
             "import runtime.memory.private_world_projection; "
             "import runtime.memory.private_world_runtime; "
-            "import reply_pipeline, reply_reviewer; "
+            "import reply_context, reply_pipeline, reply_reviewer; "
+            "import runtime.reply.reply_context; "
             "import runtime.reply.reply_pipeline, runtime.reply.reply_reviewer; "
+            "assert reply_context is runtime.reply.reply_context; "
             "assert reply_pipeline is runtime.reply.reply_pipeline; "
             "assert reply_reviewer is runtime.reply.reply_reviewer; "
             "import original_client_server, runtime.media.music_caption, song_content; "
@@ -137,7 +141,7 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "from datetime import datetime, timezone; from pathlib import Path; "
             "from persona_assembly import assemble_persona; "
             "from persona_loader import load_persona; "
-            "from reply_context import ReplyContext, ReplyMode, TrustedTime; "
+            "from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime; "
             "root = Path(__import__('persona_loader').__file__).resolve().parent; "
             "loaded = load_persona(root / 'linli_character' / 'persona_release_v2.json'); "
             "assert loaded.ready and loaded.snapshot.status == 'READY'; "

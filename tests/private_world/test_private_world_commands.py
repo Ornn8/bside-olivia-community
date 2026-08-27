@@ -21,7 +21,7 @@ from private_world_commands import (
     UpsertContinuationFact,
 )
 from private_world_port import ContinuationAwareness, HomeAccess
-from reply_context import RelationshipStage
+from runtime.reply.reply_context import RelationshipStage
 
 
 NOW = datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc)

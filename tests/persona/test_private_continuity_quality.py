@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from llm_gateway import Gateway, GatewayResponse
-from reply_context import (
+from runtime.reply.reply_context import (
     KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,

@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from persona_assembly import assemble_persona
 from persona_loader import load_persona
-from reply_context import ReplyContext, ReplyMode, TrustedTime
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 
 
 ROOT = Path(__file__).resolve().parents[2]

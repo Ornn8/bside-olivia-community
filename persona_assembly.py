@@ -15,7 +15,7 @@ from runtime.reply.prompt_budget import (
     PromptSection,
     plan_prompt_budget,
 )
-from reply_context import ReplyContext
+from runtime.reply.reply_context import ReplyContext
 
 
 _FORBIDDEN_RULES = (

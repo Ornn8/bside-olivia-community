@@ -9,7 +9,7 @@ from typing import Any, Mapping, Protocol
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
 from reply_model_quality import create_model_quality_ports
-from reply_context import ReplyContext
+from runtime.reply.reply_context import ReplyContext
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from runtime.reply.reply_quality_gate import ReviewerPort, RewriterPort, run_reply_quality_gate
 from runtime.reply.reply_reviewer import NullReviewer

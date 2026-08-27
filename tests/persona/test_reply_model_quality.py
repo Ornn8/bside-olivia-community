@@ -12,7 +12,7 @@ import pytest
 from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
-from reply_context import (
+from runtime.reply.reply_context import (
     KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,
