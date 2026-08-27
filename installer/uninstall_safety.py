@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from pathlib import Path, PurePath
 
 
@@ -13,6 +15,8 @@ OWNED_PATHS = (
     "START.cmd",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",
+    "runtime/mem0-site-packages",
+    "runtime/mem0-site-packages.staging",
     MARKER_NAME,
 )
 PRESERVED_PATHS = ("data", "logs", "third-party")
@@ -72,10 +76,42 @@ def safe_owned_targets(root: Path) -> tuple[Path, ...]:
     return tuple(_safe_target(root, name) for name in OWNED_PATHS)
 
 
+def _remove_managed_python_path_registration(root: Path) -> None:
+    """Remove only this installation's absolute Mem0 runtime registration."""
+
+    registered_runtime = (root / "runtime" / "mem0-site-packages").resolve()
+    runtime_root = Path(sys.executable).resolve().parent
+    for pth_path in runtime_root.glob("*._pth"):
+        try:
+            lines = pth_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        kept: list[str] = []
+        changed = False
+        for line in lines:
+            try:
+                candidate = Path(line.strip())
+                matches = candidate.is_absolute() and candidate.resolve() == registered_runtime
+            except OSError:
+                matches = False
+            if matches:
+                changed = True
+            else:
+                kept.append(line)
+        if changed:
+            temporary = pth_path.with_name(f".{pth_path.name}.uninstall.tmp")
+            try:
+                temporary.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                os.replace(temporary, pth_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+
 def remove_owned_targets(root: Path) -> None:
     """Remove only validated compiled targets; marker contents are untrusted."""
 
     targets = safe_owned_targets(root)
+    _remove_managed_python_path_registration(root.resolve())
     for target in targets:
         # Re-check each target immediately before deletion to avoid following a
         # path component that was replaced after the initial validation.

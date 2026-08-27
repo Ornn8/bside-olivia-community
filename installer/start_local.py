@@ -137,6 +137,46 @@ _BACKEND_BOOTSTRAP = (
 )
 
 
+def _memory_enabled(value: object) -> str:
+    normalized = str(value or "").strip().casefold()
+    return "0" if normalized in {"0", "false", "no", "off"} else "1"
+
+
+def _configure_memory_environment(
+    environment: dict[str, str],
+    data_root: Path,
+) -> dict[str, str]:
+    """Enable the installed Mem0 lifecycle without letting it own other data."""
+
+    memory_root = data_root / "memory"
+    environment["OLIVIA_MEMORY_ENABLED"] = _memory_enabled(
+        environment.get("OLIVIA_MEMORY_ENABLED")
+    )
+    environment.setdefault("OLIVIA_MEMORY_DEFAULT_PROVIDER", "mem0")
+    environment.setdefault("OLIVIA_MEMORY_ROOT", str(memory_root))
+    environment.setdefault(
+        "OLIVIA_MEMORY_EMBEDDING_CACHE", str(memory_root / "model-cache")
+    )
+    environment.setdefault(
+        "OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL", environment.get("OLIVIA_LLM_BASE_URL", "")
+    )
+    environment.setdefault(
+        "OLIVIA_MEMORY_LLM_DEFAULT_MODEL", environment.get("OLIVIA_LLM_MODEL", "")
+    )
+    environment.setdefault(
+        "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV",
+        environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+    )
+    environment.update(
+        {
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "MEM0_TELEMETRY": "False",
+            "DO_NOT_TRACK": "1",
+        }
+    )
+    return environment
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -192,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     }.items():
         backend_environment.setdefault(name, value)
         client_environment.setdefault(name, value)
+    _configure_memory_environment(backend_environment, data_root)
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None

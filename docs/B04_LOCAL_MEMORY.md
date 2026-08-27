@@ -4,7 +4,7 @@
 
 ## 数据边界
 
-- 新聊天默认是 session-only：未显式启用 `memory_config.json` 或 `OLIVIA_MEMORY_ENABLED=true` 时，不创建数据库，也不保存个人聊天。
+- 仓库默认仍是 session-only：未显式启用 `memory_config.json` 或 `OLIVIA_MEMORY_ENABLED=true` 时，不创建数据库，也不保存个人聊天。隔离 Windows 安装默认选择本地 Mem0，并提供可选运行依赖安装；用户可用 `OLIVIA_MEMORY_ENABLED=0` 明确关闭。Embedding 只会在安装器或原版 Settings 中得到用户确认后下载；依赖、模型或初始化失败时，写信继续走现有无记忆降级路径。
 - `legacy_letters` 是独立的只读角色经历资料库。导入内容保留原文、来源标签、来源记录 ID、时间、内容哈希和完整 metadata；它不会写入新聊天集合，也不会改写原始文本。
 - `conversation_memory` 只在 opt-in profile 启用后保存新聊天摘要/事实，支持 TTL 和单独清空。
 - `persona_evidence` 仅保存配置引用、版本和哈希，不会被当作记忆事实写入 prompt。

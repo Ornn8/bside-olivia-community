@@ -1024,8 +1024,9 @@ def load_memory_config(
         if name in environ:
             data[key] = environ[name]
     enabled = _as_bool(data.get("enabled", False))
-    provider = str(data.get("provider", "sqlite")).strip().casefold() or "sqlite"
-    if provider not in {"sqlite", "mem0"}:
+    default_provider = environ.get("OLIVIA_MEMORY_DEFAULT_PROVIDER", "sqlite")
+    provider = str(data.get("provider", default_provider)).strip().casefold() or "sqlite"
+    if provider not in {"sqlite", "mem0", "none"}:
         config_error = "MEMORY_PROVIDER_INVALID"
     configured_root = data.get("data_root")
     if configured_root:
@@ -1102,6 +1103,8 @@ def create_memory_adapter(
         return UnavailableMemoryPort(config.config_error, provider=config.provider)
     if config.provider == "mem0":
         return UnavailableMemoryPort("mem0 adapter unavailable", provider="mem0")
+    if config.provider == "none":
+        return NullMemoryPort()
     if config.data_root is None:
         return UnavailableMemoryPort("memory root unavailable")
     archive_root = _archive_data_root(config.data_root)
@@ -1219,14 +1222,14 @@ def create_conversation_memory_adapter(
             elif isinstance(value, int) and not isinstance(value, bool):
                 mem0_environment[environment_name] = str(value)
     fallback = llm_fallback or {}
-    for memory_name, gateway_name, field_name in (
-        ("OLIVIA_MEMORY_LLM_BASE_URL", "OLIVIA_LLM_BASE_URL", "base_url"),
-        ("OLIVIA_MEMORY_LLM_MODEL", "OLIVIA_LLM_MODEL", "model"),
-        ("OLIVIA_MEMORY_LLM_API_KEY_ENV", "OLIVIA_LLM_API_KEY_ENV", "api_key_env"),
+    for memory_name, gateway_name, default_name, field_name in (
+        ("OLIVIA_MEMORY_LLM_BASE_URL", "OLIVIA_LLM_BASE_URL", "OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL", "base_url"),
+        ("OLIVIA_MEMORY_LLM_MODEL", "OLIVIA_LLM_MODEL", "OLIVIA_MEMORY_LLM_DEFAULT_MODEL", "model"),
+        ("OLIVIA_MEMORY_LLM_API_KEY_ENV", "OLIVIA_LLM_API_KEY_ENV", "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV", "api_key_env"),
     ):
         if mem0_environment.get(memory_name) or mem0_environment.get(gateway_name):
             continue
-        value = fallback.get(field_name, "")
+        value = fallback.get(field_name, "") or mem0_environment.get(default_name, "")
         if isinstance(value, str) and value.strip():
             mem0_environment[memory_name] = value.strip()
     try:
