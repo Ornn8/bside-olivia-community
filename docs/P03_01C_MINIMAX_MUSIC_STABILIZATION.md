@@ -107,7 +107,7 @@ avoid soul
 
 ### 4.2 程序构造唯一的正向 Structured Caption
 
-新增 `music_caption.py`，由程序把枚举渲染为固定三段式 Caption。核心基线：
+新增 `runtime/media/music_caption.py`，由程序把枚举渲染为固定三段式 Caption。核心基线：
 
 ```text
 ### Global Metadata
@@ -220,7 +220,7 @@ song_content.py
   ├─ 枚举、歌词与标签验证
   └─ 不再接受自由 Caption
 
-music_caption.py（新增）
+runtime/media/music_caption.py（新增）
   ├─ 固定正向核心模板
   ├─ 枚举 -> 正向片段
   ├─ render_minimax_caption(plan)
@@ -376,7 +376,7 @@ canonical reply
 
 ### MUSIC-02：固定正向 Caption Renderer
 
-新增 `music_caption.py`、模板快照和枚举组合测试。最终 Caption 必须完全由程序生成。
+新增 `runtime/media/music_caption.py`、模板快照和枚举组合测试。最终 Caption 必须完全由程序生成。
 
 ### MUSIC-03：切换生产链
 
