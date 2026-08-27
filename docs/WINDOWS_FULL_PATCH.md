@@ -10,6 +10,10 @@
 4. 首次配置可双击 `CONFIGURE.cmd`：API key 输入不回显，并以当前 Windows 用户 DPAPI 加密保存到 `data\config`；也可选择自己的参考音频/视频导入 `data\third-party\reference`。这些文件不进入补丁包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
+## 启动器健康检查
+
+`installer/start_local.py --health-only` 输出一行符合 [`contracts/launcher_health.schema.json`](../contracts/launcher_health.schema.json) 的 JSON。`READY` 的退出码为 0；`UNAVAILABLE` 与 `PORT_CONFLICT` 的退出码为 2。`PORT_CONFLICT` 表示端口已有非本契约监听器或返回了无效健康契约，启动器不会尝试启动第二个后端。
+
 ## 原版客户端补丁
 
 安装前同时校验：
