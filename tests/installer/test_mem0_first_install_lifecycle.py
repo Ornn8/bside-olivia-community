@@ -171,7 +171,12 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
     )
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
-            {"requirements_sha256": hashlib.sha256(requirements.read_bytes()).hexdigest()}
+            {
+                "requirements_sha256": hashlib.sha256(
+                    requirements.read_bytes()
+                ).hexdigest(),
+                "source": "https://pypi.tuna.tsinghua.edu.cn/simple",
+            }
         ),
         encoding="utf-8",
     )
@@ -211,7 +216,12 @@ def test_windows_installer_runtime_probe_survives_native_argument_quoting(
     )
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
-            {"requirements_sha256": hashlib.sha256(requirements.read_bytes()).hexdigest()}
+            {
+                "requirements_sha256": hashlib.sha256(
+                    requirements.read_bytes()
+                ).hexdigest(),
+                "source": "https://pypi.tuna.tsinghua.edu.cn/simple",
+            }
         ),
         encoding="utf-8",
     )

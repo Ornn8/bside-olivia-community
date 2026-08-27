@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 
 
 def verify_runtime(runtime: Path, requirements: Path) -> bool:
@@ -23,7 +24,24 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
         expected_hash = hashlib.sha256(requirements.read_bytes()).hexdigest()
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    if manifest != {"requirements_sha256": expected_hash}:
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "requirements_sha256",
+        "source",
+    }:
+        return False
+    source = manifest.get("source")
+    if not isinstance(source, str):
+        return False
+    parsed_source = urlsplit(source)
+    if (
+        manifest.get("requirements_sha256") != expected_hash
+        or parsed_source.scheme != "https"
+        or not parsed_source.hostname
+        or parsed_source.username
+        or parsed_source.password
+        or parsed_source.query
+        or parsed_source.fragment
+    ):
         return False
 
     sys.path[:0] = [
