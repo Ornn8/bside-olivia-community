@@ -22,7 +22,7 @@ from latentsync_reply import (
     render_latentsync_video,
     resolve_ffmpeg_executable,
 )
-from media_paths import configured_media_path
+from runtime.media.media_paths import configured_media_path
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from reply_media import (
     ReplyMediaError,

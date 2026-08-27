@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Mapping
 
 from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
-from media_paths import resolve_media_path
+from runtime.media.media_paths import resolve_media_path
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
 from voice_direction import VoicePerformancePlan
 try:
