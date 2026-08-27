@@ -134,6 +134,40 @@ def test_launcher_starts_combined_server_before_original_client(
     assert not backend_command[-1].endswith("local_server.py")
 
 
+def test_launcher_allows_mem0_cold_start_before_opening_client(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    clock = [0.0]
+    client_commands: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+    def health(_port: int) -> str:
+        return "READY" if clock[0] >= 45 else "UNAVAILABLE"
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    def call(command, **_kwargs):
+        client_commands.append([str(value) for value in command])
+        return 0
+
+    monkeypatch.setattr(start_local, "_health", health)
+    monkeypatch.setattr(start_local.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(start_local.time, "sleep", sleep)
+    monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(start_local.subprocess, "call", call)
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert clock[0] >= 45
+    assert len(client_commands) == 1
+
+
 def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     tmp_path: Path,
     monkeypatch,

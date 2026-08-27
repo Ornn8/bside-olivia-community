@@ -132,6 +132,7 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
     "music.catalog",
 )
 _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
+_BACKEND_START_TIMEOUT_SECONDS = 120
 
 
 def _port_is_bindable(port: int) -> bool:
@@ -340,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             stderr=subprocess.DEVNULL,
             creationflags=detached,
         )
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
         while time.monotonic() < deadline and server.poll() is None:
             if _health(args.port) == "READY":
                 break
