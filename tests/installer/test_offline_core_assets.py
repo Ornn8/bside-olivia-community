@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import subprocess
 
 from jsonschema import Draft202012Validator
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +82,22 @@ def test_public_schema_rejects_nonfixed_runtime_and_incomplete_wheel_closure() -
     insecure_source["python_runtime"]["source_url"] = "http://mirror.example/python.zip"
     assert list(validator.iter_errors(insecure_source))
 
+    wrong_pip_hash = deepcopy(example)
+    wrong_pip_hash["pip_bootstrap"]["sha256"] = "0" * 64
+    assert list(validator.iter_errors(wrong_pip_hash))
+
+    traversal = deepcopy(example)
+    traversal["wheels"][0]["path"] = "../escape.whl"
+    assert list(validator.iter_errors(traversal))
+
+    duplicate_path = deepcopy(example)
+    duplicate_path["wheels"][1]["path"] = duplicate_path["wheels"][0]["path"]
+    assert list(validator.iter_errors(duplicate_path))
+
+    duplicate_hash = deepcopy(example)
+    duplicate_hash["wheels"][1]["sha256"] = duplicate_hash["wheels"][0]["sha256"]
+    assert list(validator.iter_errors(duplicate_hash))
+
 
 def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
@@ -89,6 +108,57 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
     assert "$lockedWheelHashes.SetEquals($manifestWheelHashes)" in script
     assert "[IO.Directory]::Move($runtimeRoot, $runtimeBackup)" in script
     assert "[IO.Directory]::Move($runtimeBackup, $runtimeRoot)" in script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
+    tmp_path: Path,
+) -> None:
+    local_app_data = tmp_path / "localappdata"
+    outside = tmp_path / "outside"
+    product_root = local_app_data / "BSideOliviaLocal"
+    local_app_data.mkdir()
+    outside.mkdir()
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(product_root), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        environment = os.environ.copy()
+        environment["LOCALAPPDATA"] = str(local_app_data)
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ROOT / "installer" / "Install.ps1"),
+                "-PayloadRoot",
+                str(ROOT),
+                "-OfflineAssetsRoot",
+                str(tmp_path / "missing-offline-assets"),
+                "-Destination",
+                str(tmp_path / "install"),
+                "-SkipShortcut",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "OFFLINE_CORE_RUNTIME_PARENT_INVALID" in result.stdout + result.stderr
+        assert not (outside / "runtime").exists()
+    finally:
+        os.rmdir(product_root)
 
 
 def test_offline_asset_builder_uses_the_hash_locked_windows_wheel_closure() -> None:

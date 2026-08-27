@@ -50,6 +50,56 @@ function Assert-OfflineObjectShape {
     }
 }
 
+function Get-ExpectedOfflineWheels {
+    $expected = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    $expected.Add('wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl', '9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472')
+    $expected.Add('wheelhouse/aiohttp-3.14.1-cp312-cp312-win_amd64.whl', '2aa92c87868cd13674989f9ee83e5f9f7ea4237589b728048e1f0c8f6caa3271')
+    $expected.Add('wheelhouse/aiosignal-1.4.0-py3-none-any.whl', '053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e')
+    $expected.Add('wheelhouse/attrs-26.1.0-py3-none-any.whl', 'c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309')
+    $expected.Add('wheelhouse/frozenlist-1.8.0-cp312-cp312-win_amd64.whl', '34187385b08f866104f0c0617404c8eb08165ab1272e884abc89c112e9c00746')
+    $expected.Add('wheelhouse/idna-3.18-py3-none-any.whl', '7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2')
+    $expected.Add('wheelhouse/jsonschema-4.26.0-py3-none-any.whl', 'd489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce')
+    $expected.Add('wheelhouse/jsonschema_specifications-2025.9.1-py3-none-any.whl', '98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe')
+    $expected.Add('wheelhouse/multidict-6.7.1-cp312-cp312-win_amd64.whl', 'fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19')
+    $expected.Add('wheelhouse/propcache-0.5.2-cp312-cp312-win_amd64.whl', 'd9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42')
+    $expected.Add('wheelhouse/referencing-0.37.0-py3-none-any.whl', '381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231')
+    $expected.Add('wheelhouse/rpds_py-2026.6.3-cp312-cp312-win_amd64.whl', '2c958bf94822e9290a40aaf2a822d4bc5c88099093e3948ad6c571eca9272e5f')
+    $expected.Add('wheelhouse/typing_extensions-4.16.0-py3-none-any.whl', '481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8')
+    $expected.Add('wheelhouse/yarl-1.24.2-cp312-cp312-win_amd64.whl', '7dafe10c12ddd4d120d528c4b5599c953bd7b12845347d507b95451195bb6cad')
+    return ,$expected
+}
+
+function Assert-ManagedRuntimeParent {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LocalAppData,
+        [Parameter(Mandatory)]
+        [string]$RuntimePath
+    )
+
+    try {
+        $localFull = [IO.Path]::GetFullPath($LocalAppData)
+        $productRoot = Join-Path $localFull 'BSideOliviaLocal'
+        $runtimeParent = Join-Path $productRoot 'runtime'
+        $expectedRuntime = Join-Path $runtimeParent 'python-3.12.10-embed-amd64'
+        if (-not [string]::Equals([IO.Path]::GetFullPath($RuntimePath), $expectedRuntime, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+        }
+        foreach ($path in @($localFull, $productRoot, $runtimeParent, $expectedRuntime)) {
+            if (Test-Path -LiteralPath $path) {
+                if (
+                    -not [IO.Directory]::Exists($path) -or
+                    (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+                ) {
+                    throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+                }
+            }
+        }
+    } catch {
+        throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+    }
+}
+
 function Resolve-OfflineAsset {
     param(
         [Parameter(Mandatory)]
@@ -154,10 +204,17 @@ function Get-OfflineCoreAssets {
     }
     $runtime = Resolve-OfflineAsset -Root $Root -Asset $manifest.python_runtime
     $pipBootstrap = Resolve-OfflineAsset -Root $Root -Asset $manifest.pip_bootstrap
+    $expectedWheelAssets = Get-ExpectedOfflineWheels
     $wheelPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $manifestWheelHashes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($wheel in @($manifest.wheels)) {
         Assert-OfflineObjectShape -Value $wheel -Names @('path', 'size_bytes', 'sha256')
+        if (
+            -not $expectedWheelAssets.ContainsKey([string]$wheel.path) -or
+            $expectedWheelAssets[[string]$wheel.path] -cne [string]$wheel.sha256
+        ) {
+            throw 'OFFLINE_CORE_WHEEL_SET_MISMATCH'
+        }
         $wheelPath = Resolve-OfflineAsset -Root $Root -Asset $wheel
         if (-not $wheelPath.EndsWith('.whl', [StringComparison]::OrdinalIgnoreCase)) {
             throw 'OFFLINE_CORE_MANIFEST_INVALID'
@@ -268,6 +325,7 @@ function Test-ManagedServerDependencies {
     }
 }
 
+Assert-ManagedRuntimeParent -LocalAppData $env:LOCALAPPDATA -RuntimePath $runtimeRoot
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
 $runtimeStaging = $runtimeRoot + '.staging.' + [guid]::NewGuid().ToString('N')
 $runtimeBackup = ''
