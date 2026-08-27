@@ -6,6 +6,8 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -436,6 +438,26 @@ def test_external_reference_rejects_non_local_or_unsafe_paths(value: str) -> Non
 )
 def test_external_reference_rejects_dos_device_name_segments(value: str) -> None:
     assert is_external_reference(value) is False
+
+
+def test_b10b_runtime_comments_pass_public_hardening_scan() -> None:
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "baseline_hardening_scan.py"),
+            "--root",
+            str(root),
+            "--mode",
+            "comments",
+        ],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_b06_tts_is_lifecycle_managed_when_composed_and_fail_closed_before_merge(tmp_path: Path) -> None:

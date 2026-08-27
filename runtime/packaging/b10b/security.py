@@ -150,7 +150,7 @@ def _is_reserved_device_segment(part: str) -> bool:
 def is_external_reference(value: str, *, policy: str = "absolute") -> bool:
     """Validate a reference without resolving or copying the referenced asset.
 
-    External provider assets may reside on any local Windows volume.  This
+    Caller-provided assets may reside on any local Windows volume.  This
     helper deliberately validates syntax only; callers retain ownership and
     must apply their existing copy/hash/delete rules before touching a path.
     """
