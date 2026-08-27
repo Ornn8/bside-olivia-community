@@ -303,6 +303,7 @@ def _validated_result(
         or role not in _ALLOWED_MUSIC_ROLES
         or disposition not in _ALLOWED_REQUEST_DISPOSITIONS
         or len(raw_contexts) > len(_ALLOWED_MUSIC_CONTEXTS)
+        or any(type(item) is not str for item in raw_contexts)
     ):
         return None
 

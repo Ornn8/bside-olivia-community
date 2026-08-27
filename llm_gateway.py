@@ -757,9 +757,10 @@ def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
         if isinstance(choice, Mapping):
             message = choice.get("message", choice)
             if isinstance(message, Mapping) and isinstance(message.get("tool_calls"), list):
-                raw_calls.extend(
-                    item for item in message["tool_calls"] if isinstance(item, Mapping)
-                )
+                tool_calls = message["tool_calls"]
+                if any(not isinstance(item, Mapping) for item in tool_calls):
+                    raise ProviderProtocolError()
+                raw_calls.extend(tool_calls)
     output = data.get("output")
     if isinstance(output, list):
         raw_calls.extend(

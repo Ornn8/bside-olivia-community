@@ -242,6 +242,8 @@ def test_router_accepts_one_offline_structured_musical_tool_call():
         ("reason_code", 123),
         ("mode", "TEXT_LETTER"),
         ("mode", " text_letter "),
+        ("music_contexts", [{}]),
+        ("music_contexts", [[]]),
     ],
 )
 def test_router_rejects_noncanonical_tool_schema_arguments(
