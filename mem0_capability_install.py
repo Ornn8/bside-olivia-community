@@ -1,0 +1,1122 @@
+"""Verified, user-triggered installation of the optional Mem0 capability."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import threading
+import time
+from typing import Any, Protocol
+from urllib.parse import quote, urlsplit
+from urllib.request import Request, urlopen
+import uuid
+import zipfile
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+Progress = Callable[[int, int, str], None]
+
+
+class CapabilityState(StrEnum):
+    MISSING = "missing"
+    QUEUED = "queued"
+    DOWNLOADING = "downloading"
+    VERIFYING = "verifying"
+    READY = "ready"
+    PAUSED = "paused"
+    REPAIR = "repair"
+    INCOMPATIBLE = "incompatible"
+
+
+@dataclass(frozen=True)
+class ModelArtifact:
+    size_bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.size_bytes < 0 or not _SHA256_RE.fullmatch(self.sha256):
+            raise ValueError("model artifact is invalid")
+
+
+@dataclass(frozen=True)
+class RuntimeBOM:
+    requirements_sha256: str
+    package_count: int
+    estimated_download_bytes: int
+    sources: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class ModelBOM:
+    repo_id: str
+    revision: str
+    license: str
+    sources: tuple[str, str]
+    files: Mapping[str, ModelArtifact]
+
+    @property
+    def download_bytes(self) -> int:
+        return sum(item.size_bytes for item in self.files.values())
+
+
+@dataclass(frozen=True)
+class Mem0CapabilityBOM:
+    capability: str
+    status: str
+    version: str
+    runtime: RuntimeBOM
+    model: ModelBOM
+    license_summary: str
+    requires_gpu: bool
+
+    @property
+    def estimated_download_bytes(self) -> int:
+        return self.runtime.estimated_download_bytes + self.model.download_bytes
+
+
+def _https_source(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("capability source is invalid")
+    normalized = value.rstrip("/")
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("capability source is invalid")
+    return normalized
+
+
+def load_mem0_capability_bom(
+    manifest_path: Path,
+    requirements_path: Path,
+) -> Mem0CapabilityBOM:
+    try:
+        payload: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+        requirements_digest = hashlib.sha256(requirements_path.read_bytes()).hexdigest()
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("capability BOM is unavailable") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version",
+        "capability",
+        "status",
+        "version",
+        "runtime",
+        "model",
+        "license_summary",
+        "requires_gpu",
+    }:
+        raise ValueError("capability BOM is invalid")
+    runtime = payload.get("runtime")
+    model = payload.get("model")
+    if (
+        payload.get("schema_version") != "olivia.capability-bom.v1"
+        or payload.get("capability") != "long_term_memory"
+        or payload.get("status") != "FIXED"
+        or not isinstance(payload.get("version"), str)
+        or not isinstance(runtime, dict)
+        or not isinstance(model, dict)
+        or not isinstance(payload.get("license_summary"), str)
+        or type(payload.get("requires_gpu")) is not bool
+    ):
+        raise ValueError("capability BOM is invalid")
+    if set(runtime) != {
+        "requirements",
+        "requirements_sha256",
+        "package_count",
+        "estimated_download_bytes",
+        "pypi_sources",
+    }:
+        raise ValueError("capability runtime BOM is invalid")
+    runtime_sources = runtime.get("pypi_sources")
+    if (
+        runtime.get("requirements") != "installer/mem0-runtime-requirements.txt"
+        or runtime.get("requirements_sha256") != requirements_digest
+        or not _SHA256_RE.fullmatch(str(runtime.get("requirements_sha256", "")))
+        or type(runtime.get("package_count")) is not int
+        or runtime["package_count"] <= 0
+        or type(runtime.get("estimated_download_bytes")) is not int
+        or runtime["estimated_download_bytes"] <= 0
+        or not isinstance(runtime_sources, dict)
+        or set(runtime_sources) != {"mirror", "official"}
+    ):
+        raise ValueError("capability runtime BOM is invalid")
+    if set(model) != {"repo_id", "revision", "license", "sources", "files"}:
+        raise ValueError("capability model BOM is invalid")
+    model_sources = model.get("sources")
+    raw_files = model.get("files")
+    if (
+        model.get("repo_id") != "BAAI/bge-small-zh-v1.5"
+        or not isinstance(model.get("revision"), str)
+        or not _REVISION_RE.fullmatch(model["revision"])
+        or not isinstance(model.get("license"), str)
+        or not isinstance(model_sources, dict)
+        or set(model_sources) != {"mirror", "official"}
+        or not isinstance(raw_files, dict)
+        or len(raw_files) != 10
+    ):
+        raise ValueError("capability model BOM is invalid")
+    files: dict[str, ModelArtifact] = {}
+    for name, item in raw_files.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or "\\" in name
+            or Path(name).is_absolute()
+            or ".." in Path(name).parts
+            or not isinstance(item, dict)
+            or set(item) != {"size_bytes", "sha256"}
+            or type(item.get("size_bytes")) is not int
+            or not isinstance(item.get("sha256"), str)
+        ):
+            raise ValueError("capability model file is invalid")
+        files[name] = ModelArtifact(item["size_bytes"], item["sha256"])
+    return Mem0CapabilityBOM(
+        capability=payload["capability"],
+        status=payload["status"],
+        version=payload["version"],
+        runtime=RuntimeBOM(
+            requirements_sha256=requirements_digest,
+            package_count=runtime["package_count"],
+            estimated_download_bytes=runtime["estimated_download_bytes"],
+            sources=(
+                _https_source(runtime_sources["mirror"]),
+                _https_source(runtime_sources["official"]),
+            ),
+        ),
+        model=ModelBOM(
+            repo_id=model["repo_id"],
+            revision=model["revision"],
+            license=model["license"],
+            sources=(
+                _https_source(model_sources["mirror"]),
+                _https_source(model_sources["official"]),
+            ),
+            files=files,
+        ),
+        license_summary=payload["license_summary"],
+        requires_gpu=payload["requires_gpu"],
+    )
+
+
+class ResumableModelDownloader:
+    """Download immutable model files with Range resume and source fallback."""
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        revision: str,
+        files: Mapping[str, ModelArtifact],
+        sources: tuple[str, str],
+        download_root: Path,
+        source_mode: str,
+        pause_requested: threading.Event,
+        progress: Progress,
+        opener: Callable[..., Any] = urlopen,
+    ) -> None:
+        if source_mode not in {"auto", "official"}:
+            raise ValueError("download source mode is invalid")
+        self.repo_id = repo_id
+        self.revision = revision
+        self.files = files
+        self.sources = sources[1:] if source_mode == "official" else sources
+        self.download_root = download_root
+        self.pause_requested = pause_requested
+        self.progress = progress
+        self.opener = opener
+        self.total_bytes = sum(item.size_bytes for item in files.values())
+        self.completed_bytes = 0
+        self._completed: set[str] = set()
+
+    def download(
+        self,
+        *,
+        revision: str,
+        relative_path: str,
+        destination: Path,
+    ) -> None:
+        if revision != self.revision or relative_path not in self.files:
+            raise RuntimeError("MEM0_EMBEDDING_IDENTITY_MISMATCH")
+        artifact = self.files[relative_path]
+        cached = self.download_root.joinpath(*relative_path.split("/"))
+        partial = cached.with_suffix(cached.suffix + ".part")
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        if not self._valid(cached, artifact):
+            cached.unlink(missing_ok=True)
+            if partial.is_file() and partial.stat().st_size > artifact.size_bytes:
+                partial.unlink()
+            last_error: Exception | None = None
+            for source in self.sources:
+                try:
+                    self._transfer(source, relative_path, partial, artifact)
+                    last_error = None
+                    break
+                except _DownloadPaused:
+                    raise
+                except (OSError, RuntimeError) as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise RuntimeError("MEM0_MODEL_DOWNLOAD_FAILED") from last_error
+            if not self._valid(partial, artifact):
+                partial.unlink(missing_ok=True)
+                raise RuntimeError("MEM0_MODEL_HASH_MISMATCH")
+            partial.replace(cached)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(cached, destination)
+        if relative_path not in self._completed:
+            self.completed_bytes += artifact.size_bytes
+            self._completed.add(relative_path)
+        self.progress(self.completed_bytes, self.total_bytes, relative_path)
+
+    def _transfer(
+        self,
+        source: str,
+        relative_path: str,
+        partial: Path,
+        artifact: ModelArtifact,
+    ) -> None:
+        offset = partial.stat().st_size if partial.is_file() else 0
+        url = (
+            f"{source}/{self.repo_id}/resolve/{self.revision}/"
+            f"{quote(relative_path, safe='/')}"
+        )
+        request = Request(url, headers={"Range": f"bytes={offset}-"} if offset else {})
+        with self.opener(request, timeout=30) as response:
+            status = getattr(response, "status", 200)
+            append = bool(offset and status == 206)
+            if offset and not append:
+                offset = 0
+            mode = "ab" if append else "wb"
+            with partial.open(mode) as stream:
+                downloaded = offset
+                while True:
+                    if self.pause_requested.is_set():
+                        raise _DownloadPaused
+                    block = response.read(1 << 20)
+                    if not block:
+                        break
+                    stream.write(block)
+                    downloaded += len(block)
+                    self.progress(
+                        self.completed_bytes + downloaded,
+                        self.total_bytes,
+                        relative_path,
+                    )
+        if partial.stat().st_size != artifact.size_bytes:
+            raise OSError("download size mismatch")
+
+    @staticmethod
+    def _valid(path: Path, artifact: ModelArtifact) -> bool:
+        try:
+            if path.stat().st_size != artifact.size_bytes:
+                return False
+            with path.open("rb") as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest() == artifact.sha256
+        except OSError:
+            return False
+
+
+class _DownloadPaused(RuntimeError):
+    pass
+
+
+class CapabilityLayer(Protocol):
+    def ready(self) -> bool: ...
+
+    def install(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None,
+        pause_requested: threading.Event,
+        progress: Progress,
+    ) -> None: ...
+
+    def uninstall(self) -> None: ...
+
+
+CommandRunner = Callable[..., int]
+RuntimeVerifier = Callable[[Path, Path], bool]
+
+
+def _run_command(
+    command: list[str],
+    *,
+    environment: Mapping[str, str],
+    pause_requested: threading.Event,
+) -> int:
+    process = subprocess.Popen(
+        command,
+        env=dict(environment),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    while process.poll() is None:
+        if pause_requested.is_set():
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            raise _DownloadPaused
+        time.sleep(0.1)
+    return int(process.returncode or 0)
+
+
+class ManagedMem0Runtime:
+    """Install the hash-locked Mem0 wheel closure beside the core runtime."""
+
+    def __init__(
+        self,
+        *,
+        install_root: Path,
+        python_executable: Path,
+        requirements: Path,
+        sources: tuple[str, str],
+        verifier: RuntimeVerifier | None = None,
+        runner: CommandRunner = _run_command,
+    ) -> None:
+        self.install_root = install_root.resolve()
+        self.python_executable = python_executable.resolve()
+        self.requirements = requirements.resolve()
+        self.sources = sources
+        self.verifier = verifier
+        self.runner = runner
+        self.target = self.install_root / "runtime" / "mem0-site-packages"
+        self.staging = self.install_root / "runtime" / "mem0-site-packages.staging"
+        self.cache = self.install_root / "downloads" / "pip-cache"
+        self._ready_fingerprint: tuple[int, ...] | None = None
+        self._ready_result = False
+        try:
+            self.python_executable.relative_to(self.install_root / "runtime")
+            self.requirements.relative_to(self.install_root / "local_backend")
+        except ValueError as exc:
+            raise ValueError("managed Mem0 paths are invalid") from exc
+
+    def _pth(self) -> Path:
+        candidates = tuple(self.python_executable.parent.glob("*._pth"))
+        if len(candidates) != 1 or not candidates[0].is_file():
+            raise RuntimeError("MEM0_RUNTIME_PTH_UNAVAILABLE")
+        return candidates[0]
+
+    def _registered(self) -> bool:
+        try:
+            lines = self._pth().read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeError, RuntimeError):
+            return False
+        expected = [str(self.target), str(self.target / "win32"), str(self.target / "win32" / "lib")]
+        return lines[:3] == expected
+
+    def ready(self) -> bool:
+        try:
+            if not self._registered():
+                return False
+            tracked = (
+                self.target,
+                self.target / ".olivia-mem0-runtime-manifest.json",
+                self._pth(),
+                self.requirements,
+            )
+            fingerprint = tuple(
+                value
+                for path in tracked
+                for value in (path.stat().st_mtime_ns, path.stat().st_size)
+            )
+            if fingerprint != self._ready_fingerprint:
+                self._ready_result = self._verify(self.target)
+                self._ready_fingerprint = fingerprint
+            return self._ready_result
+        except Exception:
+            return False
+
+    def _verify(self, runtime: Path) -> bool:
+        if self.verifier is not None:
+            return self.verifier(runtime, self.requirements)
+        result = subprocess.run(
+            [
+                str(self.python_executable),
+                str(self.requirements.parent / "verify_mem0_runtime.py"),
+                str(runtime),
+                str(self.requirements),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
+        )
+        return result.returncode == 0
+
+    def _update_pth(self, *, enabled: bool) -> None:
+        path = self._pth()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        kept: list[str] = []
+        has_site = False
+        has_import = False
+        for line in lines:
+            stripped = line.strip()
+            normalized = stripped.replace("\\", "/").casefold()
+            if "/runtime/mem0-site-packages" in normalized:
+                continue
+            if stripped == "site-packages":
+                if not has_site:
+                    kept.append("site-packages")
+                    has_site = True
+                continue
+            if stripped == "import site":
+                if not has_import:
+                    kept.append("import site")
+                    has_import = True
+                continue
+            kept.append(line)
+        if not has_site:
+            kept.append("site-packages")
+        if not has_import:
+            kept.append("import site")
+        if enabled:
+            kept[:0] = [
+                str(self.target),
+                str(self.target / "win32"),
+                str(self.target / "win32" / "lib"),
+            ]
+        staging = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        staging.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        staging.replace(path)
+
+    def _command(self, *, target: Path, source: str | None, wheelhouse: Path | None) -> list[str]:
+        command = [
+            str(self.python_executable),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--require-hashes",
+            "--only-binary=:all:",
+            "--no-compile",
+            "--target",
+            str(target),
+            "-r",
+            str(self.requirements),
+        ]
+        if wheelhouse is not None:
+            command[6:6] = ["--no-index", "--find-links", str(wheelhouse)]
+        elif source is not None:
+            command[6:6] = ["--index-url", source, "--cache-dir", str(self.cache)]
+        return command
+
+    def install(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None,
+        pause_requested: threading.Event,
+        progress: Progress,
+    ) -> None:
+        if self.ready():
+            return
+        attempts: tuple[tuple[str | None, Path | None], ...]
+        if source_mode == "offline":
+            if offline_root is None:
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_REQUIRED")
+            attempts = ((None, offline_root / "wheelhouse"),)
+        elif source_mode == "official":
+            attempts = ((self.sources[1], None),)
+        elif source_mode == "auto":
+            attempts = ((self.sources[0], None), (self.sources[1], None))
+        else:
+            raise ValueError("runtime source mode is invalid")
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                "PIP_NO_INPUT": "1",
+                "DO_NOT_TRACK": "1",
+            }
+        )
+        installed = False
+        for source, wheelhouse in attempts:
+            shutil.rmtree(self.staging, ignore_errors=True)
+            self.staging.mkdir(parents=True, exist_ok=True)
+            progress(0, 1, "python-dependencies")
+            result = self.runner(
+                self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
+                environment=environment,
+                pause_requested=pause_requested,
+            )
+            if result == 0:
+                installed = True
+                break
+        if not installed:
+            shutil.rmtree(self.staging, ignore_errors=True)
+            raise RuntimeError("MEM0_RUNTIME_DOWNLOAD_FAILED")
+        digest = hashlib.sha256(self.requirements.read_bytes()).hexdigest()
+        (self.staging / ".olivia-mem0-runtime-manifest.json").write_text(
+            json.dumps({"requirements_sha256": digest}, sort_keys=True),
+            encoding="utf-8",
+        )
+        if not self._verify(self.staging):
+            shutil.rmtree(self.staging, ignore_errors=True)
+            raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
+        backup = self.target.with_name(f"{self.target.name}.backup.{uuid.uuid4().hex}")
+        old_pth = self._pth().read_bytes()
+        if self.target.exists():
+            self.target.replace(backup)
+        try:
+            self.staging.replace(self.target)
+            self._update_pth(enabled=True)
+            if not self._verify(self.target):
+                raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
+        except Exception:
+            shutil.rmtree(self.target, ignore_errors=True)
+            if backup.exists():
+                backup.replace(self.target)
+            self._pth().write_bytes(old_pth)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        self._ready_fingerprint = None
+        progress(1, 1, "python-dependencies")
+
+    def uninstall(self) -> None:
+        self._update_pth(enabled=False)
+        shutil.rmtree(self.target, ignore_errors=True)
+        shutil.rmtree(self.staging, ignore_errors=True)
+        self._ready_fingerprint = None
+        self._ready_result = False
+
+
+class _OfflineModelDownloader:
+    def __init__(
+        self,
+        root: Path,
+        files: Mapping[str, ModelArtifact],
+        pause_requested: threading.Event,
+        progress: Progress,
+    ) -> None:
+        self.root = root
+        self.files = files
+        self.pause_requested = pause_requested
+        self.progress = progress
+        self.completed = 0
+        self.total = sum(item.size_bytes for item in files.values())
+
+    def download(
+        self,
+        *,
+        revision: str,
+        relative_path: str,
+        destination: Path,
+    ) -> None:
+        del revision
+        if self.pause_requested.is_set():
+            raise _DownloadPaused
+        artifact = self.files.get(relative_path)
+        source = self.root.joinpath(*relative_path.split("/"))
+        if artifact is None or not ResumableModelDownloader._valid(source, artifact):
+            raise RuntimeError("MEM0_OFFLINE_MODEL_INVALID")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        self.completed += artifact.size_bytes
+        self.progress(self.completed, self.total, relative_path)
+
+
+class ManagedEmbeddingModel:
+    """Install the trusted BGE revision through online or offline transport."""
+
+    def __init__(
+        self,
+        *,
+        data_root: Path,
+        bom: ModelBOM,
+        download_root: Path,
+    ) -> None:
+        from mem0_memory import Mem0Config
+
+        self.bom = bom
+        self.download_root = download_root
+        self.config = Mem0Config(
+            enabled=True,
+            data_root=data_root / "memory" / "mem0",
+            embedding_cache=data_root / "memory" / "model-cache",
+        )
+
+    def ready(self) -> bool:
+        from mem0_memory import verified_embedding_cache
+
+        if not verified_embedding_cache(self.config):
+            return False
+        manifest_path = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        expected = {name: artifact.sha256 for name, artifact in self.bom.files.items()}
+        return manifest.get("files") == expected
+
+    def install(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None,
+        pause_requested: threading.Event,
+        progress: Progress,
+    ) -> None:
+        from mem0_embedding_install import Mem0EmbeddingInstaller
+
+        if self.ready():
+            return
+        if source_mode == "offline":
+            if offline_root is None:
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_REQUIRED")
+            downloader: Any = _OfflineModelDownloader(
+                offline_root / "model",
+                self.bom.files,
+                pause_requested,
+                progress,
+            )
+        else:
+            downloader = ResumableModelDownloader(
+                repo_id=self.bom.repo_id,
+                revision=self.bom.revision,
+                files=self.bom.files,
+                sources=self.bom.sources,
+                download_root=self.download_root,
+                source_mode=source_mode,
+                pause_requested=pause_requested,
+                progress=progress,
+            )
+        result = Mem0EmbeddingInstaller(
+            self.config,
+            downloader=downloader,
+            expected_hashes={
+                name: artifact.sha256 for name, artifact in self.bom.files.items()
+            },
+        ).install()
+        if result.status not in {"APPLIED", "NOOP"} or not self.ready():
+            if pause_requested.is_set():
+                raise _DownloadPaused
+            raise RuntimeError(result.reason_code or "MEM0_MODEL_INSTALL_FAILED")
+
+    def uninstall(self) -> None:
+        snapshot = self.config.embedding_snapshot
+        manifest = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
+        shutil.rmtree(snapshot, ignore_errors=True)
+        manifest.unlink(missing_ok=True)
+
+
+def create_mem0_capability_installer(
+    *,
+    install_root: Path,
+    data_root: Path,
+    python_executable: Path,
+    backend_root: Path,
+) -> Mem0CapabilityInstaller:
+    manifest = backend_root / "installer" / "mem0-capability-manifest.json"
+    requirements = backend_root / "installer" / "mem0-runtime-requirements.txt"
+    bom = load_mem0_capability_bom(manifest, requirements)
+    runtime = ManagedMem0Runtime(
+        install_root=install_root,
+        python_executable=python_executable,
+        requirements=requirements,
+        sources=bom.runtime.sources,
+    )
+    model = ManagedEmbeddingModel(
+        data_root=data_root,
+        bom=bom.model,
+        download_root=install_root / "downloads" / "mem0-model",
+    )
+    return Mem0CapabilityInstaller(
+        runtime=runtime,
+        model=model,
+        version=bom.version,
+        estimated_download_bytes=bom.estimated_download_bytes,
+        license_summary=bom.license_summary,
+        requires_gpu=bom.requires_gpu,
+        required_free_bytes=max(
+            1_073_741_824,
+            bom.estimated_download_bytes * 5 // 2,
+        ),
+        free_space=lambda: shutil.disk_usage(install_root).free,
+    )
+
+
+def extract_offline_mem0_pack(
+    package: Path,
+    destination: Path,
+    *,
+    bom: Mem0CapabilityBOM,
+    requirements_bytes: bytes,
+) -> Path:
+    """Extract one bounded capability archive after embedded-BOM verification."""
+
+    if package.suffix.casefold() != ".oliviapack" or destination.exists():
+        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+    expected_model = {f"model/{name}": item for name, item in bom.model.files.items()}
+    expected_metadata = {
+        "schema_version": "olivia.offline-capability-pack.v1",
+        "capability": "long_term_memory",
+        "version": bom.version,
+        "requirements_sha256": bom.runtime.requirements_sha256,
+        "model_revision": bom.model.revision,
+    }
+    try:
+        if package.stat().st_size > 1_073_741_824:
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+        with zipfile.ZipFile(package) as archive:
+            infos = [item for item in archive.infolist() if not item.is_dir()]
+            names: set[str] = set()
+            total_size = 0
+            wheel_count = 0
+            for info in infos:
+                path = PurePosixPath(info.filename)
+                normalized = path.as_posix()
+                unix_mode = (info.external_attr >> 16) & 0o170000
+                if (
+                    path.is_absolute()
+                    or normalized != info.filename
+                    or any(part in {"", ".", ".."} for part in path.parts)
+                    or normalized.casefold() in names
+                    or info.flag_bits & 0x1
+                    or unix_mode == 0o120000
+                    or info.file_size > 536_870_912
+                ):
+                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+                names.add(normalized.casefold())
+                total_size += info.file_size
+                if normalized.startswith("wheelhouse/") and len(path.parts) == 2 and normalized.endswith(".whl"):
+                    wheel_count += 1
+                elif normalized not in {"manifest.json", "requirements.txt"} and normalized not in expected_model:
+                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+            required = {"manifest.json", "requirements.txt", *expected_model}
+            if total_size > 1_073_741_824 or wheel_count < 1 or not required.issubset(
+                {info.filename for info in infos}
+            ):
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+            metadata = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if metadata != expected_metadata or archive.read("requirements.txt") != requirements_bytes:
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+            destination.mkdir(parents=True)
+            for info in infos:
+                target = destination.joinpath(*PurePosixPath(info.filename).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output, length=1 << 20)
+    except RuntimeError:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID") from exc
+    if hashlib.sha256(requirements_bytes).hexdigest() != bom.runtime.requirements_sha256:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+    for relative, artifact in expected_model.items():
+        if not ResumableModelDownloader._valid(destination / relative, artifact):
+            shutil.rmtree(destination, ignore_errors=True)
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+    return destination
+
+
+@dataclass(frozen=True)
+class CapabilityStatus:
+    state: CapabilityState
+    phase: str
+    downloaded_bytes: int
+    total_bytes: int
+    current_file: str | None
+    source: str | None
+    version: str
+    license_summary: str
+    requires_gpu: bool
+    reason_code: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": "olivia.capability-status.v1",
+            "status": "READY",
+            "capability": "long_term_memory",
+            "state": self.state.value,
+            "phase": self.phase,
+            "downloaded_bytes": self.downloaded_bytes,
+            "total_bytes": self.total_bytes,
+            "version": self.version,
+            "license_summary": self.license_summary,
+            "requires_gpu": self.requires_gpu,
+        }
+        if self.current_file is not None:
+            payload["current_file"] = self.current_file
+        if self.source is not None:
+            payload["source"] = self.source
+        if self.reason_code is not None:
+            payload["reason_code"] = self.reason_code
+        return payload
+
+
+class Mem0CapabilityInstaller:
+    """Coordinate runtime and model layers without downloading before consent."""
+
+    def __init__(
+        self,
+        *,
+        runtime: CapabilityLayer,
+        model: CapabilityLayer,
+        version: str,
+        estimated_download_bytes: int,
+        license_summary: str,
+        requires_gpu: bool,
+        required_free_bytes: int = 0,
+        free_space: Callable[[], int] | None = None,
+    ) -> None:
+        self.runtime = runtime
+        self.model = model
+        self.version = version
+        self.total = estimated_download_bytes
+        self.license_summary = license_summary
+        self.requires_gpu = requires_gpu
+        self.required_free_bytes = max(0, required_free_bytes)
+        self.free_space = free_space
+        self._lock = threading.Lock()
+        self._pause = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
+
+    def _new_status(
+        self,
+        state: CapabilityState,
+        phase: str,
+        downloaded: int,
+        *,
+        current: str | None = None,
+        source: str | None = None,
+        reason: str | None = None,
+    ) -> CapabilityStatus:
+        return CapabilityStatus(
+            state,
+            phase,
+            downloaded,
+            self.total,
+            current,
+            source,
+            self.version,
+            self.license_summary,
+            self.requires_gpu,
+            reason,
+        )
+
+    def status(self) -> CapabilityStatus:
+        try:
+            ready = self.runtime.ready() and self.model.ready()
+        except Exception:
+            ready = False
+        with self._lock:
+            if ready and self._status.state not in {
+                CapabilityState.DOWNLOADING,
+                CapabilityState.VERIFYING,
+            }:
+                return self._new_status(CapabilityState.READY, "complete", self.total)
+            return self._status
+
+    def _progress(self, phase: str, source: str) -> Progress:
+        def update(downloaded: int, total: int, current: str) -> None:
+            ratio = 0 if total <= 0 else min(1.0, downloaded / total)
+            base = 0 if phase == "runtime" else self.total // 2
+            span = self.total // 2
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.DOWNLOADING,
+                    phase,
+                    min(self.total, base + int(span * ratio)),
+                    current=Path(current).name[:160],
+                    source=source,
+                )
+
+        return update
+
+    def install(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None = None,
+    ) -> str:
+        if source_mode not in {"auto", "official", "offline"}:
+            raise ValueError("capability source mode is invalid")
+        with self._lock:
+            if self.runtime.ready() and self.model.ready():
+                return "NOOP"
+            self._pause.clear()
+            self._status = self._new_status(
+                CapabilityState.DOWNLOADING, "runtime", 0, source=source_mode
+            )
+        try:
+            self.runtime.install(
+                source_mode=source_mode,
+                offline_root=offline_root,
+                pause_requested=self._pause,
+                progress=self._progress("runtime", source_mode),
+            )
+            if self._pause.is_set():
+                raise _DownloadPaused
+            self.model.install(
+                source_mode=source_mode,
+                offline_root=offline_root,
+                pause_requested=self._pause,
+                progress=self._progress("model", source_mode),
+            )
+            if self._pause.is_set():
+                raise _DownloadPaused
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.VERIFYING,
+                    "verification",
+                    self.total,
+                    source=source_mode,
+                )
+            if not self.runtime.ready() or not self.model.ready():
+                raise RuntimeError("MEM0_CAPABILITY_VERIFY_FAILED")
+        except _DownloadPaused:
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.PAUSED,
+                    self._status.phase,
+                    self._status.downloaded_bytes,
+                    current=self._status.current_file,
+                    source=source_mode,
+                )
+            return "PAUSED"
+        except Exception:
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    self._status.phase,
+                    self._status.downloaded_bytes,
+                    current=self._status.current_file,
+                    source=source_mode,
+                    reason="MEM0_CAPABILITY_INSTALL_FAILED",
+                )
+            return "REJECTED"
+        with self._lock:
+            self._status = self._new_status(
+                CapabilityState.READY, "complete", self.total, source=source_mode
+            )
+        return "APPLIED"
+
+    def start(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None = None,
+        cleanup_offline: bool = False,
+    ) -> str:
+        if source_mode not in {"auto", "official", "offline"}:
+            raise ValueError("capability source mode is invalid")
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return "NOOP"
+            if self.runtime.ready() and self.model.ready():
+                return "NOOP"
+            try:
+                enough_space = (
+                    self.free_space is None
+                    or self.free_space() >= self.required_free_bytes
+                )
+            except OSError:
+                enough_space = False
+            if not enough_space:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    "preflight",
+                    0,
+                    source=source_mode,
+                    reason="MEM0_CAPABILITY_DISK_SPACE_LOW",
+                )
+                return "REJECTED"
+            self._status = self._new_status(
+                CapabilityState.QUEUED, "queued", 0, source=source_mode
+            )
+            self._thread = threading.Thread(
+                target=self._install_background,
+                kwargs={
+                    "source_mode": source_mode,
+                    "offline_root": offline_root,
+                    "cleanup_offline": cleanup_offline,
+                },
+                name="olivia-mem0-capability-install",
+                daemon=True,
+            )
+            self._thread.start()
+        return "APPLIED"
+
+    def _install_background(
+        self,
+        *,
+        source_mode: str,
+        offline_root: Path | None,
+        cleanup_offline: bool,
+    ) -> None:
+        try:
+            self.install(source_mode=source_mode, offline_root=offline_root)
+        finally:
+            if (
+                cleanup_offline
+                and offline_root is not None
+                and offline_root.name == "extracted"
+                and offline_root.parent.name.startswith(".mem0-offline-")
+            ):
+                shutil.rmtree(offline_root.parent, ignore_errors=True)
+
+    def pause(self) -> str:
+        with self._lock:
+            if self._status.state not in {
+                CapabilityState.QUEUED,
+                CapabilityState.DOWNLOADING,
+                CapabilityState.VERIFYING,
+            }:
+                return "NOOP"
+            self._pause.set()
+        return "APPLIED"
+
+    def resume(self, *, source_mode: str) -> str:
+        if self.status().state is CapabilityState.READY:
+            return "NOOP"
+        return self.start(source_mode=source_mode)
+
+    def uninstall(self, *, remove_model: bool) -> str:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return "REJECTED"
+        changed = self.runtime.ready() or remove_model and self.model.ready()
+        self.runtime.uninstall()
+        if remove_model:
+            self.model.uninstall()
+        with self._lock:
+            self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
+        return "APPLIED" if changed else "NOOP"
+
+
+__all__ = [
+    "CapabilityState",
+    "CapabilityStatus",
+    "ManagedMem0Runtime",
+    "ManagedEmbeddingModel",
+    "ModelBOM",
+    "Mem0CapabilityBOM",
+    "Mem0CapabilityInstaller",
+    "ModelArtifact",
+    "ResumableModelDownloader",
+    "create_mem0_capability_installer",
+    "extract_offline_mem0_pack",
+    "load_mem0_capability_bom",
+]

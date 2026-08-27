@@ -1,0 +1,39 @@
+{
+  "schema_version": "olivia.capability-bom.v1",
+  "capability": "long_term_memory",
+  "status": "FIXED",
+  "version": "mem0ai-2.0.18+bge-small-zh-v1.5-7999e1d",
+  "runtime": {
+    "requirements": "installer/mem0-runtime-requirements.txt",
+    "requirements_sha256": "c1b33ac879a788314f4d588fafe308db7d7ffaefd43c6dd15787be41d3132ef4",
+    "package_count": 69,
+    "estimated_download_bytes": 235929600,
+    "pypi_sources": {
+      "mirror": "https://pypi.tuna.tsinghua.edu.cn/simple",
+      "official": "https://pypi.org/simple"
+    }
+  },
+  "model": {
+    "repo_id": "BAAI/bge-small-zh-v1.5",
+    "revision": "7999e1d3359715c523056ef9478215996d62a620",
+    "license": "MIT",
+    "sources": {
+      "mirror": "https://hf-mirror.com",
+      "official": "https://huggingface.co"
+    },
+    "files": {
+      "1_Pooling/config.json": {"size_bytes": 190, "sha256": "aaa8861589f80c961a03cc86c7eeaef7605c1676b9ab55329d33a304738769c6"},
+      "config.json": {"size_bytes": 776, "sha256": "3853a7979202c348751b753e36f579c41d8da7d36af617d3d907e1fc9b441f2a"},
+      "config_sentence_transformers.json": {"size_bytes": 124, "sha256": "940d5f50db195fa6e5e6a4f122c095f77880de259d74b14a65779ed48bdd7c56"},
+      "model.safetensors": {"size_bytes": 95827648, "sha256": "354763b9b1357bc9c44f62c6be2276321081ed2567773608c0d0785b61d5a026"},
+      "modules.json": {"size_bytes": 349, "sha256": "84e40c8e006c9b1d6c122e02cba9b02458120b5fb0c87b746c41e0207cf642cf"},
+      "sentence_bert_config.json": {"size_bytes": 52, "sha256": "84e39fda68ccbff05bfa723ae9c0e70e23e2ec373b76e0f8c6e71af72a693cbf"},
+      "special_tokens_map.json": {"size_bytes": 125, "sha256": "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3"},
+      "tokenizer.json": {"size_bytes": 439125, "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"},
+      "tokenizer_config.json": {"size_bytes": 367, "sha256": "e6f3b96db926a37d4039995fbf5ad17de158dfb8f6343d607e4dbaad18d75f5a"},
+      "vocab.txt": {"size_bytes": 109540, "sha256": "45bbac6b341c319adc98a532532882e91a9cefc0329aa57bac9ae761c27b291c"}
+    }
+  },
+  "license_summary": "Mem0: Apache-2.0; BGE model: MIT; Python dependencies retain their upstream licenses.",
+  "requires_gpu": false
+}

@@ -51,6 +51,7 @@ PAYLOAD_EXTRA_FILES = (
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 PAYLOAD_ROOT_FILES = {
     "local_server.py",
+    "mem0_capability_install.py",
     "original_client_server.py",
     "original_client_settings_ui.py",
     "patch_companion_settings.py",
@@ -69,6 +70,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "letter_status.py",
     "local_server.py",
     "original_client_media_http.py",
+    "mem0_capability_install.py",
     "original_client_server.py",
     "original_client_settings_ui.py",
     "patch_companion_settings.py",
@@ -94,6 +96,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
     "installer/version_launcher.py",
+    "installer/mem0-capability-manifest.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",
     "runtime/imports/historical_memory.py",
