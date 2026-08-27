@@ -589,11 +589,6 @@ def _make_payload(repo_root: Path, root: Path) -> Path:
     root.mkdir()
     for name in PAYLOAD_REQUIRED_ROOT_FILES:
         shutil.copy2(repo_root / name, root / name)
-    constitution = Path(
-        "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
-    )
-    (root / constitution).parent.mkdir(parents=True)
-    shutil.copy2(repo_root / constitution, root / constitution)
     shutil.copytree(repo_root / "control_center", root / "control_center")
     shutil.copytree(repo_root / "contracts", root / "contracts")
     shutil.copytree(repo_root / "installer", root / "installer")
@@ -984,13 +979,6 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert "data-ui-version=\"p03.original-settings-manage.v5\"" in index
     assert (installed / "local_backend" / "original_client_setup_api.py").is_file()
     assert (installed / "local_backend" / "original_client_capability_api.py").is_file()
-    assert (
-        installed
-        / "local_backend"
-        / "docs"
-        / "persona-sources"
-        / "linli-im-private-constitution-1.0.zh-CN.md"
-    ).is_file()
     assert "toyApiUrl" in main
     assert "await t.replace({name:ye.Collection})" in main
 

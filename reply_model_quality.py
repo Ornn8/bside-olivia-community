@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from llm_gateway import Gateway, GatewayConfig, create_gateway
-from persona_loader import PersonaDeclaration, load_persona
+from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
 from runtime.reply.reply_context import ReplyContext
 from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
@@ -25,9 +25,6 @@ from runtime.reply.reply_reviewer import (
 _REVIEW_MARKER = "P02_REPLY_REVIEW_JSON"
 _REWRITE_MARKER = "P02_REPLY_REWRITE_TEXT"
 _REVIEW_MODEL = "deepseek-v4-flash"
-_CONSTITUTION_RELATIVE_PATH = Path(
-    "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
-)
 _GLOBAL_HEADINGS = (
     "零、使用方式",
     "一、使用目的",
@@ -121,9 +118,19 @@ _LAYER_SPECS = {
     },
 }
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
+_LAYER_RELEASE_FACETS = {
+    "identity_boundary": frozenset(
+        {"IDENTITY", "KNOWLEDGE_BOUNDARY", "RELATIONSHIP_STYLE", "SAFETY"}
+    ),
+    "voice_style": frozenset({"EXPRESSION_STYLE", "MODE_STYLE"}),
+    "focus_response": frozenset(
+        {"CORE_TRAIT", "EXPRESSION_STYLE", "RELATIONSHIP_STYLE"}
+    ),
+    "continuity_memory": frozenset({"MEMORY_CONTINUITY", "UNCERTAINTY"}),
+    "autonomy_life": frozenset({"AUTONOMY", "BACKGROUND", "CORE_TRAIT"}),
+}
 _MEMORY_SOURCE_CHARACTER_LIMIT = 2400
 _REVIEW_INPUT_CHARACTER_LIMIT = 30000
-_HEADLINE = re.compile(r"(?m)^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _REVIEW_FACETS = frozenset(
     {
         "CORE_TRAIT",
@@ -178,8 +185,10 @@ class GatewayReviewTransport:
         model: str,
         timeout_seconds: float,
     ) -> object:
-        authorities = _build_layer_authorities(
-            _constitution_path(self.persona_path).read_text(encoding="utf-8")
+        mode = str(request.get("mode", ""))
+        authorities = _build_release_layer_authorities(
+            load_persona(self.persona_path).snapshot,
+            mode=mode,
         )
         current_user_input = _reference_text(
             request,
@@ -213,7 +222,7 @@ class GatewayReviewTransport:
             candidate=str(request.get("candidate", "")),
             current_user_input=current_user_input,
             memory_evidence=memory_evidence,
-            mode=str(request.get("mode", "")),
+            mode=mode,
             timeout_seconds=timeout_seconds,
         )
         return _aggregate_layer_results(
@@ -496,39 +505,40 @@ def create_model_quality_ports(
     return reviewer, rewriter
 
 
-def _constitution_path(persona_path: Path) -> Path:
-    path = persona_path.parent.parent / _CONSTITUTION_RELATIVE_PATH
-    if not path.is_file():
-        raise RuntimeError("PERSONA_CONSTITUTION_UNAVAILABLE")
-    return path
-
-
-def _extract_section(markdown: str, heading: str) -> str:
-    matches = list(_HEADLINE.finditer(markdown))
-    target_index = next(
-        (
-            index
-            for index, item in enumerate(matches)
-            if item.group(2).strip() == heading
-        ),
-        None,
+def _release_authority_text(
+    declarations: Sequence[PersonaDeclaration],
+    *,
+    facets: frozenset[str] | None = None,
+    mode: str,
+) -> str:
+    selected = tuple(
+        item
+        for item in declarations
+        if item.allowed_public_release
+        and (facets is None or item.facet in facets)
+        and (item.tier != "MODE_STYLE" or item.mode == mode)
     )
-    if target_index is None:
-        raise RuntimeError(f"PERSONA_SECTION_MISSING:{heading}")
-    target = matches[target_index]
-    level = len(target.group(1))
-    end = len(markdown)
-    for following in matches[target_index + 1 :]:
-        if len(following.group(1)) <= level:
-            end = following.start()
-            break
-    return markdown[target.start() : end].strip()
+    if not selected:
+        raise RuntimeError("PERSONA_REVIEW_AUTHORITY_UNAVAILABLE")
+    return "\n".join(
+        f"[{item.declaration_id}] {item.statement}"
+        for item in selected
+    )
 
 
-def _build_layer_authorities(markdown: str) -> tuple[_LayerAuthority, ...]:
-    global_authority = "\n\n".join(
-        _extract_section(markdown, heading)
-        for heading in _GLOBAL_HEADINGS
+def _build_release_layer_authorities(
+    snapshot: PersonaSnapshot,
+    *,
+    mode: str,
+) -> tuple[_LayerAuthority, ...]:
+    if snapshot.status != "READY" or not snapshot.declarations:
+        raise RuntimeError("PERSONA_RELEASE_UNAVAILABLE")
+    constitution = tuple(
+        item for item in snapshot.declarations if item.tier == "CONSTITUTION"
+    )
+    global_authority = _release_authority_text(
+        constitution,
+        mode=mode,
     )
     return tuple(
         _LayerAuthority(
@@ -536,9 +546,10 @@ def _build_layer_authorities(markdown: str) -> tuple[_LayerAuthority, ...]:
             question=str(raw["question"]),
             allowed_codes=tuple(raw["codes"]),
             global_authority=global_authority,
-            layer_authority="\n\n".join(
-                _extract_section(markdown, heading)
-                for heading in tuple(raw["headings"])
+            layer_authority=_release_authority_text(
+                snapshot.declarations,
+                facets=_LAYER_RELEASE_FACETS[name],
+                mode=mode,
             ),
         )
         for name, raw in _LAYER_SPECS.items()
@@ -556,8 +567,8 @@ def _layer_messages(
     allowed = ", ".join(layer.allowed_codes)
     system = (
         f"{_REVIEW_MARKER}\n"
-        "The GLOBAL_AUTHORITY is the common Constitution prelude and remains "
-        "authoritative. The LAYER_AUTHORITY is exact Constitution text for "
+        "The GLOBAL_AUTHORITY contains approved public release policy and remains "
+        "authoritative. The LAYER_AUTHORITY contains approved public release declarations for "
         "this narrow review. Judge only the named layer; do not invent rules "
         "or use outside knowledge. "
         f"Layer: {layer.name}. Question: {layer.question} "

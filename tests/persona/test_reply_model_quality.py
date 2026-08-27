@@ -27,7 +27,7 @@ from reply_model_quality import (
     GatewayPersonaRewriter,
     create_model_quality_ports,
 )
-from runtime.reply.reply_reviewer import NullReviewer
+from runtime.reply.reply_reviewer import NullReviewer, ReviewVerdict
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -233,6 +233,28 @@ def test_configured_provider_runs_structured_persona_review(
         and request["mode"] == "text_letter"
         for request in gateway.review_requests
     )
+
+
+def test_reviewer_uses_release_declarations_without_source_document(
+    tmp_path: Path,
+) -> None:
+    persona_path = tmp_path / "runtime" / "linli_character" / "persona_release_v2.json"
+    persona_path.parent.mkdir(parents=True)
+    persona_path.write_bytes(
+        (ROOT / "linli_character" / "persona_release_v2.json").read_bytes()
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=_passing_layer_payloads(),
+    )
+
+    result = GatewayPersonaReviewer(gateway, persona_path, 1).review(
+        "这是一条合成候选回复。",
+        _context(),
+    )
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert gateway.call_kinds == ["review"] * 5
 
 
 class _FixedMemory(NullMemoryPort):

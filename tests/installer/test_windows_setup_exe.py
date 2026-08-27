@@ -142,16 +142,12 @@ def test_prepare_setup_payload_rejects_dirty_tracked_release_file(
 def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("local_server.py")
     assert _is_release_file("control_center/static/index.html")
-    assert _is_release_file(
-        "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
-    )
     assert _is_release_file("installer/full_patch.py")
     assert _is_release_file("tools/livetalking_worker.py")
 
     assert not _is_release_file(".gitignore")
     assert not _is_release_file("baseline_hardening_scan.py")
     assert not _is_release_file("installer/build_offline_core_assets.py")
-    assert not _is_release_file("docs/architecture.md")
     assert not _is_release_file("tools/verify_b11_scope.py")
     assert not _is_release_file("tools/live_e2e_acceptance.py")
 
@@ -164,19 +160,13 @@ def test_real_head_setup_payload_excludes_build_audit_test_and_scm_files() -> No
     }
 
     assert {
-        "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
         "installer/Install.ps1",
         "installer/full_patch.py",
         "local_server.py",
         "control_center/static/index.html",
     }.issubset(selected)
     assert not any(
-        relative.startswith((".", "tests/"))
-        or (
-            relative.startswith("docs/")
-            and relative
-            != "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
-        )
+        relative.startswith((".", "docs/", "tests/"))
         or relative.startswith("tools/verify_")
         or "/audit_" in relative
         or "acceptance" in relative
