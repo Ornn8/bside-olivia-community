@@ -66,6 +66,14 @@ jobs:
             --version $version `
             --iscc $iscc
 
+      - name: Exercise setup failure boundary
+        shell: powershell
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & '.\tests\installer\windows_setup_smoke.ps1' `
+            -Iscc $iscc `
+            -SetupScript 'installer/windows_setup.iss'
+
       - name: Verify published checksum
         shell: powershell
         run: |

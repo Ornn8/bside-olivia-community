@@ -4,6 +4,7 @@ param(
     [string]$Destination = (Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\install'),
     [string]$OfficialRoot = '',
     [string]$OfflineAssetsRoot = '',
+    [string]$SetupResultPath = '',
     [switch]$NonInteractive,
     [switch]$SkipShortcut,
     [ValidateRange(1, 65535)]
@@ -17,6 +18,40 @@ $runtimeExe = Join-Path $runtimeRoot 'python.exe'
 $offlineRoot = if ($OfflineAssetsRoot) { $OfflineAssetsRoot } else { Join-Path $PayloadRoot 'offline' }
 $offlineManifestPath = if ($OfflineAssetsRoot) { Join-Path $OfflineAssetsRoot 'offline-core-assets.json' } else { Join-Path $PayloadRoot 'offline\offline-core-assets.json' }
 $requirements = Join-Path $PayloadRoot 'installer\runtime-requirements.txt'
+
+function Get-SafeSetupErrorCode {
+    param([string]$Code)
+
+    if ($Code -cmatch '^[A-Z][A-Z0-9_]{3,95}$') {
+        $Code
+    } else {
+        'SETUP_INSTALL_FAILED'
+    }
+}
+
+function Write-SetupErrorResult {
+    param([string]$Code)
+
+    if (-not $SetupResultPath) { return }
+    $safeCode = Get-SafeSetupErrorCode -Code $Code
+    try {
+        $utf8NoBom = [Text.UTF8Encoding]::new($false)
+        [IO.File]::WriteAllText(
+            $SetupResultPath,
+            ('OLIVIA_SETUP_ERROR=' + $safeCode),
+            $utf8NoBom
+        )
+    } catch {
+        # The installer still receives the non-zero process code.
+    }
+}
+
+trap {
+    $safeCode = Get-SafeSetupErrorCode -Code ([string]$_.Exception.Message)
+    Write-SetupErrorResult -Code $safeCode
+    if (-not $SetupResultPath) { Write-Output $safeCode }
+    exit 2
+}
 
 function Get-Sha256 {
     param(
@@ -392,9 +427,29 @@ if ($selectedOfficial) { $arguments += @('--official-root', $selectedOfficial) }
 $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
 $bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'
-& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments)
+$installOutput = @(& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments))
 $installExitCode = $LASTEXITCODE
-if ($installExitCode -ne 0) { exit $installExitCode }
+if ($installExitCode -ne 0) {
+    $installCode = 'SETUP_INSTALL_FAILED'
+    foreach ($line in $installOutput) {
+        try {
+            $record = $line | ConvertFrom-Json
+            if (
+                $record.status -eq 'ERROR' -and
+                $record.code -is [string] -and
+                $record.code -cmatch '^[A-Z][A-Z0-9_]{3,95}$'
+            ) {
+                $installCode = $record.code
+            }
+        } catch {
+            # Ignore non-JSON child output; it must never reach the setup log.
+        }
+    }
+    Write-SetupErrorResult -Code $installCode
+    if (-not $SetupResultPath) { $installOutput | Write-Output }
+    exit $installExitCode
+}
+if (-not $SetupResultPath) { $installOutput | Write-Output }
 
 $LASTEXITCODE = 0
 

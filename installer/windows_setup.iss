@@ -40,12 +40,7 @@ var
   OfficialDirPage: TInputQueryWizardPage;
   OfficialBrowseButton: TNewButton;
   StableInstallCode: String;
-
-function IsCodeChar(const Value: Char): Boolean;
-begin
-  Result := ((Value >= 'A') and (Value <= 'Z')) or
-    ((Value >= '0') and (Value <= '9')) or (Value = '_');
-end;
+  SetupResultPath: String;
 
 procedure OfficialBrowseButtonClick(Sender: TObject);
 var
@@ -56,48 +51,38 @@ begin
     OfficialDirPage.Values[0] := Selected;
 end;
 
-function IsStableCodeCandidate(const Value: String): Boolean;
+function IsStableErrorCode(const Value: String): Boolean;
 var
   Index: Integer;
 begin
   Result := (Length(Value) >= 4) and (Length(Value) <= 96) and
-    (Pos('_', Value) > 0);
+    (Value[1] >= 'A') and (Value[1] <= 'Z') and (Pos('_', Value) > 0);
   if not Result then
     Exit;
   for Index := 1 to Length(Value) do
-    if not IsCodeChar(Value[Index]) then
+    if not (((Value[Index] >= 'A') and (Value[Index] <= 'Z')) or
+      ((Value[Index] >= '0') and (Value[Index] <= '9')) or
+      (Value[Index] = '_')) then
     begin
       Result := False;
       Exit;
     end;
 end;
 
-procedure CaptureStableInstallCode(
-  const S: String;
-  const Error, FirstLine: Boolean
-);
+function LoadStableInstallCode(const ResultPath: String): String;
 var
-  Index: Integer;
-  StartIndex: Integer;
+  Content: AnsiString;
+  Prefix: String;
   Candidate: String;
 begin
-  Index := 1;
-  while Index <= Length(S) do
+  Result := '';
+  Prefix := 'OLIVIA_SETUP_ERROR=';
+  if LoadStringFromFile(ResultPath, Content) then
   begin
-    while (Index <= Length(S)) and (not IsCodeChar(S[Index])) do
-      Index := Index + 1;
-    StartIndex := Index;
-    while (Index <= Length(S)) and IsCodeChar(S[Index]) do
-      Index := Index + 1;
-    if Index > StartIndex then
-    begin
-      Candidate := Copy(S, StartIndex, Index - StartIndex);
-      if IsStableCodeCandidate(Candidate) then
-      begin
-        StableInstallCode := Candidate;
-        Log('Olivia installer code: ' + StableInstallCode);
-      end;
-    end;
+    Candidate := Copy(String(Content), Length(Prefix) + 1, MaxInt);
+    if (Copy(String(Content), 1, Length(Prefix)) = Prefix) and
+      IsStableErrorCode(Candidate) then
+      Result := Candidate;
   end;
 end;
 
@@ -161,6 +146,8 @@ var
 begin
   Result := '';
   StableInstallCode := '';
+  SetupResultPath := ExpandConstant('{tmp}\olivia-setup-result.txt');
+  DeleteFile(SetupResultPath);
   ExitCode := -1;
   try
     ExtractTemporaryFiles('{tmp}\OliviaPayload\*');
@@ -178,21 +165,25 @@ begin
     ' -PayloadRoot ' + AddQuotes(ExpandConstant('{tmp}\OliviaPayload')) +
     ' -Destination ' + AddQuotes(InstallDirPage.Values[0]) +
     ' -OfflineAssetsRoot ' + AddQuotes(ExpandConstant('{tmp}\OliviaPayload\offline')) +
+    ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
     ' -NonInteractive';
   if Trim(OfficialDirPage.Values[0]) <> '' then
     Params := Params + ' -OfficialRoot ' + AddQuotes(OfficialDirPage.Values[0]);
 
-  if (not ExecAndLogOutput(
+  if (not Exec(
        PowerShell,
        Params,
        '',
        SW_HIDE,
        ewWaitUntilTerminated,
-       ExitCode,
-       @CaptureStableInstallCode
+       ExitCode
      )) or
      (ExitCode <> 0) then
   begin
+    StableInstallCode := LoadStableInstallCode(SetupResultPath);
+    if StableInstallCode = '' then
+      StableInstallCode := 'SETUP_INSTALL_FAILED';
+    Log('Olivia installer code: ' + StableInstallCode);
     if StableInstallCode <> '' then
       Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。'
     else

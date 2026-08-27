@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from installer.build_windows_setup import (
+    BUILD_CONTROL_FILES,
     SetupBuildError,
+    _git_tracked_files,
+    _is_release_file,
     prepare_setup_payload,
 )
 
@@ -60,7 +63,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "LICENSE").write_text("license", encoding="utf-8")
-    (source / "tracked.py").write_text("tracked", encoding="utf-8")
+    (source / "local_server.py").write_text("tracked", encoding="utf-8")
     (source / "untracked.py").write_text("untracked", encoding="utf-8")
     (source / "test_root.py").write_text("hidden", encoding="utf-8")
     (source / "requirements-ci.txt").write_text("hidden", encoding="utf-8")
@@ -76,8 +79,9 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
         lambda _source: {
             "installer/Install.ps1",
             "installer/runtime-requirements.txt",
+            *BUILD_CONTROL_FILES,
             "LICENSE",
-            "tracked.py",
+            "local_server.py",
             "test_root.py",
             "requirements-ci.txt",
             "pyproject.toml",
@@ -94,7 +98,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
 
     assert (destination / "installer" / "Install.ps1").read_text() == "install"
     assert (destination / "LICENSE").is_file()
-    assert (destination / "tracked.py").is_file()
+    assert (destination / "local_server.py").is_file()
     assert (destination / "offline" / "offline-core-assets.json").is_file()
     assert not (destination / "untracked.py").exists()
     assert not (destination / "tests").exists()
@@ -115,19 +119,84 @@ def test_prepare_setup_payload_rejects_dirty_tracked_release_file(
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
-    (source / "tracked.py").write_text("dirty", encoding="utf-8")
+    (source / "local_server.py").write_text("dirty", encoding="utf-8")
     _offline_fixture(offline, requirements)
     monkeypatch.setattr(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
             "installer/runtime-requirements.txt",
-            "tracked.py",
+            *BUILD_CONTROL_FILES,
+            "local_server.py",
         },
     )
     monkeypatch.setattr(
         "installer.build_windows_setup._git_dirty_files",
-        lambda _source: {"tracked.py"},
+        lambda _source: {"local_server.py"},
+    )
+
+    with pytest.raises(SetupBuildError, match="SETUP_SOURCE_DIRTY"):
+        prepare_setup_payload(source, offline, tmp_path / "payload", validate_schema=False)
+
+
+def test_setup_payload_uses_positive_runtime_allowlist() -> None:
+    assert _is_release_file("local_server.py")
+    assert _is_release_file("control_center/static/index.html")
+    assert _is_release_file("installer/full_patch.py")
+    assert _is_release_file("tools/livetalking_worker.py")
+
+    assert not _is_release_file(".gitignore")
+    assert not _is_release_file("baseline_hardening_scan.py")
+    assert not _is_release_file("installer/build_offline_core_assets.py")
+    assert not _is_release_file("tools/verify_b11_scope.py")
+    assert not _is_release_file("tools/live_e2e_acceptance.py")
+
+
+def test_real_head_setup_payload_excludes_build_audit_test_and_scm_files() -> None:
+    selected = {
+        relative
+        for relative in _git_tracked_files(ROOT)
+        if _is_release_file(relative)
+    }
+
+    assert {
+        "installer/Install.ps1",
+        "installer/full_patch.py",
+        "local_server.py",
+        "control_center/static/index.html",
+    }.issubset(selected)
+    assert not any(
+        relative.startswith((".", "docs/", "tests/"))
+        or relative.startswith("tools/verify_")
+        or "/audit_" in relative
+        or "acceptance" in relative
+        or relative.startswith("installer/build_")
+        for relative in selected
+    )
+
+
+def test_prepare_setup_payload_rejects_dirty_setup_build_control_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    offline = tmp_path / "offline"
+    (source / "installer").mkdir(parents=True)
+    requirements = b"locked requirements"
+    (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
+    (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    _offline_fixture(offline, requirements)
+    monkeypatch.setattr(
+        "installer.build_windows_setup._git_tracked_files",
+        lambda _source: {
+            "installer/Install.ps1",
+            "installer/runtime-requirements.txt",
+            *BUILD_CONTROL_FILES,
+        },
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup._git_dirty_files",
+        lambda _source: {"installer/windows_setup.iss"},
     )
 
     with pytest.raises(SetupBuildError, match="SETUP_SOURCE_DIRTY"):
@@ -151,6 +220,7 @@ def test_prepare_setup_payload_rejects_tampered_offline_assets(
         lambda _source: {
             "installer/Install.ps1",
             "installer/runtime-requirements.txt",
+            *BUILD_CONTROL_FILES,
         },
     )
     monkeypatch.setattr(
@@ -201,8 +271,11 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "Install.ps1" in script
     assert "-NonInteractive" in script
     assert "GetInstallRoot" in script
-    assert "ExecAndLogOutput" in script
+    assert "Exec(" in script
+    assert "ExecAndLogOutput" not in script
     assert "StableInstallCode" in script
+    assert "SetupResultPath" in script
+    assert "OLIVIA_SETUP_ERROR=" in script
     assert "function PrepareToInstall" in script
     assert "dontcopy noencryption" in script
     assert "OfficialDirPage: TInputQueryWizardPage" in script
@@ -217,6 +290,9 @@ def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() 
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
     assert "[switch]$NonInteractive" in script
+    assert "[string]$SetupResultPath" in script
+    assert "OLIVIA_SETUP_ERROR=" in script
+    assert "SETUP_INSTALL_FAILED" in script
     assert "if (-not $selectedOfficial -and -not $NonInteractive)" in script
     assert "Invoke-WebRequest" not in script
     assert "provision_mem0_embedding.py" not in script
@@ -238,6 +314,7 @@ def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     assert "is-6_7_1/Files/Languages/Unofficial/ChineseSimplified.isl" in workflow
     assert "7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278" in workflow
     assert "Olivia-Setup-x64.exe.sha256" in workflow
+    assert "windows_setup_smoke.ps1" in workflow
     assert "actions/upload-artifact@v4" in workflow
 
 

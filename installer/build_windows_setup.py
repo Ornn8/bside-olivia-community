@@ -16,16 +16,120 @@ from pathlib import Path, PurePosixPath
 
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
-EXCLUDED_PREFIXES = (".github/", "docs/", "tests/")
-EXCLUDED_RELEASE_FILES = {
-    "pyproject.toml",
-    "pytest.ini",
-    "requirements-ci.txt",
-    "requirements-dev.txt",
-    "requirements.txt",
+BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
     "installer/setup-build-requirements.txt",
     "installer/windows_setup.iss",
+}
+RELEASE_PREFIXES = (
+    "asr/",
+    "control_center/",
+    "contracts/",
+    "linli_character/",
+    "live/",
+    "media_state/",
+    "runtime/",
+    "tts/",
+    "visual_driver/",
+)
+RELEASE_ROOT_FILES = {
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "companion_memory_context.py",
+    "conversation_memory_admin.py",
+    "conversation_memory_delivery.py",
+    "conversation_memory_outbox.py",
+    "conversation_memory_port.py",
+    "conversation_memory_runtime.py",
+    "http_contract.py",
+    "latentsync_reply.py",
+    "letter_status.py",
+    "letter_triage.py",
+    "llm_config.example.json",
+    "llm_gateway.py",
+    "local_memory.py",
+    "local_server.py",
+    "mem0_embedding_install.py",
+    "mem0_memory.py",
+    "memory.py",
+    "memory_isolation_case01.py",
+    "memory_port.py",
+    "memory_prompt.py",
+    "music_reply.py",
+    "original_client_companion_api.py",
+    "original_client_companion_backend.py",
+    "original_client_companion_mutation_api.py",
+    "original_client_companion_mutation_backend.py",
+    "original_client_letter_contract.py",
+    "original_client_media_http.py",
+    "original_client_server.py",
+    "original_client_settings_ui.py",
+    "patch_companion_settings.py",
+    "patch_feapp.py",
+    "patch_webplayer.py",
+    "persona_assembly.py",
+    "persona_loader.py",
+    "persona_provider.py",
+    "private_world_admin.py",
+    "private_world_candidate.py",
+    "private_world_candidates.py",
+    "private_world_commands.py",
+    "private_world_ledger.py",
+    "private_world_port.py",
+    "private_world_reducer.py",
+    "private_world_service.py",
+    "reply_context.py",
+    "reply_delivery.py",
+    "reply_media.py",
+    "reply_model_quality.py",
+    "reply_orchestrator.py",
+    "reply_pipeline.py",
+    "reply_reviewer.py",
+    "song_content.py",
+    "version.json",
+    "video_reply_settings.py",
+    "voice_direction.py",
+}
+RELEASE_INSTALLER_FILES = {
+    "installer/__init__.py",
+    "installer/__main__.py",
+    "installer/bootstrap_install.py",
+    "installer/component_update.py",
+    "installer/configure.py",
+    "installer/Create-Shortcut.ps1",
+    "installer/full_patch.py",
+    "installer/full-patch-manifest.json",
+    "installer/Install.ps1",
+    "installer/mem0-runtime-requirements.txt",
+    "installer/provision_mem0_embedding.py",
+    "installer/runtime-requirements.txt",
+    "installer/start_local.py",
+    "installer/uninstall.py",
+    "installer/uninstall_safety.py",
+    "installer/verify_mem0_runtime.py",
+    "installer/version_launcher.py",
+}
+RELEASE_TOOL_FILES = {
+    "tools/asr_healthcheck.py",
+    "tools/asr_manage.py",
+    "tools/asset_manifest.py",
+    "tools/b05_native_http_snapshot.patch",
+    "tools/B10A_cli.py",
+    "tools/B10B_cli.py",
+    "tools/download_third_party.py",
+    "tools/healthcheck.py",
+    "tools/Install-ThirdParty.ps1",
+    "tools/live_b10b.py",
+    "tools/live_healthcheck.py",
+    "tools/livetalking_runtime.py",
+    "tools/livetalking_worker.py",
+    "tools/memory_import.py",
+    "tools/minimax_music3_worker.py",
+    "tools/minimax_profile.py",
+    "tools/music_renderer.py",
+    "tools/tts_cli.py",
 }
 REQUIRED_PAYLOAD_FILES = {
     "installer/Install.ps1",
@@ -96,13 +200,11 @@ def _git_dirty_files(source: Path) -> set[str]:
 
 
 def _is_release_file(relative: str) -> bool:
-    if relative.startswith(EXCLUDED_PREFIXES) or relative in EXCLUDED_RELEASE_FILES:
-        return False
-    path = PurePosixPath(relative)
-    return not (
-        len(path.parts) == 1
-        and path.name.startswith("test_")
-        and path.suffix.lower() == ".py"
+    return (
+        relative in RELEASE_ROOT_FILES
+        or relative in RELEASE_INSTALLER_FILES
+        or relative in RELEASE_TOOL_FILES
+        or relative.startswith(RELEASE_PREFIXES)
     )
 
 
@@ -222,7 +324,10 @@ def prepare_setup_payload(
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
     selected = sorted(relative for relative in tracked if _is_release_file(relative))
-    if set(selected) & _git_dirty_files(source):
+    build_inputs = set(selected) | BUILD_CONTROL_FILES
+    if not build_inputs.issubset(tracked):
+        raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
+    if build_inputs & _git_dirty_files(source):
         raise SetupBuildError("SETUP_SOURCE_DIRTY")
     staging = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
     try:
