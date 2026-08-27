@@ -28,6 +28,13 @@ REQUIREMENTS = Path(__file__).parents[2] / "installer" / "mem0-runtime-requireme
 CONTRACTS = Path(__file__).parents[2] / "contracts"
 
 
+def _managed_model(tmp_path: Path, bom) -> ManagedEmbeddingModel:
+    return ManagedEmbeddingModel(
+        data_root=tmp_path / "data", install_root=tmp_path / "install", bom=bom.model,
+        download_root=tmp_path / "install" / "downloads" / "mem0-model",
+    )
+
+
 def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
     bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
 
@@ -219,6 +226,36 @@ def test_model_download_discards_partial_when_falling_back_to_another_source(
 
     assert observed[1][1] is None
     assert (tmp_path / "stage" / "weights.bin").read_bytes() == trusted
+
+
+def test_model_download_restores_transport_source_from_verified_complete_cache(
+    tmp_path: Path,
+) -> None:
+    trusted = b"trusted model bytes"
+    artifact = ModelArtifact(len(trusted), hashlib.sha256(trusted).hexdigest())
+    cached = tmp_path / "downloads" / "weights.bin"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(trusted)
+    cached.with_name(cached.name + ".source").write_text(
+        "https://official.example", encoding="utf-8"
+    )
+    downloader = ResumableModelDownloader(
+        repo_id="owner/model",
+        revision="a" * 40,
+        files={"weights.bin": artifact},
+        sources=("https://mirror.example", "https://official.example"),
+        download_root=tmp_path / "downloads",
+        source_mode="auto",
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+        opener=lambda *_args, **_kwargs: pytest.fail("network must not be used"),
+    )
+    downloader.download(
+        revision="a" * 40,
+        relative_path="weights.bin",
+        destination=tmp_path / "stage" / "weights.bin",
+    )
+    assert downloader.last_source == "https://official.example"
 
 
 class _Layer:
@@ -565,12 +602,7 @@ def test_managed_embedding_uninstall_removes_model_and_transport_cache(
     tmp_path: Path,
 ) -> None:
     bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
-    layer = ManagedEmbeddingModel(
-        data_root=tmp_path / "data",
-        install_root=tmp_path / "install",
-        bom=bom.model,
-        download_root=tmp_path / "install" / "downloads" / "mem0-model",
-    )
+    layer = _managed_model(tmp_path, bom)
     layer.config.embedding_snapshot.mkdir(parents=True)
     manifest = layer.config.model_cache / "olivia-mem0-embedding-manifest.json"
     manifest.write_text(
@@ -601,12 +633,7 @@ def test_managed_embedding_keeps_canonical_manifest_and_persists_source_separate
     monkeypatch,
 ) -> None:
     bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
-    layer = ManagedEmbeddingModel(
-        data_root=tmp_path / "data",
-        install_root=tmp_path / "install",
-        bom=bom.model,
-        download_root=tmp_path / "install" / "downloads" / "mem0-model",
-    )
+    layer = _managed_model(tmp_path, bom)
     expected = {name: item.sha256 for name, item in bom.model.files.items()}
 
     def verified(config) -> bool:
@@ -662,18 +689,47 @@ def test_managed_embedding_keeps_canonical_manifest_and_persists_source_separate
     assert layer.last_source == bom.model.sources[0]
 
 
+def test_managed_embedding_ready_binds_canonical_manifest_to_capability_bom(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
+    layer = _managed_model(tmp_path, bom)
+    manifest = layer.config.model_cache / "olivia-mem0-embedding-manifest.json"
+    manifest.parent.mkdir(parents=True)
+    files = {name: item.sha256 for name, item in bom.model.files.items()}
+    files["model.safetensors"] = "0" * 64
+    manifest.write_text(
+        json.dumps({"model": bom.model.repo_id, "revision": bom.model.revision, "files": files}),
+        encoding="utf-8",
+    )
+    layer._write_source(bom.model.sources[0])
+    monkeypatch.setattr(mem0_memory, "verified_embedding_cache", lambda _config: True)
+
+    assert layer.ready() is False
+
+
 def test_managed_embedding_migrates_verified_cache_without_source_to_owned_marker(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
-    layer = ManagedEmbeddingModel(
-        data_root=tmp_path / "data",
-        install_root=tmp_path / "install",
-        bom=bom.model,
-        download_root=tmp_path / "install" / "downloads" / "mem0-model",
-    )
+    layer = _managed_model(tmp_path, bom)
     monkeypatch.setattr(mem0_memory, "verified_embedding_cache", lambda _config: True)
+    manifest = layer.config.model_cache / "olivia-mem0-embedding-manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "model": bom.model.repo_id,
+                "revision": bom.model.revision,
+                "files": {
+                    name: item.sha256 for name, item in bom.model.files.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     class ExistingCacheInstaller:
         def __init__(self, _config, *, downloader, expected_hashes) -> None:
@@ -698,6 +754,61 @@ def test_managed_embedding_migrates_verified_cache_without_source_to_owned_marke
 
     assert layer.ready() is True
     assert layer.last_source == "verified-existing-cache"
+
+
+def test_managed_embedding_marks_download_root_before_installer_can_fail(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
+    layer = _managed_model(tmp_path, bom)
+    class FailingInstaller:
+        def __init__(self, _config, *, downloader, expected_hashes) -> None:
+            self.downloader = downloader
+            assert expected_hashes == {
+                name: item.sha256 for name, item in bom.model.files.items()
+            }
+
+        def install(self):
+            owner = self.downloader.download_root / ".olivia-mem0-downloads.json"
+            assert owner.is_file()
+            (self.downloader.download_root / "model.safetensors.part").write_bytes(b"partial")
+            return SimpleNamespace(status="REJECTED", reason_code="SYNTHETIC_FAILURE")
+
+    monkeypatch.setattr(mem0_embedding_install, "Mem0EmbeddingInstaller", FailingInstaller)
+
+    with pytest.raises(RuntimeError, match="SYNTHETIC_FAILURE"):
+        layer.install(
+            source_mode="auto",
+            offline_root=None,
+            pause_requested=threading.Event(),
+            progress=lambda *_args: None,
+        )
+    layer.uninstall()
+    assert not layer.download_root.exists()
+
+
+def test_capability_migrates_verified_model_before_download_space_preflight() -> None:
+    class MigratingLayer(_Layer):
+        def migrate_verified_cache(self) -> bool:
+            self.is_ready = True
+            self.last_source = "verified-existing-cache"
+            return True
+
+    runtime = _Layer(ready=True)
+    model = MigratingLayer()
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime,
+        model=model,
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+        space_checks=((lambda: 0, 100),),
+    )
+
+    assert installer.install(source_mode="auto") == "NOOP"
+    assert installer.status().state is CapabilityState.READY
 
 
 def test_capability_rejects_start_before_thread_when_disk_space_is_low() -> None:

@@ -348,6 +348,12 @@ class ResumableModelDownloader:
         self.completed_bytes = 0
         self._completed: set[str] = set()
         self.last_source: str | None = None
+        self._source_history: list[str] = []
+
+    def _record_source(self, source: str) -> None:
+        if source not in self._source_history:
+            self._source_history.append(source)
+        self.last_source = ";".join(self._source_history)
 
     def download(
         self,
@@ -360,6 +366,7 @@ class ResumableModelDownloader:
             raise RuntimeError("MEM0_EMBEDDING_IDENTITY_MISMATCH")
         artifact = self.files[relative_path]
         cached = self.download_root.joinpath(*relative_path.split("/"))
+        cached_source = cached.with_name(cached.name + ".source")
         partial = cached.with_suffix(cached.suffix + ".part")
         partial_source = partial.with_name(partial.name + ".source")
         cached.parent.mkdir(parents=True, exist_ok=True)
@@ -395,6 +402,16 @@ class ResumableModelDownloader:
                 raise RuntimeError("MEM0_MODEL_DOWNLOAD_FAILED") from last_error
             partial.replace(cached)
             partial_source.unlink(missing_ok=True)
+            cached_source.write_text(str(self.last_source), encoding="utf-8")
+            self._record_source(str(self.last_source))
+        else:
+            try:
+                source = cached_source.read_text(encoding="utf-8")
+            except OSError:
+                source = "verified-legacy-download-cache"
+            self._record_source(
+                source if source in self.sources else "verified-legacy-download-cache"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(cached, destination)
         if relative_path not in self._completed:
@@ -790,16 +807,36 @@ class ManagedEmbeddingModel:
             return None
         if not isinstance(payload, dict):
             return None
-        accepted = {*self.bom.sources, "verified-existing-cache", "verified-download-cache"}
+        accepted = {
+            *self.bom.sources,
+            "verified-existing-cache",
+            "verified-download-cache",
+            "verified-legacy-download-cache",
+        }
         source = payload.get("source")
         if (
             set(payload) != {"repo_id", "revision", "source"}
             or payload.get("repo_id") != self.bom.repo_id
             or payload.get("revision") != self.bom.revision
-            or source not in accepted
+            or not isinstance(source, str)
+            or not source
+            or any(value not in accepted for value in source.split(";"))
         ):
             return None
         return str(source)
+
+    def _bom_cache_ready(self) -> bool:
+        from mem0_memory import verified_embedding_cache
+
+        if not verified_embedding_cache(self.config):
+            return False
+        manifest_path = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        expected = {name: artifact.sha256 for name, artifact in self.bom.files.items()}
+        return manifest.get("files") == expected
 
     def _write_source(self, source: str) -> None:
         self._source_marker.parent.mkdir(parents=True, exist_ok=True)
@@ -818,15 +855,71 @@ class ManagedEmbeddingModel:
         temporary.replace(self._source_marker)
 
     def ready(self) -> bool:
-        from mem0_memory import verified_embedding_cache
-
-        if not verified_embedding_cache(self.config):
+        if not self._bom_cache_ready():
             return False
         source = self._read_source()
         if source is None:
             return False
         self.last_source = source
         return True
+
+    def migrate_verified_cache(self) -> bool:
+        if self.ready():
+            return True
+        if not self._bom_cache_ready():
+            return False
+        self.last_source = "verified-existing-cache"
+        self._write_source(self.last_source)
+        return self.ready()
+
+    def _ensure_download_ownership(self) -> None:
+        self.install_root.mkdir(parents=True, exist_ok=True)
+        safe_managed_target(
+            self.install_owner_root,
+            self.download_root.relative_to(self.install_root).as_posix(),
+        )
+        owner = self.download_root / ".olivia-mem0-downloads.json"
+        expected_owner = {"repo_id": self.bom.repo_id, "revision": self.bom.revision}
+        if owner.is_file():
+            try:
+                if json.loads(owner.read_text(encoding="utf-8")) != expected_owner:
+                    raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID") from exc
+            return
+        allowed: set[str] = set()
+        for relative_path in self.bom.files:
+            allowed.update(
+                {
+                    relative_path,
+                    relative_path + ".source",
+                    relative_path + ".part",
+                    relative_path + ".part.source",
+                }
+            )
+        allowed_directories = {
+            parent.as_posix()
+            for name in allowed
+            for parent in Path(name).parents
+            if parent != Path(".")
+        }
+        if self.download_root.exists():
+            for candidate in self.download_root.rglob("*"):
+                relative = candidate.relative_to(self.download_root).as_posix()
+                safe_managed_target(self.download_root, relative)
+                if (
+                    candidate.is_file()
+                    and relative not in allowed
+                    or candidate.is_dir()
+                    and relative not in allowed_directories
+                    or not candidate.is_file()
+                    and not candidate.is_dir()
+                ):
+                    raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
+        self.download_root.mkdir(parents=True, exist_ok=True)
+        temporary = owner.with_suffix(".tmp")
+        temporary.write_text(json.dumps(expected_owner, sort_keys=True), encoding="utf-8")
+        temporary.replace(owner)
 
     def install(
         self,
@@ -842,10 +935,9 @@ class ManagedEmbeddingModel:
             return
         if offline_root is not None:
             raise ValueError("offline capability packs are not enabled")
-        from mem0_memory import verified_embedding_cache
-
-        cache_was_verified = verified_embedding_cache(self.config)
+        cache_was_verified = self._bom_cache_ready()
         previous_source = self._read_source()
+        self._ensure_download_ownership()
         downloader: ResumableModelDownloader
 
         def report(downloaded: int, total: int, current: str) -> None:
@@ -869,9 +961,7 @@ class ManagedEmbeddingModel:
                 name: artifact.sha256 for name, artifact in self.bom.files.items()
             },
         ).install()
-        if result.status not in {"APPLIED", "NOOP"} or not verified_embedding_cache(
-            self.config
-        ):
+        if result.status not in {"APPLIED", "NOOP"} or not self._bom_cache_ready():
             if pause_requested.is_set():
                 raise _DownloadPaused
             raise RuntimeError(result.reason_code or "MEM0_MODEL_INSTALL_FAILED")
@@ -881,12 +971,6 @@ class ManagedEmbeddingModel:
             or ("verified-existing-cache" if cache_was_verified else "verified-download-cache")
         )
         self._write_source(self.last_source)
-        owner = self.download_root / ".olivia-mem0-downloads.json"
-        owner.parent.mkdir(parents=True, exist_ok=True)
-        owner.write_text(
-            json.dumps({"repo_id": self.bom.repo_id, "revision": self.bom.revision}),
-            encoding="utf-8",
-        )
         if not self.ready():
             raise RuntimeError("MEM0_MODEL_INSTALL_FAILED")
 
@@ -894,13 +978,15 @@ class ManagedEmbeddingModel:
         snapshot = self.config.embedding_snapshot
         manifest = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
         download_marker = self.download_root / ".olivia-mem0-downloads.json"
-        safe_managed_target(
-            self.data_owner_root, snapshot.relative_to(self.data_root).as_posix()
-        )
-        safe_managed_target(
-            self.install_owner_root,
-            self.download_root.relative_to(self.install_root).as_posix(),
-        )
+        if snapshot.exists() or manifest.exists() or self._source_marker.exists():
+            safe_managed_target(
+                self.data_owner_root, snapshot.relative_to(self.data_root).as_posix()
+            )
+        if self.download_root.exists():
+            safe_managed_target(
+                self.install_owner_root,
+                self.download_root.relative_to(self.install_root).as_posix(),
+            )
         expected = {name: item.sha256 for name, item in self.bom.files.items()}
         if snapshot.exists() and json.loads(manifest.read_text(encoding="utf-8")).get(
             "files"
@@ -1092,6 +1178,14 @@ class Mem0CapabilityInstaller:
         except OSError:
             return False
 
+    def _ready_after_migration(self) -> bool:
+        if not self.runtime.ready():
+            return False
+        if self.model.ready():
+            return True
+        migrate = getattr(self.model, "migrate_verified_cache", None)
+        return bool(callable(migrate) and migrate())
+
     def _progress(self, phase: str, layer: CapabilityLayer, source: str) -> Progress:
         def update(downloaded: int, total: int, current: str) -> None:
             ratio = 0 if total <= 0 else min(1.0, downloaded / total)
@@ -1116,6 +1210,15 @@ class Mem0CapabilityInstaller:
     ) -> str:
         if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
+        if self._ready_after_migration():
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.READY,
+                    "complete",
+                    self.total,
+                    source=self._actual_source(source_mode),
+                )
+            return "NOOP"
         if not self._has_space():
             with self._lock:
                 self._status = self._new_status(
@@ -1127,8 +1230,6 @@ class Mem0CapabilityInstaller:
                 )
             return "REJECTED"
         with self._lock:
-            if self.runtime.ready() and self.model.ready():
-                return "NOOP"
             if self._pause.is_set():
                 self._status = self._new_status(
                     CapabilityState.PAUSED, "queued", 0, source=source_mode
@@ -1206,7 +1307,7 @@ class Mem0CapabilityInstaller:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return "NOOP"
-            if self.runtime.ready() and self.model.ready():
+            if self._ready_after_migration():
                 return "NOOP"
             if not self._has_space():
                 self._status = self._new_status(
