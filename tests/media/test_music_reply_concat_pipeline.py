@@ -7,7 +7,7 @@ import pytest
 
 import music_reply
 from runtime.media.music_caption import render_minimax_caption
-from song_content import (
+from runtime.media.song_content import (
     PianoTexture,
     SongContentPlan,
     SongDynamicArc,

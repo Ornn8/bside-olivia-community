@@ -12,7 +12,7 @@
 - 歌词与来信、canonical reply 和林离人格一致；
 - 音乐生成失败时不影响已经完成并持久化的 canonical text。
 
-本工作包只重构 `song_content.py -> MiniMax Music 3` 的内容规划、正向 Caption、参数基线、实验与音频验收。现有说话视频、RoFormer、LatentSync、转场和 FFmpeg 拼接链不在本工作包中重新设计，但必须做回归验证。
+本工作包只重构 `runtime/media/song_content.py -> MiniMax Music 3` 的内容规划、正向 Caption、参数基线、实验与音频验收。现有说话视频、RoFormer、LatentSync、转场和 FFmpeg 拼接链不在本工作包中重新设计，但必须做回归验证。
 
 ## 2. 上游依据与证据优先级
 
@@ -58,7 +58,7 @@ avoid soul
 
 ### 3.2 自由 Caption 权限过大
 
-当前 `song_content.py` 让文本模型自由生成完整 Caption，只检查少量必需字段。模型可以在保留钢琴、女声、普通话等词的同时加入额外配器、groove、背景和声或宽泛风格标签，仍然通过验证。
+当前 `runtime/media/song_content.py` 让文本模型自由生成完整 Caption，只检查少量必需字段。模型可以在保留钢琴、女声、普通话等词的同时加入额外配器、groove、背景和声或宽泛风格标签，仍然通过验证。
 
 ### 3.3 风格词会带入训练先验
 
@@ -214,7 +214,7 @@ complete, quiet piano cadence.
 ## 5. 目标代码结构
 
 ```text
-song_content.py
+runtime/media/song_content.py
   ├─ SongSemanticPlan
   ├─ 受限 LLM JSON 生成
   ├─ 枚举、歌词与标签验证
@@ -386,7 +386,7 @@ canonical reply
 LLM -> SongSemanticPlan -> 程序 Caption -> MiniMax
 ```
 
-同步更新 `song_content.py`、`music_reply.py` 和媒体边界测试。
+同步更新 `runtime/media/song_content.py`、`music_reply.py` 和媒体边界测试。
 
 ### MUSIC-04：Worker 清理与官方参数入口
 

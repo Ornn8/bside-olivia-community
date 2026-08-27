@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import latentsync_reply
+from runtime.media import latentsync_reply
 import tts.delivery as tts_delivery
 from letter_triage import (
     LetterReplyRouter,

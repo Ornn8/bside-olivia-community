@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from song_content import (
+from runtime.media.song_content import (
     PianoTexture,
     SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
     SongDynamicArc,
