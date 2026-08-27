@@ -269,6 +269,8 @@ def render_reply_video(
     voice_performance_plan: VoicePerformancePlan | None = None,
     enforce_content_gate: bool = False,
     environment: Mapping[str, str] | None = None,
+    ffmpeg_path: Path | None = None,
+    provider_cache_root: Path | None = None,
 ) -> dict[str, object]:
     if scene_path is not None and (
         latentsync_python_path is None
@@ -346,8 +348,11 @@ def render_reply_video(
                     scene_path,
                     audio_path,
                     output_path,
-                    python_path=latentsync_python_path,
-                    latentsync_root=latentsync_root,
+                python_path=latentsync_python_path,
+                latentsync_root=latentsync_root,
+                environment=environment,
+                ffmpeg_path=ffmpeg_path,
+                provider_cache_root=provider_cache_root,
                 )
             except LatentSyncReplyError as exc:
                 raise ReplyMediaError(str(exc)) from exc

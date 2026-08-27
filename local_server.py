@@ -17,7 +17,8 @@ import hashlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 from aiohttp import web
 
@@ -508,8 +509,11 @@ class Store:
 store = Store()
 
 
-def _local_data_root() -> Path | None:
-    configured = configured_media_path(_os.environ, "OLIVIA_LOCAL_DATA_ROOT")
+def _local_data_root(environment: Mapping[str, str] | None = None) -> Path | None:
+    configured = configured_media_path(
+        _os.environ if environment is None else environment,
+        "OLIVIA_LOCAL_DATA_ROOT",
+    )
     return configured.resolve(strict=False) if configured is not None else None
 
 
@@ -2035,7 +2039,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     async with media_semaphore:
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
-        data_root = _local_data_root()
+        environment = MappingProxyType(dict(_os.environ))
+        data_root = _local_data_root(environment)
         output_dir = data_root / "media" if data_root is not None else None
         if output_dir is None:
             letter["media_status"] = "UNAVAILABLE"
@@ -2047,8 +2052,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             def runtime_path(name: str) -> Path:
-                configured = configured_media_path(_os.environ, name)
-                if configured is None and _os.environ.get(name, "").strip():
+                configured = configured_media_path(environment, name)
+                if configured is None and environment.get(name, "").strip():
                     raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
                 return configured if configured is not None else Path()
 
@@ -2058,7 +2063,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             if reply_mode == "musical_video":
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
-                performance_scene = _current_music_performance(_os.environ)
+                performance_scene = _current_music_performance(environment)
                 if performance_scene is None or not performance_scene.is_file():
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 await asyncio.to_thread(render_musical_reply,
@@ -2070,7 +2075,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                         f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
                     ),
                     official_reply_reference_path=select_speaking_scene(
-                        speaking_scene_candidates(_os.environ)
+                        speaking_scene_candidates(environment)
                     ) or Path(),
                     tts_config_path=tts_config,
                     visual_config_path=visual_config,
@@ -2078,6 +2083,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
                     voice_performance_plan=voice_plan,
+                    environment=environment,
                 )
             else:
                 voice_plan = await _voice_plan_for_letter(letter, reply_text)
@@ -2086,7 +2092,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 hour = datetime.now().hour
                 scene_key = "morning" if 5 <= hour < 10 else "day" if 10 <= hour < 17 else "dusk" if 17 <= hour < 20 else "night"
                 normal_scene = configured_media_path(
-                    _os.environ, f"OLIVIA_SCENE_{scene_key.upper()}"
+                    environment, f"OLIVIA_SCENE_{scene_key.upper()}"
                 )
                 if normal_scene is None or not normal_scene.is_file():
                     raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
@@ -2104,6 +2110,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     adaptive_delivery=True,
                     voice_performance_plan=voice_plan,
                     enforce_content_gate=True,
+                    environment=environment,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"

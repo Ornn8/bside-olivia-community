@@ -284,6 +284,8 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root = tmp_path / "project"
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
 
     def write(path: Path, payload: bytes) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +294,7 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
 
     transition = write(project_root / "scenes" / "transition.mp4", b"transition")
     performance = write(project_root / "scenes" / "performance.mp4", b"performance")
+    ffmpeg = write(project_root / "tools" / "ffmpeg.exe", b"ffmpeg")
     environment = {
         "OLIVIA_PROJECT_ROOT": str(project_root),
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/transition.mp4",
@@ -303,9 +306,12 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
         "OLIVIA_ROFORMER_CONFIG_PATH": "providers/roformer/config.yaml",
         "OLIVIA_LATENTSYNC_PYTHON": "providers/latentsync/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "providers/latentsync/root",
+        "OLIVIA_FFMPEG_EXE": "tools/ffmpeg.exe",
+        "OLIVIA_PROVIDER_CACHE_ROOT": "provider-cache",
     }
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.chdir(unrelated_cwd)
     observed: dict[str, object] = {}
     output = tmp_path / "output.mp4"
 
@@ -322,7 +328,7 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda _reference, destination: write(Path(destination), b"spoken-base"),
+        lambda _reference, destination, **_kwargs: write(Path(destination), b"spoken-base"),
     )
 
     def fake_spoken(_text, destination, **kwargs):
@@ -359,6 +365,9 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
             kwargs["latentsync_python_path"],
             kwargs["latentsync_root"],
         )
+        observed["face_ffmpeg"] = kwargs.get("ffmpeg_path")
+        observed["face_cache"] = kwargs.get("provider_cache_root")
+        observed["face_environment"] = kwargs.get("environment")
         write(Path(destination), b"face")
         return {"performance_stage": "completed"}
 
@@ -397,6 +406,9 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
         project_root / "providers/latentsync/python.exe",
         project_root / "providers/latentsync/root",
     )
+    assert observed["face_ffmpeg"] == ffmpeg
+    assert observed["face_cache"] == project_root / "provider-cache"
+    assert observed["face_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
     assert observed["tts_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
     assert observed["roformer_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
     assert output.read_bytes() == b"final"
@@ -414,7 +426,7 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
     monkeypatch.setenv("OLIVIA_ROFORMER_EXE", str(executable))
     monkeypatch.setenv("OLIVIA_ROFORMER_MODEL_PATH", str(model))
     monkeypatch.setenv("OLIVIA_ROFORMER_CONFIG_PATH", str(config))
-    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
     observed = []
 
     def fake_run(command, error_code, *, timeout=900.0, env=None):
@@ -888,6 +900,7 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
     monkeypatch.chdir(unrelated_cwd)
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
     monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(ffmpeg))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", "provider-cache")
     monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", "assets/reference.mp4")
     for name, path in provider_paths.items():
         monkeypatch.setenv(name, path.relative_to(project_root).as_posix())
@@ -917,18 +930,18 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
         Path(output).write_bytes(b"normal-video")
         return {}
 
-    def fake_latentsync(_source, _audio, output, *, python_path, latentsync_root):
+    def fake_latentsync(_source, _audio, output, *, python_path, latentsync_root, **_kwargs):
         observed["latentsync_paths"] = (python_path, latentsync_root)
         Path(output).write_bytes(b"face-video")
         return {}
 
-    def fake_prepare(_reference, destination):
+    def fake_prepare(_reference, destination, **_kwargs):
         Path(destination).write_bytes(b"spoken-base")
         return destination
 
     monkeypatch.setattr(music_reply, "MiniMaxMusic3Worker", FakeMiniMaxWorker)
     monkeypatch.setattr(music_reply, "_run", fake_run)
-    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: str(ffmpeg))
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: str(ffmpeg))
     monkeypatch.setattr(music_reply, "render_reply_video", fake_render_reply)
     monkeypatch.setattr(music_reply, "render_latentsync_video", fake_latentsync)
     monkeypatch.setattr(music_reply, "prepare_official_spoken_base", fake_prepare)

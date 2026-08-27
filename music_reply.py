@@ -54,10 +54,14 @@ class MusicProviderPathSnapshot:
     roformer_config: Path | None
     latentsync_python: Path | None
     latentsync_root: Path | None
+    ffmpeg_executable: Path | None
+    provider_cache_root: Path | None
 
 
-def _music_provider_path_snapshot() -> MusicProviderPathSnapshot:
-    environment = MappingProxyType(dict(os.environ))
+def _music_provider_path_snapshot(
+    environment: Mapping[str, str] | None = None,
+) -> MusicProviderPathSnapshot:
+    environment = MappingProxyType(dict(os.environ if environment is None else environment))
     return MusicProviderPathSnapshot(
         environment=environment,
         minimax_python=configured_media_path(environment, "OLIVIA_MINIMAX_COMFY_PYTHON"),
@@ -68,6 +72,8 @@ def _music_provider_path_snapshot() -> MusicProviderPathSnapshot:
         roformer_config=configured_media_path(environment, "OLIVIA_ROFORMER_CONFIG_PATH"),
         latentsync_python=configured_media_path(environment, "OLIVIA_LATENTSYNC_PYTHON"),
         latentsync_root=configured_media_path(environment, "OLIVIA_LATENTSYNC_ROOT"),
+        ffmpeg_executable=configured_media_path(environment, "OLIVIA_FFMPEG_EXE"),
+        provider_cache_root=configured_media_path(environment, "OLIVIA_PROVIDER_CACHE_ROOT"),
     )
 
 
@@ -371,8 +377,12 @@ class AceStepClient:
         raise MusicReplyError("ACESTEP_TIMEOUT")
 
 
-def _ffmpeg() -> str:
+def _ffmpeg(ffmpeg_path: Path | None = None) -> str:
     try:
+        if ffmpeg_path is not None:
+            if not ffmpeg_path.is_absolute() or not ffmpeg_path.is_file():
+                raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+            return str(ffmpeg_path)
         return str(resolve_ffmpeg_executable())
     except LatentSyncReplyError as exc:
         raise MusicReplyError("FFMPEG_UNAVAILABLE") from exc
@@ -399,7 +409,12 @@ def _run(
         raise MusicReplyError(error_code)
 
 
-def prepare_official_spoken_base(reference_path: Path, destination: Path) -> Path:
+def prepare_official_spoken_base(
+    reference_path: Path,
+    destination: Path,
+    *,
+    ffmpeg_path: Path | None = None,
+) -> Path:
     """Create the verified 0-35s speaking-performance base for musical replies."""
 
     reference_path = Path(reference_path)
@@ -413,7 +428,7 @@ def prepare_official_spoken_base(reference_path: Path, destination: Path) -> Pat
     partial.unlink(missing_ok=True)
     _run(
         [
-            _ffmpeg(),
+            _ffmpeg(ffmpeg_path),
             "-hide_banner",
             "-loglevel",
             "error",
@@ -456,6 +471,7 @@ def separate_vocals(
     model_path: Path | None,
     config_path: Path | None,
     environment: Mapping[str, str],
+    ffmpeg_path: Path | None = None,
 ) -> None:
     if any(
         value is None or not value.is_file()
@@ -471,7 +487,7 @@ def separate_vocals(
         source = inputs / "song.wav"
         _run(
             [
-                _ffmpeg(),
+                _ffmpeg(ffmpeg_path),
                 "-y",
                 "-i",
                 str(song_path),
@@ -517,6 +533,9 @@ def render_full_face_performance(
     *,
     latentsync_python_path: Path | None,
     latentsync_root: Path | None,
+    ffmpeg_path: Path | None = None,
+    provider_cache_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if latentsync_python_path is None or latentsync_root is None:
@@ -530,12 +549,15 @@ def render_full_face_performance(
                 raw_video,
                 python_path=latentsync_python_path,
                 latentsync_root=latentsync_root,
+                ffmpeg_path=ffmpeg_path,
+                provider_cache_root=provider_cache_root,
+                environment=environment,
             )
         except LatentSyncReplyError as exc:
             raise MusicReplyError(str(exc)) from exc
         _run(
             [
-                _ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+                _ffmpeg(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(raw_video), "-i", str(full_song_path),
                 "-map", "0:v:0", "-map", "1:a:0",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
@@ -569,6 +591,7 @@ def concat_videos(
     transition_start_seconds: float = 35.0,
     transition_end_seconds: float = 43.0,
     end_fade_seconds: float = 2.0,
+    ffmpeg_path: Path | None = None,
 ) -> None:
     """Join speech and performance, optionally preserving the reference turn/transition.
 
@@ -651,7 +674,7 @@ def concat_videos(
         assembled = root / "assembled-lossless.mkv"
         _run(
             [
-                _ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+                _ffmpeg(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
                 *inputs,
                 "-filter_complex", ";".join(filters),
                 "-map", "[final_v]", "-map", "[final_a]",
@@ -664,7 +687,7 @@ def concat_videos(
         result = root / "complete.mp4"
         _run(
             [
-                _ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+                _ffmpeg(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(assembled),
                 "-vf", "tpad=stop_mode=clone:stop_duration=1",
                 "-af", (
@@ -917,11 +940,12 @@ def render_musical_reply(
     performance_video_path: Path,
     duration_seconds: int,
     voice_performance_plan: VoicePerformancePlan | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Render the ordinary reply, append an original-view song performance."""
 
     duration_seconds = normalize_music_duration(duration_seconds)
-    provider_paths = _music_provider_path_snapshot()
+    provider_paths = _music_provider_path_snapshot(environment)
     transition_reference = _official_transition_reference(provider_paths.environment)
     minimax_python = provider_paths.minimax_python
     minimax_root = provider_paths.minimax_root
@@ -931,6 +955,12 @@ def render_musical_reply(
     latentsync_python = provider_paths.latentsync_python
     latentsync_root = provider_paths.latentsync_root
     if latentsync_python is None or latentsync_root is None:
+        raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
+    ffmpeg_path = provider_paths.ffmpeg_executable
+    if ffmpeg_path is None or not ffmpeg_path.is_file():
+        raise MusicReplyError("FFMPEG_UNAVAILABLE")
+    provider_cache_root = provider_paths.provider_cache_root
+    if provider_cache_root is None or not provider_cache_root.is_absolute():
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     try:
         song_plan = plan_song_content(content, reply_text, duration_seconds)
@@ -980,7 +1010,11 @@ def render_musical_reply(
     else:
         if not _stage_reusable(manifest, "spoken_base", spoken_base):
             spoken_base.unlink(missing_ok=True)
-            prepare_official_spoken_base(official_reply_reference_path, spoken_base)
+            prepare_official_spoken_base(
+                official_reply_reference_path,
+                spoken_base,
+                ffmpeg_path=ffmpeg_path,
+            )
             _record_stage(manifest, manifest_path, "spoken_base", spoken_base)
         normal_metadata = render_reply_video(
             reply_text,
@@ -994,6 +1028,8 @@ def render_musical_reply(
             adaptive_delivery=True,
             voice_performance_plan=voice_performance_plan,
             environment=provider_paths.environment,
+            ffmpeg_path=ffmpeg_path,
+            provider_cache_root=provider_cache_root,
         )
         _record_stage(
             manifest,
@@ -1045,6 +1081,7 @@ def render_musical_reply(
             model_path=provider_paths.roformer_model,
             config_path=provider_paths.roformer_config,
             environment=provider_paths.environment,
+            ffmpeg_path=ffmpeg_path,
         )
         partial_vocals.replace(vocals)
         _record_stage(
@@ -1074,6 +1111,9 @@ def render_musical_reply(
             partial_video,
             latentsync_python_path=provider_paths.latentsync_python,
             latentsync_root=provider_paths.latentsync_root,
+            ffmpeg_path=ffmpeg_path,
+            provider_cache_root=provider_cache_root,
+            environment=provider_paths.environment,
         )
         partial_video.replace(song_video_path)
         _record_stage(
@@ -1089,6 +1129,7 @@ def render_musical_reply(
         song_video_path,
         output_path,
         transition_video_path=transition_reference,
+        ffmpeg_path=ffmpeg_path,
     )
     _record_stage(
         manifest,
