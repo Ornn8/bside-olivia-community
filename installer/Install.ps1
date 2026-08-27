@@ -110,6 +110,35 @@ function Assert-NoReparsePointsInPath {
     }
 }
 
+function Test-NoReparsePointsInTree {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath
+    )
+
+    try {
+        $root = [IO.Path]::GetFullPath($LiteralPath)
+        if (-not [IO.Directory]::Exists($root)) { return $false }
+        $pending = [Collections.Generic.Stack[string]]::new()
+        $pending.Push($root)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($current)) {
+                $attributes = [IO.File]::GetAttributes($entry)
+                if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    return $false
+                }
+                if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                    $pending.Push($entry)
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Test-PathsOverlap {
     param(
         [Parameter(Mandatory)]
@@ -499,6 +528,43 @@ function Update-ManagedPythonPath {
     }
 }
 
+function Register-VerifiedMemoryRuntime {
+    param(
+        [Parameter(Mandatory)]
+        [string]$CandidateExe,
+        [Parameter(Mandatory)]
+        [string]$PthPath,
+        [Parameter(Mandatory)]
+        [string]$MemoryRuntimePath,
+        [Parameter(Mandatory)]
+        [string]$RequirementsPath,
+        [Parameter(Mandatory)]
+        [string]$VerifierPath
+    )
+
+    if (
+        -not [IO.File]::Exists($CandidateExe) -or
+        -not [IO.File]::Exists($PthPath) -or
+        -not [IO.Directory]::Exists($MemoryRuntimePath) -or
+        -not [IO.File]::Exists($RequirementsPath) -or
+        -not [IO.File]::Exists($VerifierPath)
+    ) {
+        return $false
+    }
+    try {
+        Assert-NoReparsePointsInPath -LiteralPath $MemoryRuntimePath
+        if (-not (Test-NoReparsePointsInTree -LiteralPath $MemoryRuntimePath)) {
+            return $false
+        }
+        & $CandidateExe $VerifierPath $MemoryRuntimePath $RequirementsPath *> $null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        Update-ManagedPythonPath -PthPath $PthPath -MemoryRuntimePath $MemoryRuntimePath
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Test-ManagedServerDependencies {
     param(
         [Parameter(Mandatory)]
@@ -553,21 +619,7 @@ try {
     $existingMemoryRuntime = Join-Path $productRoot 'runtime\mem0-site-packages'
     $memoryRuntimeRequirements = Join-Path $PayloadRoot 'installer\mem0-runtime-requirements.txt'
     $memoryRuntimeVerifier = Join-Path $PayloadRoot 'installer\verify_mem0_runtime.py'
-    if (
-        [IO.Directory]::Exists($existingMemoryRuntime) -and
-        [IO.File]::Exists($memoryRuntimeRequirements) -and
-        [IO.File]::Exists($memoryRuntimeVerifier)
-    ) {
-        try {
-            Assert-NoReparsePointsInPath -LiteralPath $existingMemoryRuntime
-            & $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime $memoryRuntimeRequirements *> $null
-            if ($LASTEXITCODE -eq 0) {
-                Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $existingMemoryRuntime
-            }
-        } catch {
-            # An invalid optional Mem0 runtime stays unregistered after core upgrade.
-        }
-    }
+    [void](Register-VerifiedMemoryRuntime -CandidateExe $candidateExe -PthPath $pth.FullName -MemoryRuntimePath $existingMemoryRuntime -RequirementsPath $memoryRuntimeRequirements -VerifierPath $memoryRuntimeVerifier)
     if (Test-Path -LiteralPath $runtimeRoot) {
         if (
             -not [IO.Directory]::Exists($runtimeRoot) -or

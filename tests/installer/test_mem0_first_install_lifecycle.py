@@ -139,15 +139,36 @@ def test_memory_assets_remain_pinned_but_are_not_installed_during_first_setup() 
     ).read_text(encoding="utf-8")
 
     assert script.count("mem0-runtime-requirements.txt") == 1
-    assert "[IO.Directory]::Exists($existingMemoryRuntime)" in script
+    assert "[IO.Directory]::Exists($MemoryRuntimePath)" in script
     assert (
-        "& $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime "
-        "$memoryRuntimeRequirements"
+        "& $CandidateExe $VerifierPath $MemoryRuntimePath "
+        "$RequirementsPath"
     ) in script
     assert "provision_mem0_embedding.py" not in script
     assert "mem0ai==2.0.18" in requirements
     assert "sentence-transformers==5.7.0" in requirements
     assert (root / "installer" / "provision_mem0_embedding.py").is_file()
+
+
+def _write_runtime_bom(requirements: Path) -> None:
+    (requirements.parent / "mem0-capability-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.capability-bom.v1",
+                "runtime": {
+                    "requirements": "installer/mem0-runtime-requirements.txt",
+                    "requirements_sha256": hashlib.sha256(
+                        requirements.read_bytes()
+                    ).hexdigest(),
+                    "pypi_sources": {
+                        "mirror": "https://pypi.tuna.tsinghua.edu.cn/simple",
+                        "official": "https://pypi.org/simple",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
@@ -174,6 +195,7 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
         "annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101\n",
         encoding="utf-8",
     )
+    _write_runtime_bom(requirements)
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
             {
@@ -194,6 +216,19 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
     )
 
     assert result.returncode == 0, result.stderr
+
+    marker = runtime / ".olivia-mem0-runtime-manifest.json"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["source"] = "https://unapproved.example/simple"
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    rejected = subprocess.run(
+        [sys.executable, str(verifier), str(runtime), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert rejected.returncode == 2
 
 
 def test_windows_installer_runtime_probe_survives_native_argument_quoting(
@@ -219,6 +254,7 @@ def test_windows_installer_runtime_probe_survives_native_argument_quoting(
         "annotated-doc==0.0.5 --hash=sha256:fixture\n",
         encoding="utf-8",
     )
+    _write_runtime_bom(requirements)
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
             {
@@ -247,7 +283,7 @@ def test_first_install_defers_memory_runtime_and_embedding_downloads() -> None:
     launcher = (root / "installer" / "start_local.py").read_text(encoding="utf-8")
 
     assert script.count("mem0-runtime-requirements.txt") == 1
-    assert "[IO.Directory]::Exists($existingMemoryRuntime)" in script
+    assert "[IO.Directory]::Exists($MemoryRuntimePath)" in script
     assert "provision_mem0_embedding.py" not in script
     assert "BAAI/bge-small-zh-v1.5" not in script
     assert "Read-Host 'Accept this optional" not in script

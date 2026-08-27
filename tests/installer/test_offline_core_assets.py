@@ -25,7 +25,7 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
     assert "python.org" not in script
     assert "bootstrap.pypa.io" not in script
     assert script.count("mem0-runtime-requirements.txt") == 1
-    assert "[IO.Directory]::Exists($existingMemoryRuntime)" in script
+    assert "[IO.Directory]::Exists($MemoryRuntimePath)" in script
     assert "Update-ManagedPythonPath -PthPath $pth.FullName" in script
     assert "provision_mem0_embedding.py" not in script
     assert "BAAI/bge-small-zh-v1.5" not in script

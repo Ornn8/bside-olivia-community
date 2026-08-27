@@ -281,7 +281,6 @@ def test_missing_managed_server_dependencies_are_a_nonfatal_probe_result() -> No
 def _run_managed_python_path_helper(
     *,
     pth_path: Path,
-    memory_runtime_path: Path | None = None,
     deny_replace: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).parents[2]
@@ -299,10 +298,7 @@ def _run_managed_python_path_helper(
         "if($env:BSIDE_DENY_REPLACE -eq '1'){"
         "$lock=[IO.File]::Open($env:BSIDE_PTH_PATH,[IO.FileMode]::Open,"
         "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)};"
-        "$arguments=@{PthPath=$env:BSIDE_PTH_PATH};"
-        "if($env:BSIDE_MEMORY_RUNTIME_PATH){"
-        "$arguments.MemoryRuntimePath=$env:BSIDE_MEMORY_RUNTIME_PATH};"
-        "try{Update-ManagedPythonPath @arguments}"
+        "try{Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH}"
         "finally{if($lock){$lock.Dispose()}}"
     )
     env = os.environ.copy()
@@ -310,9 +306,6 @@ def _run_managed_python_path_helper(
         {
             "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
             "BSIDE_PTH_PATH": str(pth_path),
-            "BSIDE_MEMORY_RUNTIME_PATH": (
-                str(memory_runtime_path) if memory_runtime_path else ""
-            ),
             "BSIDE_DENY_REPLACE": "1" if deny_replace else "0",
         }
     )
@@ -423,51 +416,200 @@ def test_managed_runtime_pth_never_writes_payload_and_preserves_existing_paths(
     ]
 
 
-def test_core_runtime_upgrade_reregisters_only_verified_mem0_runtime(
-    tmp_path: Path,
-) -> None:
-    if os.name != "nt":
-        pytest.skip("Windows PowerShell is only available on Windows")
+def _run_memory_runtime_registration(
+    *,
+    pth_path: Path,
+    memory_runtime: Path,
+    requirements: Path,
+    verifier: Path,
+) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).parents[2]
+    command = (
+        "$tokens=$null;$errors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:BSIDE_INSTALL_SCRIPT,[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){throw 'INSTALL_SCRIPT_PARSE_FAILED'};"
+        "$names=@('Assert-NoReparsePointsInPath','Test-NoReparsePointsInTree',"
+        "'Update-ManagedPythonPath','Register-VerifiedMemoryRuntime');"
+        "foreach($name in $names){"
+        "$function=$ast.Find({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]"
+        " -and $node.Name -eq $name},$true);"
+        "if(-not $function){throw ('FUNCTION_MISSING:'+$name)};"
+        ". ([scriptblock]::Create($function.Extent.Text))};"
+        "$registered=Register-VerifiedMemoryRuntime "
+        "-CandidateExe $env:BSIDE_PROBE_EXECUTABLE "
+        "-PthPath $env:BSIDE_PTH_PATH "
+        "-MemoryRuntimePath $env:BSIDE_MEMORY_RUNTIME_PATH "
+        "-RequirementsPath $env:BSIDE_MEMORY_REQUIREMENTS "
+        "-VerifierPath $env:BSIDE_MEMORY_VERIFIER;"
+        "if($registered){exit 0};exit 7"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
+            "BSIDE_PROBE_EXECUTABLE": sys.executable,
+            "BSIDE_PTH_PATH": str(pth_path),
+            "BSIDE_MEMORY_RUNTIME_PATH": str(memory_runtime),
+            "BSIDE_MEMORY_REQUIREMENTS": str(requirements),
+            "BSIDE_MEMORY_VERIFIER": str(verifier),
+        }
+    )
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
 
-    product_root = tmp_path / "product"
-    runtime_root = product_root / "runtime" / "python-3.12.10-embed-amd64"
-    runtime_root.mkdir(parents=True)
-    pth_path = runtime_root / "python312._pth"
+
+def _memory_registration_fixture(
+    tmp_path: Path,
+    verifier_source: str,
+) -> tuple[Path, Path, Path, Path, dict[Path, str]]:
+    product = tmp_path / "product"
+    python_root = product / "runtime" / "python-3.12.10-embed-amd64"
+    python_root.mkdir(parents=True)
+    pth_path = python_root / "python312._pth"
     pth_path.write_text(
         "python312.zip\n.\nsite-packages\nimport site\n",
         encoding="utf-8",
     )
-    memory_runtime = product_root / "runtime" / "mem0-site-packages"
+    memory_runtime = product / "runtime" / "mem0-site-packages"
     memory_runtime.mkdir()
+    runtime_marker = memory_runtime / ".olivia-mem0-runtime-manifest.json"
+    runtime_marker.write_text('{"synthetic":"owned"}', encoding="utf-8")
+    requirements = tmp_path / "mem0-runtime-requirements.txt"
+    requirements.write_text("synthetic==1\n", encoding="utf-8")
+    verifier = tmp_path / "verify.py"
+    verifier.write_text(verifier_source, encoding="utf-8")
+    data_file = product / "install" / "data" / "config" / "llm.json"
+    data_file.parent.mkdir(parents=True)
+    data_file.write_bytes(b"synthetic-user-data")
+    model_manifest = (
+        product
+        / "install"
+        / "data"
+        / "memory"
+        / "model-cache"
+        / "olivia-mem0-embedding-manifest.json"
+    )
+    model_manifest.parent.mkdir(parents=True)
+    model_manifest.write_bytes(b"synthetic-model-manifest")
+    preserved = {
+        path: _sha256(path)
+        for path in (runtime_marker, data_file, model_manifest)
+    }
+    return pth_path, memory_runtime, requirements, verifier, preserved
 
-    result = _run_managed_python_path_helper(
-        pth_path=pth_path,
-        memory_runtime_path=memory_runtime,
+
+def test_core_runtime_upgrade_registers_verified_mem0_without_touching_data(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+    pth, runtime, requirements, verifier, preserved = _memory_registration_fixture(
+        tmp_path,
+        "raise SystemExit(0)\n",
+    )
+
+    result = _run_memory_runtime_registration(
+        pth_path=pth,
+        memory_runtime=runtime,
+        requirements=requirements,
+        verifier=verifier,
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert pth_path.read_text(encoding="utf-8").splitlines()[:3] == [
-        str(memory_runtime),
-        str(memory_runtime / "win32"),
-        str(memory_runtime / "win32" / "lib"),
+    assert pth.read_text(encoding="utf-8").splitlines()[:3] == [
+        str(runtime),
+        str(runtime / "win32"),
+        str(runtime / "win32" / "lib"),
     ]
-    script = (
-        Path(__file__).parents[2] / "installer" / "Install.ps1"
-    ).read_text(encoding="utf-8-sig")
-    verification = (
-        "& $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime "
-        "$memoryRuntimeRequirements"
+    assert {path: _sha256(path) for path in preserved} == preserved
+
+
+@pytest.mark.parametrize(
+    "verifier_source",
+    ("raise SystemExit(2)\n", "raise RuntimeError('synthetic failure')\n"),
+)
+def test_core_runtime_upgrade_keeps_failed_mem0_unregistered_and_preserved(
+    tmp_path: Path,
+    verifier_source: str,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+    pth, runtime, requirements, verifier, preserved = _memory_registration_fixture(
+        tmp_path,
+        verifier_source,
     )
-    registration = (
-        "Update-ManagedPythonPath -PthPath $pth.FullName "
-        "-MemoryRuntimePath $existingMemoryRuntime"
+
+    result = _run_memory_runtime_registration(
+        pth_path=pth,
+        memory_runtime=runtime,
+        requirements=requirements,
+        verifier=verifier,
     )
-    core_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe))"
-    assert verification in script
-    assert registration in script
-    assert script.index(core_probe) < script.index(verification) < script.index(
-        registration
+
+    assert result.returncode == 7
+    assert all(
+        "mem0-site-packages" not in line
+        for line in pth.read_text(encoding="utf-8").splitlines()
     )
+    assert {path: _sha256(path) for path in preserved} == preserved
+
+
+@pytest.mark.parametrize("nested", (False, True))
+def test_core_runtime_upgrade_rejects_root_and_descendant_reparse_points(
+    tmp_path: Path,
+    nested: bool,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction contract")
+    pth, runtime, requirements, verifier, _preserved = _memory_registration_fixture(
+        tmp_path,
+        "raise SystemExit(0)\n",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if nested:
+        link = runtime / "nested-runtime-link"
+    else:
+        (runtime / ".olivia-mem0-runtime-manifest.json").unlink()
+        runtime.rmdir()
+        link = runtime
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(link), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        result = _run_memory_runtime_registration(
+            pth_path=pth,
+            memory_runtime=runtime,
+            requirements=requirements,
+            verifier=verifier,
+        )
+
+        assert result.returncode == 7
+        assert all(
+            "mem0-site-packages" not in line
+            for line in pth.read_text(encoding="utf-8").splitlines()
+        )
+    finally:
+        os.rmdir(link)
 
 
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
