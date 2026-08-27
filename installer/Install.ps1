@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$PayloadRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$Destination = (Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\install'),
+    [string]$Destination = (Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal'),
     [string]$OfficialRoot = '',
     [string]$OfflineAssetsRoot = '',
     [string]$SetupResultPath = '',
@@ -13,14 +13,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $env:MEM0_TELEMETRY = 'False'
-$destinationFull = [IO.Path]::GetFullPath($Destination)
-if (-not [string]::Equals([IO.Path]::GetFileName($destinationFull.TrimEnd('\')), 'install', [StringComparison]::OrdinalIgnoreCase)) {
-    $destinationFull = Join-Path $destinationFull 'install'
-}
-$Destination = $destinationFull
-$productRoot = Split-Path -Parent $destinationFull
-$runtimeRoot = Join-Path $productRoot 'runtime\python-3.12.10-embed-amd64'
-$runtimeExe = Join-Path $runtimeRoot 'python.exe'
 $offlineRoot = if ($OfflineAssetsRoot) { $OfflineAssetsRoot } else { Join-Path $PayloadRoot 'offline' }
 $offlineManifestPath = if ($OfflineAssetsRoot) { Join-Path $OfflineAssetsRoot 'offline-core-assets.json' } else { Join-Path $PayloadRoot 'offline\offline-core-assets.json' }
 $requirements = Join-Path $PayloadRoot 'installer\runtime-requirements.txt'
@@ -59,6 +51,15 @@ trap {
     exit 2
 }
 
+$productRoot = [IO.Path]::GetFullPath($Destination)
+$legacyDefaultInstall = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\install'))
+if ([string]::Equals($productRoot.TrimEnd('\'), $legacyDefaultInstall.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    $productRoot = Split-Path -Parent $productRoot
+}
+$Destination = Join-Path $productRoot 'install'
+$runtimeRoot = Join-Path $productRoot 'runtime\python-3.12.10-embed-amd64'
+$runtimeExe = Join-Path $runtimeRoot 'python.exe'
+
 function Get-Sha256 {
     param(
         [Parameter(Mandatory)]
@@ -72,6 +73,154 @@ function Get-Sha256 {
     } finally {
         $hasher.Dispose()
         $stream.Dispose()
+    }
+}
+
+function Assert-NoReparsePointsInPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath
+    )
+
+    $full = [IO.Path]::GetFullPath($LiteralPath)
+    $root = [IO.Path]::GetPathRoot($full)
+    if (-not $root) { throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID' }
+    if (
+        -not [IO.Directory]::Exists($root) -or
+        (([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    ) {
+        throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+    }
+    $current = $root
+    $parts = $full.Substring($root.Length).Split(
+        [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar),
+        [StringSplitOptions]::RemoveEmptyEntries
+    )
+    foreach ($part in $parts) {
+        $current = Join-Path $current $part
+        if (Test-Path -LiteralPath $current) {
+            if (
+                -not [IO.Directory]::Exists($current) -or
+                (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            ) {
+                throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+            }
+        }
+    }
+}
+
+function Test-PathsOverlap {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Left,
+        [Parameter(Mandatory)]
+        [string]$Right
+    )
+
+    $leftFull = [IO.Path]::GetFullPath($Left).TrimEnd('\')
+    $rightFull = [IO.Path]::GetFullPath($Right).TrimEnd('\')
+    if ([string]::Equals($leftFull, $rightFull, [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return (
+        $leftFull.StartsWith($rightFull + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $rightFull.StartsWith($leftFull + '\', [StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Resolve-OfficialInstall {
+    param([string]$RequestedRoot)
+
+    if ($RequestedRoot) {
+        return [IO.Path]::GetFullPath($RequestedRoot)
+    }
+    $steamRoots = [Collections.Generic.List[string]]::new()
+    try {
+        $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -Name SteamPath).SteamPath
+        if ($steamPath) { $steamRoots.Add([string]$steamPath) }
+    } catch {
+        # Continue with conventional Steam roots.
+    }
+    foreach ($drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()) {
+        $candidate = $drive + ':\steam'
+        if ([IO.Directory]::Exists($candidate)) { $steamRoots.Add($candidate) }
+    }
+    $libraryRoots = [Collections.Generic.List[string]]::new()
+    foreach ($steamRoot in $steamRoots) {
+        try {
+            $steamFull = [IO.Path]::GetFullPath($steamRoot)
+            $libraryRoots.Add($steamFull)
+            $vdf = Join-Path $steamFull 'steamapps\libraryfolders.vdf'
+            if ([IO.File]::Exists($vdf)) {
+                $text = [IO.File]::ReadAllText($vdf)
+                foreach ($match in [regex]::Matches($text, '"path"\s+"([^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                    $libraryRoots.Add($match.Groups[1].Value.Replace('\\', '\'))
+                }
+            }
+        } catch {
+            # Ignore malformed or inaccessible Steam library entries.
+        }
+    }
+    foreach ($libraryRoot in $libraryRoots) {
+        try {
+            $libraryFull = [IO.Path]::GetFullPath($libraryRoot)
+            $appManifest = Join-Path $libraryFull 'steamapps\appmanifest_4532590.acf'
+            if (-not [IO.File]::Exists($appManifest)) { continue }
+            $match = [regex]::Match(
+                [IO.File]::ReadAllText($appManifest),
+                '"installdir"\s+"([^"]+)"',
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+            if (-not $match.Success) { continue }
+            $candidate = Join-Path $libraryFull ('steamapps\common\' + $match.Groups[1].Value)
+            if ([IO.Directory]::Exists($candidate)) {
+                return [IO.Path]::GetFullPath($candidate)
+            }
+        } catch {
+            # Continue to the next Steam library.
+        }
+    }
+    throw 'OFFICIAL_INSTALL_NOT_FOUND'
+}
+
+function Assert-OfficialSource {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+        [Parameter(Mandatory)]
+        [string]$ManifestPath
+    )
+
+    try {
+        $manifest = [IO.File]::ReadAllText($ManifestPath) | ConvertFrom-Json
+        if (
+            $manifest.schema_version -ne 'olivia.full-patch.v2' -or
+            $manifest.steam_app_id -ne '4532590' -or
+            $manifest.patch_mode -ne 'isolated-copy' -or
+            $manifest.client_version -isnot [string] -or
+            $manifest.feapp_sha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
+            $manifest.webplayer_sha256 -cnotmatch '^[0-9a-fA-F]{64}$'
+        ) {
+            throw 'PATCH_MANIFEST_INVALID'
+        }
+    } catch {
+        if ([string]$_.Exception.Message -eq 'PATCH_MANIFEST_INVALID') { throw }
+        throw 'PATCH_MANIFEST_INVALID'
+    }
+    $versionRoot = Join-Path $SourceRoot $manifest.client_version
+    $resources = Join-Path $versionRoot 'resources'
+    $launcher = Join-Path $SourceRoot 'launcher.exe'
+    $client = Join-Path $versionRoot 'Olivia.exe'
+    $feapp = Join-Path $resources 'feapp.dat'
+    $webplayer = Join-Path $resources 'webplayer.dat'
+    foreach ($required in @($launcher, $client, $feapp, $webplayer)) {
+        if (-not [IO.File]::Exists($required)) { throw 'OFFICIAL_INSTALL_NOT_FOUND' }
+    }
+    if (
+        (Get-Sha256 -LiteralPath $feapp) -cne ([string]$manifest.feapp_sha256).ToLowerInvariant() -or
+        (Get-Sha256 -LiteralPath $webplayer) -cne ([string]$manifest.webplayer_sha256).ToLowerInvariant()
+    ) {
+        throw 'UNSUPPORTED_OFFICIAL_VERSION'
     }
 }
 
@@ -121,21 +270,19 @@ function Assert-ManagedRuntimeParent {
 
     try {
         $productFull = [IO.Path]::GetFullPath($ProductRoot)
+        $volumeRoot = [IO.Path]::GetPathRoot($productFull)
+        if (
+            -not $volumeRoot -or
+            [string]::Equals($productFull.TrimEnd('\'), $volumeRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+        ) {
+            throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+        }
         $runtimeParent = Join-Path $productFull 'runtime'
         $expectedRuntime = Join-Path $runtimeParent 'python-3.12.10-embed-amd64'
         if (-not [string]::Equals([IO.Path]::GetFullPath($RuntimePath), $expectedRuntime, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
         }
-        foreach ($path in @($productFull, $runtimeParent, $expectedRuntime)) {
-            if (Test-Path -LiteralPath $path) {
-                if (
-                    -not [IO.Directory]::Exists($path) -or
-                    (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-                ) {
-                    throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
-                }
-            }
-        }
+        Assert-NoReparsePointsInPath -LiteralPath $expectedRuntime
     } catch {
         throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
     }
@@ -367,6 +514,16 @@ function Test-ManagedServerDependencies {
 }
 
 Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
+$selectedOfficial = $OfficialRoot
+if (-not $selectedOfficial -and -not $NonInteractive) {
+    $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
+}
+$selectedOfficial = Resolve-OfficialInstall -RequestedRoot $selectedOfficial
+if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
+    throw 'INSTALL_ROOT_OVERLAPS_OFFICIAL'
+}
+$manifestPath = Join-Path $PayloadRoot 'installer\full-patch-manifest.json'
+Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
 $runtimeStaging = $runtimeRoot + '.staging.' + [guid]::NewGuid().ToString('N')
 $runtimeBackup = ''
@@ -423,12 +580,7 @@ try {
 }
 $runner = @{ File = $runtimeExe; Args = @() }
 
-$arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', (Join-Path $PayloadRoot 'installer\full-patch-manifest.json'), '--port', $Port)
-$selectedOfficial = $OfficialRoot
-if (-not $selectedOfficial -and -not $NonInteractive) {
-    $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
-}
-if ($selectedOfficial) { $arguments += @('--official-root', $selectedOfficial) }
+$arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', $manifestPath, '--port', $Port, '--official-root', $selectedOfficial)
 $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
 $bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'

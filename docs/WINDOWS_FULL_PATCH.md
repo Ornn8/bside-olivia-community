@@ -5,7 +5,7 @@
 ## 使用
 
 1. 下载 `Olivia-Setup-x64.exe` 及同目录的 `.sha256` 文件，并先核对 SHA-256。
-2. 双击 EXE，选择安装位置和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
+2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后双击 `START.cmd`。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。长期记忆、PrivateWorld 和媒体接口都挂在同一个进程中。
 4. 本版本提供登录后初始设置的本机 API；原版客户端界面接线在后续独立补丁中交付。在界面接线前仍通过启动环境提供 LLM key，也可继续使用 `CONFIGURE.cmd` 管理参考音频/视频。这些文件不进入补丁包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。

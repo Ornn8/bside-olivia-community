@@ -13,7 +13,7 @@ AppId={{E7B6A4B1-2AC0-4B1E-85DA-E17E66D6EF0A}
 AppName=Olivia 本地版
 AppVersion={#AppVersion}
 AppPublisher=BSide Olivia Community
-DefaultDirName={localappdata}\BSideOliviaLocal\install
+DefaultDirName={localappdata}\BSideOliviaLocal
 CreateAppDir=no
 Uninstallable=no
 PrivilegesRequired=lowest
@@ -90,15 +90,15 @@ procedure InitializeWizard;
 begin
   InstallDirPage := CreateInputDirPage(
     wpSelectDir,
-    '选择安装位置',
-    'Olivia 本地版将安装到当前 Windows 用户目录。',
+    '选择产品目录',
+    'Olivia 本地版将在产品目录内分别管理客户端与运行环境。',
     '建议保留默认位置；升级补丁会继续使用这里的受管安装。',
     False,
     ''
   );
-  InstallDirPage.Add('安装位置：');
+  InstallDirPage.Add('产品目录：');
   InstallDirPage.Values[0] := ExpandConstant(
-    '{param:InstallRoot|{localappdata}\BSideOliviaLocal\install}'
+    '{param:InstallRoot|{localappdata}\BSideOliviaLocal}'
   );
 
   OfficialDirPage := CreateInputQueryPage(
@@ -133,7 +133,7 @@ begin
   Result := True;
   if (CurPageID = InstallDirPage.ID) and (Trim(InstallDirPage.Values[0]) = '') then
   begin
-    MsgBox('请选择安装位置。', mbError, MB_OK);
+    MsgBox('请选择产品目录。', mbError, MB_OK);
     Result := False;
   end;
 end;
