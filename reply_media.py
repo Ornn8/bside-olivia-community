@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Mapping
 
 from latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
+from media_paths import resolve_media_path
 from reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
 from voice_direction import VoicePerformancePlan
 try:
@@ -90,18 +91,37 @@ def _tts_config(
     env: Mapping[str, str] | None = None,
 ) -> TTSConfig:
     settings = _settings(path)
-    runtime_root = Path(str(settings.get("runtime_root", "")))
+    environment = os.environ if env is None else env
+
+    def configured_path(value: object) -> Path:
+        resolved = resolve_media_path(value, environment)
+        if resolved is None:
+            raise ReplyMediaError("TTS_CONFIG_PATH_UNAVAILABLE")
+        return resolved
+
+    runtime_root = configured_path(settings.get("runtime_root", ""))
+    model_dir = configured_path(settings.get("model_dir", ""))
+    reference_audio = configured_path(settings.get("reference_audio", ""))
     external_python = runtime_root / "venv" / "Scripts" / "python.exe"
+    settings.update(
+        {
+            "runtime_root": str(runtime_root),
+            "model_dir": str(model_dir),
+            "reference_audio": str(reference_audio),
+        }
+    )
     provider_options = settings.get("provider_options")
     if not isinstance(provider_options, dict):
         provider_options = {}
     else:
         provider_options = dict(provider_options)
+    for key in ("numba_cache_dir", "quality_gate_cache_root", "wetext_fst_root"):
+        if key in provider_options and str(provider_options[key]).strip():
+            provider_options[key] = str(configured_path(provider_options[key]))
     if ordinary_video:
-        environment = os.environ if env is None else env
         configured_reference = environment.get("OLIVIA_REPLY_VOICE_REFERENCE")
-        if configured_reference is not None:
-            official_reference = Path(configured_reference)
+        if configured_reference is not None and str(configured_reference).strip():
+            official_reference = configured_path(configured_reference)
             if not official_reference.is_file():
                 raise ReplyMediaError("VOICE_REFERENCE_UNAVAILABLE")
             settings["reference_audio"] = str(
@@ -112,9 +132,11 @@ def _tts_config(
         quality_cache_root = environment.get(
             "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"
         )
-        if quality_cache_root is not None:
-            provider_options["quality_gate_cache_root"] = quality_cache_root
-    reference_audio = Path(str(settings.get("reference_audio", "")))
+        if quality_cache_root is not None and str(quality_cache_root).strip():
+            provider_options["quality_gate_cache_root"] = str(
+                configured_path(quality_cache_root)
+            )
+    reference_audio = Path(str(settings["reference_audio"]))
     leading_trim = settings.get("leading_trim_seconds")
     if leading_trim is None and reference_audio.is_file():
         try:
@@ -125,7 +147,7 @@ def _tts_config(
     provider_options.update(
         {
             "external_python": str(external_python),
-            "temp_root": str(temporary_root),
+            "temp_root": str(temporary_root.resolve(strict=False)),
         }
     )
     settings.update(
@@ -246,7 +268,17 @@ def render_reply_video(
     adaptive_delivery: bool = False,
     voice_performance_plan: VoicePerformancePlan | None = None,
     enforce_content_gate: bool = False,
+    environment: Mapping[str, str] | None = None,
+    ffmpeg_path: Path | None = None,
+    provider_cache_root: Path | None = None,
 ) -> dict[str, object]:
+    if scene_path is not None and (
+        latentsync_python_path is None
+        or latentsync_root is None
+        or not latentsync_python_path.is_absolute()
+        or not latentsync_root.is_absolute()
+    ):
+        raise ReplyMediaError("LATENTSYNC_INPUT_UNAVAILABLE")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
         root = Path(temporary)
@@ -255,6 +287,7 @@ def render_reply_video(
             visual_config_path,
             worker_path,
             root,
+            environment,
             require_quality_gate=enforce_content_gate,
         )
         audio_path = root / "reply.wav"
@@ -315,10 +348,11 @@ def render_reply_video(
                     scene_path,
                     audio_path,
                     output_path,
-                    python_path=latentsync_python_path
-                    or Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                    latentsync_root=latentsync_root
-                    or Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                python_path=latentsync_python_path,
+                latentsync_root=latentsync_root,
+                environment=environment,
+                ffmpeg_path=ffmpeg_path,
+                provider_cache_root=provider_cache_root,
                 )
             except LatentSyncReplyError as exc:
                 raise ReplyMediaError(str(exc)) from exc

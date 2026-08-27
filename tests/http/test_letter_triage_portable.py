@@ -396,6 +396,19 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
 
     assert routing_context_from_environment(env) == RoutingContext(True, True)
 
+    env["OLIVIA_PROJECT_ROOT"] = str(tmp_path)
+    for name, value in tuple(env.items()):
+        if not name.startswith("OLIVIA_") or name in {
+            "OLIVIA_FFMPEG_EXE",
+            "OLIVIA_PROJECT_ROOT",
+        }:
+            continue
+        try:
+            env[name] = Path(value).relative_to(tmp_path).as_posix()
+        except (TypeError, ValueError):
+            pass
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+
     quality_checkpoint.unlink()
     assert routing_context_from_environment(env) == RoutingContext(True, True)
     quality_checkpoint.write_bytes(b"synthetic")
