@@ -726,8 +726,23 @@ async def _migrate_official_history(
         memory_status = "unavailable"
     if memory_status == "disabled":
         return replace(result, private_world_status="skipped_memory_disabled")
+    try:
+        if private_world_port.snapshot() != PrivateWorldSnapshot():
+            return replace(result, private_world_status="already_initialized")
+    except Exception:
+        return replace(
+            result,
+            status="partial",
+            private_world_status="unavailable",
+            error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        )
     if private_world_command_service is None:
-        return replace(result, private_world_status="unavailable")
+        return replace(
+            result,
+            status="partial",
+            private_world_status="unavailable",
+            error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        )
     try:
         assessment = await assess_historical_relationship(
             exchanges,
@@ -1050,6 +1065,9 @@ async def handler(request: web.Request):
                 body,
                 query,
                 defer_reply=(method == "POST" and path.rstrip("/") == "/toy/letter/send"),
+                companion_confirmed=(
+                    request.headers.get("X-Olivia-Companion-Action") == "confirmed"
+                ),
             )
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
@@ -1510,6 +1528,24 @@ def _legacy_letter_collection() -> list[dict]:
     return store.legacy_letters
 
 
+def _official_account_conflicts(payload: Mapping[str, object]) -> bool:
+    account_id = payload.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        return True
+    incoming = account_id.strip()
+    existing: set[str] = set()
+    for letter in _legacy_letter_collection():
+        metadata = letter.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("import_kind") != "official_text_reply":
+            continue
+        stored = metadata.get("official_account_id")
+        if isinstance(stored, str) and stored.strip():
+            existing.add(stored.strip())
+    return bool(existing and existing != {incoming})
+
+
 def _letter_collection(scope: str):
     if scope == "legacy":
         return _legacy_letter_collection()
@@ -1724,7 +1760,15 @@ def _recent_active_duplicate(
     return None
 
 
-async def route(method, path, body, query, *, defer_reply: bool = False):
+async def route(
+    method,
+    path,
+    body,
+    query,
+    *,
+    defer_reply: bool = False,
+    companion_confirmed: bool = False,
+):
     p = path.rstrip("/")
     official_import = False
 
@@ -1759,6 +1803,12 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
     if p == "/toy/letter/legacy/official-import":
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
+                "status": "FAILED",
+                "error_code": "COMPANION_CONFIRMATION_REQUIRED",
+                "retryable": False,
+            })
         official_import = True
         try:
             body = await asyncio.to_thread(collect_default_official_text_replies)
@@ -1767,6 +1817,12 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 "status": "UNAVAILABLE",
                 "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
                 "retryable": True,
+            })
+        if _official_account_conflicts(body):
+            return err(409, "OFFICIAL_ACCOUNT_CONFLICT", {
+                "status": "FAILED",
+                "error_code": "OFFICIAL_ACCOUNT_CONFLICT",
+                "retryable": False,
             })
         p = "/toy/letter/legacy/import"
 

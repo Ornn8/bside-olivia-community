@@ -219,7 +219,7 @@ class ConfirmRelationshipStage(PrivateWorldCommand):
 
 @dataclass(frozen=True, kw_only=True)
 class InitializeHistoricalRelationship(PrivateWorldCommand):
-    """Set one bounded baseline from a user-authorized ordered history import."""
+    """Set one bounded baseline from user-authorized ordered imported exchanges."""
 
     relationship_stage: RelationshipStage
     familiarity: int

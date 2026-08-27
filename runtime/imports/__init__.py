@@ -1,1 +1,1 @@
-"""Local-only import adapters for user-authorized history migration."""
+"""Local-only adapters for user-authorized ordered letter migration."""

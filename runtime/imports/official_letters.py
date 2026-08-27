@@ -60,10 +60,11 @@ def build_legacy_import_payload(
                     "reply_text": reply_text,
                     "replied_at": letter.get("replied_at"),
                     "import_kind": "official_text_reply",
+                    "official_account_id": account,
                 },
             }
         )
-    return {"mode": "read_only", "letters": records}
+    return {"mode": "read_only", "account_id": account, "letters": records}
 
 
 def _headers_from_log(log_path: str | Path) -> dict[str, str]:
@@ -129,10 +130,11 @@ def collect_official_text_replies(
             headers,
         )
         if not isinstance(detail, Mapping) or detail.get("code") != 0:
-            continue
+            raise ValueError("OFFICIAL_LETTER_DETAIL_UNAVAILABLE")
         value = detail.get("data")
-        if isinstance(value, Mapping):
-            details.append({"letter_id": letter_id, **dict(value)})
+        if not isinstance(value, Mapping):
+            raise ValueError("OFFICIAL_LETTER_DETAIL_INVALID")
+        details.append({"letter_id": letter_id, **dict(value)})
     return build_legacy_import_payload(details, account_id=headers["x-uid"])
 
 

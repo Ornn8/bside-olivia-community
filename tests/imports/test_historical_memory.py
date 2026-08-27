@@ -309,3 +309,83 @@ def test_server_migration_runs_mem0_in_order_before_one_private_world_commit(
     assert memory.events == [("write", "user-first"), ("write", "user-second")]
     assert len(service.commands) == 1
     assert "AUTHORITATIVE PERSONA POLICY" in gateway.messages[0]["content"]
+
+
+def test_server_migration_skips_relationship_llm_when_private_world_already_exists(
+    monkeypatch,
+) -> None:
+    import asyncio
+    import local_server
+    from private_world_port import PrivateWorldSnapshot
+
+    memory = RecordingMemory([MemoryWriteStatus.DUPLICATE])
+
+    class ExistingWorld:
+        def snapshot(self) -> PrivateWorldSnapshot:
+            return PrivateWorldSnapshot(version=2, trust=20)
+
+    class FailingGateway:
+        async def complete(self, *_args, **_kwargs):
+            raise AssertionError("relationship LLM must not run twice")
+
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "private_world_port", ExistingWorld())
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", FailingGateway())
+
+    result = asyncio.run(
+        local_server._migrate_official_history(
+            {
+                "mode": "read_only",
+                "account_id": "account",
+                "letters": [
+                    {
+                        "source_record_id": "official:account:first",
+                        "occurred_at": 10,
+                        "metadata": {
+                            "import_kind": "official_text_reply",
+                            "user_content": "user-first",
+                            "reply_text": "assistant-first",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.private_world_status == "already_initialized"
+
+
+def test_server_migration_reports_partial_when_private_world_is_unavailable(
+    monkeypatch,
+) -> None:
+    import asyncio
+    import local_server
+
+    memory = RecordingMemory([MemoryWriteStatus.WRITTEN])
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "private_world_command_service", None)
+
+    result = asyncio.run(
+        local_server._migrate_official_history(
+            {
+                "mode": "read_only",
+                "account_id": "account",
+                "letters": [
+                    {
+                        "source_record_id": "official:account:first",
+                        "occurred_at": 10,
+                        "metadata": {
+                            "import_kind": "official_text_reply",
+                            "user_content": "user-first",
+                            "reply_text": "assistant-first",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result.status == "partial"
+    assert result.private_world_status == "unavailable"
+    assert result.error_code == "PRIVATE_WORLD_HISTORY_UNAVAILABLE"

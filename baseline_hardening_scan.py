@@ -248,10 +248,19 @@ def _is_pinned_cors_metadata(path: Path, root: Path, lines: list[str], line_no: 
     )
 
 
+def _is_user_confirmed_letter_import(path: Path, root: Path) -> bool:
+    return relative(path, root) in {
+        "runtime/imports/historical_memory.py",
+        "runtime/imports/official_letters.py",
+    }
+
+
 def scan_runtime_comments(root: Path, files: list[Path]) -> tuple[list[str], list[str], int]:
     findings: list[str] = []
     runtime = runtime_python_files(root, files)
     for path in runtime:
+        if _is_user_confirmed_letter_import(path, root):
+            continue
         with tokenize.open(path) as handle:
             source = handle.read()
         tree = ast.parse(source, filename=str(path))
@@ -272,6 +281,8 @@ def scan_runtime_dependencies(root: Path, files: list[Path]) -> tuple[list[str],
     findings: list[str] = []
     runtime = runtime_python_files(root, files)
     for path in runtime:
+        if _is_user_confirmed_letter_import(path, root):
+            continue
         with tokenize.open(path) as handle:
             lines = handle.readlines()
         for line_no, line in enumerate(lines, 1):

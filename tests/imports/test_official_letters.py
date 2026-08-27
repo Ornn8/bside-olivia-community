@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from memory_port import NullMemoryPort
 from runtime.imports.official_letters import (
     build_legacy_import_payload,
@@ -33,6 +35,7 @@ def test_official_text_replies_become_read_only_legacy_pairs() -> None:
 
     assert payload == {
         "mode": "read_only",
+        "account_id": "official-user-1",
         "letters": [
             {
                 "source_record_id": "official:official-user-1:letter-text",
@@ -44,6 +47,7 @@ def test_official_text_replies_become_read_only_legacy_pairs() -> None:
                     "reply_text": "林离过去的文字回信",
                     "replied_at": 1710000100,
                     "import_kind": "official_text_reply",
+                    "official_account_id": "official-user-1",
                 },
             }
         ],
@@ -90,6 +94,7 @@ def test_official_log_credentials_are_used_but_never_enter_import_payload(
         "/letter/detail?letter_id=letter-1",
     ]
     assert payload["letters"][0]["metadata"]["reply_text"] == "旧文字回信"
+    assert payload["account_id"] == "200717"
     assert "secret-token" not in repr(payload)
     assert "200717" in payload["letters"][0]["source_record_id"]
 
@@ -116,7 +121,7 @@ def test_official_log_skips_newer_sign_in_entry_with_empty_uid(tmp_path) -> None
 
     payload = collect_official_text_replies(log_path, request_json=request_json)
 
-    assert payload == {"mode": "read_only", "letters": []}
+    assert payload == {"mode": "read_only", "account_id": "200717", "letters": []}
     assert observed["x-token"] == "usable-token"
     assert observed["x-uid"] == "200717"
 
@@ -165,6 +170,32 @@ def test_official_import_follows_mailbox_cursor_pages(tmp_path) -> None:
     assert len(payload["letters"]) == 2
 
 
+def test_official_import_fails_closed_when_any_letter_detail_is_unavailable(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "Olivia.log"
+    log_path.write_text(
+        'network_request {"x-token":"secret-token","x-uid":"200717"}',
+        encoding="utf-8",
+    )
+
+    def request_json(path: str, _headers: dict[str, str]) -> dict:
+        if path.startswith("/letter/list"):
+            return {
+                "code": 0,
+                "data": {
+                    "list": [{"letter_id": "letter-1"}, {"letter_id": "letter-2"}],
+                    "has_more": False,
+                },
+            }
+        if path.endswith("letter-1"):
+            return {"code": 0, "data": {"content": "one", "reply_text": "reply"}}
+        return {"code": 503, "data": None}
+
+    with pytest.raises(ValueError, match="OFFICIAL_LETTER_DETAIL_UNAVAILABLE"):
+        collect_official_text_replies(log_path, request_json=request_json)
+
+
 def test_official_import_route_persists_read_only_pair_in_current_mailbox(
     tmp_path,
     monkeypatch,
@@ -179,6 +210,7 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
         "collect_default_official_text_replies",
         lambda: {
             "mode": "read_only",
+            "account_id": "200717",
             "letters": [
                 {
                     "source_record_id": "official:200717:letter-1",
@@ -190,6 +222,7 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
                         "reply_text": "旧文字回信",
                         "replied_at": 1710000100,
                         "import_kind": "official_text_reply",
+                        "official_account_id": "200717",
                     },
                 }
             ],
@@ -198,10 +231,22 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
     )
 
     imported = asyncio.run(
-        local_server.route("POST", "/toy/letter/legacy/official-import", {}, {})
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
     )
     duplicate = asyncio.run(
-        local_server.route("POST", "/toy/letter/legacy/official-import", {}, {})
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
     )
     listed = asyncio.run(
         local_server.route("GET", "/toy/letter/list", {}, {})
@@ -241,7 +286,13 @@ def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> 
     )
 
     response = asyncio.run(
-        local_server.route("POST", "/toy/letter/legacy/official-import", {}, {})
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
     )
 
     assert response["code"] == 503
@@ -251,3 +302,58 @@ def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> 
         "retryable": True,
     }
     assert private_value not in repr(response)
+
+
+def test_official_import_requires_explicit_companion_confirmation(monkeypatch) -> None:
+    import local_server
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: calls.append("collect") or {},
+        raising=False,
+    )
+
+    response = asyncio.run(
+        local_server.route("POST", "/toy/letter/legacy/official-import", {}, {})
+    )
+
+    assert response["code"] == 403
+    assert response["data"]["error_code"] == "COMPANION_CONFIRMATION_REQUIRED"
+    assert calls == []
+
+
+def test_official_import_rejects_a_different_account_before_persisting(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    existing = {
+        "letter_id": "existing",
+        "source_record_id": "official:account-a:letter-1",
+        "metadata": {
+            "import_kind": "official_text_reply",
+            "official_account_id": "account-a",
+        },
+        "read_only": True,
+    }
+    monkeypatch.setattr(local_server, "_legacy_letter_collection", lambda: [existing])
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: {"mode": "read_only", "account_id": "account-b", "letters": []},
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response["code"] == 409
+    assert response["data"]["error_code"] == "OFFICIAL_ACCOUNT_CONFLICT"
