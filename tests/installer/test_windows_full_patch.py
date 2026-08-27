@@ -1000,11 +1000,18 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start
+    assert "set PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe" in start
     uninstall = (installed / "UNINSTALL.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in uninstall
     assert "installer_main" not in uninstall
-    for script in (installed / "START.cmd", installed / "UNINSTALL.cmd"):
+    for script in (
+        installed / "START.cmd",
+        installed / "CONFIGURE.cmd",
+        installed / "UNINSTALL.cmd",
+    ):
         value = script.read_text(encoding="utf-8").lower()
+        assert "%localappdata%" not in value
+        assert "%root%..\\runtime\\python-3.12.10-embed-amd64\\python.exe" in value
         assert "d:/" not in value
         assert "f:/" not in value
         assert "sk-" not in value

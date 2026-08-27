@@ -103,21 +103,62 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
     assert "if (-not (Test-Path -LiteralPath $runtimeExe))" not in script
+    assert "$productRoot = [IO.Path]::GetFullPath($Destination)" in script
+    assert "$Destination = Join-Path $productRoot 'install'" in script
+    assert "$runtimeRoot = Join-Path $productRoot 'runtime\\python-3.12.10-embed-amd64'" in script
+    assert "GetFileName($destinationFull" not in script
+    assert "Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\\runtime" not in script
     assert "Assert-OfflineObjectShape" in script
     assert "OFFLINE_CORE_WHEEL_SET_MISMATCH" in script
     assert "$lockedWheelHashes.SetEquals($manifestWheelHashes)" in script
     assert "[IO.Directory]::Move($runtimeRoot, $runtimeBackup)" in script
     assert "[IO.Directory]::Move($runtimeBackup, $runtimeRoot)" in script
+    assert script.rindex(
+        "$selectedOfficial = Resolve-OfficialInstall"
+    ) < script.index("$coreAssets = Get-OfflineCoreAssets")
+    assert script.rindex("Assert-OfficialSource") < script.index(
+        "$coreAssets = Get-OfflineCoreAssets"
+    )
+
+
+def _run_install_preflight(
+    product_root: Path,
+    tmp_path: Path,
+    *extra: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ROOT / "installer" / "Install.ps1"),
+            "-PayloadRoot",
+            str(ROOT),
+            "-OfflineAssetsRoot",
+            str(tmp_path / "missing-offline-assets"),
+            "-Destination",
+            str(product_root),
+            "-SkipShortcut",
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
-def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
+@pytest.mark.parametrize("product_name", ["isolated-product", "install"])
+def test_first_install_rejects_a_reparse_point_at_the_selected_product_root(
     tmp_path: Path,
+    product_name: str,
 ) -> None:
-    local_app_data = tmp_path / "localappdata"
     outside = tmp_path / "outside"
-    product_root = local_app_data / "BSideOliviaLocal"
-    local_app_data.mkdir()
+    product_root = tmp_path / product_name
     outside.mkdir()
     linked = subprocess.run(
         ["cmd", "/d", "/c", "mklink", "/J", str(product_root), str(outside)],
@@ -128,37 +169,121 @@ def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
     if linked.returncode != 0:
         pytest.skip("junction creation is unavailable")
     try:
-        environment = os.environ.copy()
-        environment["LOCALAPPDATA"] = str(local_app_data)
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(ROOT / "installer" / "Install.ps1"),
-                "-PayloadRoot",
-                str(ROOT),
-                "-OfflineAssetsRoot",
-                str(tmp_path / "missing-offline-assets"),
-                "-Destination",
-                str(tmp_path / "install"),
-                "-SkipShortcut",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=environment,
-            check=False,
-        )
+        result = _run_install_preflight(product_root, tmp_path)
 
         assert result.returncode != 0
         assert "OFFLINE_CORE_RUNTIME_PARENT_INVALID" in result.stdout + result.stderr
         assert not (outside / "runtime").exists()
     finally:
         os.rmdir(product_root)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_first_install_rejects_a_reparse_point_in_an_existing_ancestor(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    linked_ancestor = tmp_path / "linked-ancestor"
+    outside.mkdir()
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(linked_ancestor), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        result = _run_install_preflight(linked_ancestor / "Olivia", tmp_path)
+
+        assert result.returncode != 0
+        assert "OFFLINE_CORE_RUNTIME_PARENT_INVALID" in result.stdout + result.stderr
+        assert not (outside / "Olivia" / "runtime").exists()
+    finally:
+        os.rmdir(linked_ancestor)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_first_install_rejects_an_official_junction_alias_before_writes(
+    tmp_path: Path,
+) -> None:
+    physical_official = tmp_path / "physical-official"
+    official_alias = tmp_path / "official-alias"
+    product_root = physical_official / "nested-product"
+    physical_official.mkdir()
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(official_alias), str(physical_official)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        result = _run_install_preflight(
+            product_root,
+            tmp_path,
+            "-OfficialRoot",
+            str(official_alias),
+        )
+
+        assert result.returncode != 0
+        assert "OFFICIAL_INSTALL_PATH_REPARSE_POINT" in result.stdout + result.stderr
+        assert not (product_root / "runtime").exists()
+    finally:
+        os.rmdir(official_alias)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
+def test_first_install_rejects_a_volume_root_as_product_root(tmp_path: Path) -> None:
+    result = _run_install_preflight(Path(tmp_path.anchor), tmp_path)
+
+    assert result.returncode != 0
+    assert "OFFLINE_CORE_RUNTIME_PARENT_INVALID" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows preflight contract")
+def test_first_install_rejects_official_overlap_before_runtime_writes(
+    tmp_path: Path,
+) -> None:
+    product_root = tmp_path / "official"
+    product_root.mkdir()
+
+    result = _run_install_preflight(
+        product_root,
+        tmp_path,
+        "-OfficialRoot",
+        str(product_root),
+    )
+
+    assert result.returncode != 0
+    assert "INSTALL_ROOT_OVERLAPS_OFFICIAL" in result.stdout + result.stderr
+    assert not (product_root / "runtime").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows preflight contract")
+def test_first_install_validates_official_files_before_runtime_writes(
+    tmp_path: Path,
+) -> None:
+    product_root = tmp_path / "product"
+    official_root = tmp_path / "official"
+    resources = official_root / "0.0.9.627" / "resources"
+    resources.mkdir(parents=True)
+    (official_root / "launcher.exe").write_bytes(b"launcher")
+    (official_root / "0.0.9.627" / "Olivia.exe").write_bytes(b"client")
+    (resources / "feapp.dat").write_bytes(b"wrong feapp")
+    (resources / "webplayer.dat").write_bytes(b"wrong webplayer")
+
+    result = _run_install_preflight(
+        product_root,
+        tmp_path,
+        "-OfficialRoot",
+        str(official_root),
+    )
+
+    assert result.returncode != 0
+    assert "UNSUPPORTED_OFFICIAL_VERSION" in result.stdout + result.stderr
+    assert not (product_root / "runtime").exists()
 
 
 def test_offline_asset_builder_uses_the_hash_locked_windows_wheel_closure() -> None:

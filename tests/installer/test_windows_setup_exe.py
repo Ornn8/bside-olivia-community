@@ -281,6 +281,8 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "OfficialDirPage: TInputQueryWizardPage" in script
     assert "BrowseForFolder" in script
     assert "{param:InstallRoot|" in script
+    assert "{localappdata}\\BSideOliviaLocal\\install}" not in script
+    assert "产品目录" in script
     assert "{param:OfficialRoot|" in script
     assert "API" not in script
     assert "Hugging Face" not in script
