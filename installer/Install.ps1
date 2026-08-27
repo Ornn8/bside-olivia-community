@@ -13,7 +13,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $env:MEM0_TELEMETRY = 'False'
-$runtimeRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\runtime\python-3.12.10-embed-amd64'
+$destinationFull = [IO.Path]::GetFullPath($Destination)
+if (-not [string]::Equals([IO.Path]::GetFileName($destinationFull.TrimEnd('\')), 'install', [StringComparison]::OrdinalIgnoreCase)) {
+    $destinationFull = Join-Path $destinationFull 'install'
+}
+$Destination = $destinationFull
+$productRoot = Split-Path -Parent $destinationFull
+$runtimeRoot = Join-Path $productRoot 'runtime\python-3.12.10-embed-amd64'
 $runtimeExe = Join-Path $runtimeRoot 'python.exe'
 $offlineRoot = if ($OfflineAssetsRoot) { $OfflineAssetsRoot } else { Join-Path $PayloadRoot 'offline' }
 $offlineManifestPath = if ($OfflineAssetsRoot) { Join-Path $OfflineAssetsRoot 'offline-core-assets.json' } else { Join-Path $PayloadRoot 'offline\offline-core-assets.json' }
@@ -108,20 +114,19 @@ function Get-ExpectedOfflineWheels {
 function Assert-ManagedRuntimeParent {
     param(
         [Parameter(Mandatory)]
-        [string]$LocalAppData,
+        [string]$ProductRoot,
         [Parameter(Mandatory)]
         [string]$RuntimePath
     )
 
     try {
-        $localFull = [IO.Path]::GetFullPath($LocalAppData)
-        $productRoot = Join-Path $localFull 'BSideOliviaLocal'
-        $runtimeParent = Join-Path $productRoot 'runtime'
+        $productFull = [IO.Path]::GetFullPath($ProductRoot)
+        $runtimeParent = Join-Path $productFull 'runtime'
         $expectedRuntime = Join-Path $runtimeParent 'python-3.12.10-embed-amd64'
         if (-not [string]::Equals([IO.Path]::GetFullPath($RuntimePath), $expectedRuntime, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
         }
-        foreach ($path in @($localFull, $productRoot, $runtimeParent, $expectedRuntime)) {
+        foreach ($path in @($productFull, $runtimeParent, $expectedRuntime)) {
             if (Test-Path -LiteralPath $path) {
                 if (
                     -not [IO.Directory]::Exists($path) -or
@@ -361,7 +366,7 @@ function Test-ManagedServerDependencies {
     }
 }
 
-Assert-ManagedRuntimeParent -LocalAppData $env:LOCALAPPDATA -RuntimePath $runtimeRoot
+Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
 $runtimeStaging = $runtimeRoot + '.staging.' + [guid]::NewGuid().ToString('N')
 $runtimeBackup = ''

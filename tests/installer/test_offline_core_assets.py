@@ -103,6 +103,12 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
     assert "if (-not (Test-Path -LiteralPath $runtimeExe))" not in script
+    assert "$destinationFull = [IO.Path]::GetFullPath($Destination)" in script
+    assert "$destinationFull = Join-Path $destinationFull 'install'" in script
+    assert "$Destination = $destinationFull" in script
+    assert "$productRoot = Split-Path -Parent $destinationFull" in script
+    assert "$runtimeRoot = Join-Path $productRoot 'runtime\\python-3.12.10-embed-amd64'" in script
+    assert "Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\\runtime" not in script
     assert "Assert-OfflineObjectShape" in script
     assert "OFFLINE_CORE_WHEEL_SET_MISMATCH" in script
     assert "$lockedWheelHashes.SetEquals($manifestWheelHashes)" in script
@@ -114,10 +120,8 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
 def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
     tmp_path: Path,
 ) -> None:
-    local_app_data = tmp_path / "localappdata"
     outside = tmp_path / "outside"
-    product_root = local_app_data / "BSideOliviaLocal"
-    local_app_data.mkdir()
+    product_root = tmp_path / "isolated-product"
     outside.mkdir()
     linked = subprocess.run(
         ["cmd", "/d", "/c", "mklink", "/J", str(product_root), str(outside)],
@@ -128,8 +132,6 @@ def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
     if linked.returncode != 0:
         pytest.skip("junction creation is unavailable")
     try:
-        environment = os.environ.copy()
-        environment["LOCALAPPDATA"] = str(local_app_data)
         result = subprocess.run(
             [
                 "powershell",
@@ -143,14 +145,13 @@ def test_first_install_rejects_a_reparse_point_in_the_runtime_parent_chain(
                 "-OfflineAssetsRoot",
                 str(tmp_path / "missing-offline-assets"),
                 "-Destination",
-                str(tmp_path / "install"),
+                str(product_root / "install"),
                 "-SkipShortcut",
             ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=environment,
             check=False,
         )
 
