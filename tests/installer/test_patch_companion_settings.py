@@ -136,6 +136,30 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     assert "https://" not in bootstrap
 
 
+def test_patch_supports_original_client_0_0_9_627_main_module(
+    tmp_path: Path,
+) -> None:
+    main_member = "assets/main-31595bd3.js"
+    index = INDEX.replace("main-917d29fc.js", "main-31595bd3.js")
+    path = tmp_path / "feapp.dat"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(INDEX_MEMBER, index)
+        archive.writestr(main_member, b"synthetic-0.0.9.627-main-module")
+        archive.writestr("assets/index.css", b"body{display:block}")
+
+    result = patch_companion_settings(
+        path,
+        "http://127.0.0.1:8899",
+        work_root=tmp_path,
+    )
+
+    after = _members(path)
+    assert result["status"] == "PATCHED"
+    assert after[main_member] == b"synthetic-0.0.9.627-main-module"
+    assert PATCH_MARKER in after[INDEX_MEMBER].decode()
+    assert BOOTSTRAP_MEMBER in after
+
+
 def test_patch_is_idempotent_for_the_same_api_base(tmp_path: Path) -> None:
     path = _archive(tmp_path / "feapp.dat")
     first = patch_companion_settings(

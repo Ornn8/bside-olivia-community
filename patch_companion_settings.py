@@ -25,6 +25,10 @@ from original_client_settings_ui import (
 
 INDEX_MEMBER = "index.html"
 MAIN_MODULE_MEMBER = "assets/main-917d29fc.js"
+MAIN_MODULE_MEMBERS = (
+    MAIN_MODULE_MEMBER,
+    "assets/main-31595bd3.js",
+)
 BOOTSTRAP_MEMBER = "assets/olivia-companion-settings.js"
 PATCH_MARKER = "data-olivia-companion-settings"
 PATCH_SCHEMA_VERSION = "p03.original-settings-shell.v1"
@@ -34,7 +38,8 @@ MAX_TEXT_MEMBER_BYTES = 64 * 1024 * 1024
 _MODULE_SCRIPT_RE = re.compile(
     r"<script\b"
     r"(?=[^>]*\btype\s*=\s*([\"'])module\1)"
-    r"(?=[^>]*\bsrc\s*=\s*([\"'])\./assets/main-917d29fc\.js\2)"
+    r"(?=[^>]*\bsrc\s*=\s*([\"'])\./assets/"
+    r"(?P<main>main-(?:917d29fc|31595bd3)\.js)\2)"
     r"[^>]*>\s*</script>",
     flags=re.IGNORECASE,
 )
@@ -253,12 +258,9 @@ def _patch_existing(
 
 def _patch_index(root: Path, api_base: str) -> str:
     index = root / INDEX_MEMBER
-    main_module = root / MAIN_MODULE_MEMBER
     bootstrap = root / BOOTSTRAP_MEMBER
     if not index.is_file():
         raise CompanionSettingsPatchError("COMPANION_INDEX_MISSING")
-    if not main_module.is_file():
-        raise CompanionSettingsPatchError("COMPANION_MAIN_MODULE_MISSING")
     source = _read_text(index, "COMPANION_INDEX_UNREADABLE")
 
     marker_count = source.count(PATCH_MARKER)
@@ -271,6 +273,9 @@ def _patch_index(root: Path, api_base: str) -> str:
     if len(matches) != 1:
         raise CompanionSettingsPatchError("COMPANION_MODULE_ANCHOR_INVALID")
     match = matches[0]
+    main_member = f"assets/{match.group('main')}"
+    if main_member not in MAIN_MODULE_MEMBERS or not (root / main_member).is_file():
+        raise CompanionSettingsPatchError("COMPANION_MAIN_MODULE_MISSING")
     patched = (
         source[: match.end()]
         + "\n  "

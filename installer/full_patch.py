@@ -35,7 +35,13 @@ PAYLOAD_DIRS = (
     "tts",
     "linli_character",
 )
-PAYLOAD_EXTRA_DIRS = ("runtime/visual",)
+PAYLOAD_EXTRA_DIRS = (
+    "runtime/media",
+    "runtime/memory",
+    "runtime/reply",
+    "runtime/validation",
+    "runtime/visual",
+)
 PAYLOAD_EXTRA_FILES = (
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",

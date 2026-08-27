@@ -19,7 +19,7 @@ import tempfile
 from typing import Any, Iterable
 import zipfile
 
-from patch_feapp import MAIN_JS
+from patch_feapp import patch_profile_for_members
 
 
 BRIDGE_AUDIT_SCHEMA_VERSION = "p03.original-player-bridge-audit.v1"
@@ -205,6 +205,19 @@ def _read_archive_texts(
     return archive_sha256, texts
 
 
+def _read_feapp_texts(path: Path) -> tuple[str, dict[str, str]]:
+    if not path.is_file():
+        raise OriginalPlayerBridgeAuditError("BRIDGE_ARCHIVE_NOT_FOUND")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            profile = patch_profile_for_members(archive.namelist())
+    except ValueError as exc:
+        raise OriginalPlayerBridgeAuditError("BRIDGE_MAIN_BUNDLE_MISSING") from exc
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise OriginalPlayerBridgeAuditError("BRIDGE_ARCHIVE_INVALID") from exc
+    return _read_archive_texts(path, only_member=profile.main_js)
+
+
 def _application_texts(texts: dict[str, str]) -> dict[str, str]:
     selected: dict[str, str] = {}
     for name, text in texts.items():
@@ -318,10 +331,7 @@ def audit_original_player_bridge(
     if not resources.is_dir():
         raise OriginalPlayerBridgeAuditError("BRIDGE_RESOURCES_NOT_FOUND")
 
-    feapp_sha256, feapp_texts = _read_archive_texts(
-        resources / "feapp.dat",
-        only_member=MAIN_JS,
-    )
+    feapp_sha256, feapp_texts = _read_feapp_texts(resources / "feapp.dat")
     player_archives: dict[str, dict[str, Any]] = {}
     for archive_name in PLAYER_ARCHIVES:
         archive_sha256, texts = _read_archive_texts(resources / archive_name)
