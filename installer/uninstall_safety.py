@@ -80,6 +80,15 @@ def safe_owned_targets(root: Path) -> tuple[Path, ...]:
     return tuple(_safe_target(root, name) for name in OWNED_PATHS)
 
 
+def safe_managed_target(root: Path, name: str) -> Path:
+    """Validate one caller-owned relative target using the shared boundary."""
+
+    root = root.absolute()
+    if _is_reparse_point(root) or not root.is_dir():
+        raise ValueError("managed uninstall root is unavailable")
+    return _safe_target(root.resolve(), name)
+
+
 def _remove_managed_python_path_registration(root: Path) -> None:
     """Remove only this installation's absolute Mem0 runtime registration."""
 
@@ -131,5 +140,6 @@ __all__ = [
     "OWNED_PATHS",
     "PRESERVED_PATHS",
     "remove_owned_targets",
+    "safe_managed_target",
     "safe_owned_targets",
 ]
