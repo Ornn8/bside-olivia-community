@@ -7,12 +7,12 @@
 | 路径 | 职责 |
 | --- | --- |
 | `local_server.py` | 本机 HTTP 服务、信件主流程和后台媒体任务入口 |
-| `reply_pipeline.py`、`reply_*.py` | canonical reply 装配、审校、持久化和媒体投影 |
+| `reply_context.py`、`reply_model_quality.py`、`reply_orchestrator.py`、`reply_pipeline.py`、`reply_reviewer.py`、`runtime/reply/*.py` | canonical reply 装配、审校、持久化和媒体投影；只有根目录 `reply_delivery.py` 与 `reply_media.py` 是兼容别名 |
 | `llm_gateway.py`、`voice_direction.py` | 可配置模型调用与语音导演计划 |
 | `conversation_memory_*.py`、`mem0_memory.py` | 长期记忆、outbox、管理和运行时适配 |
 | `private_world_*.py` | 私有关系事件、ledger、reducer、投影和管理 |
 | `original_client_*.py`、`patch_*.py` | 原版客户端兼容接口、设置页和本机补丁 |
-| `music_*.py`、`reply_media.py` | 视频、音乐和媒体编排 |
+| `music_*.py`、`runtime/reply/reply_media.py` | 视频、音乐和媒体编排 |
 
 ## 目录
 

@@ -14,17 +14,17 @@ import pytest
 
 import latentsync_reply
 import music_reply
-import reply_media
+from runtime.reply import reply_media
 from latentsync_reply import render_latentsync_video
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration
 from music_reply import MusicReplyError, render_musical_reply
-from reply_delivery import (
+from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
     build_ordinary_video_repair_content,
     ordinary_video_reply_length_ok,
     plan_reply_delivery,
 )
-from reply_media import (
+from runtime.reply.reply_media import (
     ReplyMediaError,
     _tts_config,
     assemble_complete_video_delivery,

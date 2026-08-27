@@ -52,8 +52,8 @@ from letter_triage import LetterEmotionTriage, TriageResult, _current_music_perf
 from runtime.media.media_paths import configured_media_path
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS
-from reply_media import ReplyMediaError, render_reply_video
-from reply_delivery import (
+from runtime.reply.reply_media import ReplyMediaError, render_reply_video
+from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
     build_ordinary_video_repair_content,
     ordinary_video_reply_length_ok,
