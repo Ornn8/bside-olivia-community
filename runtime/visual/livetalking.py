@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
+from runtime.packaging.b10b.security import is_external_reference
+
 
 LIVE_TALKING_SOURCE = "https://github.com/lipku/LiveTalking"
 LIVE_TALKING_REVISION = "a97f01ba366e55eeed94e88d6bae38ed77b3a1b9"
@@ -37,33 +39,6 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _AVATAR_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 _FRAME_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
-_RESERVED_DEVICE_NAMES = frozenset(
-    {
-        "AUX",
-        "CLOCK$",
-        "COM1",
-        "COM2",
-        "COM3",
-        "COM4",
-        "COM5",
-        "COM6",
-        "COM7",
-        "COM8",
-        "COM9",
-        "CON",
-        "LPT1",
-        "LPT2",
-        "LPT3",
-        "LPT4",
-        "LPT5",
-        "LPT6",
-        "LPT7",
-        "LPT8",
-        "LPT9",
-        "NUL",
-        "PRN",
-    }
-)
 
 
 class LiveTalkingConfigError(ValueError):
@@ -74,23 +49,10 @@ class LiveTalkingRuntimeError(RuntimeError):
     """Raised when the delegated LiveTalking process cannot be started safely."""
 
 
-def _is_reserved_device_segment(part: str) -> bool:
-    normalized = part.rstrip(" .")
-    return normalized.split(".", 1)[0].upper() in _RESERVED_DEVICE_NAMES
-
-
 def _external_path(value: Path | str) -> bool:
-    candidate = PureWindowsPath(str(value))
-    # Provider assets may live on any local Windows volume.  Keep the
-    # reference-only boundary strict: no relative/drive-relative paths, UNC
-    # shares, URLs, device paths, traversal, or a bare drive root.
-    return (
-        candidate.is_absolute()
-        and bool(re.fullmatch(r"[A-Za-z]:", candidate.drive))
-        and len(candidate.parts) > 1
-        and not any(part in {".", ".."} for part in candidate.parts)
-        and not any(_is_reserved_device_segment(part) for part in candidate.parts)
-    )
+    """Apply B10B's public Windows external-reference syntax policy."""
+
+    return is_external_reference(str(value))
 
 
 def _path(value: Path | str, field: str) -> Path:

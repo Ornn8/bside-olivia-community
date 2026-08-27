@@ -147,6 +147,32 @@ def _is_reserved_device_segment(part: str) -> bool:
     return normalized.upper() in _RESERVED
 
 
+def managed_copy_paths_are_distinct(source: Path, destination: Path) -> bool:
+    """Return whether an external managed-copy pair is safe to treat as distinct.
+
+    Reparse points make lexical paths unreliable.  For existing non-reparse
+    paths, ``samefile`` also detects physical aliases such as NTFS short names.
+    A failed identity probe is unsafe; a missing path cannot be the deletion
+    target and is handled by the lifecycle plan separately.
+    """
+
+    for path in (Path(source), Path(destination)):
+        current = path
+        while True:
+            if os.path.lexists(current) and _is_reparse_point(current):
+                return False
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+    try:
+        return not os.path.samefile(source, destination)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def is_external_reference(value: str, *, policy: str = "absolute") -> bool:
     """Validate a reference without resolving or copying the referenced asset.
 

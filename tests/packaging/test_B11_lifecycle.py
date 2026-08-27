@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import os
 
 import pytest
 
@@ -52,6 +53,13 @@ def _settings(tmp_path: Path) -> dict[str, object]:
             }
         ],
     }
+
+
+def _directory_alias(target: Path, link: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory reparse points are unavailable: {exc}")
 
 
 def test_livetalking_install_enable_health_and_uninstall_are_idempotent_and_external_only(tmp_path: Path) -> None:
@@ -120,3 +128,115 @@ def test_livetalking_rejects_managed_copy_destination_alias_of_preserved_source(
     assert exc_info.value.code == "CONFIG_INVALID"
     assert source.is_file()
     assert not (data_root / "modules" / "visual_livetalking" / "config.json").exists()
+
+
+def test_livetalking_uninstall_refuses_physical_alias_of_preserved_source(tmp_path: Path) -> None:
+    project, data_root = _project(tmp_path)
+    manager = B10BManager(project_root=project, data_root=data_root)
+    manager.install(["core/http", "visual-driver", "visual-livetalking"])
+
+    settings = _settings(tmp_path)
+    source = tmp_path / "downloads" / "preserved.pth"
+    destination = tmp_path / "external" / "LiveTalking" / "models" / "preserved.pth"
+    source.write_bytes(b"preserved source")
+    destination.write_bytes(source.read_bytes())
+    settings["managed_external_copies"] = [
+        {
+            "source": str(source),
+            "destination": str(destination),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "preserve_source": True,
+        }
+    ]
+    manager.customize("visual-livetalking", settings)
+    manager.disable("visual-livetalking")
+
+    destination.unlink()
+    os.link(source, destination)
+    assert os.path.samefile(source, destination)
+
+    with pytest.raises(B10BError) as exc_info:
+        manager.uninstall(["visual-livetalking"], dry_run=False)
+
+    assert exc_info.value.code == "CONFIG_INVALID"
+    assert source.read_bytes() == b"preserved source"
+    assert destination.exists()
+
+
+def test_livetalking_uninstall_refuses_reparse_alias_of_preserved_source(tmp_path: Path) -> None:
+    project, data_root = _project(tmp_path)
+    manager = B10BManager(project_root=project, data_root=data_root)
+    manager.install(["core/http", "visual-driver", "visual-livetalking"])
+
+    settings = _settings(tmp_path)
+    source = tmp_path / "downloads" / "preserved.pth"
+    destination = tmp_path / "external" / "LiveTalking" / "models" / "preserved.pth"
+    source.write_bytes(b"preserved source")
+    destination.write_bytes(source.read_bytes())
+    settings["managed_external_copies"] = [
+        {
+            "source": str(source),
+            "destination": str(destination),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "preserve_source": True,
+        }
+    ]
+    manager.customize("visual-livetalking", settings)
+    manager.disable("visual-livetalking")
+
+    destination.unlink()
+    (destination.parent / "wav2lip.pth").unlink()
+    destination.parent.rmdir()
+    _directory_alias(source.parent, destination.parent)
+    assert os.path.samefile(source, destination)
+
+    with pytest.raises(B10BError) as exc_info:
+        manager.uninstall(["visual-livetalking"], dry_run=False)
+
+    assert exc_info.value.code == "CONFIG_INVALID"
+    assert source.read_bytes() == b"preserved source"
+    assert destination.exists()
+
+
+def test_livetalking_uninstall_refuses_destination_alias_of_any_preserved_source(tmp_path: Path) -> None:
+    project, data_root = _project(tmp_path)
+    manager = B10BManager(project_root=project, data_root=data_root)
+    manager.install(["core/http", "visual-driver", "visual-livetalking"])
+
+    settings = _settings(tmp_path)
+    source_a = tmp_path / "downloads" / "preserved-a.pth"
+    source_b = tmp_path / "downloads" / "preserved-b.pth"
+    destination_a = tmp_path / "external" / "LiveTalking" / "models" / "copy-a.pth"
+    destination_b = tmp_path / "external" / "LiveTalking" / "models" / "copy-b.pth"
+    source_a.write_bytes(b"same verified source")
+    source_b.write_bytes(b"same verified source")
+    destination_a.write_bytes(source_a.read_bytes())
+    destination_b.write_bytes(source_b.read_bytes())
+    digest = hashlib.sha256(source_a.read_bytes()).hexdigest()
+    settings["managed_external_copies"] = [
+        {
+            "source": str(source_a),
+            "destination": str(destination_a),
+            "sha256": digest,
+            "preserve_source": True,
+        },
+        {
+            "source": str(source_b),
+            "destination": str(destination_b),
+            "sha256": digest,
+            "preserve_source": True,
+        },
+    ]
+    manager.customize("visual-livetalking", settings)
+    manager.disable("visual-livetalking")
+
+    destination_a.unlink()
+    os.link(source_b, destination_a)
+    assert os.path.samefile(source_b, destination_a)
+
+    with pytest.raises(B10BError) as exc_info:
+        manager.uninstall(["visual-livetalking"], dry_run=False)
+
+    assert exc_info.value.code == "CONFIG_INVALID"
+    assert source_b.read_bytes() == b"same verified source"
+    assert destination_a.exists()

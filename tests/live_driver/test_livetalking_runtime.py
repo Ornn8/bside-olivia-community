@@ -109,6 +109,35 @@ def test_config_rejects_tilde_backslash_paths_before_expanduser() -> None:
 
 
 @pytest.mark.parametrize(
+    "field",
+    (
+        "runtime_root",
+        "checkpoint_path",
+        "avatar_payload",
+        "original_reference",
+        "work_root",
+        "python_executable",
+    ),
+)
+@pytest.mark.parametrize(
+    "unsafe",
+    (
+        r"C:\provider\staged.\asset",
+        r"C:\provider\staged \asset",
+        r"C:\provider\NUL .txt\asset",
+    ),
+)
+def test_config_rejects_windows_alias_segments_for_every_managed_path(
+    tmp_path: Path, field: str, unsafe: str
+) -> None:
+    config = _config(tmp_path)
+    object.__setattr__(config, field, Path(unsafe))
+
+    with pytest.raises(LiveTalkingConfigError, match="absolute local Windows"):
+        config.validate()
+
+
+@pytest.mark.parametrize(
     "unsafe",
     [
         r"C:\NUL",
@@ -196,6 +225,31 @@ def test_worker_command_delegates_to_official_runtime_without_install_or_downloa
     assert "--download" not in encoded
     assert "--install" not in encoded
     assert LIVE_TALKING_REVISION in command
+
+
+@pytest.mark.parametrize("field", ("audio_path", "output_dir", "worker_path"))
+@pytest.mark.parametrize(
+    "unsafe",
+    (
+        r"C:\provider\staged.\asset",
+        r"C:\provider\staged \asset",
+        r"C:\provider\NUL .txt\asset",
+    ),
+)
+def test_worker_command_rejects_windows_alias_segments_for_every_managed_path(
+    tmp_path: Path, field: str, unsafe: str
+) -> None:
+    config = _config(tmp_path)
+    arguments: dict[str, Path | tuple[int, ...]] = {
+        "audio_path": tmp_path / "audio" / "sample.wav",
+        "output_dir": tmp_path / "evidence" / "frames",
+        "worker_path": tmp_path / "project" / "tools" / "livetalking_worker.py",
+        "frame_indices": (0,),
+    }
+    arguments[field] = Path(unsafe)
+
+    with pytest.raises(LiveTalkingConfigError, match="absolute local Windows"):
+        build_worker_command(config, **arguments)
 
 
 def test_original_frame_restore_is_a_source_copy_without_watermark_or_renderer(tmp_path: Path) -> None:

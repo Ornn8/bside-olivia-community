@@ -25,6 +25,7 @@ from .security import (
     ensure_regular_owned_file,
     is_external_reference,
     is_sensitive_key,
+    managed_copy_paths_are_distinct,
     redact,
     safe_owned_path,
     ensure_safe_root,
@@ -1240,6 +1241,8 @@ class B10BManager:
             raise B10BError("CONFIG_INVALID", "managed_external_copies must be a list.", {"module": module["id"]})
         normalized: list[dict[str, Any]] = []
         destinations: set[str] = set()
+        sources: list[Path] = []
+        destination_paths: list[Path] = []
         for index, item in enumerate(raw):
             if not isinstance(item, dict) or set(item) != _MANAGED_COPY_KEYS:
                 raise B10BError("CONFIG_INVALID", "A managed external copy declaration is invalid.", {"module": module["id"], "index": index})
@@ -1254,11 +1257,22 @@ class B10BManager:
             destination_key = os.path.normcase(os.path.normpath(destination))
             if source_key == destination_key or destination_key in destinations:
                 raise B10BError("CONFIG_INVALID", "Managed copy destinations must be unique and distinct from sources.", {"index": index})
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if (
+                not managed_copy_paths_are_distinct(source_path, destination_path)
+                or any(not managed_copy_paths_are_distinct(source_path, prior) for prior in destination_paths)
+                or any(not managed_copy_paths_are_distinct(prior, destination_path) for prior in sources)
+                or any(not managed_copy_paths_are_distinct(prior, destination_path) for prior in destination_paths)
+            ):
+                raise B10BError("CONFIG_INVALID", "Managed copy sources and destinations must not be physical path aliases.", {"index": index})
             if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
                 raise B10BError("CONFIG_INVALID", "Managed copy sha256 must be a 64-character hexadecimal digest.", {"index": index})
             if item["preserve_source"] is not True:
                 raise B10BError("CONFIG_INVALID", "Managed copies must preserve their external source files.", {"index": index})
             destinations.add(destination_key)
+            sources.append(source_path)
+            destination_paths.append(destination_path)
             normalized.append({"source": source, "destination": destination, "sha256": digest.lower(), "preserve_source": True})
         return normalized
 
@@ -1267,10 +1281,11 @@ class B10BManager:
         declarations = self._validate_managed_external_copies(module, settings)
         plan: list[dict[str, Any]] = []
         for item in declarations:
-            source = Path(item["source"])
             destination = Path(item["destination"])
             entry = dict(item)
-            if not source.is_file():
+            if not managed_copy_paths_are_distinct(source, destination):
+                entry["status"] = "PATH_ALIAS"
+            elif not source.is_file():
                 entry["status"] = "SOURCE_MISSING"
             elif not destination.exists():
                 entry["status"] = "MISSING"
@@ -1296,12 +1311,16 @@ class B10BManager:
 
     def _delete_managed_copies(self, plan: list[dict[str, Any]]) -> list[dict[str, str]]:
         ready: list[dict[str, str]] = []
+        protected_sources = tuple(Path(item["source"]) for item in plan)
         for item in plan:
             if item["status"] in {"MISSING"}:
                 continue
             if item["status"] != "READY":
                 raise B10BError("MANAGED_COPY_NOT_SAFE", "A managed external copy is not hash-verified and cannot be deleted.", {"destination": item["destination"], "status": item["status"]})
+            source = Path(item["source"])
             destination = Path(item["destination"])
+            if any(not managed_copy_paths_are_distinct(protected, destination) for protected in protected_sources):
+                raise B10BError("MANAGED_COPY_NOT_SAFE", "A managed external copy is a path alias and cannot be deleted.", {"destination": item["destination"]})
             try:
                 destination.unlink()
             except OSError as exc:
@@ -1311,16 +1330,21 @@ class B10BManager:
 
     @staticmethod
     def _restore_managed_copies(deleted: list[dict[str, str]]) -> None:
+        protected_sources = tuple(Path(item["source"]) for item in deleted)
         for item in deleted:
             source = Path(item["source"])
             destination = Path(item["destination"])
             if destination.exists():
                 continue
+            if any(not managed_copy_paths_are_distinct(protected, destination) for protected in protected_sources):
+                raise B10BError("MANAGED_COPY_NOT_SAFE", "A managed external copy recovery path is a path alias.", {"destination": item["destination"]})
             if not source.is_file():
                 raise B10BError("MANAGED_COPY_SOURCE_MISSING", "A managed copy source disappeared during recovery.", {"source": item["source"]})
             if B10BManager._managed_copy_sha256(source) != item["sha256"]:
                 raise B10BError("MANAGED_COPY_SOURCE_CHANGED", "A managed copy source changed during recovery.", {"source": item["source"]})
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if any(not managed_copy_paths_are_distinct(protected, destination) for protected in protected_sources):
+                raise B10BError("MANAGED_COPY_NOT_SAFE", "A managed external copy recovery path is a path alias.", {"destination": item["destination"]})
             shutil.copyfile(source, destination)
 
 
