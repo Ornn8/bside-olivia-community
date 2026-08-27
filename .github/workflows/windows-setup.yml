@@ -31,7 +31,7 @@ jobs:
 
       - name: Install pinned Inno Setup compiler
         shell: powershell
-        run: choco install innosetup --version=6.7.3 --yes --no-progress
+        run: choco install innosetup --version=6.7.1 --yes --no-progress
 
       - name: Build single-file setup
         shell: powershell

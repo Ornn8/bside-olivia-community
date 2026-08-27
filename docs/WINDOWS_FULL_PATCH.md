@@ -26,7 +26,7 @@ python installer/build_offline_core_assets.py --output offline
 
 ## 构建单文件安装器
 
-构建机需要 Python 3.12、`jsonschema` 和 Inno Setup 6.7.3。先生成离线核心资产，再执行：
+构建机需要 Python 3.12、`jsonschema` 和 Inno Setup 6.7.1 或兼容的新版本。先生成离线核心资产，再执行：
 
 ```powershell
 python installer/build_windows_setup.py `
