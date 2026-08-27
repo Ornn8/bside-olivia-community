@@ -142,7 +142,7 @@ http://localhost:<port>/toy/media/<safe-name>.mp4
 
 ## 7. 原版播放器边界
 
-原版信箱视频回复使用 Collection 内现有的 `BaseVideo` 路径。`webplayer` 是另一套与 `uid`、下载进度和播放控制相关的播放器；`feplayer` 使用 `file` 参数。当前书信视频不需要新建播放器路由，也不应把 `webplayer` 或 `feplayer` 强行替换为信件详情组件。
+原版信箱视频回复使用 Collection 内现有的 `BaseVideo` 路径，作为默认书信编排路线。`webplayer` 是另一套与 `uid`、下载进度和播放控制相关的播放器；安装器提供可选的显式 `uid` 本机回退，只接受明确的 loopback `/toy/media/` URL。该回退不替代 `BaseVideo` 或改变书信路由；`feplayer` 使用 `file` 参数，也不应被强行替换为信件详情组件。
 
 ## 8. 实施顺序
 

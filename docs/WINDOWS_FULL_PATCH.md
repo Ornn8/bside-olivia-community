@@ -34,8 +34,8 @@ feapp.dat
   3. 在原版 Settings 内加入“本地陪伴”界面
 
 webplayer.dat
-  4. 保留原版 uid 播放路径
-  5. 只为明确的 loopback /toy/media/ 地址启用本机视频播放
+4. 保留原版 uid 播放路径
+5. 提供可选的显式 `uid` 本机回退，只为明确的 loopback `/toy/media/` 地址启用本机视频播放
 ```
 
 原版主包之外，设置界面只增加一个仓库自有 bootstrap；原版 `assets/main-917d29fc.js` 的业务代码除既有端点和 Collection 锚点外不做模糊替换。播放器的普通原版路径继续加载未修改的原模块。
@@ -56,7 +56,7 @@ webplayer.dat.orig
 
 - 原版 UI：用户日常只打开原版 Olivia。原版 Settings 内可读取长期记忆、PrivateWorld 和待确认建议；不发布独立浏览器 Control Center 或第二个桌面入口。
 - 文字回信：接入 main 的本地 HTTP 契约；LLM 未配置时返回真实 `UNAVAILABLE`，不伪造成功。
-- 视频回信、音乐视频：已迁入情绪分流、普通视频 delivery、LatentSync、音乐内容/渲染与 MiniMax Music 3 worker 的调用边界；实际 TTS、视觉、分离和音乐模型均为外部依赖。依赖缺失时明确返回 `UNAVAILABLE`，不会伪造媒体 URL。完成的本机 MP4 通过原版 webplayer 播放。
+- 视频回信、音乐视频：已迁入情绪分流、普通视频 delivery、LatentSync、音乐内容/渲染与 MiniMax Music 3 worker 的调用边界；实际 TTS、视觉、分离和音乐模型均为外部依赖。依赖缺失时明确返回 `UNAVAILABLE`，不会伪造媒体 URL。完成的本机 MP4 默认通过 Collection 内的 `BaseVideo` 展示；`webplayer` 仅保留为可选的显式 `uid` 本机回退，不替代书信编排路线。
 - Live：暂停，manifest 标记为 `UNAVAILABLE_PAUSED`，不会注入 Live 入口。
 - 第三方 Python/runtime/model：不随补丁分发。请使用 `docs/THIRD_PARTY_DOWNLOADS.md` 的官方来源页；下载清单默认空、下载器默认 dry-run，必须明确接受许可证后才允许写入仓库外 data root。
 

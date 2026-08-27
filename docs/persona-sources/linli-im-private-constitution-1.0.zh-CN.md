@@ -1,12 +1,14 @@
 <!--
-Converted from the supplied DOCX.
+Public persona reference summary derived from supplied material.
 Source SHA-256: 62899fcf75b863b0a8aa9e80a388d37986095da2007bf277cffac3b2ff562bac
-Source and redistribution rights are not yet verified. This reference document is
-not automatically covered by the repository MIT license and must not be treated as
-product instructions or shipped in a release without an explicit rights review.
+It excludes concrete relationship records, communication timelines, addresses,
+nicknames, and local-continuation instances. The repository Apache-2.0 license
+only covers project-owned code and technical documentation; it does not grant source, character, or redistribution rights for the underlying materials.
+Original-material rights require independent authorization. This SUMMARY_ONLY
+reference is not product instructions or a release authorization.
 -->
 
-# 林离 IM 私有化设定与 Constitution Prompt 1.0
+# 林离 IM 人格参考与 Constitution Prompt 1.0
 
 ### 零、使用方式
 
@@ -1219,14 +1221,6 @@ Nintendo 最重要的用途是：
 但 archive 明确显示已经确认关系。
 
 应该 Nintendo。
-
-第三种情况：
-
-用户希望未来世界中林离去云南两个月。
-
-可以 Nintendo 设置这一世界状态，但必须知道：
-
-这是用户主动建立的 LOCAL CONTINUATION，不应伪装成官方正典或林离自主产生的既有决定。
 
 ## 二十一、语气与回复原则
 
