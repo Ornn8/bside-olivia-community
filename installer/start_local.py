@@ -46,6 +46,9 @@ def _health(port: int) -> str:
             payload = json.loads(response.read().decode("utf-8"))
         data = payload.get("data") if isinstance(payload, dict) else None
         required_checks = data.get("required_checks") if isinstance(data, dict) else None
+        required_checks_available = isinstance(required_checks, dict) and all(
+            required_checks.get(name) == "available" for name in _CORE_HEALTH_REQUIRED_CHECKS
+        )
         contract_matches = (
             response.status == 200
             and isinstance(payload, dict)
@@ -57,7 +60,7 @@ def _health(port: int) -> str:
             and data.get("profile") == "core"
             and data.get("status") in {"HEALTHY", "FAILED"}
             and isinstance(required_checks, dict)
-            and all(required_checks.get(name) == "available" for name in _CORE_HEALTH_REQUIRED_CHECKS)
+            and (data["status"] == "HEALTHY") == required_checks_available
         )
         if not contract_matches:
             return "PORT_CONFLICT"
