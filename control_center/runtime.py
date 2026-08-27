@@ -17,7 +17,7 @@ from aiohttp import web
 
 from private_world_candidates import SQLitePrivateWorldCandidateStore
 from private_world_ledger import LedgerWriteError, SQLitePrivateWorldLedger
-from private_world_runtime import resolve_private_world_database
+from runtime.memory.private_world_runtime import resolve_private_world_database
 from private_world_service import PrivateWorldCommandService
 
 from .app import AUTH_KEY, create_control_app

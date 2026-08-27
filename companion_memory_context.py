@@ -15,7 +15,7 @@ from conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
 )
-from conversation_memory_identity import (
+from runtime.memory.conversation_memory_identity import (
     ConversationMemoryIdentityError,
     normalize_conversation_memory_user_id,
 )

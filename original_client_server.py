@@ -53,8 +53,8 @@ from private_world_candidates import (
 )
 from private_world_ledger import LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldPort, PrivateWorldSnapshot
-from private_world_projection import project_private_world
-from private_world_runtime import resolve_private_world_database
+from runtime.memory.private_world_projection import project_private_world
+from runtime.memory.private_world_runtime import resolve_private_world_database
 from private_world_service import PrivateWorldCommandService
 
 
