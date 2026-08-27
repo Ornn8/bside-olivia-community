@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -136,8 +137,43 @@ def test_install_entrypoint_prioritizes_selected_payload() -> None:
         encoding="utf-8-sig"
     )
 
-    assert "sys.path.insert(0,sys.argv.pop(1))" in script
-    assert 'runpy.run_module("installer",run_name="__main__")' in script
+    assert "installer\\bootstrap_install.py" in script
+    assert "@($bootstrap, $PayloadRoot) + $arguments" in script
+    assert (repo_root / "installer" / "bootstrap_install.py").is_file()
+
+
+def test_install_bootstrap_passes_arguments_to_the_package_cli(tmp_path: Path) -> None:
+    repo_root = Path(__file__).parents[2]
+    bootstrap = repo_root / "installer" / "bootstrap_install.py"
+    missing_official = tmp_path / "official-client"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bootstrap),
+            str(repo_root),
+            "doctor",
+            "--official-root",
+            str(missing_official),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["code"] == "OFFICIAL_INSTALL_NOT_FOUND"
+
+
+def test_install_entrypoint_uses_dotnet_sha256_not_optional_powershell_cmdlet() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = (repo_root / "installer" / "Install.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "function Get-Sha256" in script
+    assert "[Security.Cryptography.SHA256]::Create()" in script
+    assert "Get-FileHash" not in script
 
 
 def test_managed_runtime_installs_all_server_dependencies() -> None:

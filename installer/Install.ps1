@@ -17,6 +17,22 @@ $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3
 $memoryDependenciesReady = $false
 $memoryDependenciesDeclined = $false
 
+function Get-Sha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath
+    )
+
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Update-ManagedPythonPath {
     param(
         [Parameter(Mandatory)]
@@ -92,7 +108,7 @@ function Test-MemoryRuntime {
     $manifestPath = Join-Path $runtimeFullPath '.olivia-mem0-runtime-manifest.json'
     try {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        $requirementsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirementsFullPath).Hash.ToLowerInvariant()
+        $requirementsHash = Get-Sha256 -LiteralPath $requirementsFullPath
         if ($manifest.requirements_sha256 -ne $requirementsHash) {
             Write-Warning 'MEM0_RUNTIME_MANIFEST_INVALID'
             return $false
@@ -138,7 +154,7 @@ if (-not (Test-Path -LiteralPath $runtimeExe)) {
     if ($answer -notmatch '^(y|yes)$') { throw 'PYTHON_LICENSE_NOT_ACCEPTED' }
     New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
     Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimeZip).Hash.ToLowerInvariant()
+    $actual = Get-Sha256 -LiteralPath $runtimeZip
     if ($actual -ne $runtimeSha256) { Remove-Item -LiteralPath $runtimeZip -Force; throw 'PYTHON_RUNTIME_HASH_MISMATCH' }
     Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
     Remove-Item -LiteralPath $runtimeZip -Force
@@ -157,7 +173,7 @@ if ($runner.File -eq $runtimeExe) {
         if ($answer -notmatch '^(y|yes)$') { throw 'AIOHTTP_LICENSE_NOT_ACCEPTED' }
         $pipScript = Join-Path $env:TEMP 'get-pip.py'
         Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $pipScript
-        $pipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pipScript).Hash.ToLowerInvariant()
+        $pipHash = Get-Sha256 -LiteralPath $pipScript
         if ($pipHash -ne 'fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6') { Remove-Item -LiteralPath $pipScript -Force; throw 'PIP_BOOTSTRAP_HASH_MISMATCH' }
         & $runner.File $pipScript --no-warn-script-location
         if ($LASTEXITCODE -ne 0) { throw 'PIP_BOOTSTRAP_FAILED' }
@@ -176,8 +192,8 @@ if (-not $selectedOfficial) {
 if ($selectedOfficial) { $arguments += @('--official-root', $selectedOfficial) }
 $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
-$bootstrap = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("installer",run_name="__main__")'
-& $runner.File @($runner.Args + @('-c', $bootstrap, $PayloadRoot) + $arguments)
+$bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'
+& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments)
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) { exit $installExitCode }
 
@@ -209,7 +225,7 @@ if ($runner.File -eq $runtimeExe) {
                     if ($LASTEXITCODE -eq 0) {
                         & $runner.File '-m' 'pip' 'install' '--disable-pip-version-check' '--require-hashes' '--only-binary=:all:' '--target' $memoryStaging '-r' $memoryRequirements
                         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $memoryStaging 'mem0\__init__.py'))) {
-                            $runtimeManifest = @{ requirements_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $memoryRequirements).Hash.ToLowerInvariant() } | ConvertTo-Json -Compress
+                            $runtimeManifest = @{ requirements_sha256 = Get-Sha256 -LiteralPath $memoryRequirements } | ConvertTo-Json -Compress
                             [IO.File]::WriteAllText((Join-Path $memoryStaging '.olivia-mem0-runtime-manifest.json'), $runtimeManifest, [System.Text.UTF8Encoding]::new($false))
                             if (Test-MemoryRuntime -RuntimePath $memoryStaging -RequirementsPath $memoryRequirements) {
                                 $memoryBackup = $memoryRuntime + '.backup.' + [guid]::NewGuid().ToString('N')
