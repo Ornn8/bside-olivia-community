@@ -10,6 +10,8 @@
 | `pytest` | 开发测试 | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | MIT |
 | `numpy` | 可选开发/媒体测试依赖 | [numpy/numpy](https://github.com/numpy/numpy) | BSD-3-Clause |
 | `opencv-python-headless` | 可选媒体测试依赖 | [opencv/opencv-python](https://github.com/opencv/opencv-python) | Apache-2.0 |
+| Inno Setup 6.7.1 | 仅用于构建 Windows 单文件安装器；编译器本身不进入发布包，生成的 Setup runtime 进入 EXE | [jrsoftware/issrc `is-6_7_1`](https://github.com/jrsoftware/issrc/tree/is-6_7_1) | Inno Setup License；构建时验证 `ISCC.exe` 的有效 Authenticode 签名及发布者 `Pyrsys B.V.` |
+| `ChineseSimplified.isl` | Windows 安装向导简体中文消息，编译后进入 EXE | [Inno Setup `is-6_7_1` 固定标签](https://github.com/jrsoftware/issrc/blob/is-6_7_1/Files/Languages/Unofficial/ChineseSimplified.isl) | 随 Inno Setup 源码发布并适用其许可证；构建锁定 SHA-256 `7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278` |
 
 模型、官方游戏、CosyVoice、LiveTalking、ASR/TTS provider、生成媒体和用户数据不属于公开依赖清单；它们必须由使用者在本机按各自来源和许可证提供，不能因为本项目使用接口或适配器就被重新授权。
 

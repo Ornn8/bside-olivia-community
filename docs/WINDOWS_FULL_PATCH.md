@@ -1,14 +1,16 @@
 # Windows 完整版补丁（隔离安装）
 
-本补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体。发布包内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
+本补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
 
 ## 使用
 
-1. 将发布 ZIP 解压到任意目录。
-2. 双击 `INSTALL.cmd`。它从发布包的 `offline` 目录安装受管的 Python 3.12 runtime 和固定 wheel，不联网下载。安装器从 Steam AppID `4532590` 的 appmanifest 自动发现正版目录。
+1. 下载 `Olivia-Setup-x64.exe` 及同目录的 `.sha256` 文件，并先核对 SHA-256。
+2. 双击 EXE，选择安装位置和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后双击 `START.cmd`。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。长期记忆、PrivateWorld 和媒体接口都挂在同一个进程中。
 4. 首次配置可双击 `CONFIGURE.cmd`：API key 输入不回显，并以当前 Windows 用户 DPAPI 加密保存到 `data\config`；也可选择自己的参考音频/视频导入 `data\third-party\reference`。这些文件不进入补丁包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
+
+兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
 
 ## 离线核心资产
 
@@ -21,6 +23,22 @@ python installer/build_offline_core_assets.py --output offline
 ```
 
 构建器只接受哈希锁定的二进制 wheel；pip 源仍兼容标准 `PIP_INDEX_URL` / pip 配置，因此发布构建可使用可信镜像，最终产物仍按仓库固定 SHA-256 验证。公开清单契约见 `contracts/offline_core_assets.schema.json` 和 `contracts/offline_core_assets.example.json`。
+
+## 构建单文件安装器
+
+构建机需要 Python 3.12、`jsonschema` 和 Inno Setup 6.7.1 或兼容的新版本。先生成离线核心资产，再执行：
+
+```powershell
+python installer/build_windows_setup.py `
+  --offline offline `
+  --output dist `
+  --version 0.1.0 `
+  --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
+
+GitHub Actions 会在 PR 和 `main` 更新时生成同样的可下载 artifact。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 
 ## 启动器健康检查
 
