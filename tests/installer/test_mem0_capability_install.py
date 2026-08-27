@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import threading
 
 from jsonschema import Draft202012Validator
+import pytest
 
 from mem0_capability_install import (
     CapabilityState,
@@ -348,6 +349,33 @@ def test_capability_uninstall_reports_failure_instead_of_missing() -> None:
     assert status.to_dict()["status"] == "UNAVAILABLE"
 
 
+def test_ready_status_fails_closed_when_live_layer_is_lost() -> None:
+    runtime, model = _Layer(ready=True), _Layer(ready=True)
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime, model=model, version="v1", estimated_download_bytes=20,
+        license_summary="licenses", requires_gpu=False,
+    )
+    assert installer.status().state is CapabilityState.READY
+    model.is_ready = False
+    status = installer.status()
+    assert status.state is CapabilityState.REPAIR
+    assert status.reason_code == "MEM0_CAPABILITY_VERIFY_FAILED"
+
+
+def test_progress_uses_bom_weights_and_actual_transport_source() -> None:
+    runtime, model = _Layer(), _Layer()
+    runtime.last_source = "https://official.example/simple"
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime, model=model, version="v1", estimated_download_bytes=30,
+        runtime_download_bytes=10, license_summary="licenses", requires_gpu=False,
+    )
+    installer._progress("runtime", runtime, "auto")(5, 10, "wheel")
+    assert installer.status().downloaded_bytes == 5
+    assert installer.status().source == runtime.last_source
+    installer._progress("model", model, "auto")(5, 10, "model")
+    assert installer.status().downloaded_bytes == 20
+
+
 def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     tmp_path: Path,
 ) -> None:
@@ -388,6 +416,7 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
             "https://pypi.tuna.tsinghua.edu.cn/simple",
             "https://pypi.org/simple",
         ),
+        download_bytes=236_253_351,
         verifier=verifier,
         runner=runner,
     )
@@ -404,6 +433,7 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     assert "https://pypi.tuna.tsinghua.edu.cn/simple" in calls[0]
     assert "https://pypi.org/simple" in calls[1]
     assert layer.ready() is True
+    assert layer.last_source == "https://pypi.org/simple"
     registered = pth.read_text(encoding="utf-8").splitlines()
     target = install_root / "runtime" / "mem0-site-packages"
     assert registered[:3] == [
@@ -416,7 +446,13 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
         "python-dependencies",
         "python-dependencies",
     ]
-
+    marker = target / ".olivia-mem0-runtime-manifest.json"
+    owned = marker.read_bytes()
+    marker.write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MEM0_RUNTIME_OWNERSHIP_INVALID"):
+        layer.uninstall()
+    assert target.exists()
+    marker.write_bytes(owned)
     layer.uninstall()
     assert not target.exists()
     assert all("mem0-site-packages" not in line for line in pth.read_text(encoding="utf-8").splitlines())
@@ -442,7 +478,12 @@ def test_managed_runtime_verifies_in_embedded_python_child_and_caches_result(
     requirements = install_root / "local_backend" / "installer" / "mem0-runtime-requirements.txt"
     requirements.parent.mkdir(parents=True)
     requirements.write_bytes(REQUIREMENTS.read_bytes())
-    (target / ".olivia-mem0-runtime-manifest.json").write_text("{}", encoding="utf-8")
+    (target / ".olivia-mem0-runtime-manifest.json").write_text(
+        json.dumps({
+            "requirements_sha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
+            "source": "https://official.example/simple",
+        }), encoding="utf-8",
+    )
     calls: list[list[str]] = []
 
     def run(command, **options):
@@ -458,6 +499,7 @@ def test_managed_runtime_verifies_in_embedded_python_child_and_caches_result(
         python_executable=python_executable,
         requirements=requirements,
         sources=("https://mirror.example/simple", "https://official.example/simple"),
+        download_bytes=236_253_351,
     )
 
     assert layer.ready() is True
@@ -473,14 +515,22 @@ def test_managed_embedding_uninstall_removes_model_and_transport_cache(
     bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
     layer = ManagedEmbeddingModel(
         data_root=tmp_path / "data",
+        install_root=tmp_path / "install",
         bom=bom.model,
-        download_root=tmp_path / "downloads",
+        download_root=tmp_path / "install" / "downloads" / "mem0-model",
     )
     layer.config.embedding_snapshot.mkdir(parents=True)
     manifest = layer.config.model_cache / "olivia-mem0-embedding-manifest.json"
-    manifest.write_text("{}", encoding="utf-8")
+    manifest.write_text(
+        json.dumps({"files": {name: item.sha256 for name, item in bom.model.files.items()}, "source": bom.model.sources[0]}),
+        encoding="utf-8",
+    )
     layer.download_root.mkdir(parents=True)
     (layer.download_root / "model.safetensors.part").write_bytes(b"partial")
+    (layer.download_root / ".olivia-mem0-downloads.json").write_text(
+        json.dumps({"repo_id": bom.model.repo_id, "revision": bom.model.revision}),
+        encoding="utf-8",
+    )
 
     layer.uninstall()
 
@@ -499,11 +549,10 @@ def test_capability_rejects_start_before_thread_when_disk_space_is_low() -> None
         estimated_download_bytes=20,
         license_summary="fixture licenses",
         requires_gpu=False,
-        required_free_bytes=100,
-        free_space=lambda: 99,
+        space_checks=((lambda: 100, 100), (lambda: 99, 100)),
     )
 
-    assert installer.start(source_mode="auto") == "REJECTED"
+    assert installer.install(source_mode="auto") == "REJECTED"
     status = installer.status()
     assert status.state is CapabilityState.REPAIR
     assert status.reason_code == "MEM0_CAPABILITY_DISK_SPACE_LOW"

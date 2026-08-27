@@ -19,6 +19,8 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
+from installer.uninstall_safety import safe_managed_target
+
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -367,11 +369,11 @@ class ResumableModelDownloader:
             last_error: Exception | None = None
             for source in self.sources:
                 try:
+                    self.last_source = source
                     self._transfer(source, relative_path, partial, artifact)
                     if not self._valid(partial, artifact):
                         partial.unlink(missing_ok=True)
                         raise RuntimeError("MEM0_MODEL_HASH_MISMATCH")
-                    self.last_source = source
                     last_error = None
                     break
                 except _DownloadPaused:
@@ -494,13 +496,16 @@ class ManagedMem0Runtime:
         python_executable: Path,
         requirements: Path,
         sources: tuple[str, str],
+        download_bytes: int,
         verifier: RuntimeVerifier | None = None,
         runner: CommandRunner = _run_command,
     ) -> None:
+        self.owner_root = install_root.absolute()
         self.install_root = install_root.resolve()
         self.python_executable = python_executable.resolve()
         self.requirements = requirements.resolve()
         self.sources = sources
+        self.download_bytes = download_bytes
         self.verifier = verifier
         self.runner = runner
         self.target = self.install_root / "runtime" / "mem0-site-packages"
@@ -533,6 +538,18 @@ class ManagedMem0Runtime:
         try:
             if not self._registered():
                 return False
+            marker = json.loads(
+                (self.target / ".olivia-mem0-runtime-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if (
+                marker.get("requirements_sha256")
+                != hashlib.sha256(self.requirements.read_bytes()).hexdigest()
+                or marker.get("source") not in self.sources
+            ):
+                return False
+            self.last_source = marker["source"]
             tracked = (
                 self.target,
                 self.target / ".olivia-mem0-runtime-manifest.json",
@@ -656,7 +673,17 @@ class ManagedMem0Runtime:
         for source, wheelhouse in attempts:
             shutil.rmtree(self.staging, ignore_errors=True)
             self.staging.mkdir(parents=True, exist_ok=True)
-            progress(0, 1, "python-dependencies")
+            marker = {
+                "requirements_sha256": hashlib.sha256(
+                    self.requirements.read_bytes()
+                ).hexdigest(),
+                "source": source,
+            }
+            (self.staging / ".olivia-mem0-runtime-manifest.json").write_text(
+                json.dumps(marker, sort_keys=True), encoding="utf-8"
+            )
+            self.last_source = source
+            progress(0, self.download_bytes, "python-dependencies")
             result = self.runner(
                 self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
                 environment=environment,
@@ -669,11 +696,6 @@ class ManagedMem0Runtime:
         if not installed:
             shutil.rmtree(self.staging, ignore_errors=True)
             raise RuntimeError("MEM0_RUNTIME_DOWNLOAD_FAILED")
-        digest = hashlib.sha256(self.requirements.read_bytes()).hexdigest()
-        (self.staging / ".olivia-mem0-runtime-manifest.json").write_text(
-            json.dumps({"requirements_sha256": digest}, sort_keys=True),
-            encoding="utf-8",
-        )
         if not self._verify(self.staging):
             shutil.rmtree(self.staging, ignore_errors=True)
             raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
@@ -694,9 +716,21 @@ class ManagedMem0Runtime:
             raise
         shutil.rmtree(backup, ignore_errors=True)
         self._ready_fingerprint = None
-        progress(1, 1, "python-dependencies")
+        progress(self.download_bytes, self.download_bytes, "python-dependencies")
 
     def uninstall(self) -> None:
+        marker_name = ".olivia-mem0-runtime-manifest.json"
+        for path, relative in (
+            (self.target, "runtime/mem0-site-packages"),
+            (self.staging, "runtime/mem0-site-packages.staging"),
+        ):
+            safe_managed_target(self.owner_root, relative)
+            if path.exists():
+                marker = json.loads((path / marker_name).read_text(encoding="utf-8"))
+                if marker.get("requirements_sha256") != hashlib.sha256(
+                    self.requirements.read_bytes()
+                ).hexdigest():
+                    raise RuntimeError("MEM0_RUNTIME_OWNERSHIP_INVALID")
         self._update_pth(enabled=False)
         for path in (self.target, self.staging):
             if path.exists():
@@ -714,12 +748,17 @@ class ManagedEmbeddingModel:
         self,
         *,
         data_root: Path,
+        install_root: Path,
         bom: ModelBOM,
         download_root: Path,
     ) -> None:
         from mem0_memory import Mem0Config
 
         self.bom = bom
+        self.data_owner_root, self.install_owner_root = (
+            data_root.absolute(), install_root.absolute()
+        )
+        self.data_root, self.install_root = data_root.resolve(), install_root.resolve()
         self.download_root = download_root
         self.config = Mem0Config(
             enabled=True,
@@ -739,7 +778,10 @@ class ManagedEmbeddingModel:
         except (OSError, UnicodeError, json.JSONDecodeError):
             return False
         expected = {name: artifact.sha256 for name, artifact in self.bom.files.items()}
-        return manifest.get("files") == expected
+        if manifest.get("files") != expected or manifest.get("source") not in self.bom.sources:
+            return False
+        self.last_source = manifest["source"]
+        return True
 
     def install(
         self,
@@ -755,6 +797,12 @@ class ManagedEmbeddingModel:
             return
         if offline_root is not None:
             raise ValueError("offline capability packs are not enabled")
+        downloader: ResumableModelDownloader
+
+        def report(downloaded: int, total: int, current: str) -> None:
+            self.last_source = downloader.last_source
+            progress(downloaded, total, current)
+
         downloader = ResumableModelDownloader(
             repo_id=self.bom.repo_id,
             revision=self.bom.revision,
@@ -763,7 +811,7 @@ class ManagedEmbeddingModel:
             download_root=self.download_root,
             source_mode=source_mode,
             pause_requested=pause_requested,
-            progress=progress,
+            progress=report,
         )
         result = Mem0EmbeddingInstaller(
             self.config,
@@ -773,6 +821,17 @@ class ManagedEmbeddingModel:
             },
         ).install()
         self.last_source = downloader.last_source
+        manifest_path = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source"] = self.last_source
+        temporary = manifest_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+        temporary.replace(manifest_path)
+        owner = self.download_root / ".olivia-mem0-downloads.json"
+        owner.write_text(
+            json.dumps({"repo_id": self.bom.repo_id, "revision": self.bom.revision}),
+            encoding="utf-8",
+        )
         if result.status not in {"APPLIED", "NOOP"} or not self.ready():
             if pause_requested.is_set():
                 raise _DownloadPaused
@@ -781,6 +840,23 @@ class ManagedEmbeddingModel:
     def uninstall(self) -> None:
         snapshot = self.config.embedding_snapshot
         manifest = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
+        download_marker = self.download_root / ".olivia-mem0-downloads.json"
+        safe_managed_target(
+            self.data_owner_root, snapshot.relative_to(self.data_root).as_posix()
+        )
+        safe_managed_target(
+            self.install_owner_root,
+            self.download_root.relative_to(self.install_root).as_posix(),
+        )
+        expected = {name: item.sha256 for name, item in self.bom.files.items()}
+        if snapshot.exists() and json.loads(manifest.read_text(encoding="utf-8")).get(
+            "files"
+        ) != expected:
+            raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
+        if self.download_root.exists() and json.loads(
+            download_marker.read_text(encoding="utf-8")
+        ) != {"repo_id": self.bom.repo_id, "revision": self.bom.revision}:
+            raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
         if snapshot.exists():
             shutil.rmtree(snapshot)
         manifest.unlink(missing_ok=True)
@@ -805,9 +881,11 @@ def create_mem0_capability_installer(
         python_executable=python_executable,
         requirements=requirements,
         sources=bom.runtime.sources,
+        download_bytes=bom.runtime.estimated_download_bytes,
     )
     model = ManagedEmbeddingModel(
         data_root=data_root,
+        install_root=install_root,
         bom=bom.model,
         download_root=install_root / "downloads" / "mem0-model",
     )
@@ -818,11 +896,17 @@ def create_mem0_capability_installer(
         estimated_download_bytes=bom.estimated_download_bytes,
         license_summary=bom.license_summary,
         requires_gpu=bom.requires_gpu,
-        required_free_bytes=max(
-            1_073_741_824,
-            bom.estimated_download_bytes * 5 // 2,
+        runtime_download_bytes=bom.runtime.estimated_download_bytes,
+        space_checks=(
+            (
+                lambda: shutil.disk_usage(install_root).free,
+                max(1_073_741_824, bom.runtime.estimated_download_bytes * 2),
+            ),
+            (
+                lambda: shutil.disk_usage(data_root).free,
+                max(1_073_741_824, bom.model.download_bytes * 2),
+            ),
         ),
-        free_space=lambda: shutil.disk_usage(install_root).free,
     )
 
 
@@ -873,17 +957,21 @@ class Mem0CapabilityInstaller:
         estimated_download_bytes: int,
         license_summary: str,
         requires_gpu: bool,
+        runtime_download_bytes: int | None = None,
         required_free_bytes: int = 0,
         free_space: Callable[[], int] | None = None,
+        space_checks: tuple[tuple[Callable[[], int], int], ...] = (),
     ) -> None:
         self.runtime = runtime
         self.model = model
         self.version = version
         self.total = estimated_download_bytes
+        self.runtime_bytes = runtime_download_bytes or estimated_download_bytes // 2
         self.license_summary = license_summary
         self.requires_gpu = requires_gpu
-        self.required_free_bytes = max(0, required_free_bytes)
-        self.free_space = free_space
+        self.space_checks = space_checks or (
+            ((free_space, max(0, required_free_bytes)),) if free_space else ()
+        )
         self._lock = threading.Lock()
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
@@ -922,21 +1010,44 @@ class Mem0CapabilityInstaller:
                 CapabilityState.MISSING,
                 CapabilityState.READY,
             }:
-                return self._new_status(CapabilityState.READY, "complete", self.total)
+                self._status = self._new_status(
+                    CapabilityState.READY,
+                    "complete",
+                    self.total,
+                    source=self._actual_source(None),
+                )
+                return self._status
+            if not ready and self._status.state is CapabilityState.READY:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    "verification",
+                    self._status.downloaded_bytes,
+                    reason="MEM0_CAPABILITY_VERIFY_FAILED",
+                )
             return self._status
 
-    def _progress(self, phase: str, source: str) -> Progress:
+    def _actual_source(self, fallback: str | None) -> str | None:
+        values = [getattr(layer, "last_source", None) for layer in (self.runtime, self.model)]
+        return ";".join(dict.fromkeys(value for value in values if value)) or fallback
+
+    def _has_space(self) -> bool:
+        try:
+            return all(check() >= required for check, required in self.space_checks)
+        except OSError:
+            return False
+
+    def _progress(self, phase: str, layer: CapabilityLayer, source: str) -> Progress:
         def update(downloaded: int, total: int, current: str) -> None:
             ratio = 0 if total <= 0 else min(1.0, downloaded / total)
-            base = 0 if phase == "runtime" else self.total // 2
-            span = self.total // 2
+            base = 0 if phase == "runtime" else self.runtime_bytes
+            span = self.runtime_bytes if phase == "runtime" else self.total - base
             with self._lock:
                 self._status = self._new_status(
                     CapabilityState.DOWNLOADING,
                     phase,
                     min(self.total, base + int(span * ratio)),
                     current=Path(current).name[:160],
-                    source=source,
+                    source=getattr(layer, "last_source", None) or source,
                 )
 
         return update
@@ -949,6 +1060,16 @@ class Mem0CapabilityInstaller:
     ) -> str:
         if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
+        if not self._has_space():
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    "preflight",
+                    0,
+                    source=source_mode,
+                    reason="MEM0_CAPABILITY_DISK_SPACE_LOW",
+                )
+            return "REJECTED"
         with self._lock:
             if self.runtime.ready() and self.model.ready():
                 return "NOOP"
@@ -965,7 +1086,7 @@ class Mem0CapabilityInstaller:
                 source_mode=source_mode,
                 offline_root=offline_root,
                 pause_requested=self._pause,
-                progress=self._progress("runtime", source_mode),
+                progress=self._progress("runtime", self.runtime, source_mode),
             )
             if self._pause.is_set():
                 raise _DownloadPaused
@@ -973,7 +1094,7 @@ class Mem0CapabilityInstaller:
                 source_mode=source_mode,
                 offline_root=offline_root,
                 pause_requested=self._pause,
-                progress=self._progress("model", source_mode),
+                progress=self._progress("model", self.model, source_mode),
             )
             if self._pause.is_set():
                 raise _DownloadPaused
@@ -983,7 +1104,7 @@ class Mem0CapabilityInstaller:
                     "verification",
                     self.total,
                     source=str(
-                        getattr(self.model, "last_source", None) or source_mode
+                        self._actual_source(source_mode)
                     ),
                 )
             if not self.runtime.ready() or not self.model.ready():
@@ -1014,7 +1135,7 @@ class Mem0CapabilityInstaller:
                 CapabilityState.READY,
                 "complete",
                 self.total,
-                source=str(getattr(self.model, "last_source", None) or source_mode),
+                source=self._actual_source(source_mode),
             )
         return "APPLIED"
 
@@ -1031,14 +1152,7 @@ class Mem0CapabilityInstaller:
                 return "NOOP"
             if self.runtime.ready() and self.model.ready():
                 return "NOOP"
-            try:
-                enough_space = (
-                    self.free_space is None
-                    or self.free_space() >= self.required_free_bytes
-                )
-            except OSError:
-                enough_space = False
-            if not enough_space:
+            if not self._has_space():
                 self._status = self._new_status(
                     CapabilityState.REPAIR,
                     "preflight",
