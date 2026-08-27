@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+
+import pytest
+from jsonschema import Draft202012Validator
 
 import pytest
 
@@ -35,7 +40,7 @@ def test_launcher_starts_combined_server_before_original_client(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     commands: list[list[str]] = []
     client_commands: list[list[str]] = []
 
@@ -105,7 +110,7 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     assert protected_path.is_file()
     assert protected_path.read_text(encoding="utf-8").strip() != expected
 
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
     client_environments: list[dict[str, str]] = []
 
@@ -149,7 +154,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -194,7 +199,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -244,3 +249,397 @@ def test_launcher_refuses_payload_without_combined_entrypoint(
 
     assert start_local.main(["--install-root", str(root)]) == 2
     assert capsys.readouterr().out.strip() == "PATCH_PAYLOAD_INCOMPLETE"
+
+
+def test_launcher_refuses_unrelated_http_health_payload(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "launcher must not start a backend when the port serves an unrelated JSON payload"
+        ),
+    )
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+
+
+def test_launcher_refuses_http_error_without_starting_backend_or_client(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    backend_commands: list[list[str]] = []
+    client_commands: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return 0
+
+    def raise_not_found(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8899/health?profile=core",
+            404,
+            "Not Found",
+            None,
+            None,
+        )
+
+    def popen(command, **_kwargs):
+        backend_commands.append([str(value) for value in command])
+        return Process()
+
+    def call(command, **_kwargs):
+        client_commands.append([str(value) for value in command])
+        return 0
+
+    monkeypatch.setattr(start_local, "urlopen", raise_not_found)
+    monkeypatch.setattr(start_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(start_local.subprocess, "call", call)
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+    assert backend_commands == []
+    assert client_commands == []
+
+
+def test_launcher_refuses_inconsistent_failed_health_before_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    backend_commands: list[list[str]] = []
+    client_commands: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return 0
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "schema_version": 1,
+                        "contract_version": "b02.v1",
+                        "profile": "core",
+                        "status": "FAILED",
+                        "required_checks": {
+                            "core.health": "available",
+                            "core.session": "available",
+                            "letters.read": "available",
+                            "music.catalog": "available",
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+    def popen(command, **_kwargs):
+        backend_commands.append([str(value) for value in command])
+        return Process()
+
+    def call(command, **_kwargs):
+        client_commands.append([str(value) for value in command])
+        return 0
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(start_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(start_local.subprocess, "call", call)
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+    assert not (root / "data").exists()
+    assert backend_commands == []
+    assert client_commands == []
+
+
+@pytest.mark.parametrize(
+    ("code", "schema_version"),
+    [(False, 1), (0, True)],
+    ids=("boolean-code", "boolean-schema-version"),
+)
+def test_launcher_refuses_boolean_health_contract_integers_before_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    code: object,
+    schema_version: object,
+) -> None:
+    root = _installation(tmp_path)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "code": code,
+                    "message": "ok",
+                    "data": {
+                        "schema_version": schema_version,
+                        "contract_version": "b02.v1",
+                        "profile": "core",
+                        "status": "HEALTHY",
+                        "required_checks": {
+                            "core.health": "available",
+                            "core.session": "available",
+                            "letters.read": "available",
+                            "music.catalog": "available",
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("boolean contract values must not start a backend"),
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail("boolean contract values must not start a client"),
+    )
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+    assert not (root / "data").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "required_checks"),
+    [
+        ("FAILED", {}),
+        (
+            "FAILED",
+            {
+                "core.health": "available",
+                "core.session": "available",
+                "letters.read": "available",
+            },
+        ),
+        (
+            "HEALTHY",
+            {
+                "core.health": "available",
+                "core.session": "available",
+                "letters.read": "available",
+                "music.catalog": "available",
+                "unexpected.check": "available",
+            },
+        ),
+        (
+            "FAILED",
+            {
+                "core.health": "unknown",
+                "core.session": "available",
+                "letters.read": "available",
+                "music.catalog": "available",
+            },
+        ),
+    ],
+    ids=("empty", "missing", "extra", "invalid-state"),
+)
+def test_launcher_refuses_noncanonical_core_required_checks_before_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    status: str,
+    required_checks: dict[str, str],
+) -> None:
+    root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "schema_version": 1,
+                        "contract_version": "b02.v1",
+                        "profile": "core",
+                        "status": status,
+                        "required_checks": required_checks,
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "launcher must not start a backend for a noncanonical core health payload"
+        ),
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail(
+            "launcher must not start a client for a noncanonical core health payload"
+        ),
+    )
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+    assert not (root / "data").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "required_checks", "expected"),
+    [
+        (
+            "HEALTHY",
+            {
+                "core.health": "available",
+                "core.session": "available",
+                "letters.read": "available",
+                "music.catalog": "available",
+            },
+            "READY",
+        ),
+        (
+            "FAILED",
+            {
+                "core.health": "degraded",
+                "core.session": "available",
+                "letters.read": "available",
+                "music.catalog": "available",
+            },
+            "UNAVAILABLE",
+        ),
+    ],
+    ids=("healthy", "failed-degraded"),
+)
+def test_health_accepts_the_versioned_core_contract(
+    monkeypatch,
+    status: str,
+    required_checks: dict[str, str],
+    expected: str,
+) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {
+                        "schema_version": 1,
+                        "contract_version": "b02.v1",
+                        "profile": "core",
+                        "status": status,
+                        "required_checks": required_checks,
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+
+    assert start_local._health(8899) == expected
+
+
+def test_health_treats_connection_refused_as_no_listener(monkeypatch) -> None:
+    def connection_refused(*_args, **_kwargs):
+        raise URLError(ConnectionRefusedError(errno.ECONNREFUSED, "connection refused"))
+
+    monkeypatch.setattr(start_local, "urlopen", connection_refused)
+
+    assert start_local._health(8899) == "UNAVAILABLE"
+
+
+def test_health_only_reports_port_conflict_using_the_public_cli_schema(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+
+    assert start_local.main(["--install-root", str(root), "--health-only"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts" / "launcher_health.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result == {"status": "PORT_CONFLICT"}
+    assert not list(Draft202012Validator(schema).iter_errors(result))
