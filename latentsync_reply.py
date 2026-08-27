@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
+from media_paths import resolve_media_path
+
 
 class LatentSyncReplyError(RuntimeError):
     """Stable product error for the external LatentSync process."""
@@ -20,8 +22,8 @@ def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
     environment = os.environ if env is None else env
     configured = str(environment.get("OLIVIA_FFMPEG_EXE", "")).strip()
     if configured:
-        configured_path = Path(configured)
-        if not configured_path.is_file():
+        configured_path = resolve_media_path(configured, environment)
+        if configured_path is None or not configured_path.is_file():
             raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
         executable = configured_path
     else:
@@ -51,23 +53,35 @@ def media_runtime_available(env: Mapping[str, str] | None = None) -> bool:
         return False
 
 
-def _environment_with_ffmpeg(shim_root: Path, cache_root: Path) -> dict[str, str]:
-    resolved = resolve_ffmpeg_executable()
+def _environment_with_ffmpeg(
+    shim_root: Path,
+    cache_root: Path,
+    *,
+    ffmpeg_path: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    resolved = (
+        resolve_ffmpeg_executable(environment)
+        if ffmpeg_path is None
+        else Path(ffmpeg_path)
+    )
+    if not resolved.is_absolute() or not resolved.is_file():
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
     directory = resolved.parent
     if resolved.stem.casefold() != "ffmpeg":
         shim = Path(shim_root) / "ffmpeg.exe"
         shutil.copy2(resolved, shim)
         directory = shim.parent
-    environment = dict(os.environ)
-    environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+    runtime_environment = dict(os.environ if environment is None else environment)
+    runtime_environment["PATH"] = str(directory) + os.pathsep + runtime_environment.get("PATH", "")
     cache_root.mkdir(parents=True, exist_ok=True)
-    environment["HF_HOME"] = str(cache_root / "huggingface")
-    environment["HF_HUB_CACHE"] = str(cache_root / "huggingface" / "hub")
-    environment["TORCH_HOME"] = str(cache_root / "torch")
-    environment["XDG_CACHE_HOME"] = str(cache_root)
-    environment["TEMP"] = str(shim_root)
-    environment["TMP"] = str(shim_root)
-    return environment
+    runtime_environment["HF_HOME"] = str(cache_root / "huggingface")
+    runtime_environment["HF_HUB_CACHE"] = str(cache_root / "huggingface" / "hub")
+    runtime_environment["TORCH_HOME"] = str(cache_root / "torch")
+    runtime_environment["XDG_CACHE_HOME"] = str(cache_root)
+    runtime_environment["TEMP"] = str(shim_root)
+    runtime_environment["TMP"] = str(shim_root)
+    return runtime_environment
 
 
 def _prepare_source_clip(
@@ -133,6 +147,9 @@ def render_latentsync_video(
     python_path: Path,
     latentsync_root: Path,
     timeout_seconds: float = 21600.0,
+    ffmpeg_path: Path | None = None,
+    provider_cache_root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Apply the accepted 1.5 settings to an original-motion source video."""
 
@@ -157,17 +174,28 @@ def render_latentsync_video(
         raise LatentSyncReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_value = os.environ.get("OLIVIA_PROVIDER_CACHE_ROOT", "").strip()
-    cache_root = (
-        Path(cache_value).expanduser()
-        if cache_value
-        else output_path.parent.parent / "provider-cache"
-    )
+    source_environment = os.environ if environment is None else environment
+    cache_root = provider_cache_root
+    if cache_root is None:
+        cache_root = resolve_media_path(
+            source_environment.get("OLIVIA_PROVIDER_CACHE_ROOT", ""),
+            source_environment,
+        )
+    if cache_root is None:
+        cache_root = output_path.parent.parent / "provider-cache"
+    cache_root = Path(cache_root)
+    if not cache_root.is_absolute():
+        raise LatentSyncReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     work_root = cache_root / "latentsync-work"
     work_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="job-", dir=work_root) as temporary:
         temporary_root = Path(temporary)
-        environment = _environment_with_ffmpeg(temporary_root, cache_root)
+        runtime_environment = _environment_with_ffmpeg(
+            temporary_root,
+            cache_root,
+            ffmpeg_path=ffmpeg_path,
+            environment=source_environment,
+        )
         prepared_video = temporary_root / "source-h264.mp4"
         working_output = temporary_root / "reply.mp4"
         pipeline_temp = temporary_root / "pipeline-temp"
@@ -175,7 +203,7 @@ def render_latentsync_video(
             source_video,
             audio_path,
             prepared_video,
-            environment=environment,
+            environment=runtime_environment,
         )
         command = [
             str(python_path),
@@ -208,7 +236,7 @@ def render_latentsync_video(
                 capture_output=True,
                 check=False,
                 timeout=timeout_seconds,
-                env=environment,
+                env=runtime_environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise LatentSyncReplyError("LATENTSYNC_FAILED") from exc
