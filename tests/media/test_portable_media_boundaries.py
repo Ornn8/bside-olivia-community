@@ -16,7 +16,7 @@ import latentsync_reply
 import music_reply
 import reply_media
 from latentsync_reply import render_latentsync_video
-from music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration
+from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration
 from music_reply import MusicReplyError, render_musical_reply
 from reply_delivery import (
     build_ordinary_video_llm_content,
