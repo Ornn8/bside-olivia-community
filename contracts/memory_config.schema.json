@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "enabled": {"type": "boolean", "default": false},
-    "provider": {"type": "string", "enum": ["sqlite", "mem0"], "default": "sqlite"},
+    "provider": {"type": "string", "enum": ["sqlite", "mem0", "none"], "default": "sqlite"},
     "data_root": {"type": "string", "minLength": 1},
     "user_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$", "default": "local-user"},
     "ttl_seconds": {"type": ["integer", "null"], "minimum": 1},

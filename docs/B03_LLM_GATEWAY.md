@@ -75,13 +75,16 @@ calls = await gateway.complete_with_tools(
   `stream=false` 发起一次请求；它不会回退到自由文本。
 - `api_style="chat_completions"` 发送 OpenAI Chat Completions 的
   `tools`/`tool_choice` 形状，并读取
-  `choices[0].message.tool_calls[*].function`。
+  `choices[0].message.tool_calls[*].function`。唯一兼容例外是
+  `openai_compatible` 的 `deepseek-v4-flash`：其默认 thinking 模式不接受
+  `tool_choice`，因此该请求省略该字段，但仍只发送一次带唯一 function schema 的
+  请求，并在本地严格要求恰好一个有效调用；不会回退为文本或接受任意调用。
 - `api_style="responses"` 将同一输入函数 schema 转为 Responses 的
   `type/name/description/parameters` 形状，并读取
   `output[*]` 中 `type="function_call"` 的 `name` 和 `arguments`。
-- 缺少调用、无效 name、非对象 arguments 或不能解析的 arguments JSON 都是
-  非重试的 `PROVIDER_PROTOCOL`；不支持该能力或 provider 不可用仍为可重试的
-  `PROVIDER_UNAVAILABLE`。调用方不得把这些错误转换成占位成功。
+- 缺少调用、无效 name、非对象 arguments、不能解析的 arguments JSON，或调用数组
+  中任何畸形 sibling 都是非重试的 `PROVIDER_PROTOCOL`；不支持该能力或 provider
+  不可用仍为可重试的 `PROVIDER_UNAVAILABLE`。调用方不得把这些错误转换成占位成功。
 - 自定义 provider 若声明支持此公开能力，必须覆写
   `Gateway.complete_with_tools()` 并返回 `Sequence[GatewayToolCall]`；若不支持，
   保持基类的 `PROVIDER_UNAVAILABLE` 失败边界。自定义实现也必须保留 request ID、
