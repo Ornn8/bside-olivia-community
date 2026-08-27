@@ -17,6 +17,8 @@ OWNED_PATHS = (
     "UNINSTALL.cmd",
     "runtime/mem0-site-packages",
     "runtime/mem0-site-packages.staging",
+    "runtime/update-staging",
+    ".olivia-update-state.json",
     MARKER_NAME,
 )
 PRESERVED_PATHS = ("data", "logs", "third-party")
