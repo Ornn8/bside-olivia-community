@@ -1152,12 +1152,7 @@ class Mem0CapabilityInstaller:
                 CapabilityState.MISSING,
                 CapabilityState.READY,
             }:
-                self._status = self._new_status(
-                    CapabilityState.READY,
-                    "complete",
-                    self.total,
-                    source=self._actual_source(None),
-                )
+                self._set_ready(None)
                 return self._status
             if not ready and self._status.state is CapabilityState.READY:
                 self._status = self._new_status(
@@ -1171,6 +1166,12 @@ class Mem0CapabilityInstaller:
     def _actual_source(self, fallback: str | None) -> str | None:
         values = [getattr(layer, "last_source", None) for layer in (self.runtime, self.model)]
         return ";".join(dict.fromkeys(value for value in values if value)) or fallback
+
+    def _set_ready(self, source: str | None) -> None:
+        self._status = self._new_status(
+            CapabilityState.READY, "complete", self.total,
+            source=self._actual_source(source),
+        )
 
     def _has_space(self) -> bool:
         try:
@@ -1212,12 +1213,7 @@ class Mem0CapabilityInstaller:
             raise ValueError("capability source mode is invalid")
         if self._ready_after_migration():
             with self._lock:
-                self._status = self._new_status(
-                    CapabilityState.READY,
-                    "complete",
-                    self.total,
-                    source=self._actual_source(source_mode),
-                )
+                self._set_ready(source_mode)
             return "NOOP"
         if not self._has_space():
             with self._lock:
@@ -1288,12 +1284,7 @@ class Mem0CapabilityInstaller:
                 )
             return "REJECTED"
         with self._lock:
-            self._status = self._new_status(
-                CapabilityState.READY,
-                "complete",
-                self.total,
-                source=self._actual_source(source_mode),
-            )
+            self._set_ready(source_mode)
         return "APPLIED"
 
     def start(
@@ -1308,6 +1299,7 @@ class Mem0CapabilityInstaller:
             if self._thread is not None and self._thread.is_alive():
                 return "NOOP"
             if self._ready_after_migration():
+                self._set_ready(source_mode)
                 return "NOOP"
             if not self._has_space():
                 self._status = self._new_status(

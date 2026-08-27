@@ -179,6 +179,11 @@ def test_model_download_retries_official_when_mirror_payload_hash_is_wrong(
 
     assert len(observed) == 2
     assert downloader.last_source == "https://official.example"
+    downloader.last_source = None
+    downloader._source_history.clear()
+    downloader.opener = lambda *_args, **_kwargs: pytest.fail("network must not be used")
+    downloader.download(revision="a" * 40, relative_path="weights.bin", destination=tmp_path / "cached" / "weights.bin")
+    assert downloader.last_source == "https://official.example"
 
 
 def test_model_download_discards_partial_when_falling_back_to_another_source(
@@ -226,36 +231,6 @@ def test_model_download_discards_partial_when_falling_back_to_another_source(
 
     assert observed[1][1] is None
     assert (tmp_path / "stage" / "weights.bin").read_bytes() == trusted
-
-
-def test_model_download_restores_transport_source_from_verified_complete_cache(
-    tmp_path: Path,
-) -> None:
-    trusted = b"trusted model bytes"
-    artifact = ModelArtifact(len(trusted), hashlib.sha256(trusted).hexdigest())
-    cached = tmp_path / "downloads" / "weights.bin"
-    cached.parent.mkdir(parents=True)
-    cached.write_bytes(trusted)
-    cached.with_name(cached.name + ".source").write_text(
-        "https://official.example", encoding="utf-8"
-    )
-    downloader = ResumableModelDownloader(
-        repo_id="owner/model",
-        revision="a" * 40,
-        files={"weights.bin": artifact},
-        sources=("https://mirror.example", "https://official.example"),
-        download_root=tmp_path / "downloads",
-        source_mode="auto",
-        pause_requested=threading.Event(),
-        progress=lambda *_args: None,
-        opener=lambda *_args, **_kwargs: pytest.fail("network must not be used"),
-    )
-    downloader.download(
-        revision="a" * 40,
-        relative_path="weights.bin",
-        destination=tmp_path / "stage" / "weights.bin",
-    )
-    assert downloader.last_source == "https://official.example"
 
 
 class _Layer:
@@ -790,7 +765,11 @@ def test_managed_embedding_marks_download_root_before_installer_can_fail(
 
 def test_capability_migrates_verified_model_before_download_space_preflight() -> None:
     class MigratingLayer(_Layer):
+        migration_enabled = False
+
         def migrate_verified_cache(self) -> bool:
+            if not self.migration_enabled:
+                return False
             self.is_ready = True
             self.last_source = "verified-existing-cache"
             return True
@@ -807,7 +786,10 @@ def test_capability_migrates_verified_model_before_download_space_preflight() ->
         space_checks=((lambda: 0, 100),),
     )
 
-    assert installer.install(source_mode="auto") == "NOOP"
+    assert installer.install(source_mode="auto") == "REJECTED"
+    assert installer.status().state is CapabilityState.REPAIR
+    model.migration_enabled = True
+    assert installer.start(source_mode="auto") == "NOOP"
     assert installer.status().state is CapabilityState.READY
 
 
