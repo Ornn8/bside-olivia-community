@@ -28,6 +28,9 @@ from installer.start_local import (
 )
 
 
+CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -505,7 +508,7 @@ def test_start_local_matches_first_party_client_launch_contract(
 
 
 def _make_official(root: Path) -> tuple[Path, str, str]:
-    version_root = root / "0.0.9.615"
+    version_root = root / CURRENT_TEST_CLIENT_VERSION
     resources = version_root / "resources"
     resources.mkdir(parents=True)
     (root / "launcher.exe").write_bytes(b"official launcher fixture")
@@ -569,7 +572,7 @@ def _write_manifest(
             {
                 "schema_version": "olivia.full-patch.v2",
                 "steam_app_id": "4532590",
-                "client_version": "0.0.9.615",
+                "client_version": CURRENT_TEST_CLIENT_VERSION,
                 "feapp_sha256": feapp_sha256,
                 "webplayer_sha256": webplayer_sha256,
                 "patch_mode": "isolated-copy",
@@ -926,7 +929,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     tmp_path: Path,
 ) -> None:
     official, payload, manifest, feapp_digest, webplayer_digest = fixture_inputs
-    resources = official / "0.0.9.615" / "resources"
+    resources = official / CURRENT_TEST_CLIENT_VERSION / "resources"
     source_feapp = resources / "feapp.dat"
     source_webplayer = resources / "webplayer.dat"
     source_feapp_bytes = source_feapp.read_bytes()
@@ -953,7 +956,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert _sha256(source_webplayer) == webplayer_digest
 
     installed_resources = (
-        installed / "app" / "0.0.9.615" / "resources"
+        installed / "app" / CURRENT_TEST_CLIENT_VERSION / "resources"
     )
     patched_feapp = installed_resources / "feapp.dat"
     patched_webplayer = installed_resources / "webplayer.dat"
@@ -1340,7 +1343,7 @@ def test_start_resolves_isolated_client_and_never_launcher(
     target = tmp_path / "installed"
     install_full_patch(official, target, payload, manifest)
     assert _client_executable(target) == (
-        target / "app" / "0.0.9.615" / "Olivia.exe"
+        target / "app" / CURRENT_TEST_CLIENT_VERSION / "Olivia.exe"
     )
     start = (target / "START.cmd").read_text(encoding="utf-8")
     assert "launcher.exe" not in start.lower()
