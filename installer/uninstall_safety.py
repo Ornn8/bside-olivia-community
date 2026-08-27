@@ -63,8 +63,11 @@ def _safe_target(root: Path, name: str) -> Path:
 def safe_owned_targets(root: Path) -> tuple[Path, ...]:
     """Resolve the compiled ownership list, rejecting unsafe targets first."""
 
+    root = root.absolute()
+    if _is_reparse_point(root):
+        raise ValueError("managed uninstall root is unavailable")
     root = root.resolve()
-    if not root.is_dir() or _is_reparse_point(root):
+    if not root.is_dir():
         raise ValueError("managed uninstall root is unavailable")
     return tuple(_safe_target(root, name) for name in OWNED_PATHS)
 

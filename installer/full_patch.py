@@ -623,7 +623,7 @@ def uninstall_full_patch(
     *,
     apply: bool = False,
 ) -> dict[str, Any]:
-    root = Path(installation).expanduser().resolve()
+    root = Path(installation).expanduser().absolute()
     marker_path = root / MARKER_NAME
     if not root.is_dir() or not marker_path.is_file():
         raise PatchInstallError("PATCH_MARKER_NOT_FOUND")

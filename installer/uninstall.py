@@ -29,7 +29,7 @@ def main() -> int:
     parser.add_argument("--installation", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    root = args.installation.expanduser().resolve()
+    root = args.installation.expanduser().absolute()
     marker_path = root / MARKER_NAME
     if not root.is_dir() or not marker_path.is_file():
         print("PATCH_MARKER_NOT_FOUND")

@@ -947,6 +947,22 @@ def test_discovery_uses_appmanifest_without_fixed_drive(tmp_path: Path) -> None:
     assert discover_steam_install([steam]) == official.resolve()
 
 
+def _make_windows_junction(link: Path, target: Path) -> Path:
+    if os.name != "nt":
+        pytest.skip("Windows junctions are only available on Windows")
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip("Windows junctions are unavailable")
+    assert getattr(link.lstat(), "st_file_attributes", 0) & 0x0400
+    return link
+
+
 def test_uninstall_is_dry_run_then_removes_only_owned_paths(
     fixture_inputs,
     tmp_path: Path,
@@ -1015,6 +1031,27 @@ def test_uninstall_fails_closed_for_owned_symlink(
     assert outside.is_dir()
 
 
+def test_uninstall_rejects_install_root_junction_before_external_delete(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    external = tmp_path / "external-install"
+    install_full_patch(official, external, payload, manifest)
+    sentinel = external / "data" / "junction-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    marker_path = external / ".olivia-full-patch.json"
+    marker_before = marker_path.read_bytes()
+    junction = _make_windows_junction(tmp_path / "install-junction", external)
+
+    with pytest.raises(PatchInstallError, match="PATCH_MARKER_INVALID"):
+        uninstall_full_patch(junction, apply=True)
+
+    assert (external / "app").is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert marker_path.read_bytes() == marker_before
+
+
 def test_standalone_uninstall_ignores_marker_owned_paths(
     tmp_path: Path,
 ) -> None:
@@ -1059,6 +1096,40 @@ def test_standalone_uninstall_ignores_marker_owned_paths(
     assert result.returncode == 0, result.stderr or result.stdout
     assert outside.read_text(encoding="utf-8") == "keep"
     assert not (root / "app").exists()
+
+
+def test_standalone_uninstall_rejects_install_root_junction_before_external_delete(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    external = tmp_path / "external-install"
+    install_full_patch(official, external, payload, manifest)
+    sentinel = external / "data" / "junction-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    marker_path = external / ".olivia-full-patch.json"
+    marker_before = marker_path.read_bytes()
+    junction = _make_windows_junction(tmp_path / "install-junction", external)
+    script = Path(__file__).parents[2] / "installer" / "uninstall.py"
+
+    result = subprocess.run(
+        [
+            os.fspath(Path(os.sys.executable)),
+            str(script),
+            "--installation",
+            str(junction),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2, result.stderr or result.stdout
+    assert "PATCH_MARKER_INVALID" in result.stdout
+    assert (external / "app").is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert marker_path.read_bytes() == marker_before
 
 
 def test_start_resolves_isolated_client_and_never_launcher(
