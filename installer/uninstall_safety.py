@@ -12,11 +12,15 @@ MARKER_NAME = ".olivia-full-patch.json"
 OWNED_PATHS = (
     "app",
     "local_backend",
+    "launcher",
+    "versions",
     "START.cmd",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",
     "runtime/mem0-site-packages",
     "runtime/mem0-site-packages.staging",
+    "runtime/update-staging",
+    ".olivia-update-state.json",
     MARKER_NAME,
 )
 PRESERVED_PATHS = ("data", "logs", "third-party")

@@ -67,3 +67,32 @@ webplayer.dat.orig
 embeddable Python 仅解决解释器获取；`aiohttp`、TTS、视觉、音频分离和音乐模型仍需按第三方下载清单单独准备。缺失时 `START.cmd` / 本地 health 会报告不可用原因；不会自动下载未固定来源、许可证或 SHA-256 的内容。用户 API key 只从启动进程环境或 `CONFIGURE.cmd` 生成的当前用户 DPAPI 文件读取，不写入安装包或日志；DPAPI 解密值只存在于后端子进程环境中。
 
 启动时若没有 `OLIVIA_LLM_API_KEY`、`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`，命令行会明确提示未配置，不能把 safe-static 回退误认为真实模型回信。
+
+## 本地组件补丁与回滚
+
+安装后的 `START.cmd`、`CONFIGURE.cmd` 和 `UNINSTALL.cmd` 只调用安装根目录中的稳定启动器 `launcher/version_launcher.py`。稳定启动器读取一次 `.olivia-update-state.json` 原子指针，从 `versions/local_backend/<version>-<manifest-sha256>` 选择完整后端；没有更新状态时继续使用初装的 `local_backend`。因此更新期间不会把正在使用的后端目录临时移走，也不会要求用户重新运行完整安装器。
+
+当前版本只提供经过外部渠道取得的本地 `.oliviapatch` 文件安装，不联网检查或下载更新。包必须是 ZIP，并且只能包含一个 `manifest.json` 和清单声明的 `payload/...` 普通文件。`local_backend` 包必须包含 `installer/start_local.py`、`installer/configure.py` 和 `installer/uninstall.py` 三个普通文件入口，否则不会激活。公开契约及示例见：
+
+- `contracts/component_update_package.schema.json`
+- `contracts/component_update_package.example.json`
+- `contracts/component_update_state.schema.json`
+- `contracts/component_update_state.example.json`
+
+安装命令：
+
+```powershell
+python -m installer apply-update --installation <安装目录> --package <补丁.oliviapatch> --manifest-sha256 <64位小写SHA-256>
+```
+
+`--manifest-sha256` 是包外信任锚，必须来自经过认证的发布元数据或用户已验证的官方发布页面，不能从同一个补丁包内自行读取后当作可信值。当前实现不包含签名验证或在线发布元数据获取；自动下载器接入前必须保持这条边界。
+
+每个 payload 文件还会按清单校验大小和 SHA-256。路径会按 Windows 规则拒绝目录穿越、大小写别名、尾随点/空格、ADS、设备名、符号链接和 reparse point；解包完成后会重新枚举暂存目录并逐文件复验。校验成功后先发布不可变版本目录，最后仅用一次原子替换切换状态指针。指针替换失败时，旧指针或初装后端仍可启动，新目录只是未激活版本。
+
+第一次更新会把初装 `local_backend` 记录为 `0.0.0+legacy` 回滚基线；后续更新记录上一个活动版本。重复应用当前活动版本不会覆盖真正的上一版本。可原子交换活动/上一版本指针：
+
+```powershell
+python -m installer rollback-update --installation <安装目录>
+```
+
+CLI 成功时输出一行 JSON 并返回 `0`；失败时输出 `{"status":"ERROR","code":"..."}` 并返回 `2`。稳定错误码包括：`UPDATE_INSTALLATION_INVALID`、`UPDATE_MANIFEST_DIGEST_INVALID`、`UPDATE_MANIFEST_DIGEST_MISMATCH`、`UPDATE_MANIFEST_INVALID`、`UPDATE_PACKAGE_INVALID`、`UPDATE_PAYLOAD_DIGEST_MISMATCH`、`UPDATE_STAGED_TREE_MISMATCH`、`UPDATE_COMPONENT_UNSUPPORTED`、`UPDATE_COMPONENT_UNAVAILABLE`、`UPDATE_VERSION_CONFLICT`、`UPDATE_STATE_INVALID`、`UPDATE_ROLLBACK_UNAVAILABLE` 和 `UPDATE_ACTIVATION_FAILED`。

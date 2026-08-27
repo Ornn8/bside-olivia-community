@@ -4,6 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
+from .component_update import (
+    ComponentUpdateError,
+    apply_component_update,
+    rollback_component_update,
+)
 from .full_patch import PatchInstallError, discover_steam_install, install_full_patch, load_manifest, uninstall_full_patch, validate_official_source
 
 
@@ -21,6 +26,12 @@ def main(argv: list[str] | None = None) -> int:
     remove = sub.add_parser("uninstall")
     remove.add_argument("--installation", type=Path, required=True)
     remove.add_argument("--apply", action="store_true")
+    update = sub.add_parser("apply-update")
+    update.add_argument("--installation", type=Path, required=True)
+    update.add_argument("--package", type=Path, required=True)
+    update.add_argument("--manifest-sha256", required=True)
+    rollback = sub.add_parser("rollback-update")
+    rollback.add_argument("--installation", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "doctor":
@@ -31,11 +42,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "install":
             source = (args.official_root or discover_steam_install()).resolve()
             result = install_full_patch(source, args.destination, args.payload, args.manifest, port=args.port)
-        else:
+        elif args.command == "uninstall":
             result = uninstall_full_patch(args.installation, apply=args.apply)
+        elif args.command == "apply-update":
+            result = apply_component_update(
+                args.installation,
+                args.package,
+                expected_manifest_sha256=args.manifest_sha256,
+            )
+        else:
+            result = rollback_component_update(args.installation)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
-    except PatchInstallError as exc:
+    except (PatchInstallError, ComponentUpdateError) as exc:
         print(json.dumps({"status": "ERROR", "code": str(exc)}, ensure_ascii=False))
         return 2
 

@@ -996,10 +996,10 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert not (installed / "local_backend" / "llm_config.json").exists()
     assert (installed / "CONFIGURE.cmd").is_file()
     start = (installed / "START.cmd").read_text(encoding="utf-8")
-    assert "installer\\start_local.py" in start
+    assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start
     uninstall = (installed / "UNINSTALL.cmd").read_text(encoding="utf-8")
-    assert "installer\\uninstall.py" in uninstall
+    assert "launcher\\version_launcher.py" in uninstall
     assert "installer_main" not in uninstall
     for script in (installed / "START.cmd", installed / "UNINSTALL.cmd"):
         value = script.read_text(encoding="utf-8").lower()
@@ -1043,7 +1043,9 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     assert (target / "local_backend" / "installer" / "uninstall_safety.py").read_text(
         encoding="utf-8"
     ) != "old uninstaller"
-    assert "start_local.py" in (target / "START.cmd").read_text(encoding="utf-8")
+    assert "version_launcher.py" in (target / "START.cmd").read_text(
+        encoding="utf-8"
+    )
     assert "runtime/mem0-site-packages" in repeated["owned_paths"]
     for name in ("data", "logs", "third-party"):
         assert (target / name / "preserve.txt").read_text(encoding="utf-8") == name
@@ -1056,6 +1058,31 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     assert (
         unknown / "user-file.txt"
     ).read_text(encoding="utf-8") == "keep"
+
+
+def test_install_scripts_dispatch_through_the_stable_version_launcher(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+
+    install_full_patch(official, target, payload, manifest)
+
+    stable_launcher = target / "launcher" / "version_launcher.py"
+    assert stable_launcher.read_bytes() == (
+        payload / "installer" / "version_launcher.py"
+    ).read_bytes()
+    actions = {
+        "START.cmd": "start",
+        "CONFIGURE.cmd": "configure",
+        "UNINSTALL.cmd": "uninstall",
+    }
+    for name, action in actions.items():
+        script = (target / name).read_text(encoding="utf-8")
+        assert "launcher\\version_launcher.py" in script
+        assert f'--install-root "%ROOT%." {action}' in script
+        assert "local_backend\\installer" not in script
 
 
 def test_repeat_install_atomically_replaces_managed_payload_without_stale_files(

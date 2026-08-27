@@ -1,0 +1,17 @@
+{
+  "schema_version": "olivia.update-state.v1",
+  "active_components": {
+    "local_backend": {
+      "version": "1.1.0",
+      "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "payload_path": "versions/local_backend/1.1.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "previous_components": {
+    "local_backend": {
+      "version": "0.0.0+legacy",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "payload_path": "local_backend"
+    }
+  }
+}
