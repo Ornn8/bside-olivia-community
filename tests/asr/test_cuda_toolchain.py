@@ -12,6 +12,7 @@ from asr.cuda_toolchain import (
     assemble_cuda_toolchain,
     build_command,
     build_environment,
+    cuda_toolchain_status,
     inspect_cuda_transfer,
     load_manifest,
     select_cuda_packages,
@@ -108,6 +109,29 @@ def test_manifest_selection_returns_the_pinned_windows_build_closure(tmp_path: P
     assert packages[0].size == 7
 
 
+@pytest.mark.parametrize("drive", ("C:", "E:"))
+def test_cuda_status_accepts_any_local_drive(drive: str) -> None:
+    report = cuda_toolchain_status(Path(f"{drive}/bside/asr/cuda"))
+
+    assert report["toolchain_root"] == str(Path(f"{drive}/bside/asr/cuda"))
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path("C:/"),
+        Path("C:/bside/../cuda"),
+        Path("C:bside/cuda"),
+        Path("relative/cuda"),
+        Path("https://example.invalid/cuda"),
+        Path("//server/share/cuda"),
+    ),
+)
+def test_cuda_status_rejects_unsafe_roots(value: Path) -> None:
+    with pytest.raises(AsrError, match="absolute local Windows path"):
+        cuda_toolchain_status(value)
+
+
 def test_strict_manifest_pin_rejects_size_or_hash_mismatch(tmp_path: Path) -> None:
     manifest_path = tmp_path / "redistrib.json"
     _write_manifest(manifest_path)
@@ -169,6 +193,21 @@ def test_assembly_dry_run_does_not_write_and_apply_is_idempotent(tmp_path: Path)
     assert (toolchain_root / "bin" / "nvcc.exe").is_file()
 
 
+def test_uninstall_preserves_unknown_user_data_next_to_valid_marker(tmp_path: Path) -> None:
+    manifest_path, transfer_root = _write_transfer(tmp_path)
+    toolchain_root = tmp_path / "toolchain"
+    assemble_cuda_toolchain(manifest_path, transfer_root, toolchain_root, apply=True, strict=False)
+    unknown_user_data = toolchain_root / "unknown-user-data.txt"
+    unknown_user_data.write_text("keep me", encoding="utf-8")
+
+    removed = uninstall_cuda_toolchain(toolchain_root, apply=True)
+
+    assert removed["deleted"] is True
+    assert not (toolchain_root / ".b05-cuda-toolchain.json").exists()
+    assert unknown_user_data.read_text(encoding="utf-8") == "keep me"
+    assert toolchain_root.exists()
+
+
 def test_build_contract_is_sm86_msvc_http_asr_only_and_uninstall_is_owned(tmp_path: Path) -> None:
     command = build_command(tmp_path / "source", tmp_path / "build")
     assert "-AsrOnly" in command
@@ -189,7 +228,9 @@ def test_build_contract_is_sm86_msvc_http_asr_only_and_uninstall_is_owned(tmp_pa
     assert toolchain_root.exists()
     removed = uninstall_cuda_toolchain(toolchain_root, apply=True)
     assert removed["deleted"] is True
-    assert not toolchain_root.exists()
+    assert not (toolchain_root / ".b05-cuda-toolchain.json").exists()
+    assert (toolchain_root / "bin" / "nvcc.exe").is_file()
+    assert toolchain_root.exists()
 
 
 def test_management_cli_reports_unavailable_without_touching_the_root(

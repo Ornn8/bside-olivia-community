@@ -106,7 +106,13 @@ class HuggingFaceEmbeddingDownloader:
             token=False,
         )
         fetched_path = Path(fetched)
-        if fetched_path.resolve() != destination.resolve():
+        try:
+            same_file = os.path.samefile(fetched_path, destination)
+        except FileNotFoundError:
+            # A missing source/destination must still follow the normal copy
+            # path so the caller receives the download error and fails closed.
+            same_file = False
+        if not same_file:
             shutil.copyfile(fetched_path, destination)
 
 
