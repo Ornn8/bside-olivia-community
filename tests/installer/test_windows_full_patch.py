@@ -194,6 +194,51 @@ def test_managed_runtime_installs_all_server_dependencies() -> None:
     assert "rpds-py==2026.6.3" in requirements
 
 
+def test_missing_managed_server_dependencies_are_a_nonfatal_probe_result() -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+
+    repo_root = Path(__file__).parents[2]
+    command = (
+        "$tokens=$null;$errors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:BSIDE_INSTALL_SCRIPT,[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){throw 'INSTALL_SCRIPT_PARSE_FAILED'};"
+        "$function=$ast.Find({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]"
+        " -and $node.Name -eq 'Test-ManagedServerDependencies'},$true);"
+        "if(-not $function){throw 'MANAGED_DEPENDENCY_PROBE_MISSING'};"
+        ". ([scriptblock]::Create($function.Extent.Text));"
+        "$ErrorActionPreference='Stop';"
+        "if(Test-ManagedServerDependencies -PythonExe $env:BSIDE_PROBE_EXECUTABLE){exit 3};"
+        "exit 0"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
+            "BSIDE_PROBE_EXECUTABLE": str(
+                Path(os.environ.get("WINDIR", r"C:\\Windows"))
+                / "System32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "powershell.exe"
+            ),
+        }
+    )
+    powershell = env["BSIDE_PROBE_EXECUTABLE"]
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def _run_managed_python_path_helper(
     *,
     pth_path: Path,

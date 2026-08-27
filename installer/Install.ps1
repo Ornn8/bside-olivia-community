@@ -145,6 +145,21 @@ for module in ("mem0", "sentence_transformers", "huggingface_hub"):
     return $LASTEXITCODE -eq 0
 }
 
+function Test-ManagedServerDependencies {
+    param(
+        [Parameter(Mandatory)]
+        [string]$PythonExe
+    )
+
+    try {
+        & $PythonExe '-c' 'import aiohttp,jsonschema' 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        if ($LASTEXITCODE -eq 0) { throw }
+        return $false
+    }
+}
+
 $runner = @{ File = $runtimeExe; Args = @() }
 if (-not (Test-Path -LiteralPath $runtimeExe)) {
     Write-Host 'The managed Python 3.12 runtime is not installed. The next step downloads the official PSF embeddable runtime.'
@@ -165,8 +180,7 @@ if ($runner.File -eq $runtimeExe) {
     New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
     $pth = Get-ChildItem -LiteralPath $runtimeRoot -Filter '*._pth' | Select-Object -First 1
     if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName }
-    & $runner.File '-c' 'import aiohttp,jsonschema' 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-ManagedServerDependencies -PythonExe $runner.File)) {
         Write-Host 'The local server needs aiohttp, jsonschema, and their fixed Windows/Python 3.12 dependency closure.'
         Write-Host 'Licenses: aiohttp Apache-2.0; jsonschema MIT; transitive packages retain their upstream licenses.'
         $answer = Read-Host 'Accept these licenses and download the pinned wheels? [Y/N]'

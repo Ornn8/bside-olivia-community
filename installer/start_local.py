@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -39,6 +39,15 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
     "music.catalog",
 )
 _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
+
+
+def _port_is_bindable(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    return True
 
 
 def _health(port: int) -> str:
@@ -73,13 +82,10 @@ def _health(port: int) -> str:
         if not contract_matches:
             return "PORT_CONFLICT"
         return "READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"
-    except OSError as error:
-        reason = error.reason if isinstance(error, URLError) else error
-        if isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED:
-            return "UNAVAILABLE"
+    except HTTPError:
         return "PORT_CONFLICT"
     except Exception:
-        return "PORT_CONFLICT"
+        return "UNAVAILABLE" if _port_is_bindable(port) else "PORT_CONFLICT"
 
 
 def _client_executable(root: Path) -> Path:
