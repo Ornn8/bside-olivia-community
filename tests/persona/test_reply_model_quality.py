@@ -21,13 +21,13 @@ from reply_context import (
     TrustedWorldFact,
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
-from reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
 from reply_model_quality import (
     GatewayPersonaReviewer,
     GatewayPersonaRewriter,
     create_model_quality_ports,
 )
-from reply_reviewer import NullReviewer
+from runtime.reply.reply_reviewer import NullReviewer
 
 
 ROOT = Path(__file__).resolve().parents[2]

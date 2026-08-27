@@ -54,6 +54,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/memory/private_world_projection.py" in packaged_paths
     assert "runtime/memory/conversation_memory_identity.py" in packaged_paths
     assert "runtime/media/music_caption.py" in packaged_paths
+    assert "runtime/reply/reply_pipeline.py" in packaged_paths
+    assert "runtime/reply/reply_reviewer.py" in packaged_paths
+    assert "reply_pipeline.py" in packaged_paths
+    assert "reply_reviewer.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
     assert not {
         "conversation_memory_identity.py",
@@ -107,6 +111,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import runtime.memory.private_world_delivery; "
             "import runtime.memory.private_world_projection; "
             "import runtime.memory.private_world_runtime; "
+            "import reply_pipeline, reply_reviewer; "
+            "import runtime.reply.reply_pipeline, runtime.reply.reply_reviewer; "
+            "assert reply_pipeline is runtime.reply.reply_pipeline; "
+            "assert reply_reviewer is runtime.reply.reply_reviewer; "
             "import original_client_server, runtime.media.music_caption, song_content; "
             "import local_server",
         ],

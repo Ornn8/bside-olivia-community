@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,12 +17,12 @@ from reply_orchestrator import (
     ReplyResult,
     ReplyState,
 )
-from reply_pipeline import (
+from runtime.reply.reply_pipeline import (
     PipelineResult,
     ReplyPipeline,
     UnavailableRewriter,
 )
-from reply_reviewer import (
+from runtime.reply.reply_reviewer import (
     NullReviewer,
     ReviewResult,
     ReviewerScores,
@@ -31,6 +32,15 @@ from reply_reviewer import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_legacy_reply_modules_alias_the_canonical_runtime_modules() -> None:
+    assert importlib.import_module("reply_pipeline") is importlib.import_module(
+        "runtime.reply.reply_pipeline"
+    )
+    assert importlib.import_module("reply_reviewer") is importlib.import_module(
+        "runtime.reply.reply_reviewer"
+    )
 
 
 def _context(mode: ReplyMode = ReplyMode.TEXT_LETTER) -> ReplyContext:

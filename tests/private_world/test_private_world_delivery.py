@@ -15,7 +15,7 @@ from private_world_ledger import LedgerEvent, SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldSnapshot
 from private_world_reducer import ReducerEventKind
 from reply_orchestrator import ReplyState
-from reply_pipeline import PipelineResult
+from runtime.reply.reply_pipeline import PipelineResult
 
 
 NOW = datetime(2026, 8, 22, tzinfo=timezone.utc)

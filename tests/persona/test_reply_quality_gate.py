@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.reply.reply_quality_gate import QualityGateStatus, run_reply_quality_gate
-from reply_reviewer import (
+from runtime.reply.reply_reviewer import (
     NullReviewer,
     ReviewerScores,
     ReviewerViolation,

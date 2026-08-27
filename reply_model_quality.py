@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence
 from llm_gateway import Gateway, GatewayConfig, create_gateway
 from persona_loader import PersonaDeclaration, load_persona
 from reply_context import ReplyContext
-from reply_reviewer import (
+from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     ReviewReference,
     ReviewResult,
