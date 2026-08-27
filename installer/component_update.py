@@ -24,6 +24,18 @@ _INSTALL_MARKER = ".olivia-full-patch.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 _COMPONENT_TARGETS = {"local_backend": "local_backend"}
+_COMPONENT_REQUIRED_FILES = {
+    "local_backend": frozenset(
+        {
+            "installer/start_local.py",
+            "installer/configure.py",
+            "installer/uninstall.py",
+        }
+    )
+}
+_LEGACY_VERSION = "0.0.0+legacy"
+_LEGACY_MANIFEST_SHA256 = "0" * 64
+_LEGACY_PAYLOAD_PATH = "local_backend"
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*')
 _WINDOWS_DEVICE_NAMES = frozenset(
@@ -123,6 +135,10 @@ def _validate_manifest(value: dict[str, Any]) -> tuple[str, str, list[dict[str, 
             raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
         seen.add(relative.casefold())
         normalized.append({"path": relative, "size_bytes": size, "sha256": digest})
+    if not _COMPONENT_REQUIRED_FILES[component].issubset(
+        {item["path"] for item in normalized}
+    ):
+        raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
     return component, version, normalized
 
 
@@ -242,6 +258,13 @@ def _validate_state_descriptor(component: str, value: object) -> dict[str, str]:
     version = value.get("version")
     manifest_sha256 = value.get("manifest_sha256")
     payload_path = value.get("payload_path")
+    legacy_descriptor = {
+        "version": _LEGACY_VERSION,
+        "manifest_sha256": _LEGACY_MANIFEST_SHA256,
+        "payload_path": _LEGACY_PAYLOAD_PATH,
+    }
+    if value == legacy_descriptor:
+        return legacy_descriptor
     if (
         component not in _COMPONENT_TARGETS
         or not isinstance(version, str)
@@ -274,6 +297,7 @@ def _read_state(path: Path) -> dict[str, Any]:
         or state.get("schema_version") != STATE_SCHEMA
         or not isinstance(state.get("active_components"), dict)
         or not isinstance(state.get("previous_components"), dict)
+        or set(state["active_components"]) != {"local_backend"}
     ):
         raise ComponentUpdateError("UPDATE_STATE_INVALID")
     for section_name in ("active_components", "previous_components"):
@@ -307,19 +331,55 @@ def _next_state(
     payload_path: str,
 ) -> dict[str, Any]:
     active = dict(current["active_components"])
-    previous: dict[str, dict[str, str]] = {}
-    if component in active:
-        previous[component] = active[component]
-    active[component] = {
+    new_descriptor = {
         "version": version,
         "manifest_sha256": manifest_sha256,
         "payload_path": payload_path,
     }
+    if active.get(component) == new_descriptor:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "active_components": active,
+            "previous_components": dict(current["previous_components"]),
+        }
+    previous = dict(current["previous_components"])
+    previous[component] = active.get(
+        component,
+        {
+            "version": _LEGACY_VERSION,
+            "manifest_sha256": _LEGACY_MANIFEST_SHA256,
+            "payload_path": _LEGACY_PAYLOAD_PATH,
+        },
+    )
+    active[component] = new_descriptor
     return {
         "schema_version": STATE_SCHEMA,
         "active_components": active,
         "previous_components": previous,
     }
+
+
+def _resolve_state_payload(
+    root: Path,
+    component: str,
+    descriptor: object,
+) -> Path:
+    validated = _validate_state_descriptor(component, descriptor)
+    current = root
+    try:
+        for part in PurePosixPath(validated["payload_path"]).parts:
+            current = current / part
+            metadata = current.lstat()
+            if current.is_symlink() or bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & _FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                raise ComponentUpdateError("UPDATE_STATE_INVALID")
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_STATE_INVALID") from exc
+    if not current.is_dir():
+        raise ComponentUpdateError("UPDATE_STATE_INVALID")
+    return current
 
 
 def apply_component_update(
@@ -395,9 +455,7 @@ def rollback_component_update(
     previous = state["previous_components"].get(component)
     if active is None or previous is None:
         raise ComponentUpdateError("UPDATE_ROLLBACK_UNAVAILABLE")
-    previous_path = root.joinpath(*PurePosixPath(previous["payload_path"]).parts)
-    if not previous_path.is_dir():
-        raise ComponentUpdateError("UPDATE_ROLLBACK_UNAVAILABLE")
+    _resolve_state_payload(root, component, previous)
 
     next_state = {
         "schema_version": STATE_SCHEMA,

@@ -15,6 +15,29 @@
     "files": {
       "type": "array",
       "minItems": 1,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {"path": {"const": "installer/start_local.py"}}
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {"path": {"const": "installer/configure.py"}}
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {"path": {"const": "installer/uninstall.py"}}
+          }
+        }
+      ],
       "items": {
         "type": "object",
         "additionalProperties": false,

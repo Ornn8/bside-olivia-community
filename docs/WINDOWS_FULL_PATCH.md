@@ -72,7 +72,7 @@ embeddable Python 仅解决解释器获取；`aiohttp`、TTS、视觉、音频�
 
 安装后的 `START.cmd`、`CONFIGURE.cmd` 和 `UNINSTALL.cmd` 只调用安装根目录中的稳定启动器 `launcher/version_launcher.py`。稳定启动器读取一次 `.olivia-update-state.json` 原子指针，从 `versions/local_backend/<version>-<manifest-sha256>` 选择完整后端；没有更新状态时继续使用初装的 `local_backend`。因此更新期间不会把正在使用的后端目录临时移走，也不会要求用户重新运行完整安装器。
 
-当前版本只提供经过外部渠道取得的本地 `.oliviapatch` 文件安装，不联网检查或下载更新。包必须是 ZIP，并且只能包含一个 `manifest.json` 和清单声明的 `payload/...` 普通文件。公开契约及示例见：
+当前版本只提供经过外部渠道取得的本地 `.oliviapatch` 文件安装，不联网检查或下载更新。包必须是 ZIP，并且只能包含一个 `manifest.json` 和清单声明的 `payload/...` 普通文件。`local_backend` 包必须包含 `installer/start_local.py`、`installer/configure.py` 和 `installer/uninstall.py` 三个普通文件入口，否则不会激活。公开契约及示例见：
 
 - `contracts/component_update_package.schema.json`
 - `contracts/component_update_package.example.json`
@@ -89,7 +89,7 @@ python -m installer apply-update --installation <安装目录> --package <补丁
 
 每个 payload 文件还会按清单校验大小和 SHA-256。路径会按 Windows 规则拒绝目录穿越、大小写别名、尾随点/空格、ADS、设备名、符号链接和 reparse point；解包完成后会重新枚举暂存目录并逐文件复验。校验成功后先发布不可变版本目录，最后仅用一次原子替换切换状态指针。指针替换失败时，旧指针或初装后端仍可启动，新目录只是未激活版本。
 
-上一版本存在时可原子交换活动/上一版本指针：
+第一次更新会把初装 `local_backend` 记录为 `0.0.0+legacy` 回滚基线；后续更新记录上一个活动版本。重复应用当前活动版本不会覆盖真正的上一版本。可原子交换活动/上一版本指针：
 
 ```powershell
 python -m installer rollback-update --installation <安装目录>

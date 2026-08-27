@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "active_components", "previous_components"],
   "$defs": {
-    "component": {
+    "versioned_component": {
       "type": "object",
       "additionalProperties": false,
       "required": ["version", "manifest_sha256", "payload_path"],
@@ -24,6 +24,24 @@
           "pattern": "^versions/local_backend/[0-9A-Za-z][0-9A-Za-z.+-]{0,63}-[0-9a-f]{64}$"
         }
       }
+    },
+    "legacy_component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "payload_path"],
+      "properties": {
+        "version": {"const": "0.0.0+legacy"},
+        "manifest_sha256": {
+          "const": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "payload_path": {"const": "local_backend"}
+      }
+    },
+    "component": {
+      "oneOf": [
+        {"$ref": "#/$defs/versioned_component"},
+        {"$ref": "#/$defs/legacy_component"}
+      ]
     }
   },
   "properties": {

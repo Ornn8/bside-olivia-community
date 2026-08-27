@@ -16,6 +16,9 @@ INSTALL_SCHEMA = "olivia.full-patch.install.v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+_LEGACY_VERSION = "0.0.0+legacy"
+_LEGACY_MANIFEST_SHA256 = "0" * 64
+_LEGACY_PAYLOAD_PATH = "local_backend"
 
 
 class VersionLauncherError(RuntimeError):
@@ -33,7 +36,11 @@ def _is_reparse_point(path: Path) -> bool:
     )
 
 
-def _safe_version_path(root: Path, value: object, version: object, digest: object) -> Path:
+def _validated_relative_path(
+    value: object,
+    version: object,
+    digest: object,
+) -> PurePosixPath:
     if (
         not isinstance(value, str)
         or not isinstance(version, str)
@@ -43,13 +50,25 @@ def _safe_version_path(root: Path, value: object, version: object, digest: objec
     ):
         raise VersionLauncherError("UPDATE_STATE_INVALID")
     relative = PurePosixPath(value)
-    expected = PurePosixPath(
-        "versions",
-        "local_backend",
-        f"{version}-{digest}",
-    )
+    if (
+        version == _LEGACY_VERSION
+        and digest == _LEGACY_MANIFEST_SHA256
+        and value == _LEGACY_PAYLOAD_PATH
+    ):
+        expected = PurePosixPath(_LEGACY_PAYLOAD_PATH)
+    else:
+        expected = PurePosixPath(
+            "versions",
+            "local_backend",
+            f"{version}-{digest}",
+        )
     if relative != expected or relative.as_posix() != value:
         raise VersionLauncherError("UPDATE_STATE_INVALID")
+    return relative
+
+
+def _safe_version_path(root: Path, value: object, version: object, digest: object) -> Path:
+    relative = _validated_relative_path(value, version, digest)
     current = root
     for part in relative.parts:
         current = current / part
@@ -123,8 +142,7 @@ def resolve_active_backend(installation: str | os.PathLike[str]) -> Path:
             "payload_path",
         }:
             raise VersionLauncherError("UPDATE_STATE_INVALID")
-        _safe_version_path(
-            root,
+        _validated_relative_path(
             previous.get("payload_path"),
             previous.get("version"),
             previous.get("manifest_sha256"),

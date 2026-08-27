@@ -22,12 +22,24 @@ from installer.component_update import (
 from installer.uninstall_safety import remove_owned_targets
 
 
+_REQUIRED_COMPONENT_ENTRYPOINTS = {
+    "installer/start_local.py": b"",
+    "installer/configure.py": b"",
+    "installer/uninstall.py": b"",
+}
+
+
 def _write_component_package(
     path: Path,
     *,
     version: str,
     files: dict[str, bytes],
+    include_entrypoints: bool = True,
 ) -> str:
+    package_files = dict(files)
+    if include_entrypoints:
+        for name, content in _REQUIRED_COMPONENT_ENTRYPOINTS.items():
+            package_files.setdefault(name, content)
     manifest = {
         "schema_version": "olivia.component-package.v1",
         "component": "local_backend",
@@ -38,7 +50,7 @@ def _write_component_package(
                 "size_bytes": len(content),
                 "sha256": hashlib.sha256(content).hexdigest(),
             }
-            for name, content in sorted(files.items())
+            for name, content in sorted(package_files.items())
         ],
     }
     manifest_bytes = json.dumps(
@@ -49,7 +61,7 @@ def _write_component_package(
     ).encode("utf-8")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", manifest_bytes)
-        for name, content in files.items():
+        for name, content in package_files.items():
             archive.writestr(f"payload/{name}", content)
     return hashlib.sha256(manifest_bytes).hexdigest()
 
@@ -132,7 +144,13 @@ def test_valid_local_backend_component_update_is_activated_atomically(
                 "payload_path": versioned.relative_to(installation).as_posix(),
             }
         },
-        "previous_components": {},
+        "previous_components": {
+            "local_backend": {
+                "version": "0.0.0+legacy",
+                "manifest_sha256": "0" * 64,
+                "payload_path": "local_backend",
+            }
+        },
     }
 
 
@@ -161,8 +179,34 @@ def test_stable_launcher_resolves_the_atomically_selected_backend(
         / "local_backend"
         / f"1.1.0-{manifest_sha256}"
     )
+    assert version_launcher.main(
+        ["--install-root", str(installation), "start"]
+    ) == 0
     (installation / ".olivia-update-state.json").unlink()
     assert resolve_active_backend(installation) == legacy
+
+
+def test_component_package_requires_all_stable_launcher_entrypoints(
+    tmp_path: Path,
+) -> None:
+    installation, legacy = _managed_installation(tmp_path)
+    package = tmp_path / "incomplete.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={"new.py": b"new"},
+        include_entrypoints=False,
+    )
+
+    with pytest.raises(ComponentUpdateError, match="UPDATE_MANIFEST_INVALID"):
+        apply_component_update(
+            installation,
+            package,
+            expected_manifest_sha256=manifest_sha256,
+        )
+
+    assert (legacy / "old.py").read_text(encoding="utf-8") == "old"
+    assert not (installation / ".olivia-update-state.json").exists()
 
 
 def test_stable_launcher_runs_without_importing_the_legacy_backend_first(
@@ -298,6 +342,137 @@ def test_next_component_update_preserves_the_previous_version_for_rollback(
         "payload_path": f"versions/local_backend/1.1.0-{first_sha256}",
     }
     assert (legacy / "old.py").read_text(encoding="utf-8") == "old"
+
+
+def test_first_component_update_can_roll_back_to_the_legacy_baseline(
+    tmp_path: Path,
+) -> None:
+    from installer.version_launcher import resolve_active_backend
+
+    installation, legacy = _managed_installation(tmp_path)
+    package = tmp_path / "first.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={"new.py": b"new"},
+    )
+    apply_component_update(
+        installation,
+        package,
+        expected_manifest_sha256=manifest_sha256,
+    )
+
+    result = rollback_component_update(installation)
+
+    assert result == {
+        "status": "ROLLED_BACK",
+        "component": "local_backend",
+        "version": "0.0.0+legacy",
+    }
+    assert resolve_active_backend(installation) == legacy
+
+
+def test_reapplying_the_active_descriptor_preserves_the_real_previous_pointer(
+    tmp_path: Path,
+) -> None:
+    installation, _legacy = _managed_installation(tmp_path)
+    packages: list[tuple[Path, str]] = []
+    for version in ("1.1.0", "1.2.0"):
+        package = tmp_path / f"{version}.oliviapatch"
+        digest = _write_component_package(
+            package,
+            version=version,
+            files={f"{version}.py": version.encode("utf-8")},
+        )
+        packages.append((package, digest))
+        apply_component_update(
+            installation,
+            package,
+            expected_manifest_sha256=digest,
+        )
+    state_path = installation / ".olivia-update-state.json"
+    before = json.loads(state_path.read_text(encoding="utf-8"))
+
+    apply_component_update(
+        installation,
+        packages[-1][0],
+        expected_manifest_sha256=packages[-1][1],
+    )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == before
+
+
+def test_existing_state_requires_an_active_local_backend(
+    tmp_path: Path,
+) -> None:
+    installation, _legacy = _managed_installation(tmp_path)
+    state_path = installation / ".olivia-update-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.update-state.v1",
+                "active_components": {},
+                "previous_components": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    package = tmp_path / "update.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={"new.py": b"new"},
+    )
+
+    with pytest.raises(ComponentUpdateError, match="UPDATE_STATE_INVALID"):
+        apply_component_update(
+            installation,
+            package,
+            expected_manifest_sha256=manifest_sha256,
+        )
+
+
+def test_rollback_rejects_a_reparse_previous_version_without_changing_state(
+    tmp_path: Path,
+) -> None:
+    from installer.version_launcher import resolve_active_backend
+
+    installation, _legacy = _managed_installation(tmp_path)
+    applied: list[tuple[str, str]] = []
+    for version in ("1.1.0", "1.2.0"):
+        package = tmp_path / f"{version}.oliviapatch"
+        digest = _write_component_package(
+            package,
+            version=version,
+            files={f"{version}.py": version.encode("utf-8")},
+        )
+        apply_component_update(
+            installation,
+            package,
+            expected_manifest_sha256=digest,
+        )
+        applied.append((version, digest))
+    previous_version, previous_digest = applied[0]
+    previous_path = (
+        installation
+        / "versions"
+        / "local_backend"
+        / f"{previous_version}-{previous_digest}"
+    )
+    shutil.rmtree(previous_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    _make_windows_junction(previous_path, external)
+    state_path = installation / ".olivia-update-state.json"
+    state_before = state_path.read_bytes()
+
+    with pytest.raises(ComponentUpdateError, match="UPDATE_STATE_INVALID"):
+        rollback_component_update(installation)
+
+    assert state_path.read_bytes() == state_before
+    assert resolve_active_backend(installation).name == (
+        f"{applied[1][0]}-{applied[1][1]}"
+    )
 
 
 def test_component_update_rolls_back_by_atomically_swapping_the_version_pointer(
