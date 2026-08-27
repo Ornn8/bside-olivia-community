@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -142,10 +143,18 @@ def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() ->
     assert linked == declarations
     source = payload["sources"][0]
     assert source["source_id"] == "P02.LINLI.CONSTITUTION"
-    assert source["source_url"].endswith(
-        "/blob/900d6d18eba458e86fba79c05608fe8671d9100e/"
-        "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
+    reference_revision = "15453c7bf8d242b58c445d27399979a6550ac203"
+    reference_path = "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
+    assert source["source_url"] == (
+        "https://github.com/Ornn8/bside-olivia-community/blob/"
+        f"{reference_revision}/{reference_path}"
     )
+    assert source["content_source"] == {
+        "repository": "Ornn8/bside-olivia-community",
+        "path": reference_path,
+        "revision": reference_revision,
+        "sha256": hashlib.sha256(PUBLIC_REFERENCE_PATH.read_bytes()).hexdigest(),
+    }
     assert source["rights_status"] == "SUMMARY_ONLY"
     assert "Concrete relationship records" in source["exclusion_reason"]
     assert "communication timelines" in source["exclusion_reason"]
