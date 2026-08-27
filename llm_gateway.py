@@ -482,6 +482,26 @@ class OfflineDeterministicAdapter(Gateway):
             raise ProviderProtocolError()
         return GatewayResponse(text, request, self.config.provider, self.config.model or "offline")
 
+    async def complete_with_tools(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
+        request_id: str | None = None,
+    ) -> Sequence[GatewayToolCall]:
+        validate_messages(messages, max_input_chars=self.config.max_input_chars)
+        if tool_choice != "required":
+            raise InvalidGatewayInput("REQUIRED_TOOL_CHOICE")
+        configured = self.config.provider_options.get("tool_call")
+        if not isinstance(configured, Mapping):
+            raise ProviderProtocolError()
+        name = configured.get("name")
+        arguments = configured.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(arguments, Mapping):
+            raise ProviderProtocolError()
+        return (GatewayToolCall(name=name, arguments=dict(arguments)),)
+
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
         response = await self.complete(messages, request_id=request_id)
         width = _bounded_int(self.config.provider_options.get("chunk_size", 12), 12, 1, 256)
@@ -623,7 +643,12 @@ class OpenAICompatibleAdapter(Gateway):
             body["tools"] = converted
         else:
             body["tools"] = list(tools)
-        body["tool_choice"] = tool_choice
+        if not (
+            self.config.provider == "openai_compatible"
+            and self.config.api_style == "chat_completions"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+        ):
+            body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
         calls = _extract_tool_calls(data)
         if not calls:
@@ -732,9 +757,12 @@ def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
         if isinstance(choice, Mapping):
             message = choice.get("message", choice)
             if isinstance(message, Mapping) and isinstance(message.get("tool_calls"), list):
-                raw_calls.extend(
-                    item for item in message["tool_calls"] if isinstance(item, Mapping)
-                )
+                tool_calls = message["tool_calls"]
+                if any(not isinstance(item, Mapping) for item in tool_calls):
+                    raise ProviderProtocolError()
+                if any(not isinstance(item.get("function"), Mapping) for item in tool_calls):
+                    raise ProviderProtocolError()
+                raw_calls.extend(tool_calls)
     output = data.get("output")
     if isinstance(output, list):
         raw_calls.extend(

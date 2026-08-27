@@ -5,6 +5,10 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
 import latentsync_reply
 import tts.delivery as tts_delivery
 from letter_triage import (
@@ -13,26 +17,38 @@ from letter_triage import (
     _current_music_performance,
     routing_context_from_environment,
 )
-
-
-class _Response:
-    def __init__(self, text: str) -> None:
-        self.text = text
+from llm_gateway import GatewayConfig, GatewayToolCall, create_gateway
 
 
 class _Gateway:
-    def __init__(self, response: str) -> None:
-        self.response = response
+    def __init__(self, arguments: dict[str, object]) -> None:
+        self.arguments = arguments
         self.messages = None
+        self.requests: list[dict[str, object]] = []
 
-    async def complete(self, messages, *, request_id=None):
+    async def complete_with_tools(
+        self,
+        *,
+        messages,
+        tools,
+        tool_choice,
+        request_id=None,
+    ):
         self.messages = messages
-        return _Response(self.response)
+        self.requests.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "request_id": request_id,
+            }
+        )
+        return [GatewayToolCall("select_reply_mode", self.arguments)]
 
 
 def test_router_timeout_uses_portable_environment_configuration():
     router = LetterReplyRouter(
-        _Gateway("{}"),
+        _Gateway({}),
         environ={"OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS": "90"},
     )
 
@@ -61,7 +77,7 @@ def test_music_performance_uses_system_tod_with_day_morning_fallback(tmp_path):
     assert _current_music_performance(environ, hour=4) == night
 
 
-def _route(*, context=None, **overrides):
+def _route_arguments(**overrides) -> dict[str, object]:
     payload = {
         "mode": "text_letter",
         "reason_code": "direct_words_are_enough",
@@ -76,7 +92,12 @@ def _route(*, context=None, **overrides):
         "character_willing": True,
     }
     payload.update(overrides)
-    gateway = _Gateway(json.dumps(payload))
+    return payload
+
+
+def _route(*, context=None, **overrides):
+    payload = _route_arguments(**overrides)
+    gateway = _Gateway(payload)
     result = asyncio.run(
         LetterReplyRouter(
             gateway,
@@ -182,6 +203,179 @@ def test_all_musical_gates_allow_character_choice():
     )
     assert result.reply_mode == "musical_video"
     assert result.status == "completed"
+
+
+def test_router_accepts_one_offline_structured_musical_tool_call():
+    gateway = _Gateway(
+        {
+            "mode": "musical_video",
+            "reason_code": "performance_carries_this_reply",
+            "emotion_level": "mixed",
+            "music_contexts": ["explicit_performance_or_adaptation_request"],
+            "music_role": "performance",
+            "music_intent": "perform",
+            "request_disposition": "fulfill",
+            "direct_response_sufficient": False,
+            "voice_materially_better": False,
+            "music_materially_better": True,
+            "character_willing": True,
+        }
+    )
+
+    result = asyncio.run(
+        LetterReplyRouter(
+            gateway,
+            routing_context=RoutingContext(True, True),
+        ).classify("请把这段心事唱给我听。")
+    )
+
+    assert result.reply_mode == "musical_video"
+    assert result.status == "completed"
+    assert gateway.requests[0]["tool_choice"] == "required"
+    assert gateway.requests[0]["request_id"] == "letter-reply-mode-router"
+    assert gateway.requests[0]["tools"][0]["function"]["name"] == "select_reply_mode"
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("reason_code", 123),
+        ("mode", "TEXT_LETTER"),
+        ("mode", " text_letter "),
+        ("music_contexts", [{}]),
+        ("music_contexts", [[]]),
+    ],
+)
+def test_router_rejects_noncanonical_tool_schema_arguments(
+    field: str,
+    invalid_value: object,
+):
+    result, _ = _route(**{field: invalid_value})
+
+    assert result.reply_mode == "text_letter"
+    assert result.status == "unavailable"
+    assert result.reason_code == "router_invalid_result"
+
+
+@pytest.mark.parametrize(
+    ("expected_mode", "overrides"),
+    [
+        ("text_letter", {}),
+        (
+            "spoken_video",
+            {
+                "mode": "spoken_video",
+                "reason_code": "voice_adds_presence",
+                "emotion_level": "high",
+                "direct_response_sufficient": True,
+                "voice_materially_better": True,
+            },
+        ),
+        (
+            "musical_video",
+            {
+                "mode": "musical_video",
+                "reason_code": "performance_carries_this_reply",
+                "emotion_level": "mixed",
+                "music_contexts": ["explicit_performance_or_adaptation_request"],
+                "music_role": "performance",
+                "music_intent": "perform",
+                "request_disposition": "fulfill",
+                "direct_response_sufficient": False,
+                "music_materially_better": True,
+            },
+        ),
+    ],
+)
+def test_public_mock_gateway_routes_configured_tool_result(
+    expected_mode: str,
+    overrides: dict[str, object],
+):
+    arguments = _route_arguments(**overrides)
+    gateway = create_gateway(
+        GatewayConfig(
+            provider="mock",
+            provider_options={
+                "tool_call": {
+                    "name": "select_reply_mode",
+                    "arguments": arguments,
+                }
+            },
+        )
+    )
+
+    result = asyncio.run(
+        LetterReplyRouter(
+            gateway,
+            routing_context=RoutingContext(True, True),
+        ).classify("synthetic current letter")
+    )
+
+    assert result.reply_mode == expected_mode
+    assert result.status == "completed"
+    assert gateway.network_call_count == 0
+
+
+def test_deepseek_flash_thinking_omits_tool_choice_and_routes_valid_structured_call():
+    async def exercise():
+        seen: dict[str, object] = {}
+        arguments = _route_arguments(
+            mode="musical_video",
+            reason_code="performance_carries_this_reply",
+            emotion_level="mixed",
+            music_contexts=["explicit_performance_or_adaptation_request"],
+            music_role="performance",
+            music_intent="perform",
+            request_disposition="fulfill",
+            direct_response_sufficient=False,
+            music_materially_better=True,
+        )
+
+        async def handler(request: web.Request) -> web.Response:
+            seen["body"] = await request.json()
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "select_reply_mode",
+                                            "arguments": json.dumps(arguments),
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            gateway = create_gateway(
+                GatewayConfig(
+                    provider="openai_compatible",
+                    base_url=str(client.make_url("/v1")),
+                    model="deepseek-v4-flash",
+                )
+            )
+            result = await LetterReplyRouter(
+                gateway,
+                routing_context=RoutingContext(True, True),
+            ).classify("synthetic current letter")
+        return result, seen["body"]
+
+    result, body = asyncio.run(exercise())
+
+    assert result.reply_mode == "musical_video"
+    assert result.status == "completed"
+    assert body["model"] == "deepseek-v4-flash"
+    assert "thinking" not in body
+    assert "tool_choice" not in body
+    assert body["tools"][0]["function"]["name"] == "select_reply_mode"
 
 
 def test_current_work_relevance_requires_trusted_current_work():
@@ -437,9 +631,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
 def test_invalid_router_output_fails_closed_to_text_letter():
     result = asyncio.run(
         LetterReplyRouter(
-            _Gateway("not-json"),
+            _Gateway({}),
             routing_context=RoutingContext(True, True),
         ).classify("普通聊天")
     )
     assert result.reply_mode == "text_letter"
     assert result.status == "unavailable"
+    assert result.reason_code == "router_invalid_result"
