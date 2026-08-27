@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from bounded_daemon_call import BoundedDaemonCall
+from runtime.memory.bounded_daemon_call import BoundedDaemonCall
 
 
 def test_permanently_blocked_call_times_out_without_starting_another_worker() -> None:

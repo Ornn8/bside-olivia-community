@@ -21,7 +21,7 @@ import threading
 import time
 from typing import Callable, Mapping, Protocol, Sequence
 
-from bounded_daemon_call import BoundedDaemonCall
+from runtime.memory.bounded_daemon_call import BoundedDaemonCall
 from conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
