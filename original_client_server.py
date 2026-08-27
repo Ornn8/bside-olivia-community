@@ -319,9 +319,6 @@ def create_original_client_server_runtime(
     embedding_installer: Mem0EmbeddingInstaller | None = None,
     letter_collection: LetterCollection | None = None,
     setup_service: LLMSetupService | None = None,
-    capability_installer: Any | None = None,
-    capability_staging_root: Path | None = None,
-    capability_offline_importer: Callable[[Path, Path], Path] | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
@@ -357,8 +354,9 @@ def create_original_client_server_runtime(
             response = await fallback_handler(request)
             if request.path.rstrip("/") == "/toy/signIn":
                 payload = _response_payload(response)
+                code = payload.get("code") if payload else None
                 setup_service.observe_login(
-                    success=bool(payload and payload.get("code") == 0)
+                    success=type(code) is int and code == 0
                 )
             return response
 
@@ -366,20 +364,6 @@ def create_original_client_server_runtime(
             app,
             setup_service,
             trusted_origins=origins,
-        )
-    if (
-        capability_installer is not None
-        and capability_staging_root is not None
-        and capability_offline_importer is not None
-    ):
-        from original_client_capability_api import mount_original_client_capability_api
-
-        mount_original_client_capability_api(
-            app,
-            capability_installer,
-            trusted_origins=origins,
-            staging_root=capability_staging_root,
-            offline_importer=capability_offline_importer,
         )
     mount_original_companion_read_api(
         app,

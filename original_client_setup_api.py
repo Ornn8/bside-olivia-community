@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,9 +23,9 @@ LLM_DELETE_PATH = "/toy/setup/llm/delete"
 SETUP_COMPLETE_PATH = "/toy/setup/complete"
 CONFIRM_HEADER = "X-Olivia-Setup-Action"
 CONFIRM_VALUE = "confirmed"
+SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_BODY_BYTES = 4_096
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
-_LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _SERVICE_KEY = web.AppKey("original_client_setup_service", object)
 _ORIGINS_KEY = web.AppKey("original_client_setup_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_setup_mounted", bool)
@@ -191,11 +192,21 @@ class LLMSetupService:
         self._unprotect = unprotect
         self._probe = probe
         self._login_observed = False
+        self._session_token: str | None = None
         self._tested_digest: str | None = None
 
     def observe_login(self, *, success: bool) -> None:
         if success:
             self._login_observed = True
+            self._session_token = secrets.token_urlsafe(32)
+
+    def require_session(self, supplied: str) -> None:
+        if (
+            not self._login_observed
+            or self._session_token is None
+            or not secrets.compare_digest(self._session_token, supplied)
+        ):
+            raise LLMSetupError("LLM_SETUP_LOGIN_REQUIRED", status=403)
 
     def _config(self) -> dict[str, object]:
         fallback: dict[str, object] = {
@@ -225,7 +236,7 @@ class LLMSetupService:
     def status(self) -> dict[str, object]:
         completed, skipped = self._completion()
         config = self._config()
-        return {
+        result: dict[str, object] = {
             "schema_version": "olivia.initial-setup.v1",
             "status": "READY",
             "login_observed": self._login_observed,
@@ -238,6 +249,9 @@ class LLMSetupService:
                 "key_configured": self._key_path.is_file(),
             },
         }
+        if self._session_token is not None:
+            result["session_token"] = self._session_token
+        return result
 
     @staticmethod
     def _digest(base_url: str, model: str, api_key: str) -> str:
@@ -245,10 +259,16 @@ class LLMSetupService:
             "\0".join((base_url, model, api_key)).encode("utf-8")
         ).hexdigest()
 
-    def _secret(self, supplied: object) -> str:
+    def _secret(self, supplied: object, *, base_url: str, model: str) -> str:
         candidate = _api_key(supplied, allow_empty=True)
         if candidate:
             return candidate
+        configured = self._config()
+        if (
+            configured["base_url"] != base_url
+            or configured["model"] != model
+        ):
+            raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400)
         try:
             protected = self._key_path.read_text(encoding="utf-8").strip()
         except OSError as exc:
@@ -262,7 +282,9 @@ class LLMSetupService:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
         base_url = _base_url(payload.get("base_url"))
         model = _model(payload.get("model"))
-        api_key = self._secret(payload.get("api_key", ""))
+        api_key = self._secret(
+            payload.get("api_key", ""), base_url=base_url, model=model
+        )
         await self._probe(base_url, model, api_key)
         self._tested_digest = self._digest(base_url, model, api_key)
 
@@ -271,7 +293,9 @@ class LLMSetupService:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
         base_url = _base_url(payload.get("base_url"))
         model = _model(payload.get("model"))
-        api_key = self._secret(payload.get("api_key", ""))
+        api_key = self._secret(
+            payload.get("api_key", ""), base_url=base_url, model=model
+        )
         if self._tested_digest != self._digest(base_url, model, api_key):
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
         protected = self._protect(api_key)
@@ -333,7 +357,7 @@ def _authorize(request: web.Request, *, confirm: bool) -> str:
     if hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise LLMSetupError("LLM_SETUP_HOST_FORBIDDEN", status=403)
     origin = request.headers.get("Origin", "").rstrip("/")
-    if origin not in request.app[_ORIGINS_KEY] and not _LOOPBACK_ORIGIN_RE.fullmatch(origin):
+    if origin not in request.app[_ORIGINS_KEY]:
         raise LLMSetupError("LLM_SETUP_ORIGIN_FORBIDDEN", status=403)
     if confirm and request.headers.get(CONFIRM_HEADER) != CONFIRM_VALUE:
         raise LLMSetupError("LLM_SETUP_CONFIRMATION_REQUIRED", status=403)
@@ -349,7 +373,9 @@ def _headers(origin: str | None = None, *, preflight: bool = False) -> dict[str,
         values.update(
             {
                 "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": f"Content-Type, {CONFIRM_HEADER}",
+                "Access-Control-Allow-Headers": (
+                    f"Content-Type, {CONFIRM_HEADER}, {SESSION_HEADER}"
+                ),
                 "Access-Control-Max-Age": "600",
             }
         )
@@ -395,27 +421,41 @@ def mount_original_client_setup_api(
 
     async def test(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
+        service.require_session(request.headers.get(SESSION_HEADER, ""))
         await service.test(await _body(request))
         return web.json_response({"status": "AVAILABLE"}, headers=_headers(origin))
 
     async def save(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
+        service.require_session(request.headers.get(SESSION_HEADER, ""))
         service.save(await _body(request))
         return web.json_response(
-            {"status": "SAVED", "restart_required": True}, headers=_headers(origin)
+            {
+                "status": "SAVED",
+                "reload_applied": False,
+                "restart_required": True,
+            },
+            headers=_headers(origin),
         )
 
     async def delete(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
+        service.require_session(request.headers.get(SESSION_HEADER, ""))
         if await _body(request):
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
         service.delete()
         return web.json_response(
-            {"status": "DELETED", "restart_required": True}, headers=_headers(origin)
+            {
+                "status": "DELETED",
+                "reload_applied": False,
+                "restart_required": True,
+            },
+            headers=_headers(origin),
         )
 
     async def complete(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
+        service.require_session(request.headers.get(SESSION_HEADER, ""))
         payload = await _body(request)
         if set(payload) != {"skipped"}:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)

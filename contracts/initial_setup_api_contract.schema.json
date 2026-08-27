@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "initial_setup_api_contract.schema.json",
+  "title": "Post-login LLM setup API contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status_schema_version", "authorization", "routes", "error_codes"],
+  "properties": {
+    "schema_version": {"const": "olivia.initial-setup-api-contract.v1"},
+    "status_schema_version": {"const": "olivia.initial-setup.v1"},
+    "authorization": {
+      "const": {
+        "origins": "explicit-trusted-https-only",
+        "login_required_for_mutations": true,
+        "session_header": "X-Olivia-Setup-Session",
+        "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "/toy/setup/status",
+        "/toy/setup/llm/test",
+        "/toy/setup/llm/save",
+        "/toy/setup/llm/delete",
+        "/toy/setup/complete"
+      ],
+      "properties": {
+        "/toy/setup/status": {"const": {"methods": ["GET", "OPTIONS"], "success_statuses": ["READY"]}},
+        "/toy/setup/llm/test": {"const": {"methods": ["POST", "OPTIONS"], "success_statuses": ["AVAILABLE"]}},
+        "/toy/setup/llm/save": {"const": {"methods": ["POST", "OPTIONS"], "success_statuses": ["SAVED"]}},
+        "/toy/setup/llm/delete": {"const": {"methods": ["POST", "OPTIONS"], "success_statuses": ["DELETED"]}},
+        "/toy/setup/complete": {"const": {"methods": ["POST", "OPTIONS"], "success_statuses": ["COMPLETED"]}}
+      }
+    },
+    "error_codes": {
+      "const": [
+        "LLM_SETUP_CONFIRMATION_REQUIRED",
+        "LLM_SETUP_CONNECTION_FAILED",
+        "LLM_SETUP_CONTENT_TYPE_INVALID",
+        "LLM_SETUP_DPAPI_FAILED",
+        "LLM_SETUP_DPAPI_UNAVAILABLE",
+        "LLM_SETUP_FIELDS_INVALID",
+        "LLM_SETUP_HOST_FORBIDDEN",
+        "LLM_SETUP_JSON_INVALID",
+        "LLM_SETUP_KEY_REQUIRED",
+        "LLM_SETUP_KEY_UNAVAILABLE",
+        "LLM_SETUP_LOGIN_REQUIRED",
+        "LLM_SETUP_ORIGIN_FORBIDDEN",
+        "LLM_SETUP_REQUEST_TOO_LARGE",
+        "LLM_SETUP_TEST_REQUIRED"
+      ]
+    }
+  }
+}

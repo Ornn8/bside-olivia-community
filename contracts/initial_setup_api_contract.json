@@ -1,0 +1,33 @@
+{
+  "schema_version": "olivia.initial-setup-api-contract.v1",
+  "status_schema_version": "olivia.initial-setup.v1",
+  "authorization": {
+    "origins": "explicit-trusted-https-only",
+    "login_required_for_mutations": true,
+    "session_header": "X-Olivia-Setup-Session",
+    "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
+  },
+  "routes": {
+    "/toy/setup/status": {"methods": ["GET", "OPTIONS"], "success_statuses": ["READY"]},
+    "/toy/setup/llm/test": {"methods": ["POST", "OPTIONS"], "success_statuses": ["AVAILABLE"]},
+    "/toy/setup/llm/save": {"methods": ["POST", "OPTIONS"], "success_statuses": ["SAVED"]},
+    "/toy/setup/llm/delete": {"methods": ["POST", "OPTIONS"], "success_statuses": ["DELETED"]},
+    "/toy/setup/complete": {"methods": ["POST", "OPTIONS"], "success_statuses": ["COMPLETED"]}
+  },
+  "error_codes": [
+    "LLM_SETUP_CONFIRMATION_REQUIRED",
+    "LLM_SETUP_CONNECTION_FAILED",
+    "LLM_SETUP_CONTENT_TYPE_INVALID",
+    "LLM_SETUP_DPAPI_FAILED",
+    "LLM_SETUP_DPAPI_UNAVAILABLE",
+    "LLM_SETUP_FIELDS_INVALID",
+    "LLM_SETUP_HOST_FORBIDDEN",
+    "LLM_SETUP_JSON_INVALID",
+    "LLM_SETUP_KEY_REQUIRED",
+    "LLM_SETUP_KEY_UNAVAILABLE",
+    "LLM_SETUP_LOGIN_REQUIRED",
+    "LLM_SETUP_ORIGIN_FORBIDDEN",
+    "LLM_SETUP_REQUEST_TOO_LARGE",
+    "LLM_SETUP_TEST_REQUIRED"
+  ]
+}

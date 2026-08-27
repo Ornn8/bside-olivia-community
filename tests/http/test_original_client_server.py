@@ -70,6 +70,35 @@ def test_successful_original_sign_in_unlocks_initial_setup(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_boolean_false_sign_in_code_does_not_unlock_initial_setup(tmp_path: Path) -> None:
+    async def malformed_sign_in(_request: web.Request) -> web.Response:
+        return web.json_response({"code": False, "message": "invalid", "data": {}})
+
+    async def scenario() -> None:
+        service = LLMSetupService(
+            tmp_path,
+            protect=lambda value: value,
+            unprotect=lambda value: value,
+            probe=lambda *_args: None,
+        )
+        runtime = create_original_client_server_runtime(
+            malformed_sign_in,
+            setup_service=service,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            response = await client.post(
+                "/toy/signIn", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert response.status == 200
+            status = await client.get(
+                "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert (await status.json())["login_observed"] is False
+
+    asyncio.run(scenario())
+
+
 class MemoryAdminFixture:
     def status(self) -> MemoryAdminStatus:
         return MemoryAdminStatus(
