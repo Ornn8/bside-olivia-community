@@ -279,7 +279,7 @@ def reduce_private_world_command(
     if isinstance(command, InitializeHistoricalRelationship):
         if snapshot != PrivateWorldSnapshot():
             return _no_change(snapshot, "HISTORY_ALREADY_INITIALIZED")
-        return _apply_updates(
+        initialized = _apply_updates(
             snapshot,
             {
                 "relationship_stage": command.relationship_stage.value,
@@ -291,6 +291,12 @@ def reduce_private_world_command(
             },
             reason_code="INITIALIZE_HISTORICAL_RELATIONSHIP",
             unchanged_reason="HISTORY_INITIALIZED_NO_CHANGE",
+        )
+        if initialized.delta.applied:
+            return initialized
+        return ReducerResult(
+            replace(snapshot, version=snapshot.version + 1),
+            ReducerDelta(True, "INITIALIZE_HISTORICAL_RELATIONSHIP"),
         )
 
     if isinstance(command, GrantNickname):

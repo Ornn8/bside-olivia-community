@@ -32,6 +32,24 @@ def _command() -> InitializeHistoricalRelationship:
     )
 
 
+def _default_command() -> InitializeHistoricalRelationship:
+    return InitializeHistoricalRelationship(
+        command_id="history.init.default",
+        idempotency_key="history.init.default",
+        actor=PrivateWorldActor.MIGRATION,
+        source=PrivateWorldCommandSource.IMPORT,
+        occurred_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        reason="one-time ordered imported exchanges",
+        evidence_refs=("history.letter.1",),
+        relationship_stage=RelationshipStage.UNKNOWN,
+        familiarity=0,
+        trust=0,
+        comfort=0,
+        closeness=0,
+        tension=0,
+    )
+
+
 def test_historical_relationship_initializes_one_pristine_snapshot() -> None:
     result = reduce_private_world_command(PrivateWorldSnapshot(), _command())
 
@@ -53,6 +71,17 @@ def test_historical_relationship_never_overwrites_an_existing_private_world() ->
     assert result.snapshot == existing
     assert result.delta.applied is False
     assert result.delta.reason_code == "HISTORY_ALREADY_INITIALIZED"
+
+
+def test_default_historical_relationship_still_records_one_initialization() -> None:
+    first = reduce_private_world_command(PrivateWorldSnapshot(), _default_command())
+    second = reduce_private_world_command(first.snapshot, _default_command())
+
+    assert first.delta.applied is True
+    assert first.delta.changes == ()
+    assert first.snapshot == PrivateWorldSnapshot(version=2)
+    assert second.delta.applied is False
+    assert second.delta.reason_code == "HISTORY_ALREADY_INITIALIZED"
 
 
 def test_migration_actor_can_atomically_initialize_once(tmp_path) -> None:

@@ -338,7 +338,11 @@ def test_official_import_rejects_a_different_account_before_persisting(
         },
         "read_only": True,
     }
-    monkeypatch.setattr(local_server, "_legacy_letter_collection", lambda: [existing])
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_letter_collection",
+        lambda *, strict=False: [existing],
+    )
     monkeypatch.setattr(
         local_server,
         "collect_default_official_text_replies",
@@ -357,3 +361,35 @@ def test_official_import_rejects_a_different_account_before_persisting(
 
     assert response["code"] == 409
     assert response["data"]["error_code"] == "OFFICIAL_ACCOUNT_CONFLICT"
+
+
+def test_official_import_fails_closed_when_account_binding_cannot_be_read(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class UnreadableArchive:
+        enabled = True
+
+        def list_legacy(self):
+            raise OSError("private archive path")
+
+    monkeypatch.setattr(local_server, "memory_adapter", UnreadableArchive())
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: {"mode": "read_only", "account_id": "account-b", "letters": []},
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response["code"] == 503
+    assert response["data"]["error_code"] == "OFFICIAL_LETTER_IMPORT_UNAVAILABLE"

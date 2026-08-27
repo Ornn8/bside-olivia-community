@@ -1519,11 +1519,13 @@ def _mark_superseded_failed_retries() -> None:
         _persist_store_state()
 
 
-def _legacy_letter_collection() -> list[dict]:
+def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
     if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
         try:
             return list(getattr(memory_adapter, "list_legacy")())
         except Exception:
+            if strict:
+                raise
             _safe_log("memory_read_skipped", domain="legacy_letters")
     return store.legacy_letters
 
@@ -1534,7 +1536,7 @@ def _official_account_conflicts(payload: Mapping[str, object]) -> bool:
         return True
     incoming = account_id.strip()
     existing: set[str] = set()
-    for letter in _legacy_letter_collection():
+    for letter in _legacy_letter_collection(strict=True):
         metadata = letter.get("metadata")
         if not isinstance(metadata, Mapping):
             continue
@@ -1818,7 +1820,15 @@ async def route(
                 "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
                 "retryable": True,
             })
-        if _official_account_conflicts(body):
+        try:
+            account_conflict = _official_account_conflicts(body)
+        except Exception:
+            return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
+                "retryable": True,
+            })
+        if account_conflict:
             return err(409, "OFFICIAL_ACCOUNT_CONFLICT", {
                 "status": "FAILED",
                 "error_code": "OFFICIAL_ACCOUNT_CONFLICT",
