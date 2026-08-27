@@ -24,7 +24,7 @@ from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldSnapshot
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
-from reply_pipeline import PipelineResult
+from runtime.reply.reply_pipeline import PipelineResult
 
 
 ROOT = Path(__file__).resolve().parents[2]

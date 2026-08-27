@@ -108,8 +108,8 @@ from reply_context import (
     TrustedWorldFact,
     WorldFactKind,
 )
-from reply_pipeline import ReplyPipeline, UnavailableRewriter
-from reply_reviewer import NullReviewer
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30

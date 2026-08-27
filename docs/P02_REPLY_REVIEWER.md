@@ -1,6 +1,7 @@
 # P02 reply reviewer and configured-model transport
 
-`reply_reviewer.py` keeps the provider-neutral JSON contract. The response must
+`runtime/reply/reply_reviewer.py` keeps the provider-neutral JSON contract;
+`reply_reviewer.py` remains an exact module alias for legacy imports. The response must
 match `contracts/reply_review.schema.json` with id
 `p02.reply-review.v1`: verdict, bounded violations, four 0-100 consistency
 scores, and completed status.

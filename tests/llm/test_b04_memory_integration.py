@@ -20,7 +20,7 @@ from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPrompt
 from runtime.memory.private_world_delivery import DeliveryStatus
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
-from reply_pipeline import PipelineResult
+from runtime.reply.reply_pipeline import PipelineResult
 from letter_triage import TriageResult
 
 

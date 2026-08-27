@@ -138,7 +138,7 @@ def test_factory_path_resolution_failure_is_fail_closed(monkeypatch):
 def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatch):
     import local_server
     from reply_orchestrator import ReplyState
-    from reply_pipeline import PipelineResult
+    from runtime.reply.reply_pipeline import PipelineResult
     settings = VideoReplySettingsStore.initialize(tmp_path)
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     async def route_check():
