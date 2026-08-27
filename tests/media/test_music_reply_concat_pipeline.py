@@ -214,6 +214,8 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
 
     def fake_plan(content, reply_text, duration_seconds):
         order.append("plan")
@@ -381,6 +383,8 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     monkeypatch.setenv(
         "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
     )
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -490,6 +494,8 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     monkeypatch.setenv(
         "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
     )
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -597,6 +603,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(minimax_python))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", str(minimax_root))
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", str(tmp_path / "latentsync-python.exe"))
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", str(latentsync_root))
     monkeypatch.setattr(
         music_reply,

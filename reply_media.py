@@ -247,6 +247,13 @@ def render_reply_video(
     voice_performance_plan: VoicePerformancePlan | None = None,
     enforce_content_gate: bool = False,
 ) -> dict[str, object]:
+    if scene_path is not None and (
+        latentsync_python_path is None
+        or latentsync_root is None
+        or not latentsync_python_path.is_absolute()
+        or not latentsync_root.is_absolute()
+    ):
+        raise ReplyMediaError("LATENTSYNC_INPUT_UNAVAILABLE")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
         root = Path(temporary)
@@ -315,10 +322,8 @@ def render_reply_video(
                     scene_path,
                     audio_path,
                     output_path,
-                    python_path=latentsync_python_path
-                    or Path(os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                    latentsync_root=latentsync_root
-                    or Path(os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                    python_path=latentsync_python_path,
+                    latentsync_root=latentsync_root,
                 )
             except LatentSyncReplyError as exc:
                 raise ReplyMediaError(str(exc)) from exc

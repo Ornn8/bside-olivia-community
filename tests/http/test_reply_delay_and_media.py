@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import subprocess
 
 import pytest
 from aiohttp import web
@@ -189,18 +190,35 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     assert observed["latentsync_root"] == latentsync_root
 
 
-def test_relative_local_data_root_drives_state_and_media_from_project_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "root_alias",
+    ("anchor/../data", "data-junction"),
+    ids=("dotdot", "directory-junction"),
+)
+def test_local_data_root_alias_drives_state_and_serves_rendered_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_alias: str
 ) -> None:
     project_root = tmp_path / "app"
     unrelated_cwd = tmp_path / "unrelated-cwd"
     unrelated_cwd.mkdir()
+    data_root = project_root / "data"
+    if root_alias == "data-junction":
+        data_root.mkdir(parents=True)
+        junction = project_root / root_alias
+        result = subprocess.run(
+            ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(data_root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"directory junctions are unavailable: {result.stderr}")
     scene = project_root / "assets" / "scene.mp4"
     scene.parent.mkdir(parents=True)
     scene.write_bytes(b"scene")
     monkeypatch.chdir(unrelated_cwd)
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
-    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", "data")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", root_alias)
     for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
         monkeypatch.setenv(f"OLIVIA_SCENE_{period}", "assets/scene.mp4")
 
@@ -237,7 +255,6 @@ def test_relative_local_data_root_drives_state_and_media_from_project_root(
         )
     )
 
-    data_root = project_root / "data"
     media_path = data_root / "media" / f"{letter['letter_id']}.mp4"
     assert media_path.read_bytes() == b"video"
     assert (data_root / "state.json").is_file()

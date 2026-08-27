@@ -901,6 +901,10 @@ def render_musical_reply(
     minimax_worker = _configured_provider_path("OLIVIA_MINIMAX_WORKER")
     if any(path is None for path in (minimax_python, minimax_root, minimax_worker)):
         raise MusicReplyError("MINIMAX_MUSIC3_UNAVAILABLE")
+    latentsync_python = _configured_provider_path("OLIVIA_LATENTSYNC_PYTHON")
+    latentsync_root = _configured_provider_path("OLIVIA_LATENTSYNC_ROOT")
+    if latentsync_python is None or latentsync_root is None:
+        raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     try:
         song_plan = plan_song_content(content, reply_text, duration_seconds)
     except Exception as exc:
@@ -957,10 +961,8 @@ def render_musical_reply(
             visual_config_path=visual_config_path,
             worker_path=worker_path,
             scene_path=spoken_base,
-            latentsync_python_path=_configured_provider_path(
-                "OLIVIA_LATENTSYNC_PYTHON"
-            ),
-            latentsync_root=_configured_provider_path("OLIVIA_LATENTSYNC_ROOT"),
+            latentsync_python_path=latentsync_python,
+            latentsync_root=latentsync_root,
             adaptive_delivery=True,
             voice_performance_plan=voice_performance_plan,
         )

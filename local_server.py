@@ -509,7 +509,8 @@ store = Store()
 
 
 def _local_data_root() -> Path | None:
-    return configured_media_path(_os.environ, "OLIVIA_LOCAL_DATA_ROOT")
+    configured = configured_media_path(_os.environ, "OLIVIA_LOCAL_DATA_ROOT")
+    return configured.resolve(strict=False) if configured is not None else None
 
 
 def _conversation_state_root() -> Path | None:

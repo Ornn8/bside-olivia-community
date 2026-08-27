@@ -75,6 +75,27 @@ def test_media_workers_fail_closed_without_external_provider(tmp_path):
         )
 
 
+def test_reply_video_rejects_relative_latentsync_paths_without_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.delenv("OLIVIA_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "providers/latentsync/python.exe")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "providers/latentsync")
+
+    with pytest.raises(ReplyMediaError, match="^LATENTSYNC_INPUT_UNAVAILABLE$"):
+        render_reply_video(
+            "synthetic reply",
+            tmp_path / "reply.mp4",
+            tts_config_path=tmp_path / "missing-tts.json",
+            visual_config_path=tmp_path / "missing-visual.json",
+            worker_path=tmp_path / "missing-worker.py",
+            scene_path=tmp_path / "scene.mp4",
+        )
+
+
 def test_ordinary_quality_preflight_preserves_retryable_gate_error(
     tmp_path,
     monkeypatch,
@@ -534,6 +555,53 @@ def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Pa
             ),
         }
     ) == (first, second)
+
+
+def test_musical_renderer_rejects_relative_latentsync_paths_without_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    transition = tmp_path / "transition.mp4"
+    transition.write_bytes(b"synthetic")
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.delenv("OLIVIA_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", str(transition))
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(tmp_path / "minimax.exe"))
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", str(tmp_path / "minimax"))
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(tmp_path / "minimax-worker.py"))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "providers/latentsync/python.exe")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "providers/latentsync")
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SimpleNamespace(lyrics="lyrics", caption="caption", emotion="steady"),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda _reference, destination: Path(destination).write_bytes(b"spoken-base"),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "render_reply_video",
+        lambda *_args, **_kwargs: pytest.fail("ordinary renderer must not be called"),
+    )
+
+    with pytest.raises(MusicReplyError, match="^LATENTSYNC_INPUT_UNAVAILABLE$"):
+        render_musical_reply(
+            "letter",
+            "reply",
+            tmp_path / "out" / "reply.mp4",
+            normal_video_path=tmp_path / "out" / "normal.mp4",
+            official_reply_reference_path=transition,
+            song_video_path=tmp_path / "out" / "song.mp4",
+            tts_config_path=tmp_path / "tts.json",
+            visual_config_path=tmp_path / "visual.json",
+            worker_path=tmp_path / "worker.py",
+            performance_video_path=tmp_path / "performance.mp4",
+            duration_seconds=40,
+        )
 
 
 def test_musical_renderer_resolves_all_provider_paths_from_project_root(
