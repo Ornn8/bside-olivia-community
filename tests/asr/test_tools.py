@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from asr.config import AsrConfig
 from tools import asr_healthcheck, asr_manage
 
@@ -28,3 +30,20 @@ def test_asr_manage_switch_cli_writes_only_config(capsys, tmp_path: Path) -> Non
     assert asr_manage.main(["switch", "--config", str(config_path), "--provider", "text-fallback"]) == 0
     json.loads(capsys.readouterr().out)
     assert AsrConfig.from_json(config_path).provider == "text-fallback"
+
+
+def test_asr_manage_rejects_relative_data_root_before_resolution(capsys, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        asr_manage.main(
+            [
+                "switch",
+                "--config",
+                str(tmp_path / "config.json"),
+                "--provider",
+                "text-fallback",
+                "--data-root",
+                "relative/asr",
+            ]
+        )
+
+    assert "--data-root must be an absolute local Windows path" in capsys.readouterr().err
