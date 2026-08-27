@@ -32,6 +32,9 @@ RELEASE_PREFIXES = (
     "tts/",
     "visual_driver/",
 )
+RELEASE_RESOURCE_FILES = {
+    "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
+}
 RELEASE_ROOT_FILES = {
     "LICENSE",
     "NOTICE",
@@ -206,7 +209,8 @@ def _git_dirty_files(source: Path) -> set[str]:
 
 def _is_release_file(relative: str) -> bool:
     return (
-        relative in RELEASE_ROOT_FILES
+        relative in RELEASE_RESOURCE_FILES
+        or relative in RELEASE_ROOT_FILES
         or relative in RELEASE_INSTALLER_FILES
         or relative in RELEASE_TOOL_FILES
         or relative.startswith(RELEASE_PREFIXES)

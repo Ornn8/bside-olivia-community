@@ -44,6 +44,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/visual",
 )
 PAYLOAD_EXTRA_FILES = (
+    "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
@@ -99,6 +100,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_backend.py",
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
+    "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
     "installer/version_launcher.py",
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
