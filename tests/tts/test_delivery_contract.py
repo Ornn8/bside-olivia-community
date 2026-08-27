@@ -44,9 +44,9 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
     initial = build_ordinary_video_llm_content("原始来信")
     repair = build_ordinary_video_repair_content("旧候选")
 
-    assert "180到200个汉字" in initial
-    assert "目标为185字" in initial
-    assert "去除空白后的字符数" in initial
+    assert "总字符数严格为180到200" in initial
+    assert "汉字、标点、数字和字母都计入" in initial
+    assert "目标为185个总字符" in initial
     assert "输出前必须自行计数" in initial
     assert "180到200个汉字" in repair
     assert ordinary_video_reply_length_ok("林" * 179) is False
