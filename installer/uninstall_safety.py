@@ -13,6 +13,8 @@ OWNED_PATHS = (
     "START.cmd",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",
+    "runtime/mem0-site-packages",
+    "runtime/mem0-site-packages.staging",
     MARKER_NAME,
 )
 PRESERVED_PATHS = ("data", "logs", "third-party")

@@ -121,6 +121,7 @@ def _configure_memory_environment(
                 "OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"
             ),
             "HF_HUB_DISABLE_TELEMETRY": "1",
+            "MEM0_TELEMETRY": "False",
             "DO_NOT_TRACK": "1",
         }
     )
@@ -177,6 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     }.items():
         environment.setdefault(name, value)
     _configure_memory_environment(environment, data_root)
+    memory_runtime = root / "runtime" / "mem0-site-packages"
+    existing_python_path = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = (
+        str(memory_runtime)
+        if not existing_python_path
+        else str(memory_runtime) + os.pathsep + existing_python_path
+    )
     if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
