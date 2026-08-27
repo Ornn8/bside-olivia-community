@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
+from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -29,13 +31,55 @@ def _load_dpapi_key(path: Path) -> str:
         return ""
 
 
-def _health(port: int) -> bool:
+_CORE_HEALTH_CONTRACT_VERSION = "b02.v1"
+_CORE_HEALTH_REQUIRED_CHECKS = (
+    "core.health",
+    "core.session",
+    "letters.read",
+    "music.catalog",
+)
+_CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
+
+
+def _health(port: int) -> str:
     try:
         with urlopen(f"http://127.0.0.1:{port}/health?profile=core", timeout=1.5) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return response.status == 200 and isinstance(payload, dict)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        required_checks = data.get("required_checks") if isinstance(data, dict) else None
+        required_checks_match_contract = isinstance(required_checks, dict) and (
+            set(required_checks) == set(_CORE_HEALTH_REQUIRED_CHECKS)
+        ) and all(
+            state in _CORE_HEALTH_CHECK_STATES for state in required_checks.values()
+        )
+        required_checks_available = required_checks_match_contract and all(
+            required_checks.get(name) == "available" for name in _CORE_HEALTH_REQUIRED_CHECKS
+        )
+        contract_matches = (
+            response.status == 200
+            and isinstance(payload, dict)
+            and type(payload.get("code")) is int
+            and payload["code"] == 0
+            and payload.get("message") == "ok"
+            and isinstance(data, dict)
+            and type(data.get("schema_version")) is int
+            and data["schema_version"] == 1
+            and data.get("contract_version") == _CORE_HEALTH_CONTRACT_VERSION
+            and data.get("profile") == "core"
+            and data.get("status") in {"HEALTHY", "FAILED"}
+            and required_checks_match_contract
+            and (data["status"] == "HEALTHY") == required_checks_available
+        )
+        if not contract_matches:
+            return "PORT_CONFLICT"
+        return "READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"
+    except OSError as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        if isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED:
+            return "UNAVAILABLE"
+        return "PORT_CONFLICT"
     except Exception:
-        return False
+        return "PORT_CONFLICT"
 
 
 def _client_executable(root: Path) -> Path:
@@ -146,9 +190,13 @@ def main(argv: list[str] | None = None) -> int:
         print("PATCH_PAYLOAD_INCOMPLETE")
         return 2
     if args.health_only:
-        ready = _health(args.port)
-        print(json.dumps({"status": "READY" if ready else "UNAVAILABLE"}))
-        return 0 if ready else 2
+        health = _health(args.port)
+        print(json.dumps({"status": health}))
+        return 0 if health == "READY" else 2
+    health = _health(args.port)
+    if health == "PORT_CONFLICT":
+        print("PORT_CONFLICT")
+        return 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()
@@ -188,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
-    if not _health(args.port):
+    if health != "READY":
         detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
         server = subprocess.Popen(
             [
@@ -206,10 +254,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and server.poll() is None:
-            if _health(args.port):
+            if _health(args.port) == "READY":
                 break
             time.sleep(0.25)
-        if not _health(args.port):
+        health = _health(args.port)
+        if health != "READY":
+            if health == "PORT_CONFLICT":
+                print("PORT_CONFLICT")
+                return 2
             print("LOCAL_SERVER_UNAVAILABLE")
             return 2
     client = _client_executable(root)
