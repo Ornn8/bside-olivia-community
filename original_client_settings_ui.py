@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v1"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v3"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -15,6 +15,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
+  const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
@@ -205,7 +206,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH ? 600000 : 8000;
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -225,7 +227,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         responseBody = null;
       }
-      const payload = path === VIDEO_REPLY_SETTINGS_PATH
+      const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -876,6 +878,43 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     void hydrate();
   };
 
+  const mountOfficialLetterImport = (section) => {
+    const row = document.createElement("div");
+    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
+    const state = text("div", "", "text-text-secondary text-caption-m font-regular");
+    state.setAttribute("aria-live", "polite");
+    copy.append(
+      text("div", "导入官方文字信件", "text-text-body text-label-l"),
+      text("div", "只导入原信和文字回信，不导入视频。重复信件会自动跳过。", "text-text-secondary text-body-m font-regular"),
+      state
+    );
+    const importButton = button("导入", async () => {
+      if (!window.confirm("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
+        return;
+      }
+      setButtonsBusy([importButton], true);
+      state.textContent = "正在读取官方文字信件……";
+      try {
+        const payload = await requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {});
+        const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
+        const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
+        const migration = payload.memory_migration;
+        const memoryText = migration && migration.status === "completed"
+          ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
+          : "信件已保存；长期记忆尚未全部处理，可稍后重试。";
+        state.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}`;
+      } catch (_error) {
+        state.textContent = "导入失败。请先启动官方客户端并登录，再重试。";
+      } finally {
+        setButtonsBusy([importButton], false);
+      }
+    });
+    row.append(copy, importButton);
+    section.append(text("div", "历史信件", "text-text-body text-title-m"), row);
+  };
+
   const mountShell = () => {
     if (!isSettingsRoute()) {
       removeShell();
@@ -911,6 +950,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     row.append(copy, button("打开", openDialog));
     section.append(title, row);
     mountVideoReplySetting(section);
+    mountOfficialLetterImport(section);
     container.append(section);
   };
 

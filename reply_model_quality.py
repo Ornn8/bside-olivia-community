@@ -751,7 +751,13 @@ def _aggregate_layer_results(
                 {
                     "code": code,
                     "severity": (
-                        "hard" if item.hard_violations or item.score == 0 else "soft"
+                        "soft"
+                        if name == "voice_style"
+                        else (
+                            "hard"
+                            if item.hard_violations or item.score == 0
+                            else "soft"
+                        )
                     ),
                     "evidence": {"start": 0, "end": len(candidate)},
                 }

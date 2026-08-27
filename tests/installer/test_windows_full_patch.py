@@ -660,6 +660,8 @@ def test_copy_payload_excludes_non_runtime_project_files(
     ).is_file()
     assert (destination / "runtime" / "original_client_media_http.py").is_file()
     assert (destination / "runtime" / "video_reply_settings.py").is_file()
+    assert (destination / "runtime" / "imports" / "official_letters.py").is_file()
+    assert (destination / "runtime" / "imports" / "historical_memory.py").is_file()
     assert not (destination / "runtime" / "packaging").exists()
     assert "dynamic_renderer.py" in copied
     assert (destination / "dynamic_renderer.py").is_file()
@@ -974,7 +976,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
         main = archive.read("assets/main-917d29fc.js").decode("utf-8")
     assert "assets/olivia-companion-settings.js" in names
     assert "data-olivia-companion-settings" in index
-    assert "data-ui-version=\"p03.original-settings-manage.v1\"" in index
+    assert "data-ui-version=\"p03.original-settings-manage.v3\"" in index
     assert "toyApiUrl" in main
     assert "await t.replace({name:ye.Collection})" in main
 

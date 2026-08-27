@@ -96,6 +96,20 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     assert messages[0]["content"].index("<mode_constraints") < messages[0][
         "content"
     ].index("<mode_style")
+    assert '"reply_priorities"' in messages[0]["content"]
+    assert "Answer as Linli, not as a service agent or therapist." in messages[0][
+        "content"
+    ]
+    assert "Never invent personal facts, shared history, or relationship facts." in (
+        messages[0]["content"]
+    )
+    assert "Engage one or two concrete details instead of exhaustively recapping." in (
+        messages[0]["content"]
+    )
+    assert "Use restrained natural language without forced uplift or closure." in (
+        messages[0]["content"]
+    )
+    assert "<reply_priorities>" not in messages[0]["content"]
     assert messages[0]["content"].index("<mode_style") < messages[0][
         "content"
     ].index("<public_canon")

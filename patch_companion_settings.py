@@ -338,6 +338,7 @@ def _verify_archive(
     bootstrap_required = (
         'const STATUS_PATH = "/toy/companion/status";',
         'const MEMORY_PATH = "/toy/companion/memory";',
+        'const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
@@ -355,6 +356,7 @@ def _verify_archive(
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
+        "导入官方文字信件",
         "new MutationObserver",
         "replaceChildren",
     )

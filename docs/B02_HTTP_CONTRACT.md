@@ -38,6 +38,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 音乐写操作 | `/toy/addPerformance` 等 | unavailable | 501 `MUSIC_WRITE_NOT_IMPLEMENTED` |
 | MIDI | `/toy/midi/*` | terminal/partial | 任务状态兼容现有原型；生成/上传/分享码导入明确 501 |
 | legacy import | `/toy/letter/legacy/import` | available | SQLite 本地扩展；仅接受 `mode=read_only`，以单事务原子导入旧信并按内容哈希去重；导入后旧信域只读且不与新聊天合并 |
+| 官方文字信件导入 | `/toy/letter/legacy/official-import` | available/degraded | 用户在设置页明确确认后，临时读取官方客户端登录日志并从官方接口导入原信与文字回信；忽略视频，不保存或回显凭证；启用 Mem0 时严格按时间逐封迁移，最后至多初始化一次 PrivateWorld |
 
 原生 WebSocket、ASR、TTS、Live 没有假 route；`/health` 的 capability registry 明确为 `unavailable`，错误码分别为 `WEBSOCKET_UNAVAILABLE`、`ASR_UNAVAILABLE`、`TTS_UNAVAILABLE`、`LIVE_UNAVAILABLE`。
 
@@ -46,6 +47,8 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 缺少 `letter_id`/`content`：400 `MISSING_FIELD`。
 - `content` 为空、`material` 非 object、JSON 非法或请求体非 object：400 稳定错误。
 - legacy import 的 body、`mode` 或 `letters` 不合法：400 `INVALID_BODY`；SQLite 存储不可用：503 `MEMORY_UNAVAILABLE`。两类错误都不回显旧信正文、路径或密钥。
+- 官方文字信件导入无法读取登录日志、官方接口或有效账户时：503 `OFFICIAL_LETTER_IMPORT_UNAVAILABLE`；用户可先启动官方客户端并登录后重试。
+- 官方归档成功但长期记忆或 PrivateWorld 迁移中断时，归档不会回滚；响应中的 `memory_migration.status=partial` 和稳定 `error_code` 表明可重试。已写入记录由稳定 source id 判重，不会重复生成。
 - 找不到信件或 MIDI job：404，不返回空的成功对象。
 - 空信箱、无匹配歌曲、空 playlist：200，但 `source=local-memory|empty`、列表和计数明确为空。
 - LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。

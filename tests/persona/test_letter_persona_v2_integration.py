@@ -81,6 +81,26 @@ def test_enabled_v2_uses_persona_assembly_and_separate_user_message() -> None:
     assert "synthetic current letter" not in messages[0]["content"]
 
 
+def test_historical_policy_uses_ready_v2_without_private_world_evidence() -> None:
+    adapter = LetterAdapter(
+        _config(persona_v2_file=str(ROOT / "linli_character" / "persona_release_v2.json")),
+        memory_port=NullMemoryPort(),
+        private_world_port=SnapshotPort(
+            PrivateWorldSnapshot(
+                trust=88,
+                nickname_permissions=("private-nickname",),
+            )
+        ),
+        now=lambda: NOW,
+    )
+
+    policy = adapter.get_persona_policy()
+
+    assert "林离 Olivia" in policy
+    assert "Persona status is DRAFT" not in policy
+    assert "private-nickname" not in policy
+
+
 def test_letter_adapter_uses_explicit_conversation_memory_port() -> None:
     conversation_memory = ExplicitConversationMemory()
     archive_memory = NullMemoryPort()
