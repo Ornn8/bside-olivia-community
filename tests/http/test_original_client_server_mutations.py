@@ -36,7 +36,7 @@ from original_client_server import (
     create_configured_original_client_server_runtime,
     create_original_client_server_runtime,
 )
-from private_world_delivery import PrivateWorldDeliveryCommitter
+from runtime.memory.private_world_delivery import PrivateWorldDeliveryCommitter
 from private_world_ledger import SQLitePrivateWorldLedger
 
 

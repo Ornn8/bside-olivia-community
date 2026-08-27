@@ -9,7 +9,7 @@ from llm_gateway import GatewayConfig
 from local_server import LetterAdapter
 from memory_port import NullMemoryPort
 from private_world_admin import PrivateWorldAdmin
-from private_world_delivery import (
+from runtime.memory.private_world_delivery import (
     DeliveryEvent,
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,

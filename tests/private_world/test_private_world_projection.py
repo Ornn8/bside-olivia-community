@@ -4,7 +4,7 @@ from private_world_port import (
     LocalContinuationFact,
     PrivateWorldSnapshot,
 )
-from private_world_projection import project_private_world
+from runtime.memory.private_world_projection import project_private_world
 from reply_context import BehaviorLevel, RelationshipStage
 
 
