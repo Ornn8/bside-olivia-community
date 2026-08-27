@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from llm_gateway import GatewayError, GatewayToolCall
-from media_paths import configured_media_path
+from runtime.media.media_paths import configured_media_path
 from music_reply import musical_reply_configured
 
 
