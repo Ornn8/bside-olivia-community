@@ -107,6 +107,7 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
 
     health = iter((False, True, True))
     backend_environments: list[dict[str, str]] = []
+    client_environments: list[dict[str, str]] = []
 
     class Process:
         @staticmethod
@@ -121,6 +122,10 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
         backend_environments.append(kwargs["env"].copy())
         return Process()
 
+    def call(_command, **kwargs):
+        client_environments.append(kwargs["env"].copy())
+        return 0
+
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
     monkeypatch.setattr(
         start_local,
@@ -128,10 +133,12 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
         lambda: Path("pythonw-fixture.exe"),
     )
     monkeypatch.setattr(start_local.subprocess, "Popen", popen)
-    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(start_local.subprocess, "call", call)
 
     assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
     assert backend_environments[0]["DEEPSEEK_API_KEY"] == expected
+    assert "DEEPSEEK_API_KEY" not in client_environments[0]
+    assert expected not in client_environments[0].values()
     captured = capsys.readouterr()
     assert expected not in captured.out
     assert expected not in captured.err

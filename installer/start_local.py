@@ -111,11 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ready else 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
-    environment = os.environ.copy()
+    client_environment = os.environ.copy()
+    backend_environment = client_environment.copy()
     configured_key = _load_dpapi_key(data_root / "config" / "deepseek_api_key.dpapi")
-    if configured_key and not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        environment["DEEPSEEK_API_KEY"] = configured_key
-    environment.update(
+    if configured_key and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
+        backend_environment["DEEPSEEK_API_KEY"] = configured_key
+    backend_environment.update(
         {
             "OLIVIA_INSTALL_ROOT": str(root),
             "OLIVIA_PROJECT_ROOT": str(root / "app"),
@@ -141,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
         "OLIVIA_LLM_MAX_RETRIES": "0",
     }.items():
-        environment.setdefault(name, value)
-    if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
+        backend_environment.setdefault(name, value)
+    if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
     if not _health(args.port):
@@ -156,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 str(entrypoint),
             ],
             cwd=backend,
-            env=environment,
+            env=backend_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=detached,
@@ -178,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     local = profile / "Local"
     roaming.mkdir(parents=True, exist_ok=True)
     local.mkdir(parents=True, exist_ok=True)
-    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(environment, roaming, local))
+    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(client_environment, roaming, local))
 
 
 if __name__ == "__main__":
