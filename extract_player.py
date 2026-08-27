@@ -62,7 +62,7 @@ def safe_extract_zip(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", type=Path, default=Path("0.0.9.615/resources"))
+    parser.add_argument("--base", type=Path, default=Path("0.0.9.627/resources"))
     parser.add_argument("--output-root", type=Path, default=Path("extracted_player"))
     args = parser.parse_args()
 

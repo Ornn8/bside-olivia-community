@@ -7,6 +7,7 @@ server and its tests use only temporary archives.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable
 from urllib.parse import urlsplit
 
 
@@ -28,6 +30,52 @@ MAILBOX_LOGIN_REPLACEMENT = (
     '!z.isNew||N?(localStorage.setItem("appMode","lite"),'
     'await t.replace({name:ye.Collection}),'
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+)
+
+MAIN_JS_0627 = "assets/main-31595bd3.js"
+HE_ANCHOR_0627 = "We=e=>new Promise((t,s)=>{try{"
+INJECT_ANCHOR_0627 = ',"query.response":io(a)}}),t(c)},onFailure:'
+MAILBOX_LOGIN_ANCHOR_0627 = (
+    '!z.isNew||$?(await t.replace({name:ve.Home}),'
+    'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+)
+MAILBOX_LOGIN_REPLACEMENT_0627 = (
+    '!z.isNew||$?(localStorage.setItem("appMode","lite"),'
+    'await t.replace({name:ve.Collection}),'
+    'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+)
+
+
+@dataclass(frozen=True)
+class _PatchProfile:
+    main_js: str
+    bridge_anchor: str
+    inject_anchor: str
+    inject_prefix: str
+    mailbox_anchor: str
+    mailbox_replacement: str
+    collection_route: str
+
+
+_PATCH_PROFILES = (
+    _PatchProfile(
+        MAIN_JS,
+        HE_ANCHOR,
+        INJECT_ANCHOR,
+        ',"query.response":no(a)}}),',
+        MAILBOX_LOGIN_ANCHOR,
+        MAILBOX_LOGIN_REPLACEMENT,
+        "await t.replace({name:ye.Collection})",
+    ),
+    _PatchProfile(
+        MAIN_JS_0627,
+        HE_ANCHOR_0627,
+        INJECT_ANCHOR_0627,
+        ',"query.response":io(a)}}),',
+        MAILBOX_LOGIN_ANCHOR_0627,
+        MAILBOX_LOGIN_REPLACEMENT_0627,
+        "await t.replace({name:ve.Collection})",
+    ),
 )
 
 
@@ -94,10 +142,37 @@ def _validate_zip(path: Path) -> None:
         raise ValueError("input or backup archive is invalid") from exc
 
 
-def _patch_mailbox_default_route(javascript: str) -> str:
-    if javascript.count(MAILBOX_LOGIN_ANCHOR) != 1:
+def patch_profile_for_members(member_names: Iterable[str]) -> _PatchProfile:
+    names = set(member_names)
+    matches = [
+        profile
+        for profile in _PATCH_PROFILES
+        if profile.main_js in names
+    ]
+    if len(matches) != 1:
+        raise ValueError("supported frontend main bundle is missing or ambiguous")
+    return matches[0]
+
+
+def _select_profile(root: Path) -> _PatchProfile:
+    return patch_profile_for_members(
+        profile.main_js
+        for profile in _PATCH_PROFILES
+        if (root / Path(*profile.main_js.split("/"))).is_file()
+    )
+
+
+def _patch_mailbox_default_route(
+    javascript: str,
+    profile: _PatchProfile,
+) -> str:
+    if javascript.count(profile.mailbox_anchor) != 1:
         raise ValueError("fresh lite login mailbox anchor is missing or not unique")
-    return javascript.replace(MAILBOX_LOGIN_ANCHOR, MAILBOX_LOGIN_REPLACEMENT, 1)
+    return javascript.replace(
+        profile.mailbox_anchor,
+        profile.mailbox_replacement,
+        1,
+    )
 
 
 def _ensure_backup(feapp: Path) -> Path:
@@ -146,13 +221,12 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
             with zipfile.ZipFile(feapp) as archive:
                 _safe_extract(archive, temporary_root / "unpacked")
             root = temporary_root / "unpacked"
-            main_path = root / Path(*MAIN_JS.split("/"))
-            if not main_path.is_file():
-                raise ValueError(f"missing {MAIN_JS}")
+            profile = _select_profile(root)
+            main_path = root / Path(*profile.main_js.split("/"))
             javascript = main_path.read_text(encoding="utf-8")
-            if javascript.count(HE_ANCHOR) != 1:
-                raise ValueError("He anchor is missing or not unique")
-            index = javascript.find(INJECT_ANCHOR)
+            if javascript.count(profile.bridge_anchor) != 1:
+                raise ValueError("bridge anchor is missing or not unique")
+            index = javascript.find(profile.inject_anchor)
             if index < 0:
                 raise ValueError("onSuccess injection anchor is missing")
             patch = (
@@ -161,25 +235,26 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 + 'c.appConf.toyApiUrl=' + json.dumps(new_http)
                 + ')'
             )
-            head_end = index + len(',"query.response":no(a)}}),')
+            head_end = index + len(profile.inject_prefix)
             main_path.write_text(javascript[:head_end] + patch + ',' + javascript[head_end:], encoding="utf-8")
             patched_javascript = main_path.read_text(encoding="utf-8")
             main_path.write_text(
-                _patch_mailbox_default_route(patched_javascript), encoding="utf-8"
+                _patch_mailbox_default_route(patched_javascript, profile),
+                encoding="utf-8",
             )
             output_archive = temporary_root / "patched.dat"
             _repack(root, output_archive)
             _validate_zip(output_archive)
             os.replace(output_archive, feapp)
             with zipfile.ZipFile(feapp) as archive:
-                patched_js = archive.read(MAIN_JS).decode("utf-8")
+                patched_js = archive.read(profile.main_js).decode("utf-8")
             if (
                 "toyApiUrl" not in patched_js
                 or new_http not in patched_js
                 or "toyWsUrl" not in patched_js
                 or new_ws not in patched_js
                 or 'localStorage.setItem("appMode","lite")' not in patched_js
-                or "await t.replace({name:ye.Collection})" not in patched_js
+                or profile.collection_route not in patched_js
             ):
                 raise ValueError("patched archive verification failed")
         except Exception:
@@ -196,7 +271,7 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("feapp", nargs="?", default=r"0.0.9.615\resources\feapp.dat")
+    parser.add_argument("feapp", nargs="?", default=r"0.0.9.627\resources\feapp.dat")
     parser.add_argument("new_ws", help="explicit ws://localhost:<port>/... target")
     args = parser.parse_args()
     result = patch_feapp(args.feapp, args.new_ws)

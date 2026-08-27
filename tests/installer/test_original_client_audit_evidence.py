@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EVIDENCE = ROOT / "docs" / "evidence" / "original-client-audit-0.0.9.615.json"
+EVIDENCE = ROOT / "docs" / "evidence" / "original-client-audit-0.0.9.627.json"
 MANIFEST = ROOT / "installer" / "full-patch-manifest.json"
 
 
@@ -55,9 +55,9 @@ def test_original_client_evidence_supports_collection_and_user_info_only() -> No
 
     assert navigation["has_home"] is True
     assert navigation["has_collection"] is True
-    assert "ye.Home" in routes
-    assert "ye.Collection" in routes
-    assert "ye.UserInfo" in routes
+    assert "ve.Home" in routes
+    assert "ve.Collection" in routes
+    assert "ve.UserInfo" in routes
     assert "LetterDetail" not in routes
     assert "ye.Settings" not in routes
 

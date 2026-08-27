@@ -6,7 +6,7 @@
 
 1. 将发布 ZIP 解压到任意目录。
 2. 双击 `INSTALL.cmd`。它始终使用 `%LOCALAPPDATA%` 下受管的 Python 3.12 embeddable runtime；首次使用会显示 Python.org 固定来源、SHA-256 和 PSF 许可证，并在明确同意后下载。安装器从 Steam AppID `4532590` 的 appmanifest 自动发现正版目录。
-3. 安装成功后双击 `START.cmd`。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.615\Olivia.exe`，并使用安装目录下的独立 profile。长期记忆、PrivateWorld 和媒体接口都挂在同一个进程中。
+3. 安装成功后双击 `START.cmd`。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。长期记忆、PrivateWorld 和媒体接口都挂在同一个进程中。
 4. 首次配置可双击 `CONFIGURE.cmd`：API key 输入不回显，并以当前 Windows 用户 DPAPI 加密保存到 `data\config`；也可选择自己的参考音频/视频导入 `data\third-party\reference`。这些文件不进入补丁包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
@@ -19,12 +19,12 @@
 安装前同时校验：
 
 ```text
-客户端版本：0.0.9.615
+客户端版本：0.0.9.627
 feapp.dat SHA-256：
-53babcf288c7679a57eb4a2647397d951ec450d5fdaea634498286b2ebb8136e
+c88f1dd4cb7c95e4902d74dd0c247962ffd65559e3907497b416078d3a6698b5
 
 webplayer.dat SHA-256：
-504b59876af2f04c4902f8c8e6811018d36a2da4394e20cf74f22d13d394b636
+565b5e3e113c2a9dfb90d5fa4f2a0ccda9b0151c118ae3365e6ee0c8624a451d
 ```
 
 任一文件缺失或哈希不匹配时，安装在写入目标目录前停止。
@@ -42,7 +42,7 @@ webplayer.dat
 5. 提供可选的显式 `uid` 本机回退，只为明确的 loopback `/toy/media/` 地址启用本机视频播放
 ```
 
-原版主包之外，设置界面只增加一个仓库自有 bootstrap；原版 `assets/main-917d29fc.js` 的业务代码除既有端点和 Collection 锚点外不做模糊替换。播放器的普通原版路径继续加载未修改的原模块。
+原版主包之外，设置界面只增加一个仓库自有 bootstrap；原版 `assets/main-31595bd3.js` 的业务代码除既有端点和 Collection 锚点外不做模糊替换。播放器的普通原版路径继续加载未修改的原模块。
 
 隔离副本保留：
 

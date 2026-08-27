@@ -28,6 +28,9 @@ from installer.start_local import (
 )
 
 
+CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -163,6 +166,42 @@ def test_install_bootstrap_passes_arguments_to_the_package_cli(tmp_path: Path) -
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["code"] == "OFFICIAL_INSTALL_NOT_FOUND"
+
+
+def test_doctor_reports_both_supported_original_archives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from installer import __main__ as installer_cli
+
+    monkeypatch.setattr(
+        installer_cli,
+        "load_manifest",
+        lambda _path: {
+            "client_version": "0.0.9.627",
+            "live_status": "UNAVAILABLE_PAUSED",
+            "media_status": "ORIGINAL_WEBPLAYER_LOCAL_VIDEO",
+        },
+    )
+    monkeypatch.setattr(
+        installer_cli,
+        "validate_official_source",
+        lambda _source, _manifest: (
+            "0.0.9.627",
+            tmp_path / "feapp.dat",
+            tmp_path / "webplayer.dat",
+        ),
+    )
+
+    assert installer_cli.main(
+        ["doctor", "--official-root", str(tmp_path)]
+    ) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "SUPPORTED"
+    assert report["client_version"] == "0.0.9.627"
+    assert report["feapp"].endswith("feapp.dat")
+    assert report["webplayer"].endswith("webplayer.dat")
 
 
 def test_install_entrypoint_uses_dotnet_sha256_not_optional_powershell_cmdlet() -> None:
@@ -469,7 +508,7 @@ def test_start_local_matches_first_party_client_launch_contract(
 
 
 def _make_official(root: Path) -> tuple[Path, str, str]:
-    version_root = root / "0.0.9.615"
+    version_root = root / CURRENT_TEST_CLIENT_VERSION
     resources = version_root / "resources"
     resources.mkdir(parents=True)
     (root / "launcher.exe").write_bytes(b"official launcher fixture")
@@ -533,7 +572,7 @@ def _write_manifest(
             {
                 "schema_version": "olivia.full-patch.v2",
                 "steam_app_id": "4532590",
-                "client_version": "0.0.9.615",
+                "client_version": CURRENT_TEST_CLIENT_VERSION,
                 "feapp_sha256": feapp_sha256,
                 "webplayer_sha256": webplayer_sha256,
                 "patch_mode": "isolated-copy",
@@ -639,6 +678,23 @@ def test_copy_payload_excludes_non_runtime_project_files(
         assert not (destination / name).exists()
     assert not (destination / ".evidence").exists()
     assert not (destination / "__pycache__").exists()
+
+
+def test_copy_payload_includes_runtime_packages_used_by_product_imports(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).parents[2]
+    destination = tmp_path / "installed" / "local_backend"
+
+    copy_project_payload(repo_root, destination)
+
+    for relative in (
+        "runtime/memory/bounded_daemon_call.py",
+        "runtime/media/music_duration.py",
+        "runtime/reply/reply_quality_gate.py",
+        "runtime/validation/memory_isolation_case01.py",
+    ):
+        assert (destination / relative).is_file(), relative
 
 
 def test_copy_payload_from_git_tree_excludes_untracked_files(
@@ -873,7 +929,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     tmp_path: Path,
 ) -> None:
     official, payload, manifest, feapp_digest, webplayer_digest = fixture_inputs
-    resources = official / "0.0.9.615" / "resources"
+    resources = official / CURRENT_TEST_CLIENT_VERSION / "resources"
     source_feapp = resources / "feapp.dat"
     source_webplayer = resources / "webplayer.dat"
     source_feapp_bytes = source_feapp.read_bytes()
@@ -900,7 +956,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert _sha256(source_webplayer) == webplayer_digest
 
     installed_resources = (
-        installed / "app" / "0.0.9.615" / "resources"
+        installed / "app" / CURRENT_TEST_CLIENT_VERSION / "resources"
     )
     patched_feapp = installed_resources / "feapp.dat"
     patched_webplayer = installed_resources / "webplayer.dat"
@@ -1287,7 +1343,7 @@ def test_start_resolves_isolated_client_and_never_launcher(
     target = tmp_path / "installed"
     install_full_patch(official, target, payload, manifest)
     assert _client_executable(target) == (
-        target / "app" / "0.0.9.615" / "Olivia.exe"
+        target / "app" / CURRENT_TEST_CLIENT_VERSION / "Olivia.exe"
     )
     start = (target / "START.cmd").read_text(encoding="utf-8")
     assert "launcher.exe" not in start.lower()

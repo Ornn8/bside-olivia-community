@@ -1,6 +1,6 @@
 {
   "archive": {
-    "compressed_bytes": 27732805,
+    "compressed_bytes": 27735098,
     "extension_counts": {
       ".css": 3,
       ".html": 1,
@@ -11,7 +11,7 @@
       ".webp": 16
     },
     "member_count": 36,
-    "uncompressed_bytes": 40561344
+    "uncompressed_bytes": 40567993
   },
   "limitations": [
     "No route or component is considered reusable from a keyword alone.",
@@ -32,27 +32,27 @@
     }
   },
   "main_bundle": {
-    "bytes": 370246,
-    "member": "assets/main-917d29fc.js",
-    "sha256": "c00dedb9a3ff72226b2c8dca81c05e3152de9149113bf6259ca04c415b332d8b"
+    "bytes": 376617,
+    "member": "assets/main-31595bd3.js",
+    "sha256": "08fec37feb4f0e6c4a5fec16ac405ce0da2f9a56eb276003d52abf329a57a123"
   },
   "navigation_evidence": {
     "has_collection": true,
     "has_home": true,
     "route_references": [
-      "C",
-      "P.name",
-      "f",
-      "f.route",
-      "ye.Collection",
-      "ye.Feedback",
-      "ye.Home",
-      "ye.Login",
-      "ye.ModeSelect",
-      "ye.Share",
-      "ye.Studio",
-      "ye.Survey",
-      "ye.UserInfo"
+      "S",
+      "U.name",
+      "g.route",
+      "ve.Collection",
+      "ve.Feedback",
+      "ve.Home",
+      "ve.Login",
+      "ve.ModeSelect",
+      "ve.Share",
+      "ve.Studio",
+      "ve.Survey",
+      "ve.UserInfo",
+      "y"
     ]
   },
   "patch_contract": {
@@ -67,19 +67,19 @@
   },
   "schema_version": "p03.original-client-audit.v1",
   "source": {
-    "archive_sha256": "53babcf288c7679a57eb4a2647397d951ec450d5fdaea634498286b2ebb8136e",
-    "client_version_hint": "0.0.9.615",
+    "archive_sha256": "c88f1dd4cb7c95e4902d74dd0c247962ffd65559e3907497b416078d3a6698b5",
+    "client_version_hint": "0.0.9.627",
     "expected_sha256_match": true,
     "name": "feapp.dat"
   },
   "status": "AUDITED",
   "surface_keyword_counts": {
-    "Collection": 12,
-    "Home": 8,
+    "Collection": 13,
+    "Home": 10,
     "LetterDetail": 0,
     "Profile": 9,
-    "Setting": 15,
-    "Settings": 13,
+    "Setting": 17,
+    "Settings": 15,
     "个人": 0,
     "信件": 0,
     "信箱": 0,

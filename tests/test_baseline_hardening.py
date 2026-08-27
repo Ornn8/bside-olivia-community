@@ -1049,6 +1049,40 @@ def test_patch_feapp_routes_fresh_lite_login_to_existing_mailbox_collection(
     assert "await t.replace({name:ye.Home})" not in patched
 
 
+def test_patch_feapp_supports_original_client_0_0_9_627(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    import patch_feapp
+
+    feapp = tmp_path / "feapp.dat"
+    main_member = "assets/main-31595bd3.js"
+    javascript = (
+        'We=e=>new Promise((t,s)=>{try{,'
+        '"query.response":io(a)}}),t(c)},onFailure:'
+        '!z.isNew||$?(await t.replace({name:ve.Home}),'
+        'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+    )
+    with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(main_member, javascript)
+
+    patch_feapp.patch_feapp(
+        feapp,
+        "ws://127.0.0.1:8899/ws",
+        work_root=tmp_path,
+    )
+
+    with zipfile.ZipFile(feapp) as archive:
+        patched = archive.read(main_member).decode("utf-8")
+
+    assert 'toyApiUrl="http://127.0.0.1:8899"' in patched
+    assert 'toyWsUrl="ws://127.0.0.1:8899/ws"' in patched
+    assert 'localStorage.setItem("appMode","lite")' in patched
+    assert "await t.replace({name:ve.Collection})" in patched
+    assert "await t.replace({name:ve.Home})" not in patched
+
+
 def test_patch_feapp_requires_explicit_local_ws_and_rolls_back_on_failure(tmp_path: Path) -> None:
     import hashlib
 
