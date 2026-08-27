@@ -16,22 +16,21 @@
         "size_bytes": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/digest"}
       }
-    },
-    "downloaded_asset": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "size_bytes", "sha256", "source_url"],
-      "properties": {
-        "path": {"type": "string", "minLength": 1},
-        "size_bytes": {"type": "integer", "minimum": 1},
-        "sha256": {"$ref": "#/$defs/digest"},
-        "source_url": {"type": "string", "format": "uri"}
-      }
     }
   },
   "properties": {
     "schema_version": {"const": "olivia.offline-core-assets.v1"},
-    "python_runtime": {"$ref": "#/$defs/downloaded_asset"},
+    "python_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "source_url"],
+      "properties": {
+        "path": {"const": "python-3.12.10-embed-amd64.zip"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"const": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"},
+        "source_url": {"type": "string", "format": "uri", "pattern": "^https://"}
+      }
+    },
     "pip_bootstrap": {
       "type": "object",
       "additionalProperties": false,
@@ -47,7 +46,9 @@
     "requirements_sha256": {"$ref": "#/$defs/digest"},
     "wheels": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 14,
+      "maxItems": 14,
+      "uniqueItems": true,
       "items": {"$ref": "#/$defs/local_asset"}
     }
   }

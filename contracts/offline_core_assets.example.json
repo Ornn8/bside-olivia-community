@@ -2,23 +2,88 @@
   "schema_version": "olivia.offline-core-assets.v1",
   "python_runtime": {
     "path": "python-3.12.10-embed-amd64.zip",
-    "size_bytes": 1,
+    "size_bytes": 11133606,
     "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
     "source_url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
   },
   "pip_bootstrap": {
     "path": "pip-25.2-py3-none-any.whl",
-    "size_bytes": 1,
+    "size_bytes": 1752557,
     "sha256": "6d67a2b4e7f14d8b31b8b52648866fa717f45a1eb70e83002f4331d07e953717",
     "package": "pip",
     "version": "25.2"
   },
-  "requirements_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requirements_sha256": "1d0a1ffc59c358123d1a3fc97c2b86e82daa52d1b336bb1b5d39524d75fc1ef1",
   "wheels": [
     {
-      "path": "wheelhouse/example-1.0-py3-none-any.whl",
-      "size_bytes": 1,
-      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "path": "wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl",
+      "size_bytes": 15038,
+      "sha256": "9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472"
+    },
+    {
+      "path": "wheelhouse/aiohttp-3.14.1-cp312-cp312-win_amd64.whl",
+      "size_bytes": 479873,
+      "sha256": "2aa92c87868cd13674989f9ee83e5f9f7ea4237589b728048e1f0c8f6caa3271"
+    },
+    {
+      "path": "wheelhouse/aiosignal-1.4.0-py3-none-any.whl",
+      "size_bytes": 7490,
+      "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"
+    },
+    {
+      "path": "wheelhouse/attrs-26.1.0-py3-none-any.whl",
+      "size_bytes": 67548,
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"
+    },
+    {
+      "path": "wheelhouse/frozenlist-1.8.0-cp312-cp312-win_amd64.whl",
+      "size_bytes": 44591,
+      "sha256": "34187385b08f866104f0c0617404c8eb08165ab1272e884abc89c112e9c00746"
+    },
+    {
+      "path": "wheelhouse/idna-3.18-py3-none-any.whl",
+      "size_bytes": 65455,
+      "sha256": "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"
+    },
+    {
+      "path": "wheelhouse/jsonschema-4.26.0-py3-none-any.whl",
+      "size_bytes": 90630,
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce"
+    },
+    {
+      "path": "wheelhouse/jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "size_bytes": 18437,
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"
+    },
+    {
+      "path": "wheelhouse/multidict-6.7.1-cp312-cp312-win_amd64.whl",
+      "size_bytes": 46053,
+      "sha256": "fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19"
+    },
+    {
+      "path": "wheelhouse/propcache-0.5.2-cp312-cp312-win_amd64.whl",
+      "size_bytes": 42322,
+      "sha256": "d9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42"
+    },
+    {
+      "path": "wheelhouse/referencing-0.37.0-py3-none-any.whl",
+      "size_bytes": 26766,
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231"
+    },
+    {
+      "path": "wheelhouse/rpds_py-2026.6.3-cp312-cp312-win_amd64.whl",
+      "size_bytes": 220394,
+      "sha256": "2c958bf94822e9290a40aaf2a822d4bc5c88099093e3948ad6c571eca9272e5f"
+    },
+    {
+      "path": "wheelhouse/typing_extensions-4.16.0-py3-none-any.whl",
+      "size_bytes": 45571,
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    },
+    {
+      "path": "wheelhouse/yarl-1.24.2-cp312-cp312-win_amd64.whl",
+      "size_bytes": 92901,
+      "sha256": "7dafe10c12ddd4d120d528c4b5599c953bd7b12845347d507b95451195bb6cad"
     }
   ]
 }
