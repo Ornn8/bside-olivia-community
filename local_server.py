@@ -81,7 +81,7 @@ from memory_prompt import MemoryPromptBuilder
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
 from private_world_port import NullPrivateWorldPort, PrivateWorldPort, PrivateWorldSnapshot
-from private_world_delivery import (
+from runtime.memory.private_world_delivery import (
     DeliveryEvent,
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,
@@ -95,8 +95,8 @@ from private_world_candidate import (
 )
 from private_world_candidates import SQLitePrivateWorldCandidateStore
 from private_world_reducer import ReducerEventKind
-from private_world_projection import project_private_world
-from private_world_runtime import (
+from runtime.memory.private_world_projection import project_private_world
+from runtime.memory.private_world_runtime import (
     PrivateWorldRuntime,
     create_private_world_runtime,
     resolve_private_world_database,

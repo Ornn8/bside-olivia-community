@@ -13,7 +13,7 @@ from enum import StrEnum
 import re
 from typing import Mapping, Protocol, runtime_checkable
 
-from conversation_memory_identity import (
+from runtime.memory.conversation_memory_identity import (
     ConversationMemoryIdentityError,
     normalize_conversation_memory_user_id,
 )
