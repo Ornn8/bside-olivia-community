@@ -1,0 +1,24 @@
+{
+  "schema_version": "olivia.offline-core-assets.v1",
+  "python_runtime": {
+    "path": "python-3.12.10-embed-amd64.zip",
+    "size_bytes": 1,
+    "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+    "source_url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
+  },
+  "pip_bootstrap": {
+    "path": "pip-25.2-py3-none-any.whl",
+    "size_bytes": 1,
+    "sha256": "6d67a2b4e7f14d8b31b8b52648866fa717f45a1eb70e83002f4331d07e953717",
+    "package": "pip",
+    "version": "25.2"
+  },
+  "requirements_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "wheels": [
+    {
+      "path": "wheelhouse/example-1.0-py3-none-any.whl",
+      "size_bytes": 1,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

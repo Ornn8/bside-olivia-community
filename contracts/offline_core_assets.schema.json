@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/offline_core_assets.schema.json",
+  "title": "Olivia offline core assets",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "local_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "downloaded_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "source_url"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "source_url": {"type": "string", "format": "uri"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "olivia.offline-core-assets.v1"},
+    "python_runtime": {"$ref": "#/$defs/downloaded_asset"},
+    "pip_bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "package", "version"],
+      "properties": {
+        "path": {"const": "pip-25.2-py3-none-any.whl"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "package": {"const": "pip"},
+        "version": {"const": "25.2"}
+      }
+    },
+    "requirements_sha256": {"$ref": "#/$defs/digest"},
+    "wheels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/local_asset"}
+    }
+  }
+}
