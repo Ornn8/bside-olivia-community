@@ -58,10 +58,12 @@ def _health(port: int) -> str:
         contract_matches = (
             response.status == 200
             and isinstance(payload, dict)
-            and payload.get("code") == 0
+            and type(payload.get("code")) is int
+            and payload["code"] == 0
             and payload.get("message") == "ok"
             and isinstance(data, dict)
-            and data.get("schema_version") == 1
+            and type(data.get("schema_version")) is int
+            and data["schema_version"] == 1
             and data.get("contract_version") == _CORE_HEALTH_CONTRACT_VERSION
             and data.get("profile") == "core"
             and data.get("status") in {"HEALTHY", "FAILED"}
