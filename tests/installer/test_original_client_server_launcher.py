@@ -85,7 +85,7 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
         pytest.skip("DPAPI is only available on Windows")
 
     root = _installation(tmp_path)
-    api_key = "dpapi-launcher-regression-key"
+    expected = "dpapi-launcher-regression-value"
     monkeypatch.setenv(
         "PSModulePath",
         str(
@@ -98,12 +98,12 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     )
     for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(configure.getpass, "getpass", lambda _prompt: api_key)
+    monkeypatch.setattr(configure.getpass, "getpass", lambda _prompt: expected)
 
     assert configure.main(["--installation", str(root)]) == 0
     protected_path = root / "data" / "config" / "deepseek_api_key.dpapi"
     assert protected_path.is_file()
-    assert protected_path.read_text(encoding="utf-8").strip() != api_key
+    assert protected_path.read_text(encoding="utf-8").strip() != expected
 
     health = iter((False, True, True))
     backend_environments: list[dict[str, str]] = []
@@ -131,10 +131,10 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
 
     assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
-    assert backend_environments[0]["DEEPSEEK_API_KEY"] == api_key
+    assert backend_environments[0]["DEEPSEEK_API_KEY"] == expected
     captured = capsys.readouterr()
-    assert api_key not in captured.out
-    assert api_key not in captured.err
+    assert expected not in captured.out
+    assert expected not in captured.err
 
 
 def test_launcher_preserves_compatible_llm_environment_overrides(
