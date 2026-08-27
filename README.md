@@ -23,7 +23,7 @@ BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。
 
 - 复用用户合法取得的原版 `0.0.9.615` 客户端，在隔离副本内接入本机服务，不修改正版 Steam 目录；
 - 将来信、Persona、记忆、PrivateWorld 与审校装配为唯一 canonical reply，再投影为文字或媒体；
-- 通过原版 Collection 和 webplayer 展示回信，避免另造第二套日常使用界面；
+- 通过原版 Collection 展示回信；书信视频由 Collection 内的 `BaseVideo` 播放，避免另造第二套日常使用界面；
 - 把 TTS、口型、音乐、ASR 和视觉能力放在可替换 provider 后，缺失时返回真实状态；
 - 将私人信件、API key、数据库、声音参考、模型权重和生成媒体留在用户本机；
 - 用 Windows CI、JSON Schema、合成 fixture 和发布扫描约束兼容性、隐私与失败边界。
@@ -45,12 +45,17 @@ flowchart LR
     Media --> TTS[CosyVoice TTS]
     Media --> Visual[LatentSync / FFmpeg]
     Media --> Music[MiniMax Music 3 / RoFormer]
-    TTS --> Player[原版 webplayer]
-    Visual --> Player
-    Music --> Player
+    TTS --> Render[本机媒体合成]
+    Visual --> Render
+    Music --> Render
+    Render --> MP4[最终本机 MP4]
+    MP4 --> MediaURL[/toy/media/.../]
+    MediaURL --> BaseVideo[Collection 内 BaseVideo]
 ```
 
 正文先成为 canonical reply，关系事件只提交一次。媒体生成是正文的后台投影；TTS、视觉或音乐失败不能删除正文，也不能重复改变记忆和关系状态。
+
+书信视频的最终本机 MP4 只通过 `/toy/media/...` 投影到 Collection 内的 `BaseVideo`。`webplayer` 属于另一条 `uid`、下载和播放控制路径，不是书信视频的接收或播放端点。
 
 ## 关键技术
 

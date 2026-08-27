@@ -84,7 +84,7 @@ def test_release_profile_excludes_private_instances_and_control_protocol() -> No
     assert max(len(row["statement"]) for row in payload["declarations"]) <= 240
 
 
-def test_release_provenance_is_bidirectional_and_pinned_to_current_repository() -> None:
+def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() -> None:
     schema = json.loads(
         (
             ROOT / "contracts" / "persona_v2_provenance.schema.json"
@@ -107,9 +107,13 @@ def test_release_provenance_is_bidirectional_and_pinned_to_current_repository() 
     assert linked == declarations
     source = payload["sources"][0]
     assert source["source_id"] == "P02.LINLI.CONSTITUTION"
-    assert "bside-olivia-community/blob/065185ab" in source["source_url"]
+    assert source["source_url"].endswith(
+        "/blob/900d6d18eba458e86fba79c05608fe8671d9100e/"
+        "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
+    )
     assert source["rights_status"] == "SUMMARY_ONLY"
-    assert "private history" in source["exclusion_reason"]
+    assert "Concrete relationship records" in source["exclusion_reason"]
+    assert "communication timelines" in source["exclusion_reason"]
 
 
 def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:

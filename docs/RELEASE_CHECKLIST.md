@@ -22,7 +22,8 @@
 
 - [x] 已选择并提交代码许可证（Apache-2.0，见根目录 `LICENSE` 和 `NOTICE`）。
 - [x] 已声明原版、角色、商标、模型、用户内容和生成媒体不属于项目许可证（见 `ASSET_POLICY.md`）。
-- [ ] 第三方依赖、模型、运行时和原版资源的许可证已分别记录（基础依赖见 `THIRD_PARTY_NOTICES.md`）。
+- [x] `pyproject.toml` 中的直接运行依赖已在 `THIRD_PARTY_NOTICES.md` 记录来源和许可证；若 wheel 包含额外二进制，仍须核对该二进制的随附声明。
+- [ ] 第三方模型、运行时和原版资源的许可证已分别记录，并已按实际锁定发行环境核对完整依赖树。
 - [ ] `CONTRIBUTING.md`、`SECURITY.md` 和 `CODE_OF_CONDUCT.md` 已更新。
 - [ ] 发布说明包含已验证能力、未验证边界、已知限制和回滚方式。
 
