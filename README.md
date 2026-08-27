@@ -1,48 +1,117 @@
 # BSide Olivia Community
 
+<div align="center">
+
+**把 Olivia 的写信与回信体验留在本地，并将人格、记忆与生成媒体变成可维护的开放工程。**
+
 [![Public smoke](https://github.com/Ornn8/bside-olivia-community/actions/workflows/public-smoke.yml/badge.svg)](https://github.com/Ornn8/bside-olivia-community/actions/workflows/public-smoke.yml)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/Code-MIT-yellow.svg)](LICENSE)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4.svg)](docs/WINDOWS_FULL_PATCH.md)
+[![License: Apache-2.0](https://img.shields.io/badge/Code-Apache--2.0-D22128.svg)](LICENSE)
 
-一个面向 Windows 的非官方、非商业 Olivia 本地陪伴复刻项目。
+[安装说明](docs/WINDOWS_FULL_PATCH.md) · [文档索引](docs/README.md) · [项目进度](https://github.com/Ornn8/bside-olivia-community/issues) · [第三方下载](docs/THIRD_PARTY_DOWNLOADS.md)
 
-项目尽量保留原版的写信、等待回信和视频回信体验，并在本机加入可配置的 LLM、Persona、长期记忆、PrivateWorld 与媒体生成能力。它不是官方服务的替代入口，也不包含原版游戏、官方素材、模型权重、用户数据或访问凭据。
+</div>
 
-> 当前阶段：文字回信、人格、记忆和原版客户端接入已经形成可运行主链；视频与音乐回信具备编排代码，但跨机器安装和最终人工效果验收仍在进行；Live 实时对话暂停开发。
+BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。它保留原版客户端的 Collection、写信、等待与回信交互，同时以本机后端替代已经不可持续依赖的在线链路。
 
-## 已实现
+项目并不重新制作一个聊天壳。核心目标是让原版体验、可审计人格、长期记忆、私有关系状态和离线媒体生成组合成一条可维护、可降级、可替换的产品管线。
 
-- 原版客户端与本机 HTTP 后端联动，服务默认只监听 `127.0.0.1:8899`；
-- Persona 2.0、上下文装配、固定分层审校和最多一次正文修复；
-- 文字回信、普通说话视频、音乐视频三种表达路径；
-- Mem0 长期记忆与 PrivateWorld 私有关系状态，按用户隔离并提供本地管理入口；
-- 后台媒体任务、重启恢复和“仅影响新信”的视频回信开关；
-- Windows 隔离安装、DPAPI 密钥保存、启动与保留用户数据的卸载流程；
-- provider、模型或原版资源缺失时明确返回 `UNAVAILABLE` / `DEGRADED`，不伪造成功。
+> **当前状态：开发预览。** 文字回信主链可运行；视频与音乐回信仍处于真实设备和人工效果验收阶段；Mem0 一键新装、DPAPI 启动读取等发布阻断仍在修复。Live 实时对话暂停开发。
 
-## 仍在完善
+## 项目做到了什么
 
-| 能力 | 当前边界 |
+- 复用用户合法取得的原版 `0.0.9.615` 客户端，在隔离副本内接入本机服务，不修改正版 Steam 目录；
+- 将来信、Persona、记忆、PrivateWorld 与审校装配为唯一 canonical reply，再投影为文字或媒体；
+- 通过原版 Collection 和 webplayer 展示回信，避免另造第二套日常使用界面；
+- 把 TTS、口型、音乐、ASR 和视觉能力放在可替换 provider 后，缺失时返回真实状态；
+- 将私人信件、API key、数据库、声音参考、模型权重和生成媒体留在用户本机；
+- 用 Windows CI、JSON Schema、合成 fixture 和发布扫描约束兼容性、隐私与失败边界。
+
+## 架构
+
+```mermaid
+flowchart LR
+    Client[原版 Olivia 客户端] --> HTTP[本机 aiohttp 服务]
+    HTTP --> Context[ReplyContext]
+    Persona[Persona 2.0] --> Context
+    Memory[Mem0 长期记忆] --> Context
+    World[PrivateWorld 行为投影] --> Context
+    Context --> LLM[OpenAI-compatible LLM]
+    LLM --> Gate[ReplyQualityGate]
+    Gate --> Canonical[Canonical reply]
+    Canonical --> Collection[原版 Collection]
+    Canonical -. 后台可选投影 .-> Media[媒体编排]
+    Media --> TTS[CosyVoice TTS]
+    Media --> Visual[LatentSync / FFmpeg]
+    Media --> Music[MiniMax Music 3 / RoFormer]
+    TTS --> Player[原版 webplayer]
+    Visual --> Player
+    Music --> Player
+```
+
+正文先成为 canonical reply，关系事件只提交一次。媒体生成是正文的后台投影；TTS、视觉或音乐失败不能删除正文，也不能重复改变记忆和关系状态。
+
+## 关键技术
+
+| 层 | 技术与职责 |
 | --- | --- |
-| 文字回信 | 主链可用，仍需更多长期人格与记忆盲测 |
-| 普通视频回信 | 编排已接入；TTS、口型和场景效果仍需真实设备人工验收 |
-| 音乐视频回信 | 支持说话视频、转场、演唱视频组合；生成耗时和人物稳定性仍是主要问题 |
-| 本地模型安装 | 核心运行时可由安装器准备；大型 TTS、视觉和音乐模型仍需按文档单独配置 |
-| Live 实时对话 | 暂停，不属于当前发布范围 |
-| 正式发行包 | 尚未发布 GitHub Release；目前面向源码安装与开发者测试 |
+| 本机服务 | Python 3.12、`aiohttp`、loopback HTTP、后台任务恢复 |
+| 接口契约 | JSON Schema、稳定错误码、幂等 request ID、fail-closed 校验 |
+| 模型网关 | OpenAI-compatible API；默认适配 DeepSeek，支持结构化工具调用 |
+| Persona | Persona 2.0、provenance、prompt budget、ReplyContext、可审计装配 |
+| 回信质量 | 确定性策略检查、一次模型审校、全局最多一次正文重写 |
+| 长期记忆 | Mem0、`sentence-transformers` 离线 embedding、按用户隔离的本机数据根 |
+| 私有关系 | SQLite 事件账本、reducer、有限行为投影；隐藏数值不直接进入模型 |
+| 语音 | CosyVoice 3、VoicePerformancePlan、整段单次 TTS、ASR 质量门禁 |
+| 视频 | 原版场景、LatentSync 1.5 口型适配、FFmpeg 转场与时间线合成 |
+| 音乐 | MiniMax Music 3、结构化歌词与音乐方向、RoFormer 人声分离、钢琴场景 |
+| ASR / Live | NeMo-Speech.cpp 接口与流式契约；Live 当前暂停，不属于发布范围 |
+| Windows 安装 | PowerShell、受管 Python、Steam AppID 发现、归档哈希校验、DPAPI |
+| 工程质量 | `pytest`、Windows GitHub Actions、hardening scan、合成隐私 fixture |
 
-动态进度以 [GitHub Issues](https://github.com/Ornn8/bside-olivia-community/issues) 和 [Milestones](https://github.com/Ornn8/bside-olivia-community/milestones) 为准。
+第三方运行时和模型均由用户在仓库外提供。本项目只维护薄适配器、配置、契约、编排、安装生命周期和验收测试，不在仓库内重造或分发模型。
 
-## 普通用户安装
+## 回信链路
 
-### 要求
+产品界面主要呈现“文字回信”和“视频回信”。内部为了调度、降级与验收，将媒体投影拆成三个模式：
+
+### 文字回信
+
+来信经过 Persona、上下文、长期记忆和 PrivateWorld 行为提示装配，再由 LLM 生成正文。正文通过质量门后持久化，并按真实产品节奏延迟送达。
+
+这是当前最成熟的主链。模型不可用时会报告 `UNAVAILABLE` 或 `DEGRADED`，不会把静态模板伪装成真实模型回信。
+
+### 普通说话视频
+
+冻结正文先生成 VoicePerformancePlan，再完成整段 TTS、ASR 门禁、人物口型和原版场景合成。说话场景由资源池选择，不绑定唯一素材。
+
+代码入口与 provider 合约已经接入，但不同机器上的 TTS、口型、面部稳定性和场景衔接仍需人工视听验收。
+
+### 音乐视频回信
+
+完整结构为：**说话视频 → 原版转身/黑屏转场 → 钢琴演唱视频 → 渐暗收尾**。歌曲、歌词和表演方向由同一封信的 canonical reply 派生。
+
+当前目标是一首约 40–60 秒的完整短歌，而不是几句演示音频。MiniMax、分离、口型与合成均为后台串行任务，RTX 3080 10GB 主要面向离线生成，不承诺实时速度。
+
+## Persona、记忆与 PrivateWorld
+
+Persona 不是一段无限增长的 system prompt。公开人格文件带有来源与版本信息，并通过预算器、上下文合同和质量门装配到单次回信中。
+
+Mem0 保存可检索的长期事实；PrivateWorld 保存私有关系事件。两者职责分离：记忆负责“发生过什么”，PrivateWorld 负责把关系变化投影为有限的行为提示。
+
+私人关系数值不会直接暴露给模型。视频重试、音乐重渲染和播放器失败也不会再次提交关系事件。
+
+## 安装
+
+### 基础要求
 
 - Windows 10/11 x64；
-- 合法取得的原版客户端 `0.0.9.615`；
-- 可用的 DeepSeek API；其他 OpenAI-compatible 接口目前仅支持开发者通过环境变量配置；
-- 仅使用文字回信时不要求本地独立显卡；视频、TTS 和音乐模型有各自的显存与磁盘要求。
+- 用户合法取得的原版客户端 `0.0.9.615`；
+- DeepSeek API key，或开发者自行配置的 OpenAI-compatible 接口；
+- 文字回信不要求独立显卡；视频、TTS 和音乐 provider 有各自显存与磁盘要求。
 
-### 安装与启动
+### 源码安装
 
 ```powershell
 git clone https://github.com/Ornn8/bside-olivia-community.git
@@ -51,46 +120,46 @@ cd bside-olivia-community
 .\START.cmd
 ```
 
-首次安装会在获得同意后下载经过哈希校验的 Python 3.12 嵌入式运行时和固定依赖，并自动查找 Steam AppID `4532590`。如果没有自动发现，可以按提示选择原版安装目录。
+安装器创建隔离副本并自动查找 Steam AppID `4532590`。正版目录不写入补丁、备份或生成数据；版本或关键归档哈希不匹配时会在写入前停止。
 
-首次启动后可在原版客户端的本地设置页管理记忆和视频回信开关；安装目录中的 `CONFIGURE.cmd` 用于保存 DeepSeek API key 和可选参考文件。API key 使用当前 Windows 用户的 DPAPI 加密保存，不写入仓库、安装包或日志。
+`CONFIGURE.cmd` 用于保存 API key 和可选参考文件。密钥设计为通过当前 Windows 用户的 DPAPI 加密保存；该启动读取链仍在发布验收中，现阶段开发者也可使用环境变量。
 
-安装、升级、目录和卸载边界详见 [Windows 完整版补丁说明](docs/WINDOWS_FULL_PATCH.md)。第三方模型请从 [官方或维护方下载入口](docs/THIRD_PARTY_DOWNLOADS.md) 获取。
+大型 TTS、视觉与音乐模型不随安装包分发。请按[第三方下载清单](docs/THIRD_PARTY_DOWNLOADS.md)从上游获取，并接受各自许可证。
 
-## 工作方式
+## 当前成熟度
 
-```text
-原版客户端
-  -> 本机 HTTP 服务
-  -> Persona + 当前来信 + 历史记忆 + PrivateWorld 行为投影
-  -> LLM 生成与审校
-  -> canonical reply 持久化
-  -> 文字展示
-  -> 可选的后台说话视频 / 音乐视频任务
-```
+| 能力 | 状态 | 证据边界 |
+| --- | --- | --- |
+| 原版客户端隔离接入 | 可运行 | 已验证安装、启动、本机 health 与 Collection 接入 |
+| 文字回信 | 可运行 | 已完成真实 LLM 回信；仍需长期人格与记忆盲测 |
+| Persona 2.0 / 审校 | 已接入 | 合成与回归测试覆盖；效果仍依赖模型 |
+| PrivateWorld | 已接入 | 本机 ledger、reducer 和管理接口可用 |
+| Mem0 | 实验可用 | 准备好的环境可写入和召回；一键新装仍在修复 |
+| 普通视频 | 实验性 | provider 可探测；最终人物效果尚未人工通过 |
+| 音乐视频 | 实验性 | 编排与模型接口存在；耗时、路由和稳定性仍待验收 |
+| Live 实时对话 | 暂停 | 不进入当前 Release |
+| 正式 Release | 未发布 | 当前只提供源码和验收候选，不宣称最终发布完成 |
 
-正文一旦成为 canonical reply，记忆、PrivateWorld 或媒体 provider 的失败都不能删除它。媒体只是正文的可选投影，不是文字回信成功的前置条件。
+CI 通过只证明对应代码、契约和合成 fixture 通过，不等于第三方模型、真实 GPU、原版客户端或人工视听验收完成。
 
 ## 仓库结构
 
 | 路径 | 内容 |
 | --- | --- |
-| 根目录 Python 模块 | 当前产品运行时；为兼容已有导入暂时保持扁平结构 |
+| 根目录 Python 模块 | 当前产品运行时与兼容导入入口 |
 | `linli_character/` | 可公开的人格配置、风格特征与 provenance |
-| `control_center/` | 本地记忆和 PrivateWorld 管理界面 |
-| `installer/` | Windows 隔离安装、启动、配置和卸载 |
+| `control_center/` | Memory 与 PrivateWorld 本地管理界面 |
+| `installer/` | Windows 安装、启动、配置、升级和卸载 |
 | `contracts/` | JSON Schema 与公开接口契约 |
-| `tts/`, `asr/`, `live/`, `visual_driver/` | 可替换的媒体 provider 适配层 |
-| `runtime/` | 可选模块和视觉运行时装配 |
+| `tts/`, `asr/`, `visual_driver/` | 可替换的媒体 provider 适配层 |
+| `runtime/`, `media_state/` | 可选运行时装配、媒体状态与资源引用 |
 | `tests/` | 合成 fixture 与回归测试，不包含私人数据 |
-| `tools/` | 审计、健康检查和维护工具 |
-| `docs/` | 用户、架构、验收和治理文档；入口见 [文档索引](docs/README.md) |
+| `tools/` | 审计、健康检查、provider worker 和维护工具 |
+| `docs/` | 用户、架构、验收和治理文档 |
 
-更详细的公开边界见 [仓库结构说明](docs/REPOSITORY_LAYOUT.md)。
+完整职责见[仓库结构说明](docs/REPOSITORY_LAYOUT.md)，文档入口见[文档索引](docs/README.md)。
 
-## 开发
-
-需要 Python 3.12：
+## 开发与验证
 
 ```powershell
 py -3.12 -m venv .venv
@@ -101,29 +170,24 @@ python baseline_hardening_scan.py --mode all
 git diff --check
 ```
 
-本地开发服务：
+本地后端可以直接运行：
 
 ```powershell
 python local_server.py
 ```
 
-测试通过只证明对应代码和合成 fixture 通过，不代表第三方模型、原版客户端、真实 GPU 或人工视听验收已经完成。
+提交前请阅读[贡献指南](CONTRIBUTING.md)、[安全政策](SECURITY.md)和[行为准则](CODE_OF_CONDUCT.md)。优先提交单一职责、可回滚的小 PR，并同时说明验证结果与未验证边界。
 
-## 隐私、版权与分发边界
+## 隐私、版权与分发
 
-本仓库不会分发：
+公开仓库和 Release 不包含：
 
-- 原版程序、`feapp.dat`、解包前端、角色视频、背景或音乐；
-- CosyVoice、LiveTalking、MiniMax 等第三方运行时、模型权重和缓存；
+- 原版程序、`feapp.dat`、`webplayer.dat`、解包前端、角色视频、背景或音乐；
+- CosyVoice、LiveTalking、MiniMax、LatentSync 等第三方运行时、模型权重和缓存；
 - 私人信件、声音参考、生成媒体、用户数据库、抓包、Token 或 API key；
-- 任何开发者机器专属的绝对路径和私有配置。
+- 开发者机器的绝对路径、私有配置、验收证据或本地工作树。
 
-公开代码只提供适配器、配置接口、哈希校验、合成测试和失败状态。使用者必须自行确认原版内容、第三方模型和生成内容在所在地及具体用途下的许可。完整规则见 [公开仓库边界](docs/PUBLIC_REPOSITORY.md) 与 [第三方声明](THIRD_PARTY_NOTICES.md)。
+项目自有代码及未另行标注的原创技术文档采用 [Apache License 2.0](LICENSE)。该许可证不授予任何原版游戏、角色、商标、官方素材、第三方模型或用户内容的权利。
 
-## 参与维护
+本项目与原作者、发行方及相关权利方没有隶属、授权或背书关系。详细边界见[资产与权利政策](ASSET_POLICY.md)、[公开仓库边界](docs/PUBLIC_REPOSITORY.md)和[第三方声明](THIRD_PARTY_NOTICES.md)。
 
-提交前请阅读 [贡献指南](CONTRIBUTING.md)、[安全政策](SECURITY.md) 与 [行为准则](CODE_OF_CONDUCT.md)。优先提交小而可回滚的 PR，并明确测试结果、外部依赖和未验证边界。
-
-## 许可
-
-本仓库自有代码与文档采用 [MIT License](LICENSE)。该许可证不覆盖原版游戏、官方素材、第三方模型、第三方运行时或用户生成内容。本项目与原作者、发行方及相关权利方没有隶属或授权关系。
