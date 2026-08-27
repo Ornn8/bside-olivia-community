@@ -22,6 +22,11 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
             )
         )
         expected_hash = hashlib.sha256(requirements.read_bytes()).hexdigest()
+        capability = json.loads(
+            (requirements.parent / "mem0-capability-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     if not isinstance(manifest, dict) or set(manifest) != {
@@ -30,7 +35,21 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
     }:
         return False
     source = manifest.get("source")
-    if not isinstance(source, str):
+    runtime_bom = capability.get("runtime") if isinstance(capability, dict) else None
+    sources = runtime_bom.get("pypi_sources") if isinstance(runtime_bom, dict) else None
+    if (
+        not isinstance(capability, dict)
+        or capability.get("schema_version") != "olivia.capability-bom.v1"
+        or not isinstance(runtime_bom, dict)
+        or runtime_bom.get("requirements_sha256") != expected_hash
+        or runtime_bom.get("requirements")
+        != "installer/mem0-runtime-requirements.txt"
+        or not isinstance(sources, dict)
+        or set(sources) != {"mirror", "official"}
+        or any(not isinstance(item, str) for item in sources.values())
+        or not isinstance(source, str)
+        or source not in sources.values()
+    ):
         return False
     parsed_source = urlsplit(source)
     if (
