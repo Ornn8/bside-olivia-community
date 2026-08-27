@@ -194,6 +194,100 @@ def test_openai_compatible_adapter_returns_required_tool_calls(
     assert seen["body"]["tools"][0]["function"]["name"] == "apply_voice_performance"
 
 
+def test_openai_compatible_adapter_rejects_malformed_tool_call_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        async def handler(_request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    42,
+                                    {
+                                        "function": {
+                                            "name": "apply_voice_performance",
+                                            "arguments": '{"overall_emotion":"steady reassurance"}',
+                                        }
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            with pytest.raises(ProviderProtocolError):
+                await adapter.complete_with_tools(
+                    messages=ROOT_MESSAGES,
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "apply_voice_performance",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    tool_choice="required",
+                )
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
+def test_openai_compatible_adapter_rejects_non_mapping_function_without_top_level_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        async def handler(_request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": 42,
+                                        "name": "apply_voice_performance",
+                                        "arguments": '{"overall_emotion":"steady reassurance"}',
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            with pytest.raises(ProviderProtocolError):
+                await adapter.complete_with_tools(
+                    messages=ROOT_MESSAGES,
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "apply_voice_performance",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    tool_choice="required",
+                )
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
 def test_tool_completion_rejects_non_required_choice_before_provider_call() -> None:
     async def exercise() -> InvalidGatewayInput:
         adapter = OpenAICompatibleAdapter(
