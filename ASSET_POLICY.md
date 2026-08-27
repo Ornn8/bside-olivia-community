@@ -41,4 +41,3 @@ BSide Olivia Community 是非官方社区项目，与原作者、发行方、分
 使用者在下载、运行、修改或分发第三方内容前，应阅读对应来源的许可证和服务条款，并自行确认具体用途具有必要权利。
 
 依赖与模型来源见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`docs/THIRD_PARTY_DOWNLOADS.md`](docs/THIRD_PARTY_DOWNLOADS.md)。公开仓库边界见 [`docs/PUBLIC_REPOSITORY.md`](docs/PUBLIC_REPOSITORY.md)。
-

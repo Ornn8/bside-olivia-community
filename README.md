@@ -190,4 +190,3 @@ python local_server.py
 项目自有代码及未另行标注的原创技术文档采用 [Apache License 2.0](LICENSE)。该许可证不授予任何原版游戏、角色、商标、官方素材、第三方模型或用户内容的权利。
 
 本项目与原作者、发行方及相关权利方没有隶属、授权或背书关系。详细边界见[资产与权利政策](ASSET_POLICY.md)、[公开仓库边界](docs/PUBLIC_REPOSITORY.md)和[第三方声明](THIRD_PARTY_NOTICES.md)。
-
