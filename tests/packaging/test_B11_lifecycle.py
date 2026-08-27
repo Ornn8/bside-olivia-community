@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 
+import pytest
+
+from runtime.packaging.b10b.errors import B10BError
 from runtime.packaging.b10b.manager import B10BManager
 
 
@@ -87,4 +90,33 @@ def test_livetalking_install_enable_health_and_uninstall_are_idempotent_and_exte
     assert (tmp_path / "downloads" / "wav2lip256.pth").exists()
     assert (tmp_path / "external" / "LiveTalking").is_dir()
     assert not (data_root / "modules" / "visual_livetalking" / "marker.json").exists()
+    assert not (data_root / "modules" / "visual_livetalking" / "config.json").exists()
+
+
+@pytest.mark.parametrize("alias_suffix", [".", " "])
+def test_livetalking_rejects_managed_copy_destination_alias_of_preserved_source(
+    tmp_path: Path, alias_suffix: str
+) -> None:
+    project, data_root = _project(tmp_path)
+    manager = B10BManager(project_root=project, data_root=data_root)
+    manager.install(["core/http", "visual-driver", "visual-livetalking"])
+
+    settings = _settings(tmp_path)
+    source = tmp_path / "downloads" / "notepad.exe"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"preserved source")
+    settings["managed_external_copies"] = [
+        {
+            "source": str(source),
+            "destination": f"{source}{alias_suffix}",
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "preserve_source": True,
+        }
+    ]
+
+    with pytest.raises(B10BError) as exc_info:
+        manager.customize("visual-livetalking", settings)
+
+    assert exc_info.value.code == "CONFIG_INVALID"
+    assert source.is_file()
     assert not (data_root / "modules" / "visual_livetalking" / "config.json").exists()

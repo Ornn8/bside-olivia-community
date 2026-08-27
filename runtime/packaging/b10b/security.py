@@ -143,8 +143,8 @@ def is_sensitive_key(value: str) -> bool:
 
 
 def _is_reserved_device_segment(part: str) -> bool:
-    normalized = part.rstrip(" .")
-    return normalized.split(".", 1)[0].upper() in _RESERVED
+    normalized = part.split(".", 1)[0].rstrip(" .")
+    return normalized.upper() in _RESERVED
 
 
 def is_external_reference(value: str, *, policy: str = "absolute") -> bool:
@@ -168,6 +168,7 @@ def is_external_reference(value: str, *, policy: str = "absolute") -> bool:
         or not re.fullmatch(r"[A-Za-z]:", candidate.drive)
         or len(candidate.parts) <= 1
         or any(part in {".", ".."} for part in candidate.parts)
+        or any(part.endswith((" ", ".")) for part in candidate.parts[1:])
         or any(_is_reserved_device_segment(part) for part in candidate.parts)
     ):
         return False
