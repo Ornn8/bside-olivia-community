@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
+from runtime.media.latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
 from runtime.reply.reply_delivery import ReplyDeliveryPlan
 from voice_direction import VoiceDirectionError, validate_short_instruction
 

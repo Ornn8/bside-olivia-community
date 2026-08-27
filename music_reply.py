@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-from latentsync_reply import (
+from runtime.media.latentsync_reply import (
     LatentSyncReplyError,
     render_latentsync_video,
     resolve_ffmpeg_executable,
@@ -29,7 +29,7 @@ from runtime.reply.reply_media import (
     assemble_complete_video_delivery,
     render_reply_video,
 )
-from song_content import plan_song_content
+from runtime.media.song_content import plan_song_content
 from voice_direction import VoicePerformancePlan
 
 

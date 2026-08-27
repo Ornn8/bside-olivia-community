@@ -13,7 +13,7 @@
 | `conversation_memory_*.py`、`mem0_memory.py` | 长期记忆、outbox、管理和运行时适配 |
 | `private_world_*.py` | 私有关系事件、ledger、reducer、投影和管理 |
 | `original_client_*.py`、`patch_*.py` | 原版客户端兼容接口、设置页和本机补丁 |
-| `music_*.py`、`runtime/reply/reply_media.py` | 视频、音乐和媒体编排 |
+| `runtime/media/`、`runtime/reply/reply_media.py`（根目录兼容别名保留） | 视频、音乐和媒体编排 |
 
 ## 目录
 
