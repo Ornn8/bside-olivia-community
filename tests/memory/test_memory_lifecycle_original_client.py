@@ -19,7 +19,7 @@ from conversation_memory_admin import (
     MemoryAdminMutationStatus,
 )
 from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
-from conversation_memory_delivery import CanonicalMemoryDelivery, ConversationMemoryDeliveryCommitter
+from runtime.memory.conversation_memory_delivery import CanonicalMemoryDelivery, ConversationMemoryDeliveryCommitter
 from conversation_memory_runtime import (
     ensure_conversation_memory_runtime,
     stop_conversation_memory_runtime,

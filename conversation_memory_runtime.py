@@ -18,8 +18,8 @@ import re
 import threading
 from typing import Mapping
 
-from conversation_memory_delivery import ConversationMemoryDeliveryCommitter
-from conversation_memory_outbox import CanonicalMemoryOutbox
+from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
 from conversation_memory_port import ConversationMemoryPort
 from memory_port import MemoryPort
 

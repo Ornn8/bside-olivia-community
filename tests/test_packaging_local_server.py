@@ -53,6 +53,11 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/memory/private_world_delivery.py" in packaged_paths
     assert "runtime/memory/private_world_projection.py" in packaged_paths
     assert "runtime/memory/conversation_memory_identity.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_delivery.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_outbox.py" in packaged_paths
+    assert "conversation_memory_delivery.py" in packaged_paths
+    assert "conversation_memory_outbox.py" in packaged_paths
+    assert "conversation_memory_runtime.py" in packaged_paths
     assert "runtime/media/music_caption.py" in packaged_paths
     assert "runtime/media/latentsync_reply.py" in packaged_paths
     assert "runtime/media/song_content.py" in packaged_paths
@@ -109,6 +114,11 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "-c",
             "import conversation_memory_admin, mem0_memory; "
             "import mem0_embedding_install, original_client_companion_mutation_backend; "
+            "import conversation_memory_delivery, conversation_memory_outbox; "
+            "import runtime.memory.conversation_memory_delivery as delivery_impl; "
+            "import runtime.memory.conversation_memory_outbox as outbox_impl; "
+            "assert conversation_memory_delivery is delivery_impl; "
+            "assert conversation_memory_outbox is outbox_impl; "
             "import importlib.util; "
             "assert importlib.util.find_spec('conversation_memory_identity') is None; "
             "assert importlib.util.find_spec('private_world_delivery') is None; "
