@@ -701,7 +701,7 @@ def test_available_sqlite_projects_only_character_view_into_reply_context(
     tmp_path: Path,
 ) -> None:
     from local_server import LetterAdapter
-    from reply_context import ReplyMode
+    from runtime.reply.reply_context import ReplyMode
 
     runtime = create_private_world_runtime(
         {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)}

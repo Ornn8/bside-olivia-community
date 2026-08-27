@@ -34,7 +34,7 @@ from private_world_service import (
     PrivateWorldCommandService,
     PrivateWorldCommandServiceError,
 )
-from reply_context import RelationshipStage
+from runtime.reply.reply_context import RelationshipStage
 
 
 PRIVATE_WORLD_CONTROL_SCHEMA = "p03.private-world-control.v1"

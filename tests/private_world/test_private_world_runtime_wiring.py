@@ -39,7 +39,7 @@ from private_world_port import (
     LocalContinuationFact,
     PrivateWorldSnapshot,
 )
-from reply_context import ReplyMode
+from runtime.reply.reply_context import ReplyMode
 
 database = Path(__import__('os').environ['OLIVIA_LOCAL_DATA_ROOT']) / 'private_world' / 'private_world.sqlite3'
 if __import__('os').environ.get('OLIVIA_TEST_SEED_PRIVATE_WORLD') == '1':
@@ -140,7 +140,7 @@ import os
 from pathlib import Path
 
 import local_server
-from reply_context import ReplyMode
+from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
 from voice_direction import VoicePerformancePlan

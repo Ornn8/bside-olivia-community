@@ -10,7 +10,7 @@ from conversation_memory_port import ConversationMemoryRecord, ConversationMemor
 from llm_gateway import GatewayConfig, GatewayResponse
 from memory_port import NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
-from reply_context import ReplyContext, ReplyMode, TrustedTime
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from reply_orchestrator import (
     ReplyOrchestrator,
     ReplyRequest,

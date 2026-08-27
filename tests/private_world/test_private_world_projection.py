@@ -5,7 +5,7 @@ from private_world_port import (
     PrivateWorldSnapshot,
 )
 from runtime.memory.private_world_projection import project_private_world
-from reply_context import BehaviorLevel, RelationshipStage
+from runtime.reply.reply_context import BehaviorLevel, RelationshipStage
 
 
 def test_projection_converts_hidden_scores_to_finite_behavior_levels() -> None:

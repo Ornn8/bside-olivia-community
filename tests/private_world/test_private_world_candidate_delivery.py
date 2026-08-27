@@ -22,7 +22,7 @@ from private_world_candidates import (
 from runtime.memory.private_world_delivery import PrivateWorldDeliveryCommitter
 from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldSnapshot
-from reply_context import ReplyMode
+from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
 

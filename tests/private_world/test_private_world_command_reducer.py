@@ -28,7 +28,7 @@ from private_world_reducer import (
     ReducerInputError,
     reduce_private_world_command,
 )
-from reply_context import RelationshipStage
+from runtime.reply.reply_context import RelationshipStage
 
 
 NOW = datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc)

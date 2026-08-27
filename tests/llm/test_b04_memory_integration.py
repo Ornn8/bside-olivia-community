@@ -18,7 +18,7 @@ from local_memory import LocalMemoryAdapter, UnavailableMemoryPort
 from memory_port import CONVERSATION_MEMORY, LEGACY_LETTERS, LegacyLetter, NullMemoryPort
 from memory_prompt import MEMORY_CONTEXT_BEGIN, MEMORY_CONTEXT_END, MemoryPromptBuilder
 from runtime.memory.private_world_delivery import DeliveryStatus
-from reply_context import ReplyMode
+from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
 from letter_triage import TriageResult
