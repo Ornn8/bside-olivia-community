@@ -24,7 +24,13 @@ from reply_delivery import (
     ordinary_video_reply_length_ok,
     plan_reply_delivery,
 )
-from reply_media import ReplyMediaError, _tts_config, render_reply_video
+from reply_media import (
+    ReplyMediaError,
+    _tts_config,
+    assemble_complete_video_delivery,
+    render_reply_video,
+)
+from song_content import SongContentPlan
 from tts.delivery import (
     DeliveryAudioError,
     _fit_overlong_wav,
@@ -163,6 +169,239 @@ def test_shared_music_preflight_never_checks_ordinary_quality_gate(
     assert calls == [False]
 
 
+def test_complete_delivery_resolves_tts_internal_paths_from_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / "config" / "tts.json"
+    reference = project_root / "voice" / "reference.wav"
+    worker = project_root / "workers" / "visual.py"
+    for path in (worker,):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic")
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(reference), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16_000)
+        target.writeframes(b"\0\0" * 16_000)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "runtime_root": "providers/cosyvoice",
+                    "model_dir": "providers/cosyvoice-model",
+                    "reference_audio": "voice/default.wav",
+                    "provider_options": {
+                        "numba_cache_dir": "cache/numba",
+                        "quality_gate_cache_root": "cache/quality-default",
+                        "wetext_fst_root": "cache/wetext",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    environment = {
+        "OLIVIA_PROJECT_ROOT": str(project_root),
+        "OLIVIA_REPLY_VOICE_REFERENCE": "voice/reference.wav",
+        "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": "cache/quality-override",
+    }
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setattr(
+        reply_media,
+        "_visual_config",
+        lambda _path: SimpleNamespace(validate=lambda: None),
+    )
+    monkeypatch.setattr(reply_media, "media_runtime_available", lambda _env: True)
+    monkeypatch.setattr(reply_media, "delivery_configured", lambda _tts: True)
+
+    delivery = assemble_complete_video_delivery(
+        config_path,
+        tmp_path / "unused-visual.json",
+        worker,
+        tmp_path / "temporary",
+        environment,
+    )
+
+    assert Path(delivery.tts.runtime_root) == project_root / "providers" / "cosyvoice"
+    assert Path(delivery.tts.model_dir) == project_root / "providers" / "cosyvoice-model"
+    assert Path(delivery.tts.reference_audio) == reference
+    assert delivery.tts.provider_options["numba_cache_dir"] == str(
+        project_root / "cache" / "numba"
+    )
+    assert delivery.tts.provider_options["quality_gate_cache_root"] == str(
+        project_root / "cache" / "quality-override"
+    )
+    assert delivery.tts.provider_options["wetext_fst_root"] == str(
+        project_root / "cache" / "wetext"
+    )
+
+
+def test_complete_delivery_rejects_relative_tts_paths_without_absolute_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "tts.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "runtime_root": "providers/cosyvoice",
+                    "model_dir": "providers/cosyvoice-model",
+                    "reference_audio": "voice/default.wav",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = tmp_path / "worker.py"
+    worker.write_bytes(b"synthetic")
+    monkeypatch.setattr(
+        reply_media,
+        "_visual_config",
+        lambda _path: SimpleNamespace(validate=lambda: None),
+    )
+    monkeypatch.setattr(reply_media, "media_runtime_available", lambda _env: True)
+    monkeypatch.setattr(reply_media, "delivery_configured", lambda _tts: True)
+
+    with pytest.raises(ReplyMediaError, match="COMPLETE_VIDEO_CONFIG_UNAVAILABLE"):
+        assemble_complete_video_delivery(
+            config_path,
+            tmp_path / "unused-visual.json",
+            worker,
+            tmp_path / "temporary",
+            {},
+        )
+
+
+def test_musical_render_uses_one_immutable_provider_path_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+
+    def write(path: Path, payload: bytes) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        return path
+
+    transition = write(project_root / "scenes" / "transition.mp4", b"transition")
+    performance = write(project_root / "scenes" / "performance.mp4", b"performance")
+    environment = {
+        "OLIVIA_PROJECT_ROOT": str(project_root),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/transition.mp4",
+        "OLIVIA_MINIMAX_COMFY_PYTHON": "providers/minimax/python.exe",
+        "OLIVIA_MINIMAX_COMFY_ROOT": "providers/minimax/root",
+        "OLIVIA_MINIMAX_WORKER": "providers/minimax/worker.py",
+        "OLIVIA_ROFORMER_EXE": "providers/roformer/roformer.exe",
+        "OLIVIA_ROFORMER_MODEL_PATH": "providers/roformer/model.ckpt",
+        "OLIVIA_ROFORMER_CONFIG_PATH": "providers/roformer/config.yaml",
+        "OLIVIA_LATENTSYNC_PYTHON": "providers/latentsync/python.exe",
+        "OLIVIA_LATENTSYNC_ROOT": "providers/latentsync/root",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    observed: dict[str, object] = {}
+    output = tmp_path / "output.mp4"
+
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="gentle_reassurance",
+            lyrics="[Verse]\\nsynthetic",
+            caption="synthetic piano ballad",
+            duration_seconds=40,
+        ),
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "prepare_official_spoken_base",
+        lambda _reference, destination: write(Path(destination), b"spoken-base"),
+    )
+
+    def fake_spoken(_text, destination, **kwargs):
+        observed["tts_environment"] = kwargs["environment"]
+        write(Path(destination), b"spoken")
+        for name in environment:
+            monkeypatch.delenv(name, raising=False)
+        return {"spoken_stage": "completed"}
+
+    monkeypatch.setattr(music_reply, "render_reply_video", fake_spoken)
+
+    def fake_generate(self, _content, _reply_text, destination, **_kwargs):
+        observed["minimax"] = (
+            self.python_path,
+            self.worker_path,
+            self.comfy_root,
+        )
+        write(Path(destination), b"song")
+        return {"music_stage": "completed"}
+
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
+
+    def fake_separate(_song, destination, **kwargs):
+        observed["roformer"] = (
+            kwargs["executable"], kwargs["model_path"], kwargs["config_path"]
+        )
+        observed["roformer_environment"] = kwargs["environment"]
+        write(Path(destination), b"vocals")
+
+    monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
+
+    def fake_face(_base, _vocals, _song, destination, **kwargs):
+        observed["face"] = (
+            kwargs["latentsync_python_path"],
+            kwargs["latentsync_root"],
+        )
+        write(Path(destination), b"face")
+        return {"performance_stage": "completed"}
+
+    monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
+    monkeypatch.setattr(
+        music_reply,
+        "concat_videos",
+        lambda _normal, _song, destination, **_kwargs: write(Path(destination), b"final"),
+    )
+
+    music_reply.render_musical_reply(
+        "letter",
+        "reply",
+        output,
+        normal_video_path=tmp_path / "normal.mp4",
+        official_reply_reference_path=transition,
+        song_video_path=tmp_path / "song.mp4",
+        tts_config_path=project_root / "config" / "tts.json",
+        visual_config_path=project_root / "config" / "visual.json",
+        worker_path=project_root / "workers" / "visual.py",
+        performance_video_path=performance,
+        duration_seconds=40,
+    )
+
+    assert observed["minimax"] == (
+        project_root / "providers/minimax/python.exe",
+        project_root / "providers/minimax/worker.py",
+        project_root / "providers/minimax/root",
+    )
+    assert observed["roformer"] == (
+        project_root / "providers/roformer/roformer.exe",
+        project_root / "providers/roformer/model.ckpt",
+        project_root / "providers/roformer/config.yaml",
+    )
+    assert observed["face"] == (
+        project_root / "providers/latentsync/python.exe",
+        project_root / "providers/latentsync/root",
+    )
+    assert observed["tts_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
+    assert observed["roformer_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
+    assert output.read_bytes() == b"final"
+
+
 def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
     executable = tmp_path / "roformer.exe"
     model = tmp_path / "models" / "MelBandRoformer.ckpt"
@@ -186,7 +425,14 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
 
     monkeypatch.setattr(music_reply, "_run", fake_run)
 
-    music_reply.separate_vocals(song, vocals)
+    music_reply.separate_vocals(
+        song,
+        vocals,
+        executable=executable,
+        model_path=model,
+        config_path=config,
+        environment={},
+    )
 
     assert observed[0][0][:4] == ["ffmpeg", "-y", "-i", str(song)]
     assert observed[0][1] == "ROFORMER_INPUT_CONVERSION_FAILED"

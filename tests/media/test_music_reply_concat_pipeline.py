@@ -235,12 +235,12 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         _write(Path(destination), b"song")
         return {"music_stage": "completed"}
 
-    def fake_separate(source, destination):
+    def fake_separate(source, destination, **_kwargs):
         order.append("separate")
         observed["separate"] = (Path(source), Path(destination))
         _write(Path(destination), b"vocals")
 
-    def fake_face(base, vocals, full_song, destination):
+    def fake_face(base, vocals, full_song, destination, **_kwargs):
         order.append("performance")
         observed["performance"] = (
             Path(base),
@@ -276,7 +276,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
-    monkeypatch.setattr(music_reply, "_official_transition_reference", lambda: transition)
+    monkeypatch.setattr(
+        music_reply, "_official_transition_reference", lambda _environment: transition
+    )
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
     result = music_reply.render_musical_reply(
@@ -407,7 +409,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
         _write(Path(destination), b"expensive-song")
         return {"music_stage": "completed"}
 
-    def flaky_separate(_source, destination):
+    def flaky_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         if calls["separate"] == 1:
             raise music_reply.MusicReplyError("ROFORMER_FAILED")
@@ -419,14 +421,14 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     monkeypatch.setattr(
         music_reply,
         "render_full_face_performance",
-        lambda _base, _vocals, _song, destination: (
+            lambda _base, _vocals, _song, destination, **_kwargs: (
             _write(Path(destination), b"performance")
             and {"performance_stage": "completed"}
         ),
     )
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
@@ -525,11 +527,11 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
         _write(Path(destination), f"song-{calls['minimax']}".encode())
         return {"music_stage": "completed"}
 
-    def fake_separate(_source, destination):
+    def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
 
-    def fake_face(_base, _vocals, _song, destination):
+    def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
         _write(Path(destination), f"performance-{calls['performance']}".encode())
         return {"performance_stage": "completed"}
@@ -539,7 +541,7 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
@@ -634,11 +636,11 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
         _write(Path(destination), f"song-{calls['minimax']}".encode())
         return {"music_stage": "completed"}
 
-    def fake_separate(_source, destination):
+    def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
 
-    def fake_face(_base, _vocals, _song, destination):
+    def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
         _write(Path(destination), f"performance-{calls['performance']}".encode())
         return {"performance_stage": "completed"}
@@ -648,7 +650,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
