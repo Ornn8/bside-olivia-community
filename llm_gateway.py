@@ -643,7 +643,12 @@ class OpenAICompatibleAdapter(Gateway):
             body["tools"] = converted
         else:
             body["tools"] = list(tools)
-        body["tool_choice"] = tool_choice
+        if not (
+            self.config.provider == "openai_compatible"
+            and self.config.api_style == "chat_completions"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+        ):
+            body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
         calls = _extract_tool_calls(data)
         if not calls:
