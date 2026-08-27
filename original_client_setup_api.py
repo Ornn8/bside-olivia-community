@@ -26,17 +26,73 @@ CONFIRM_VALUE = "confirmed"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_BODY_BYTES = 4_096
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_KEY_FILE_RE = re.compile(r"^deepseek_api_key\.[0-9a-f]{32}\.dpapi$")
 _SERVICE_KEY = web.AppKey("original_client_setup_service", object)
 _ORIGINS_KEY = web.AppKey("original_client_setup_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_setup_mounted", bool)
 Probe = Callable[[str, str, str], Awaitable[None]]
 Protector = Callable[[str], str]
 
+PUBLIC_ROUTE_CONTRACT = {
+    SETUP_STATUS_PATH: {
+        "methods": ["GET", "OPTIONS"],
+        "status_values": ["READY"],
+        "request_fields": [],
+        "response_fields": [
+            "schema_version", "status", "login_observed", "setup_completed",
+            "show_initial_setup", "skipped", "llm", "session_token?",
+        ],
+    },
+    LLM_TEST_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["AVAILABLE"],
+        "request_fields": ["base_url", "model", "api_key"],
+        "response_fields": ["status"],
+    },
+    LLM_SAVE_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["SAVED"],
+        "request_fields": ["base_url", "model", "api_key"],
+        "response_fields": ["status", "reload_applied", "restart_required"],
+    },
+    LLM_DELETE_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["DELETED"],
+        "request_fields": [],
+        "response_fields": ["status", "reload_applied", "restart_required"],
+    },
+    SETUP_COMPLETE_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["COMPLETED"],
+        "request_fields": ["skipped"],
+        "response_fields": ["status", "skipped"],
+    },
+}
+ERROR_HTTP_STATUSES = {
+    "LLM_SETUP_CONFIRMATION_REQUIRED": [403],
+    "LLM_SETUP_CONNECTION_FAILED": [503],
+    "LLM_SETUP_CONTENT_TYPE_INVALID": [415],
+    "LLM_SETUP_DPAPI_FAILED": [503],
+    "LLM_SETUP_DPAPI_UNAVAILABLE": [503],
+    "LLM_SETUP_FIELDS_INVALID": [400],
+    "LLM_SETUP_HOST_FORBIDDEN": [403],
+    "LLM_SETUP_JSON_INVALID": [400],
+    "LLM_SETUP_KEY_REQUIRED": [400, 409],
+    "LLM_SETUP_KEY_UNAVAILABLE": [503],
+    "LLM_SETUP_LOGIN_REQUIRED": [403],
+    "LLM_SETUP_ORIGIN_FORBIDDEN": [403],
+    "LLM_SETUP_REQUEST_TOO_LARGE": [413],
+    "LLM_SETUP_SAVE_FAILED": [503],
+    "LLM_SETUP_TEST_REQUIRED": [409],
+}
+
 
 class LLMSetupError(RuntimeError):
     """Stable setup failure that never contains provider or credential data."""
 
     def __init__(self, code: str, *, status: int) -> None:
+        if code not in ERROR_HTTP_STATUSES or status not in ERROR_HTTP_STATUSES[code]:
+            raise ValueError("setup error contract is invalid")
         self.code = code
         self.status = status
         super().__init__(code)
@@ -215,7 +271,7 @@ class LLMSetupService:
         }
         try:
             payload = json.loads(self._config_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            if not isinstance(payload, dict) or payload.get("schema_version") not in {1, 2}:
                 return fallback
             return {
                 "base_url": _base_url(payload.get("base_url")),
@@ -246,7 +302,7 @@ class LLMSetupService:
             "llm": {
                 "base_url": config["base_url"],
                 "model": config["model"],
-                "key_configured": self._key_path.is_file(),
+                "key_configured": self._active_key_path() is not None,
             },
         }
         if self._session_token is not None:
@@ -259,6 +315,33 @@ class LLMSetupService:
             "\0".join((base_url, model, api_key)).encode("utf-8")
         ).hexdigest()
 
+    def _active_key_path(self) -> Path | None:
+        try:
+            payload = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return self._key_path if self._key_path.is_file() else None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema_version") == 1:
+            return self._key_path if self._key_path.is_file() else None
+        name = payload.get("key_file")
+        digest = payload.get("key_sha256")
+        if (
+            payload.get("schema_version") != 2
+            or not isinstance(name, str)
+            or not _KEY_FILE_RE.fullmatch(name)
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            return None
+        path = self._config_root / name
+        try:
+            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                return None
+        except OSError:
+            return None
+        return path
+
     def _secret(self, supplied: object, *, base_url: str, model: str) -> str:
         candidate = _api_key(supplied, allow_empty=True)
         if candidate:
@@ -270,7 +353,10 @@ class LLMSetupService:
         ):
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400)
         try:
-            protected = self._key_path.read_text(encoding="utf-8").strip()
+            key_path = self._active_key_path()
+            if key_path is None:
+                raise OSError
+            protected = key_path.read_text(encoding="utf-8").strip()
         except OSError as exc:
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400) from exc
         if not protected:
@@ -298,27 +384,70 @@ class LLMSetupService:
         )
         if self._tested_digest != self._digest(base_url, model, api_key):
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
-        protected = self._protect(api_key)
+        protected_bytes = (self._protect(api_key) + "\n").encode("utf-8")
         self._config_root.mkdir(parents=True, exist_ok=True)
-        key_staging = self._key_path.with_suffix(self._key_path.suffix + ".staging")
-        key_staging.write_text(protected + "\n", encoding="utf-8")
-        _atomic_json(
-            self._config_path,
-            {"schema_version": 1, "base_url": base_url, "model": model},
-        )
-        key_staging.replace(self._key_path)
+        generation = secrets.token_hex(16)
+        key_path = self._config_root / f"deepseek_api_key.{generation}.dpapi"
+        key_staging = key_path.with_suffix(key_path.suffix + ".staging")
+        try:
+            key_staging.write_bytes(protected_bytes)
+            key_staging.replace(key_path)
+            _atomic_json(
+                self._config_path,
+                {
+                    "schema_version": 2,
+                    "base_url": base_url,
+                    "model": model,
+                    "key_file": key_path.name,
+                    "key_sha256": hashlib.sha256(protected_bytes).hexdigest(),
+                },
+            )
+        except OSError as exc:
+            key_staging.unlink(missing_ok=True)
+            key_path.unlink(missing_ok=True)
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        for stale in self._config_root.glob("deepseek_api_key.*.dpapi"):
+            if stale != key_path and _KEY_FILE_RE.fullmatch(stale.name):
+                try:
+                    stale.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        try:
+            self._key_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         self._tested_digest = None
 
     def delete(self) -> None:
+        configured = self._config()
+        active = self._active_key_path()
         try:
-            self._key_path.unlink()
-        except FileNotFoundError:
+            _atomic_json(
+                self._config_path,
+                {
+                    "schema_version": 1,
+                    "base_url": configured["base_url"],
+                    "model": configured["model"],
+                },
+            )
+        except OSError as exc:
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        if active is not None:
+            try:
+                active.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            self._key_path.unlink(missing_ok=True)
+        except OSError:
             pass
         self._tested_digest = None
 
     def complete(self, *, skipped: object) -> bool:
         if type(skipped) is not bool:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
+        if not skipped and self._active_key_path() is None:
+            raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=409)
         _atomic_json(
             self._complete_path,
             {"schema_version": 1, "completed": True, "skipped": skipped},
@@ -469,10 +598,12 @@ def mount_original_client_setup_api(
         try:
             return await handler(request)
         except LLMSetupError as exc:
+            origin = request.headers.get("Origin", "").rstrip("/")
+            allowed_origin = origin if origin in request.app[_ORIGINS_KEY] else None
             return web.json_response(
                 {"status": "FAILED", "error_code": exc.code},
                 status=exc.status,
-                headers=_headers(),
+                headers=_headers(allowed_origin),
             )
 
     app.middlewares.append(errors)

@@ -8,26 +8,52 @@
     "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
   },
   "routes": {
-    "/toy/setup/status": {"methods": ["GET", "OPTIONS"], "success_statuses": ["READY"]},
-    "/toy/setup/llm/test": {"methods": ["POST", "OPTIONS"], "success_statuses": ["AVAILABLE"]},
-    "/toy/setup/llm/save": {"methods": ["POST", "OPTIONS"], "success_statuses": ["SAVED"]},
-    "/toy/setup/llm/delete": {"methods": ["POST", "OPTIONS"], "success_statuses": ["DELETED"]},
-    "/toy/setup/complete": {"methods": ["POST", "OPTIONS"], "success_statuses": ["COMPLETED"]}
+    "/toy/setup/status": {
+      "methods": ["GET", "OPTIONS"],
+      "status_values": ["READY"],
+      "request_fields": [],
+      "response_fields": ["schema_version", "status", "login_observed", "setup_completed", "show_initial_setup", "skipped", "llm", "session_token?"]
+    },
+    "/toy/setup/llm/test": {
+      "methods": ["POST", "OPTIONS"],
+      "status_values": ["AVAILABLE"],
+      "request_fields": ["base_url", "model", "api_key"],
+      "response_fields": ["status"]
+    },
+    "/toy/setup/llm/save": {
+      "methods": ["POST", "OPTIONS"],
+      "status_values": ["SAVED"],
+      "request_fields": ["base_url", "model", "api_key"],
+      "response_fields": ["status", "reload_applied", "restart_required"]
+    },
+    "/toy/setup/llm/delete": {
+      "methods": ["POST", "OPTIONS"],
+      "status_values": ["DELETED"],
+      "request_fields": [],
+      "response_fields": ["status", "reload_applied", "restart_required"]
+    },
+    "/toy/setup/complete": {
+      "methods": ["POST", "OPTIONS"],
+      "status_values": ["COMPLETED"],
+      "request_fields": ["skipped"],
+      "response_fields": ["status", "skipped"]
+    }
   },
-  "error_codes": [
-    "LLM_SETUP_CONFIRMATION_REQUIRED",
-    "LLM_SETUP_CONNECTION_FAILED",
-    "LLM_SETUP_CONTENT_TYPE_INVALID",
-    "LLM_SETUP_DPAPI_FAILED",
-    "LLM_SETUP_DPAPI_UNAVAILABLE",
-    "LLM_SETUP_FIELDS_INVALID",
-    "LLM_SETUP_HOST_FORBIDDEN",
-    "LLM_SETUP_JSON_INVALID",
-    "LLM_SETUP_KEY_REQUIRED",
-    "LLM_SETUP_KEY_UNAVAILABLE",
-    "LLM_SETUP_LOGIN_REQUIRED",
-    "LLM_SETUP_ORIGIN_FORBIDDEN",
-    "LLM_SETUP_REQUEST_TOO_LARGE",
-    "LLM_SETUP_TEST_REQUIRED"
-  ]
+  "error_codes": {
+    "LLM_SETUP_CONFIRMATION_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_CONNECTION_FAILED": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_CONTENT_TYPE_INVALID": {"http_statuses": [415], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_DPAPI_FAILED": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_DPAPI_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_FIELDS_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_HOST_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_JSON_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_KEY_REQUIRED": {"http_statuses": [400, 409], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_KEY_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_LOGIN_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_ORIGIN_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_REQUEST_TOO_LARGE": {"http_statuses": [413], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_SAVE_FAILED": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_TEST_REQUIRED": {"http_statuses": [409], "status": "FAILED", "response_fields": ["status", "error_code"]}
+  }
 }

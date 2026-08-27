@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -51,22 +52,25 @@ _LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 def _load_llm_environment(
     environment: dict[str, str],
     data_root: Path,
+    *,
+    include_secret: bool = False,
 ) -> dict[str, str]:
     """Load public provider settings while retaining safe defaults on corruption."""
 
     values = environment.copy()
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-flash"
+    provider = "openai_compatible"
+    key_path = data_root / "config" / "deepseek_api_key.dpapi"
+    config_path = data_root / "config" / "llm.json"
     try:
-        payload = json.loads(
-            (data_root / "config" / "llm.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
         candidate_url = str(payload["base_url"]).strip().rstrip("/")
         candidate_model = str(payload["model"]).strip()
         parsed = urlsplit(candidate_url)
         loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
         if (
-            payload.get("schema_version") == 1
+            payload.get("schema_version") in {1, 2}
             and parsed.hostname
             and parsed.scheme in ({"http", "https"} if loopback else {"https"})
             and not parsed.username
@@ -77,10 +81,30 @@ def _load_llm_environment(
         ):
             base_url = candidate_url
             model = candidate_model
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            if payload.get("schema_version") == 2:
+                name = payload.get("key_file")
+                expected_hash = payload.get("key_sha256")
+                if (
+                    not isinstance(name, str)
+                    or not re.fullmatch(
+                        r"deepseek_api_key\.[0-9a-f]{32}\.dpapi", name
+                    )
+                    or not isinstance(expected_hash, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                ):
+                    raise ValueError("invalid key binding")
+                key_path = config_path.parent / name
+                if hashlib.sha256(key_path.read_bytes()).hexdigest() != expected_hash:
+                    raise ValueError("invalid key binding")
+        else:
+            raise ValueError("invalid LLM config")
+    except FileNotFoundError:
         pass
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        provider = "none"
+        key_path = Path()
     for name, value in {
-        "OLIVIA_LLM_PROVIDER": "openai_compatible",
+        "OLIVIA_LLM_PROVIDER": provider,
         "OLIVIA_LLM_BASE_URL": base_url,
         "OLIVIA_LLM_MODEL": model,
         "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
@@ -90,6 +114,13 @@ def _load_llm_environment(
         "OLIVIA_LLM_MAX_RETRIES": "0",
     }.items():
         values.setdefault(name, value)
+    if include_secret and key_path != Path() and not any(
+        values.get(name)
+        for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+    ):
+        configured_key = _load_dpapi_key(key_path)
+        if configured_key:
+            values["DEEPSEEK_API_KEY"] = configured_key
     return values
 
 
@@ -269,9 +300,6 @@ def main(argv: list[str] | None = None) -> int:
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()
     backend_environment = client_environment.copy()
-    configured_key = _load_dpapi_key(data_root / "config" / "deepseek_api_key.dpapi")
-    if configured_key and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        backend_environment["DEEPSEEK_API_KEY"] = configured_key
     runtime_environment = {
         "OLIVIA_INSTALL_ROOT": str(root),
         "OLIVIA_PROJECT_ROOT": str(root / "app"),
@@ -288,7 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     backend_environment.update(runtime_environment)
     client_environment.update(runtime_environment)
-    backend_environment = _load_llm_environment(backend_environment, data_root)
+    backend_environment = _load_llm_environment(
+        backend_environment, data_root, include_secret=True
+    )
     client_environment = _load_llm_environment(client_environment, data_root)
     _configure_memory_environment(backend_environment, data_root)
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):

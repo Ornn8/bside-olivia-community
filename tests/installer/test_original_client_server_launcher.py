@@ -66,11 +66,18 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
         '{"schema_version":1,"base_url":"http://remote.example/v1","model":"bad model"}',
         encoding="utf-8",
     )
+    (config_root / "deepseek_api_key.dpapi").write_text(
+        "synthetic-ciphertext\n", encoding="utf-8"
+    )
 
-    environment = start_local._load_llm_environment({}, data_root)
+    environment = start_local._load_llm_environment(
+        {}, data_root, include_secret=True
+    )
 
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.deepseek.com"
     assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
+    assert environment["OLIVIA_LLM_PROVIDER"] == "none"
+    assert "DEEPSEEK_API_KEY" not in environment
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI is required")

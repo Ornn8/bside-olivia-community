@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,10 +13,13 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from original_client_setup_api import (
+    ERROR_HTTP_STATUSES,
     LLM_DELETE_PATH,
     LLM_SAVE_PATH,
     LLM_TEST_PATH,
     LLMSetupService,
+    LLMSetupError,
+    PUBLIC_ROUTE_CONTRACT,
     SETUP_COMPLETE_PATH,
     SETUP_STATUS_PATH,
     _dpapi_protect,
@@ -49,6 +53,14 @@ def test_initial_setup_public_contract_matches_routes_and_schema() -> None:
         LLM_DELETE_PATH,
         SETUP_COMPLETE_PATH,
     }
+    assert contract["routes"] == PUBLIC_ROUTE_CONTRACT
+    assert {
+        code: details["http_statuses"]
+        for code, details in contract["error_codes"].items()
+    } == ERROR_HTTP_STATUSES
+    assert {
+        details["status"] for details in contract["error_codes"].values()
+    } == {"FAILED"}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI is required")
@@ -149,6 +161,7 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             premature = await client.post("/toy/setup/llm/save", headers=headers, json=body)
             assert premature.status == 409
             assert (await premature.json())["error_code"] == "LLM_SETUP_TEST_REQUIRED"
+            assert premature.headers["Access-Control-Allow-Origin"] == TRUSTED_ORIGIN
 
             tested = await client.post("/toy/setup/llm/test", headers=headers, json=body)
             assert tested.status == 200
@@ -180,15 +193,17 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             assert "fixture-private-key" not in json.dumps(status_payload)
 
         config = json.loads((tmp_path / "config" / "llm.json").read_text(encoding="utf-8"))
-        assert config == {
-            "base_url": "https://opencode.ai/zen/go/v1",
-            "model": "deepseek-v4-flash",
-            "schema_version": 1,
-        }
-        protected = (tmp_path / "config" / "deepseek_api_key.dpapi").read_text(
-            encoding="utf-8"
-        )
+        assert config["base_url"] == "https://opencode.ai/zen/go/v1"
+        assert config["model"] == "deepseek-v4-flash"
+        assert config["schema_version"] == 2
+        assert config["key_file"].startswith("deepseek_api_key.")
+        assert config["key_file"].endswith(".dpapi")
+        protected_path = tmp_path / "config" / config["key_file"]
+        protected = protected_path.read_text(encoding="utf-8")
         assert protected.strip() == "protected:19"
+        assert config["key_sha256"] == hashlib.sha256(
+            protected_path.read_bytes()
+        ).hexdigest()
         assert "fixture-private-key" not in protected
 
     asyncio.run(scenario())
@@ -237,6 +252,35 @@ def test_setup_rejects_untrusted_origin_and_marks_skipped_setup_complete(
             assert status_payload["show_initial_setup"] is False
             assert status_payload["setup_completed"] is True
             assert status_payload["skipped"] is True
+
+    asyncio.run(scenario())
+
+
+def test_setup_cannot_complete_without_saved_key_unless_explicitly_skipped(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        service = _service(tmp_path, [])
+        service.observe_login(success=True)
+        app = web.Application()
+        mount_original_client_setup_api(
+            app,
+            service,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/toy/setup/complete",
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    "Content-Type": "application/json",
+                    "X-Olivia-Setup-Action": "confirmed",
+                    SESSION_HEADER: str(service.status()["session_token"]),
+                },
+                json={"skipped": False},
+            )
+            assert response.status == 409
+            assert (await response.json())["error_code"] == "LLM_SETUP_KEY_REQUIRED"
 
     asyncio.run(scenario())
 
@@ -371,3 +415,44 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
         assert retained.read_text(encoding="utf-8") == "keep"
 
     asyncio.run(scenario())
+
+
+def test_interrupted_save_keeps_previous_provider_key_generation_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir(parents=True)
+    old_key = config_root / ("deepseek_api_key." + "a" * 32 + ".dpapi")
+    old_key.write_text("old-ciphertext\n", encoding="utf-8")
+    old_config = {
+        "schema_version": 2,
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-v4-flash",
+        "key_file": old_key.name,
+        "key_sha256": hashlib.sha256(old_key.read_bytes()).hexdigest(),
+    }
+    config_path = config_root / "llm.json"
+    config_path.write_text(json.dumps(old_config), encoding="utf-8")
+    service = _service(tmp_path, [])
+    service._tested_digest = service._digest(
+        "https://opencode.ai/zen/go/v1",
+        "deepseek-v4-flash",
+        "new-fixture-key",
+    )
+
+    def interrupted(_path: Path, _payload: dict[str, object]) -> None:
+        raise OSError("synthetic interrupted config commit")
+
+    monkeypatch.setattr("original_client_setup_api._atomic_json", interrupted)
+    with pytest.raises(LLMSetupError, match="LLM_SETUP_SAVE_FAILED"):
+        service.save(
+            {
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "model": "deepseek-v4-flash",
+                "api_key": "new-fixture-key",
+            }
+        )
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == old_config
+    assert old_key.read_text(encoding="utf-8") == "old-ciphertext\n"
