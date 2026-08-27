@@ -282,30 +282,37 @@ def _validated_result(
     value: Mapping[str, Any],
     context: RoutingContext,
 ) -> TriageResult | None:
-    mode = str(value.get("mode", "")).strip().lower()
-    reason = str(value.get("reason_code", "")).strip().lower()
-    emotion = str(value.get("emotion_level", "unknown")).strip().lower()
-    intent = str(value.get("music_intent", "none")).strip().lower()
-    role = str(value.get("music_role", "")).strip().lower()
-    disposition = str(value.get("request_disposition", "")).strip().lower()
-    raw_contexts = value.get("music_contexts", [])
+    mode = value.get("mode")
+    reason = value.get("reason_code")
+    emotion = value.get("emotion_level")
+    intent = value.get("music_intent")
+    role = value.get("music_role")
+    disposition = value.get("request_disposition")
+    raw_contexts = value.get("music_contexts")
 
     if (
-        mode not in _ALLOWED_MODES
+        any(
+            type(item) is not str
+            for item in (mode, reason, emotion, intent, role, disposition)
+        )
+        or type(raw_contexts) is not list
+        or mode not in _ALLOWED_MODES
         or not _REASON.fullmatch(reason)
         or emotion not in _ALLOWED_EMOTIONS
         or intent not in _ALLOWED_MUSIC_INTENTS
         or role not in _ALLOWED_MUSIC_ROLES
         or disposition not in _ALLOWED_REQUEST_DISPOSITIONS
-        or not isinstance(raw_contexts, list)
         or len(raw_contexts) > len(_ALLOWED_MUSIC_CONTEXTS)
     ):
         return None
 
-    contexts = tuple(str(item).strip().lower() for item in raw_contexts)
+    contexts = tuple(raw_contexts)
     if (
         len(contexts) != len(set(contexts))
-        or any(item not in _ALLOWED_MUSIC_CONTEXTS for item in contexts)
+        or any(
+            type(item) is not str or item not in _ALLOWED_MUSIC_CONTEXTS
+            for item in contexts
+        )
         or _ROLE_INTENT[role] != intent
     ):
         return None

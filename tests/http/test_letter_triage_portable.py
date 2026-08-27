@@ -237,6 +237,25 @@ def test_router_accepts_one_offline_structured_musical_tool_call():
 
 
 @pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("reason_code", 123),
+        ("mode", "TEXT_LETTER"),
+        ("mode", " text_letter "),
+    ],
+)
+def test_router_rejects_noncanonical_tool_schema_arguments(
+    field: str,
+    invalid_value: object,
+):
+    result, _ = _route(**{field: invalid_value})
+
+    assert result.reply_mode == "text_letter"
+    assert result.status == "unavailable"
+    assert result.reason_code == "router_invalid_result"
+
+
+@pytest.mark.parametrize(
     ("expected_mode", "overrides"),
     [
         ("text_letter", {}),
