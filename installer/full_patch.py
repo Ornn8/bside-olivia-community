@@ -14,19 +14,16 @@ from typing import Any, Iterable
 from patch_companion_settings import patch_companion_settings
 from patch_feapp import patch_feapp
 from patch_webplayer import patch_webplayer
+from installer.uninstall_safety import (
+    MARKER_NAME,
+    OWNED_PATHS,
+    PRESERVED_PATHS,
+    remove_owned_targets,
+    safe_owned_targets,
+)
 
 APP_ID = "4532590"
 MANIFEST_SCHEMA = "olivia.full-patch.v2"
-MARKER_NAME = ".olivia-full-patch.json"
-OWNED_PATHS = (
-    "app",
-    "local_backend",
-    "START.cmd",
-    "CONFIGURE.cmd",
-    "UNINSTALL.cmd",
-    MARKER_NAME,
-)
-PRESERVED_PATHS = ("data", "logs", "third-party")
 PAYLOAD_DIRS = (
     "asr",
     "control_center",
@@ -626,22 +623,24 @@ def uninstall_full_patch(
     *,
     apply: bool = False,
 ) -> dict[str, Any]:
-    root = Path(installation).expanduser().resolve()
+    root = Path(installation).expanduser().absolute()
     marker_path = root / MARKER_NAME
     if not root.is_dir() or not marker_path.is_file():
         raise PatchInstallError("PATCH_MARKER_NOT_FOUND")
     marker = _read_marker(marker_path)
+    try:
+        safe_owned_targets(root)
+    except ValueError as exc:
+        raise PatchInstallError("PATCH_MARKER_INVALID") from exc
     plan = {
         "status": "UNINSTALLED" if apply else "DRY_RUN",
-        "owned_paths": list(marker.get("owned_paths", OWNED_PATHS)),
+        "owned_paths": list(OWNED_PATHS),
         "preserved_paths": list(PRESERVED_PATHS),
     }
     if not apply:
         return plan
-    for name in marker.get("owned_paths", OWNED_PATHS):
-        target = root / name
-        if target.is_dir():
-            shutil.rmtree(target)
-        elif target.is_file():
-            target.unlink()
+    try:
+        remove_owned_targets(root)
+    except ValueError as exc:
+        raise PatchInstallError("PATCH_MARKER_INVALID") from exc
     return plan
