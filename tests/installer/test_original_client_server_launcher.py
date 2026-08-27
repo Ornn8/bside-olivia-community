@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -114,6 +115,47 @@ def test_launcher_refuses_unrelated_http_health_payload(
 
     assert start_local.main(["--install-root", str(root)]) == 2
     assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+
+
+def test_launcher_refuses_http_error_without_starting_backend_or_client(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+    backend_commands: list[list[str]] = []
+    client_commands: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return 0
+
+    def raise_not_found(*_args, **_kwargs):
+        raise HTTPError(
+            "http://127.0.0.1:8899/health?profile=core",
+            404,
+            "Not Found",
+            None,
+            None,
+        )
+
+    def popen(command, **_kwargs):
+        backend_commands.append([str(value) for value in command])
+        return Process()
+
+    def call(command, **_kwargs):
+        client_commands.append([str(value) for value in command])
+        return 0
+
+    monkeypatch.setattr(start_local, "urlopen", raise_not_found)
+    monkeypatch.setattr(start_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(start_local.subprocess, "call", call)
+
+    assert start_local.main(["--install-root", str(root)]) == 2
+    assert capsys.readouterr().out.strip() == "PORT_CONFLICT"
+    assert backend_commands == []
+    assert client_commands == []
 
 
 def test_health_accepts_the_versioned_core_contract(monkeypatch) -> None:

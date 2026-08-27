@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
+from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -60,8 +62,13 @@ def _health(port: int) -> str:
         if not contract_matches:
             return "PORT_CONFLICT"
         return "READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"
+    except OSError as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        if isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED:
+            return "UNAVAILABLE"
+        return "PORT_CONFLICT"
     except Exception:
-        return "UNAVAILABLE"
+        return "PORT_CONFLICT"
 
 
 def _client_executable(root: Path) -> Path:
