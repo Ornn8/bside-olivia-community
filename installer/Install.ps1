@@ -112,7 +112,7 @@ runtime = Path(sys.argv[1]).resolve()
 requirements = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
 sys.path.insert(0, str(runtime))
 for line in requirements:
-    match = re.match(r"^([A-Za-z0-9_.-]+)==([^\\s]+)", line)
+    match = re.match(r"^([A-Za-z0-9_.-]+)==([^\s]+)", line)
     if match is None:
         continue
     if importlib.metadata.version(match.group(1)) != match.group(2):

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
+import subprocess
+import sys
 
 import pytest
 
@@ -146,6 +149,41 @@ def test_windows_installer_offers_pinned_mem0_and_confirmed_embedding_setup() ->
     assert "Olivia will continue without long-term memory" in script
     assert "mem0ai==2.0.18" in requirements
     assert "sentence-transformers==5.7.0" in requirements
+
+
+def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
+    probe_match = re.search(r"\$probe = @'\n(.*?)\n'@", script, re.DOTALL)
+    assert probe_match is not None
+
+    runtime = tmp_path / "mem0-site-packages"
+    runtime.mkdir()
+    (runtime / "annotated_doc-0.0.5.dist-info").mkdir()
+    (runtime / "annotated_doc-0.0.5.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: annotated-doc\nVersion: 0.0.5\n",
+        encoding="utf-8",
+    )
+    for module in ("mem0", "sentence_transformers", "huggingface_hub"):
+        package = runtime / module
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    requirements = tmp_path / "mem0-runtime-requirements.txt"
+    requirements.write_text(
+        "annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe_match.group(1), str(runtime), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_optional_memory_runtime_is_a_hash_locked_install_owned_closure() -> None:
