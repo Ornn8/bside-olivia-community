@@ -75,7 +75,10 @@ def _health(port: int) -> str:
         return "READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"
     except OSError as error:
         reason = error.reason if isinstance(error, URLError) else error
-        if isinstance(reason, OSError) and reason.errno == errno.ECONNREFUSED:
+        if isinstance(reason, OSError) and (
+            reason.errno == errno.ECONNREFUSED
+            or getattr(reason, "winerror", None) == 10061
+        ):
             return "UNAVAILABLE"
         return "PORT_CONFLICT"
     except Exception:

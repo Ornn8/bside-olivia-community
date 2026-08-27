@@ -612,6 +612,19 @@ def test_health_treats_connection_refused_as_no_listener(monkeypatch) -> None:
     assert start_local._health(8899) == "UNAVAILABLE"
 
 
+def test_health_treats_windows_connection_refused_as_no_listener(monkeypatch) -> None:
+    class WindowsConnectionRefused(OSError):
+        errno = None
+        winerror = 10061
+
+    def connection_refused(*_args, **_kwargs):
+        raise URLError(WindowsConnectionRefused("connection refused"))
+
+    monkeypatch.setattr(start_local, "urlopen", connection_refused)
+
+    assert start_local._health(8899) == "UNAVAILABLE"
+
+
 def test_health_only_reports_port_conflict_using_the_public_cli_schema(
     tmp_path: Path,
     monkeypatch,
