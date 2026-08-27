@@ -36,6 +36,7 @@ PAYLOAD_DIRS = (
     "linli_character",
 )
 PAYLOAD_EXTRA_DIRS = (
+    "runtime/imports",
     "runtime/media",
     "runtime/memory",
     "runtime/reply",
@@ -94,6 +95,9 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "runtime/__init__.py",
+    "runtime/imports/__init__.py",
+    "runtime/imports/historical_memory.py",
+    "runtime/imports/official_letters.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }

@@ -14,7 +14,7 @@ from original_client_settings_ui import (
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v1"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v3"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -47,6 +47,19 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'panel.style.display = active ? "grid" : "none";' in BOOTSTRAP_JAVASCRIPT
     assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
+
+
+def test_original_settings_can_import_official_text_reply_history() -> None:
+    assert BOOTSTRAP_JAVASCRIPT.count(
+        'const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";'
+    ) == 1
+    assert "导入官方文字信件" in BOOTSTRAP_JAVASCRIPT
+    assert "只导入原信和文字回信，不导入视频" in BOOTSTRAP_JAVASCRIPT
+    assert "requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
+    assert "path === OFFICIAL_LETTER_IMPORT_PATH ? 600000 : 8000" in BOOTSTRAP_JAVASCRIPT
+    assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
+    assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
+    assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:

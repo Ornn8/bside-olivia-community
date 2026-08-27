@@ -239,6 +239,26 @@ def test_b00_scanner_allows_pinned_cors_metadata_but_rejects_forwarding(
     ]
 
 
+def test_b00_scanner_allows_the_user_confirmed_official_history_import_module(
+    tmp_path: Path,
+) -> None:
+    import baseline_hardening_scan as scanner
+
+    module = tmp_path / "runtime" / "imports" / "official_letters.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        '"""Read official text replies after explicit user confirmation."""\n'
+        'OFFICIAL_API_BASE = "https://toy-cnbeta01.olivia.miyoushe.com/toy"\n',
+        encoding="utf-8",
+    )
+
+    comment_findings, _, _ = scanner.scan_runtime_comments(tmp_path, [module])
+    dependency_findings, _, _ = scanner.scan_runtime_dependencies(tmp_path, [module])
+
+    assert comment_findings == []
+    assert dependency_findings == []
+
+
 def test_persona_release_scan_allows_contracts_code_and_public_declarations(
     tmp_path: Path,
 ) -> None:

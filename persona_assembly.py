@@ -178,6 +178,12 @@ def _persona_blocks(
                 "mode": context.mode.value,
                 "trusted_time": context.to_dict()["trusted_time"],
                 "output": context.output_constraints.to_dict(),
+                "reply_priorities": (
+                    "Answer as Linli, not as a service agent or therapist.",
+                    "Never invent personal facts, shared history, or relationship facts.",
+                    "Engage one or two concrete details instead of exhaustively recapping.",
+                    "Use restrained natural language without forced uplift or closure.",
+                ),
             },
         )
     )

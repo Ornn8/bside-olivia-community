@@ -46,6 +46,7 @@ class PrivateWorldCommandKind(StrEnum):
     UPSERT_CONTINUATION_FACT = "upsert_continuation_fact"
     SET_CONTINUATION_AWARENESS = "set_continuation_awareness"
     DELETE_CONTINUATION_FACT = "delete_continuation_fact"
+    INITIALIZE_HISTORICAL_RELATIONSHIP = "initialize_historical_relationship"
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -217,6 +218,43 @@ class ConfirmRelationshipStage(PrivateWorldCommand):
 
 
 @dataclass(frozen=True, kw_only=True)
+class InitializeHistoricalRelationship(PrivateWorldCommand):
+    """Set one bounded baseline from user-authorized ordered imported exchanges."""
+
+    relationship_stage: RelationshipStage
+    familiarity: int
+    trust: int
+    comfort: int
+    closeness: int
+    tension: int
+
+    kind: ClassVar[PrivateWorldCommandKind] = (
+        PrivateWorldCommandKind.INITIALIZE_HISTORICAL_RELATIONSHIP
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not isinstance(self.relationship_stage, RelationshipStage):
+            raise PrivateWorldCommandError("relationship stage is invalid")
+        for field_name in ("familiarity", "trust", "comfort", "closeness", "tension"):
+            value = getattr(self, field_name)
+            if type(value) is not int or not 0 <= value <= 100:
+                raise PrivateWorldCommandError(f"{field_name} is invalid")
+        if not self.evidence_refs:
+            raise PrivateWorldCommandError("historical initialization requires evidence")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "relationship_stage": self.relationship_stage.value,
+            "familiarity": self.familiarity,
+            "trust": self.trust,
+            "comfort": self.comfort,
+            "closeness": self.closeness,
+            "tension": self.tension,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class GrantNickname(PrivateWorldCommand):
     nickname: str
 
@@ -362,6 +400,7 @@ PrivateWorldMutation: TypeAlias = (
     | UpsertContinuationFact
     | SetContinuationAwareness
     | DeleteContinuationFact
+    | InitializeHistoricalRelationship
 )
 
 
@@ -369,6 +408,7 @@ __all__ = [
     "ConfirmRelationshipStage",
     "DeleteContinuationFact",
     "GrantNickname",
+    "InitializeHistoricalRelationship",
     "PrivateWorldActor",
     "PrivateWorldCommand",
     "PrivateWorldCommandError",

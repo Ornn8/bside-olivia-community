@@ -341,6 +341,44 @@ def test_localized_voice_mismatch_is_warning_without_rewrite(
     assert gateway.call_kinds == ["generation", *("review",) * 5]
 
 
+def test_voice_style_alone_cannot_hard_block_after_the_single_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_pass = _passing_layer_payloads()
+    first_pass[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+    )
+    second_pass = _passing_layer_payloads()
+    second_pass[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+    )
+    gateway = SequencedQualityGateway(
+        candidate="A polished but overly generic reply.",
+        reviews=[*first_pass, *second_pass],
+        rewritten="A direct, concrete, restrained reply.",
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="I had a difficult day.", request_id="style-only"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.text == "A direct, concrete, restrained reply."
+    assert result.quality_status == "accepted_with_warnings"
+    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+
+
 def test_non_voice_layer_mismatch_uses_only_existing_one_rewrite_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

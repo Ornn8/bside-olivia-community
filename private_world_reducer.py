@@ -11,6 +11,7 @@ from private_world_commands import (
     ConfirmRelationshipStage,
     DeleteContinuationFact,
     GrantNickname,
+    InitializeHistoricalRelationship,
     PrivateWorldCommand,
     RecordBoundaryRespected,
     RecordConflict,
@@ -274,6 +275,29 @@ def reduce_private_world_command(
     relationship_event = _relationship_command_event(command)
     if relationship_event is not None:
         return reduce_private_world(snapshot, relationship_event)
+
+    if isinstance(command, InitializeHistoricalRelationship):
+        if snapshot != PrivateWorldSnapshot():
+            return _no_change(snapshot, "HISTORY_ALREADY_INITIALIZED")
+        initialized = _apply_updates(
+            snapshot,
+            {
+                "relationship_stage": command.relationship_stage.value,
+                "familiarity": command.familiarity,
+                "trust": command.trust,
+                "comfort": command.comfort,
+                "closeness": command.closeness,
+                "tension": command.tension,
+            },
+            reason_code="INITIALIZE_HISTORICAL_RELATIONSHIP",
+            unchanged_reason="HISTORY_INITIALIZED_NO_CHANGE",
+        )
+        if initialized.delta.applied:
+            return initialized
+        return ReducerResult(
+            replace(snapshot, version=snapshot.version + 1),
+            ReducerDelta(True, "INITIALIZE_HISTORICAL_RELATIONSHIP"),
+        )
 
     if isinstance(command, GrantNickname):
         if command.nickname in snapshot.nickname_permissions:

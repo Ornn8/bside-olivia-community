@@ -19,6 +19,14 @@
       "error_code": null,
       "evidence": "local-extension"
     },
+    "/toy/letter/legacy/official-import": {
+      "methods": ["POST"],
+      "capability": "letters.official_import",
+      "state": "available",
+      "read_only": false,
+      "error_code": null,
+      "evidence": "local-extension"
+    },
     "/toy/settings/video-reply": {
       "methods": ["GET", "POST"],
       "capability": "settings.video_reply",
@@ -49,6 +57,12 @@
       "provider": "sqlite",
       "probe": "in-process",
       "mode": "read-only-atomic-import"
+    },
+    "letters.official_import": {
+      "status": "available",
+      "provider": "official-client-user-authorized",
+      "probe": "user-triggered",
+      "mode": "text-replies-only"
     },
     "settings.video_reply": {
       "status": "available",

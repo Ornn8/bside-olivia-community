@@ -24,6 +24,11 @@
 | 200 detail | `LLM_TIMEOUT` / `LLM_UNAVAILABLE` | FAILED | 是 | 发信先确认 PENDING；provider 超时/不可用后 detail 显示 FAILED |
 | 200 detail | `LLM_INTERRUPTED` | FAILED | 是 | 进程在 provider 调用终态落盘前中断；不自动重复生成 |
 | 503 | `MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | legacy import 的 SQLite 存储不可用；不回显正文、路径或密钥 |
+| 503 | `OFFICIAL_LETTER_IMPORT_UNAVAILABLE` | UNAVAILABLE | 是 | 官方登录日志或文字信件接口暂不可用；不回显凭证、正文或本机路径 |
+| 409 | `OFFICIAL_ACCOUNT_CONFLICT` | FAILED | 否 | 当前本地档案已绑定另一个官方账户；拒绝把两个账户写入同一记忆空间 |
+| 200 | `MEM0_WRITE_FAILED` / `MEM0_WRITE_TIMEOUT` | partial | 是 | 官方归档已保存，但严格顺序的长期记忆迁移停在当前信件；重试会先判重已完成记录 |
+| 200 | `PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED` | partial | 是 | 逐封长期记忆已完成，但一次性 PrivateWorld 历史基线未完成；不会覆盖已有状态 |
+| 200 | `PRIVATE_WORLD_HISTORY_UNAVAILABLE` | partial | 是 | 逐封长期记忆已完成，但 PrivateWorld 当前不可用；可稍后重试且不会重复写入记忆 |
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |
 | 409 | `IDEMPOTENCY_CONFLICT` | FAILED | 否 | 同一幂等键重复提交了不同正文 |
 | 400 | `VIDEO_REPLY_SETTING_REQUEST_ID_INVALID` / `VIDEO_REPLY_SETTING_PAYLOAD_INVALID` | FAILED | 否 | 视频回信设置 request_id 必须为 `video_reply_setting:<opaque>`；enabled 必须为布尔值 |

@@ -95,11 +95,20 @@ from private_world_candidate import (
 )
 from private_world_candidates import SQLitePrivateWorldCandidateStore
 from private_world_reducer import ReducerEventKind
+from private_world_service import PrivateWorldCommandService
 from runtime.memory.private_world_projection import project_private_world
 from runtime.memory.private_world_runtime import (
     PrivateWorldRuntime,
     create_private_world_runtime,
     resolve_private_world_database,
+)
+from runtime.imports.official_letters import collect_default_official_text_replies
+from runtime.imports.historical_memory import (
+    HistoricalMigrationResult,
+    apply_historical_private_world,
+    assess_historical_relationship,
+    exchanges_from_legacy_payload,
+    migrate_historical_exchanges,
 )
 from runtime.reply.reply_context import (
     ReplyContext,
@@ -291,6 +300,23 @@ class LetterAdapter:
 
     def get_system_prompt(self) -> str:
         return self.persona_provider.snapshot().system_prompt
+
+    def get_persona_policy(self) -> str:
+        """Return the authoritative public policy without private-world evidence."""
+
+        if not self.config.persona_v2_enabled:
+            return self.get_system_prompt()
+        loaded = load_persona(self.persona_v2_path)
+        context = ReplyContext.create(
+            ReplyMode.TEXT_LETTER,
+            trusted_time=TrustedTime(self._now()),
+        )
+        return assemble_persona(
+            loaded.snapshot,
+            context,
+            user_input="historical relationship migration policy",
+            max_units=self.config.max_input_chars,
+        ).system_content
 
     def public_persona_status(self) -> dict[str, str | None]:
         if self.config.persona_v2_enabled:
@@ -641,6 +667,11 @@ private_world_port: PrivateWorldPort = private_world_runtime.port
 private_world_committer: PrivateWorldDeliveryCommitter | None = (
     private_world_runtime.committer
 )
+private_world_command_service: PrivateWorldCommandService | None = (
+    PrivateWorldCommandService(private_world_runtime.port)
+    if private_world_runtime.status == "available"
+    else None
+)
 letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     conversation_memory=conversation_memory_adapter,
@@ -675,6 +706,63 @@ private_world_candidate_analyzer: PrivateWorldCandidateAnalyzer = (
 private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
     private_world_candidate_runtime.store
 )
+
+
+async def _migrate_official_history(
+    payload: Mapping[str, object],
+) -> HistoricalMigrationResult:
+    exchanges = exchanges_from_legacy_payload(payload)
+    result = await asyncio.to_thread(
+        migrate_historical_exchanges,
+        exchanges,
+        memory=conversation_memory_adapter,
+        user_id=_memory_config.user_id,
+    )
+    if result.status != "completed" or not exchanges:
+        return result
+    try:
+        memory_status = conversation_memory_adapter.status().status
+    except Exception:
+        memory_status = "unavailable"
+    if memory_status == "disabled":
+        return replace(result, private_world_status="skipped_memory_disabled")
+    try:
+        if private_world_port.snapshot() != PrivateWorldSnapshot():
+            return replace(result, private_world_status="already_initialized")
+    except Exception:
+        return replace(
+            result,
+            status="partial",
+            private_world_status="unavailable",
+            error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        )
+    if private_world_command_service is None:
+        return replace(
+            result,
+            status="partial",
+            private_world_status="unavailable",
+            error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        )
+    try:
+        assessment = await assess_historical_relationship(
+            exchanges,
+            gateway=letters_adapter.gateway,
+            persona_policy=letters_adapter.get_persona_policy(),
+        )
+        private_world_status = await asyncio.to_thread(
+            apply_historical_private_world,
+            exchanges,
+            assessment=assessment,
+            command_service=private_world_command_service,
+        )
+    except Exception:
+        return replace(
+            result,
+            status="partial",
+            private_world_status="unavailable",
+            error_code="PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED",
+        )
+    return replace(result, private_world_status=private_world_status)
 # A file-only Mem0 profile owns the same canonical state root on restart; load
 # only after the validated conversation adapter has selected that root.
 _load_store_state()
@@ -840,9 +928,18 @@ def fake_jwt():
 
 def letter_to_out(l):
     published = l.get("reply_not_before", 0.0) <= time.time()
+    metadata = l.get("metadata")
+    imported_official = isinstance(metadata, dict) and (
+        metadata.get("import_kind") == "official_text_reply"
+    )
+    summary = (
+        l.get("content")
+        if imported_official
+        else l.get("reply_text") or l.get("content")
+    ) or ""
     return {
         "letter_id": l["letter_id"],
-        "summary": (l.get("reply_text") or l.get("content") or "")[:50],
+        "summary": summary[:50],
         "letter_status": l.get("letter_status", 4) if published else "PENDING",
         "audit_status": l.get("audit_status", 2),
         "reply_type": 1 if published and l.get("reply_text") else 0,
@@ -968,6 +1065,9 @@ async def handler(request: web.Request):
                 body,
                 query,
                 defer_reply=(method == "POST" and path.rstrip("/") == "/toy/letter/send"),
+                companion_confirmed=(
+                    request.headers.get("X-Olivia-Companion-Action") == "confirmed"
+                ),
             )
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
@@ -1419,14 +1519,38 @@ def _mark_superseded_failed_retries() -> None:
         _persist_store_state()
 
 
+def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
+    if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
+        try:
+            return list(getattr(memory_adapter, "list_legacy")())
+        except Exception:
+            if strict:
+                raise
+            _safe_log("memory_read_skipped", domain="legacy_letters")
+    return store.legacy_letters
+
+
+def _official_account_conflicts(payload: Mapping[str, object]) -> bool:
+    account_id = payload.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        return True
+    incoming = account_id.strip()
+    existing: set[str] = set()
+    for letter in _legacy_letter_collection(strict=True):
+        metadata = letter.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("import_kind") != "official_text_reply":
+            continue
+        stored = metadata.get("official_account_id")
+        if isinstance(stored, str) and stored.strip():
+            existing.add(stored.strip())
+    return bool(existing and existing != {incoming})
+
+
 def _letter_collection(scope: str):
     if scope == "legacy":
-        if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
-            try:
-                return list(getattr(memory_adapter, "list_legacy")())
-            except Exception:
-                _safe_log("memory_read_skipped", domain="legacy_letters")
-        return store.legacy_letters
+        return _legacy_letter_collection()
     _mark_superseded_failed_retries()
     return [letter for letter in store.letters if not letter.get("superseded_by")]
 
@@ -1619,8 +1743,17 @@ def _recent_active_duplicate(
     return None
 
 
-async def route(method, path, body, query, *, defer_reply: bool = False):
+async def route(
+    method,
+    path,
+    body,
+    query,
+    *,
+    defer_reply: bool = False,
+    companion_confirmed: bool = False,
+):
     p = path.rstrip("/")
+    official_import = False
 
     spec = contract.route_spec(p)
     if spec is None:
@@ -1651,6 +1784,39 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
+
+    if p == "/toy/letter/legacy/official-import":
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
+                "status": "FAILED",
+                "error_code": "COMPANION_CONFIRMATION_REQUIRED",
+                "retryable": False,
+            })
+        official_import = True
+        try:
+            body = await asyncio.to_thread(collect_default_official_text_replies)
+            exchanges_from_legacy_payload(body)
+        except (OSError, UnicodeError, ValueError):
+            return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
+                "retryable": True,
+            })
+        try:
+            account_conflict = _official_account_conflicts(body)
+        except Exception:
+            return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
+                "retryable": True,
+            })
+        if account_conflict:
+            return err(409, "OFFICIAL_ACCOUNT_CONFLICT", {
+                "status": "FAILED",
+                "error_code": "OFFICIAL_ACCOUNT_CONFLICT",
+                "retryable": False,
+            })
+        p = "/toy/letter/legacy/import"
 
     # ---- 认证 ----
     if p == "/toy/signIn" or p == "/toy/getUserInfo":
@@ -1755,7 +1921,7 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
                 "status": "FAILED",
                 "error_code": "LETTER_NOT_FOUND",
             })
-        if scope == "current":
+        if scope == "current" and not l.get("read_only"):
             l["is_read"] = 1
         reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
@@ -1794,8 +1960,8 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             "is_read": 1 if l.get("is_read") else 0,
             "replied_at": l.get("replied_at"),
             "created_at": l.get("created_at", int(time.time())),
-            "scope": scope,
-            "read_only": scope == "legacy",
+            "scope": "legacy" if l.get("read_only") else scope,
+            "read_only": bool(l.get("read_only", scope == "legacy")),
         })
     if p == "/toy/letter/legacy/import":
         records = _legacy_records(body)
@@ -1821,12 +1987,17 @@ async def route(method, path, body, query, *, defer_reply: bool = False):
             })
         payload = result.to_dict()
         payload.update({"read_only": True, "scope": "legacy"})
+        if official_import:
+            payload["status"] = "APPLIED"
         if result.rolled_back:
             return err(400, "INVALID_CONTENT", {
                 "status": "FAILED",
                 "error_code": "INVALID_CONTENT",
                 **payload,
             })
+        if official_import:
+            migration = await _migrate_official_history(body)
+            payload["memory_migration"] = migration.to_dict()
         return ok(payload)
     if p == "/toy/letter/send":
         if query.get("scope", "current") == "legacy":

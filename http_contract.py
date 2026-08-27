@@ -58,6 +58,9 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "FEEDBACK_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "SHARE_TOKEN_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "MEMORY_UNAVAILABLE": {"http_status": 503, "retryable": True},
+    "OFFICIAL_LETTER_IMPORT_UNAVAILABLE": {"http_status": 503, "retryable": True},
+    "OFFICIAL_ACCOUNT_CONFLICT": {"http_status": 409, "retryable": False},
+    "PRIVATE_WORLD_HISTORY_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "WEBSOCKET_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ASR_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ASR_NOT_PROBED": {"http_status": 503, "retryable": True},
@@ -154,6 +157,11 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/letter/legacy/import": _route(
         ["POST"],
         "letters.legacy_import",
+        evidence="local-extension",
+    ),
+    "/toy/letter/legacy/official-import": _route(
+        ["POST"],
+        "letters.official_import",
         evidence="local-extension",
     ),
     "/toy/getMusicTypeInfo": _route(["GET"], "music.catalog", read_only=True),

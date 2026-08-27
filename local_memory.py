@@ -828,21 +828,26 @@ class LocalMemoryAdapter:
                 "content_hash, imported_at, metadata_json FROM legacy_letters "
                 "ORDER BY imported_at DESC, memory_id"
             ).fetchall()
-        return [
-            {
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = _load_metadata(row["metadata_json"])
+            stored_content = str(row["content"])
+            user_content = metadata.get("user_content")
+            reply_text = metadata.get("reply_text")
+            result.append({
                 "letter_id": str(row["memory_id"]),
                 "source_record_id": str(row["source_record_id"]),
                 "source": str(row["source"]),
                 "created_at": row["occurred_at"] or int(row["imported_at"]),
-                "content": str(row["content"]),
+                "content": user_content if isinstance(user_content, str) else stored_content,
                 "content_hash": str(row["content_hash"]),
-                "metadata": _load_metadata(row["metadata_json"]),
-                "reply_text": "",
+                "metadata": metadata,
+                "reply_text": reply_text if isinstance(reply_text, str) else "",
+                "replied_at": metadata.get("replied_at"),
                 "is_read": 0,
                 "read_only": True,
-            }
-            for row in rows
-        ]
+            })
+        return result
 
     def persona_evidence(self) -> list[Mapping[str, Any]]:
         with self._lock:
