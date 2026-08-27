@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "initial_setup_api_contract.schema.json",
+  "title": "Post-login LLM setup API contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status_schema_version", "authorization", "routes", "error_codes"],
+  "properties": {
+    "schema_version": {"const": "olivia.initial-setup-api-contract.v1"},
+    "status_schema_version": {"const": "olivia.initial-setup.v1"},
+    "authorization": {
+      "const": {
+        "origins": "explicit-trusted-https-only",
+        "login_required_for_mutations": true,
+        "session_header": "X-Olivia-Setup-Session",
+        "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "/toy/setup/status", "/toy/setup/llm/test", "/toy/setup/llm/save",
+        "/toy/setup/llm/delete", "/toy/setup/complete"
+      ],
+      "properties": {
+        "/toy/setup/status": {"$ref": "#/$defs/route"},
+        "/toy/setup/llm/test": {"$ref": "#/$defs/route"},
+        "/toy/setup/llm/save": {"$ref": "#/$defs/route"},
+        "/toy/setup/llm/delete": {"$ref": "#/$defs/route"},
+        "/toy/setup/complete": {"$ref": "#/$defs/route"}
+      }
+    },
+    "error_codes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "LLM_SETUP_CONFIRMATION_REQUIRED", "LLM_SETUP_CONNECTION_FAILED",
+        "LLM_SETUP_CONTENT_TYPE_INVALID", "LLM_SETUP_DPAPI_FAILED",
+        "LLM_SETUP_DPAPI_UNAVAILABLE", "LLM_SETUP_FIELDS_INVALID",
+        "LLM_SETUP_HOST_FORBIDDEN", "LLM_SETUP_JSON_INVALID",
+        "LLM_SETUP_KEY_REQUIRED", "LLM_SETUP_KEY_UNAVAILABLE",
+        "LLM_SETUP_LOGIN_REQUIRED", "LLM_SETUP_ORIGIN_FORBIDDEN",
+        "LLM_SETUP_REQUEST_TOO_LARGE", "LLM_SETUP_SAVE_FAILED",
+        "LLM_SETUP_TEST_REQUIRED"
+      ],
+      "patternProperties": {"^LLM_SETUP_[A-Z_]+$": {"$ref": "#/$defs/error"}}
+    }
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods", "status_values", "request_fields", "response_fields"],
+      "properties": {
+        "methods": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"enum": ["GET", "POST", "OPTIONS"]}},
+        "status_values": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+        "request_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "response_fields": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http_statuses", "status", "response_fields"],
+      "properties": {
+        "http_statuses": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 400, "maximum": 599}},
+        "status": {"const": "FAILED"},
+        "response_fields": {"const": ["status", "error_code"]}
+      }
+    }
+  }
+}

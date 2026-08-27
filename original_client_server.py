@@ -40,6 +40,10 @@ from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
     MemoryAdminMutationService,
 )
+from original_client_setup_api import (
+    LLMSetupService,
+    mount_original_client_setup_api,
+)
 from original_client_letter_contract import (
     OriginalClientContractError,
     serialize_letter_detail,
@@ -314,6 +318,7 @@ def create_original_client_server_runtime(
     candidate_decisions: CandidateReviewBackend | None = None,
     embedding_installer: Mem0EmbeddingInstaller | None = None,
     letter_collection: LetterCollection | None = None,
+    setup_service: LLMSetupService | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
@@ -343,6 +348,23 @@ def create_original_client_server_runtime(
     )
     app = web.Application()
     origins = tuple(trusted_origins)
+    observed_fallback = fallback_handler
+    if setup_service is not None:
+        async def observed_fallback(request: web.Request) -> web.StreamResponse:
+            response = await fallback_handler(request)
+            if request.path.rstrip("/") == "/toy/signIn":
+                payload = _response_payload(response)
+                code = payload.get("code") if payload else None
+                setup_service.observe_login(
+                    success=type(code) is int and code == 0
+                )
+            return response
+
+        mount_original_client_setup_api(
+            app,
+            setup_service,
+            trusted_origins=origins,
+        )
     mount_original_companion_read_api(
         app,
         backend,
@@ -356,11 +378,11 @@ def create_original_client_server_runtime(
     if letter_collection is not None:
         mount_original_mailbox_wire_adapter(
             app,
-            fallback_handler,
+            observed_fallback,
             letter_collection,
         )
     # Keep this last.  The original server intentionally owns a catch-all route.
-    app.router.add_route("*", "/{tail:.*}", fallback_handler)
+    app.router.add_route("*", "/{tail:.*}", observed_fallback)
     runtime = OriginalClientServerRuntime(
         app,
         backend,
@@ -522,6 +544,8 @@ def create_configured_original_client_server_runtime(
         values,
     )
     collection = getattr(server_module, "_letter_collection", None)
+    data_root = _absolute_data_root(values)
+    setup_service = LLMSetupService(data_root) if data_root is not None else None
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -530,6 +554,7 @@ def create_configured_original_client_server_runtime(
         candidate_decisions=candidate_decisions,
         embedding_installer=embedding_installer,
         letter_collection=collection if callable(collection) else None,
+        setup_service=setup_service,
         trusted_origins=origins,
     )
     install_reply_task_lifecycle = getattr(
