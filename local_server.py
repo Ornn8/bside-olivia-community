@@ -1795,6 +1795,7 @@ async def route(
         official_import = True
         try:
             body = await asyncio.to_thread(collect_default_official_text_replies)
+            exchanges_from_legacy_payload(body)
         except (OSError, UnicodeError, ValueError):
             return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
                 "status": "UNAVAILABLE",

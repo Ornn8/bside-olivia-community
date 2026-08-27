@@ -19,7 +19,7 @@ def test_official_text_replies_become_read_only_legacy_pairs() -> None:
                 "created_at": 1710000000,
                 "replied_at": 1710000100,
                 "content": "用户写下的旧信",
-                "reply_text": "林离过去的文字回信",
+                "reply_content": "林离过去的文字回信",
                 "reply_video_url": "",
             },
             {
@@ -73,7 +73,10 @@ def test_official_log_credentials_are_used_but_never_enter_import_payload(
         if path.startswith("/letter/list"):
             return {
                 "code": 0,
-                "data": {"list": [{"letter_id": "letter-1"}], "has_more": False},
+                "data": {
+                    "list": [{"letter_id": "letter-1", "created_at": 1710000000}],
+                    "has_more": False,
+                },
             }
         return {
             "code": 0,
@@ -82,7 +85,7 @@ def test_official_log_credentials_are_used_but_never_enter_import_payload(
                 "created_at": 1710000000,
                 "replied_at": 1710000100,
                 "content": "旧信正文",
-                "reply_text": "旧文字回信",
+                "reply_content": "旧文字回信",
                 "reply_video_url": "",
             },
         }
@@ -142,14 +145,17 @@ def test_official_import_follows_mailbox_cursor_pages(tmp_path) -> None:
                 return {
                     "code": 0,
                     "data": {
-                        "list": [{"letter_id": "letter-1"}],
+                        "list": [{"letter_id": "letter-1", "created_at": 1710000000}],
                         "has_more": True,
                         "next_cursor": 50,
                     },
                 }
             return {
                 "code": 0,
-                "data": {"list": [{"letter_id": "letter-2"}], "has_more": False},
+                "data": {
+                    "list": [{"letter_id": "letter-2", "created_at": 1710000200}],
+                    "has_more": False,
+                },
             }
         letter_id = path.rsplit("=", 1)[-1]
         return {
@@ -157,7 +163,7 @@ def test_official_import_follows_mailbox_cursor_pages(tmp_path) -> None:
             "data": {
                 "letter_id": letter_id,
                 "content": f"旧信 {letter_id}",
-                "reply_text": f"回信 {letter_id}",
+                "reply_content": f"回信 {letter_id}",
             },
         }
 
@@ -168,6 +174,31 @@ def test_official_import_follows_mailbox_cursor_pages(tmp_path) -> None:
         "/letter/list?cursor=50&page_size=50",
     ]
     assert len(payload["letters"]) == 2
+
+
+def test_official_import_rejects_text_reply_without_a_valid_timestamp(tmp_path) -> None:
+    log_path = tmp_path / "Olivia.log"
+    log_path.write_text(
+        'network_request {"x-token":"secret-token","x-uid":"200717"}',
+        encoding="utf-8",
+    )
+
+    def request_json(path: str, _headers: dict[str, str]) -> dict:
+        if path.startswith("/letter/list"):
+            return {
+                "code": 0,
+                "data": {"list": [{"letter_id": "letter-1"}], "has_more": False},
+            }
+        return {
+            "code": 0,
+            "data": {
+                "content": "旧信",
+                "reply_content": "旧文字回信",
+            },
+        }
+
+    with pytest.raises(ValueError, match="OFFICIAL_LETTER_TIMESTAMP_INVALID"):
+        collect_official_text_replies(log_path, request_json=request_json)
 
 
 def test_official_import_fails_closed_when_any_letter_detail_is_unavailable(
@@ -308,6 +339,46 @@ def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> 
         "retryable": True,
     }
     assert private_value not in repr(response)
+
+
+def test_official_import_route_rejects_invalid_timestamp_before_archiving(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: {
+            "mode": "read_only",
+            "account_id": "200717",
+            "letters": [
+                {
+                    "source_record_id": "official:200717:letter-1",
+                    "occurred_at": None,
+                    "metadata": {
+                        "user_content": "旧信",
+                        "reply_text": "旧文字回信",
+                        "import_kind": "official_text_reply",
+                        "official_account_id": "200717",
+                    },
+                }
+            ],
+        },
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response["code"] == 503
+    assert response["data"]["error_code"] == "OFFICIAL_LETTER_IMPORT_UNAVAILABLE"
 
 
 def test_official_import_requires_explicit_companion_confirmation(monkeypatch) -> None:

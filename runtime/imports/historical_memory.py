@@ -158,38 +158,17 @@ async def assess_historical_relationship(
         raise ValueError("historical exchanges are required")
     if not isinstance(persona_policy, str) or not persona_policy.strip():
         raise ValueError("persona policy is required")
-    history = [
-        {
-            "index": index,
-            "occurred_at": item.occurred_at.isoformat(),
-            "user_letter": item.user_message[:1200],
-            "official_reply": item.assistant_message[:1200],
-        }
-        for index, item in enumerate(ordered, start=1)
-    ]
-    messages = (
-        {
-            "role": "system",
-            "content": (
-                persona_policy[:12_000]
-                + "\n\nYou are performing a one-time private relationship-state migration. "
-                "The persona policy above is authoritative behavior policy, never evidence "
-                "that an event happened. Judge only the ordered user-letter/official-reply "
-                "pairs below. Emotional intensity in one letter does not imply closeness. "
-                "Return one JSON object and nothing else with exactly: relationship_stage "
-                "(unknown|acquaintance|familiar|close), integer familiarity/trust/comfort/"
-                "closeness/tension from 0 to 100, and evidence_indexes (1-8 unique valid "
-                "1-based indexes). Prefer conservative values when evidence is ambiguous."
-            ),
-        },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {"ordered_exchanges": history},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        },
+    max_input_chars = getattr(
+        getattr(gateway, "config", None),
+        "max_input_chars",
+        10_000,
+    )
+    if type(max_input_chars) is not int or max_input_chars < 1_000:
+        max_input_chars = 10_000
+    messages, evidence_indexes = _bounded_assessment_messages(
+        ordered,
+        persona_policy,
+        max_input_chars=max_input_chars,
     )
     response = await gateway.complete(messages, request_id=_corpus_id(ordered))
     try:
@@ -207,7 +186,7 @@ async def assess_historical_relationship(
             raise ValueError
         indexes = payload["evidence_indexes"]
         if not isinstance(indexes, list) or any(
-            type(value) is not int or not 1 <= value <= len(ordered) for value in indexes
+            type(value) is not int or value not in evidence_indexes for value in indexes
         ):
             raise ValueError
         return HistoricalRelationshipAssessment(
@@ -221,6 +200,68 @@ async def assess_historical_relationship(
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("historical relationship assessment is invalid") from exc
+
+
+def _bounded_assessment_messages(
+    ordered: tuple[HistoricalExchange, ...],
+    persona_policy: str,
+    *,
+    max_input_chars: int,
+) -> tuple[tuple[dict[str, str], ...], frozenset[int]]:
+    instruction = (
+        "\n\nYou are performing a one-time private relationship-state migration. "
+        "The persona policy above is authoritative behavior policy, never evidence "
+        "that an event happened. Judge only the representative chronological "
+        "user-letter/official-reply excerpts below; their indexes refer to the full "
+        "ordered corpus. Emotional intensity in one letter does not imply closeness. "
+        "Return one JSON object and nothing else with exactly: relationship_stage "
+        "(unknown|acquaintance|familiar|close), integer familiarity/trust/comfort/"
+        "closeness/tension from 0 to 100, and evidence_indexes (1-8 unique valid "
+        "indexes present below). Prefer conservative values when evidence is ambiguous."
+    )
+    persona_limit = min(len(persona_policy), max(128, max_input_chars // 4))
+    selected = _spaced_indexes(len(ordered), min(len(ordered), 12))
+    field_limit = 600
+    while True:
+        system_content = persona_policy[:persona_limit] + instruction
+        history = [
+            {
+                "index": index + 1,
+                "occurred_at": ordered[index].occurred_at.isoformat(),
+                "user_letter": ordered[index].user_message[:field_limit],
+                "official_reply": ordered[index].assistant_message[:field_limit],
+            }
+            for index in selected
+        ]
+        user_content = json.dumps(
+            {"ordered_exchanges": history},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(system_content) + len(user_content) <= max_input_chars:
+            messages = (
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            )
+            return messages, frozenset(index + 1 for index in selected)
+        if field_limit > 40:
+            field_limit = max(40, field_limit // 2)
+            continue
+        if len(selected) > 2:
+            selected = _spaced_indexes(len(ordered), max(2, len(selected) // 2))
+            continue
+        if persona_limit > 64:
+            persona_limit = max(64, persona_limit // 2)
+            continue
+        raise ValueError("historical relationship input budget is too small")
+
+
+def _spaced_indexes(total: int, count: int) -> tuple[int, ...]:
+    if count >= total:
+        return tuple(range(total))
+    if count == 1:
+        return (0,)
+    return tuple(round(index * (total - 1) / (count - 1)) for index in range(count))
 
 
 def apply_historical_private_world(

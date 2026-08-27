@@ -25,7 +25,7 @@ metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储�
 
 检索内容只作为 `<MEMORY_CONTEXT_UNTRUSTED_DATA>` 内的引用资料。正文在渲染时转义 `<`、`>`、方括号、下划线和反斜杠；角色伪装、命令、重复 delimiter 都不会成为 system 指令。资料区分 `CONVERSATION_MEMORY_CURRENT` 与 `LEGACY_LETTERS_REFERENCE_ONLY`，并携带有限 provenance。
 
-聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。`/toy/letter/legacy/official-import` 由设置页用户确认触发，复用同一只读导入边界，只导入用户原信和官方文字回信，忽略视频；官方凭证只在本次请求内存中使用。归档落盘后，启用 Mem0 的安装会按 `occurred_at` 从早到晚逐封执行现有 `remember_exchange`：一封写入成功、判重或确认无可提取记忆后才处理下一封，失败立即停止，重试依靠稳定 source id 从头判重并续跑。全部逐封处理完成后，才允许一次幂等的 PrivateWorld 历史基线初始化；它不会覆盖已有 PrivateWorld。默认 session-only 时仅保存只读归档，不生成长期记忆或 PrivateWorld 基线。
+聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。`/toy/letter/legacy/official-import` 由设置页用户确认触发，复用同一只读导入边界，只导入用户原信和官方文字回信，忽略视频；官方凭证只在本次请求内存中使用。一个本地 data-root 只对应一个用户档案：首个含文字回信的官方账号写入稳定账号标记，后续不同账号会在任何归档或记忆写入前被拒绝；需要切换账号时必须使用独立 data-root。归档落盘后，启用 Mem0 的安装会按 `occurred_at` 从早到晚逐封执行现有 `remember_exchange`：一封写入成功、判重或确认无可提取记忆后才处理下一封，失败立即停止，重试依靠稳定 source id 从头判重并续跑。全部逐封处理完成后，才允许一次幂等的 PrivateWorld 历史基线初始化；它不会覆盖已有 PrivateWorld。默认 session-only 时仅保存只读归档，不生成长期记忆或 PrivateWorld 基线。
 
 ## 健康检查与验证
 

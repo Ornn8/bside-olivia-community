@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -228,6 +229,53 @@ def test_private_world_assessment_uses_persona_policy_and_ordered_history_once()
     assert gateway.messages[1]["content"].index("user-first") < gateway.messages[1][
         "content"
     ].index("user-second")
+
+
+def test_private_world_assessment_bounds_a_long_history_to_gateway_input_limit() -> None:
+    import asyncio
+
+    class BoundedGateway(AssessmentGateway):
+        config = type("Config", (), {"max_input_chars": 2_000})()
+
+        async def complete(self, messages, *, request_id=None) -> GatewayResponse:
+            del request_id
+            self.messages = tuple(messages)
+            assert sum(len(item["content"]) for item in self.messages) <= 2_000
+            return GatewayResponse(
+                '{"relationship_stage":"familiar","familiarity":48,"trust":44,'
+                '"comfort":42,"closeness":36,"tension":9,'
+                '"evidence_indexes":[1,30]}',
+                "request-bounded",
+                "fixture",
+                "fixture-model",
+            )
+
+    ordered = tuple(
+        HistoricalExchange(
+            source_record_id=f"official:user:{index}",
+            occurred_at=datetime.fromtimestamp(index, timezone.utc),
+            user_message=(f"user-{index}-" + "u" * 1_000),
+            assistant_message=(f"assistant-{index}-" + "a" * 1_000),
+        )
+        for index in range(1, 31)
+    )
+    gateway = BoundedGateway()
+
+    assessment = asyncio.run(
+        assess_historical_relationship(
+            ordered,
+            gateway=gateway,
+            persona_policy="P" * 12_000,
+        )
+    )
+
+    prompt = json.loads(gateway.messages[1]["content"])["ordered_exchanges"]
+    assert prompt[0]["index"] == 1
+    assert prompt[-1]["index"] == 30
+    assert [item["index"] for item in prompt] == sorted(
+        item["index"] for item in prompt
+    )
+    assert assessment.evidence_indexes == (1, 30)
 
 
 def test_private_world_initialization_commits_exactly_one_migration_command() -> None:

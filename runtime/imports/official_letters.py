@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -32,6 +34,25 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _official_timestamp(value: object) -> object:
+    if isinstance(value, bool):
+        raise ValueError("OFFICIAL_LETTER_TIMESTAMP_INVALID")
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        try:
+            datetime.fromtimestamp(float(value))
+        except (OSError, OverflowError, ValueError) as exc:
+            raise ValueError("OFFICIAL_LETTER_TIMESTAMP_INVALID") from exc
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("OFFICIAL_LETTER_TIMESTAMP_INVALID") from exc
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            return value
+    raise ValueError("OFFICIAL_LETTER_TIMESTAMP_INVALID")
+
+
 def build_legacy_import_payload(
     letters: Iterable[Mapping[str, Any]],
     *,
@@ -46,14 +67,17 @@ def build_legacy_import_payload(
     for letter in letters:
         letter_id = _text(letter.get("letter_id"))
         user_content = _text(letter.get("content"))
-        reply_text = _text(letter.get("reply_text"))
+        reply_text = _text(letter.get("reply_content")) or _text(
+            letter.get("reply_text")
+        )
         if not letter_id or not user_content or not reply_text:
             continue
+        occurred_at = _official_timestamp(letter.get("created_at"))
         records.append(
             {
                 "source_record_id": f"official:{account}:{letter_id}",
                 "source": "official-olivia",
-                "occurred_at": letter.get("created_at"),
+                "occurred_at": occurred_at,
                 "content": f"用户来信：{user_content}\n林离回信：{reply_text}",
                 "metadata": {
                     "user_content": user_content,
@@ -134,7 +158,7 @@ def collect_official_text_replies(
         value = detail.get("data")
         if not isinstance(value, Mapping):
             raise ValueError("OFFICIAL_LETTER_DETAIL_INVALID")
-        details.append({"letter_id": letter_id, **dict(value)})
+        details.append({**dict(item), **dict(value), "letter_id": letter_id})
     return build_legacy_import_payload(details, account_id=headers["x-uid"])
 
 
