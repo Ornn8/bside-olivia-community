@@ -376,7 +376,7 @@ def _user_id(
     memory: ConversationMemoryPort,
     environment: Mapping[str, str],
 ) -> str:
-    from conversation_memory_identity import (
+    from runtime.memory.conversation_memory_identity import (
         ConversationMemoryIdentityError,
         normalize_conversation_memory_user_id,
     )

@@ -341,7 +341,7 @@ def _conversation_status(memory: object) -> str:
 
 
 def _conversation_user_id(memory: object, explicit: str | None) -> str:
-    from conversation_memory_identity import (
+    from runtime.memory.conversation_memory_identity import (
         ConversationMemoryIdentityError,
         normalize_conversation_memory_user_id,
     )

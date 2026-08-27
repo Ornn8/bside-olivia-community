@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from private_world_delivery import (
+from runtime.memory.private_world_delivery import (
     DeliveryEvent,
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,

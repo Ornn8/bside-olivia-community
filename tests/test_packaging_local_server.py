@@ -49,14 +49,22 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     wheel = next(wheel_dir.glob("*.whl"))
     with zipfile.ZipFile(wheel) as archive:
         packaged_paths = frozenset(archive.namelist())
-    assert "private_world_runtime.py" in packaged_paths
+    assert "runtime/memory/private_world_runtime.py" in packaged_paths
+    assert "runtime/memory/private_world_delivery.py" in packaged_paths
+    assert "runtime/memory/private_world_projection.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_identity.py" in packaged_paths
     assert "runtime/media/music_caption.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
     assert "runtime/reply/reply_delivery.py" in packaged_paths
     assert "runtime/reply/reply_media.py" in packaged_paths
     assert "reply_delivery.py" in packaged_paths
     assert "reply_media.py" in packaged_paths
-    assert "conversation_memory_identity.py" in packaged_paths
+    assert not {
+        "conversation_memory_identity.py",
+        "private_world_delivery.py",
+        "private_world_projection.py",
+        "private_world_runtime.py",
+    } & packaged_paths
     assert "mem0_embedding_install.py" in packaged_paths
     assert {
         "linli_character/persona_release_v2.json",
@@ -91,9 +99,18 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
         [
             str(interpreter),
             "-c",
-            "import conversation_memory_identity, conversation_memory_admin, mem0_memory; "
+            "import conversation_memory_admin, mem0_memory; "
             "import mem0_embedding_install, original_client_companion_mutation_backend; "
-            "import importlib.util; assert importlib.util.find_spec('music_caption') is None; "
+            "import importlib.util; "
+            "assert importlib.util.find_spec('conversation_memory_identity') is None; "
+            "assert importlib.util.find_spec('private_world_delivery') is None; "
+            "assert importlib.util.find_spec('private_world_projection') is None; "
+            "assert importlib.util.find_spec('private_world_runtime') is None; "
+            "assert importlib.util.find_spec('music_caption') is None; "
+            "import runtime.memory.conversation_memory_identity; "
+            "import runtime.memory.private_world_delivery; "
+            "import runtime.memory.private_world_projection; "
+            "import runtime.memory.private_world_runtime; "
             "import original_client_server, runtime.media.music_caption, song_content; "
             "import reply_delivery, reply_media; "
             "from runtime.reply import reply_delivery as canonical_delivery; "
