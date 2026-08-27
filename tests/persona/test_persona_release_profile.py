@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +17,12 @@ RELEASE_PATH = ROOT / "linli_character" / "persona_release_v2.json"
 PROVENANCE_PATH = (
     ROOT / "linli_character" / "persona_release_provenance_v2.json"
 )
+PUBLIC_REFERENCE_PATH = (
+    ROOT / "docs" / "persona-sources" / "linli-im-private-constitution-1.0.zh-CN.md"
+)
+README_PATH = ROOT / "README.md"
+WINDOWS_INSTALL_PATH = ROOT / "docs" / "WINDOWS_FULL_PATCH.md"
+LETTER_CONTRACT_PATH = ROOT / "docs" / "P03_ORIGINAL_CLIENT_LETTER_CONTRACT.md"
 
 
 def test_release_profile_is_complete_linli_not_policy_only() -> None:
@@ -84,7 +91,36 @@ def test_release_profile_excludes_private_instances_and_control_protocol() -> No
     assert max(len(row["statement"]) for row in payload["declarations"]) <= 240
 
 
-def test_release_provenance_is_bidirectional_and_pinned_to_current_repository() -> None:
+def test_public_persona_reference_excludes_private_continuation_and_rights_claims() -> None:
+    text = PUBLIC_REFERENCE_PATH.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "云南",
+        "LOCAL CONTINUATION",
+        "repository MIT license",
+    ):
+        assert forbidden not in text
+    assert "Apache-2.0" in text
+    assert "does not grant source, character, or redistribution rights" in text
+
+
+def test_public_install_docs_distinguish_basevideo_from_webplayer_fallback() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    installer = WINDOWS_INSTALL_PATH.read_text(encoding="utf-8")
+    contract = LETTER_CONTRACT_PATH.read_text(encoding="utf-8")
+
+    assert "Collection 内的 `BaseVideo`" in readme
+    assert "默认书信编排路线" in readme
+    assert "可选的显式 `uid` 本机回退" in readme
+    assert "/toy/media/" in readme
+    assert "DPAPI 当前用户启动读取修复已合入" in readme
+    assert "发布/真实客户端验收尚未完成" in readme
+    assert "Collection 内的 `BaseVideo`" in installer
+    assert "可选的显式 `uid` 本机回退" in installer
+    assert "可选的显式 `uid` 本机回退" in contract
+
+
+def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() -> None:
     schema = json.loads(
         (
             ROOT / "contracts" / "persona_v2_provenance.schema.json"
@@ -107,9 +143,21 @@ def test_release_provenance_is_bidirectional_and_pinned_to_current_repository() 
     assert linked == declarations
     source = payload["sources"][0]
     assert source["source_id"] == "P02.LINLI.CONSTITUTION"
-    assert "bside-olivia-community/blob/065185ab" in source["source_url"]
+    reference_revision = "15453c7bf8d242b58c445d27399979a6550ac203"
+    reference_path = "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
+    assert source["source_url"] == (
+        "https://github.com/Ornn8/bside-olivia-community/blob/"
+        f"{reference_revision}/{reference_path}"
+    )
+    assert source["content_source"] == {
+        "repository": "Ornn8/bside-olivia-community",
+        "path": reference_path,
+        "revision": reference_revision,
+        "sha256": hashlib.sha256(PUBLIC_REFERENCE_PATH.read_bytes()).hexdigest(),
+    }
     assert source["rights_status"] == "SUMMARY_ONLY"
-    assert "private history" in source["exclusion_reason"]
+    assert "Concrete relationship records" in source["exclusion_reason"]
+    assert "communication timelines" in source["exclusion_reason"]
 
 
 def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:
