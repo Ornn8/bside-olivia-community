@@ -1,0 +1,4 @@
+# Supported top-level Mem0 runtime for the managed CPython 3.12 install.
+# Transitive wheels are resolved only when the user accepts this optional setup.
+mem0ai==2.0.18
+sentence-transformers==5.7.0
