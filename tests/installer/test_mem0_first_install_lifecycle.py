@@ -138,7 +138,12 @@ def test_memory_assets_remain_pinned_but_are_not_installed_during_first_setup() 
         root / "installer" / "mem0-runtime-requirements.txt"
     ).read_text(encoding="utf-8")
 
-    assert "mem0-runtime-requirements.txt" not in script
+    assert script.count("mem0-runtime-requirements.txt") == 1
+    assert "[IO.Directory]::Exists($existingMemoryRuntime)" in script
+    assert (
+        "& $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime "
+        "$memoryRuntimeRequirements"
+    ) in script
     assert "provision_mem0_embedding.py" not in script
     assert "mem0ai==2.0.18" in requirements
     assert "sentence-transformers==5.7.0" in requirements
@@ -241,7 +246,8 @@ def test_first_install_defers_memory_runtime_and_embedding_downloads() -> None:
     script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
     launcher = (root / "installer" / "start_local.py").read_text(encoding="utf-8")
 
-    assert "mem0-runtime-requirements.txt" not in script
+    assert script.count("mem0-runtime-requirements.txt") == 1
+    assert "[IO.Directory]::Exists($existingMemoryRuntime)" in script
     assert "provision_mem0_embedding.py" not in script
     assert "BAAI/bge-small-zh-v1.5" not in script
     assert "Read-Host 'Accept this optional" not in script

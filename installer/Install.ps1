@@ -550,6 +550,24 @@ try {
             throw 'OFFLINE_CORE_DEPENDENCY_VERIFY_FAILED'
         }
     }
+    $existingMemoryRuntime = Join-Path $productRoot 'runtime\mem0-site-packages'
+    $memoryRuntimeRequirements = Join-Path $PayloadRoot 'installer\mem0-runtime-requirements.txt'
+    $memoryRuntimeVerifier = Join-Path $PayloadRoot 'installer\verify_mem0_runtime.py'
+    if (
+        [IO.Directory]::Exists($existingMemoryRuntime) -and
+        [IO.File]::Exists($memoryRuntimeRequirements) -and
+        [IO.File]::Exists($memoryRuntimeVerifier)
+    ) {
+        try {
+            Assert-NoReparsePointsInPath -LiteralPath $existingMemoryRuntime
+            & $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime $memoryRuntimeRequirements *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $existingMemoryRuntime
+            }
+        } catch {
+            # An invalid optional Mem0 runtime stays unregistered after core upgrade.
+        }
+    }
     if (Test-Path -LiteralPath $runtimeRoot) {
         if (
             -not [IO.Directory]::Exists($runtimeRoot) -or

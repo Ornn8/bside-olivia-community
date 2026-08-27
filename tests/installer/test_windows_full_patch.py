@@ -281,6 +281,7 @@ def test_missing_managed_server_dependencies_are_a_nonfatal_probe_result() -> No
 def _run_managed_python_path_helper(
     *,
     pth_path: Path,
+    memory_runtime_path: Path | None = None,
     deny_replace: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).parents[2]
@@ -298,7 +299,10 @@ def _run_managed_python_path_helper(
         "if($env:BSIDE_DENY_REPLACE -eq '1'){"
         "$lock=[IO.File]::Open($env:BSIDE_PTH_PATH,[IO.FileMode]::Open,"
         "[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)};"
-        "try{Update-ManagedPythonPath -PthPath $env:BSIDE_PTH_PATH}"
+        "$arguments=@{PthPath=$env:BSIDE_PTH_PATH};"
+        "if($env:BSIDE_MEMORY_RUNTIME_PATH){"
+        "$arguments.MemoryRuntimePath=$env:BSIDE_MEMORY_RUNTIME_PATH};"
+        "try{Update-ManagedPythonPath @arguments}"
         "finally{if($lock){$lock.Dispose()}}"
     )
     env = os.environ.copy()
@@ -306,6 +310,9 @@ def _run_managed_python_path_helper(
         {
             "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
             "BSIDE_PTH_PATH": str(pth_path),
+            "BSIDE_MEMORY_RUNTIME_PATH": (
+                str(memory_runtime_path) if memory_runtime_path else ""
+            ),
             "BSIDE_DENY_REPLACE": "1" if deny_replace else "0",
         }
     )
@@ -414,6 +421,53 @@ def test_managed_runtime_pth_never_writes_payload_and_preserves_existing_paths(
         "site-packages",
         "import site",
     ]
+
+
+def test_core_runtime_upgrade_reregisters_only_verified_mem0_runtime(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows PowerShell is only available on Windows")
+
+    product_root = tmp_path / "product"
+    runtime_root = product_root / "runtime" / "python-3.12.10-embed-amd64"
+    runtime_root.mkdir(parents=True)
+    pth_path = runtime_root / "python312._pth"
+    pth_path.write_text(
+        "python312.zip\n.\nsite-packages\nimport site\n",
+        encoding="utf-8",
+    )
+    memory_runtime = product_root / "runtime" / "mem0-site-packages"
+    memory_runtime.mkdir()
+
+    result = _run_managed_python_path_helper(
+        pth_path=pth_path,
+        memory_runtime_path=memory_runtime,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert pth_path.read_text(encoding="utf-8").splitlines()[:3] == [
+        str(memory_runtime),
+        str(memory_runtime / "win32"),
+        str(memory_runtime / "win32" / "lib"),
+    ]
+    script = (
+        Path(__file__).parents[2] / "installer" / "Install.ps1"
+    ).read_text(encoding="utf-8-sig")
+    verification = (
+        "& $candidateExe $memoryRuntimeVerifier $existingMemoryRuntime "
+        "$memoryRuntimeRequirements"
+    )
+    registration = (
+        "Update-ManagedPythonPath -PthPath $pth.FullName "
+        "-MemoryRuntimePath $existingMemoryRuntime"
+    )
+    core_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe))"
+    assert verification in script
+    assert registration in script
+    assert script.index(core_probe) < script.index(verification) < script.index(
+        registration
+    )
 
 
 def test_published_powershell_scripts_are_utf8_bom_safe() -> None:
