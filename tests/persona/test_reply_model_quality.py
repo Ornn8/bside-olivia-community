@@ -88,6 +88,7 @@ class SequencedQualityGateway(Gateway):
         self.reviews = list(reviews)
         self.rewritten = rewritten
         self.call_kinds: list[str] = []
+        self.review_system_prompts: list[str] = []
         self.review_requests: list[dict[str, object]] = []
         self.rewrite_requests: list[dict[str, object]] = []
         self.review_input_sizes: list[int] = []
@@ -102,6 +103,7 @@ class SequencedQualityGateway(Gateway):
         user = str(messages[-1].get("content", ""))
         if "P02_REPLY_REVIEW_JSON" in system:
             self.call_kinds.append("review")
+            self.review_system_prompts.append(system)
             self.review_requests.append(json.loads(user))
             self.review_input_sizes.append(
                 sum(len(str(message.get("content", ""))) for message in messages)
@@ -255,6 +257,50 @@ def test_reviewer_uses_release_declarations_without_source_document(
 
     assert result.verdict is ReviewVerdict.PASS
     assert gateway.call_kinds == ["review"] * 5
+    voice_prompt = gateway.review_system_prompts[1]
+    assert "mode.text.selective_complete" in voice_prompt
+    assert "mode.spoken.natural_plain" not in voice_prompt
+
+
+def test_reviewer_fails_closed_when_current_mode_declaration_is_missing(
+    tmp_path: Path,
+) -> None:
+    source = json.loads(
+        (ROOT / "linli_character" / "persona_release_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    source["declarations"] = [
+        item
+        for item in source["declarations"]
+        if not (
+            item["tier"] == "MODE_STYLE"
+            and item.get("mode") == "text_letter"
+        )
+    ]
+    source["profile"]["required_modes"] = [
+        mode
+        for mode in source["profile"]["required_modes"]
+        if mode != "text_letter"
+    ]
+    persona_path = tmp_path / "persona_release_v2.json"
+    persona_path.write_text(
+        json.dumps(source, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=_passing_layer_payloads(),
+    )
+
+    result = GatewayPersonaReviewer(gateway, persona_path, 1).review(
+        "synthetic candidate",
+        _context(),
+    )
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert gateway.call_kinds == []
 
 
 class _FixedMemory(NullMemoryPort):

@@ -533,6 +533,13 @@ def _build_release_layer_authorities(
 ) -> tuple[_LayerAuthority, ...]:
     if snapshot.status != "READY" or not snapshot.declarations:
         raise RuntimeError("PERSONA_RELEASE_UNAVAILABLE")
+    if not any(
+        item.allowed_public_release
+        and item.tier == "MODE_STYLE"
+        and item.mode == mode
+        for item in snapshot.declarations
+    ):
+        raise RuntimeError("PERSONA_MODE_STYLE_UNAVAILABLE")
     constitution = tuple(
         item for item in snapshot.declarations if item.tier == "CONSTITUTION"
     )
