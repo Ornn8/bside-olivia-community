@@ -64,7 +64,7 @@ function Update-ManagedPythonPath {
         }
         if ($memoryRuntimeFullPath -and $trimmed) {
             try { $registeredPath = [IO.Path]::GetFullPath($trimmed) } catch { $registeredPath = '' }
-            if ($registeredPath -and $registeredPath -match '[\\/]runtime[\\/]mem0-site-packages$') {
+            if ($registeredPath -and $registeredPath -match '[\\/]runtime[\\/]mem0-site-packages(?:[\\/].*)?$') {
                 continue
             }
         }
@@ -75,7 +75,11 @@ function Update-ManagedPythonPath {
     }
 
     if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
-    if ($memoryRuntimeFullPath) { $keptLines.Insert(0, $memoryRuntimeFullPath) }
+    if ($memoryRuntimeFullPath) {
+        $keptLines.Insert(0, (Join-Path $memoryRuntimeFullPath 'win32\lib'))
+        $keptLines.Insert(0, (Join-Path $memoryRuntimeFullPath 'win32'))
+        $keptLines.Insert(0, $memoryRuntimeFullPath)
+    }
     if (-not $hasImportSite) { $keptLines.Add('import site') }
     $transactionId = [guid]::NewGuid().ToString('N')
     $tempName = '.' + [IO.Path]::GetFileName($pthFullPath) + '.' + $transactionId + '.tmp'
@@ -105,43 +109,8 @@ function Test-MemoryRuntime {
 
     $runtimeFullPath = [IO.Path]::GetFullPath($RuntimePath)
     $requirementsFullPath = [IO.Path]::GetFullPath($RequirementsPath)
-    $manifestPath = Join-Path $runtimeFullPath '.olivia-mem0-runtime-manifest.json'
-    try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        $requirementsHash = Get-Sha256 -LiteralPath $requirementsFullPath
-        if ($manifest.requirements_sha256 -ne $requirementsHash) {
-            Write-Warning 'MEM0_RUNTIME_MANIFEST_INVALID'
-            return $false
-        }
-    } catch {
-        Write-Warning 'MEM0_RUNTIME_MANIFEST_INVALID'
-        return $false
-    }
-    $probe = @'
-import importlib.metadata
-import importlib.util
-import re
-import sys
-from pathlib import Path
-
-runtime = Path(sys.argv[1]).resolve()
-requirements = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
-sys.path.insert(0, str(runtime))
-for line in requirements:
-    match = re.match(r"^([A-Za-z0-9_.-]+)==([^\s]+)", line)
-    if match is None:
-        continue
-    if importlib.metadata.version(match.group(1)) != match.group(2):
-        raise SystemExit(2)
-for module in ("mem0", "sentence_transformers", "huggingface_hub"):
-    spec = importlib.util.find_spec(module)
-    if spec is None or not spec.origin:
-        raise SystemExit(3)
-    origin = Path(spec.origin).resolve()
-    if runtime not in origin.parents:
-        raise SystemExit(4)
-'@
-    & $runner.File '-c' $probe $runtimeFullPath $requirementsFullPath 2>$null
+    $verifier = Join-Path $PSScriptRoot 'verify_mem0_runtime.py'
+    & $runner.File $verifier $runtimeFullPath $requirementsFullPath 2>$null
     return $LASTEXITCODE -eq 0
 }
 
@@ -246,7 +215,6 @@ if ($runner.File -eq $runtimeExe) {
                                 try {
                                     if (Test-Path -LiteralPath $memoryRuntime) { [IO.Directory]::Move($memoryRuntime, $memoryBackup) }
                                     [IO.Directory]::Move($memoryStaging, $memoryRuntime)
-                                    if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
                                     $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime -RequirementsPath $memoryRequirements
                                     if (-not $memoryDependenciesReady) { throw 'MEM0_RUNTIME_VERIFY_FAILED' }
                                 } catch {
@@ -270,6 +238,9 @@ if ($runner.File -eq $runtimeExe) {
         }
     } catch {
         $memoryDependenciesReady = $false
+    }
+    if ($memoryDependenciesReady -and $pth) {
+        Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime
     }
     if (-not $memoryDependenciesReady) {
         if ($memoryDependenciesDeclined) {
