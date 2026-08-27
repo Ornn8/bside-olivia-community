@@ -361,18 +361,29 @@ class ResumableModelDownloader:
         artifact = self.files[relative_path]
         cached = self.download_root.joinpath(*relative_path.split("/"))
         partial = cached.with_suffix(cached.suffix + ".part")
+        partial_source = partial.with_name(partial.name + ".source")
         cached.parent.mkdir(parents=True, exist_ok=True)
         if not self._valid(cached, artifact):
             cached.unlink(missing_ok=True)
             if partial.is_file() and partial.stat().st_size > artifact.size_bytes:
                 partial.unlink()
+                partial_source.unlink(missing_ok=True)
             last_error: Exception | None = None
             for source in self.sources:
                 try:
+                    try:
+                        recorded_source = partial_source.read_text(encoding="utf-8")
+                    except OSError:
+                        recorded_source = ""
+                    if partial.is_file() and recorded_source != source:
+                        partial.unlink()
+                        partial_source.unlink(missing_ok=True)
+                    partial_source.write_text(source, encoding="utf-8")
                     self.last_source = source
                     self._transfer(source, relative_path, partial, artifact)
                     if not self._valid(partial, artifact):
                         partial.unlink(missing_ok=True)
+                        partial_source.unlink(missing_ok=True)
                         raise RuntimeError("MEM0_MODEL_HASH_MISMATCH")
                     last_error = None
                     break
@@ -383,6 +394,7 @@ class ResumableModelDownloader:
             if last_error is not None:
                 raise RuntimeError("MEM0_MODEL_DOWNLOAD_FAILED") from last_error
             partial.replace(cached)
+            partial_source.unlink(missing_ok=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(cached, destination)
         if relative_path not in self._completed:
@@ -767,20 +779,53 @@ class ManagedEmbeddingModel:
         )
         self.last_source: str | None = None
 
+    @property
+    def _source_marker(self) -> Path:
+        return self.config.model_cache / "olivia-mem0-capability-source.json"
+
+    def _read_source(self) -> str | None:
+        try:
+            payload = json.loads(self._source_marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        accepted = {*self.bom.sources, "verified-existing-cache", "verified-download-cache"}
+        source = payload.get("source")
+        if (
+            set(payload) != {"repo_id", "revision", "source"}
+            or payload.get("repo_id") != self.bom.repo_id
+            or payload.get("revision") != self.bom.revision
+            or source not in accepted
+        ):
+            return None
+        return str(source)
+
+    def _write_source(self, source: str) -> None:
+        self._source_marker.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._source_marker.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "repo_id": self.bom.repo_id,
+                    "revision": self.bom.revision,
+                    "source": source,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(self._source_marker)
+
     def ready(self) -> bool:
         from mem0_memory import verified_embedding_cache
 
         if not verified_embedding_cache(self.config):
             return False
-        manifest_path = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        source = self._read_source()
+        if source is None:
             return False
-        expected = {name: artifact.sha256 for name, artifact in self.bom.files.items()}
-        if manifest.get("files") != expected or manifest.get("source") not in self.bom.sources:
-            return False
-        self.last_source = manifest["source"]
+        self.last_source = source
         return True
 
     def install(
@@ -797,6 +842,10 @@ class ManagedEmbeddingModel:
             return
         if offline_root is not None:
             raise ValueError("offline capability packs are not enabled")
+        from mem0_memory import verified_embedding_cache
+
+        cache_was_verified = verified_embedding_cache(self.config)
+        previous_source = self._read_source()
         downloader: ResumableModelDownloader
 
         def report(downloaded: int, total: int, current: str) -> None:
@@ -820,22 +869,26 @@ class ManagedEmbeddingModel:
                 name: artifact.sha256 for name, artifact in self.bom.files.items()
             },
         ).install()
-        self.last_source = downloader.last_source
-        manifest_path = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["source"] = self.last_source
-        temporary = manifest_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-        temporary.replace(manifest_path)
+        if result.status not in {"APPLIED", "NOOP"} or not verified_embedding_cache(
+            self.config
+        ):
+            if pause_requested.is_set():
+                raise _DownloadPaused
+            raise RuntimeError(result.reason_code or "MEM0_MODEL_INSTALL_FAILED")
+        self.last_source = (
+            downloader.last_source
+            or previous_source
+            or ("verified-existing-cache" if cache_was_verified else "verified-download-cache")
+        )
+        self._write_source(self.last_source)
         owner = self.download_root / ".olivia-mem0-downloads.json"
+        owner.parent.mkdir(parents=True, exist_ok=True)
         owner.write_text(
             json.dumps({"repo_id": self.bom.repo_id, "revision": self.bom.revision}),
             encoding="utf-8",
         )
-        if result.status not in {"APPLIED", "NOOP"} or not self.ready():
-            if pause_requested.is_set():
-                raise _DownloadPaused
-            raise RuntimeError(result.reason_code or "MEM0_MODEL_INSTALL_FAILED")
+        if not self.ready():
+            raise RuntimeError("MEM0_MODEL_INSTALL_FAILED")
 
     def uninstall(self) -> None:
         snapshot = self.config.embedding_snapshot
@@ -853,6 +906,8 @@ class ManagedEmbeddingModel:
             "files"
         ) != expected:
             raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
+        if snapshot.exists() and self._read_source() is None:
+            raise RuntimeError("MEM0_MODEL_OWNERSHIP_INVALID")
         if self.download_root.exists() and json.loads(
             download_marker.read_text(encoding="utf-8")
         ) != {"repo_id": self.bom.repo_id, "revision": self.bom.revision}:
@@ -860,6 +915,7 @@ class ManagedEmbeddingModel:
         if snapshot.exists():
             shutil.rmtree(snapshot)
         manifest.unlink(missing_ok=True)
+        self._source_marker.unlink(missing_ok=True)
         if self.download_root.exists():
             shutil.rmtree(self.download_root)
         if snapshot.exists() or manifest.exists() or self.download_root.exists():
