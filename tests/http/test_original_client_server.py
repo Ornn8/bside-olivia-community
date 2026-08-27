@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import original_client_server
 from conversation_memory_admin import MemoryAdminStatus
 from conversation_memory_port import (
     ConversationMemoryRecord,
@@ -70,6 +72,67 @@ def test_successful_original_sign_in_unlocks_initial_setup(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_successful_sign_in_authorizes_on_demand_capability_install(tmp_path: Path) -> None:
+    async def signed_in(_request: web.Request) -> web.Response:
+        return web.json_response({"code": 0, "message": "ok", "data": {}})
+
+    class Status:
+        def to_dict(self):
+            return {
+                "schema_version": "olivia.capability-status.v2",
+                "status": "UNAVAILABLE", "capability": "long_term_memory",
+                "state": "missing", "phase": "idle", "downloaded_bytes": 0,
+                "total_bytes": 100, "remaining_bytes": 100, "installed_bytes": 0,
+                "install_locations": [
+                    {"root": "installation_root", "relative_path": "runtime/mem0-site-packages"},
+                    {"root": "local_data_root", "relative_path": "memory/model-cache"},
+                ],
+                "version": "fixture", "license_summary": "fixture",
+                "requires_gpu": False,
+            }
+
+    class Installer:
+        starts: list[str] = []
+
+        def status(self): return Status()
+        def start(self, *, source_mode, **_options):
+            self.starts.append(source_mode)
+            return "APPLIED"
+        def pause(self): return "NOOP"
+        def resume(self, *, source_mode): return "NOOP"
+        def uninstall(self, *, remove_model): return "NOOP"
+
+    async def scenario() -> None:
+        service = LLMSetupService(
+            tmp_path, protect=lambda value: value, unprotect=lambda value: value,
+            probe=lambda *_args: None,
+        )
+        installer = Installer()
+        runtime = create_original_client_server_runtime(
+            signed_in, setup_service=service, capability_installer=installer,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            await client.post("/toy/signIn", headers={"Origin": TRUSTED_ORIGIN})
+            setup = await client.get(
+                "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            token = (await setup.json())["session_token"]
+            response = await client.post(
+                "/toy/capabilities/mem0/action",
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": token,
+                },
+                json={"action": "install", "source": "auto"},
+            )
+            assert response.status == 200
+            assert installer.starts == ["auto"]
+
+    asyncio.run(scenario())
+
+
 def test_boolean_false_sign_in_code_does_not_unlock_initial_setup(tmp_path: Path) -> None:
     async def malformed_sign_in(_request: web.Request) -> web.Response:
         return web.json_response({"code": False, "message": "invalid", "data": {}})
@@ -97,6 +160,49 @@ def test_boolean_false_sign_in_code_does_not_unlock_initial_setup(tmp_path: Path
             assert (await status.json())["login_observed"] is False
 
     asyncio.run(scenario())
+
+
+def test_configured_runtime_mounts_capability_from_installed_layout(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    local_root = tmp_path / "BSideOliviaLocal"
+    patch_root = local_root / "install"
+    data_root = patch_root / "data"
+    python_executable = (
+        local_root / "runtime" / "python-3.12.10-embed-amd64" / "python.exe"
+    )
+    data_root.mkdir(parents=True)
+    python_executable.parent.mkdir(parents=True)
+    python_executable.write_bytes(b"synthetic")
+    backend_root = patch_root / "local_backend"
+    packaged_installer = backend_root / "installer"
+    packaged_installer.mkdir(parents=True)
+    source_installer = Path(original_client_server.__file__).resolve().parent / "installer"
+    for name in (
+        "mem0-capability-manifest.json",
+        "mem0-runtime-artifacts.json",
+        "mem0-runtime-requirements.txt",
+    ):
+        shutil.copyfile(source_installer / name, packaged_installer / name)
+    monkeypatch.setattr(original_client_server.sys, "executable", str(python_executable))
+    monkeypatch.setattr(
+        original_client_server, "__file__", str(backend_root / "original_client_server.py")
+    )
+    server = SimpleNamespace(
+        handler=_fallback,
+        TRUSTED_FRONTEND_ORIGINS=frozenset({TRUSTED_ORIGIN}),
+    )
+
+    runtime = create_configured_original_client_server_runtime(
+        server_module=server,
+        environ={
+            "OLIVIA_INSTALL_ROOT": str(patch_root),
+            "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        },
+    )
+
+    assert runtime.capability_installer is not None
+    assert runtime.public_status()["capability_installer_mounted"] is True
 
 
 class MemoryAdminFixture:
@@ -307,6 +413,7 @@ def test_configured_runtime_reuses_existing_memory_and_private_world_storage(
             "memory_admin_mounted": True,
             "private_world_mounted": True,
             "candidate_store_mounted": True,
+            "capability_installer_mounted": False,
         }
 
         async with TestClient(TestServer(runtime.app)) as client:

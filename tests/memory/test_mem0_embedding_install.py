@@ -633,7 +633,10 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     assert "capability.embedding" in BOOTSTRAP_JAVASCRIPT
     assert "window.setTimeout(refresh, 1000);" in BOOTSTRAP_JAVASCRIPT
     assert "http://" not in BOOTSTRAP_JAVASCRIPT
-    assert "https://" not in BOOTSTRAP_JAVASCRIPT
+    without_provider_presets = BOOTSTRAP_JAVASCRIPT.replace(
+        "https://api.deepseek.com", ""
+    ).replace("https://opencode.ai/zen/go/v1", "")
+    assert "https://" not in without_provider_presets
 
     memory = UnavailableConversationMemoryPort("MEM0_EMBEDDING_CACHE_UNAVAILABLE")
     admin = ConversationMemoryAdminService(memory, tmp_path / "memory-admin.sqlite3")

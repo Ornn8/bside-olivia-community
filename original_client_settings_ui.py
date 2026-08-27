@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v3"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v5"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -22,8 +22,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
   const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";
+  const SETUP_STATUS_PATH = "/toy/setup/status";
+  const LLM_TEST_PATH = "/toy/setup/llm/test";
+  const LLM_SAVE_PATH = "/toy/setup/llm/save";
+  const LLM_DELETE_PATH = "/toy/setup/llm/delete";
+  const SETUP_COMPLETE_PATH = "/toy/setup/complete";
+  const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0";
+  const MEM0_CAPABILITY_ACTION_PATH = "/toy/capabilities/mem0/action";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
+  const SETUP_CONFIRM_HEADER = "X-Olivia-Setup-Action";
+  const SETUP_SESSION_HEADER = "X-Olivia-Setup-Session";
+  const CAPABILITY_CONFIRM_HEADER = "X-Olivia-Capability-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
@@ -55,6 +65,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   if (!apiBase) {
     return;
   }
+  let setupSessionToken = "";
 
   const text = (tag, value, className) => {
     const element = document.createElement(tag);
@@ -237,6 +248,88 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
         throw error;
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const requestSetup = async (path, body = null) => {
+    const endpoint = new URL(path, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 25000);
+    const options = {
+      cache: "no-store",
+      credentials: "omit",
+      headers: { "Accept": "application/json" },
+      signal: controller.signal,
+    };
+    if (body !== null) {
+      options.method = "POST";
+      options.headers["Content-Type"] = "application/json";
+      options.headers[SETUP_CONFIRM_HEADER] = CONFIRM_VALUE;
+      options.headers[SETUP_SESSION_HEADER] = setupSessionToken;
+      options.body = JSON.stringify(body);
+    }
+    try {
+      const response = await fetch(endpoint, options);
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = null;
+      }
+      if (!response.ok || !payload || typeof payload.status !== "string") {
+        const error = new Error("setup-unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          ? payload.error_code
+          : "LLM_SETUP_UNAVAILABLE";
+        throw error;
+      }
+      if (
+        path === SETUP_STATUS_PATH
+        && typeof payload.session_token === "string"
+        && payload.session_token.length >= 32
+      ) {
+        setupSessionToken = payload.session_token;
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const requestCapability = async (path, body = null) => {
+    if (body !== null && !setupSessionToken) {
+      await requestSetup(SETUP_STATUS_PATH);
+    }
+    const endpoint = new URL(path, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 25000);
+    const options = {
+      cache: "no-store",
+      credentials: "omit",
+      headers: { "Accept": "application/json" },
+      signal: controller.signal,
+    };
+    if (body !== null) {
+      options.method = "POST";
+      options.headers["Content-Type"] = "application/json";
+      options.headers[CAPABILITY_CONFIRM_HEADER] = CONFIRM_VALUE;
+      options.headers[SETUP_SESSION_HEADER] = setupSessionToken;
+      options.body = JSON.stringify(body);
+    }
+    try {
+      const response = await fetch(endpoint, options);
+      const payload = await response.json();
+      if (
+        !response.ok
+        || !payload
+        || typeof payload.status !== "string"
+        || (path === MEM0_CAPABILITY_PATH && payload.capability !== "long_term_memory")
+      ) {
+        throw new Error("capability-unavailable");
       }
       return payload;
     } finally {
@@ -639,7 +732,299 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     );
   };
 
-  const loadDialogData = async (statusNode, panels) => {
+  const setupInput = (label, type = "text") => {
+    const wrapper = document.createElement("label");
+    wrapper.style.display = "grid";
+    wrapper.style.gap = "6px";
+    wrapper.append(text("span", label, "text-text-secondary text-body-m font-regular"));
+    const input = document.createElement("input");
+    input.type = type;
+    input.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+    input.autocomplete = type === "password" ? "off" : "url";
+    input.style.width = "100%";
+    wrapper.append(input);
+    return { wrapper, input };
+  };
+
+  const renderLlmSetupPanel = async (panel, initialMode) => {
+    panel.replaceChildren(
+      text("h3", "大模型连接", "text-text-title text-title-m"),
+      text("p", "API key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
+    );
+    let setup;
+    try {
+      setup = await requestSetup(SETUP_STATUS_PATH);
+    } catch (_error) {
+      panel.append(text("p", "初始设置服务暂不可用。", "text-text-secondary text-body-m font-regular"));
+      return;
+    }
+    const provider = document.createElement("select");
+    provider.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+    for (const [value, label] of [
+      ["deepseek", "DeepSeek 官方"],
+      ["opencode-go", "OpenCode Go"],
+      ["custom", "自定义 OpenAI 兼容接口"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      provider.append(option);
+    }
+    const providerLabel = document.createElement("label");
+    providerLabel.style.display = "grid";
+    providerLabel.style.gap = "6px";
+    providerLabel.append(
+      text("span", "服务商", "text-text-secondary text-body-m font-regular"),
+      provider
+    );
+    const base = setupInput("接口地址");
+    const model = setupInput("模型");
+    const key = setupInput(setup.llm.key_configured ? "API key（留空则沿用已保存的 key）" : "API key", "password");
+    base.input.maxLength = 512;
+    model.input.maxLength = 128;
+    key.input.maxLength = 512;
+    base.input.value = setup.llm.base_url || "https://api.deepseek.com";
+    model.input.value = setup.llm.model || "deepseek-v4-flash";
+    key.input.value = "";
+    const inferProvider = () => {
+      if (base.input.value === "https://api.deepseek.com") return "deepseek";
+      if (base.input.value === "https://opencode.ai/zen/go/v1") return "opencode-go";
+      return "custom";
+    };
+    provider.value = inferProvider();
+    provider.addEventListener("change", () => {
+      if (provider.value === "deepseek") {
+        base.input.value = "https://api.deepseek.com";
+        model.input.value = "deepseek-v4-flash";
+      } else if (provider.value === "opencode-go") {
+        base.input.value = "https://opencode.ai/zen/go/v1";
+        model.input.value = "deepseek-v4-flash";
+      }
+      save.disabled = true;
+    });
+    const state = text("p", setup.llm.key_configured ? "已保存 API key。修改前请先测试连接。" : "请输入 API key 并测试连接。", "text-text-secondary text-body-m font-regular");
+    state.setAttribute("aria-live", "polite");
+    const testConnection = button("测试连接", async () => {
+      setButtonsBusy([testConnection, save], true);
+      state.textContent = "正在测试连接……";
+      try {
+        await requestSetup(LLM_TEST_PATH, {
+          base_url: base.input.value.trim(),
+          model: model.input.value.trim(),
+          api_key: key.input.value.trim(),
+        });
+        state.textContent = "连接成功，可以保存。";
+        save.disabled = false;
+      } catch (_error) {
+        state.textContent = "连接失败，请检查地址、模型和 API key。";
+        save.disabled = true;
+      } finally {
+        testConnection.disabled = false;
+        testConnection.style.opacity = "1";
+        testConnection.style.cursor = "pointer";
+      }
+    });
+    const save = button("保存", async () => {
+      setButtonsBusy([testConnection, save], true);
+      state.textContent = "正在安全保存……";
+      try {
+        await requestSetup(LLM_SAVE_PATH, {
+          base_url: base.input.value.trim(),
+          model: model.input.value.trim(),
+          api_key: key.input.value.trim(),
+        });
+        key.input.value = "";
+        state.textContent = "已保存。重启 Olivia 后生效。";
+      } catch (_error) {
+        state.textContent = "保存失败，请重新测试连接。";
+      } finally {
+        testConnection.disabled = false;
+        testConnection.style.opacity = "1";
+        testConnection.style.cursor = "pointer";
+        save.disabled = true;
+      }
+    });
+    save.disabled = true;
+    const removeKey = button("删除 API key", async () => {
+      if (!window.confirm("确认删除这台电脑上保存的 API key？删除后需重启 Olivia。")) {
+        return;
+      }
+      setButtonsBusy([testConnection, save, removeKey], true);
+      try {
+        await requestSetup(LLM_DELETE_PATH, {});
+        key.input.value = "";
+        state.textContent = "API key 已删除。重启 Olivia 后生效。";
+      } catch (_error) {
+        state.textContent = "API key 删除失败，请重试。";
+      } finally {
+        testConnection.disabled = false;
+        removeKey.disabled = false;
+        testConnection.style.opacity = "1";
+        removeKey.style.opacity = "1";
+      }
+    });
+    const invalidateTest = () => { save.disabled = true; };
+    base.input.addEventListener("input", invalidateTest);
+    model.input.addEventListener("input", invalidateTest);
+    key.input.addEventListener("input", invalidateTest);
+    const controls = actions();
+    controls.append(testConnection, save);
+    if (setup.llm.key_configured) {
+      controls.append(removeKey);
+    }
+    panel.append(providerLabel, base.wrapper, model.wrapper, key.wrapper, controls, state);
+  };
+
+  const formatBytes = (value) => {
+    if (!Number.isInteger(value) || value < 0) return "未知";
+    if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KiB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+  };
+
+  const renderMem0CapabilityPanel = async (panel) => {
+    let payload;
+    try {
+      payload = await requestCapability(MEM0_CAPABILITY_PATH);
+    } catch (_error) {
+      panel.replaceChildren(
+        text("h3", "长期记忆", "text-text-title text-title-m"),
+        text("p", "下载管理服务暂不可用。", "text-text-secondary text-body-m font-regular")
+      );
+      return;
+    }
+    const allowedStates = ["missing", "queued", "downloading", "verifying", "ready", "paused", "repair", "incompatible"];
+    const stateValue = allowedStates.includes(payload.state) ? payload.state : "repair";
+    const labels = {
+      missing: "未安装",
+      queued: "等待下载",
+      downloading: "下载中",
+      verifying: "校验中",
+      ready: "可用（重启 Olivia 后加载）",
+      paused: "已暂停",
+      repair: "需修复",
+      incompatible: "不兼容",
+    };
+    const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "可选安装 Mem0 与 BGE 中文 Embedding；约 317 MiB 下载，无需 GPU。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const metadata = stack();
+    const rootLabels = {
+      installation_root: "程序目录",
+      local_data_root: "本地数据目录",
+    };
+    const locations = Array.isArray(payload.install_locations)
+      ? payload.install_locations.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const root = rootLabels[value.root];
+          const relative = typeof value.relative_path === "string" ? value.relative_path : "";
+          return root && relative ? [`${root}/${relative}`] : [];
+        })
+      : [];
+    metadata.append(
+      field("状态", labels[stateValue]),
+      field("版本", typeof payload.version === "string" ? payload.version : "未知"),
+      field("下载量", formatBytes(payload.total_bytes)),
+      field("剩余", formatBytes(payload.remaining_bytes)),
+      field("安装后占用", formatBytes(payload.installed_bytes)),
+      field("实际来源", typeof payload.source === "string" ? payload.source : "尚未选择"),
+      field("许可证", typeof payload.license_summary === "string" ? payload.license_summary : "请查看第三方许可证"),
+      field("运行设备", payload.requires_gpu === false ? "CPU（无需 GPU）" : "请查看兼容说明"),
+      field("精确位置", locations.length ? locations.join("；") : "Olivia 本地受管目录")
+    );
+    const result = text("p", "", "text-text-secondary text-body-m font-regular");
+    result.setAttribute("aria-live", "polite");
+    if (["queued", "downloading", "verifying"].includes(stateValue)) {
+      const current = typeof payload.current_file === "string" ? `，当前：${payload.current_file}` : "";
+      result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;
+    } else if (stateValue === "repair") {
+      result.textContent = "上次安装未完成，可保留已下载内容并重试。";
+    }
+    const controls = actions();
+    const refresh = async () => {
+      await renderMem0CapabilityPanel(panel);
+    };
+    if (["missing", "repair", "paused"].includes(stateValue)) {
+      const source = document.createElement("select");
+      source.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+      for (const [value, label, disabled] of [
+        ["auto", "自动选择（国内源优先）", false],
+        ["official", "仅官方源", false],
+        ["offline", "导入离线包（暂不可用）", true],
+      ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.disabled = disabled;
+        source.append(option);
+      }
+      const install = button(stateValue === "paused" ? "继续下载" : "下载并启用", async () => {
+        if (!window.confirm("确认下载长期记忆能力包？下载将在后台继续。")) return;
+        setButtonsBusy([install], true);
+        result.textContent = "正在启动后台下载……";
+        try {
+          await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
+            action: stateValue === "paused" ? "resume" : "install",
+            source: source.value,
+          });
+          await refresh();
+        } catch (_error) {
+          result.textContent = "下载未能启动，请稍后重试。";
+          setButtonsBusy([install], false);
+        }
+      });
+      controls.append(source, install);
+    } else if (["queued", "downloading", "verifying"].includes(stateValue)) {
+      const pause = button("暂停下载", async () => {
+        try {
+          await requestCapability(MEM0_CAPABILITY_ACTION_PATH, { action: "pause" });
+          await refresh();
+        } catch (_error) {
+          result.textContent = "暂时无法暂停，请稍后重试。";
+        }
+      });
+      controls.append(pause);
+      window.setTimeout(refresh, 1000);
+    } else if (stateValue === "ready") {
+      const uninstall = button("卸载运行依赖", async () => {
+        if (!window.confirm("确认卸载长期记忆运行依赖？已下载模型和个人记忆会保留。")) return;
+        await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
+          action: "uninstall",
+          remove_model: false,
+        });
+        await refresh();
+      });
+      const removeAll = button("卸载并删除模型", async () => {
+        if (!window.confirm("确认卸载长期记忆并删除已下载模型？个人记忆仍会保留。")) return;
+        if (!window.confirm("模型删除后重新启用需要再次下载，仍要继续吗？")) return;
+        await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
+          action: "uninstall",
+          remove_model: true,
+        });
+        await refresh();
+      });
+      controls.append(uninstall, removeAll);
+    }
+    const offlineNote = text(
+      "p",
+      "离线包等待可信签名与受限导入校验完成后开放。",
+      "text-text-secondary text-caption-m font-regular"
+    );
+    panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
+  };
+
+  const loadDialogData = async (statusNode, panels, initialMode) => {
+    const tasks = [
+      renderLlmSetupPanel(panels.llm, initialMode),
+      renderMem0CapabilityPanel(panels.capability),
+    ];
+    if (initialMode) {
+      statusNode.textContent = "先连接大模型；未配置大模型时无法进行真实对话。长期记忆可以稍后按需安装，可在设置 > 本地陪伴中继续。";
+      await Promise.allSettled(tasks);
+      return;
+    }
     statusNode.textContent = "正在连接本机陪伴服务……";
     try {
       const payload = await requestJson(STATUS_PATH);
@@ -648,10 +1033,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : {};
       statusNode.textContent = "本机陪伴服务已连接。";
       statusNode.dataset.state = "available";
-      await Promise.allSettled([
+      await Promise.allSettled(tasks.concat([
         renderMemoryPanel(panels.memory, capabilities.memory),
         renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),
-      ]);
+      ]));
     } catch (_error) {
       statusNode.textContent = "本机陪伴服务暂不可用。";
       statusNode.dataset.state = "unavailable";
@@ -670,7 +1055,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
   };
 
-  const openDialog = () => {
+  const openDialog = (initialMode = false) => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
     const backdrop = document.createElement("div");
@@ -727,10 +1112,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     header.style.justifyContent = "space-between";
     header.style.gap = "24px";
 
-    const heading = text("h2", "本地陪伴", "text-text-title text-headline-m");
+    const heading = text("h2", initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
-    const close = button("关闭", () => backdrop.remove());
+    const close = button(initialMode ? "稍后设置" : "关闭", async () => {
+      if (initialMode) {
+        try {
+          await requestSetup(SETUP_COMPLETE_PATH, { skipped: true });
+        } catch (_error) {
+          return;
+        }
+      }
+      backdrop.remove();
+    });
     header.append(heading, close);
 
     const status = text(
@@ -749,10 +1143,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     const panels = document.createElement("div");
     const panelNodes = {};
-    const definitions = [
-      { id: "memory", label: "长期记忆", key: "memory" },
-      { id: "private-world", label: "私人世界", key: "privateWorld" },
-    ];
+    const definitions = initialMode
+      ? [
+          { id: "llm", label: "大模型", key: "llm" },
+          { id: "capability", label: "可选能力", key: "capability" },
+        ]
+      : [
+          { id: "llm", label: "大模型", key: "llm" },
+          { id: "capability", label: "本地能力与下载", key: "capability" },
+          { id: "memory", label: "长期记忆", key: "memory" },
+          { id: "private-world", label: "私人世界", key: "privateWorld" },
+        ];
 
     const showPanel = (id) => {
       for (const tab of tabs.querySelectorAll('[role="tab"]')) {
@@ -795,21 +1196,37 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
 
     dialog.append(header, status, tabs, panels);
+    if (initialMode) {
+      const finishActions = actions();
+      finishActions.style.marginTop = "18px";
+      const finish = button("完成初始设置", async () => {
+        setButtonsBusy([finish], true);
+        try {
+          await requestSetup(SETUP_COMPLETE_PATH, { skipped: false });
+          backdrop.remove();
+        } catch (_error) {
+          status.textContent = "初始设置状态保存失败，请重试。";
+          setButtonsBusy([finish], false);
+        }
+      });
+      finishActions.append(finish);
+      dialog.append(finishActions);
+    }
     backdrop.append(theme, dialog);
     backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop) {
+      if (!initialMode && event.target === backdrop) {
         backdrop.remove();
       }
     });
     backdrop.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
+      if (!initialMode && event.key === "Escape") {
         backdrop.remove();
       }
     });
     document.body.append(backdrop);
-    showPanel("memory");
+    showPanel("llm");
     close.focus();
-    loadDialogData(status, panelNodes);
+    loadDialogData(status, panelNodes, initialMode);
   };
 
   const findSettingsContainer = () => {
@@ -947,11 +1364,36 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       )
     );
 
-    row.append(copy, button("打开", openDialog));
+    row.append(copy, button("打开", () => openDialog(false)));
     section.append(title, row);
     mountVideoReplySetting(section);
     mountOfficialLetterImport(section);
     container.append(section);
+  };
+
+  let setupCheckPending = false;
+  let setupPoll = null;
+  const maybeOpenInitialSetup = async () => {
+    if (
+      setupCheckPending
+      || document.querySelector(`[${DIALOG_ATTR}]`)
+    ) {
+      return;
+    }
+    setupCheckPending = true;
+    try {
+      const payload = await requestSetup(SETUP_STATUS_PATH);
+      if (payload.setup_completed && setupPoll !== null) {
+        window.clearInterval(setupPoll);
+        setupPoll = null;
+      } else if (payload.show_initial_setup) {
+        openDialog(true);
+      }
+    } catch (_error) {
+      // The local service may still be starting; the bounded poll retries later.
+    } finally {
+      setupCheckPending = false;
+    }
   };
 
   let scheduled = false;
@@ -988,6 +1430,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       scheduled = false;
       constrainLetterInputs();
       mountShell();
+      maybeOpenInitialSetup();
     });
   };
 
@@ -995,6 +1438,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener("hashchange", schedule);
   window.addEventListener("popstate", schedule);
+  if (typeof window.setInterval === "function") {
+    setupPoll = window.setInterval(maybeOpenInitialSetup, 1500);
+  }
   schedule();
 })();
 '''

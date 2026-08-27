@@ -1,0 +1,39 @@
+{
+  "schema_version": "olivia.mem0-capability-api-contract.v1",
+  "status_schema_version": "olivia.capability-status.v2",
+  "execution": "per-installer-serialized-off-event-loop",
+  "authorization": {
+    "origins": "explicit-trusted-https-or-loopback-only",
+    "login_required_for_mutations": true,
+    "session_header": "X-Olivia-Setup-Session",
+    "confirmation_header": {"name": "X-Olivia-Capability-Action", "value": "confirmed"}
+  },
+  "routes": {
+    "/toy/capabilities/mem0": {
+      "methods": ["GET", "OPTIONS"],
+      "status_values": ["READY", "UNAVAILABLE"],
+      "request_fields": [],
+      "response_fields": ["schema_version", "status", "capability", "state", "phase", "downloaded_bytes", "total_bytes", "remaining_bytes", "installed_bytes", "install_locations", "current_file?", "source?", "version", "license_summary", "requires_gpu", "reason_code?"]
+    },
+    "/toy/capabilities/mem0/action": {
+      "methods": ["POST", "OPTIONS"],
+      "status_values": ["APPLIED", "NOOP", "REJECTED"],
+      "request_fields": ["action", "source?", "remove_model?"],
+      "response_fields": ["status"]
+    }
+  },
+  "error_codes": {
+    "CAPABILITY_ACTION_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_CONFIRMATION_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_CONTENT_TYPE_INVALID": {"http_statuses": [415], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_FIELDS_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_HOST_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_JSON_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_LOGIN_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_ORIGIN_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_REQUEST_TOO_LARGE": {"http_statuses": [413], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_RESULT_INVALID": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_STATUS_INVALID": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_STATUS_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]}
+  }
+}
