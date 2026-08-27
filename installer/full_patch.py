@@ -483,6 +483,30 @@ def _write_start_scripts(root: Path, port: int) -> None:
     )
 
 
+def _refresh_existing_install(
+    target: Path,
+    payload: Path,
+    marker: dict[str, Any],
+    port: int,
+) -> dict[str, Any]:
+    """Refresh install-owned launch code without touching user-owned data."""
+
+    copied = copy_project_payload(payload, target / "local_backend")
+    _write_start_scripts(target, port)
+    refreshed = {
+        **marker,
+        "owned_paths": list(OWNED_PATHS),
+        "preserved_paths": list(PRESERVED_PATHS),
+        "payload_entries": copied,
+        "port": port,
+    }
+    (target / MARKER_NAME).write_text(
+        json.dumps(refreshed, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return refreshed
+
+
 def _read_marker(path: Path) -> dict[str, Any]:
     marker = _load_json(path, "PATCH_MARKER_INVALID")
     if (
@@ -531,7 +555,8 @@ def install_full_patch(
         if marker_path.is_file():
             marker = _read_marker(marker_path)
             if _marker_matches_current_install(marker, manifest):
-                return {"status": "ALREADY_INSTALLED", **marker}
+                refreshed = _refresh_existing_install(target, payload, marker, port)
+                return {"status": "ALREADY_INSTALLED", **refreshed}
         raise PatchInstallError("INSTALL_ROOT_ALREADY_EXISTS")
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target

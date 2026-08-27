@@ -42,6 +42,28 @@ def test_first_install_preserves_an_explicit_memory_opt_out(tmp_path: Path) -> N
     assert environment["OLIVIA_MEMORY_ENABLED"] == "0"
 
 
+@pytest.mark.parametrize("provider", ["sqlite", "none"])
+def test_launcher_preserves_explicit_memory_provider_and_independent_endpoint(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    environment = _configure_memory_environment(
+        {
+            "OLIVIA_MEMORY_PROVIDER": provider,
+            "OLIVIA_MEMORY_LLM_BASE_URL": "https://memory.example/v1",
+            "OLIVIA_MEMORY_LLM_MODEL": "memory-only-model",
+            "OLIVIA_MEMORY_LLM_API_KEY_ENV": "MEMORY_API_KEY",
+            "OLIVIA_LLM_BASE_URL": "https://primary.example/v1",
+        },
+        tmp_path / "data",
+    )
+
+    assert environment["OLIVIA_MEMORY_PROVIDER"] == provider
+    assert environment["OLIVIA_MEMORY_LLM_BASE_URL"] == "https://memory.example/v1"
+    assert environment["OLIVIA_MEMORY_LLM_MODEL"] == "memory-only-model"
+    assert environment["OLIVIA_MEMORY_LLM_API_KEY_ENV"] == "MEMORY_API_KEY"
+
+
 def test_windows_installer_offers_pinned_mem0_and_confirmed_embedding_setup() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
@@ -85,6 +107,18 @@ def test_optional_memory_runtime_is_a_hash_locked_install_owned_closure() -> Non
     assert all("==" in line and " --hash=sha256:" in line for line in package_lines)
 
 
+def test_embeddable_python_registers_the_managed_memory_runtime_without_pythonpath() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
+    runtime_probe = script[
+        script.index("function Test-MemoryRuntime") : script.index("$runner =")
+    ]
+
+    assert "[string]$MemoryRuntimePath" in script
+    assert "-MemoryRuntimePath $memoryRuntime" in script
+    assert "$env:PYTHONPATH" not in runtime_probe
+
+
 def test_installer_disables_mem0_telemetry_before_every_probe_import() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
@@ -110,6 +144,14 @@ def test_memory_download_confirmations_show_complete_informed_choices() -> None:
     assert "model.safetensors" in script
     assert "Estimated download: about 96 MiB" in script
     assert "License: MIT" in script
+
+
+def test_optional_memory_downgrades_do_not_leak_a_native_failure_exit_code() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
+
+    assert "$LASTEXITCODE = 0\n\n& (Join-Path $PSScriptRoot 'Create-Shortcut.ps1')" in script
+    assert script.rstrip().endswith("exit 0")
 
 
 def test_uninstall_removes_only_the_managed_memory_runtime(tmp_path: Path) -> None:

@@ -20,14 +20,17 @@ $memoryDependenciesDeclined = $false
 function Update-ManagedPythonPath {
     param(
         [Parameter(Mandatory)]
-        [string]$PthPath
+        [string]$PthPath,
+        [string]$MemoryRuntimePath = ''
     )
 
     $pthFullPath = [IO.Path]::GetFullPath($PthPath)
+    $memoryRuntimeFullPath = if ($MemoryRuntimePath) { [IO.Path]::GetFullPath($MemoryRuntimePath) } else { '' }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $keptLines = New-Object 'System.Collections.Generic.List[string]'
     $hasSitePackages = $false
     $hasImportSite = $false
+    $hasMemoryRuntime = $false
     foreach ($line in @([IO.File]::ReadAllLines($pthFullPath, $utf8NoBom))) {
         $trimmed = $line.Trim()
         if ($trimmed -eq 'site-packages') {
@@ -44,10 +47,18 @@ function Update-ManagedPythonPath {
             }
             continue
         }
+        if ($memoryRuntimeFullPath -and $trimmed -eq $memoryRuntimeFullPath) {
+            if (-not $hasMemoryRuntime) {
+                $keptLines.Add($memoryRuntimeFullPath)
+                $hasMemoryRuntime = $true
+            }
+            continue
+        }
         $keptLines.Add($line)
     }
 
     if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
+    if ($memoryRuntimeFullPath -and -not $hasMemoryRuntime) { $keptLines.Add($memoryRuntimeFullPath) }
     if (-not $hasImportSite) { $keptLines.Add('import site') }
     $transactionId = [guid]::NewGuid().ToString('N')
     $tempName = '.' + [IO.Path]::GetFileName($pthFullPath) + '.' + $transactionId + '.tmp'
@@ -73,24 +84,8 @@ function Test-MemoryRuntime {
         [string]$RuntimePath
     )
 
-    $hadPythonPath = Test-Path Env:PYTHONPATH
-    $previousPythonPath = $env:PYTHONPATH
-    try {
-        $separator = [IO.Path]::PathSeparator
-        $env:PYTHONPATH = if ($previousPythonPath) {
-            $RuntimePath + $separator + $previousPythonPath
-        } else {
-            $RuntimePath
-        }
-        & $runner.File '-c' 'import mem0,sentence_transformers,huggingface_hub' 2>$null
-        return $LASTEXITCODE -eq 0
-    } finally {
-        if ($hadPythonPath) {
-            $env:PYTHONPATH = $previousPythonPath
-        } else {
-            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-        }
-    }
+    & $runner.File '-c' 'import mem0,sentence_transformers,huggingface_hub' 2>$null
+    return $LASTEXITCODE -eq 0
 }
 
 $runner = @{ File = $runtimeExe; Args = @() }
@@ -150,6 +145,7 @@ if ($runner.File -eq $runtimeExe) {
     $memoryStaging = Join-Path $Destination 'runtime\mem0-site-packages.staging'
     try {
         if (Test-Path -LiteralPath $memoryRuntime) {
+            if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
             $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime
         } else {
             $memoryRequirements = Join-Path $PayloadRoot 'installer\mem0-runtime-requirements.txt'
@@ -173,8 +169,9 @@ if ($runner.File -eq $runtimeExe) {
                         & $runner.File '-m' 'pip' '--version' 2>$null
                         if ($LASTEXITCODE -eq 0) {
                             & $runner.File '-m' 'pip' 'install' '--disable-pip-version-check' '--require-hashes' '--only-binary=:all:' '--target' $memoryStaging '-r' $memoryRequirements
-                            if ($LASTEXITCODE -eq 0 -and (Test-MemoryRuntime -RuntimePath $memoryStaging)) {
+                            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $memoryStaging 'mem0\__init__.py'))) {
                                 [IO.Directory]::Move($memoryStaging, $memoryRuntime)
+                                if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
                                 $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime
                             }
                         }
@@ -222,5 +219,7 @@ if ($memoryDependenciesReady) {
     }
 }
 
+$LASTEXITCODE = 0
+
 & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
-exit $LASTEXITCODE
+exit 0

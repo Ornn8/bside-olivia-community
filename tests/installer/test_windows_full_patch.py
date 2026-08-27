@@ -877,12 +877,37 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     target = tmp_path / "installed"
     first = install_full_patch(official, target, payload, manifest)
     assert first["status"] == "INSTALLED"
-    assert install_full_patch(
+    (target / "local_backend" / "installer" / "start_local.py").write_text(
+        "old launcher",
+        encoding="utf-8",
+    )
+    (target / "local_backend" / "installer" / "uninstall_safety.py").write_text(
+        "old uninstaller",
+        encoding="utf-8",
+    )
+    (target / "START.cmd").write_text("old start", encoding="utf-8")
+    for name in ("data", "logs", "third-party"):
+        directory = target / name
+        directory.mkdir(exist_ok=True)
+        (directory / "preserve.txt").write_text(name, encoding="utf-8")
+
+    repeated = install_full_patch(
         official,
         target,
         payload,
         manifest,
-    )["status"] == "ALREADY_INSTALLED"
+    )
+    assert repeated["status"] == "ALREADY_INSTALLED"
+    assert (target / "local_backend" / "installer" / "start_local.py").read_text(
+        encoding="utf-8"
+    ) != "old launcher"
+    assert (target / "local_backend" / "installer" / "uninstall_safety.py").read_text(
+        encoding="utf-8"
+    ) != "old uninstaller"
+    assert "start_local.py" in (target / "START.cmd").read_text(encoding="utf-8")
+    assert "runtime/mem0-site-packages" in repeated["owned_paths"]
+    for name in ("data", "logs", "third-party"):
+        assert (target / name / "preserve.txt").read_text(encoding="utf-8") == name
 
     unknown = tmp_path / "unknown"
     unknown.mkdir()
