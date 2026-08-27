@@ -22,7 +22,7 @@ def _load_dpapi_key(path: Path) -> str:
         script = "$s=ConvertTo-SecureString ([Console]::In.ReadToEnd()); $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); try {[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)} finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}"
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            input=protected + "\n", text=True, capture_output=True, check=False,
+            input=protected, text=True, capture_output=True, check=False,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, UnicodeError):
