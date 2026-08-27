@@ -79,17 +79,18 @@ function Get-Sha256 {
 function Assert-NoReparsePointsInPath {
     param(
         [Parameter(Mandatory)]
-        [string]$LiteralPath
+        [string]$LiteralPath,
+        [string]$ErrorCode = 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
     )
 
     $full = [IO.Path]::GetFullPath($LiteralPath)
     $root = [IO.Path]::GetPathRoot($full)
-    if (-not $root) { throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID' }
+    if (-not $root) { throw $ErrorCode }
     if (
         -not [IO.Directory]::Exists($root) -or
         (([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
     ) {
-        throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+        throw $ErrorCode
     }
     $current = $root
     $parts = $full.Substring($root.Length).Split(
@@ -103,7 +104,7 @@ function Assert-NoReparsePointsInPath {
                 -not [IO.Directory]::Exists($current) -or
                 (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
             ) {
-                throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID'
+                throw $ErrorCode
             }
         }
     }
@@ -519,6 +520,7 @@ if (-not $selectedOfficial -and -not $NonInteractive) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
 }
 $selectedOfficial = Resolve-OfficialInstall -RequestedRoot $selectedOfficial
+Assert-NoReparsePointsInPath -LiteralPath $selectedOfficial -ErrorCode 'OFFICIAL_INSTALL_PATH_REPARSE_POINT'
 if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
     throw 'INSTALL_ROOT_OVERLAPS_OFFICIAL'
 }

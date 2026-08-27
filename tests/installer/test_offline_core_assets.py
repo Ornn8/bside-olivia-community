@@ -203,6 +203,37 @@ def test_first_install_rejects_a_reparse_point_in_an_existing_ancestor(
         os.rmdir(linked_ancestor)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
+def test_first_install_rejects_an_official_junction_alias_before_writes(
+    tmp_path: Path,
+) -> None:
+    physical_official = tmp_path / "physical-official"
+    official_alias = tmp_path / "official-alias"
+    product_root = physical_official / "nested-product"
+    physical_official.mkdir()
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(official_alias), str(physical_official)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    try:
+        result = _run_install_preflight(
+            product_root,
+            tmp_path,
+            "-OfficialRoot",
+            str(official_alias),
+        )
+
+        assert result.returncode != 0
+        assert "OFFICIAL_INSTALL_PATH_REPARSE_POINT" in result.stdout + result.stderr
+        assert not (product_root / "runtime").exists()
+    finally:
+        os.rmdir(official_alias)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows path contract")
 def test_first_install_rejects_a_volume_root_as_product_root(tmp_path: Path) -> None:
     result = _run_install_preflight(Path(tmp_path.anchor), tmp_path)
