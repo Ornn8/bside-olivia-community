@@ -1552,26 +1552,7 @@ def _letter_collection(scope: str):
     if scope == "legacy":
         return _legacy_letter_collection()
     _mark_superseded_failed_retries()
-    current = [letter for letter in store.letters if not letter.get("superseded_by")]
-    imported = []
-    for letter in _legacy_letter_collection():
-        metadata = letter.get("metadata")
-        if (
-            isinstance(metadata, dict)
-            and metadata.get("import_kind") == "official_text_reply"
-        ):
-            imported.append(letter)
-    if not imported:
-        return current
-
-    def sort_key(letter: dict) -> float:
-        value = letter.get("created_at", 0)
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
-
-    return sorted([*current, *imported], key=sort_key, reverse=True)
+    return [letter for letter in store.letters if not letter.get("superseded_by")]
 
 
 def _bind_memory_adapter(adapter: MemoryPort) -> None:

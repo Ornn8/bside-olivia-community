@@ -196,7 +196,7 @@ def test_official_import_fails_closed_when_any_letter_detail_is_unavailable(
         collect_official_text_replies(log_path, request_json=request_json)
 
 
-def test_official_import_route_persists_read_only_pair_in_current_mailbox(
+def test_official_import_route_keeps_read_only_pair_in_legacy_mailbox(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -248,8 +248,12 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
             companion_confirmed=True,
         )
     )
+    current = asyncio.run(local_server.route("GET", "/toy/letter/list", {}, {}))
     listed = asyncio.run(
-        local_server.route("GET", "/toy/letter/list", {}, {})
+        local_server.route("GET", "/toy/letter/list", {}, {"scope": "legacy"})
+    )
+    current_unread = asyncio.run(
+        local_server.route("GET", "/toy/letter/unread_count", {}, {})
     )
     letter_id = listed["data"]["list"][0]["letter_id"]
     detail = asyncio.run(
@@ -257,7 +261,7 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
             "GET",
             "/toy/letter/detail",
             {},
-            {"letter_id": letter_id},
+            {"scope": "legacy", "letter_id": letter_id},
         )
     )
 
@@ -266,6 +270,8 @@ def test_official_import_route_persists_read_only_pair_in_current_mailbox(
     assert duplicate["code"] == 0
     assert duplicate["data"]["inserted"] == 0
     assert duplicate["data"]["duplicates"] == 1
+    assert current["data"]["total"] == 0
+    assert current_unread["data"]["unread_count"] == 0
     assert listed["data"]["total"] == 1
     assert listed["data"]["list"][0]["summary"] == "旧信正文"
     assert detail["data"]["content"] == "旧信正文"
