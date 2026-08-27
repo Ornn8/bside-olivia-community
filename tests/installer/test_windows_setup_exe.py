@@ -173,5 +173,7 @@ def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     assert "build_offline_core_assets.py" in workflow
     assert "build_windows_setup.py" in workflow
     assert "choco install innosetup --version=6.7.1" in workflow
+    assert "is-6_7_1/Files/Languages/Unofficial/ChineseSimplified.isl" in workflow
+    assert "7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278" in workflow
     assert "Olivia-Setup-x64.exe.sha256" in workflow
     assert "actions/upload-artifact@v4" in workflow
