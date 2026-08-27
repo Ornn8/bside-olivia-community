@@ -4,6 +4,7 @@ param(
     [string]$Destination = (Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\install'),
     [string]$OfficialRoot = '',
     [string]$OfflineAssetsRoot = '',
+    [switch]$NonInteractive,
     [switch]$SkipShortcut,
     [ValidateRange(1, 65535)]
     [int]$Port = 8899
@@ -384,7 +385,7 @@ $runner = @{ File = $runtimeExe; Args = @() }
 
 $arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destination, '--manifest', (Join-Path $PayloadRoot 'installer\full-patch-manifest.json'), '--port', $Port)
 $selectedOfficial = $OfficialRoot
-if (-not $selectedOfficial) {
+if (-not $selectedOfficial -and -not $NonInteractive) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
 }
 if ($selectedOfficial) { $arguments += @('--official-root', $selectedOfficial) }
