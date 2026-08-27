@@ -21,7 +21,7 @@ BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。
 
 ## 项目做到了什么
 
-- 复用用户合法取得的原版 `0.0.9.615` 客户端，在隔离副本内接入本机服务，不修改正版 Steam 目录；
+- 复用用户合法取得的原版 `0.0.9.627` 客户端，在隔离副本内接入本机服务，不修改正版 Steam 目录；
 - 将来信、Persona、记忆、PrivateWorld 与审校装配为唯一 canonical reply，再投影为文字或媒体；
 - 通过原版 Collection 展示回信；书信视频由 Collection 内的 `BaseVideo` 播放，避免另造第二套日常使用界面；
 - 把 TTS、口型、音乐、ASR 和视觉能力放在可替换 provider 后，缺失时返回真实状态；
@@ -112,7 +112,7 @@ Mem0 保存可检索的长期事实；PrivateWorld 保存私有关系事件。�
 ### 基础要求
 
 - Windows 10/11 x64；
-- 用户合法取得的原版客户端 `0.0.9.615`；
+- 用户合法取得的原版客户端 `0.0.9.627`；
 - DeepSeek API key，或开发者自行配置的 OpenAI-compatible 接口；
 - 文字回信不要求独立显卡；视频、TTS 和音乐 provider 有各自显存与磁盘要求。
 

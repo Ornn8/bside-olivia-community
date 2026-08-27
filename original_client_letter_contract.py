@@ -1,6 +1,6 @@
 """Source-grounded wire contract for the original Olivia mailbox.
 
-The supported 0.0.9.615 client maps camelCase response fields into its
+The supported 0.0.9.627 client maps camelCase response fields into its
 Collection view.  This module keeps that public contract separate from local
 runtime state and preserves optional snake_case aliases only for existing local
 callers.  It contains no original client assets or source excerpts.

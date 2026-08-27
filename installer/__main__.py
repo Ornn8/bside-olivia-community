@@ -26,8 +26,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             source = (args.official_root or discover_steam_install()).resolve()
             manifest = load_manifest(Path(__file__).with_name("full-patch-manifest.json"))
-            version, feapp = validate_official_source(source, manifest)
-            result = {"status": "SUPPORTED", "official_root": str(source), "client_version": version, "feapp": str(feapp), "live_status": manifest["live_status"], "media_status": manifest["media_status"]}
+            version, feapp, webplayer = validate_official_source(source, manifest)
+            result = {"status": "SUPPORTED", "official_root": str(source), "client_version": version, "feapp": str(feapp), "webplayer": str(webplayer), "live_status": manifest["live_status"], "media_status": manifest["media_status"]}
         elif args.command == "install":
             source = (args.official_root or discover_steam_install()).resolve()
             result = install_full_patch(source, args.destination, args.payload, args.manifest, port=args.port)
