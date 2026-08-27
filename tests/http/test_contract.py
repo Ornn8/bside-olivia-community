@@ -1169,7 +1169,7 @@ def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
             "latentsync_reply.py",
             "letter_triage.py",
             "local_server.py",
-            "music_duration.py",
+            "runtime/media/music_duration.py",
             "tools/music_renderer.py",
             "music_reply.py",
             "patch_feapp.py",

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Mapping
 
 from llm_gateway import Gateway, create_gateway, load_gateway_config
-from music_duration import normalize_music_duration
+from runtime.media.music_duration import normalize_music_duration
 
 
 SONG_SEMANTIC_PLAN_SCHEMA_VERSION = "p03.song-semantic-plan.v1"
