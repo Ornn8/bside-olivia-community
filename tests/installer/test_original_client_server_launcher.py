@@ -13,6 +13,7 @@ import pytest
 
 from installer import configure
 import installer.start_local as start_local
+from original_client_setup_api import _dpapi_protect
 
 
 def _installation(tmp_path: Path, *, with_entrypoint: bool = True) -> Path:
@@ -33,6 +34,51 @@ def _installation(tmp_path: Path, *, with_entrypoint: bool = True) -> Path:
     client.parent.mkdir(parents=True)
     client.write_bytes(b"fixture")
     return root
+
+
+def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "model": "deepseek-v4-flash",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    environment = start_local._load_llm_environment({}, data_root)
+
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://opencode.ai/zen/go/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
+
+
+def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    (config_root / "llm.json").write_text(
+        '{"schema_version":1,"base_url":"http://remote.example/v1","model":"bad model"}',
+        encoding="utf-8",
+    )
+
+    environment = start_local._load_llm_environment({}, data_root)
+
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.deepseek.com"
+    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI is required")
+def test_launcher_reads_current_user_dpapi_key_format(tmp_path: Path) -> None:
+    key_path = tmp_path / "deepseek_api_key.dpapi"
+    key_path.write_text(_dpapi_protect("synthetic-launcher-key") + "\n", encoding="utf-8")
+
+    assert start_local._load_dpapi_key(key_path) == "synthetic-launcher-key"
 
 
 def test_launcher_starts_combined_server_before_original_client(

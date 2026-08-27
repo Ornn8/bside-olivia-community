@@ -17,6 +17,7 @@ from original_client_server import (
     create_configured_original_client_server_runtime,
     create_original_client_server_runtime,
 )
+from original_client_setup_api import LLMSetupService
 from private_world_candidates import (
     CandidateStatus,
     CandidateType,
@@ -32,6 +33,41 @@ from private_world_port import (
 
 
 TRUSTED_ORIGIN = "https://client.example"
+
+
+def test_successful_original_sign_in_unlocks_initial_setup(tmp_path: Path) -> None:
+    async def signed_in(_request: web.Request) -> web.Response:
+        return web.json_response({"code": 0, "message": "ok", "data": {}})
+
+    async def scenario() -> None:
+        service = LLMSetupService(
+            tmp_path,
+            protect=lambda value: value,
+            unprotect=lambda value: value,
+            probe=lambda *_args: None,
+        )
+        runtime = create_original_client_server_runtime(
+            signed_in,
+            setup_service=service,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            before = await client.get(
+                "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert (await before.json())["show_initial_setup"] is False
+
+            login = await client.post(
+                "/toy/signIn", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert login.status == 200
+
+            after = await client.get(
+                "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            assert (await after.json())["show_initial_setup"] is True
+
+    asyncio.run(scenario())
 
 
 class MemoryAdminFixture:
