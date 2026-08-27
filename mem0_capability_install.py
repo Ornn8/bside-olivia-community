@@ -666,6 +666,7 @@ class ManagedMem0Runtime:
             "--require-hashes",
             "--only-binary=:all:",
             "--no-compile",
+            "--ignore-installed",
             "--target",
             str(target),
             "-r",

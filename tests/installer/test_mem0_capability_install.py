@@ -494,6 +494,7 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     def runner(command, *, environment, pause_requested) -> int:
         assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
         assert not pause_requested.is_set()
+        assert "--ignore-installed" in command
         calls.append(list(command))
         target = Path(command[command.index("--target") + 1])
         target.mkdir(parents=True, exist_ok=True)
