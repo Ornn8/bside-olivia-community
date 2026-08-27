@@ -17,7 +17,8 @@ import hashlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 from aiohttp import web
 
@@ -48,6 +49,7 @@ from persona_provider import (
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
+from media_paths import configured_media_path
 from music_reply import MusicReplyError, render_musical_reply, select_speaking_scene, speaking_scene_candidates
 from music_duration import MUSIC_DURATION_OPTIONS
 from reply_media import ReplyMediaError, render_reply_video
@@ -507,6 +509,14 @@ class Store:
 store = Store()
 
 
+def _local_data_root(environment: Mapping[str, str] | None = None) -> Path | None:
+    configured = configured_media_path(
+        _os.environ if environment is None else environment,
+        "OLIVIA_LOCAL_DATA_ROOT",
+    )
+    return configured.resolve(strict=False) if configured is not None else None
+
+
 def _conversation_state_root() -> Path | None:
     """Return the validated Mem0-owned canonical state root, when selected."""
 
@@ -534,8 +544,7 @@ def _state_root() -> Path | None:
     configured = _conversation_state_root()
     if configured is not None:
         return configured
-    configured = _os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "")
-    return Path(configured).expanduser().resolve() if configured else None
+    return _local_data_root()
 
 
 def _load_store_state() -> None:
@@ -882,8 +891,8 @@ _MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.mp4$")
 
 
 def _media_root() -> Path | None:
-    configured = _os.environ.get("OLIVIA_LOCAL_DATA_ROOT", "")
-    return (Path(configured).expanduser().resolve() / "media") if configured else None
+    configured = _local_data_root()
+    return configured / "media" if configured is not None else None
 
 
 async def _media_handler(request: web.Request) -> web.StreamResponse:
@@ -2030,8 +2039,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     async with media_semaphore:
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
-        data_root = Path(_os.environ.get("OLIVIA_LOCAL_DATA_ROOT", ""))
-        output_dir = data_root / "media" if data_root.is_absolute() else None
+        environment = MappingProxyType(dict(_os.environ))
+        data_root = _local_data_root(environment)
+        output_dir = data_root / "media" if data_root is not None else None
         if output_dir is None:
             letter["media_status"] = "UNAVAILABLE"
             letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
@@ -2041,13 +2051,19 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_path = output_dir / f"{letter_id}.mp4"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            tts_config = Path(_os.environ.get("OLIVIA_TTS_CONFIG", ""))
-            visual_config = Path(_os.environ.get("OLIVIA_VISUAL_CONFIG", ""))
-            worker = Path(_os.environ.get("OLIVIA_LIVETALKING_WORKER", ""))
+            def runtime_path(name: str) -> Path:
+                configured = configured_media_path(environment, name)
+                if configured is None and environment.get(name, "").strip():
+                    raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")
+                return configured if configured is not None else Path()
+
+            tts_config = runtime_path("OLIVIA_TTS_CONFIG")
+            visual_config = runtime_path("OLIVIA_VISUAL_CONFIG")
+            worker = runtime_path("OLIVIA_LIVETALKING_WORKER")
             if reply_mode == "musical_video":
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
-                performance_scene = _current_music_performance(_os.environ)
+                performance_scene = _current_music_performance(environment)
                 if performance_scene is None or not performance_scene.is_file():
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 await asyncio.to_thread(render_musical_reply,
@@ -2059,7 +2075,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                         f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
                     ),
                     official_reply_reference_path=select_speaking_scene(
-                        speaking_scene_candidates(_os.environ)
+                        speaking_scene_candidates(environment)
                     ) or Path(),
                     tts_config_path=tts_config,
                     visual_config_path=visual_config,
@@ -2067,6 +2083,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
                     voice_performance_plan=voice_plan,
+                    environment=environment,
                 )
             else:
                 voice_plan = await _voice_plan_for_letter(letter, reply_text)
@@ -2074,10 +2091,13 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
 
                 hour = datetime.now().hour
                 scene_key = "morning" if 5 <= hour < 10 else "day" if 10 <= hour < 17 else "dusk" if 17 <= hour < 20 else "night"
-                normal_scene_value = _os.environ.get(f"OLIVIA_SCENE_{scene_key.upper()}", "")
-                normal_scene = Path(normal_scene_value).expanduser() if normal_scene_value else None
+                normal_scene = configured_media_path(
+                    environment, f"OLIVIA_SCENE_{scene_key.upper()}"
+                )
                 if normal_scene is None or not normal_scene.is_file():
                     raise ReplyMediaError("ORDINARY_SCENE_NOT_CONFIGURED")
+                latentsync_python = runtime_path("OLIVIA_LATENTSYNC_PYTHON")
+                latentsync_root = runtime_path("OLIVIA_LATENTSYNC_ROOT")
                 await asyncio.to_thread(render_reply_video,
                     reply_text,
                     output_path,
@@ -2085,11 +2105,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     visual_config_path=visual_config,
                     worker_path=worker,
                     scene_path=normal_scene,
-                    latentsync_python_path=Path(_os.environ.get("OLIVIA_LATENTSYNC_PYTHON", "")),
-                    latentsync_root=Path(_os.environ.get("OLIVIA_LATENTSYNC_ROOT", "")),
+                    latentsync_python_path=latentsync_python,
+                    latentsync_root=latentsync_root,
                     adaptive_delivery=True,
                     voice_performance_plan=voice_plan,
                     enforce_content_gate=True,
+                    environment=environment,
                 )
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
