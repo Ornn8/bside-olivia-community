@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from llm_gateway import GatewayError, GatewayToolCall
+from media_paths import configured_media_path
 from music_reply import musical_reply_configured
 
 
@@ -480,21 +481,21 @@ def routing_context_from_environment(
 
 
 def _spoken_video_configured(env: Mapping[str, str]) -> bool:
-    data_root = Path(str(env.get("OLIVIA_LOCAL_DATA_ROOT", ""))).expanduser()
-    tts_config = Path(str(env.get("OLIVIA_TTS_CONFIG", ""))).expanduser()
+    data_root = configured_media_path(env, "OLIVIA_LOCAL_DATA_ROOT")
+    tts_config = configured_media_path(env, "OLIVIA_TTS_CONFIG")
     scene = _current_scene(env)
-    latentsync_python = Path(
-        str(env.get("OLIVIA_LATENTSYNC_PYTHON", ""))
-    ).expanduser()
-    latentsync_root = Path(
-        str(env.get("OLIVIA_LATENTSYNC_ROOT", ""))
-    ).expanduser()
+    latentsync_python = configured_media_path(env, "OLIVIA_LATENTSYNC_PYTHON")
+    latentsync_root = configured_media_path(env, "OLIVIA_LATENTSYNC_ROOT")
     return bool(
-        data_root.is_absolute()
+        data_root is not None
+        and data_root.is_absolute()
+        and tts_config is not None
         and tts_config.is_file()
         and scene is not None
         and scene.is_file()
+        and latentsync_python is not None
         and latentsync_python.is_file()
+        and latentsync_root is not None
         and latentsync_root.is_dir()
     )
 
@@ -517,8 +518,7 @@ def _current_scene(env: Mapping[str, str]) -> Path | None:
         if 17 <= hour < 20
         else "NIGHT"
     )
-    value = str(env.get(f"OLIVIA_SCENE_{key}", "")).strip()
-    return Path(value).expanduser() if value else None
+    return configured_media_path(env, f"OLIVIA_SCENE_{key}")
 
 
 def _current_music_performance(
@@ -541,8 +541,7 @@ def _current_music_performance(
         if 16 <= local_hour < 19
         else "NIGHT"
     )
-    value = str(env.get(f"OLIVIA_MUSIC_SCENE_{key}", "")).strip()
-    return Path(value).expanduser() if value else None
+    return configured_media_path(env, f"OLIVIA_MUSIC_SCENE_{key}")
 
 
 def _context_items(value: object) -> tuple[str, ...]:

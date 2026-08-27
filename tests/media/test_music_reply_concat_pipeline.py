@@ -68,7 +68,7 @@ def test_prepare_official_spoken_base_uses_only_first_35_seconds(
     destination = tmp_path / "stages" / "official-spoken-000-035s.mp4"
     observed: list[tuple[list[str], str]] = []
 
-    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
 
     def fake_run(command, error_code, *, timeout=900.0):
         del timeout
@@ -100,7 +100,7 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     frames = {normal: 100, song: 200}
     commands: list[tuple[list[str], str]] = []
 
-    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
@@ -160,7 +160,7 @@ def test_concat_videos_without_transition_preserves_two_segment_order(
     frames = {normal: 125, song: 250}
     commands: list[list[str]] = []
 
-    monkeypatch.setattr(music_reply, "_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
@@ -210,9 +210,14 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     order: list[str] = []
     observed: dict[str, object] = {}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
 
     def fake_plan(content, reply_text, duration_seconds):
         order.append("plan")
@@ -232,12 +237,12 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         _write(Path(destination), b"song")
         return {"music_stage": "completed"}
 
-    def fake_separate(source, destination):
+    def fake_separate(source, destination, **_kwargs):
         order.append("separate")
         observed["separate"] = (Path(source), Path(destination))
         _write(Path(destination), b"vocals")
 
-    def fake_face(base, vocals, full_song, destination):
+    def fake_face(base, vocals, full_song, destination, **_kwargs):
         order.append("performance")
         observed["performance"] = (
             Path(base),
@@ -262,7 +267,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda reference, destination: (
+        lambda reference, destination, **_kwargs: (
             observed.setdefault(
                 "spoken_reference", (Path(reference), Path(destination))
             )
@@ -273,7 +278,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
-    monkeypatch.setattr(music_reply, "_official_transition_reference", lambda: transition)
+    monkeypatch.setattr(
+        music_reply, "_official_transition_reference", lambda _environment: transition
+    )
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
     result = music_reply.render_musical_reply(
@@ -307,7 +314,10 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         normal,
         song_video,
         output,
-        {"transition_video_path": transition},
+        {
+            "transition_video_path": transition,
+            "ffmpeg_path": tmp_path / "ffmpeg.exe",
+        },
     )
     assert output.read_bytes() == b"final"
     assert result["reply_structure"] == (
@@ -374,9 +384,16 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"spoken": 0, "minimax": 0, "separate": 0}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
-    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv(
+        "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
+    )
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -399,7 +416,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
         _write(Path(destination), b"expensive-song")
         return {"music_stage": "completed"}
 
-    def flaky_separate(_source, destination):
+    def flaky_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         if calls["separate"] == 1:
             raise music_reply.MusicReplyError("ROFORMER_FAILED")
@@ -411,14 +428,14 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     monkeypatch.setattr(
         music_reply,
         "render_full_face_performance",
-        lambda _base, _vocals, _song, destination: (
+            lambda _base, _vocals, _song, destination, **_kwargs: (
             _write(Path(destination), b"performance")
             and {"performance_stage": "completed"}
         ),
     )
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
@@ -432,7 +449,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+        lambda _reference, destination, **_kwargs: _write(Path(destination), b"official-spoken"),
     )
     kwargs = {
         "normal_video_path": normal,
@@ -480,9 +497,16 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"minimax": 0, "separate": 0, "performance": 0}
 
+    monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", "synthetic-root")
-    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv(
+        "OLIVIA_MINIMAX_WORKER", minimax_worker.relative_to(tmp_path).as_posix()
+    )
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -496,7 +520,7 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+        lambda _reference, destination, **_kwargs: _write(Path(destination), b"official-spoken"),
     )
     monkeypatch.setattr(
         music_reply,
@@ -512,11 +536,11 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
         _write(Path(destination), f"song-{calls['minimax']}".encode())
         return {"music_stage": "completed"}
 
-    def fake_separate(_source, destination):
+    def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
 
-    def fake_face(_base, _vocals, _song, destination):
+    def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
         _write(Path(destination), f"performance-{calls['performance']}".encode())
         return {"performance_stage": "completed"}
@@ -526,7 +550,7 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
@@ -588,8 +612,11 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     calls = {"minimax": 0, "separate": 0, "performance": 0}
 
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(minimax_python))
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", str(minimax_root))
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", str(tmp_path / "latentsync-python.exe"))
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", str(latentsync_root))
     monkeypatch.setattr(
         music_reply,
@@ -604,7 +631,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda _reference, destination: _write(Path(destination), b"official-spoken"),
+        lambda _reference, destination, **_kwargs: _write(Path(destination), b"official-spoken"),
     )
     monkeypatch.setattr(
         music_reply,
@@ -620,11 +647,11 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
         _write(Path(destination), f"song-{calls['minimax']}".encode())
         return {"music_stage": "completed"}
 
-    def fake_separate(_source, destination):
+    def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
 
-    def fake_face(_base, _vocals, _song, destination):
+    def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
         _write(Path(destination), f"performance-{calls['performance']}".encode())
         return {"performance_stage": "completed"}
@@ -634,7 +661,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     transition = _write(tmp_path / "official-transition.mp4")
     monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda: transition
+        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
