@@ -38,6 +38,7 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
     "letters.read",
     "music.catalog",
 )
+_CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
 
 
 def _health(port: int) -> str:
@@ -46,7 +47,12 @@ def _health(port: int) -> str:
             payload = json.loads(response.read().decode("utf-8"))
         data = payload.get("data") if isinstance(payload, dict) else None
         required_checks = data.get("required_checks") if isinstance(data, dict) else None
-        required_checks_available = isinstance(required_checks, dict) and all(
+        required_checks_match_contract = isinstance(required_checks, dict) and (
+            set(required_checks) == set(_CORE_HEALTH_REQUIRED_CHECKS)
+        ) and all(
+            state in _CORE_HEALTH_CHECK_STATES for state in required_checks.values()
+        )
+        required_checks_available = required_checks_match_contract and all(
             required_checks.get(name) == "available" for name in _CORE_HEALTH_REQUIRED_CHECKS
         )
         contract_matches = (
@@ -59,7 +65,7 @@ def _health(port: int) -> str:
             and data.get("contract_version") == _CORE_HEALTH_CONTRACT_VERSION
             and data.get("profile") == "core"
             and data.get("status") in {"HEALTHY", "FAILED"}
-            and isinstance(required_checks, dict)
+            and required_checks_match_contract
             and (data["status"] == "HEALTHY") == required_checks_available
         )
         if not contract_matches:
