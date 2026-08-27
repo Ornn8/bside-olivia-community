@@ -4,7 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
-from .component_update import ComponentUpdateError, apply_component_update
+from .component_update import (
+    ComponentUpdateError,
+    apply_component_update,
+    rollback_component_update,
+)
 from .full_patch import PatchInstallError, discover_steam_install, install_full_patch, load_manifest, uninstall_full_patch, validate_official_source
 
 
@@ -26,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     update.add_argument("--installation", type=Path, required=True)
     update.add_argument("--package", type=Path, required=True)
     update.add_argument("--manifest-sha256", required=True)
+    rollback = sub.add_parser("rollback-update")
+    rollback.add_argument("--installation", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "doctor":
@@ -38,12 +44,14 @@ def main(argv: list[str] | None = None) -> int:
             result = install_full_patch(source, args.destination, args.payload, args.manifest, port=args.port)
         elif args.command == "uninstall":
             result = uninstall_full_patch(args.installation, apply=args.apply)
-        else:
+        elif args.command == "apply-update":
             result = apply_component_update(
                 args.installation,
                 args.package,
                 expected_manifest_sha256=args.manifest_sha256,
             )
+        else:
+            result = rollback_component_update(args.installation)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except (PatchInstallError, ComponentUpdateError) as exc:

@@ -12,6 +12,8 @@ MARKER_NAME = ".olivia-full-patch.json"
 OWNED_PATHS = (
     "app",
     "local_backend",
+    "launcher",
+    "versions",
     "START.cmd",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/component_update_state.schema.json",
+  "title": "Olivia active component version pointer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "active_components", "previous_components"],
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "payload_path"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "payload_path": {
+          "type": "string",
+          "pattern": "^versions/local_backend/[0-9A-Za-z][0-9A-Za-z.+-]{0,63}-[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "olivia.update-state.v1"},
+    "active_components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_backend"],
+      "properties": {"local_backend": {"$ref": "#/$defs/component"}}
+    },
+    "previous_components": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"local_backend": {"$ref": "#/$defs/component"}}
+    }
+  }
+}

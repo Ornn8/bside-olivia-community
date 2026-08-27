@@ -1,0 +1,12 @@
+{
+  "schema_version": "olivia.component-package.v1",
+  "component": "local_backend",
+  "version": "1.1.0",
+  "files": [
+    {
+      "path": "new.py",
+      "size_bytes": 3,
+      "sha256": "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437"
+    }
+  ]
+}

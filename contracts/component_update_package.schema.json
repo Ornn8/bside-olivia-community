@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/component_update_package.schema.json",
+  "title": "Olivia local component update package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "component", "version", "files"],
+  "properties": {
+    "schema_version": {"const": "olivia.component-package.v1"},
+    "component": {"const": "local_backend"},
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size_bytes", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

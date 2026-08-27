@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -23,6 +24,13 @@ _INSTALL_MARKER = ".olivia-full-patch.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 _COMPONENT_TARGETS = {"local_backend": "local_backend"}
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+_WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*')
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")}
+    | {f"LPT{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")}
+)
 
 
 class ComponentUpdateError(RuntimeError):
@@ -62,8 +70,21 @@ def _validate_relative_path(value: object) -> str:
     if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
         raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
+    for part in path.parts:
+        stem = part.split(".", 1)[0].upper()
+        if (
+            part.endswith((" ", "."))
+            or any(character in _WINDOWS_RESERVED_CHARS for character in part)
+            or any(ord(character) < 32 for character in part)
+            or stem in _WINDOWS_DEVICE_NAMES
+        ):
+            raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
     return path.as_posix()
 
 
@@ -105,11 +126,66 @@ def _validate_manifest(value: dict[str, Any]) -> tuple[str, str, list[dict[str, 
     return component, version, normalized
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
+    return path.is_symlink() or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(block)
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
+    return digest.hexdigest()
+
+
+def _verify_staged_tree(root: Path, files: list[dict[str, Any]]) -> None:
+    expected = {item["path"]: item for item in files}
+    actual: dict[str, Path] = {}
+    try:
+        for current, directories, filenames in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for name in directories:
+                if _is_reparse_point(current_path / name):
+                    raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+            for name in filenames:
+                candidate = current_path / name
+                if _is_reparse_point(candidate) or not candidate.is_file():
+                    raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+                relative = candidate.relative_to(root).as_posix()
+                if relative in actual:
+                    raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+                actual[relative] = candidate
+    except ComponentUpdateError:
+        raise
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
+    if set(actual) != set(expected):
+        raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+    for relative, candidate in actual.items():
+        item = expected[relative]
+        try:
+            size = candidate.stat().st_size
+        except OSError as exc:
+            raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
+        if size != item["size_bytes"] or _file_sha256(candidate) != item["sha256"]:
+            raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+
+
 def _stage_package(
     package: Path,
     staging: Path,
     expected_manifest_sha256: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, list[dict[str, Any]]]:
     if not _SHA256_RE.fullmatch(expected_manifest_sha256):
         raise ComponentUpdateError("UPDATE_MANIFEST_DIGEST_INVALID")
     try:
@@ -117,6 +193,14 @@ def _stage_package(
             names = archive.namelist()
             if len(names) != len(set(names)) or names.count("manifest.json") != 1:
                 raise ComponentUpdateError("UPDATE_PACKAGE_INVALID")
+            for info in archive.infolist():
+                member_kind = stat.S_IFMT(info.external_attr >> 16)
+                if (
+                    info.is_dir()
+                    or info.flag_bits & 0x1
+                    or member_kind not in {0, stat.S_IFREG}
+                ):
+                    raise ComponentUpdateError("UPDATE_PACKAGE_INVALID")
             manifest_bytes = archive.read("manifest.json")
             actual_manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
             if actual_manifest_sha256 != expected_manifest_sha256:
@@ -140,33 +224,102 @@ def _stage_package(
                 destination = component_root.joinpath(*PurePosixPath(item["path"]).parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(content)
+            _verify_staged_tree(component_root, files)
     except ComponentUpdateError:
         raise
     except (OSError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
         raise ComponentUpdateError("UPDATE_PACKAGE_INVALID") from exc
-    return component, version
+    return component, version, files
 
 
-def _write_state(
-    path: Path,
+def _validate_state_descriptor(component: str, value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {
+        "version",
+        "manifest_sha256",
+        "payload_path",
+    }:
+        raise ComponentUpdateError("UPDATE_STATE_INVALID")
+    version = value.get("version")
+    manifest_sha256 = value.get("manifest_sha256")
+    payload_path = value.get("payload_path")
+    if (
+        component not in _COMPONENT_TARGETS
+        or not isinstance(version, str)
+        or not _VERSION_RE.fullmatch(version)
+        or not isinstance(manifest_sha256, str)
+        or not _SHA256_RE.fullmatch(manifest_sha256)
+        or payload_path != f"versions/{component}/{version}-{manifest_sha256}"
+    ):
+        raise ComponentUpdateError("UPDATE_STATE_INVALID")
+    return {
+        "version": version,
+        "manifest_sha256": manifest_sha256,
+        "payload_path": payload_path,
+    }
+
+
+def _read_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "schema_version": STATE_SCHEMA,
+            "active_components": {},
+            "previous_components": {},
+        }
+    try:
+        state = _load_object(path.read_bytes(), "UPDATE_STATE_INVALID")
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_STATE_INVALID") from exc
+    if (
+        set(state) != {"schema_version", "active_components", "previous_components"}
+        or state.get("schema_version") != STATE_SCHEMA
+        or not isinstance(state.get("active_components"), dict)
+        or not isinstance(state.get("previous_components"), dict)
+    ):
+        raise ComponentUpdateError("UPDATE_STATE_INVALID")
+    for section_name in ("active_components", "previous_components"):
+        section = state[section_name]
+        if any(component not in _COMPONENT_TARGETS for component in section):
+            raise ComponentUpdateError("UPDATE_STATE_INVALID")
+        state[section_name] = {
+            component: _validate_state_descriptor(component, descriptor)
+            for component, descriptor in section.items()
+        }
+    return state
+
+
+def _write_state(path: Path, state: dict[str, Any]) -> None:
+    try:
+        with path.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(state, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_ACTIVATION_FAILED") from exc
+
+
+def _next_state(
+    current: dict[str, Any],
     *,
     component: str,
     version: str,
     manifest_sha256: str,
-) -> None:
-    state = {
-        "schema_version": STATE_SCHEMA,
-        "active_components": {
-            component: {
-                "version": version,
-                "manifest_sha256": manifest_sha256,
-            }
-        },
+    payload_path: str,
+) -> dict[str, Any]:
+    active = dict(current["active_components"])
+    previous: dict[str, dict[str, str]] = {}
+    if component in active:
+        previous[component] = active[component]
+    active[component] = {
+        "version": version,
+        "manifest_sha256": manifest_sha256,
+        "payload_path": payload_path,
     }
-    path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    return {
+        "schema_version": STATE_SCHEMA,
+        "active_components": active,
+        "previous_components": previous,
+    }
 
 
 def apply_component_update(
@@ -180,53 +333,98 @@ def apply_component_update(
     root = _validate_installation(Path(installation))
     package_path = Path(package).expanduser().resolve()
     staging = root / STAGING_ROOT / uuid.uuid4().hex
-    active: Path | None = None
-    backup: Path | None = None
     state_path = root / STATE_NAME
-    state_backup = staging / "previous-state.json"
-    active_backed_up = False
-    state_published = False
     try:
         staging.mkdir(parents=True)
-        component, version = _stage_package(
+        component, version, files = _stage_package(
             package_path,
             staging,
             expected_manifest_sha256.lower(),
         )
-        active = root / _COMPONENT_TARGETS[component]
-        if not active.is_dir():
+        current_state = _read_state(state_path)
+        legacy = root / _COMPONENT_TARGETS[component]
+        if not legacy.is_dir():
             raise ComponentUpdateError("UPDATE_COMPONENT_UNAVAILABLE")
-        backup = staging / "previous-component"
+        relative_version = PurePosixPath(
+            "versions",
+            component,
+            f"{version}-{expected_manifest_sha256.lower()}",
+        )
+        version_root = root.joinpath(*relative_version.parts)
+        version_root.parent.mkdir(parents=True, exist_ok=True)
+        if version_root.exists():
+            try:
+                if _is_reparse_point(version_root) or not version_root.is_dir():
+                    raise ComponentUpdateError("UPDATE_VERSION_CONFLICT")
+                _verify_staged_tree(version_root, files)
+            except ComponentUpdateError as exc:
+                raise ComponentUpdateError("UPDATE_VERSION_CONFLICT") from exc
+        else:
+            os.replace(staging / "payload", version_root)
         staged_state = staging / "next-state.json"
-        _write_state(
-            staged_state,
+        next_state = _next_state(
+            current_state,
             component=component,
             version=version,
             manifest_sha256=expected_manifest_sha256.lower(),
+            payload_path=relative_version.as_posix(),
         )
-        if state_path.exists():
-            shutil.copyfile(state_path, state_backup)
-        os.replace(active, backup)
-        active_backed_up = True
-        os.replace(staging / "payload", active)
+        _write_state(staged_state, next_state)
         os.replace(staged_state, state_path)
-        state_published = True
         return {"status": "APPLIED", "component": component, "version": version}
     except ComponentUpdateError:
         raise
     except OSError as exc:
         raise ComponentUpdateError("UPDATE_ACTIVATION_FAILED") from exc
     finally:
-        if active_backed_up and not state_published and active is not None and backup is not None:
-            if active.is_dir():
-                shutil.rmtree(active, ignore_errors=True)
-            if backup.exists():
-                os.replace(backup, active)
-            if state_backup.exists():
-                os.replace(state_backup, state_path)
-            else:
-                state_path.unlink(missing_ok=True)
         shutil.rmtree(staging, ignore_errors=True)
 
 
-__all__ = ["ComponentUpdateError", "apply_component_update"]
+def rollback_component_update(
+    installation: str | os.PathLike[str],
+    component: str = "local_backend",
+) -> dict[str, str]:
+    """Atomically swap the active and previous pointers for one component."""
+
+    root = _validate_installation(Path(installation))
+    if component not in _COMPONENT_TARGETS:
+        raise ComponentUpdateError("UPDATE_COMPONENT_UNSUPPORTED")
+    state_path = root / STATE_NAME
+    state = _read_state(state_path)
+    active = state["active_components"].get(component)
+    previous = state["previous_components"].get(component)
+    if active is None or previous is None:
+        raise ComponentUpdateError("UPDATE_ROLLBACK_UNAVAILABLE")
+    previous_path = root.joinpath(*PurePosixPath(previous["payload_path"]).parts)
+    if not previous_path.is_dir():
+        raise ComponentUpdateError("UPDATE_ROLLBACK_UNAVAILABLE")
+
+    next_state = {
+        "schema_version": STATE_SCHEMA,
+        "active_components": {**state["active_components"], component: previous},
+        "previous_components": {component: active},
+    }
+    staging = root / STAGING_ROOT / uuid.uuid4().hex
+    try:
+        staging.mkdir(parents=True)
+        staged_state = staging / "rollback-state.json"
+        _write_state(staged_state, next_state)
+        os.replace(staged_state, state_path)
+    except ComponentUpdateError:
+        raise
+    except OSError as exc:
+        raise ComponentUpdateError("UPDATE_ACTIVATION_FAILED") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return {
+        "status": "ROLLED_BACK",
+        "component": component,
+        "version": previous["version"],
+    }
+
+
+__all__ = [
+    "ComponentUpdateError",
+    "apply_component_update",
+    "rollback_component_update",
+]
