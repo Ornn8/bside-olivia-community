@@ -142,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
         health = _health(args.port)
         print(json.dumps({"status": health}))
         return 0 if health == "READY" else 2
+    health = _health(args.port)
+    if health == "PORT_CONFLICT":
+        print("PORT_CONFLICT")
+        return 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
@@ -178,10 +182,6 @@ def main(argv: list[str] | None = None) -> int:
     if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
-    health = _health(args.port)
-    if health == "PORT_CONFLICT":
-        print("PORT_CONFLICT")
-        return 2
     if health != "READY":
         detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
         server = subprocess.Popen(

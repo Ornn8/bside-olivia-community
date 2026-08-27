@@ -80,7 +80,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -125,7 +125,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter((False, True, True))
+    health = iter(("UNAVAILABLE", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -183,6 +183,8 @@ def test_launcher_refuses_unrelated_http_health_payload(
     capsys,
 ) -> None:
     root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
 
     class Response:
         status = 200
@@ -215,6 +217,8 @@ def test_launcher_refuses_http_error_without_starting_backend_or_client(
     capsys,
 ) -> None:
     root = _installation(tmp_path)
+    for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     backend_commands: list[list[str]] = []
     client_commands: list[list[str]] = []
 
