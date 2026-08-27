@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install build dependencies
-        run: python -m pip install jsonschema
+        run: python -m pip install --require-hashes -r installer/setup-build-requirements.txt
 
       - name: Build verified offline core assets
         run: python installer/build_offline_core_assets.py --output offline
@@ -53,6 +53,11 @@ jobs:
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
             throw 'SETUP_ISCC_NOT_FOUND'
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $iscc
+          if (($signature.Status -ne 'Valid') -or
+              ($signature.SignerCertificate.Subject -notlike '*CN=Pyrsys B.V.*')) {
+            throw 'SETUP_ISCC_SIGNATURE_INVALID'
           }
           $version = "0.1.$env:GITHUB_RUN_NUMBER"
           python installer/build_windows_setup.py `

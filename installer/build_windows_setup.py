@@ -17,6 +17,16 @@ from pathlib import Path, PurePosixPath
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
 EXCLUDED_PREFIXES = (".github/", "docs/", "tests/")
+EXCLUDED_RELEASE_FILES = {
+    "pyproject.toml",
+    "pytest.ini",
+    "requirements-ci.txt",
+    "requirements-dev.txt",
+    "requirements.txt",
+    "installer/build_windows_setup.py",
+    "installer/setup-build-requirements.txt",
+    "installer/windows_setup.iss",
+}
 REQUIRED_PAYLOAD_FILES = {
     "installer/Install.ps1",
     "installer/runtime-requirements.txt",
@@ -57,6 +67,43 @@ def _git_tracked_files(source: Path) -> set[str]:
         for item in result.stdout.split(b"\0")
         if item
     }
+
+
+def _git_dirty_files(source: Path) -> set[str]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                os.fspath(source),
+                "diff",
+                "--name-only",
+                "-z",
+                "HEAD",
+                "--",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SetupBuildError("SETUP_GIT_DIFF_FAILED") from exc
+    return {
+        item.decode("utf-8").replace("\\", "/")
+        for item in result.stdout.split(b"\0")
+        if item
+    }
+
+
+def _is_release_file(relative: str) -> bool:
+    if relative.startswith(EXCLUDED_PREFIXES) or relative in EXCLUDED_RELEASE_FILES:
+        return False
+    path = PurePosixPath(relative)
+    return not (
+        len(path.parts) == 1
+        and path.name.startswith("test_")
+        and path.suffix.lower() == ".py"
+    )
 
 
 def _safe_file(root: Path, relative: str) -> Path:
@@ -174,11 +221,9 @@ def prepare_setup_payload(
     tracked = _git_tracked_files(source)
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
-    selected = sorted(
-        relative
-        for relative in tracked
-        if not relative.startswith(EXCLUDED_PREFIXES)
-    )
+    selected = sorted(relative for relative in tracked if _is_release_file(relative))
+    if set(selected) & _git_dirty_files(source):
+        raise SetupBuildError("SETUP_SOURCE_DIRTY")
     staging = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
     try:
         staging.mkdir(parents=True)
