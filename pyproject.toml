@@ -51,7 +51,6 @@ py-modules = [
     "memory",
     "memory_port",
     "memory_prompt",
-    "music_caption",
     "music_reply",
     "original_client_companion_api",
     "original_client_companion_backend",

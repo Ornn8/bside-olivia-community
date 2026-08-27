@@ -13,7 +13,7 @@ from tools.minimax_profile import (
     OFFICIAL_COMFY_MINIMAX_PROFILE,
     minimax_profile_from_mapping,
 )
-from music_caption import render_minimax_caption
+from runtime.media.music_caption import render_minimax_caption
 from song_content import (
     PianoTexture,
     SongDynamicArc,

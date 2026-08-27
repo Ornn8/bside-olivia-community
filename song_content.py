@@ -315,7 +315,7 @@ def plan_song_content(
     # Imported lazily because music_caption imports the typed plan definitions
     # from this module. The production output remains compatible with the
     # established music-video renderer while the model no longer writes captions.
-    from music_caption import render_minimax_caption
+    from runtime.media.music_caption import render_minimax_caption
 
     caption = render_minimax_caption(semantic_plan)
     return SongContentPlan(

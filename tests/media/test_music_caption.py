@@ -4,7 +4,7 @@ from itertools import product
 
 import pytest
 
-from music_caption import (
+from runtime.media.music_caption import (
     MINIMAX_CAPTION_VERSION,
     render_minimax_caption,
     validate_minimax_caption,
