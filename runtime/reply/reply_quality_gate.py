@@ -8,7 +8,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from reply_context import ReplyContext
 from runtime.reply.reply_policy import scan_reply
-from reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
+from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 
 class QualityGateStatus(StrEnum):

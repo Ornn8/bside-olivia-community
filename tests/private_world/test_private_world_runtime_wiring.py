@@ -142,7 +142,7 @@ from pathlib import Path
 import local_server
 from reply_context import ReplyMode
 from reply_orchestrator import ReplyState
-from reply_pipeline import PipelineResult
+from runtime.reply.reply_pipeline import PipelineResult
 from voice_direction import VoicePerformancePlan
 
 class AcceptedPipeline:

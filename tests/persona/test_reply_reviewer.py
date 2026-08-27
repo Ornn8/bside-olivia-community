@@ -12,7 +12,7 @@ from reply_context import (
     TrustedTime,
     TrustedWorldFact,
 )
-from reply_reviewer import (
+from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     NullReviewer,
     ReviewReference,
