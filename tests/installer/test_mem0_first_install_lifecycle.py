@@ -131,25 +131,18 @@ def test_installed_launcher_preserves_file_provider_and_memory_llm_configuration
     )
 
 
-def test_windows_installer_offers_pinned_mem0_and_confirmed_embedding_setup() -> None:
+def test_memory_assets_remain_pinned_but_are_not_installed_during_first_setup() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
     requirements = (
         root / "installer" / "mem0-runtime-requirements.txt"
     ).read_text(encoding="utf-8")
 
-    assert "mem0-runtime-requirements.txt" in script
-    assert "--only-binary=:all:" in script
-    assert "MEMORY_DEPENDENCIES_UNAVAILABLE" in script
-    assert "MEMORY_DEPENDENCIES_NOT_ACCEPTED" in script
-    assert "provision_mem0_embedding.py" in script
-    assert "--verify-only" in script
-    assert "--install" in script
-    assert "MEMORY_EMBEDDING_UNAVAILABLE" in script
-    assert "MEMORY_EMBEDDING_NOT_ACCEPTED" in script
-    assert "Olivia will continue without long-term memory" in script
+    assert "mem0-runtime-requirements.txt" not in script
+    assert "provision_mem0_embedding.py" not in script
     assert "mem0ai==2.0.18" in requirements
     assert "sentence-transformers==5.7.0" in requirements
+    assert (root / "installer" / "provision_mem0_embedding.py").is_file()
 
 
 def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
@@ -233,94 +226,19 @@ def test_windows_installer_runtime_probe_survives_native_argument_quoting(
     assert result.returncode == 0, result.stderr
 
 
-def test_optional_memory_runtime_is_a_hash_locked_install_owned_closure() -> None:
-    root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-    requirements = (
-        root / "installer" / "mem0-runtime-requirements.txt"
-    ).read_text(encoding="utf-8")
-
-    assert "runtime\\mem0-site-packages" in script
-    assert "mem0-site-packages.staging" in script
-    assert "[IO.Directory]::Move" in script
-    assert "'--require-hashes'" in script
-    assert "'--upgrade'" not in script
-    assert "runtime/mem0-site-packages" in OWNED_PATHS
-    package_lines = [
-        line
-        for line in requirements.splitlines()
-        if line and not line.startswith("#")
-    ]
-    assert package_lines
-    assert all("==" in line and " --hash=sha256:" in line for line in package_lines)
-
-
-def test_embeddable_python_registers_the_managed_memory_runtime_without_pythonpath() -> None:
-    root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-    runtime_probe = script[
-        script.index("function Test-MemoryRuntime") : script.index("$runner =")
-    ]
-
-    assert "[string]$MemoryRuntimePath" in script
-    assert "-MemoryRuntimePath $memoryRuntime" in script
-    assert "$memoryDependenciesReady -and $pth" in script
-    assert "win32\\lib" in script
-    assert "Join-Path $memoryRuntimeFullPath 'win32'" in script
-    assert "$env:PYTHONPATH" not in runtime_probe
-
-
-def test_managed_memory_runtime_is_preferred_and_verified_against_its_lock_manifest() -> None:
-    root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-    runtime_probe = script[
-        script.index("function Test-MemoryRuntime") : script.index("$runner =")
-    ]
-
-    assert "$keptLines.Insert(0, $memoryRuntimeFullPath)" in script
-    assert "mem0-runtime-manifest.json" in script
-    assert "[string]$RequirementsPath" in runtime_probe
-    verifier = (root / "installer" / "verify_mem0_runtime.py").read_text(
-        encoding="utf-8"
-    )
-    assert "verify_mem0_runtime.py" in runtime_probe
-    assert "importlib.metadata" in verifier
-    assert "spec.origin" in verifier
-    assert "requirements_sha256" in verifier
-
-
-def test_installer_disables_mem0_telemetry_before_every_probe_import() -> None:
+def test_first_install_defers_memory_runtime_and_embedding_downloads() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
     launcher = (root / "installer" / "start_local.py").read_text(encoding="utf-8")
 
-    telemetry_setting = "$env:MEM0_TELEMETRY = 'False'"
-    assert telemetry_setting in script
-    assert script.index(telemetry_setting) < script.index("verify_mem0_runtime.py")
+    assert "mem0-runtime-requirements.txt" not in script
+    assert "provision_mem0_embedding.py" not in script
+    assert "BAAI/bge-small-zh-v1.5" not in script
+    assert "Read-Host 'Accept this optional" not in script
+    assert "runtime/mem0-site-packages" in OWNED_PATHS
+    assert (root / "installer" / "mem0-runtime-requirements.txt").is_file()
+    assert (root / "installer" / "provision_mem0_embedding.py").is_file()
     assert '"MEM0_TELEMETRY": "False"' in launcher
-
-
-def test_memory_download_confirmations_show_complete_informed_choices() -> None:
-    root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-
-    assert "Components (complete package/version/SHA-256 closure):" in script
-    assert "$memoryRequirementLines | Write-Host" in script
-    assert "Estimated download: about 225 MiB" in script
-    assert "Source: PyPI, exact versions and SHA-256 hashes above" in script
-    assert "Licenses: mem0ai 2.0.18 Apache-2.0" in script
-    assert "BAAI/bge-small-zh-v1.5 at revision 7999e1d3359715c523056ef9478215996d62a620" in script
-    assert "Contents: 10 pinned files:" in script
-    assert "model.safetensors" in script
-    assert "Estimated download: about 96 MiB" in script
-    assert "License: MIT" in script
-
-
-def test_optional_memory_downgrades_do_not_leak_a_native_failure_exit_code() -> None:
-    root = Path(__file__).resolve().parents[2]
-    script = (root / "installer" / "Install.ps1").read_text(encoding="utf-8")
-
-    assert "$LASTEXITCODE = 0\n\n& (Join-Path $PSScriptRoot 'Create-Shortcut.ps1')" in script
     assert script.rstrip().endswith("exit 0")
 
 

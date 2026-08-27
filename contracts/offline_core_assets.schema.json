@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/offline_core_assets.schema.json",
+  "title": "Olivia offline core assets",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "local_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^wheelhouse/[A-Za-z0-9][A-Za-z0-9._+-]*\\.whl$"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "olivia.offline-core-assets.v1"},
+    "python_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "source_url"],
+      "properties": {
+        "path": {"const": "python-3.12.10-embed-amd64.zip"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"const": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"},
+        "source_url": {"type": "string", "format": "uri", "pattern": "^https://"}
+      }
+    },
+    "pip_bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "package", "version"],
+      "properties": {
+        "path": {"const": "pip-25.2-py3-none-any.whl"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"const": "6d67a2b4e7f14d8b31b8b52648866fa717f45a1eb70e83002f4331d07e953717"},
+        "package": {"const": "pip"},
+        "version": {"const": "25.2"}
+      }
+    },
+    "requirements_sha256": {"$ref": "#/$defs/digest"},
+    "wheels": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/local_asset"},
+      "allOf": [
+        {"contains": {"properties": {"path": {"const": "wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl"}, "sha256": {"const": "9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/aiohttp-3.14.1-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "2aa92c87868cd13674989f9ee83e5f9f7ea4237589b728048e1f0c8f6caa3271"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/aiosignal-1.4.0-py3-none-any.whl"}, "sha256": {"const": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/attrs-26.1.0-py3-none-any.whl"}, "sha256": {"const": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/frozenlist-1.8.0-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "34187385b08f866104f0c0617404c8eb08165ab1272e884abc89c112e9c00746"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/idna-3.18-py3-none-any.whl"}, "sha256": {"const": "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/jsonschema-4.26.0-py3-none-any.whl"}, "sha256": {"const": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/jsonschema_specifications-2025.9.1-py3-none-any.whl"}, "sha256": {"const": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/multidict-6.7.1-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/propcache-0.5.2-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "d9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/referencing-0.37.0-py3-none-any.whl"}, "sha256": {"const": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/rpds_py-2026.6.3-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "2c958bf94822e9290a40aaf2a822d4bc5c88099093e3948ad6c571eca9272e5f"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/typing_extensions-4.16.0-py3-none-any.whl"}, "sha256": {"const": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"path": {"const": "wheelhouse/yarl-1.24.2-cp312-cp312-win_amd64.whl"}, "sha256": {"const": "7dafe10c12ddd4d120d528c4b5599c953bd7b12845347d507b95451195bb6cad"}}, "required": ["path", "sha256"]}, "minContains": 1, "maxContains": 1}
+      ]
+    }
+  }
+}
