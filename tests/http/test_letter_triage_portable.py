@@ -13,26 +13,38 @@ from letter_triage import (
     _current_music_performance,
     routing_context_from_environment,
 )
-
-
-class _Response:
-    def __init__(self, text: str) -> None:
-        self.text = text
+from llm_gateway import GatewayToolCall
 
 
 class _Gateway:
-    def __init__(self, response: str) -> None:
-        self.response = response
+    def __init__(self, arguments: dict[str, object]) -> None:
+        self.arguments = arguments
         self.messages = None
+        self.requests: list[dict[str, object]] = []
 
-    async def complete(self, messages, *, request_id=None):
+    async def complete_with_tools(
+        self,
+        *,
+        messages,
+        tools,
+        tool_choice,
+        request_id=None,
+    ):
         self.messages = messages
-        return _Response(self.response)
+        self.requests.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "request_id": request_id,
+            }
+        )
+        return [GatewayToolCall("select_reply_mode", self.arguments)]
 
 
 def test_router_timeout_uses_portable_environment_configuration():
     router = LetterReplyRouter(
-        _Gateway("{}"),
+        _Gateway({}),
         environ={"OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS": "90"},
     )
 
@@ -76,7 +88,7 @@ def _route(*, context=None, **overrides):
         "character_willing": True,
     }
     payload.update(overrides)
-    gateway = _Gateway(json.dumps(payload))
+    gateway = _Gateway(payload)
     result = asyncio.run(
         LetterReplyRouter(
             gateway,
@@ -182,6 +194,37 @@ def test_all_musical_gates_allow_character_choice():
     )
     assert result.reply_mode == "musical_video"
     assert result.status == "completed"
+
+
+def test_router_accepts_one_offline_structured_musical_tool_call():
+    gateway = _Gateway(
+        {
+            "mode": "musical_video",
+            "reason_code": "performance_carries_this_reply",
+            "emotion_level": "mixed",
+            "music_contexts": ["explicit_performance_or_adaptation_request"],
+            "music_role": "performance",
+            "music_intent": "perform",
+            "request_disposition": "fulfill",
+            "direct_response_sufficient": False,
+            "voice_materially_better": False,
+            "music_materially_better": True,
+            "character_willing": True,
+        }
+    )
+
+    result = asyncio.run(
+        LetterReplyRouter(
+            gateway,
+            routing_context=RoutingContext(True, True),
+        ).classify("请把这段心事唱给我听。")
+    )
+
+    assert result.reply_mode == "musical_video"
+    assert result.status == "completed"
+    assert gateway.requests[0]["tool_choice"] == "required"
+    assert gateway.requests[0]["request_id"] == "letter-reply-mode-router"
+    assert gateway.requests[0]["tools"][0]["function"]["name"] == "select_reply_mode"
 
 
 def test_current_work_relevance_requires_trusted_current_work():
@@ -424,9 +467,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
 def test_invalid_router_output_fails_closed_to_text_letter():
     result = asyncio.run(
         LetterReplyRouter(
-            _Gateway("not-json"),
+            _Gateway({}),
             routing_context=RoutingContext(True, True),
         ).classify("普通聊天")
     )
     assert result.reply_mode == "text_letter"
     assert result.status == "unavailable"
+    assert result.reason_code == "router_invalid_result"

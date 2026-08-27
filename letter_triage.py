@@ -15,9 +15,9 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
-from llm_gateway import GatewayError
+from llm_gateway import GatewayError, GatewayToolCall
 from music_reply import musical_reply_configured
 
 
@@ -75,7 +75,7 @@ spoken_video 只有在完整视频链可用、routing_context.spoken_video_avail
 text_letter。
 普通日常默认 text_letter。不要为了证明人格而音乐化。
 
-只输出一个 JSON 对象，不要 Markdown 或解释：
+必须调用 select_reply_mode，不要输出 Markdown 或解释。参数必须符合：
 {
   "mode":"text_letter|spoken_video|musical_video",
   "reason_code":"lower_snake_case",
@@ -135,15 +135,77 @@ _ROLE_INTENT = {
 _REASON = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 _MAX_CONTEXT_ITEMS = 6
 _MAX_CONTEXT_ITEM_CHARS = 240
+_TOOL_FIELDS = frozenset(
+    {
+        "mode",
+        "reason_code",
+        "emotion_level",
+        "music_contexts",
+        "music_role",
+        "music_intent",
+        "request_disposition",
+        "direct_response_sufficient",
+        "voice_materially_better",
+        "music_materially_better",
+        "character_willing",
+    }
+)
+_ROUTER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "select_reply_mode",
+        "description": "Select exactly one expression mode for the current letter.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_TOOL_FIELDS),
+            "properties": {
+                "mode": {"type": "string", "enum": sorted(_ALLOWED_MODES)},
+                "reason_code": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                },
+                "emotion_level": {
+                    "type": "string",
+                    "enum": sorted(_ALLOWED_EMOTIONS),
+                },
+                "music_contexts": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": sorted(_ALLOWED_MUSIC_CONTEXTS)},
+                    "uniqueItems": True,
+                    "maxItems": len(_ALLOWED_MUSIC_CONTEXTS),
+                },
+                "music_role": {
+                    "type": "string",
+                    "enum": sorted(_ALLOWED_MUSIC_ROLES),
+                },
+                "music_intent": {
+                    "type": "string",
+                    "enum": sorted(_ALLOWED_MUSIC_INTENTS),
+                },
+                "request_disposition": {
+                    "type": "string",
+                    "enum": sorted(_ALLOWED_REQUEST_DISPOSITIONS),
+                },
+                "direct_response_sufficient": {"type": "boolean"},
+                "voice_materially_better": {"type": "boolean"},
+                "music_materially_better": {"type": "boolean"},
+                "character_willing": {"type": "boolean"},
+            },
+        },
+    },
+}
 
 
 class RouterGateway(Protocol):
-    async def complete(
+    async def complete_with_tools(
         self,
-        messages: object,
         *,
+        messages: Sequence[Mapping[str, str]],
+        tools: Sequence[Mapping[str, object]],
+        tool_choice: str,
         request_id: str | None = None,
-    ) -> object: ...
+    ) -> Sequence[GatewayToolCall]: ...
 
 
 @dataclass(frozen=True)
@@ -209,24 +271,6 @@ def _failed(code: str, *, called: bool = True) -> TriageResult:
         called,
         character_willing=False,
     )
-
-
-def _parse(raw: object) -> Mapping[str, Any] | None:
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            text,
-            flags=re.I,
-        ).strip()
-    try:
-        value = json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    return value if isinstance(value, Mapping) else None
 
 
 def _bool_field(value: Mapping[str, Any], name: str) -> bool | None:
@@ -373,9 +417,9 @@ class LetterReplyRouter:
             "current_letter": content.strip(),
         }
         try:
-            response = await asyncio.wait_for(
-                self.gateway.complete(
-                    [
+            calls = await asyncio.wait_for(
+                self.gateway.complete_with_tools(
+                    messages=[
                         {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                         {
                             "role": "user",
@@ -386,6 +430,8 @@ class LetterReplyRouter:
                             ),
                         },
                     ],
+                    tools=[_ROUTER_TOOL],
+                    tool_choice="required",
                     request_id="letter-reply-mode-router",
                 ),
                 timeout=self.timeout_seconds,
@@ -397,10 +443,12 @@ class LetterReplyRouter:
         except Exception:
             return _failed("router_unavailable")
 
-        parsed = _parse(getattr(response, "text", None))
-        if parsed is None:
+        if len(calls) != 1 or getattr(calls[0], "name", None) != "select_reply_mode":
             return _failed("router_invalid_result")
-        result = _validated_result(parsed, context)
+        arguments = getattr(calls[0], "arguments", None)
+        if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
+            return _failed("router_invalid_result")
+        result = _validated_result(arguments, context)
         return result or _failed("router_invalid_result")
 
 
