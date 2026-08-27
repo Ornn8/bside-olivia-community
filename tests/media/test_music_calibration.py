@@ -10,7 +10,7 @@ from tools.minimax_profile import (
     CURRENT_MINIMAX_PROFILE,
     OFFICIAL_COMFY_MINIMAX_PROFILE,
 )
-from music_caption import MINIMAX_CAPTION_VERSION, validate_minimax_caption
+from runtime.media.music_caption import MINIMAX_CAPTION_VERSION, validate_minimax_caption
 from song_content import SongSemanticPlan
 
 

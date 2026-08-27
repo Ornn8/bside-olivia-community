@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from music_caption import validate_minimax_caption
+from runtime.media.music_caption import validate_minimax_caption
 from song_content import (
     SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
     SongContentPlan,
