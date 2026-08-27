@@ -36,8 +36,14 @@ class _Status:
             "remaining_bytes": 100,
             "installed_bytes": 0,
             "install_locations": [
-                "runtime/mem0-site-packages",
-                "data/memory/model-cache",
+                {
+                    "root": "installation_root",
+                    "relative_path": "runtime/mem0-site-packages",
+                },
+                {
+                    "root": "local_data_root",
+                    "relative_path": "memory/model-cache",
+                },
             ],
             "version": "fixture-v1",
             "license_summary": "fixture",
@@ -101,6 +107,7 @@ def test_capability_public_contract_matches_routes_authorization_and_schema() ->
             "value": "confirmed",
         },
     }
+    assert contract["execution"] == "per-installer-serialized-off-event-loop"
 
 
 def test_capability_api_requires_explicit_action_and_exposes_bounded_status(
@@ -125,7 +132,9 @@ def test_capability_api_requires_explicit_action_and_exposes_bounded_status(
             assert status.status == 200
             payload = await status.json()
             assert payload["state"] == "missing"
-            assert "path" not in str(payload).casefold()
+            serialized = json.dumps(payload).casefold()
+            assert ":\\" not in serialized
+            assert "users/" not in serialized
             assert installer.starts == []
 
             forbidden = await client.post(
@@ -299,5 +308,119 @@ def test_capability_installer_exceptions_use_stable_contract_codes() -> None:
                 "status": "FAILED",
                 "error_code": "CAPABILITY_ACTION_UNAVAILABLE",
             }
+
+    asyncio.run(scenario())
+
+
+def test_capability_control_calls_are_serialized_per_installer() -> None:
+    class SequencedInstaller(_Installer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status_entered = threading.Event()
+            self.status_release = threading.Event()
+            self.uninstall_entered = threading.Event()
+
+        def status(self) -> _Status:
+            self.status_entered.set()
+            assert self.status_release.wait(timeout=2)
+            return _Status()
+
+        def uninstall(self, *, remove_model) -> str:
+            self.uninstall_entered.set()
+            return super().uninstall(remove_model=remove_model)
+
+    async def scenario() -> None:
+        installer = SequencedInstaller()
+        app = web.Application()
+        mount_original_client_capability_api(
+            app,
+            installer,
+            trusted_origins=(TRUSTED_ORIGIN,),
+            authorize_session=lambda _value: None,
+        )
+        headers = {
+            "Origin": TRUSTED_ORIGIN,
+            "X-Olivia-Capability-Action": "confirmed",
+            "X-Olivia-Setup-Session": "signed-in-session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            pending_status = asyncio.create_task(
+                client.get(STATUS_PATH, headers={"Origin": TRUSTED_ORIGIN})
+            )
+            assert await asyncio.to_thread(installer.status_entered.wait, 1)
+            pending_uninstall = asyncio.create_task(
+                client.post(
+                    ACTION_PATH,
+                    headers=headers,
+                    json={"action": "uninstall", "remove_model": False},
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not installer.uninstall_entered.is_set()
+            installer.status_release.set()
+            assert (await pending_status).status == 200
+            assert (await pending_uninstall).status == 200
+            assert installer.uninstall_entered.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_capability_start_and_uninstall_cannot_overlap() -> None:
+    class BlockingInstaller(_Installer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.start_entered = threading.Event()
+            self.start_release = threading.Event()
+            self.uninstall_entered = threading.Event()
+
+        def start(self, *, source_mode, offline_root=None, cleanup_offline=False) -> str:
+            self.start_entered.set()
+            assert self.start_release.wait(timeout=2)
+            return super().start(
+                source_mode=source_mode,
+                offline_root=offline_root,
+                cleanup_offline=cleanup_offline,
+            )
+
+        def uninstall(self, *, remove_model) -> str:
+            self.uninstall_entered.set()
+            return super().uninstall(remove_model=remove_model)
+
+    async def scenario() -> None:
+        installer = BlockingInstaller()
+        app = web.Application()
+        mount_original_client_capability_api(
+            app,
+            installer,
+            trusted_origins=(TRUSTED_ORIGIN,),
+            authorize_session=lambda _value: None,
+        )
+        headers = {
+            "Origin": TRUSTED_ORIGIN,
+            "X-Olivia-Capability-Action": "confirmed",
+            "X-Olivia-Setup-Session": "signed-in-session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            pending_start = asyncio.create_task(
+                client.post(
+                    ACTION_PATH,
+                    headers=headers,
+                    json={"action": "install", "source": "auto"},
+                )
+            )
+            assert await asyncio.to_thread(installer.start_entered.wait, 1)
+            pending_uninstall = asyncio.create_task(
+                client.post(
+                    ACTION_PATH,
+                    headers=headers,
+                    json={"action": "uninstall", "remove_model": True},
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not installer.uninstall_entered.is_set()
+            installer.start_release.set()
+            assert (await pending_start).status == 200
+            assert (await pending_uninstall).status == 200
+            assert installer.uninstall_entered.is_set()
 
     asyncio.run(scenario())

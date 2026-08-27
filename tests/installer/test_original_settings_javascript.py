@@ -72,5 +72,7 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "安装后占用" in source
     assert "实际来源" in source
     assert "精确位置" in source
+    assert 'installation_root: "程序目录"' in source
+    assert 'local_data_root: "本地数据目录"' in source
     assert "|| isSettingsRoute()" not in source
     assert "innerHTML" not in source

@@ -911,8 +911,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "text-text-secondary text-body-m font-regular"
     );
     const metadata = stack();
+    const rootLabels = {
+      installation_root: "程序目录",
+      local_data_root: "本地数据目录",
+    };
     const locations = Array.isArray(payload.install_locations)
-      ? payload.install_locations.filter((value) => typeof value === "string")
+      ? payload.install_locations.flatMap((value) => {
+          if (!value || typeof value !== "object") return [];
+          const root = rootLabels[value.root];
+          const relative = typeof value.relative_path === "string" ? value.relative_path : "";
+          return root && relative ? [`${root}/${relative}`] : [];
+        })
       : [];
     metadata.append(
       field("状态", labels[stateValue]),

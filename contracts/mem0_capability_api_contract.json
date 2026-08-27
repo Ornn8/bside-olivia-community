@@ -1,6 +1,7 @@
 {
   "schema_version": "olivia.mem0-capability-api-contract.v1",
   "status_schema_version": "olivia.capability-status.v2",
+  "execution": "per-installer-serialized-off-event-loop",
   "authorization": {
     "origins": "explicit-trusted-https-or-loopback-only",
     "login_required_for_mutations": true,

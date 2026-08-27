@@ -1071,7 +1071,7 @@ class CapabilityStatus:
     license_summary: str
     requires_gpu: bool
     installed_bytes: int
-    install_locations: tuple[str, ...]
+    install_locations: tuple[tuple[str, str], ...]
     reason_code: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -1085,7 +1085,10 @@ class CapabilityStatus:
             "total_bytes": self.total_bytes,
             "remaining_bytes": max(0, self.total_bytes - self.downloaded_bytes),
             "installed_bytes": self.installed_bytes,
-            "install_locations": list(self.install_locations),
+            "install_locations": [
+                {"root": root, "relative_path": relative_path}
+                for root, relative_path in self.install_locations
+            ],
             "version": self.version,
             "license_summary": self.license_summary,
             "requires_gpu": self.requires_gpu,
@@ -1132,8 +1135,8 @@ class Mem0CapabilityInstaller:
         self._installed_bytes = 0
         self._installed_measurement_complete = False
         self._install_locations = (
-            "runtime/mem0-site-packages",
-            "data/memory/model-cache",
+            ("installation_root", "runtime/mem0-site-packages"),
+            ("local_data_root", "memory/model-cache"),
         )
         self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
 

@@ -16,7 +16,10 @@
     "remaining_bytes": {"type": "integer", "minimum": 0},
     "installed_bytes": {"type": "integer", "minimum": 0},
     "install_locations": {
-      "const": ["runtime/mem0-site-packages", "data/memory/model-cache"]
+      "const": [
+        {"root": "installation_root", "relative_path": "runtime/mem0-site-packages"},
+        {"root": "local_data_root", "relative_path": "memory/model-cache"}
+      ]
     },
     "current_file": {"type": "string", "minLength": 1, "maxLength": 160},
     "source": {"type": "string", "minLength": 1},

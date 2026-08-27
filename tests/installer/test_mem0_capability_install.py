@@ -291,14 +291,22 @@ def test_capability_installs_only_after_explicit_start_and_publishes_progress() 
     assert public["remaining_bytes"] == 0
     assert public["installed_bytes"] == 0
     assert public["install_locations"] == [
-        "runtime/mem0-site-packages",
-        "data/memory/model-cache",
+        {
+            "root": "installation_root",
+            "relative_path": "runtime/mem0-site-packages",
+        },
+        {
+            "root": "local_data_root",
+            "relative_path": "memory/model-cache",
+        },
     ]
     status_schema = json.loads(
         (CONTRACTS / "mem0_capability_status.schema.json").read_text(encoding="utf-8")
     )
     Draft202012Validator(status_schema).validate(public)
-    assert "path" not in json.dumps(public).casefold()
+    serialized = json.dumps(public).casefold()
+    assert ":\\" not in serialized
+    assert "users/" not in serialized
 
 
 def test_ready_status_reports_actual_managed_disk_usage(tmp_path: Path) -> None:

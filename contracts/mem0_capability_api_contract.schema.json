@@ -4,10 +4,11 @@
   "title": "Post-login Mem0 capability API contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "status_schema_version", "authorization", "routes", "error_codes"],
+  "required": ["schema_version", "status_schema_version", "execution", "authorization", "routes", "error_codes"],
   "properties": {
     "schema_version": {"const": "olivia.mem0-capability-api-contract.v1"},
     "status_schema_version": {"const": "olivia.capability-status.v2"},
+    "execution": {"const": "per-installer-serialized-off-event-loop"},
     "authorization": {
       "const": {
         "origins": "explicit-trusted-https-or-loopback-only",

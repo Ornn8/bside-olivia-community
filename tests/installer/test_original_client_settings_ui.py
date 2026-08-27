@@ -351,7 +351,10 @@ const statusPayload = (status) => ({
           total_bytes: 337000000,
           remaining_bytes: 337000000,
           installed_bytes: 0,
-          install_locations: ["runtime/mem0-site-packages", "data/memory/model-cache"],
+          install_locations: [
+            { root: "installation_root", relative_path: "runtime/mem0-site-packages" },
+            { root: "local_data_root", relative_path: "memory/model-cache" },
+          ],
           version: "fixture",
           license_summary: "fixture",
           requires_gpu: false,

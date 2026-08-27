@@ -169,6 +169,7 @@ def mount_original_client_capability_api(
         raise TypeError("a setup session authorizer is required")
     app[_ORIGINS_KEY] = _normalize_origins(trusted_origins)
     app[_MOUNTED_KEY] = True
+    control_lock = asyncio.Lock()
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -190,7 +191,8 @@ def mount_original_client_capability_api(
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
         try:
-            payload = await asyncio.to_thread(lambda: installer.status().to_dict())
+            async with control_lock:
+                payload = await asyncio.to_thread(lambda: installer.status().to_dict())
         except Exception as exc:
             raise CapabilityAPIError("CAPABILITY_STATUS_UNAVAILABLE", status=503) from exc
         if not isinstance(payload, dict) or payload.get("capability") != "long_term_memory":
@@ -229,7 +231,8 @@ def mount_original_client_capability_api(
         else:
             raise CapabilityAPIError("CAPABILITY_FIELDS_INVALID", status=400)
         try:
-            result = await asyncio.to_thread(call, **kwargs)
+            async with control_lock:
+                result = await asyncio.to_thread(call, **kwargs)
         except Exception as exc:
             raise CapabilityAPIError("CAPABILITY_ACTION_UNAVAILABLE", status=503) from exc
         return web.json_response({"status": _result(result)}, headers=_headers(origin))
