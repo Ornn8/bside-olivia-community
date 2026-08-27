@@ -30,7 +30,6 @@ function Update-ManagedPythonPath {
     $keptLines = New-Object 'System.Collections.Generic.List[string]'
     $hasSitePackages = $false
     $hasImportSite = $false
-    $hasMemoryRuntime = $false
     foreach ($line in @([IO.File]::ReadAllLines($pthFullPath, $utf8NoBom))) {
         $trimmed = $line.Trim()
         if ($trimmed -eq 'site-packages') {
@@ -47,18 +46,20 @@ function Update-ManagedPythonPath {
             }
             continue
         }
-        if ($memoryRuntimeFullPath -and $trimmed -eq $memoryRuntimeFullPath) {
-            if (-not $hasMemoryRuntime) {
-                $keptLines.Add($memoryRuntimeFullPath)
-                $hasMemoryRuntime = $true
+        if ($memoryRuntimeFullPath -and $trimmed) {
+            try { $registeredPath = [IO.Path]::GetFullPath($trimmed) } catch { $registeredPath = '' }
+            if ($registeredPath -and $registeredPath -match '[\\/]runtime[\\/]mem0-site-packages$') {
+                continue
             }
+        }
+        if ($memoryRuntimeFullPath -and $trimmed -eq $memoryRuntimeFullPath) {
             continue
         }
         $keptLines.Add($line)
     }
 
     if (-not $hasSitePackages) { $keptLines.Add('site-packages') }
-    if ($memoryRuntimeFullPath -and -not $hasMemoryRuntime) { $keptLines.Add($memoryRuntimeFullPath) }
+    if ($memoryRuntimeFullPath) { $keptLines.Insert(0, $memoryRuntimeFullPath) }
     if (-not $hasImportSite) { $keptLines.Add('import site') }
     $transactionId = [guid]::NewGuid().ToString('N')
     $tempName = '.' + [IO.Path]::GetFileName($pthFullPath) + '.' + $transactionId + '.tmp'
@@ -81,10 +82,50 @@ function Update-ManagedPythonPath {
 function Test-MemoryRuntime {
     param(
         [Parameter(Mandatory)]
-        [string]$RuntimePath
+        [string]$RuntimePath,
+        [Parameter(Mandatory)]
+        [string]$RequirementsPath
     )
 
-    & $runner.File '-c' 'import mem0,sentence_transformers,huggingface_hub' 2>$null
+    $runtimeFullPath = [IO.Path]::GetFullPath($RuntimePath)
+    $requirementsFullPath = [IO.Path]::GetFullPath($RequirementsPath)
+    $manifestPath = Join-Path $runtimeFullPath '.olivia-mem0-runtime-manifest.json'
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $requirementsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirementsFullPath).Hash.ToLowerInvariant()
+        if ($manifest.requirements_sha256 -ne $requirementsHash) {
+            Write-Warning 'MEM0_RUNTIME_MANIFEST_INVALID'
+            return $false
+        }
+    } catch {
+        Write-Warning 'MEM0_RUNTIME_MANIFEST_INVALID'
+        return $false
+    }
+    $probe = @'
+import importlib.metadata
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+runtime = Path(sys.argv[1]).resolve()
+requirements = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+sys.path.insert(0, str(runtime))
+for line in requirements:
+    match = re.match(r"^([A-Za-z0-9_.-]+)==([^\\s]+)", line)
+    if match is None:
+        continue
+    if importlib.metadata.version(match.group(1)) != match.group(2):
+        raise SystemExit(2)
+for module in ("mem0", "sentence_transformers", "huggingface_hub"):
+    spec = importlib.util.find_spec(module)
+    if spec is None or not spec.origin:
+        raise SystemExit(3)
+    origin = Path(spec.origin).resolve()
+    if runtime not in origin.parents:
+        raise SystemExit(4)
+'@
+    & $runner.File '-c' $probe $runtimeFullPath $requirementsFullPath 2>$null
     return $LASTEXITCODE -eq 0
 }
 
@@ -143,12 +184,12 @@ if ($installExitCode -ne 0) { exit $installExitCode }
 if ($runner.File -eq $runtimeExe) {
     $memoryRuntime = Join-Path $Destination 'runtime\mem0-site-packages'
     $memoryStaging = Join-Path $Destination 'runtime\mem0-site-packages.staging'
+    $memoryRequirements = Join-Path $PayloadRoot 'installer\mem0-runtime-requirements.txt'
     try {
         if (Test-Path -LiteralPath $memoryRuntime) {
-            if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
-            $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime
-        } else {
-            $memoryRequirements = Join-Path $PayloadRoot 'installer\mem0-runtime-requirements.txt'
+            $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime -RequirementsPath $memoryRequirements
+        }
+        if (-not $memoryDependenciesReady) {
             $memoryRequirementLines = @(
                 Get-Content -LiteralPath $memoryRequirements |
                 Where-Object { $_ -and -not $_.StartsWith('#') }
@@ -159,26 +200,38 @@ if ($runner.File -eq $runtimeExe) {
             Write-Host 'Estimated download: about 225 MiB; reserve at least 450 MiB for staging and the published runtime.'
             Write-Host 'Source: PyPI, exact versions and SHA-256 hashes above; installation accepts binary wheels only.'
             Write-Host 'Licenses: mem0ai 2.0.18 Apache-2.0; sentence-transformers 5.7.0 Apache-2.0; PyTorch, NumPy, SciPy, and scikit-learn BSD-3-Clause; Hugging Face and Qdrant clients Apache-2.0; other locked wheels retain their PyPI upstream licenses.'
-            $answer = Read-Host 'Accept this optional, hash-locked memory-runtime download? [Y/N]'
+            $answer = if (Test-Path -LiteralPath $memoryRuntime) { 'yes' } else { Read-Host 'Accept this optional, hash-locked memory-runtime download? [Y/N]' }
             if ($answer -match '^(y|yes)$') {
-                if (Test-Path -LiteralPath $memoryStaging) {
-                    Write-Warning 'MEMORY_DEPENDENCIES_UNAVAILABLE: an interrupted managed staging directory is present.'
-                } else {
-                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $memoryStaging) | Out-Null
-                    try {
-                        & $runner.File '-m' 'pip' '--version' 2>$null
-                        if ($LASTEXITCODE -eq 0) {
-                            & $runner.File '-m' 'pip' 'install' '--disable-pip-version-check' '--require-hashes' '--only-binary=:all:' '--target' $memoryStaging '-r' $memoryRequirements
-                            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $memoryStaging 'mem0\__init__.py'))) {
-                                [IO.Directory]::Move($memoryStaging, $memoryRuntime)
-                                if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
-                                $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime
+                if (Test-Path -LiteralPath $memoryStaging) { Remove-Item -LiteralPath $memoryStaging -Recurse -Force }
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $memoryStaging) | Out-Null
+                try {
+                    & $runner.File '-m' 'pip' '--version' 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        & $runner.File '-m' 'pip' 'install' '--disable-pip-version-check' '--require-hashes' '--only-binary=:all:' '--target' $memoryStaging '-r' $memoryRequirements
+                        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $memoryStaging 'mem0\__init__.py'))) {
+                            $runtimeManifest = @{ requirements_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $memoryRequirements).Hash.ToLowerInvariant() } | ConvertTo-Json -Compress
+                            [IO.File]::WriteAllText((Join-Path $memoryStaging '.olivia-mem0-runtime-manifest.json'), $runtimeManifest, [System.Text.UTF8Encoding]::new($false))
+                            if (Test-MemoryRuntime -RuntimePath $memoryStaging -RequirementsPath $memoryRequirements) {
+                                $memoryBackup = $memoryRuntime + '.backup.' + [guid]::NewGuid().ToString('N')
+                                try {
+                                    if (Test-Path -LiteralPath $memoryRuntime) { [IO.Directory]::Move($memoryRuntime, $memoryBackup) }
+                                    [IO.Directory]::Move($memoryStaging, $memoryRuntime)
+                                    if ($pth) { Update-ManagedPythonPath -PthPath $pth.FullName -MemoryRuntimePath $memoryRuntime }
+                                    $memoryDependenciesReady = Test-MemoryRuntime -RuntimePath $memoryRuntime -RequirementsPath $memoryRequirements
+                                    if (-not $memoryDependenciesReady) { throw 'MEM0_RUNTIME_VERIFY_FAILED' }
+                                } catch {
+                                    if (Test-Path -LiteralPath $memoryRuntime) { Remove-Item -LiteralPath $memoryRuntime -Recurse -Force }
+                                    if (Test-Path -LiteralPath $memoryBackup) { [IO.Directory]::Move($memoryBackup, $memoryRuntime) }
+                                    throw
+                                } finally {
+                                    if (Test-Path -LiteralPath $memoryBackup) { Remove-Item -LiteralPath $memoryBackup -Recurse -Force }
+                                }
                             }
                         }
-                    } finally {
-                        if (Test-Path -LiteralPath $memoryStaging) {
-                            Remove-Item -LiteralPath $memoryStaging -Recurse -Force
-                        }
+                    }
+                } finally {
+                    if (Test-Path -LiteralPath $memoryStaging) {
+                        Remove-Item -LiteralPath $memoryStaging -Recurse -Force
                     }
                 }
             } else {

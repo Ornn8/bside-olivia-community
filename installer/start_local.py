@@ -152,19 +152,19 @@ def _configure_memory_environment(
     environment["OLIVIA_MEMORY_ENABLED"] = _memory_enabled(
         environment.get("OLIVIA_MEMORY_ENABLED")
     )
-    environment.setdefault("OLIVIA_MEMORY_PROVIDER", "mem0")
+    environment.setdefault("OLIVIA_MEMORY_DEFAULT_PROVIDER", "mem0")
     environment.setdefault("OLIVIA_MEMORY_ROOT", str(memory_root))
     environment.setdefault(
         "OLIVIA_MEMORY_EMBEDDING_CACHE", str(memory_root / "model-cache")
     )
     environment.setdefault(
-        "OLIVIA_MEMORY_LLM_BASE_URL", environment.get("OLIVIA_LLM_BASE_URL", "")
+        "OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL", environment.get("OLIVIA_LLM_BASE_URL", "")
     )
     environment.setdefault(
-        "OLIVIA_MEMORY_LLM_MODEL", environment.get("OLIVIA_LLM_MODEL", "")
+        "OLIVIA_MEMORY_LLM_DEFAULT_MODEL", environment.get("OLIVIA_LLM_MODEL", "")
     )
     environment.setdefault(
-        "OLIVIA_MEMORY_LLM_API_KEY_ENV",
+        "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV",
         environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
     )
     environment.update(

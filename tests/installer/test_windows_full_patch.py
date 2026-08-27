@@ -919,6 +919,47 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     ).read_text(encoding="utf-8") == "keep"
 
 
+def test_repeat_install_atomically_replaces_managed_payload_without_stale_files(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    stale = target / "local_backend" / "removed_module.py"
+    stale.write_text("old managed module", encoding="utf-8")
+
+    repeated = install_full_patch(official, target, payload, manifest)
+
+    assert repeated["status"] == "ALREADY_INSTALLED"
+    assert not stale.exists()
+
+
+def test_repeat_install_rolls_back_the_active_payload_when_publish_fails(
+    fixture_inputs,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    launcher = target / "local_backend" / "installer" / "start_local.py"
+    launcher.write_text("old launcher", encoding="utf-8")
+    original_replace = full_patch.os.replace
+
+    def fail_staged_start(source: str | Path, destination: str | Path) -> None:
+        if Path(source).name == "START.cmd":
+            raise OSError("synthetic publish failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(full_patch.os, "replace", fail_staged_start)
+
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_REFRESH_FAILED"):
+        install_full_patch(official, target, payload, manifest)
+
+    assert launcher.read_text(encoding="utf-8") == "old launcher"
+
+
 def test_incomplete_old_marker_is_not_treated_as_current_install(
     fixture_inputs,
     tmp_path: Path,
