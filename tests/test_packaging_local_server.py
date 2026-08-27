@@ -52,6 +52,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "private_world_runtime.py" in packaged_paths
     assert "runtime/media/music_caption.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
+    assert "runtime/reply/reply_delivery.py" in packaged_paths
+    assert "runtime/reply/reply_media.py" in packaged_paths
+    assert "reply_delivery.py" in packaged_paths
+    assert "reply_media.py" in packaged_paths
     assert "conversation_memory_identity.py" in packaged_paths
     assert "mem0_embedding_install.py" in packaged_paths
     assert {
@@ -91,6 +95,11 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import mem0_embedding_install, original_client_companion_mutation_backend; "
             "import importlib.util; assert importlib.util.find_spec('music_caption') is None; "
             "import original_client_server, runtime.media.music_caption, song_content; "
+            "import reply_delivery, reply_media; "
+            "from runtime.reply import reply_delivery as canonical_delivery; "
+            "from runtime.reply import reply_media as canonical_media; "
+            "assert reply_delivery is canonical_delivery; "
+            "assert reply_media is canonical_media; "
             "import local_server",
         ],
         cwd=tmp_path,
