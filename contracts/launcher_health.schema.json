@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "launcher_health.schema.json",
+  "title": "Local launcher health-only result",
+  "description": "The single JSON line emitted by installer/start_local.py --health-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status"],
+  "properties": {
+    "status": {
+      "enum": ["READY", "UNAVAILABLE", "PORT_CONFLICT"]
+    }
+  }
+}
