@@ -1,8 +1,8 @@
 """Manifest-driven, portable CUDA 13.3 assembly for the B05 build boundary.
 
 This module never downloads anything.  It verifies NVIDIA redistributable
-archives supplied through an explicit D:/ or F:/ transfer root, assembles an
-owned toolchain under D:/ or F:/, and returns diagnostics suitable for the
+archives supplied through an explicit local absolute transfer root, assembles an
+owned toolchain under that local root, and returns diagnostics suitable for the
 management CLI.  A ready toolchain is only build-ready; it is not native ASR
 acceptance evidence.
 """
@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 from urllib.parse import urljoin
 
+from .config import is_local_absolute_path
 from .errors import AsrError
 
 
@@ -78,10 +79,10 @@ class CudaPackage:
 
 def _external_root(path: Path | str, label: str) -> Path:
     root = Path(path)
-    if not root.is_absolute() or root.drive.upper() not in {"D:", "F:"}:
+    if not is_local_absolute_path(root):
         raise AsrError(
             "ASR_CONFIG_INVALID",
-            f"{label} must be an absolute D:/ or F:/ path",
+            f"{label} must be an absolute local Windows path",
             {"path": str(root), "label": label},
         )
     return root
@@ -617,8 +618,59 @@ def assemble_cuda_toolchain(
     return {**plan, "mode": "applied", "idempotent": False, "assembled": True, "status": status}
 
 
+def _managed_artifact_paths(marker: Mapping[str, Any], root: Path) -> tuple[Path, ...] | None:
+    """Resolve an optional exact artifact list without trusting arbitrary paths."""
+
+    values = marker.get("managed_artifacts")
+    if not isinstance(values, list):
+        return None
+    root_resolved = root.resolve()
+    paths: list[Path] = []
+    for value in values:
+        if not isinstance(value, str):
+            return None
+        try:
+            parts = _safe_relative_parts(value, label="managed CUDA artifact")
+        except AsrError:
+            return None
+        candidate = root.joinpath(*parts)
+        try:
+            candidate.resolve(strict=False).relative_to(root_resolved)
+        except ValueError:
+            return None
+        if candidate.name == CUDA_TOOLCHAIN_MARKER:
+            return None
+        paths.append(candidate)
+    return tuple(dict.fromkeys(paths))
+
+
+def _remove_empty_directories(root: Path) -> tuple[Path, ...]:
+    """Prune empty directories only, never recursively deleting their contents."""
+
+    if not root.is_dir() or root.is_symlink():
+        return ()
+    try:
+        directories = [path for path in root.rglob("*") if path.is_dir() and not path.is_symlink()]
+    except OSError:
+        directories = []
+    removed: list[Path] = []
+    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+        removed.append(directory)
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    else:
+        removed.append(root)
+    return tuple(removed)
+
+
 def uninstall_cuda_toolchain(toolchain_root: Path | str, *, apply: bool = False) -> dict[str, Any]:
-    """Remove only an exact B05-owned CUDA prefix; absent roots are idempotent."""
+    """Remove the trusted marker and exact recorded artifacts, preserving unknown files."""
 
     root = _external_root(toolchain_root, "CUDA toolchain root")
     status = cuda_toolchain_status(root)
@@ -628,6 +680,7 @@ def uninstall_cuda_toolchain(toolchain_root: Path | str, *, apply: bool = False)
         "owned": bool(status.get("owned")),
         "status": status,
         "deleted": False,
+        "deleted_paths": [],
     }
     if not apply:
         return plan
@@ -640,8 +693,24 @@ def uninstall_cuda_toolchain(toolchain_root: Path | str, *, apply: bool = False)
             "refusing to delete a CUDA root without the exact B05 ownership marker",
             {"root": str(root)},
         )
-    shutil.rmtree(root)
-    return {**plan, "mode": "applied", "idempotent": False, "deleted": True}
+    deleted_paths: list[Path] = []
+    managed_paths = _managed_artifact_paths(marker, root) or ()
+    for path in managed_paths:
+        if not path.is_file() or path.is_symlink():
+            continue
+        path.unlink()
+        deleted_paths.append(path)
+    marker_path = root / CUDA_TOOLCHAIN_MARKER
+    marker_path.unlink()
+    deleted_paths.append(marker_path)
+    deleted_paths.extend(_remove_empty_directories(root))
+    return {
+        **plan,
+        "mode": "applied",
+        "idempotent": False,
+        "deleted": True,
+        "deleted_paths": [str(path) for path in deleted_paths],
+    }
 
 
 def build_environment(

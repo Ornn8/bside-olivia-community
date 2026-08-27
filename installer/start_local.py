@@ -161,17 +161,20 @@ def main(argv: list[str] | None = None) -> int:
             "OLIVIA_REPLY_DELAY_ENABLED": "1",
             "OLIVIA_REPLY_DELAY_MINUTES_MIN": "5",
             "OLIVIA_REPLY_DELAY_MINUTES_MAX": "10",
-            "OLIVIA_LLM_PROVIDER": "openai_compatible",
-            "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
-            "OLIVIA_LLM_MODEL": "deepseek-v4-flash",
-            "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
-            "OLIVIA_LLM_API_STYLE": "chat_completions",
-            "OLIVIA_LLM_STREAM": "true",
-            "OLIVIA_LLM_TIMEOUT_SECONDS": "25",
-            "OLIVIA_LLM_MAX_RETRIES": "0",
             "OLIVIA_PORT": str(args.port),
         }
     )
+    for name, value in {
+        "OLIVIA_LLM_PROVIDER": "openai_compatible",
+        "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
+        "OLIVIA_LLM_MODEL": "deepseek-v4-flash",
+        "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
+        "OLIVIA_LLM_API_STYLE": "chat_completions",
+        "OLIVIA_LLM_STREAM": "true",
+        "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
+        "OLIVIA_LLM_MAX_RETRIES": "0",
+    }.items():
+        environment.setdefault(name, value)
     if not any(environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
