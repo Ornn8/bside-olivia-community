@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 import re
 
-from bounded_daemon_call import BoundedDaemonCall, validate_timeout_seconds
+from runtime.memory.bounded_daemon_call import BoundedDaemonCall, validate_timeout_seconds
 from conversation_memory_port import (
     ConversationMemoryPort,
     MemoryWriteResult,
