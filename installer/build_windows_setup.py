@@ -104,6 +104,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
     "installer/mem0-capability-manifest.json",
+    "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
     "installer/provision_mem0_embedding.py",
     "installer/runtime-requirements.txt",

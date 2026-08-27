@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mem0_runtime_artifacts.schema.json",
+  "title": "Mem0 Windows runtime artifact inventory",
+  "type": "object", "additionalProperties": false, "required": ["schema_version", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "olivia.capability-runtime-artifacts.v1"},
+    "artifacts": {
+      "type": "array", "minItems": 69, "maxItems": 69, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["filename", "size_bytes", "sha256", "license"],
+        "properties": {
+          "filename": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*\\.whl$"},
+          "size_bytes": {"type": "integer", "minimum": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "license": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

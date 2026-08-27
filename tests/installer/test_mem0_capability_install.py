@@ -6,24 +6,23 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import threading
-import zipfile
+
+from jsonschema import Draft202012Validator
 
 from mem0_capability_install import (
     CapabilityState,
     ManagedMem0Runtime,
     ManagedEmbeddingModel,
-    ModelBOM,
     Mem0CapabilityInstaller,
     ModelArtifact,
     ResumableModelDownloader,
-    extract_offline_mem0_pack,
     load_mem0_capability_bom,
 )
-from installer.build_mem0_offline_pack import build_mem0_offline_pack
 
 
 MANIFEST = Path(__file__).parents[2] / "installer" / "mem0-capability-manifest.json"
 REQUIREMENTS = Path(__file__).parents[2] / "installer" / "mem0-runtime-requirements.txt"
+CONTRACTS = Path(__file__).parents[2] / "contracts"
 
 
 def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
@@ -32,6 +31,8 @@ def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
     assert bom.capability == "long_term_memory"
     assert bom.status == "FIXED"
     assert bom.runtime.package_count == 69
+    assert len(bom.runtime.artifacts) == 69
+    assert sum(item.size_bytes for item in bom.runtime.artifacts) == 236_253_351
     assert bom.runtime.requirements_sha256 == hashlib.sha256(
         REQUIREMENTS.read_bytes()
     ).hexdigest()
@@ -48,6 +49,22 @@ def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
     )
     assert bom.model.license == "MIT"
     assert bom.requires_gpu is False
+
+
+def test_mem0_public_manifests_validate_against_versioned_schemas() -> None:
+    cases = (
+        ("mem0_capability_bom.schema.json", MANIFEST),
+        (
+            "mem0_runtime_artifacts.schema.json",
+            MANIFEST.with_name("mem0-runtime-artifacts.json"),
+        ),
+    )
+    for schema_name, instance_path in cases:
+        schema = json.loads((CONTRACTS / schema_name).read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(
+            json.loads(instance_path.read_text(encoding="utf-8"))
+        )
 
 
 class _Response(io.BytesIO):
@@ -116,19 +133,55 @@ def test_model_download_resumes_partial_file_and_uses_official_fallback(
     assert progress[-1] == (len(content), len(content), "weights.bin")
 
 
+def test_model_download_retries_official_when_mirror_payload_hash_is_wrong(
+    tmp_path: Path,
+) -> None:
+    trusted = b"trusted model bytes"
+    artifact = ModelArtifact(len(trusted), hashlib.sha256(trusted).hexdigest())
+    observed: list[str] = []
+
+    def opener(request, *, timeout: float):
+        assert timeout == 30
+        observed.append(request.full_url)
+        payload = b"x" * len(trusted) if "mirror.example" in request.full_url else trusted
+        return _Response(payload, status=200)
+
+    downloader = ResumableModelDownloader(
+        repo_id="owner/model",
+        revision="a" * 40,
+        files={"weights.bin": artifact},
+        sources=("https://mirror.example", "https://official.example"),
+        download_root=tmp_path / "downloads",
+        source_mode="auto",
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+        opener=opener,
+    )
+
+    downloader.download(
+        revision="a" * 40,
+        relative_path="weights.bin",
+        destination=tmp_path / "stage" / "weights.bin",
+    )
+
+    assert len(observed) == 2
+    assert downloader.last_source == "https://official.example"
+
+
 class _Layer:
     def __init__(self, *, ready: bool = False) -> None:
         self.is_ready = ready
         self.installs: list[str] = []
+        self.offline_roots: list[Path | None] = []
         self.uninstalls = 0
 
     def ready(self) -> bool:
         return self.is_ready
 
     def install(self, *, source_mode, offline_root, pause_requested, progress) -> None:
-        del offline_root
         assert not pause_requested.is_set()
         self.installs.append(source_mode)
+        self.offline_roots.append(offline_root)
         progress(5, 10, f"{source_mode}.fixture")
         self.is_ready = True
 
@@ -151,6 +204,7 @@ def test_capability_installs_only_after_explicit_start_and_publishes_progress() 
 
     initial = installer.status()
     assert initial.state is CapabilityState.MISSING
+    assert initial.to_dict()["status"] == "UNAVAILABLE"
     assert runtime.installs == []
     assert model.installs == []
 
@@ -167,6 +221,11 @@ def test_capability_installs_only_after_explicit_start_and_publishes_progress() 
     public = ready.to_dict()
     assert public["license_summary"] == "fixture licenses"
     assert public["requires_gpu"] is False
+    assert public["status"] == "READY"
+    status_schema = json.loads(
+        (CONTRACTS / "mem0_capability_status.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator(status_schema).validate(public)
     assert "path" not in json.dumps(public).casefold()
 
 
@@ -204,6 +263,45 @@ def test_capability_start_returns_before_background_install_finishes() -> None:
     assert installer.status().state is CapabilityState.READY
 
 
+def test_queued_pause_survives_worker_start_and_resume(monkeypatch) -> None:
+    class DeferredThread:
+        def __init__(self, *, target, kwargs, **_options) -> None:
+            self.target = target
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def run(self) -> None:
+            self.target(**self.kwargs)
+
+    monkeypatch.setattr("mem0_capability_install.threading.Thread", DeferredThread)
+    runtime = _Layer()
+    model = _Layer()
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime,
+        model=model,
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+    assert installer.start(source_mode="auto") == "APPLIED"
+    assert installer.pause() == "APPLIED"
+    installer._thread.run()
+    assert installer.status().state is CapabilityState.PAUSED
+    assert runtime.installs == []
+
+    assert installer.resume(source_mode="auto") == "APPLIED"
+    installer._thread.run()
+    assert runtime.installs == ["auto"]
+    assert model.installs == ["auto"]
+    assert installer.status().state is CapabilityState.READY
+
+
 def test_capability_pause_resume_and_uninstall_keep_model_unless_confirmed() -> None:
     runtime = _Layer(ready=True)
     model = _Layer(ready=True)
@@ -227,6 +325,27 @@ def test_capability_pause_resume_and_uninstall_keep_model_unless_confirmed() -> 
     assert installer.uninstall(remove_model=True) == "APPLIED"
     assert runtime.uninstalls == 2
     assert model.uninstalls == 1
+
+
+def test_capability_uninstall_reports_failure_instead_of_missing() -> None:
+    class FailingLayer(_Layer):
+        def uninstall(self) -> None:
+            raise OSError("synthetic lock")
+
+    installer = Mem0CapabilityInstaller(
+        runtime=FailingLayer(ready=True),
+        model=_Layer(ready=True),
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+
+    assert installer.uninstall(remove_model=False) == "REJECTED"
+    status = installer.status()
+    assert status.state is CapabilityState.REPAIR
+    assert status.reason_code == "MEM0_CAPABILITY_UNINSTALL_FAILED"
+    assert status.to_dict()["status"] == "UNAVAILABLE"
 
 
 def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
@@ -348,124 +467,26 @@ def test_managed_runtime_verifies_in_embedded_python_child_and_caches_result(
     assert calls[0][-2:] == [str(target), str(requirements)]
 
 
-def test_managed_embedding_imports_offline_files_through_same_hash_gate(
+def test_managed_embedding_uninstall_removes_model_and_transport_cache(
     tmp_path: Path,
 ) -> None:
-    names = (
-        "1_Pooling/config.json",
-        "config.json",
-        "config_sentence_transformers.json",
-        "model.safetensors",
-        "modules.json",
-        "sentence_bert_config.json",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.txt",
-    )
-    files: dict[str, ModelArtifact] = {}
-    offline = tmp_path / "offline" / "model"
-    for index, name in enumerate(names):
-        payload = f"synthetic-{index}".encode()
-        target = offline.joinpath(*name.split("/"))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        files[name] = ModelArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
     layer = ManagedEmbeddingModel(
         data_root=tmp_path / "data",
-        bom=ModelBOM(
-            repo_id="BAAI/bge-small-zh-v1.5",
-            revision="7999e1d3359715c523056ef9478215996d62a620",
-            license="MIT",
-            sources=("https://mirror.example", "https://official.example"),
-            files=files,
-        ),
+        bom=bom.model,
         download_root=tmp_path / "downloads",
     )
-    progress: list[str] = []
+    layer.config.embedding_snapshot.mkdir(parents=True)
+    manifest = layer.config.model_cache / "olivia-mem0-embedding-manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    layer.download_root.mkdir(parents=True)
+    (layer.download_root / "model.safetensors.part").write_bytes(b"partial")
 
-    layer.install(
-        source_mode="offline",
-        offline_root=tmp_path / "offline",
-        pause_requested=threading.Event(),
-        progress=lambda _done, _total, current: progress.append(current),
-    )
-
-    assert layer.ready() is True
-    assert len(progress) == 10
     layer.uninstall()
-    assert layer.ready() is False
 
-
-def test_offline_pack_reuses_bom_and_rejects_unexpected_archive_paths(
-    tmp_path: Path,
-) -> None:
-    model_payload = b"offline-model"
-    requirement_payload = b"fixture==1 --hash=sha256:" + b"0" * 64 + b"\n"
-    bom = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
-    synthetic_model = ModelBOM(
-        repo_id=bom.model.repo_id,
-        revision=bom.model.revision,
-        license=bom.model.license,
-        sources=bom.model.sources,
-        files={
-            "model.safetensors": ModelArtifact(
-                len(model_payload), hashlib.sha256(model_payload).hexdigest()
-            )
-        },
-    )
-    synthetic_bom = type(bom)(
-        capability=bom.capability,
-        status=bom.status,
-        version=bom.version,
-        runtime=type(bom.runtime)(
-            requirements_sha256=hashlib.sha256(requirement_payload).hexdigest(),
-            package_count=1,
-            estimated_download_bytes=1024,
-            sources=bom.runtime.sources,
-        ),
-        model=synthetic_model,
-        license_summary=bom.license_summary,
-        requires_gpu=bom.requires_gpu,
-    )
-    package = tmp_path / "memory.oliviapack"
-    metadata = {
-        "schema_version": "olivia.offline-capability-pack.v1",
-        "capability": "long_term_memory",
-        "version": synthetic_bom.version,
-        "requirements_sha256": synthetic_bom.runtime.requirements_sha256,
-        "model_revision": synthetic_bom.model.revision,
-    }
-    with zipfile.ZipFile(package, "w") as archive:
-        archive.writestr("manifest.json", json.dumps(metadata))
-        archive.writestr("requirements.txt", requirement_payload)
-        archive.writestr("wheelhouse/fixture.whl", b"wheel")
-        archive.writestr("model/model.safetensors", model_payload)
-
-    extracted = extract_offline_mem0_pack(
-        package,
-        tmp_path / "staging",
-        bom=synthetic_bom,
-        requirements_bytes=requirement_payload,
-    )
-
-    assert (extracted / "wheelhouse" / "fixture.whl").read_bytes() == b"wheel"
-    assert (extracted / "model" / "model.safetensors").read_bytes() == model_payload
-
-    unsafe = tmp_path / "unsafe.oliviapack"
-    with zipfile.ZipFile(unsafe, "w") as archive:
-        archive.writestr("../escape.txt", b"bad")
-    try:
-        extract_offline_mem0_pack(
-            unsafe,
-            tmp_path / "unsafe-stage",
-            bom=synthetic_bom,
-            requirements_bytes=requirement_payload,
-        )
-    except RuntimeError as error:
-        assert str(error) == "MEM0_OFFLINE_PACKAGE_INVALID"
-    else:
-        raise AssertionError("unsafe offline package was accepted")
+    assert not layer.config.embedding_snapshot.exists()
+    assert not manifest.exists()
+    assert not layer.download_root.exists()
 
 
 def test_capability_rejects_start_before_thread_when_disk_space_is_low() -> None:
@@ -488,78 +509,3 @@ def test_capability_rejects_start_before_thread_when_disk_space_is_low() -> None
     assert status.reason_code == "MEM0_CAPABILITY_DISK_SPACE_LOW"
     assert runtime.installs == []
     assert model.installs == []
-
-
-def test_offline_pack_builder_requires_exact_wheel_and_model_hashes(
-    tmp_path: Path,
-) -> None:
-    wheel_payload = b"trusted wheel"
-    model_payload = b"trusted model"
-    wheelhouse = tmp_path / "wheelhouse"
-    model_root = tmp_path / "model"
-    wheelhouse.mkdir()
-    model_root.mkdir()
-    wheel = wheelhouse / "fixture-1-py3-none-any.whl"
-    wheel.write_bytes(wheel_payload)
-    (model_root / "model.safetensors").write_bytes(model_payload)
-    requirements = (
-        b"fixture==1 --hash=sha256:"
-        + hashlib.sha256(wheel_payload).hexdigest().encode()
-        + b"\n"
-    )
-    base = load_mem0_capability_bom(MANIFEST, REQUIREMENTS)
-    bom = type(base)(
-        capability=base.capability,
-        status=base.status,
-        version="fixture-offline-v1",
-        runtime=type(base.runtime)(
-            requirements_sha256=hashlib.sha256(requirements).hexdigest(),
-            package_count=1,
-            estimated_download_bytes=len(wheel_payload),
-            sources=base.runtime.sources,
-        ),
-        model=ModelBOM(
-            repo_id=base.model.repo_id,
-            revision=base.model.revision,
-            license=base.model.license,
-            sources=base.model.sources,
-            files={
-                "model.safetensors": ModelArtifact(
-                    len(model_payload),
-                    hashlib.sha256(model_payload).hexdigest(),
-                )
-            },
-        ),
-        license_summary=base.license_summary,
-        requires_gpu=False,
-    )
-    output = tmp_path / "mem0.oliviapack"
-
-    assert build_mem0_offline_pack(
-        output=output,
-        wheelhouse=wheelhouse,
-        model_root=model_root,
-        bom=bom,
-        requirements_bytes=requirements,
-    ) == output
-    extracted = extract_offline_mem0_pack(
-        output,
-        tmp_path / "extract",
-        bom=bom,
-        requirements_bytes=requirements,
-    )
-    assert (extracted / "wheelhouse" / wheel.name).read_bytes() == wheel_payload
-
-    wheel.write_bytes(b"tampered")
-    try:
-        build_mem0_offline_pack(
-            output=tmp_path / "bad.oliviapack",
-            wheelhouse=wheelhouse,
-            model_root=model_root,
-            bom=bom,
-            requirements_bytes=requirements,
-        )
-    except RuntimeError as error:
-        assert str(error) == "MEM0_OFFLINE_WHEELHOUSE_INVALID"
-    else:
-        raise AssertionError("tampered wheelhouse was accepted")

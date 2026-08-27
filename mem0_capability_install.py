@@ -8,7 +8,7 @@ from enum import StrEnum
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -18,7 +18,6 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 import uuid
-import zipfile
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -48,11 +47,20 @@ class ModelArtifact:
 
 
 @dataclass(frozen=True)
+class RuntimeArtifact:
+    filename: str
+    size_bytes: int
+    sha256: str
+    license: str
+
+
+@dataclass(frozen=True)
 class RuntimeBOM:
     requirements_sha256: str
     package_count: int
     estimated_download_bytes: int
     sources: tuple[str, str]
+    artifacts: tuple[RuntimeArtifact, ...]
 
 
 @dataclass(frozen=True)
@@ -106,7 +114,8 @@ def load_mem0_capability_bom(
 ) -> Mem0CapabilityBOM:
     try:
         payload: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
-        requirements_digest = hashlib.sha256(requirements_path.read_bytes()).hexdigest()
+        requirements_bytes = requirements_path.read_bytes()
+        requirements_digest = hashlib.sha256(requirements_bytes).hexdigest()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("capability BOM is unavailable") from exc
     if not isinstance(payload, dict) or set(payload) != {
@@ -134,35 +143,75 @@ def load_mem0_capability_bom(
     ):
         raise ValueError("capability BOM is invalid")
     if set(runtime) != {
+        "artifact_id",
+        "canonical_source",
         "requirements",
+        "artifacts",
         "requirements_sha256",
         "package_count",
-        "estimated_download_bytes",
+        "download_size_bytes",
+        "license",
+        "redistributable",
+        "required",
+        "target",
+        "install_mode",
+        "status",
         "pypi_sources",
     }:
         raise ValueError("capability runtime BOM is invalid")
     runtime_sources = runtime.get("pypi_sources")
     if (
+        runtime.get("artifact_id") != "mem0-runtime-windows-cp312"
+        or runtime.get("canonical_source") != "https://pypi.org/simple"
+        or
         runtime.get("requirements") != "installer/mem0-runtime-requirements.txt"
+        or runtime.get("artifacts") != "installer/mem0-runtime-artifacts.json"
         or runtime.get("requirements_sha256") != requirements_digest
         or not _SHA256_RE.fullmatch(str(runtime.get("requirements_sha256", "")))
         or type(runtime.get("package_count")) is not int
         or runtime["package_count"] <= 0
-        or type(runtime.get("estimated_download_bytes")) is not int
-        or runtime["estimated_download_bytes"] <= 0
+        or type(runtime.get("download_size_bytes")) is not int
+        or runtime["download_size_bytes"] <= 0
+        or not isinstance(runtime.get("license"), str)
+        or runtime.get("redistributable") is not False
+        or runtime.get("required") is not False
+        or runtime.get("target") != "runtime/mem0-site-packages"
+        or runtime.get("install_mode") != "on_demand"
+        or runtime.get("status") != "FIXED"
         or not isinstance(runtime_sources, dict)
         or set(runtime_sources) != {"mirror", "official"}
     ):
         raise ValueError("capability runtime BOM is invalid")
-    if set(model) != {"repo_id", "revision", "license", "sources", "files"}:
+    if set(model) != {
+        "artifact_id",
+        "canonical_source",
+        "repo_id",
+        "revision",
+        "license",
+        "redistributable",
+        "required",
+        "target",
+        "install_mode",
+        "status",
+        "sources",
+        "files",
+    }:
         raise ValueError("capability model BOM is invalid")
     model_sources = model.get("sources")
     raw_files = model.get("files")
     if (
-        model.get("repo_id") != "BAAI/bge-small-zh-v1.5"
+        model.get("artifact_id") != "BAAI/bge-small-zh-v1.5"
+        or model.get("canonical_source")
+        != "https://huggingface.co/BAAI/bge-small-zh-v1.5"
+        or model.get("repo_id") != "BAAI/bge-small-zh-v1.5"
         or not isinstance(model.get("revision"), str)
         or not _REVISION_RE.fullmatch(model["revision"])
         or not isinstance(model.get("license"), str)
+        or model.get("redistributable") is not True
+        or model.get("required") is not False
+        or model.get("target") != "data/memory/model-cache"
+        or model.get("install_mode") != "on_demand"
+        or model.get("status") != "FIXED"
         or not isinstance(model_sources, dict)
         or set(model_sources) != {"mirror", "official"}
         or not isinstance(raw_files, dict)
@@ -184,6 +233,60 @@ def load_mem0_capability_bom(
         ):
             raise ValueError("capability model file is invalid")
         files[name] = ModelArtifact(item["size_bytes"], item["sha256"])
+    try:
+        artifact_payload: Any = json.loads(
+            manifest_path.with_name("mem0-runtime-artifacts.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("capability runtime artifacts are unavailable") from exc
+    raw_artifacts = artifact_payload.get("artifacts") if isinstance(artifact_payload, dict) else None
+    if (
+        not isinstance(artifact_payload, dict)
+        or set(artifact_payload) != {"schema_version", "artifacts"}
+        or artifact_payload.get("schema_version")
+        != "olivia.capability-runtime-artifacts.v1"
+        or not isinstance(raw_artifacts, list)
+        or len(raw_artifacts) != runtime["package_count"]
+    ):
+        raise ValueError("capability runtime artifacts are invalid")
+    artifacts: list[RuntimeArtifact] = []
+    names: set[str] = set()
+    for item in raw_artifacts:
+        if not isinstance(item, dict) or set(item) != {
+            "filename",
+            "size_bytes",
+            "sha256",
+            "license",
+        }:
+            raise ValueError("capability runtime artifact is invalid")
+        filename = item.get("filename")
+        digest = item.get("sha256")
+        if (
+            not isinstance(filename, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.whl", filename)
+            or filename.casefold() in names
+            or type(item.get("size_bytes")) is not int
+            or item["size_bytes"] <= 0
+            or not isinstance(digest, str)
+            or not _SHA256_RE.fullmatch(digest)
+            or not isinstance(item.get("license"), str)
+            or not item["license"]
+        ):
+            raise ValueError("capability runtime artifact is invalid")
+        names.add(filename.casefold())
+        artifacts.append(
+            RuntimeArtifact(filename, item["size_bytes"], digest, item["license"])
+        )
+    requirements_hashes = set(
+        re.findall(rb"--hash=sha256:([0-9a-f]{64})", requirements_bytes)
+    )
+    if (
+        {item.sha256.encode("ascii") for item in artifacts} != requirements_hashes
+        or sum(item.size_bytes for item in artifacts) != runtime["download_size_bytes"]
+    ):
+        raise ValueError("capability runtime artifact closure is invalid")
     return Mem0CapabilityBOM(
         capability=payload["capability"],
         status=payload["status"],
@@ -191,11 +294,12 @@ def load_mem0_capability_bom(
         runtime=RuntimeBOM(
             requirements_sha256=requirements_digest,
             package_count=runtime["package_count"],
-            estimated_download_bytes=runtime["estimated_download_bytes"],
+            estimated_download_bytes=runtime["download_size_bytes"],
             sources=(
                 _https_source(runtime_sources["mirror"]),
                 _https_source(runtime_sources["official"]),
             ),
+            artifacts=tuple(artifacts),
         ),
         model=ModelBOM(
             repo_id=model["repo_id"],
@@ -241,6 +345,7 @@ class ResumableModelDownloader:
         self.total_bytes = sum(item.size_bytes for item in files.values())
         self.completed_bytes = 0
         self._completed: set[str] = set()
+        self.last_source: str | None = None
 
     def download(
         self,
@@ -263,6 +368,10 @@ class ResumableModelDownloader:
             for source in self.sources:
                 try:
                     self._transfer(source, relative_path, partial, artifact)
+                    if not self._valid(partial, artifact):
+                        partial.unlink(missing_ok=True)
+                        raise RuntimeError("MEM0_MODEL_HASH_MISMATCH")
+                    self.last_source = source
                     last_error = None
                     break
                 except _DownloadPaused:
@@ -271,9 +380,6 @@ class ResumableModelDownloader:
                     last_error = exc
             if last_error is not None:
                 raise RuntimeError("MEM0_MODEL_DOWNLOAD_FAILED") from last_error
-            if not self._valid(partial, artifact):
-                partial.unlink(missing_ok=True)
-                raise RuntimeError("MEM0_MODEL_HASH_MISMATCH")
             partial.replace(cached)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(cached, destination)
@@ -402,6 +508,7 @@ class ManagedMem0Runtime:
         self.cache = self.install_root / "downloads" / "pip-cache"
         self._ready_fingerprint: tuple[int, ...] | None = None
         self._ready_result = False
+        self.last_source: str | None = None
         try:
             self.python_executable.relative_to(self.install_root / "runtime")
             self.requirements.relative_to(self.install_root / "local_backend")
@@ -529,11 +636,9 @@ class ManagedMem0Runtime:
         if self.ready():
             return
         attempts: tuple[tuple[str | None, Path | None], ...]
-        if source_mode == "offline":
-            if offline_root is None:
-                raise RuntimeError("MEM0_OFFLINE_PACKAGE_REQUIRED")
-            attempts = ((None, offline_root / "wheelhouse"),)
-        elif source_mode == "official":
+        if offline_root is not None:
+            raise ValueError("offline capability packs are not enabled")
+        if source_mode == "official":
             attempts = ((self.sources[1], None),)
         elif source_mode == "auto":
             attempts = ((self.sources[0], None), (self.sources[1], None))
@@ -558,6 +663,7 @@ class ManagedMem0Runtime:
                 pause_requested=pause_requested,
             )
             if result == 0:
+                self.last_source = "offline" if wheelhouse is not None else source
                 installed = True
                 break
         if not installed:
@@ -592,49 +698,17 @@ class ManagedMem0Runtime:
 
     def uninstall(self) -> None:
         self._update_pth(enabled=False)
-        shutil.rmtree(self.target, ignore_errors=True)
-        shutil.rmtree(self.staging, ignore_errors=True)
+        for path in (self.target, self.staging):
+            if path.exists():
+                shutil.rmtree(path)
+            if path.exists():
+                raise RuntimeError("MEM0_RUNTIME_UNINSTALL_FAILED")
         self._ready_fingerprint = None
         self._ready_result = False
 
 
-class _OfflineModelDownloader:
-    def __init__(
-        self,
-        root: Path,
-        files: Mapping[str, ModelArtifact],
-        pause_requested: threading.Event,
-        progress: Progress,
-    ) -> None:
-        self.root = root
-        self.files = files
-        self.pause_requested = pause_requested
-        self.progress = progress
-        self.completed = 0
-        self.total = sum(item.size_bytes for item in files.values())
-
-    def download(
-        self,
-        *,
-        revision: str,
-        relative_path: str,
-        destination: Path,
-    ) -> None:
-        del revision
-        if self.pause_requested.is_set():
-            raise _DownloadPaused
-        artifact = self.files.get(relative_path)
-        source = self.root.joinpath(*relative_path.split("/"))
-        if artifact is None or not ResumableModelDownloader._valid(source, artifact):
-            raise RuntimeError("MEM0_OFFLINE_MODEL_INVALID")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        self.completed += artifact.size_bytes
-        self.progress(self.completed, self.total, relative_path)
-
-
 class ManagedEmbeddingModel:
-    """Install the trusted BGE revision through online or offline transport."""
+    """Install the trusted BGE revision through verified online transport."""
 
     def __init__(
         self,
@@ -652,6 +726,7 @@ class ManagedEmbeddingModel:
             data_root=data_root / "memory" / "mem0",
             embedding_cache=data_root / "memory" / "model-cache",
         )
+        self.last_source: str | None = None
 
     def ready(self) -> bool:
         from mem0_memory import verified_embedding_cache
@@ -678,26 +753,18 @@ class ManagedEmbeddingModel:
 
         if self.ready():
             return
-        if source_mode == "offline":
-            if offline_root is None:
-                raise RuntimeError("MEM0_OFFLINE_PACKAGE_REQUIRED")
-            downloader: Any = _OfflineModelDownloader(
-                offline_root / "model",
-                self.bom.files,
-                pause_requested,
-                progress,
-            )
-        else:
-            downloader = ResumableModelDownloader(
-                repo_id=self.bom.repo_id,
-                revision=self.bom.revision,
-                files=self.bom.files,
-                sources=self.bom.sources,
-                download_root=self.download_root,
-                source_mode=source_mode,
-                pause_requested=pause_requested,
-                progress=progress,
-            )
+        if offline_root is not None:
+            raise ValueError("offline capability packs are not enabled")
+        downloader = ResumableModelDownloader(
+            repo_id=self.bom.repo_id,
+            revision=self.bom.revision,
+            files=self.bom.files,
+            sources=self.bom.sources,
+            download_root=self.download_root,
+            source_mode=source_mode,
+            pause_requested=pause_requested,
+            progress=progress,
+        )
         result = Mem0EmbeddingInstaller(
             self.config,
             downloader=downloader,
@@ -705,6 +772,7 @@ class ManagedEmbeddingModel:
                 name: artifact.sha256 for name, artifact in self.bom.files.items()
             },
         ).install()
+        self.last_source = downloader.last_source
         if result.status not in {"APPLIED", "NOOP"} or not self.ready():
             if pause_requested.is_set():
                 raise _DownloadPaused
@@ -713,8 +781,13 @@ class ManagedEmbeddingModel:
     def uninstall(self) -> None:
         snapshot = self.config.embedding_snapshot
         manifest = self.config.model_cache / "olivia-mem0-embedding-manifest.json"
-        shutil.rmtree(snapshot, ignore_errors=True)
+        if snapshot.exists():
+            shutil.rmtree(snapshot)
         manifest.unlink(missing_ok=True)
+        if self.download_root.exists():
+            shutil.rmtree(self.download_root)
+        if snapshot.exists() or manifest.exists() or self.download_root.exists():
+            raise RuntimeError("MEM0_MODEL_UNINSTALL_FAILED")
 
 
 def create_mem0_capability_installer(
@@ -753,83 +826,6 @@ def create_mem0_capability_installer(
     )
 
 
-def extract_offline_mem0_pack(
-    package: Path,
-    destination: Path,
-    *,
-    bom: Mem0CapabilityBOM,
-    requirements_bytes: bytes,
-) -> Path:
-    """Extract one bounded capability archive after embedded-BOM verification."""
-
-    if package.suffix.casefold() != ".oliviapack" or destination.exists():
-        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-    expected_model = {f"model/{name}": item for name, item in bom.model.files.items()}
-    expected_metadata = {
-        "schema_version": "olivia.offline-capability-pack.v1",
-        "capability": "long_term_memory",
-        "version": bom.version,
-        "requirements_sha256": bom.runtime.requirements_sha256,
-        "model_revision": bom.model.revision,
-    }
-    try:
-        if package.stat().st_size > 1_073_741_824:
-            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-        with zipfile.ZipFile(package) as archive:
-            infos = [item for item in archive.infolist() if not item.is_dir()]
-            names: set[str] = set()
-            total_size = 0
-            wheel_count = 0
-            for info in infos:
-                path = PurePosixPath(info.filename)
-                normalized = path.as_posix()
-                unix_mode = (info.external_attr >> 16) & 0o170000
-                if (
-                    path.is_absolute()
-                    or normalized != info.filename
-                    or any(part in {"", ".", ".."} for part in path.parts)
-                    or normalized.casefold() in names
-                    or info.flag_bits & 0x1
-                    or unix_mode == 0o120000
-                    or info.file_size > 536_870_912
-                ):
-                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-                names.add(normalized.casefold())
-                total_size += info.file_size
-                if normalized.startswith("wheelhouse/") and len(path.parts) == 2 and normalized.endswith(".whl"):
-                    wheel_count += 1
-                elif normalized not in {"manifest.json", "requirements.txt"} and normalized not in expected_model:
-                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-            required = {"manifest.json", "requirements.txt", *expected_model}
-            if total_size > 1_073_741_824 or wheel_count < 1 or not required.issubset(
-                {info.filename for info in infos}
-            ):
-                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-            metadata = json.loads(archive.read("manifest.json").decode("utf-8"))
-            if metadata != expected_metadata or archive.read("requirements.txt") != requirements_bytes:
-                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-            destination.mkdir(parents=True)
-            for info in infos:
-                target = destination.joinpath(*PurePosixPath(info.filename).parts)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output, length=1 << 20)
-    except RuntimeError:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise
-    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID") from exc
-    if hashlib.sha256(requirements_bytes).hexdigest() != bom.runtime.requirements_sha256:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-    for relative, artifact in expected_model.items():
-        if not ResumableModelDownloader._valid(destination / relative, artifact):
-            shutil.rmtree(destination, ignore_errors=True)
-            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
-    return destination
-
-
 @dataclass(frozen=True)
 class CapabilityStatus:
     state: CapabilityState
@@ -846,7 +842,7 @@ class CapabilityStatus:
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "schema_version": "olivia.capability-status.v1",
-            "status": "READY",
+            "status": "READY" if self.state is CapabilityState.READY else "UNAVAILABLE",
             "capability": "long_term_memory",
             "state": self.state.value,
             "phase": self.phase,
@@ -922,9 +918,9 @@ class Mem0CapabilityInstaller:
         except Exception:
             ready = False
         with self._lock:
-            if ready and self._status.state not in {
-                CapabilityState.DOWNLOADING,
-                CapabilityState.VERIFYING,
+            if ready and self._status.state in {
+                CapabilityState.MISSING,
+                CapabilityState.READY,
             }:
                 return self._new_status(CapabilityState.READY, "complete", self.total)
             return self._status
@@ -951,12 +947,16 @@ class Mem0CapabilityInstaller:
         source_mode: str,
         offline_root: Path | None = None,
     ) -> str:
-        if source_mode not in {"auto", "official", "offline"}:
+        if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
         with self._lock:
             if self.runtime.ready() and self.model.ready():
                 return "NOOP"
-            self._pause.clear()
+            if self._pause.is_set():
+                self._status = self._new_status(
+                    CapabilityState.PAUSED, "queued", 0, source=source_mode
+                )
+                return "PAUSED"
             self._status = self._new_status(
                 CapabilityState.DOWNLOADING, "runtime", 0, source=source_mode
             )
@@ -982,7 +982,9 @@ class Mem0CapabilityInstaller:
                     CapabilityState.VERIFYING,
                     "verification",
                     self.total,
-                    source=source_mode,
+                    source=str(
+                        getattr(self.model, "last_source", None) or source_mode
+                    ),
                 )
             if not self.runtime.ready() or not self.model.ready():
                 raise RuntimeError("MEM0_CAPABILITY_VERIFY_FAILED")
@@ -1009,7 +1011,10 @@ class Mem0CapabilityInstaller:
             return "REJECTED"
         with self._lock:
             self._status = self._new_status(
-                CapabilityState.READY, "complete", self.total, source=source_mode
+                CapabilityState.READY,
+                "complete",
+                self.total,
+                source=str(getattr(self.model, "last_source", None) or source_mode),
             )
         return "APPLIED"
 
@@ -1018,9 +1023,8 @@ class Mem0CapabilityInstaller:
         *,
         source_mode: str,
         offline_root: Path | None = None,
-        cleanup_offline: bool = False,
     ) -> str:
-        if source_mode not in {"auto", "official", "offline"}:
+        if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -1043,6 +1047,7 @@ class Mem0CapabilityInstaller:
                     reason="MEM0_CAPABILITY_DISK_SPACE_LOW",
                 )
                 return "REJECTED"
+            self._pause.clear()
             self._status = self._new_status(
                 CapabilityState.QUEUED, "queued", 0, source=source_mode
             )
@@ -1051,7 +1056,6 @@ class Mem0CapabilityInstaller:
                 kwargs={
                     "source_mode": source_mode,
                     "offline_root": offline_root,
-                    "cleanup_offline": cleanup_offline,
                 },
                 name="olivia-mem0-capability-install",
                 daemon=True,
@@ -1064,18 +1068,8 @@ class Mem0CapabilityInstaller:
         *,
         source_mode: str,
         offline_root: Path | None,
-        cleanup_offline: bool,
     ) -> None:
-        try:
-            self.install(source_mode=source_mode, offline_root=offline_root)
-        finally:
-            if (
-                cleanup_offline
-                and offline_root is not None
-                and offline_root.name == "extracted"
-                and offline_root.parent.name.startswith(".mem0-offline-")
-            ):
-                shutil.rmtree(offline_root.parent, ignore_errors=True)
+        self.install(source_mode=source_mode, offline_root=offline_root)
 
     def pause(self) -> str:
         with self._lock:
@@ -1098,9 +1092,19 @@ class Mem0CapabilityInstaller:
             if self._thread is not None and self._thread.is_alive():
                 return "REJECTED"
         changed = self.runtime.ready() or remove_model and self.model.ready()
-        self.runtime.uninstall()
-        if remove_model:
-            self.model.uninstall()
+        try:
+            self.runtime.uninstall()
+            if remove_model:
+                self.model.uninstall()
+        except Exception:
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    "uninstall",
+                    0,
+                    reason="MEM0_CAPABILITY_UNINSTALL_FAILED",
+                )
+            return "REJECTED"
         with self._lock:
             self._status = self._new_status(CapabilityState.MISSING, "idle", 0)
         return "APPLIED" if changed else "NOOP"
@@ -1117,6 +1121,5 @@ __all__ = [
     "ModelArtifact",
     "ResumableModelDownloader",
     "create_mem0_capability_installer",
-    "extract_offline_mem0_pack",
     "load_mem0_capability_bom",
 ]

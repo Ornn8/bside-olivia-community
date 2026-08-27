@@ -97,6 +97,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "installer/mem0-capability-manifest.json",
+    "installer/mem0-runtime-artifacts.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",
     "runtime/imports/historical_memory.py",

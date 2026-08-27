@@ -4,19 +4,35 @@
   "status": "FIXED",
   "version": "mem0ai-2.0.18+bge-small-zh-v1.5-7999e1d",
   "runtime": {
+    "artifact_id": "mem0-runtime-windows-cp312",
+    "canonical_source": "https://pypi.org/simple",
     "requirements": "installer/mem0-runtime-requirements.txt",
+    "artifacts": "installer/mem0-runtime-artifacts.json",
     "requirements_sha256": "c1b33ac879a788314f4d588fafe308db7d7ffaefd43c6dd15787be41d3132ef4",
     "package_count": 69,
-    "estimated_download_bytes": 235929600,
+    "download_size_bytes": 236253351,
+    "license": "Per-artifact license inventory; complete texts remain in wheel metadata",
+    "redistributable": false,
+    "required": false,
+    "target": "runtime/mem0-site-packages",
+    "install_mode": "on_demand",
+    "status": "FIXED",
     "pypi_sources": {
       "mirror": "https://pypi.tuna.tsinghua.edu.cn/simple",
       "official": "https://pypi.org/simple"
     }
   },
   "model": {
+    "artifact_id": "BAAI/bge-small-zh-v1.5",
+    "canonical_source": "https://huggingface.co/BAAI/bge-small-zh-v1.5",
     "repo_id": "BAAI/bge-small-zh-v1.5",
     "revision": "7999e1d3359715c523056ef9478215996d62a620",
     "license": "MIT",
+    "redistributable": true,
+    "required": false,
+    "target": "data/memory/model-cache",
+    "install_mode": "on_demand",
+    "status": "FIXED",
     "sources": {
       "mirror": "https://hf-mirror.com",
       "official": "https://huggingface.co"
