@@ -1,6 +1,6 @@
 # P02-05 deterministic prompt budget planner
 
-`prompt_budget.py` plans whole prompt blocks against caller-supplied cost units.
+`runtime/reply/prompt_budget.py` plans whole prompt blocks against caller-supplied cost units.
 It is pure and content-agnostic: it does not tokenize, render prompts, call a
 provider, load a persona, or alter user text.
 

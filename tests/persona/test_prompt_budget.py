@@ -1,6 +1,6 @@
 import pytest
 
-from prompt_budget import (
+from runtime.reply.prompt_budget import (
     PromptBudgetError,
     PromptBudgetExceeded,
     PromptBudgetItem,

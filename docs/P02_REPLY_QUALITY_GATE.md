@@ -1,6 +1,6 @@
 # P02 bounded ReplyQualityGate
 
-`reply_quality_gate.py` runs one deterministic scan and one semantic review on
+`runtime/reply/reply_quality_gate.py` runs one deterministic scan and one semantic review on
 a candidate. A hard deterministic violation or reviewer `rewrite`/`block`
 verdict may trigger exactly one rewrite by the original configured reply
 Provider. The rewritten text is scanned and reviewed once more; there is no

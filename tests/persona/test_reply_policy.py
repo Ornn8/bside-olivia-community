@@ -7,7 +7,7 @@ from reply_context import (
     ReplyMode,
     TrustedTime,
 )
-from reply_policy import SharedHistoryClaim, ViolationCode, scan_reply
+from runtime.reply.reply_policy import SharedHistoryClaim, ViolationCode, scan_reply
 
 
 def test_internal_markup_and_serialized_private_state_are_hard_violations() -> None:

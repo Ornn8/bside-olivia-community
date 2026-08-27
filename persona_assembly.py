@@ -9,7 +9,7 @@ import re
 from typing import Callable
 
 from persona_loader import PersonaDeclaration, PersonaSnapshot
-from prompt_budget import (
+from runtime.reply.prompt_budget import (
     PromptBudgetItem,
     PromptBudgetReport,
     PromptSection,
