@@ -59,6 +59,10 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "reply_pipeline.py" in packaged_paths
     assert "reply_reviewer.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
+    assert "runtime/reply/reply_delivery.py" in packaged_paths
+    assert "runtime/reply/reply_media.py" in packaged_paths
+    assert "reply_delivery.py" in packaged_paths
+    assert "reply_media.py" in packaged_paths
     assert not {
         "conversation_memory_identity.py",
         "private_world_delivery.py",
@@ -116,6 +120,11 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "assert reply_pipeline is runtime.reply.reply_pipeline; "
             "assert reply_reviewer is runtime.reply.reply_reviewer; "
             "import original_client_server, runtime.media.music_caption, song_content; "
+            "import reply_delivery, reply_media; "
+            "from runtime.reply import reply_delivery as canonical_delivery; "
+            "from runtime.reply import reply_media as canonical_media; "
+            "assert reply_delivery is canonical_delivery; "
+            "assert reply_media is canonical_media; "
             "import local_server",
         ],
         cwd=tmp_path,

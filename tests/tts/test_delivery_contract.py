@@ -11,7 +11,7 @@ import pytest
 import tts.delivery as delivery
 import http_contract
 
-from reply_delivery import (
+from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
     build_ordinary_video_repair_content,
     ordinary_video_reply_length_ok,
