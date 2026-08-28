@@ -736,6 +736,8 @@ private_world_candidate_analyzer: PrivateWorldCandidateAnalyzer = (
 private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
     private_world_candidate_runtime.store
 )
+OFFICIAL_HISTORY_PUBLISH_STATUS_KEY = "official_history_publish_status"
+OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED = "completed_v1"
 
 
 def _official_history_memory_available() -> bool:
@@ -1625,7 +1627,12 @@ def _official_history_mailbox_projection() -> list[dict]:
     projected: list[dict] = []
     for letter in _legacy_letter_collection():
         metadata = letter.get("metadata")
-        if not isinstance(metadata, Mapping) or metadata.get("import_kind") != "official_text_reply":
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get("import_kind") != "official_text_reply"
+            or metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
+            != OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+        ):
             continue
         projected.append({**letter, "is_read": 1, "read_only": True})
     return projected
@@ -2171,6 +2178,18 @@ async def route(
                     "error_code": error_code,
                     "retryable": True,
                 })
+            records = [
+                replace(
+                    record,
+                    metadata={
+                        **dict(record.metadata),
+                        OFFICIAL_HISTORY_PUBLISH_STATUS_KEY: (
+                            OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+                        ),
+                    },
+                )
+                for record in records
+            ]
         adapter = _legacy_import_adapter()
         if not getattr(adapter, "enabled", False):
             return err(503, "MEMORY_UNAVAILABLE", {

@@ -422,7 +422,10 @@ def test_official_history_is_visible_in_current_mailbox_without_unread_pollution
         "reply_video_url": "",
         "is_read": 0,
         "read_only": True,
-        "metadata": {"import_kind": "official_text_reply"},
+        "metadata": {
+            "import_kind": "official_text_reply",
+            "official_history_publish_status": "completed_v1",
+        },
     }
     monkeypatch.setattr(local_server.store, "letters", [])
     monkeypatch.setattr(
@@ -451,6 +454,32 @@ def test_official_history_is_visible_in_current_mailbox_without_unread_pollution
     assert detail["data"]["reply_text"] == "historical reply"
     assert detail["data"]["scope"] == "legacy"
     assert detail["data"]["read_only"] is True
+
+
+def test_unmarked_official_archive_from_an_older_build_stays_out_of_mailbox(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    archived_before_memory_completed = {
+        "letter_id": "legacy-official-partial",
+        "created_at": 1710000000,
+        "content": "historical user letter",
+        "reply_text": "historical reply",
+        "is_read": 0,
+        "read_only": True,
+        "metadata": {"import_kind": "official_text_reply"},
+    }
+    monkeypatch.setattr(local_server.store, "letters", [])
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_letter_collection",
+        lambda *, strict=False: [archived_before_memory_completed],
+    )
+
+    listed = asyncio.run(local_server.route("GET", "/toy/letter/list", {}, {}))
+
+    assert listed["data"]["total"] == 0
 
 
 def test_official_import_persists_memory_before_publishing_read_only_mailbox(
@@ -565,6 +594,8 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     assert imported["data"]["inserted"] == 1
     assert duplicate["data"]["inserted"] == 0
     assert duplicate["data"]["duplicates"] == 1
+    archived = local_server._legacy_letter_collection()
+    assert archived[0]["metadata"]["official_history_publish_status"] == "completed_v1"
     assert len(memory.list_memories(user_id="local-user")) == 1
     remembered = memory.list_memories(user_id="local-user")[0]
     assert remembered["user_message"] == "旧信正文"
