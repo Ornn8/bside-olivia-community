@@ -61,7 +61,8 @@ request_disposition 只描述明确音乐请求：none、discuss、fulfill、ref
 5. character_willing=true；
 6. music_role 为 performance、adaptation 或 spontaneous_motif；
 7. music_intent 分别为 perform、adapt 或 compose；
-8. 若用户明确提出音乐请求，request_disposition=fulfill。
+8. 若用户明确提出音乐请求，request_disposition=fulfill；
+9. 完整视频时 voice_materially_better=false；该字段只为旧的纯说话模式兼容保留。
 
 current_work_relevance 只能引用 routing_context.current_music_work 中存在的内容。
 melody_idea 只能与 spontaneous_motif + compose 同时出现，不能因为用户写了“音乐”

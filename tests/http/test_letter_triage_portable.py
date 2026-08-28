@@ -114,6 +114,13 @@ def test_router_offers_only_text_or_spoken_plus_music_video() -> None:
     assert mode_schema["enum"] == ["musical_video", "text_letter"]
 
 
+def test_router_prompt_marks_voice_only_flag_obsolete_for_complete_video() -> None:
+    _, gateway = _route()
+
+    system_prompt = gateway.requests[0]["messages"][0]["content"]
+    assert "完整视频时 voice_materially_better=false" in system_prompt
+
+
 def test_music_discussion_remains_text_when_words_are_enough():
     result, _ = _route(
         reason_code="music_topic_still_needs_words",
