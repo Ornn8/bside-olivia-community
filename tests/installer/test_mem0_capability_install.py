@@ -57,7 +57,7 @@ def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
         "https://huggingface.co",
     )
     assert bom.model.source_revisions == (
-        "8399f11f8da998fe932df2684586c92024219d05",
+        "9534737c4ead352e88e6eb6faf4dab9ec1be9eed",
         "7999e1d3359715c523056ef9478215996d62a620",
     )
     assert len(bom.model.files) == 10
@@ -193,6 +193,62 @@ def test_model_download_retries_official_when_mirror_payload_hash_is_wrong(
     downloader.opener = lambda *_args, **_kwargs: pytest.fail("network must not be used")
     downloader.download(revision="a" * 40, relative_path="weights.bin", destination=tmp_path / "cached" / "weights.bin")
     assert downloader.last_source == "https://official.example"
+
+
+def test_model_download_stops_retrying_failed_mirror_for_remaining_files(
+    tmp_path: Path,
+) -> None:
+    payloads = {
+        "first.bin": b"first trusted model bytes",
+        "second.bin": b"second trusted model bytes",
+    }
+    artifacts = {
+        name: ModelArtifact(len(content), hashlib.sha256(content).hexdigest())
+        for name, content in payloads.items()
+    }
+    observed: list[str] = []
+
+    def opener(request, *, timeout: float):
+        assert timeout == 30
+        observed.append(request.full_url)
+        if request.full_url.startswith("https://mirror.example"):
+            raise OSError("synthetic mirror outage")
+        return _Response(
+            payloads[request.full_url.rsplit("/", 1)[-1]],
+            status=200,
+        )
+
+    downloader = ResumableModelDownloader(
+        repo_id="owner/model",
+        revision="a" * 40,
+        files=artifacts,
+        sources=("https://mirror.example", "https://official.example"),
+        download_root=tmp_path / "downloads",
+        source_mode="auto",
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+        opener=opener,
+    )
+
+    for name in payloads:
+        downloader.download(
+            revision="a" * 40,
+            relative_path=name,
+            destination=tmp_path / "stage" / name,
+        )
+
+    revision_path = "/owner/model/resolve/" + "a" * 40 + "/"
+    assert observed == [
+        "https://mirror.example" + revision_path + "first.bin",
+        "https://official.example" + revision_path + "first.bin",
+        "https://official.example" + revision_path + "second.bin",
+    ]
+    assert (tmp_path / "stage" / "first.bin").read_bytes() == payloads[
+        "first.bin"
+    ]
+    assert (tmp_path / "stage" / "second.bin").read_bytes() == payloads[
+        "second.bin"
+    ]
 
 
 def test_modelscope_fixed_revision_resumes_200_content_range_response(
