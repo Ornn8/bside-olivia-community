@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from installer.component_update import ComponentUpdateError, _validate_relative_path
 from installer.full_patch import PatchInstallError, copy_project_payload
 
 
@@ -73,19 +74,40 @@ def _export_commit(source: Path, commit: str, destination: Path, archive_path: P
                 timeout=30,
             )
         with zipfile.ZipFile(archive_path) as archive:
+            files: set[str] = set()
+            directories: set[str] = set()
             for info in archive.infolist():
                 name = info.filename
-                relative = PurePosixPath(name)
+                value = name[:-1] if info.is_dir() and name.endswith("/") else name
+                try:
+                    normalized = _validate_relative_path(value)
+                except ComponentUpdateError as exc:
+                    raise ComponentPackageBuildError(
+                        "UPDATE_SOURCE_ARCHIVE_UNSAFE"
+                    ) from exc
+                relative = PurePosixPath(normalized)
                 member_kind = stat.S_IFMT(info.external_attr >> 16)
                 if (
                     not name
                     or "\\" in name
-                    or relative.is_absolute()
-                    or any(part in {"", ".", ".."} for part in relative.parts)
                     or (not info.is_dir() and member_kind not in {0, stat.S_IFREG})
                 ):
                     raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_UNSAFE")
+                key = normalized.casefold()
+                parent_keys = {
+                    PurePosixPath(*relative.parts[:index]).as_posix().casefold()
+                    for index in range(1, len(relative.parts))
+                }
+                if key in files or key in directories or parent_keys & files:
+                    raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_UNSAFE")
+                directories.update(parent_keys)
+                if info.is_dir():
+                    directories.add(key)
+                else:
+                    files.add(key)
                 target = destination.joinpath(*relative.parts)
+                if not target.resolve().is_relative_to(destination.resolve()):
+                    raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_UNSAFE")
                 if info.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue
@@ -100,6 +122,37 @@ def _export_commit(source: Path, commit: str, destination: Path, archive_path: P
         zipfile.BadZipFile,
     ) as exc:
         raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_FAILED") from exc
+
+
+def _publish_outputs(staged: list[tuple[Path, Path]]) -> None:
+    reserved: list[Path] = []
+    try:
+        for _source, destination in staged:
+            descriptor = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            os.close(descriptor)
+            reserved.append(destination)
+    except FileExistsError as exc:
+        for path in reserved:
+            path.unlink(missing_ok=True)
+        raise ComponentPackageBuildError("UPDATE_OUTPUT_EXISTS") from exc
+    except OSError as exc:
+        for path in reserved:
+            path.unlink(missing_ok=True)
+        raise ComponentPackageBuildError("UPDATE_BUILD_FAILED") from exc
+    try:
+        for source, destination in staged:
+            os.replace(source, destination)
+    except OSError as exc:
+        for path in reserved:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise ComponentPackageBuildError("UPDATE_BUILD_FAILED") from exc
 
 
 def _payload_files(root: Path) -> list[Path]:
@@ -129,23 +182,25 @@ def build_component_package(
 ) -> dict[str, object]:
     """Build a deterministic package plus independent manifest/package digests."""
 
-    source_root = Path(source).expanduser().resolve()
-    package = Path(output).expanduser().resolve()
-    if not source_root.is_dir():
-        raise ComponentPackageBuildError("UPDATE_SOURCE_INVALID")
-    if package.suffix.lower() != ".oliviapatch":
-        raise ComponentPackageBuildError("UPDATE_OUTPUT_INVALID")
-    if not _VERSION_RE.fullmatch(version):
-        raise ComponentPackageBuildError("UPDATE_VERSION_INVALID")
-    manifest_sidecar = Path(f"{package}.manifest.sha256")
-    package_sidecar = Path(f"{package}.sha256")
-    if any(path.exists() for path in (package, manifest_sidecar, package_sidecar)):
-        raise ComponentPackageBuildError("UPDATE_OUTPUT_EXISTS")
-    source_commit = _verify_source(source_root, expected_source_commit)
-    package.parent.mkdir(parents=True, exist_ok=True)
-
-    staging = Path(tempfile.mkdtemp(prefix=".olivia-update-build-", dir=package.parent))
+    staging: Path | None = None
     try:
+        source_root = Path(source).expanduser().resolve()
+        package = Path(output).expanduser().resolve()
+        if not source_root.is_dir():
+            raise ComponentPackageBuildError("UPDATE_SOURCE_INVALID")
+        if package.suffix.lower() != ".oliviapatch":
+            raise ComponentPackageBuildError("UPDATE_OUTPUT_INVALID")
+        if not _VERSION_RE.fullmatch(version):
+            raise ComponentPackageBuildError("UPDATE_VERSION_INVALID")
+        manifest_sidecar = Path(f"{package}.manifest.sha256")
+        package_sidecar = Path(f"{package}.sha256")
+        if any(path.exists() for path in (package, manifest_sidecar, package_sidecar)):
+            raise ComponentPackageBuildError("UPDATE_OUTPUT_EXISTS")
+        source_commit = _verify_source(source_root, expected_source_commit)
+        package.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=".olivia-update-build-", dir=package.parent)
+        )
         exported_source = staging / "source"
         exported_source.mkdir()
         _export_commit(
@@ -192,9 +247,13 @@ def build_component_package(
         staged_package_sidecar = staging / package_sidecar.name
         staged_manifest_sidecar.write_text(manifest_sha256 + "\n", encoding="ascii")
         staged_package_sidecar.write_text(package_sha256 + "\n", encoding="ascii")
-        os.replace(staged_manifest_sidecar, manifest_sidecar)
-        os.replace(staged_package_sidecar, package_sidecar)
-        os.replace(staged_package, package)
+        _publish_outputs(
+            [
+                (staged_manifest_sidecar, manifest_sidecar),
+                (staged_package_sidecar, package_sidecar),
+                (staged_package, package),
+            ]
+        )
         return {
             "status": "BUILT",
             "component": "local_backend",
@@ -207,10 +266,11 @@ def build_component_package(
         }
     except ComponentPackageBuildError:
         raise
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise ComponentPackageBuildError("UPDATE_BUILD_FAILED") from exc
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 __all__ = [

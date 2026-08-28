@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from installer import component_package
 from installer import __main__ as installer_cli
 from installer.component_package import (
     ComponentPackageBuildError,
@@ -213,3 +215,123 @@ def test_packages_git_objects_not_an_assume_unchanged_worktree_file(
 
     with zipfile.ZipFile(package) as archive:
         assert archive.read("payload/local_server.py") == committed
+
+
+@pytest.mark.parametrize("fail_at", [2, 3])
+def test_publish_failure_removes_every_reserved_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: int,
+) -> None:
+    source, commit = _clean_payload_repo(tmp_path)
+    package = tmp_path / "transaction.oliviapatch"
+    real_replace = component_package.os.replace
+    calls = 0
+
+    def fail_one_replace(source_path: Path, destination_path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == fail_at:
+            raise PermissionError("synthetic publish failure")
+        real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(component_package.os, "replace", fail_one_replace)
+    with pytest.raises(ComponentPackageBuildError, match="UPDATE_BUILD_FAILED"):
+        build_component_package(
+            source,
+            package,
+            version="0.1.1",
+            expected_source_commit=commit,
+        )
+
+    assert not package.exists()
+    assert not Path(f"{package}.manifest.sha256").exists()
+    assert not Path(f"{package}.sha256").exists()
+    assert not list(tmp_path.glob(".olivia-update-build-*"))
+
+
+@pytest.mark.parametrize("unsafe_name", ["CON.txt", "asset:stream", "name. "])
+def test_commit_archive_rejects_windows_unsafe_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_name: str,
+) -> None:
+    malicious = tmp_path / "malicious.zip"
+    with zipfile.ZipFile(malicious, "w") as archive:
+        archive.writestr(unsafe_name, b"unsafe")
+
+    def fake_archive(_command, **kwargs):
+        kwargs["stdout"].write(malicious.read_bytes())
+        return subprocess.CompletedProcess(_command, 0)
+
+    monkeypatch.setattr(component_package.subprocess, "run", fake_archive)
+    with pytest.raises(ComponentPackageBuildError, match="UPDATE_SOURCE_ARCHIVE_UNSAFE"):
+        component_package._export_commit(
+            tmp_path,
+            "a" * 40,
+            tmp_path / "export",
+            tmp_path / "export.zip",
+        )
+
+
+@pytest.mark.parametrize("archive_kind", ["casefold-alias", "symlink"])
+def test_commit_archive_rejects_aliases_and_symlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_kind: str,
+) -> None:
+    malicious = tmp_path / "malicious.zip"
+    with zipfile.ZipFile(malicious, "w") as archive:
+        if archive_kind == "casefold-alias":
+            archive.writestr("Model.py", b"one")
+            archive.writestr("model.py", b"two")
+        else:
+            info = zipfile.ZipInfo("link.py")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(info, b"target.py")
+
+    def fake_archive(_command, **kwargs):
+        kwargs["stdout"].write(malicious.read_bytes())
+        return subprocess.CompletedProcess(_command, 0)
+
+    monkeypatch.setattr(component_package.subprocess, "run", fake_archive)
+    with pytest.raises(ComponentPackageBuildError, match="UPDATE_SOURCE_ARCHIVE_UNSAFE"):
+        component_package._export_commit(
+            tmp_path,
+            "a" * 40,
+            tmp_path / "export",
+            tmp_path / "export.zip",
+        )
+
+
+def test_cli_returns_stable_json_when_staging_cannot_be_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source, commit = _clean_payload_repo(tmp_path)
+    secret_path = str(tmp_path / "private-user-path")
+    monkeypatch.setattr(
+        component_package.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: (_ for _ in ()).throw(PermissionError(secret_path)),
+    )
+
+    exit_code = installer_cli.main(
+        [
+            "build-update",
+            "--source",
+            str(source),
+            "--output",
+            str(tmp_path / "failure.oliviapatch"),
+            "--version",
+            "0.1.1",
+            "--source-commit",
+            commit,
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert json.loads(output) == {"status": "ERROR", "code": "UPDATE_BUILD_FAILED"}
+    assert secret_path not in output
