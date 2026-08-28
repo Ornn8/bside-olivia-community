@@ -6,7 +6,7 @@
 
 安装后的客户端在“本地能力与下载”中提供两个独立 bundle：普通视频和音乐视频扩展。普通视频组装 CosyVoice 3、LatentSync 与 FFmpeg 的公开部分；音乐视频扩展另外组装 MiniMax Music 3、Demucs 和固定 revision 的 Seed-VC GPL 源码。LiveTalking 是独立可选能力，不参与普通/LatentSync 视频回信的 readiness。
 
-下载器默认选择国内源，失败后回退官方源；每个文件都校验声明的 size 和 SHA-256，使用 `.part` + HTTP Range 续传。声明了 `install.kind=zip` 的归档会在 staging 内拒绝绝对路径、父目录逃逸、符号链接、重复路径和超限展开，然后按固定目标安全解包；运行时路径写入 `data/capabilities/video/runtime-environment.json`，下次由 Windows 启动器验证并加载。只有下载、校验、解包和持久化接线全部完成才会标记 bundle `ready`。
+下载器默认选择国内源，失败后回退官方源；每个文件都校验声明的 size 和 SHA-256，使用 `.part` + HTTP Range 续传。声明了 `install.kind=zip` 的归档复用 Windows 更新包路径规则，在 staging 内拒绝路径逃逸、ADS、设备名、尾随点/空格、链接、重复路径和超限展开，并在解包后复验完整文件树。公开文件组装后会持久化运行时根路径；真实清单仍保持 `prerequisites_required` 或 `license_review_required`，不会把缺少 Python/TTS/正版素材或受限依赖的状态标记为 `ready`。
 
 音乐 bundle 必须由用户显式确认已阅读上游条款才会开始下载；组装公开文件后仍保持 `license_review_required`，不会在 RoFormer/Seed-VC 受限依赖缺失时标记 `ready`。RoFormer 和 Seed-VC 权重不会进入公共清单。Seed-VC GPL 源码会实际应用并验证 [`seed-vc-overlap-frames.patch`](../installer/seed-vc-overlap-frames.patch)。
 

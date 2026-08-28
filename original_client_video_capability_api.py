@@ -35,8 +35,6 @@ class VideoCapabilityAPIInstaller(Protocol):
     def pause(self) -> str: ...
     def resume(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def retry(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
-    def import_configured_assets(self, environment) -> str: ...
-    def import_configured_offline(self, *, bundle_id: str, environment) -> str: ...
 
 
 def _authorize(request: web.Request, *, confirmation: bool) -> str:
@@ -77,7 +75,6 @@ def mount_original_client_video_capability_api(
     *,
     trusted_origins: Sequence[str],
     authorize_session,
-    environment,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("VIDEO_CAPABILITY_API_ALREADY_MOUNTED")

@@ -233,9 +233,9 @@ def video_reply_dependency_status(
             "OLIVIA_ROFORMER_CONFIG_PATH",
         )
     )
-    assets_ready = bool(
-        file("OLIVIA_ORDINARY_ACTION_BASE")
-        and file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
+    ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
+    music_assets_ready = bool(
+        file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
         and performance_video_path is not None
         and performance_video_path.is_file()
     )
@@ -348,7 +348,14 @@ def video_reply_dependency_status(
         item(
             "official_video_assets",
             "Olivia 场景与转场素材",
-            assets_ready,
+            ordinary_assets_ready,
+            "local_import",
+            "从用户本机正版 Olivia 导入，不联网下载",
+        ),
+        item(
+            "music_video_assets",
+            "Olivia 音乐视频与转场素材",
+            music_assets_ready,
             "local_import",
             "从用户本机正版 Olivia 导入，不联网下载",
         ),
@@ -374,17 +381,31 @@ def video_reply_dependency_status(
             "由客户端自动创建，无需下载",
         ),
     ]
-    required_dependencies = [
-        item for item in dependencies if item["id"] != "livetalking"
+    ordinary_ids = {
+        "cosyvoice",
+        "latentsync",
+        "official_video_assets",
+        "ffmpeg",
+    }
+    ordinary_missing = [
+        item["id"]
+        for item in dependencies
+        if item["id"] in ordinary_ids and item["state"] != "ready"
     ]
-    ready = bool(
-        all(item["state"] == "ready" for item in required_dependencies)
-        and musical_reply_configured(
-            env,
-            performance_video_path=performance_video_path,
-        )
+    ordinary_ready = not ordinary_missing
+    music_ready = bool(
+        ordinary_ready
+        and minimax_ready
+        and roformer_ready
+        and music_assets_ready
+        and musical_reply_configured(env, performance_video_path=performance_video_path)
     )
-    return {"ready": ready, "dependencies": dependencies}
+    return {
+        "ready": ordinary_ready,
+        "music_ready": music_ready,
+        "ordinary_missing_dependencies": ordinary_missing,
+        "dependencies": dependencies,
+    }
 
 
 class MiniMaxMusic3Worker:

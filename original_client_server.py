@@ -400,7 +400,6 @@ def create_original_client_server_runtime(
                 video_capability_installer,
                 trusted_origins=origins,
                 authorize_session=setup_service.require_session,
-                environment=os.environ,
             )
         if component_updater is not None:
             mount_original_client_update_api(

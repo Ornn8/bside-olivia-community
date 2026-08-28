@@ -18,7 +18,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from llm_gateway import GatewayError, GatewayToolCall
 from runtime.media.media_paths import configured_media_path
-from music_reply import musical_reply_configured
+from music_reply import musical_reply_configured, video_reply_dependency_status
 
 
 ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表达方式。
@@ -470,12 +470,16 @@ def routing_context_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> RoutingContext:
     env = environ if environ is not None else os.environ
-    spoken = _spoken_video_configured(env)
-    musical_detected = spoken and _musical_video_configured(env)
-    complete_video = spoken and musical_detected
+    try:
+        readiness = video_reply_dependency_status(
+            env,
+            performance_video_path=_current_music_performance(env),
+        )
+    except Exception:
+        readiness = {"ready": False, "music_ready": False}
     return RoutingContext(
-        spoken_video_available=complete_video,
-        musical_video_available=complete_video,
+        spoken_video_available=readiness.get("ready") is True,
+        musical_video_available=readiness.get("music_ready") is True,
         current_music_work=_context_items(env.get("OLIVIA_CURRENT_MUSIC_WORK", "")),
     )
 

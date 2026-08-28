@@ -1192,6 +1192,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         item.append(pause);
       } else if (state === "license_review_required") {
         item.append(text("div", "公共文件已组装；RoFormer/Seed-VC 受限权重未公开捆绑，完成本地许可证审查前不会标记就绪。", "text-text-secondary text-caption-m font-regular"));
+      } else if (state === "prerequisites_required") {
+        item.append(text("div", "公共文件已组装；当前客户端无法选择官方 Olivia 目录或离线包，因此运行前置条件未完成，不标记就绪。", "text-text-secondary text-caption-m font-regular"));
       } else if (state !== "ready") {
         const action = state === "paused" ? "resume" : state === "failed" ? "retry" : "install";
         const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "下载并安装";

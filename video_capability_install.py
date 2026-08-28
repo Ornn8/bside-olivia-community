@@ -1,11 +1,4 @@
-"""Small, resumable installer for the optional ordinary and music video bundles.
-
-The installer owns only ``data/capabilities/video`` below the configured local
-data root.  It downloads into a staging directory, verifies every declared
-file, and promotes a complete bundle in one rename.  Private Olivia assets are
-never downloaded: they are accepted only through a user-provided, hash-bound
-offline manifest.
-"""
+"""Resumable, verified installer for optional ordinary and music video bundles."""
 
 from __future__ import annotations
 
@@ -19,18 +12,23 @@ from pathlib import Path, PurePosixPath
 import shutil
 import threading
 from typing import Any
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import zipfile
+
+from installer.component_update import (
+    ComponentUpdateError,
+    _validate_relative_path,
+    _verify_staged_tree,
+)
 
 
 _SHA256 = 64
 _PUBLIC_BUNDLES = {"ordinary_video", "music_video"}
 _SOURCE_MODES = {"auto", "official"}
 _SOURCE_IDS = {"domestic", "official"}
-_PRIVATE_MANIFEST = ".olivia-video-assets.json"
-_PRIVATE_FILES = {"ordinary_action_base", "official_reply_reference", "music_performance_base"}
 _RUNTIME_ENVIRONMENT_FILE = "runtime-environment.json"
 _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_FFMPEG_EXE",
@@ -55,6 +53,7 @@ class VideoCapabilityState(StrEnum):
     PAUSED = "paused"
     FAILED = "failed"
     LICENSE_REVIEW_REQUIRED = "license_review_required"
+    PREREQUISITES_REQUIRED = "prerequisites_required"
 
 
 @dataclass(frozen=True)
@@ -290,6 +289,7 @@ class VideoCapabilityInstaller:
         self.manifest = manifest
         self._opener = opener
         self._lock = threading.RLock()
+        self._commit_lock = threading.Lock()
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._status: dict[str, VideoBundleStatus] = {}
@@ -330,6 +330,22 @@ class VideoCapabilityInstaller:
         except (OSError, VideoCapabilityError):
             return False
 
+    @staticmethod
+    def _assembled_state(
+        bundle: VideoBundle,
+    ) -> tuple[VideoCapabilityState, str | None]:
+        if bundle.license_review_required:
+            return (
+                VideoCapabilityState.LICENSE_REVIEW_REQUIRED,
+                "VIDEO_LICENSED_DEPENDENCIES_REQUIRED",
+            )
+        if "official_video_assets" in bundle.dependencies:
+            return (
+                VideoCapabilityState.PREREQUISITES_REQUIRED,
+                "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE",
+            )
+        return VideoCapabilityState.READY, None
+
     def _load_status(self) -> None:
         for bundle in self.manifest.bundles:
             current = self._status.get(bundle.identifier)
@@ -350,16 +366,7 @@ class VideoCapabilityInstaller:
             except (OSError, VideoCapabilityError):
                 ready = False
             if ready:
-                state = (
-                    VideoCapabilityState.LICENSE_REVIEW_REQUIRED
-                    if bundle.license_review_required
-                    else VideoCapabilityState.READY
-                )
-                reason = (
-                    "VIDEO_LICENSED_DEPENDENCIES_REQUIRED"
-                    if bundle.license_review_required
-                    else None
-                )
+                state, reason = self._assembled_state(bundle)
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
@@ -392,7 +399,7 @@ class VideoCapabilityInstaller:
                 environment[key] = str(candidate)
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
-        temporary = target.with_suffix(".tmp")
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
         payload = {
             "schema_version": "olivia.video-runtime-environment.v1",
             "environment": environment,
@@ -401,6 +408,28 @@ class VideoCapabilityInstaller:
             json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8"
         )
         os.replace(temporary, target)
+
+    def _promote_directory(
+        self, staging: Path, final: Path, *, refresh_environment: bool = False
+    ) -> None:
+        backup = self.install_root / f".{final.name}.backup"
+        with self._commit_lock:
+            if backup.exists():
+                shutil.rmtree(backup)
+            if final.exists():
+                os.replace(final, backup)
+            try:
+                os.replace(staging, final)
+                if refresh_environment:
+                    self._write_runtime_environment()
+            except Exception:
+                if final.exists():
+                    shutil.rmtree(final, ignore_errors=True)
+                if backup.exists():
+                    os.replace(backup, final)
+                raise
+            if backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
 
     def start(self, *, bundle_id: str, source_mode: str = "auto", offline_root: Path | None = None, accept_licenses: bool = False) -> str:
         bundle = self._bundle(bundle_id)
@@ -412,7 +441,11 @@ class VideoCapabilityInstaller:
             thread = self._threads.get(bundle_id)
             if thread is not None and thread.is_alive():
                 return "NOOP"
-            if self._status.get(bundle_id, VideoBundleStatus(bundle_id, VideoCapabilityState.MISSING, 0, 0)).state is VideoCapabilityState.READY:
+            if self._status.get(bundle_id, VideoBundleStatus(bundle_id, VideoCapabilityState.MISSING, 0, 0)).state in {
+                VideoCapabilityState.READY,
+                VideoCapabilityState.LICENSE_REVIEW_REQUIRED,
+                VideoCapabilityState.PREREQUISITES_REQUIRED,
+            }:
                 return "NOOP"
             self._pause.clear()
             self._set(bundle, VideoCapabilityState.QUEUED, 0, source=source_mode)
@@ -438,110 +471,6 @@ class VideoCapabilityInstaller:
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str:
         return self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
 
-    def import_configured_offline(self, *, bundle_id: str, environment: Mapping[str, str]) -> str:
-        raw = str(environment.get("OLIVIA_VIDEO_OFFLINE_ROOT", "")).strip()
-        if not raw:
-            raise VideoCapabilityError("VIDEO_OFFLINE_PACKAGE_NOT_SELECTED")
-        root = Path(raw).expanduser()
-        if not root.is_absolute():
-            project_root = Path(str(environment.get("OLIVIA_PROJECT_ROOT", ""))).expanduser()
-            if not project_root.is_absolute():
-                raise VideoCapabilityError("VIDEO_OFFLINE_PACKAGE_NOT_SELECTED")
-            root = project_root / root
-        if not root.exists():
-            raise VideoCapabilityError("VIDEO_OFFLINE_PACKAGE_NOT_SELECTED")
-        return self.import_offline(bundle_id=bundle_id, offline_root=root)
-
-    def import_official_assets(self, source_root: Path) -> str:
-        """Import only a hash-bound private manifest from an explicitly chosen root."""
-        source_root = source_root.resolve()
-        manifest_path = _inside(source_root, source_root / _PRIVATE_MANIFEST)
-        try:
-            payload: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise VideoCapabilityError("VIDEO_PRIVATE_ASSET_MANIFEST_REQUIRED") from exc
-        if not isinstance(payload, dict) or set(payload) != {"schema_version", "assets"} or payload["schema_version"] != "olivia.private-video-assets.v1" or not isinstance(payload["assets"], list):
-            raise VideoCapabilityError("VIDEO_PRIVATE_ASSET_MANIFEST_INVALID")
-        staging = self.install_root / ".staging" / "private-assets"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
-        try:
-            for raw in payload["assets"]:
-                if not isinstance(raw, dict) or set(raw) != {"id", "path", "size_bytes", "sha256"} or raw["id"] not in _PRIVATE_FILES or type(raw["size_bytes"]) is not int:
-                    raise VideoCapabilityError("VIDEO_PRIVATE_ASSET_MANIFEST_INVALID")
-                source = _inside(source_root, source_root / _safe_relative(raw["path"]))
-                target = _inside(staging, staging / f"{raw['id']}{source.suffix.lower()}")
-                _verify(source, VideoFile(str(raw["id"]), source.name, raw["size_bytes"], _safe_sha(raw["sha256"]), "private-user-supplied", {}))
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-            if {item["id"] for item in payload["assets"]} != _PRIVATE_FILES:
-                raise VideoCapabilityError("VIDEO_PRIVATE_ASSET_MANIFEST_INVALID")
-            final = self.install_root / "private-assets"
-            backup = self.install_root / ".private-assets.backup"
-            if backup.exists():
-                shutil.rmtree(backup)
-            if final.exists():
-                os.replace(final, backup)
-            try:
-                os.replace(staging, final)
-            except Exception:
-                if backup.exists() and not final.exists():
-                    os.replace(backup, final)
-                raise
-            if backup.exists():
-                shutil.rmtree(backup)
-            (final / ".ready.json").write_text(json.dumps({"schema_version": "olivia.private-video-assets.v1", "assets": sorted(_PRIVATE_FILES)}), encoding="utf-8")
-        except Exception:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-            raise
-        return "APPLIED"
-
-    def import_configured_assets(self, environment: Mapping[str, str]) -> str:
-        """Copy the three already-selected licensed files without publishing paths."""
-        project_root = Path(str(environment.get("OLIVIA_PROJECT_ROOT", ""))).expanduser()
-        assets: list[dict[str, object]] = []
-        for asset_id, key in (
-            ("ordinary_action_base", "OLIVIA_ORDINARY_ACTION_BASE"),
-            ("official_reply_reference", "OLIVIA_OFFICIAL_REPLY_REFERENCE"),
-            ("music_performance_base", "OLIVIA_MUSIC_PERFORMANCE_BASE"),
-        ):
-            raw = str(environment.get(key, "")).strip()
-            if not raw:
-                raise VideoCapabilityError("VIDEO_PRIVATE_ASSETS_NOT_FOUND")
-            source = Path(raw).expanduser()
-            if not source.is_absolute() and project_root.is_absolute():
-                source = project_root / source
-            source = source.resolve()
-            if not source.is_file():
-                raise VideoCapabilityError("VIDEO_PRIVATE_ASSETS_NOT_FOUND")
-            size, digest = _sha256_file(source)
-            assets.append({"id": asset_id, "path": source.name, "size_bytes": size, "sha256": digest, "source": source})
-        staging = self.install_root / ".staging" / "private-assets"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
-        try:
-            for asset in assets:
-                target = staging / f"{asset['id']}{Path(str(asset['path'])).suffix.lower()}"
-                shutil.copy2(Path(str(asset["source"])), target)
-            final = self.install_root / "private-assets"
-            backup = self.install_root / ".private-assets.backup"
-            if backup.exists():
-                shutil.rmtree(backup)
-            if final.exists():
-                os.replace(final, backup)
-            os.replace(staging, final)
-            if backup.exists():
-                shutil.rmtree(backup)
-            (final / ".ready.json").write_text(json.dumps({"schema_version": "olivia.private-video-assets.v1", "assets": sorted(item["id"] for item in assets)}), encoding="utf-8")
-        except Exception:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-            raise
-        return "APPLIED"
-
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         try:
             root = self._staging_root(bundle)
@@ -563,34 +492,17 @@ class VideoCapabilityInstaller:
             self._assemble_archives(root, bundle)
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded, source=source_used)
             final = self._final_root(bundle)
-            backup = self.install_root / f".{bundle.identifier}.backup"
-            if backup.exists():
-                shutil.rmtree(backup)
-            if final.exists():
-                os.replace(final, backup)
-            try:
-                os.replace(root, final)
-                (final / ".ready.json").write_text(json.dumps({"schema_version": "olivia.video-bundle.v1", "bundle": bundle.identifier, "version": self.manifest.version}), encoding="utf-8")
-                self._write_runtime_environment()
-            except Exception:
-                if final.exists():
-                    shutil.rmtree(final, ignore_errors=True)
-                if backup.exists():
-                    os.replace(backup, final)
-                raise
-            if backup.exists():
-                shutil.rmtree(backup, ignore_errors=True)
+            (root / ".ready.json").write_text(json.dumps({"schema_version": "olivia.video-bundle.v1", "bundle": bundle.identifier, "version": self.manifest.version}), encoding="utf-8")
+            self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
-                if bundle.license_review_required:
-                    self._set(
-                        bundle,
-                        VideoCapabilityState.LICENSE_REVIEW_REQUIRED,
-                        downloaded,
-                        source=source_used,
-                        reason="VIDEO_LICENSED_DEPENDENCIES_REQUIRED",
-                    )
-                else:
-                    self._set(bundle, VideoCapabilityState.READY, downloaded, source=source_used)
+                state, reason = self._assembled_state(bundle)
+                self._set(
+                    bundle,
+                    state,
+                    downloaded,
+                    source=source_used,
+                    reason=reason,
+                )
         except InterruptedError:
             with self._lock:
                 self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_mode)
@@ -687,6 +599,7 @@ def _extract_zip_safely(
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     written: set[str] = set()
+    expected: list[dict[str, object]] = []
     expanded = 0
     try:
         with zipfile.ZipFile(archive_path) as archive:
@@ -694,13 +607,21 @@ def _extract_zip_safely(
                 mode = (member.external_attr >> 16) & 0o170000
                 if mode == 0o120000:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_LINK_FORBIDDEN")
-                path = PurePosixPath(member.filename.replace("\\", "/"))
-                if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+                raw = member.filename[:-1] if member.is_dir() and member.filename.endswith("/") else member.filename
+                try:
+                    validated = _validate_relative_path(raw)
+                except ComponentUpdateError as exc:
+                    raise VideoCapabilityError("VIDEO_ARCHIVE_PATH_INVALID") from exc
+                path = PurePosixPath(validated)
+                if any(part in {"", ".", ".."} for part in path.parts):
                     raise VideoCapabilityError("VIDEO_ARCHIVE_PATH_INVALID")
                 parts = path.parts[strip_components:]
                 if not parts:
                     continue
-                relative = PurePosixPath(*parts).as_posix()
+                try:
+                    relative = _validate_relative_path(PurePosixPath(*parts).as_posix())
+                except ComponentUpdateError as exc:
+                    raise VideoCapabilityError("VIDEO_ARCHIVE_PATH_INVALID") from exc
                 collision_key = relative.casefold()
                 if collision_key in written:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_DUPLICATE_PATH")
@@ -713,9 +634,16 @@ def _extract_zip_safely(
                     target.mkdir(parents=True, exist_ok=True)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                written_bytes = 0
                 with archive.open(member) as source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output)
-    except (OSError, zipfile.BadZipFile) as exc:
+                    while chunk := source.read(1024 * 1024):
+                        output.write(chunk)
+                        digest.update(chunk)
+                        written_bytes += len(chunk)
+                expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
+        _verify_staged_tree(destination, expected)
+    except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
 
 
