@@ -145,6 +145,8 @@ def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("control_center/static/index.html")
     assert _is_release_file("installer/full_patch.py")
     assert _is_release_file("installer/seed-vc-overlap-frames.patch")
+    assert _is_release_file("installer/cosyvoice-windows-audio.patch.json")
+    assert _is_release_file("installer/latentsync-windows-memmap.patch.json")
     assert _is_release_file("tools/livetalking_worker.py")
 
     assert not _is_release_file(".gitignore")

@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from video_capability_install import (
+    apply_runtime_text_patch,
     _extract_zip_safely,
     load_video_manifest,
     load_video_runtime_environment,
@@ -74,6 +75,19 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
         "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json",
     }
+    assert {
+        patch.identifier: (patch.target_path, patch.sha256)
+        for patch in ordinary.runtime_patches
+    } == {
+        "cosyvoice-windows-audio": (
+            "cosyvoice/runtime/cosyvoice/utils/file_utils.py",
+            "019a0f163e397186c0a6d26c5eeaed1c56ba88462200662950c276ceb50c2d27",
+        ),
+        "latentsync-windows-memmap": (
+            "latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py",
+            "a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1",
+        ),
+    }
     music_file_ids = {item.identifier for item in music.files}
     assert "seed-vc-code" not in music_file_ids
     assert "demucs-htdemucs6s" not in music_file_ids
@@ -100,6 +114,45 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(payload)
+
+
+def test_runtime_text_patch_is_hash_checked_and_fails_on_source_drift(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "runtime.py"
+    target.write_text("before\n", encoding="utf-8")
+    patch = tmp_path / "runtime.patch.json"
+    patch.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.runtime-text-patch.v1",
+                "target": "runtime.py",
+                "replacements": [{"before": "before", "after": "after"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sha256 = hashlib.sha256(patch.read_bytes()).hexdigest()
+
+    apply_runtime_text_patch(
+        bundle_root=tmp_path,
+        patch_path=patch,
+        target_path="runtime.py",
+        expected_sha256=sha256,
+        patch_id="fixture",
+    )
+
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert (tmp_path / ".patches" / "fixture.json").is_file()
+    target.write_text("drifted\n", encoding="utf-8")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PATCH_SOURCE_MISMATCH"):
+        apply_runtime_text_patch(
+            bundle_root=tmp_path,
+            patch_path=patch,
+            target_path="runtime.py",
+            expected_sha256=sha256,
+            patch_id="fixture",
+        )
 
 
 @pytest.mark.parametrize("unsafe", ["CON/file.bin", "asset:stream", "name./file.bin"])

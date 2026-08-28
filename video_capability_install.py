@@ -73,6 +73,14 @@ class VideoFileInstall:
 
 
 @dataclass(frozen=True)
+class VideoRuntimePatch:
+    identifier: str
+    relative_path: str
+    target_path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class VideoFile:
     identifier: str
     relative_path: str
@@ -98,6 +106,7 @@ class VideoBundle:
     files: tuple[VideoFile, ...]
     license_review_required: bool = False
     runtime_environment: Mapping[str, str] | None = None
+    runtime_patches: tuple[VideoRuntimePatch, ...] = ()
 
     @property
     def id(self) -> str:
@@ -212,6 +221,25 @@ def _load_file(raw: object) -> VideoFile:
     )
 
 
+def _load_runtime_patch(raw: object) -> VideoRuntimePatch:
+    if not isinstance(raw, dict) or set(raw) != {"id", "path", "target", "sha256"}:
+        raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+    identifier = raw.get("id")
+    if (
+        not isinstance(identifier, str)
+        or not identifier
+        or "/" in identifier
+        or "\\" in identifier
+    ):
+        raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+    return VideoRuntimePatch(
+        identifier,
+        _safe_relative(raw.get("path")),
+        _safe_relative(raw.get("target")),
+        _safe_sha(raw.get("sha256")),
+    )
+
+
 def load_video_manifest(path: Path) -> VideoManifest:
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -228,7 +256,7 @@ def load_video_manifest(path: Path) -> VideoManifest:
         if not isinstance(raw, dict):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         required = {"id", "label", "status", "requires_gpu", "dependencies", "files"}
-        if set(raw) - required - {"license_review_required", "runtime_environment"} or not required.issubset(raw):
+        if set(raw) - required - {"license_review_required", "runtime_environment", "runtime_patches"} or not required.issubset(raw):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         identifier = raw.get("id")
         if identifier not in _PUBLIC_BUNDLES or identifier in seen:
@@ -250,8 +278,18 @@ def load_video_manifest(path: Path) -> VideoManifest:
         normalized_runtime = {
             key: _safe_relative(value) for key, value in runtime_environment.items()
         }
+        runtime_patches = raw.get("runtime_patches", [])
+        if not isinstance(runtime_patches, list):
+            raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+        parsed_patches = tuple(_load_runtime_patch(item) for item in runtime_patches)
+        if (
+            len({item.identifier for item in parsed_patches}) != len(parsed_patches)
+            or len({item.target_path.casefold() for item in parsed_patches})
+            != len(parsed_patches)
+        ):
+            raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
         seen.add(identifier)
-        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime))
+        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime, parsed_patches))
     if seen != _PUBLIC_BUNDLES:
         raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
     return VideoManifest(payload["version"], tuple(result))
@@ -608,7 +646,7 @@ class VideoCapabilityInstaller:
             _verify_staged_tree(root, expected)
             self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
-                state, reason = self._assembled_state(bundle)
+                state, reason = self._runtime_dependency_state(bundle)
                 self._set(
                     bundle,
                     state,
@@ -639,6 +677,23 @@ class VideoCapabilityInstaller:
                 strip_components=item.install.strip_components,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
+        for runtime_patch in bundle.runtime_patches:
+            apply_runtime_text_patch(
+                bundle_root=root,
+                patch_path=_inside(
+                    Path(__file__).resolve().parent,
+                    Path(__file__).resolve().parent / runtime_patch.relative_path,
+                ),
+                target_path=runtime_patch.target_path,
+                expected_sha256=runtime_patch.sha256,
+                patch_id=runtime_patch.identifier,
+            )
+            for relative in (
+                runtime_patch.target_path,
+                f".patches/{runtime_patch.identifier}.json",
+            ):
+                expected = [entry for entry in expected if entry["path"] != relative]
+                expected.append(_tree_entry(root, relative))
         seed_root = root / "seed_vc" / "runtime"
         if bundle.identifier == "music_video" and (seed_root / "inference.py").is_file():
             apply_seed_vc_overlap_frames_patch(
@@ -844,6 +899,75 @@ def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
         return _load_video_runtime_environment(data_root)
 
 
+def apply_runtime_text_patch(
+    *,
+    bundle_root: Path,
+    patch_path: Path,
+    target_path: str,
+    expected_sha256: str,
+    patch_id: str,
+) -> None:
+    """Apply one pinned exact-text runtime patch without Git or patch.exe."""
+
+    if _safe_sha(expected_sha256) != _sha256_file(patch_path)[1]:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_HASH_MISMATCH")
+    try:
+        payload: Any = json.loads(patch_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_INVALID") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "target", "replacements"}
+        or payload.get("schema_version") != "olivia.runtime-text-patch.v1"
+        or payload.get("target") != target_path
+        or not isinstance(payload.get("replacements"), list)
+        or not payload["replacements"]
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_INVALID")
+    target = _inside(bundle_root, bundle_root / _safe_relative(target_path))
+    try:
+        with target.open("r", encoding="utf-8", newline="") as stream:
+            source = stream.read()
+    except (OSError, UnicodeError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_TARGET_INVALID") from exc
+    uses_crlf = "\r\n" in source and source.count("\r\n") == source.count("\n")
+    patched = source.replace("\r\n", "\n") if uses_crlf else source
+    for replacement in payload["replacements"]:
+        if (
+            not isinstance(replacement, dict)
+            or set(replacement) != {"before", "after"}
+            or not isinstance(replacement.get("before"), str)
+            or not replacement["before"]
+            or not isinstance(replacement.get("after"), str)
+            or patched.count(replacement["before"]) != 1
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_SOURCE_MISMATCH")
+        patched = patched.replace(replacement["before"], replacement["after"], 1)
+    temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="") as stream:
+            stream.write(patched.replace("\n", "\r\n") if uses_crlf else patched)
+        os.replace(temporary, target)
+        marker = _inside(bundle_root, bundle_root / ".patches" / f"{_safe_relative(patch_id)}.json")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.runtime-patch-marker.v1",
+                    "patch_id": patch_id,
+                    "sha256": expected_sha256,
+                    "target": target_path,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_WRITE_FAILED") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def apply_seed_vc_overlap_frames_patch(
     seed_root: Path, patch_path: Path
 ) -> None:
@@ -896,4 +1020,4 @@ def apply_seed_vc_overlap_frames_patch(
     )
 
 
-__all__ = ["apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "load_video_manifest", "load_video_runtime_environment"]
+__all__ = ["apply_runtime_text_patch", "apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "VideoRuntimePatch", "load_video_manifest", "load_video_runtime_environment"]

@@ -45,8 +45,23 @@
           },
           "additionalProperties": {"$ref": "#/$defs/relativePath"}
         },
+        "runtime_patches": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/runtimePatch"}
+        },
         "dependencies": {"type": "array", "items": {"type": "string"}},
         "files": {"type": "array", "items": {"$ref": "#/$defs/file"}}
+      }
+    },
+    "runtimePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "target", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/relativePath"},
+        "target": {"$ref": "#/$defs/relativePath"},
+        "sha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"}
       }
     },
     "file": {

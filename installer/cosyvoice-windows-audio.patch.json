@@ -1,0 +1,14 @@
+{
+  "schema_version": "olivia.runtime-text-patch.v1",
+  "target": "cosyvoice/runtime/cosyvoice/utils/file_utils.py",
+  "replacements": [
+    {
+      "before": "import torchaudio\nimport logging",
+      "after": "import torchaudio\nimport soundfile as sf\nimport logging"
+    },
+    {
+      "before": "    speech, sample_rate = torchaudio.load(wav, backend='soundfile')",
+      "after": "    # torchaudio 2.9 ignores the legacy backend argument and requires\n    # TorchCodec plus a shared FFmpeg installation on Windows.  Read PCM WAV\n    # files through libsndfile directly to keep this inference path portable.\n    audio, sample_rate = sf.read(wav, dtype='float32', always_2d=True)\n    speech = torch.from_numpy(audio.T)"
+    }
+  ]
+}
