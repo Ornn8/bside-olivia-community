@@ -419,6 +419,7 @@ def _load_runtime_root_manifest(
         environment[key] = str(candidate)
         environment_paths[key] = relative
     files: dict[str, tuple[int, str]] = {}
+    seen_files: set[str] = set()
     for raw in payload["files"]:
         if (
             not isinstance(raw, dict)
@@ -433,8 +434,10 @@ def _load_runtime_root_manifest(
             candidate = _inside(root, root / relative)
         except (OSError, VideoCapabilityError):
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from None
-        if relative.casefold() in {item.casefold() for item in files}:
+        folded = relative.casefold()
+        if folded in seen_files:
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        seen_files.add(folded)
         files[relative] = (raw["size_bytes"], digest)
         if verify_files:
             try:
