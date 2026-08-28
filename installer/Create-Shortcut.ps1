@@ -96,11 +96,17 @@ foreach ($path in $shortcutPaths) {
             New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
         }
         $shortcut = $shell.CreateShortcut($path)
-        if (-not $RefreshExisting) {
-            $shortcut.TargetPath = $start
-            $shortcut.WorkingDirectory = $root
-            $shortcut.Description = 'Olivia local client and backend'
+        if ($RefreshExisting -and -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$shortcut.TargetPath),
+            [IO.Path]::GetFullPath($start),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            continue
         }
+        $shortcut.TargetPath = $start
+        $shortcut.Arguments = ''
+        $shortcut.WorkingDirectory = $root
+        $shortcut.Description = 'Olivia local client and backend'
         $shortcut.IconLocation = "$icon,0"
         $shortcut.Save()
     }

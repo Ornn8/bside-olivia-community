@@ -97,6 +97,28 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
         / "v1.0"
         / "powershell.exe"
     )
+    shortcut.parent.mkdir(parents=True)
+    stale = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "$s.TargetPath=$env:COMSPEC;"
+                "$s.Arguments='//B //Nologo \"F:\\old\\START.vbs\"';"
+                "$s.Save()"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert stale.returncode == 0, stale.stderr or stale.stdout
     result = subprocess.run(
         [
             powershell,
@@ -127,7 +149,7 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
             (
                 "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
                 "[Console]::In.ReadToEnd().Trim());"
-                "[pscustomobject]@{target=$s.TargetPath;working=$s.WorkingDirectory;"
+                "[pscustomobject]@{target=$s.TargetPath;arguments=$s.Arguments;working=$s.WorkingDirectory;"
                 "icon=$s.IconLocation}|ConvertTo-Json -Compress"
             ),
         ],
@@ -139,11 +161,12 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
     )
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
+    assert metadata["arguments"] == ""
     assert Path(metadata["working"]) == install_root
     assert metadata["icon"] == f"{icon},0"
 
 
-def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
+def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
     tmp_path: Path,
 ) -> None:
     if os.name != "nt":
@@ -262,8 +285,128 @@ def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
     )
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
-    assert metadata["arguments"] == arguments
+    assert metadata["arguments"] == ""
     assert metadata["icon"] == f"{active_icon},0"
+
+
+def test_shortcut_refresh_does_not_rewrite_another_installation(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows shortcuts are only available on Windows")
+
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "installer" / "Create-Shortcut.ps1"
+    install_root = tmp_path / "current installation"
+    client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
+    icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
+    start = install_root / "START.cmd"
+    client.parent.mkdir(parents=True)
+    icon.parent.mkdir(parents=True)
+    client.write_bytes(b"synthetic client")
+    icon.write_bytes(b"current icon")
+    start.write_text("@exit /b 0\n", encoding="utf-8")
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"client_version": "0.0.9.615"}),
+        encoding="utf-8",
+    )
+
+    other_root = tmp_path / "other installation"
+    other_start = other_root / "START.cmd"
+    other_icon = other_root / "olivia.ico"
+    other_root.mkdir(parents=True)
+    other_start.write_text("@exit /b 0\n", encoding="utf-8")
+    other_icon.write_bytes(b"other icon")
+    shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
+    shortcut.parent.mkdir(parents=True)
+    arguments = '--keep "other install"'
+    description = "Other Olivia installation"
+    powershell = str(
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    configured = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$p=[Console]::In.ReadToEnd()|ConvertFrom-Json;"
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($p.shortcut);"
+                "$s.TargetPath=$p.target;$s.Arguments=$p.arguments;"
+                "$s.WorkingDirectory=$p.working;$s.Description=$p.description;"
+                "$s.IconLocation=$p.icon;$s.Save()"
+            ),
+        ],
+        input=json.dumps(
+            {
+                "shortcut": str(shortcut),
+                "target": str(other_start),
+                "arguments": arguments,
+                "working": str(other_root),
+                "description": description,
+                "icon": f"{other_icon},0",
+            }
+        ),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert configured.returncode == 0, configured.stderr or configured.stdout
+
+    refreshed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-InstallRoot",
+            str(install_root),
+            "-ShortcutPath",
+            str(shortcut),
+            "-RefreshExisting",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert refreshed.returncode == 0, refreshed.stderr or refreshed.stdout
+
+    inspect = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "[pscustomobject]@{target=$s.TargetPath;arguments=$s.Arguments;"
+                "working=$s.WorkingDirectory;description=$s.Description;"
+                "icon=$s.IconLocation}|ConvertTo-Json -Compress"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    metadata = json.loads(inspect.stdout)
+    assert Path(metadata["target"]) == other_start
+    assert metadata["arguments"] == arguments
+    assert Path(metadata["working"]) == other_root
+    assert metadata["description"] == description
+    assert metadata["icon"] == f"{other_icon},0"
 
 
 def test_shortcut_refresh_discovers_desktop_and_programs_independently() -> None:
