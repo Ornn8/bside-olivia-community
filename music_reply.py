@@ -35,7 +35,7 @@ from voice_direction import VoicePerformancePlan
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
 _MUSIC_STAGE_MANIFEST_VERSION = 3
-_RUNTIME_PROBE_TIMEOUT_SECONDS = 20.0
+_RUNTIME_PROBE_TIMEOUT_SECONDS = 60.0
 
 
 class MusicReplyError(RuntimeError):
@@ -113,7 +113,10 @@ def _music_provider_path_snapshot(
         minimax_python=configured_media_path(environment, "OLIVIA_MINIMAX_COMFY_PYTHON"),
         minimax_root=configured_media_path(environment, "OLIVIA_MINIMAX_COMFY_ROOT"),
         minimax_worker=configured_media_path(environment, "OLIVIA_MINIMAX_WORKER"),
-        roformer_executable=configured_media_path(environment, "OLIVIA_ROFORMER_EXE"),
+        roformer_executable=(
+            configured_media_path(environment, "OLIVIA_ROFORMER_PYTHON")
+            or configured_media_path(environment, "OLIVIA_ROFORMER_EXE")
+        ),
         roformer_model=configured_media_path(environment, "OLIVIA_ROFORMER_MODEL_PATH"),
         roformer_config=configured_media_path(environment, "OLIVIA_ROFORMER_CONFIG_PATH"),
         latentsync_python=configured_media_path(environment, "OLIVIA_LATENTSYNC_PYTHON"),
@@ -196,9 +199,9 @@ _VIDEO_REPLY_SOURCE_URLS = {
     ("cosyvoice", "domestic"): "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
     ("cosyvoice", "official"): "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
     ("livetalking", "official"): "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
-    ("latentsync", "domestic"): "https://gitee.com/ByteDance/LatentSync",
+    ("latentsync", "domestic"): "https://modelscope.cn/models/chenmingyu/latentsync",
     ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
-    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("minimax_music3", "domestic"): "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3",
     ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
     ("roformer", "domestic"): "https://hf-mirror.com/KimberleyJSN/melbandroformer",
     ("roformer", "official"): "https://huggingface.co/KimberleyJSN/melbandroformer",
@@ -293,15 +296,24 @@ def video_reply_dependency_status(
             accepted_torch_versions=("2.5.1+cu121", "2.9.1+cu128"),
         )
     )
-    roformer_executable = configured("OLIVIA_ROFORMER_EXE")
-    roformer_ready = all(
-        file(name)
-        for name in (
-            "OLIVIA_ROFORMER_EXE",
-            "OLIVIA_ROFORMER_MODEL_PATH",
-            "OLIVIA_ROFORMER_CONFIG_PATH",
+    roformer_python = configured("OLIVIA_ROFORMER_PYTHON")
+    roformer_executable = roformer_python or configured("OLIVIA_ROFORMER_EXE")
+    roformer_ready = bool(
+        roformer_executable
+        and roformer_executable.is_file()
+        and file("OLIVIA_ROFORMER_MODEL_PATH")
+        and file("OLIVIA_ROFORMER_CONFIG_PATH")
+        and (
+            _python_runtime_ready(
+                roformer_python,
+                cwd=roformer_python.parent if roformer_python else None,
+                imports=("torch", "mel_band_roformer.inference"),
+                accepted_torch_versions=("2.11.0+cu128", "2.13.0+cu130"),
+            )
+            if roformer_python is not None
+            else _executable_runtime_ready(roformer_executable)
         )
-    ) and _executable_runtime_ready(roformer_executable)
+    )
     ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
     music_assets_ready = bool(
         file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
@@ -323,6 +335,10 @@ def video_reply_dependency_status(
         source_summary: str,
         sources: tuple[tuple[str, str, str], ...] = (),
     ) -> dict[str, object]:
+        if identifier == "latentsync":
+            source_summary = "国内：ModelScope 社区镜像；备用：GitHub / Hugging Face"
+        elif identifier == "minimax_music3":
+            source_summary = "国内：ModelScope；备用：Hugging Face"
         return {
             "id": identifier,
             "label": label,
@@ -330,7 +346,15 @@ def video_reply_dependency_status(
             "install_mode": install_mode,
             "source_summary": source_summary,
             "sources": [
-                {"id": source_id, "label": source_label}
+                {
+                    "id": source_id,
+                    "label": (
+                        "国内源（ModelScope）"
+                        if source_id == "domestic"
+                        and identifier in {"latentsync", "minimax_music3"}
+                        else source_label
+                    ),
+                }
                 for source_id, source_label, _source_url in sources
             ],
         }
@@ -367,7 +391,7 @@ def video_reply_dependency_status(
                 (
                     "domestic",
                     "国内源（ByteDance Gitee）",
-                    "https://gitee.com/ByteDance/LatentSync",
+                    "https://modelscope.cn/models/chenmingyu/latentsync",
                 ),
                 (
                     "official",
@@ -386,7 +410,7 @@ def video_reply_dependency_status(
                 (
                     "domestic",
                     "国内源（HF-Mirror）",
-                    "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
+                    "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3",
                 ),
                 (
                     "official",
@@ -802,9 +826,12 @@ def separate_vocals(
             ],
             "ROFORMER_INPUT_CONVERSION_FAILED",
         )
-        _run(
+        command = [str(executable)]
+        configured_python = environment.get("OLIVIA_ROFORMER_PYTHON")
+        if configured_python and Path(str(configured_python)).resolve() == executable.resolve():
+            command.extend(["-m", "mel_band_roformer.inference"])
+        command.extend(
             [
-                str(executable),
                 "--input_folder",
                 str(inputs),
                 "--store_dir",
@@ -813,7 +840,10 @@ def separate_vocals(
                 str(model_path),
                 "--config_path",
                 str(config_path),
-            ],
+            ]
+        )
+        _run(
+            command,
             "ROFORMER_FAILED",
             env={
                 **environment,

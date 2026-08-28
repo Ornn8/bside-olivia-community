@@ -107,7 +107,12 @@ def _tts_config(
     runtime_root = configured_path(settings.get("runtime_root", ""))
     model_dir = configured_path(settings.get("model_dir", ""))
     reference_audio = configured_path(settings.get("reference_audio", ""))
-    external_python = runtime_root / "venv" / "Scripts" / "python.exe"
+    configured_python = environment.get("OLIVIA_COSYVOICE_PYTHON")
+    external_python = (
+        configured_path(configured_python)
+        if configured_python is not None and str(configured_python).strip()
+        else runtime_root / "venv" / "Scripts" / "python.exe"
+    )
     settings.update(
         {
             "runtime_root": str(runtime_root),

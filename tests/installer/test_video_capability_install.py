@@ -5,6 +5,7 @@ import json
 import hashlib
 from pathlib import Path
 import shutil
+import sys
 import threading
 import time
 import zipfile
@@ -18,8 +19,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from video_capability_install import (
     apply_runtime_text_patch,
     _extract_zip_safely,
+    _portable_python_runtime,
     load_video_manifest,
     load_video_runtime_environment,
+    write_runtime_root_manifest,
     VideoCapabilityError,
 )
 from video_capability_install import (
@@ -54,7 +57,7 @@ def test_repository_bom_freezes_accepted_latentsync_15_256_profile() -> None:
     assert unet.size_bytes == 5_072_348_184
     assert unet.sha256 == provenance["unet_sha256"]
     assert unet.sources == {
-        "domestic": "https://hf-mirror.com/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt",
+        "domestic": "https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/latentsync_unet.pt",
         "official": "https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt",
     }
 
@@ -70,6 +73,7 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert "official_video_assets" not in ordinary.dependencies
     assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
     assert ordinary.runtime_environment == {
+        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe",
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
@@ -96,7 +100,7 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
         "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
-        "OLIVIA_ROFORMER_EXE": "roformer/runtime/python/Scripts/melband-roformer-infer.exe",
+        "OLIVIA_ROFORMER_PYTHON": "roformer/runtime/python/python.exe",
         "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
         "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
     }
@@ -110,6 +114,13 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert latentsync_tiny.license == "OpenRAIL++"
     assert provenance["roformer"]["license"] == "MIT + CC-BY-NC-SA-4.0 checkpoint"
     assert provenance["roformer"]["config_sha256"] == "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"
+    minimax_files = [item for item in music.files if item.identifier.startswith("minimax-")]
+    assert minimax_files
+    assert all(
+        "/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/"
+        in item.sources["domestic"]
+        for item in minimax_files
+    )
 
     schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
@@ -267,6 +278,138 @@ def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missi
         installer.install_root / "ordinary_video" / "models" / "model.bin"
     ).read_bytes() == payload
     assert load_video_runtime_environment(installer.data_root) == {}
+
+
+def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "video_capability_install._runtime_environment_is_portable",
+        lambda *_args: True,
+    )
+    runtime_root = (tmp_path / "portable-runtime").resolve()
+    python = runtime_root / "latentsync/python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"accepted-python")
+    tts_config = runtime_root / "config/tts_local.json"
+    tts_config.parent.mkdir(parents=True)
+    tts_config.write_text("{}", encoding="utf-8")
+    runtime_manifest = {
+        "schema_version": "olivia.video-runtime-root.v1",
+        "version": "2026.08.29",
+        "environment": {
+            "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
+            "OLIVIA_TTS_CONFIG": "config/tts_local.json",
+        },
+        "files": [
+            {
+                "path": "latentsync/python/python.exe",
+                "size_bytes": python.stat().st_size,
+                "sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+            },
+            {
+                "path": "config/tts_local.json",
+                "size_bytes": tts_config.stat().st_size,
+                "sha256": hashlib.sha256(tts_config.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    manifest_path = runtime_root / "runtime-manifest.json"
+    manifest_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    ordinary = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (),
+        False,
+        {"OLIVIA_LATENTSYNC_PYTHON": "managed/python.exe"},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (ordinary, VideoBundle("music_video", "music", "FIXED", False, (), ())),
+        ),
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    final = installer.install_root / "ordinary_video"
+    final.mkdir(parents=True)
+    (final / ".ready.json").write_text("{}", encoding="utf-8")
+
+    assert installer.import_runtime_root(
+        runtime_root=runtime_root,
+        manifest_sha256=manifest_sha,
+    ) == "APPLIED"
+    assert load_video_runtime_environment(installer.data_root) == {
+        "OLIVIA_LATENTSYNC_PYTHON": str(python.resolve()),
+        "OLIVIA_TTS_CONFIG": str(tts_config.resolve()),
+    }
+    assert installer.status()["bundles"][0]["state"] == "ready"
+
+    (runtime_root / "unlisted-provider.py").write_text(
+        "raise RuntimeError('must never execute')", encoding="utf-8"
+    )
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ROOT_INVALID"):
+        installer.import_runtime_root(
+            runtime_root=runtime_root,
+            manifest_sha256=manifest_sha,
+        )
+    (runtime_root / "unlisted-provider.py").unlink()
+
+    runtime_manifest["environment"]["OLIVIA_LATENTSYNC_PYTHON"] = "../outside.exe"
+    manifest_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+    bad_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ROOT_INVALID"):
+        installer.import_runtime_root(
+            runtime_root=runtime_root,
+            manifest_sha256=bad_sha,
+        )
+
+
+def test_runtime_manifest_generator_hashes_the_exact_sorted_tree(tmp_path: Path) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python")
+    worker = runtime_root / "tools/worker.py"
+    worker.parent.mkdir(parents=True)
+    worker.write_bytes(b"worker")
+
+    digest = write_runtime_root_manifest(
+        runtime_root,
+        version="2026.08.29",
+        environment={
+            "OLIVIA_LATENTSYNC_PYTHON": "python/python.exe",
+            "OLIVIA_MINIMAX_WORKER": "tools/worker.py",
+        },
+    )
+
+    manifest_path = runtime_root / "runtime-manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert digest == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert [item["path"] for item in payload["files"]] == [
+        "python/python.exe",
+        "tools/worker.py",
+    ]
+    assert not any(str(runtime_root) in value for value in payload["environment"].values())
+
+
+def test_portable_python_probe_rejects_a_runtime_outside_its_base_prefix(
+    tmp_path: Path,
+) -> None:
+    base_root = Path(sys.base_prefix).resolve()
+    python = base_root / "python.exe"
+    if not python.is_file():
+        pytest.skip("base interpreter is unavailable")
+    assert _portable_python_runtime(python, base_root)
+    assert not _portable_python_runtime(Path(sys.executable).resolve(), tmp_path.resolve())
 
 
 def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> None:
@@ -451,13 +594,18 @@ def test_music_bundle_install_applies_seed_patch_or_fails_closed(
         assert not (installer.install_root / "music_video" / ".ready.json").exists()
 
 
-def test_video_capability_api_reports_native_path_selection_unavailable() -> None:
+def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir()
+    observed: list[tuple[Path, str]] = []
+
     class FakeInstaller:
         def status(self):
             return {"schema_version": "olivia.video-capability-status.v1", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
 
-        def __getattr__(self, _name):
-            raise AssertionError("path selection must fail before installer dispatch")
+        def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str):
+            observed.append((runtime_root, manifest_sha256))
+            return "APPLIED"
 
     async def call():
         app = web.Application()
@@ -466,32 +614,65 @@ def test_video_capability_api_reports_native_path_selection_unavailable() -> Non
             FakeInstaller(),
             trusted_origins=(),
             authorize_session=lambda _token: None,
+            select_runtime_root=lambda: runtime_root,
         )
         async with TestClient(TestServer(app)) as client:
             status_response = await client.get(
                 "/toy/capabilities/video", headers={"Origin": "http://localhost:3000"}
             )
-            response = await client.post(
+            selected_response = await client.post(
                 "/toy/capabilities/video/action",
-                json={"action": "import_offline", "bundle_id": "ordinary_video"},
+                json={"action": "select_runtime"},
                 headers={
                     "Origin": "http://localhost:3000",
                     "X-Olivia-Capability-Action": "confirmed",
                     "X-Olivia-Setup-Session": "session",
                 },
             )
-            return await status_response.json(), response.status, await response.json()
+            selected = await selected_response.json()
+            response = await client.post(
+                "/toy/capabilities/video/action",
+                json={
+                    "action": "import_runtime",
+                    "runtime_root": selected["runtime_root"],
+                    "manifest_sha256": "a" * 64,
+                },
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": "session",
+                },
+            )
+            return (
+                await status_response.json(),
+                selected_response.status,
+                selected,
+                response.status,
+                await response.json(),
+            )
 
-    status_payload, status, payload = asyncio.run(call())
-    for name, document in (("status", status_payload), ("action", {"action": "pause"})):
+    status_payload, selected_status, selected, status, payload = asyncio.run(call())
+    for name, document in (
+        ("status", status_payload),
+        ("action", {"action": "pause"}),
+        ("action", {"action": "select_runtime"}),
+        (
+            "action",
+            {
+                "action": "import_runtime",
+                "runtime_root": str(runtime_root),
+                "manifest_sha256": "a" * 64,
+            },
+        ),
+    ):
         schema = json.loads(Path(f"contracts/video_capability_{name}.schema.json").read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
-    assert status == 503
-    assert payload == {
-        "status": "FAILED",
-        "error_code": "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE",
-    }
+    assert selected_status == 200
+    assert selected == {"status": "SELECTED", "runtime_root": str(runtime_root)}
+    assert status == 200
+    assert payload == {"status": "APPLIED"}
+    assert observed == [(runtime_root, "a" * 64)]
 
 
 def test_download_progress_updates_before_a_large_file_finishes(tmp_path: Path) -> None:

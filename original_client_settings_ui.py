@@ -386,13 +386,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
-  const requestCapability = async (path, body = null) => {
+  const requestCapability = async (path, body = null, timeoutMs = 25000) => {
     if (body !== null && !setupSessionToken) {
       await requestSetup(SETUP_STATUS_PATH);
     }
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 25000);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     const options = {
       cache: "no-store",
       credentials: "omit",
@@ -1217,6 +1217,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : "missing";
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
+    let videoSourceMode = "auto";
+    let runtimeRoot = "";
     const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
@@ -1236,12 +1238,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ? "安装包组件不完整，请更新到完整发布包"
       : "未安装";
     const result = text("div", "", "text-text-secondary text-caption-m font-regular");
+    const sourceControls = actions();
+    const domesticSource = button("国内源优先", () => {
+      videoSourceMode = "auto";
+      result.textContent = "下载时优先使用国内源，失败后回退官方源。";
+    });
+    const officialSource = button("仅官方源", () => {
+      videoSourceMode = "official";
+      result.textContent = "下载时仅使用官方源。";
+    });
+    sourceControls.append(domesticSource, officialSource);
     item.append(
       text("div", "视频回信（说话 + 音乐）", "text-text-body text-label-l"),
       text("div", stateLabel, "text-text-secondary text-body-m font-regular"),
       text("div", "语音、音乐、口型和媒体工具会自动准备，无需逐项选择。", "text-text-secondary text-caption-m font-regular"),
       text("div", totalBytes ? `已处理 ${downloadedBytes} / ${totalBytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
     );
+    item.append(sourceControls);
     if (state === "downloading") {
       const pause = button("暂停下载", async () => {
         try {
@@ -1265,7 +1278,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {
               action,
               bundle_id: dependency.id,
-              source: "auto",
+              source: videoSourceMode,
               accept_licenses: dependency.id === "music_video",
             });
           }
@@ -1276,6 +1289,69 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
       });
       item.append(install);
+    }
+    if (state === "prerequisites_required") {
+      const runtimeNote = text(
+        "p",
+        "公开源当前只安装模型与受管组件，尚未提供可迁移运行时归档；可选择本机已准备且清单匹配的运行时目录。",
+        "text-text-secondary text-caption-m font-regular"
+      );
+      const runtimeDigest = setupInput("发布页提供的 runtime-manifest.json SHA-256");
+      runtimeDigest.input.maxLength = 64;
+      runtimeDigest.input.autocomplete = "off";
+      const selectedRuntime = text(
+        "p",
+        "尚未选择本机已准备的运行时根目录。",
+        "text-text-secondary text-caption-m font-regular"
+      );
+      const chooseRuntime = button("选择本机运行时目录", async () => {
+        setButtonsBusy([chooseRuntime], true);
+        try {
+          const selected = await requestCapability(
+            VIDEO_CAPABILITY_ACTION_PATH,
+            { action: "select_runtime" }
+          );
+          if (selected.status === "SELECTED" && typeof selected.runtime_root === "string") {
+            runtimeRoot = selected.runtime_root;
+            selectedRuntime.textContent = `已选择：${runtimeRoot.split(/[\\/]/).pop()}`;
+          }
+        } catch (_error) {
+          result.textContent = "无法打开运行时目录选择器。";
+        } finally {
+          setButtonsBusy([chooseRuntime], false);
+        }
+      });
+      const importRuntime = button("校验并接入离线运行时", async () => {
+        const digest = runtimeDigest.input.value.trim().toLowerCase();
+        if (!runtimeRoot || !/^[0-9a-f]{64}$/.test(digest)) {
+          result.textContent = "请选择运行时目录，并填写发布页提供的 64 位 SHA-256。";
+          return;
+        }
+        setButtonsBusy([chooseRuntime, importRuntime], true);
+        result.textContent = "正在校验全部文件并检测 GPU 运行环境……";
+        try {
+          await requestCapability(
+            VIDEO_CAPABILITY_ACTION_PATH,
+            {
+              action: "import_runtime",
+              runtime_root: runtimeRoot,
+              manifest_sha256: runtimeDigest.input.value.trim().toLowerCase(),
+            },
+            30 * 60 * 1000
+          );
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          result.textContent = "运行时校验未通过；请确认目录完整、SHA-256 正确且 GPU 环境可用。";
+          setButtonsBusy([chooseRuntime, importRuntime], false);
+        }
+      });
+      item.append(
+        runtimeNote,
+        runtimeDigest.wrapper,
+        selectedRuntime,
+        chooseRuntime,
+        importRuntime
+      );
     }
     item.append(result);
     const list = stack();

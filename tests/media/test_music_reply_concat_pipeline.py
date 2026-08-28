@@ -88,8 +88,8 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     ]
     assert all(item["state"] == "missing" for item in dependencies.values())
     assert "ModelScope" in dependencies["cosyvoice"]["source_summary"]
-    assert "HF-Mirror" in dependencies["latentsync"]["source_summary"]
-    assert "HF-Mirror" in dependencies["minimax_music3"]["source_summary"]
+    assert "ModelScope" in dependencies["latentsync"]["source_summary"]
+    assert "ModelScope" in dependencies["minimax_music3"]["source_summary"]
     assert [source["id"] for source in dependencies["cosyvoice"]["sources"]] == [
         "domestic",
         "official",
@@ -100,8 +100,10 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "official",
     ]
     assert music_reply.video_reply_source_url("minimax_music3", "domestic") == (
-        "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/"
-        "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6"
+        "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3"
+    )
+    assert music_reply.video_reply_source_url("latentsync", "domestic") == (
+        "https://modelscope.cn/models/chenmingyu/latentsync"
     )
     assert music_reply.video_reply_source_url("roformer", "domestic") == (
         "https://hf-mirror.com/KimberleyJSN/melbandroformer"
