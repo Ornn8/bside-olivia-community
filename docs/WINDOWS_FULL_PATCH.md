@@ -42,7 +42,7 @@ GitHub Actions 会在 PR 和 `main` 更新时生成同样的可下载 artifact�
 
 ## 启动器健康检查
 
-`installer/start_local.py --health-only` 输出一行符合 [`contracts/launcher_health.schema.json`](../contracts/launcher_health.schema.json) 的 JSON。`READY` 的退出码为 0；`UNAVAILABLE` 与 `PORT_CONFLICT` 的退出码为 2。`PORT_CONFLICT` 表示端口已有非本契约监听器或返回了无效健康契约，启动器不会尝试启动第二个后端。
+`installer/start_local.py --health-only` 输出一行符合 [`contracts/launcher_health.schema.json`](../contracts/launcher_health.schema.json) 的 JSON。`READY` 的退出码为 0；`UNAVAILABLE` 与 `PORT_CONFLICT` 的退出码为 2。`PORT_CONFLICT` 表示端口已有非本契约监听器或返回了无效健康契约，启动器不会尝试启动第二个后端。正常启动还会核对 health 中不含路径的 `backend_id`，它同时绑定活动组件与当前安装实例；版本或安装实例不匹配时不会复用该服务。首个组件补丁遇到旧版遗留服务时，只有在 Windows 确认监听进程是当前产品目录自带 runtime 的 Python 后才会终止并启动新版本；无法证明归属时以 `STALE_BACKEND_RUNNING` 停止，不会结束其他程序。启动器自己创建的后端随 Olivia 客户端退出而结束。
 
 ## 原版客户端补丁
 

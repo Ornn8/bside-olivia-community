@@ -188,18 +188,23 @@ def _health(port: int) -> str:
         return "UNAVAILABLE" if _port_is_bindable(port) else "PORT_CONFLICT"
 
 
-def _backend_id(backend: Path) -> str:
+def _backend_id(backend: Path, root: Path) -> str:
     """Return a path-free identity for the selected backend tree."""
 
     if backend.name == "local_backend":
-        return "legacy"
-    if (
+        component_id = "legacy"
+    elif (
         backend.parent.name == "local_backend"
         and backend.parent.parent.name == "versions"
         and _BACKEND_ID_RE.fullmatch(backend.name)
     ):
-        return backend.name
-    return "invalid"
+        component_id = backend.name
+    else:
+        component_id = "invalid"
+    installation_id = hashlib.sha256(
+        os.path.normcase(os.fspath(root)).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{component_id}.{installation_id}"
 
 
 def _server_backend_id(port: int) -> str | None:
@@ -245,6 +250,110 @@ def _stop_backend_server(server: object) -> None:
                 pass
     except OSError:
         pass
+
+
+def _listening_process_id(port: int) -> int | None:
+    """Resolve the Windows PID that owns one listening TCP port."""
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class TcpRowOwnerPid(ctypes.Structure):
+        _fields_ = [
+            ("state", wintypes.DWORD),
+            ("local_address", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_address", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("process_id", wintypes.DWORD),
+        ]
+
+    size = wintypes.ULONG()
+    table = ctypes.WinDLL("iphlpapi", use_last_error=True).GetExtendedTcpTable
+    table(None, ctypes.byref(size), False, socket.AF_INET, 3, 0)
+    if not size.value:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if table(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 0:
+        return None
+    count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    offset = ctypes.sizeof(wintypes.DWORD)
+    row_size = ctypes.sizeof(TcpRowOwnerPid)
+    for index in range(count):
+        row = TcpRowOwnerPid.from_buffer_copy(buffer, offset + index * row_size)
+        if socket.ntohs(row.local_port & 0xFFFF) == port:
+            return int(row.process_id)
+    return None
+
+
+def _runtime_owns_executable(executable: Path, root: Path) -> bool:
+    """Limit legacy migration to Python bundled beside this installation."""
+
+    if executable.name.casefold() not in {"python.exe", "pythonw.exe"}:
+        return False
+    candidate = os.path.normcase(os.fspath(executable.absolute()))
+    for runtime in (root.parent / "runtime", root / "runtime"):
+        boundary = os.path.normcase(os.fspath(runtime.absolute()))
+        try:
+            if os.path.commonpath((candidate, boundary)) == boundary:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _terminate_runtime_process(process_id: int, root: Path) -> bool:
+    """Terminate a listener only when its executable belongs to this install."""
+
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    process_access = 0x0001 | 0x1000 | 0x00100000
+    handle = kernel32.OpenProcess(process_access, False, process_id)
+    if not handle:
+        return False
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(
+            handle,
+            0,
+            buffer,
+            ctypes.byref(length),
+        ) or not _runtime_owns_executable(Path(buffer.value), root):
+            return False
+        if not kernel32.TerminateProcess(handle, 0):
+            return False
+        return kernel32.WaitForSingleObject(handle, 5000) == 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _stop_stale_backend(port: int, root: Path) -> bool:
+    """Stop a legacy listener only after proving it uses this install runtime."""
+
+    process_id = _listening_process_id(port)
+    return process_id is not None and _terminate_runtime_process(process_id, root)
 
 
 def _client_executable(root: Path) -> Path:
@@ -383,10 +492,20 @@ def main(argv: list[str] | None = None) -> int:
     if health == "PORT_CONFLICT":
         print("PORT_CONFLICT")
         return 2
-    expected_backend_id = _backend_id(backend)
+    expected_backend_id = _backend_id(backend, root)
     if health == "READY" and _server_backend_id(args.port) != expected_backend_id:
-        print("STALE_BACKEND_RUNNING")
-        return 2
+        if not _stop_stale_backend(args.port, root):
+            print("STALE_BACKEND_RUNNING")
+            return 2
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            health = _health(args.port)
+            if health == "UNAVAILABLE":
+                break
+            time.sleep(0.1)
+        if health != "UNAVAILABLE":
+            print("STALE_BACKEND_RUNNING")
+            return 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()

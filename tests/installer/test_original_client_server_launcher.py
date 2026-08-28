@@ -300,14 +300,16 @@ def test_component_launcher_identifies_and_stops_its_backend(
     monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
 
     assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
-    assert backend_environments[0]["OLIVIA_BACKEND_ID"] == "0.1.2-digest"
+    assert backend_environments[0]["OLIVIA_BACKEND_ID"] == start_local._backend_id(
+        active_backend,
+        root.resolve(),
+    )
     assert lifecycle == ["terminate", "wait:5"]
 
 
-def test_launcher_refuses_to_reuse_a_ready_backend_with_another_identity(
+def test_launcher_replaces_a_verified_stale_backend_before_starting_active_version(
     tmp_path: Path,
     monkeypatch,
-    capsys,
 ) -> None:
     root = _installation(tmp_path)
     active_backend = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
@@ -317,20 +319,34 @@ def test_launcher_refuses_to_reuse_a_ready_backend_with_another_identity(
         "# active",
         encoding="utf-8",
     )
-    client_calls: list[list[str]] = []
+    health = iter(("READY", "UNAVAILABLE", "READY", "READY"))
+    stale_stops: list[tuple[int, Path]] = []
+    backend_starts: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
     monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: "legacy")
     monkeypatch.setattr(
-        start_local.subprocess,
-        "call",
-        lambda command, **_kwargs: client_calls.append(command) or 0,
+        start_local,
+        "_stop_stale_backend",
+        lambda port, installation: stale_stops.append((port, installation)) or True,
     )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda command, **_kwargs: backend_starts.append(command) or Process(),
+    )
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
 
-    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 2
-    assert capsys.readouterr().out.strip() == "STALE_BACKEND_RUNNING"
-    assert client_calls == []
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert stale_stops == [(8899, root.resolve())]
+    assert len(backend_starts) == 1
 
 
 def test_launcher_reads_backend_identity_from_health_response(monkeypatch) -> None:
@@ -358,12 +374,46 @@ def test_launcher_reads_backend_identity_from_health_response(monkeypatch) -> No
     assert start_local._server_backend_id(8899) == "0.1.2-digest"
 
 
-def test_backend_identity_tracks_versioned_and_legacy_selection(tmp_path: Path) -> None:
-    legacy = tmp_path / "local_backend"
+def test_backend_identity_tracks_version_and_installation(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    legacy = first_root / "local_backend"
     versioned = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
 
-    assert start_local._backend_id(legacy) == "legacy"
-    assert start_local._backend_id(versioned) == "0.1.2-digest"
+    legacy_id = start_local._backend_id(legacy, first_root)
+    versioned_id = start_local._backend_id(versioned, first_root)
+
+    assert legacy_id.startswith("legacy.")
+    assert versioned_id.startswith("0.1.2-digest.")
+    assert start_local._backend_id(versioned, second_root) != versioned_id
+
+
+def test_stale_backend_stop_requires_runtime_owned_process(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "installed"
+    calls: list[tuple[int, Path]] = []
+    monkeypatch.setattr(start_local, "_listening_process_id", lambda _port: 4321)
+    monkeypatch.setattr(
+        start_local,
+        "_terminate_runtime_process",
+        lambda pid, installation: calls.append((pid, installation)) or True,
+    )
+
+    assert start_local._stop_stale_backend(8899, root) is True
+    assert calls == [(4321, root)]
+
+
+def test_runtime_process_ownership_is_scoped_to_one_installation(tmp_path: Path) -> None:
+    root = tmp_path / "product" / "install"
+    owned = tmp_path / "product" / "runtime" / "python-3.12" / "pythonw.exe"
+    another = tmp_path / "other" / "runtime" / "python-3.12" / "pythonw.exe"
+    unrelated = tmp_path / "product" / "runtime" / "Olivia.exe"
+
+    assert start_local._runtime_owns_executable(owned, root) is True
+    assert start_local._runtime_owns_executable(another, root) is False
+    assert start_local._runtime_owns_executable(unrelated, root) is False
 
 
 def test_launcher_allows_mem0_cold_start_before_opening_client(
