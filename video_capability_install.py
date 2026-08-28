@@ -715,11 +715,11 @@ class VideoCapabilityInstaller:
                 content_ready = (
                     _ready_marker_matches(root, bundle, self.manifest.version)
                     and all(
-                        _size_matches(root / item.relative_path, item)
+                        _size_matches(root, root / item.relative_path, item)
                         for item in bundle.files
                     )
                 )
-            except (OSError, VideoCapabilityError):
+            except (OSError, ComponentUpdateError, VideoCapabilityError):
                 content_ready = False
             if content_ready:
                 state, reason = self._installed_state(root, bundle)
@@ -1171,11 +1171,11 @@ def _verify_and_true(path: Path, item: VideoFile) -> bool:
 
 def _ready_marker_matches(root: Path, bundle: VideoBundle, version: str) -> bool:
     marker = root / ".ready.json"
-    if not marker.is_file() or _is_reparse_point(marker):
+    if not _regular_file_without_reparse_ancestors(root, marker):
         return False
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, ComponentUpdateError, UnicodeError, json.JSONDecodeError):
         return False
     return payload == {
         "schema_version": "olivia.video-bundle.v1",
@@ -1184,14 +1184,28 @@ def _ready_marker_matches(root: Path, bundle: VideoBundle, version: str) -> bool
     }
 
 
-def _size_matches(path: Path, item: VideoFile) -> bool:
+def _regular_file_without_reparse_ancestors(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+        if not root.is_dir() or _is_reparse_point(root):
+            return False
+        current = root
+        for part in relative.parts[:-1]:
+            current /= part
+            if not current.is_dir() or _is_reparse_point(current):
+                return False
+        return path.is_file() and not _is_reparse_point(path)
+    except (OSError, ComponentUpdateError, ValueError):
+        return False
+
+
+def _size_matches(root: Path, path: Path, item: VideoFile) -> bool:
     try:
         return (
-            path.is_file()
-            and not _is_reparse_point(path)
+            _regular_file_without_reparse_ancestors(root, path)
             and path.stat().st_size == item.size_bytes
         )
-    except OSError:
+    except (OSError, ComponentUpdateError):
         return False
 
 

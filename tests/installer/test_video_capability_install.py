@@ -590,6 +590,102 @@ def test_ready_status_does_not_rehash_installed_bundle(
 
 
 @pytest.mark.parametrize(
+    "target_kind", ("bundle_root", "nested_parent", "marker", "file")
+)
+def test_ready_status_rejects_reparse_points_in_bundle_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    data_root = (tmp_path / target_kind / "data").resolve()
+    bundle = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (
+            VideoFile(
+                "model",
+                "models/nested/model.bin",
+                7,
+                hashlib.sha256(b"fixture").hexdigest(),
+                "MIT",
+                {},
+            ),
+        ),
+    )
+    root = data_root / "capabilities" / "video" / bundle.identifier
+    model = root / "models" / "nested" / "model.bin"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixture")
+    marker = root / ".ready.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": bundle.identifier,
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    targets = {
+        "bundle_root": root,
+        "nested_parent": model.parent,
+        "marker": marker,
+        "file": model,
+    }
+    target = targets[target_kind]
+    monkeypatch.setattr(
+        video_capability_install,
+        "_is_reparse_point",
+        lambda path: path == target,
+    )
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest("1.0", (bundle,)),
+    )
+
+    assert installer.status()["bundles"][0]["state"] == "missing"
+
+
+def test_ready_status_fails_closed_when_reparse_lstat_races(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = (tmp_path / "data").resolve()
+    bundle = VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ())
+    root = data_root / "capabilities" / "video" / bundle.identifier
+    root.mkdir(parents=True)
+    marker = root / ".ready.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": bundle.identifier,
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def race(path: Path) -> bool:
+        if path == marker:
+            raise video_capability_install.ComponentUpdateError(
+                "UPDATE_STAGED_TREE_MISMATCH"
+            )
+        return False
+
+    monkeypatch.setattr(video_capability_install, "_is_reparse_point", race)
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest("1.0", (bundle,)),
+    )
+
+    assert installer.status()["bundles"][0]["state"] == "missing"
+
+
+@pytest.mark.parametrize(
     "damage",
     ("corrupt_marker", "wrong_bundle", "wrong_version", "missing_file", "wrong_size"),
 )
