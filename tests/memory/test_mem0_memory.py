@@ -694,6 +694,33 @@ def test_historical_actor_split_discards_only_invalid_candidate(tmp_path: Path) 
     assert ("delete", "memory.fixture.english") in backend.calls
 
 
+def test_historical_actor_split_allows_an_actor_with_no_durable_fact(
+    tmp_path: Path,
+) -> None:
+    class EmptyLinliFactsMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs["metadata"]["history_actor"] == "linli":
+                self.calls.append(("add", {"messages": messages, **kwargs}))
+                return {"results": []}
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "用户最近改成夜班。"
+            value["results"][0]["memory"] = "用户最近改成夜班。"
+            return value
+
+    backend = EmptyLinliFactsMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="最近改成夜班。",
+        assistant_message="我知道了。",
+        occurred_at=NOW,
+        source_id="history:empty-linli-facts",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert result.memory_ids == ("memory.fixture.1",)
+    assert [row["memory"] for row in backend.rows] == ["用户最近改成夜班。"]
+
+
 def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(
     tmp_path: Path,
 ) -> None:

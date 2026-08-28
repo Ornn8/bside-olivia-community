@@ -952,9 +952,6 @@ class Mem0ConversationMemoryAdapter:
         history_write = source_id.startswith("history:")
         if any(
             acknowledgements is None for acknowledgements in acknowledgement_groups
-        ) or (
-            history_write
-            and any(not acknowledgements for acknowledgements in acknowledgement_groups)
         ):
             created_ids = tuple(
                 memory_id
@@ -1021,27 +1018,34 @@ class Mem0ConversationMemoryAdapter:
             )
             for group in acknowledgement_groups
         )
-        if history_write and any(not group for group in valid_groups):
-            remaining_ids = tuple(
-                memory_id
-                for group in valid_groups
-                for memory_id, _memory in group
+        if history_write and any(not group for group in valid_groups) and invalid_ids:
+            empty_actor_was_rejected = any(
+                group and not valid_group
+                for group, valid_group in zip(
+                    acknowledgement_groups, valid_groups, strict=True
+                )
             )
-            pending_ids = self._delete_provider_memories(remaining_ids)
-            return MemoryWriteResult(
-                MemoryWriteStatus.UNAVAILABLE,
-                source_id,
-                pending_ids,
-                error_code=(
-                    "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
-                    if pending_ids and invalid_identity_ids
-                    else "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
-                    if pending_ids
-                    else "MEM0_CHARACTER_IDENTITY_MISMATCH"
-                    if invalid_identity_ids
-                    else "MEM0_LANGUAGE_MISMATCH"
-                ),
-            )
+            if empty_actor_was_rejected:
+                remaining_ids = tuple(
+                    memory_id
+                    for group in valid_groups
+                    for memory_id, _memory in group
+                )
+                pending_ids = self._delete_provider_memories(remaining_ids)
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    pending_ids,
+                    error_code=(
+                        "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+                        if pending_ids and invalid_identity_ids
+                        else "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
+                        if pending_ids
+                        else "MEM0_CHARACTER_IDENTITY_MISMATCH"
+                        if invalid_identity_ids
+                        else "MEM0_LANGUAGE_MISMATCH"
+                    ),
+                )
         if not history_write and invalid_ids:
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -1056,7 +1060,9 @@ class Mem0ConversationMemoryAdapter:
             memory_id for group in valid_groups for memory_id, _memory in group
         )
         return MemoryWriteResult(
-            MemoryWriteStatus.WRITTEN if memory_ids else MemoryWriteStatus.SKIPPED,
+            MemoryWriteStatus.WRITTEN
+            if history_write or memory_ids
+            else MemoryWriteStatus.SKIPPED,
             source_id,
             memory_ids,
         )
