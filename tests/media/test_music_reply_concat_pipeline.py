@@ -201,11 +201,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     normal = tmp_path / "spoken.mp4"
     song_video = tmp_path / "performance.mp4"
     official_reference = _write(tmp_path / "official-complete-reply.mp4")
-    official_spoken = (
-        tmp_path
-        / "final-music-v2-40s-stages"
-        / "official-spoken-000-035s.mp4"
-    )
+    spoken_action_base = _write(tmp_path / "accepted-action-base.mp4")
     transition = _write(tmp_path / "official-transition.mp4")
     order: list[str] = []
     observed: dict[str, object] = {}
@@ -267,11 +263,8 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda reference, destination, **_kwargs: (
-            observed.setdefault(
-                "spoken_reference", (Path(reference), Path(destination))
-            )
-            and _write(Path(destination), b"official-spoken")
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the accepted action base must be used directly")
         ),
     )
     monkeypatch.setattr(music_reply, "render_reply_video", fake_normal)
@@ -295,6 +288,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         worker_path=tmp_path / "visual-worker.py",
         performance_video_path=tmp_path / "base-performance.mp4",
         duration_seconds=40,
+        spoken_action_base_path=spoken_action_base,
     )
 
     assert order == [
@@ -308,8 +302,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert observed["minimax"][3]["lyrics"] == semantic.lyrics
     assert observed["minimax"][3]["caption"] == caption
     assert observed["spoken"][2]["adaptive_delivery"] is True
-    assert observed["spoken"][2]["scene_path"] == official_spoken
-    assert observed["spoken_reference"] == (official_reference, official_spoken)
+    assert observed["spoken"][2]["scene_path"] == spoken_action_base
     assert observed["concat"] == (
         normal,
         song_video,

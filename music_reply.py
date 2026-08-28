@@ -752,6 +752,7 @@ def _build_music_stage_manifest(
     duration_seconds: int,
     *,
     official_reply_reference_path: Path,
+    spoken_action_base_path: Path | None,
     transition_reference: Path,
     performance_video_path: Path,
     tts_config_path: Path,
@@ -788,6 +789,7 @@ def _build_music_stage_manifest(
         },
         "assets": {
             "official_reply_reference": _file_fingerprint(official_reply_reference_path),
+            "spoken_action_base": _file_fingerprint(spoken_action_base_path),
             "official_transition_reference": _file_fingerprint(transition_reference),
             "performance_video": _file_fingerprint(performance_video_path),
             "tts_config": _file_fingerprint(tts_config_path),
@@ -939,6 +941,7 @@ def render_musical_reply(
     worker_path: Path,
     performance_video_path: Path,
     duration_seconds: int,
+    spoken_action_base_path: Path | None = None,
     voice_performance_plan: VoicePerformancePlan | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
@@ -977,6 +980,7 @@ def render_musical_reply(
         song_plan,
         duration_seconds,
         official_reply_reference_path=official_reply_reference_path,
+        spoken_action_base_path=spoken_action_base_path,
         transition_reference=transition_reference,
         performance_video_path=performance_video_path,
         tts_config_path=tts_config_path,
@@ -999,7 +1003,13 @@ def render_musical_reply(
     if not manifest_compatible:
         _write_stage_manifest(manifest_path, manifest)
 
-    spoken_base = stage_root / "official-spoken-000-035s.mp4"
+    spoken_base = (
+        Path(spoken_action_base_path)
+        if spoken_action_base_path is not None
+        else stage_root / "official-spoken-000-035s.mp4"
+    )
+    if spoken_action_base_path is not None and not spoken_base.is_file():
+        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
     if _stage_reusable(
         manifest,
         "normal_video",
@@ -1008,7 +1018,10 @@ def render_musical_reply(
     ):
         normal_metadata = {"spoken_stage": "reused"}
     else:
-        if not _stage_reusable(manifest, "spoken_base", spoken_base):
+        if (
+            spoken_action_base_path is None
+            and not _stage_reusable(manifest, "spoken_base", spoken_base)
+        ):
             spoken_base.unlink(missing_ok=True)
             prepare_official_spoken_base(
                 official_reply_reference_path,

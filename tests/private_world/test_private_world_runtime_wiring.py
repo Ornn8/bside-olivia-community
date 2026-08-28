@@ -173,7 +173,7 @@ async def fixed_voice_plan(letter, text):
         emphasize_sentences=(),
     )
 
-def render_reply(text, output_path, **kwargs):
+def render_reply(content, text, output_path, **kwargs):
     Path(output_path).write_bytes(b'synthetic media retry')
     return {}
 
@@ -184,7 +184,7 @@ local_server._persist_store_state = lambda: None
 local_server._persist_media_state = lambda: None
 local_server.letters_adapter.remember_conversation = lambda *args: None
 local_server._voice_plan_for_letter = fixed_voice_plan
-local_server.render_reply_video = render_reply
+local_server.render_musical_reply = render_reply
 
 if os.environ.get('OLIVIA_TEST_PRIVATE_WORLD_SQLITE_FAILURE') == '1':
     def unavailable_snapshot():
@@ -212,8 +212,9 @@ recovery_count = local_server.recover_pending_private_world()
 
 scene = Path(os.environ['OLIVIA_LOCAL_DATA_ROOT']) / 'scene.mp4'
 scene.write_bytes(b'synthetic scene')
-for key in ('MORNING', 'DAY', 'DUSK', 'NIGHT'):
-    os.environ['OLIVIA_SCENE_' + key] = str(scene)
+os.environ['OLIVIA_ORDINARY_ACTION_BASE'] = str(scene)
+os.environ['OLIVIA_OFFICIAL_REPLY_REFERENCE'] = str(scene)
+os.environ['OLIVIA_MUSIC_PERFORMANCE_BASE'] = str(scene)
 letter['media_status'] = 'UNAVAILABLE'
 asyncio.run(
     local_server._render_media_job(

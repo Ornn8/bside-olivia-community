@@ -92,9 +92,16 @@ class ReplyPipeline:
             generation_messages=_generation_messages(prepared),
         )
         if not gate.accepted:
+            repairable_text = (
+                gate.text
+                if gate.violation_codes
+                == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+                else ""
+            )
             return PipelineResult(
                 candidate.request_id,
                 ReplyState.FAILED,
+                text=repairable_text,
                 error_code=gate.error_code or "REPLY_QUALITY_BLOCKED",
                 quality_status=gate.status.value,
                 violation_codes=gate.violation_codes,
