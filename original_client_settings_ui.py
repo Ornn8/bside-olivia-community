@@ -107,7 +107,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
-  const confirmOfficialImport = (message) => new Promise((resolve) => {
+  const confirmAction = (message) => new Promise((resolve) => {
     document.querySelector(`[${OFFICIAL_IMPORT_CONFIRM_ATTR}]`)?.remove();
     const backdrop = document.createElement("div");
     backdrop.setAttribute(OFFICIAL_IMPORT_CONFIRM_ATTR, "");
@@ -121,40 +121,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     backdrop.style.pointerEvents = "auto";
     backdrop.style.webkitAppRegion = "no-drag";
 
-    const dialog = document.createElement("section");
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    dialog.style.width = "min(520px, calc(100vw - 48px))";
-    dialog.style.padding = "24px";
-    dialog.style.borderRadius = "12px";
-    dialog.style.backgroundColor = "#ffffff";
-    dialog.style.color = "#1f2937";
-    dialog.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
-    dialog.style.pointerEvents = "auto";
-    dialog.style.webkitAppRegion = "no-drag";
+    const confirmation = document.createElement("section");
+    confirmation.setAttribute("role", "dialog");
+    confirmation.setAttribute("aria-modal", "true");
+    confirmation.style.width = "min(520px, calc(100vw - 48px))";
+    confirmation.style.padding = "24px";
+    confirmation.style.borderRadius = "12px";
+    confirmation.style.backgroundColor = "#18191c";
+    confirmation.style.color = "#f9fafb";
+    confirmation.style.colorScheme = "dark";
+    confirmation.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
+    confirmation.style.pointerEvents = "auto";
+    confirmation.style.webkitAppRegion = "no-drag";
 
     const finish = (accepted) => {
       backdrop.remove();
       resolve(accepted);
     };
     const messageNode = text("p", message, "text-text-body text-body-m font-regular");
-    messageNode.style.color = "#1f2937";
+    messageNode.style.color = "#f9fafb";
     const actionsNode = actions();
     actionsNode.style.justifyContent = "flex-end";
     const cancel = button("取消", () => finish(false));
     const confirm = button("确定", () => finish(true));
     for (const item of [cancel, confirm]) {
-      item.style.color = "#1f2937";
-      item.style.backgroundColor = "#ffffff";
-      item.style.borderColor = "#9ca3af";
+      item.style.color = "#f9fafb";
+      item.style.backgroundColor = "#111827";
+      item.style.borderColor = "#6b7280";
       item.style.pointerEvents = "auto";
       item.style.webkitAppRegion = "no-drag";
     }
     confirm.style.backgroundColor = "#2563eb";
     confirm.style.color = "#ffffff";
     actionsNode.append(cancel, confirm);
-    dialog.append(messageNode, actionsNode);
-    backdrop.append(dialog);
+    confirmation.append(messageNode, actionsNode);
+    backdrop.append(confirmation);
     (document.body || document.documentElement).append(backdrop);
     confirm.focus();
   });
@@ -523,7 +524,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
               resultState.textContent = "内容没有变化。";
               return;
             }
-            if (!window.confirm("确认用新内容替换这条长期记忆？")) {
+            if (!await confirmAction("确认用新内容替换这条长期记忆？")) {
               return;
             }
             setButtonsBusy([save, cancel, correct, remove], true);
@@ -563,7 +564,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         });
 
         const remove = button("删除", async () => {
-          if (!window.confirm("确认删除这条长期记忆？原始信件不会被删除。")) {
+          if (!await confirmAction("确认删除这条长期记忆？原始信件不会被删除。")) {
             return;
           }
           setButtonsBusy([correct, remove], true);
@@ -596,15 +597,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const renderMemoryPanel = async (panel, capability) => {
     const state = capabilityState(capability);
-    const confirmClear = () => window.confirm("确认清空当前用户的 Mem0 长期记忆？")
-      && window.confirm("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
+    const confirmClear = async () => await confirmAction("确认清空当前用户的 Mem0 长期记忆？")
+      && await confirmAction("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
     if (state === "disabled" || state === "unavailable") {
       if (state === "unavailable" && capability && capability.reason_code === "MEMORY_ADMIN_CLEAR_PENDING") {
         const heading = text("h3", "长期记忆", "text-text-title text-title-m");
         const summary = text("p", "上次清空尚未完成。", "text-text-secondary text-body-m font-regular");
         const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
         const resume = button("继续完成清空", async () => {
-          if (!confirmClear()) return;
+          if (!await confirmClear()) return;
           setButtonsBusy([resume], true);
           resultState.textContent = "正在继续清空当前用户记忆……";
           try {
@@ -671,7 +672,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           return;
         }
         const install = button("安装 Embedding", async () => {
-          if (!window.confirm("确认下载本地 Embedding 模型？下载仅在此次确认后开始。")) {
+          if (!await confirmAction("确认下载本地 Embedding 模型？下载仅在此次确认后开始。")) {
             return;
           }
           setButtonsBusy([install], true);
@@ -762,7 +763,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const toggle = button(paused ? "恢复长期记忆" : "暂停长期记忆", async () => {
       const action = paused ? "恢复" : "暂停";
-      if (!window.confirm(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
+      if (!await confirmAction(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
         return;
       }
       setButtonsBusy([toggle, clear], true);
@@ -784,7 +785,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     const clear = button("清空当前用户记忆", async () => {
-      if (!confirmClear()) return;
+      if (!await confirmClear()) return;
       setButtonsBusy([toggle, clear], true);
       resultState.textContent = "正在清空当前用户记忆……";
       try {
@@ -950,7 +951,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     save.disabled = true;
     const removeKey = button("删除 API key", async () => {
-      if (!window.confirm("确认删除这台电脑上保存的 API key？删除后需重启 Olivia。")) {
+      if (!await confirmAction("确认删除这台电脑上保存的 API key？删除后需重启 Olivia。")) {
         return;
       }
       setButtonsBusy([testConnection, save, removeKey], true);
@@ -1068,7 +1069,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         source.append(option);
       }
       const install = button(stateValue === "paused" ? "继续下载" : "下载并启用", async () => {
-        if (!window.confirm("确认下载长期记忆能力包？下载将在后台继续。")) return;
+        if (!await confirmAction("确认下载长期记忆能力包？下载将在后台继续。")) return;
         setButtonsBusy([install], true);
         result.textContent = "正在启动后台下载……";
         try {
@@ -1096,7 +1097,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       window.setTimeout(refresh, 1000);
     } else if (stateValue === "ready") {
       const uninstall = button("卸载运行依赖", async () => {
-        if (!window.confirm("确认卸载长期记忆运行依赖？已下载模型和个人记忆会保留。")) return;
+        if (!await confirmAction("确认卸载长期记忆运行依赖？已下载模型和个人记忆会保留。")) return;
         await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
           action: "uninstall",
           remove_model: false,
@@ -1104,8 +1105,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         await refresh();
       });
       const removeAll = button("卸载并删除模型", async () => {
-        if (!window.confirm("确认卸载长期记忆并删除已下载模型？个人记忆仍会保留。")) return;
-        if (!window.confirm("模型删除后重新启用需要再次下载，仍要继续吗？")) return;
+        if (!await confirmAction("确认卸载长期记忆并删除已下载模型？个人记忆仍会保留。")) return;
+        if (!await confirmAction("模型删除后重新启用需要再次下载，仍要继续吗？")) return;
         await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
           action: "uninstall",
           remove_model: true,
@@ -1276,7 +1277,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         result.textContent = "请输入发布页提供的 64 位 Manifest SHA-256。";
         return;
       }
-      if (!window.confirm("确认校验并安装这个本地补丁？")) return;
+      if (!await confirmAction("确认校验并安装这个本地补丁？")) return;
       setButtonsBusy([install, rollback], true);
       result.textContent = "正在校验并安装补丁……";
       try {
@@ -1293,7 +1294,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     const rollback = button("回滚上一版本", async () => {
-      if (!window.confirm("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
+      if (!await confirmAction("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
       setButtonsBusy([install, rollback], true);
       result.textContent = "正在切换到上一版本……";
       try {
@@ -1498,7 +1499,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panel.setAttribute("role", "tabpanel");
       panel.style.padding = "18px";
       panel.style.borderRadius = "12px";
-      panel.style.background = "var(--el-fill-color-light, rgba(0,0,0,0.035))";
+      panel.style.background = "#23252a";
       panel.style.display = "grid";
       panel.style.gap = "14px";
       panel.append(
@@ -1660,7 +1661,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         importState.textContent = "无法确认长期记忆组件状态，请重启客户端后再试。";
         return;
       }
-      if (!await confirmOfficialImport("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
+      if (!await confirmAction("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
         return;
       }
       setButtonsBusy([importButton], true);

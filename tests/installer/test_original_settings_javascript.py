@@ -32,7 +32,8 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert source.count('method: "GET"') == 1
     assert '"Content-Type": "application/json"' in source
     assert 'const CONFIRM_VALUE = "confirmed"' in source
-    assert "window.confirm" in source
+    assert "window.confirm" not in source
+    assert "confirmAction" in source
     assert "window.open" not in source
     assert "innerHTML" not in source
     assert "document.write" not in source

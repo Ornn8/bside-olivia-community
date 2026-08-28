@@ -127,7 +127,8 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     assert 'method: "GET"' in bootstrap
     assert 'method: "POST"' in bootstrap
     assert "X-Olivia-Companion-Action" in bootstrap
-    assert "window.confirm" in bootstrap
+    assert "window.confirm" not in bootstrap
+    assert "confirmAction" in bootstrap
     assert "crypto.randomUUID" in bootstrap
     assert "<iframe" not in bootstrap.casefold()
     assert "window.open" not in bootstrap

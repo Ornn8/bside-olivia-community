@@ -386,7 +386,7 @@ def _verify_archive(
         'const CONFIRM_VALUE = "confirmed";',
         'method: "GET"',
         'method: "POST"',
-        "window.confirm",
+        "confirmAction",
         "data-olivia-companion-settings-root",
         "panel.dataset.oliviaCompanionPanel",
         "长期记忆",

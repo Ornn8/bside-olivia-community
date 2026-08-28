@@ -38,7 +38,9 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
-    assert "window.confirm" in BOOTSTRAP_JAVASCRIPT
+    assert "window.confirm" not in BOOTSTRAP_JAVASCRIPT
+    assert "const confirmAction = (message) => new Promise" in BOOTSTRAP_JAVASCRIPT
+    assert 'confirmation.style.backgroundColor = "#18191c";' in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.webkitAppRegion = "no-drag";' in BOOTSTRAP_JAVASCRIPT
@@ -52,6 +54,8 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'color: #cbd5e1 !important;' in BOOTSTRAP_JAVASCRIPT
     assert '[role="dialog"] select' in BOOTSTRAP_JAVASCRIPT
     assert 'background-color: #111827 !important;' in BOOTSTRAP_JAVASCRIPT
+    assert 'panel.style.background = "#23252a";' in BOOTSTRAP_JAVASCRIPT
+    assert "var(--el-fill-color-light" not in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_can_apply_a_user_downloaded_patch_and_roll_back() -> None:
@@ -617,8 +621,20 @@ const context = {
   document, window, fetch,
 };
 vm.runInNewContext(source, context);
-(async () => {
-  const findButton = (label) => body.querySelectorAll("button").find((item) => item.textContent === label);
+    (async () => {
+      const findButton = (label) => body.querySelectorAll("button").find((item) => item.textContent === label);
+      const clickConfirmed = async (target, count = 1) => {
+        const pending = target.click();
+        for (let index = 0; index < count; index += 1) {
+          await flush();
+          const dialogs = body.querySelectorAll('[role="dialog"]');
+          const confirmation = dialogs[dialogs.length - 1];
+          const buttons = confirmation && confirmation.querySelectorAll("button");
+          if (!buttons || buttons.length < 2) throw new Error("confirmation dialog missing");
+          await buttons[buttons.length - 1].click();
+        }
+        await pending;
+      };
   const open = findButton("打开");
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
       await open.click();
@@ -628,19 +644,19 @@ vm.runInNewContext(source, context);
       await findButton("已关闭").click();
       await flush();
       if (!body.querySelectorAll("div").some((item) => item.textContent.includes("原设置保持不变"))) throw new Error("video mutation error was hidden");
-      await findButton("暂停长期记忆").click();
+          await clickConfirmed(findButton("暂停长期记忆"));
   await flush();
   const resume = findButton("恢复长期记忆");
   if (!resume) throw new Error("resume button was not rendered after pause");
-  await resume.click();
+      await clickConfirmed(resume);
   await flush();
   const pause = findButton("暂停长期记忆");
   if (!pause) throw new Error("pause button was not rendered after resume");
-  await pause.click();
+      await clickConfirmed(pause);
   await flush();
   const pending = findButton("继续完成清空");
   if (!pending) throw new Error("pending clear recovery was not rendered");
-  await pending.click();
+      await clickConfirmed(pending, 2);
   await flush();
   if (!findButton("暂停长期记忆")) throw new Error("clear recovery did not refresh status");
   process.stdout.write(JSON.stringify({ mutationPaths, videoMethods, statusIndex }));
