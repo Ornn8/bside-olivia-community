@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .component_package import ComponentPackageBuildError, build_component_package
 from .component_update import (
     ComponentUpdateError,
     apply_component_update,
@@ -30,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
     update.add_argument("--installation", type=Path, required=True)
     update.add_argument("--package", type=Path, required=True)
     update.add_argument("--manifest-sha256", required=True)
+    build_update = sub.add_parser("build-update")
+    build_update.add_argument("--source", type=Path, required=True)
+    build_update.add_argument("--output", type=Path, required=True)
+    build_update.add_argument("--version", required=True)
+    build_update.add_argument("--source-commit", required=True)
     rollback = sub.add_parser("rollback-update")
     rollback.add_argument("--installation", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -50,11 +56,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.package,
                 expected_manifest_sha256=args.manifest_sha256,
             )
+        elif args.command == "build-update":
+            result = build_component_package(
+                args.source,
+                args.output,
+                version=args.version,
+                expected_source_commit=args.source_commit,
+            )
         else:
             result = rollback_component_update(args.installation)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
-    except (PatchInstallError, ComponentUpdateError) as exc:
+    except (PatchInstallError, ComponentPackageBuildError, ComponentUpdateError) as exc:
         print(json.dumps({"status": "ERROR", "code": str(exc)}, ensure_ascii=False))
         return 2
 
