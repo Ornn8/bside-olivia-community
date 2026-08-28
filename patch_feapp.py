@@ -44,6 +44,8 @@ MAILBOX_LOGIN_REPLACEMENT_0627 = (
     'await t.replace({name:ve.Collection}),'
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
 )
+MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
+MAILBOX_WRITE_REPLACEMENT_0627 = '"hide-write":!1'
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class _PatchProfile:
     mailbox_anchor: str
     mailbox_replacement: str
     collection_route: str
+    mailbox_write_anchor: str | None
+    mailbox_write_replacement: str | None
 
 
 _PATCH_PROFILES = (
@@ -66,6 +70,8 @@ _PATCH_PROFILES = (
         MAILBOX_LOGIN_ANCHOR,
         MAILBOX_LOGIN_REPLACEMENT,
         "await t.replace({name:ye.Collection})",
+        None,
+        None,
     ),
     _PatchProfile(
         MAIN_JS_0627,
@@ -75,6 +81,8 @@ _PATCH_PROFILES = (
         MAILBOX_LOGIN_ANCHOR_0627,
         MAILBOX_LOGIN_REPLACEMENT_0627,
         "await t.replace({name:ve.Collection})",
+        MAILBOX_WRITE_ANCHOR_0627,
+        MAILBOX_WRITE_REPLACEMENT_0627,
     ),
 )
 
@@ -175,6 +183,21 @@ def _patch_mailbox_default_route(
     )
 
 
+def _patch_mailbox_write_access(
+    javascript: str,
+    profile: _PatchProfile,
+) -> str:
+    if profile.mailbox_write_anchor is None:
+        return javascript
+    if javascript.count(profile.mailbox_write_anchor) != 1:
+        raise ValueError("mailbox write visibility anchor is missing or not unique")
+    return javascript.replace(
+        profile.mailbox_write_anchor,
+        profile.mailbox_write_replacement,
+        1,
+    )
+
+
 def _ensure_backup(feapp: Path) -> Path:
     backup = Path(str(feapp) + ".orig")
     if backup.exists():
@@ -238,8 +261,12 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
             head_end = index + len(profile.inject_prefix)
             main_path.write_text(javascript[:head_end] + patch + ',' + javascript[head_end:], encoding="utf-8")
             patched_javascript = main_path.read_text(encoding="utf-8")
+            mailbox_javascript = _patch_mailbox_default_route(
+                patched_javascript,
+                profile,
+            )
             main_path.write_text(
-                _patch_mailbox_default_route(patched_javascript, profile),
+                _patch_mailbox_write_access(mailbox_javascript, profile),
                 encoding="utf-8",
             )
             output_archive = temporary_root / "patched.dat"
@@ -255,6 +282,10 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 or new_ws not in patched_js
                 or 'localStorage.setItem("appMode","lite")' not in patched_js
                 or profile.collection_route not in patched_js
+                or (
+                    profile.mailbox_write_replacement is not None
+                    and profile.mailbox_write_replacement not in patched_js
+                )
             ):
                 raise ValueError("patched archive verification failed")
         except Exception:

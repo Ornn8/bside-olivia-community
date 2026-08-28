@@ -21,6 +21,11 @@ from original_client_settings_ui import (
     BOOTSTRAP_JAVASCRIPT,
     SETTINGS_UI_VERSION,
 )
+from patch_feapp import (
+    MAILBOX_WRITE_ANCHOR_0627,
+    MAILBOX_WRITE_REPLACEMENT_0627,
+    MAIN_JS_0627,
+)
 
 
 INDEX_MEMBER = "index.html"
@@ -310,17 +315,42 @@ def _repack(root: Path, destination: Path) -> None:
             pass
 
 
+def _repair_mailbox_write_access(root: Path) -> str:
+    main = root / Path(*MAIN_JS_0627.split("/"))
+    if not main.is_file():
+        return "UNCHANGED"
+    source = _read_text(main, "COMPANION_MAIN_MODULE_UNREADABLE")
+    anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
+    replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
+    if anchor_count == 1 and replacement_count == 0:
+        _write_utf8(
+            main,
+            source.replace(
+                MAILBOX_WRITE_ANCHOR_0627,
+                MAILBOX_WRITE_REPLACEMENT_0627,
+                1,
+            ),
+        )
+        return "PATCHED"
+    if anchor_count == 0 and replacement_count == 1:
+        return "ALREADY_PATCHED"
+    return "UNCHANGED"
+
+
 def _verify_archive(
     path: Path,
     *,
     api_base: str,
     original_hashes: dict[str, str],
+    mailbox_write_changed: bool = False,
 ) -> None:
     patched_hashes = _member_hashes(path)
     if set(patched_hashes) != set(original_hashes) | {BOOTSTRAP_MEMBER}:
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
     for name, digest in original_hashes.items():
-        if name in {INDEX_MEMBER, BOOTSTRAP_MEMBER}:
+        if name in {INDEX_MEMBER, BOOTSTRAP_MEMBER} or (
+            mailbox_write_changed and name == MAIN_JS_0627
+        ):
             continue
         if patched_hashes.get(name) != digest:
             raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
@@ -328,6 +358,11 @@ def _verify_archive(
         with zipfile.ZipFile(path) as archive:
             index = archive.read(INDEX_MEMBER).decode("utf-8")
             bootstrap = archive.read(BOOTSTRAP_MEMBER).decode("utf-8")
+            main_0627 = (
+                archive.read(MAIN_JS_0627).decode("utf-8")
+                if mailbox_write_changed
+                else ""
+            )
     except (KeyError, OSError, UnicodeError, zipfile.BadZipFile) as exc:
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED") from exc
     required = (
@@ -387,6 +422,13 @@ def _verify_archive(
         or any(value in bootstrap for value in forbidden)
         or _normalize_newlines(bootstrap)
         != _normalize_newlines(BOOTSTRAP_JAVASCRIPT)
+        or (
+            mailbox_write_changed
+            and (
+                main_0627.count(MAILBOX_WRITE_REPLACEMENT_0627) != 1
+                or MAILBOX_WRITE_ANCHOR_0627 in main_0627
+            )
+        )
     ):
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
 
@@ -397,7 +439,7 @@ def patch_companion_settings(
     *,
     work_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, str]:
-    """Patch one staged client archive and preserve every existing asset."""
+    """Patch repository-owned UI and restore the supported mailbox entry."""
 
     feapp = Path(feapp_path).expanduser().resolve()
     normalized_api_base = validate_api_base(api_base)
@@ -423,7 +465,14 @@ def patch_companion_settings(
             unpacked = temporary_root / "unpacked"
             with zipfile.ZipFile(feapp) as archive:
                 _safe_extract(archive, unpacked)
-            status = _patch_index(unpacked, normalized_api_base)
+            ui_status = _patch_index(unpacked, normalized_api_base)
+            mailbox_status = _repair_mailbox_write_access(unpacked)
+            status = (
+                "PATCHED"
+                if "PATCHED" in {ui_status, mailbox_status}
+                else "ALREADY_PATCHED"
+            )
+            mailbox_write_changed = mailbox_status == "PATCHED"
             if status == "PATCHED":
                 output = temporary_root / "patched.dat"
                 _repack(unpacked, output)
@@ -432,6 +481,7 @@ def patch_companion_settings(
                 feapp,
                 api_base=normalized_api_base,
                 original_hashes=original_hashes,
+                mailbox_write_changed=mailbox_write_changed,
             )
         except Exception:
             _atomic_copy(rollback, feapp)

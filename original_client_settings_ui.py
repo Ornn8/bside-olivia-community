@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v6"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v7"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1175,7 +1175,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const removeShell = () => {
     document.querySelector(`[${ROOT_ATTR}]`)?.remove();
-    document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
   };
 
   const openDialog = (initialMode = false) => {
