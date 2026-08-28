@@ -645,6 +645,55 @@ def test_historical_actor_split_rolls_back_user_fact_when_linli_add_fails(
     assert backend.rows == []
 
 
+def test_historical_actor_split_discards_only_invalid_candidate(tmp_path: Path) -> None:
+    class MixedLanguageMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            valid = (
+                "用户最近改成夜班，也会使用 AI 整理会议记录。"
+                if actor == "user"
+                else "我记得自己曾认真回复过这封信。"
+            )
+            self.rows[-1]["memory"] = valid
+            value["results"][0]["memory"] = valid
+            if actor == "linli":
+                invalid = {
+                    "id": "memory.fixture.english",
+                    "memory": "The assistant summarized the user's letter in English.",
+                    "user_id": kwargs["user_id"],
+                    "agent_id": kwargs["agent_id"],
+                    "metadata": dict(kwargs["metadata"]),
+                    "created_at": NOW.isoformat(),
+                }
+                self.rows.append(invalid)
+                value["results"].append(
+                    {
+                        "id": invalid["id"],
+                        "memory": invalid["memory"],
+                        "event": "ADD",
+                    }
+                )
+            return value
+
+    backend = MixedLanguageMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="最近改成夜班，也会用 AI 整理会议记录。",
+        assistant_message="我记得自己曾认真回复过这封信。",
+        occurred_at=NOW,
+        source_id="history:mixed-language-candidates",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert result.memory_ids == ("memory.fixture.1", "memory.fixture.2")
+    assert {row["id"] for row in backend.rows} == {
+        "memory.fixture.1",
+        "memory.fixture.2",
+    }
+    assert ("delete", "memory.fixture.english") in backend.calls
+
+
 def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(
     tmp_path: Path,
 ) -> None:

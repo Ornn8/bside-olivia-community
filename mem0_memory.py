@@ -979,41 +979,82 @@ class Mem0ConversationMemoryAdapter:
             if group
             for acknowledgement in group
         )
-        if history_write and any(
-            not _HISTORY_FIRST_PERSON_RE.search(memory)
-            or _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
-            for _memory_id, memory in acknowledgement_groups[1] or ()
-        ):
-            pending_ids = self._delete_provider_memories(
-                tuple(memory_id for memory_id, _memory in acknowledgements)
+        invalid_identity_ids: set[str] = set()
+        if history_write:
+            invalid_identity_ids = {
+                memory_id
+                for memory_id, memory in acknowledgement_groups[1] or ()
+                if not _HISTORY_FIRST_PERSON_RE.search(memory)
+                or _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
+            }
+        invalid_language_ids = (
+            {
+                memory_id
+                for memory_id, memory in acknowledgements
+                if _CJK_RE.search(memory) is None
+            }
+            if _CJK_RE.search(f"{user_message}\n{assistant_message}")
+            else set()
+        )
+        invalid_ids = invalid_identity_ids | invalid_language_ids
+        if invalid_ids:
+            pending_ids = self._delete_provider_memories(tuple(sorted(invalid_ids)))
+            if pending_ids:
+                pending_ids = self._delete_provider_memories(
+                    tuple(memory_id for memory_id, _memory in acknowledgements)
+                )
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    pending_ids,
+                    error_code=(
+                        "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+                        if invalid_identity_ids
+                        else "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
+                    ),
+                )
+        valid_groups = tuple(
+            tuple(
+                acknowledgement
+                for acknowledgement in group or ()
+                if acknowledgement[0] not in invalid_ids
             )
+            for group in acknowledgement_groups
+        )
+        if history_write and any(not group for group in valid_groups):
+            remaining_ids = tuple(
+                memory_id
+                for group in valid_groups
+                for memory_id, _memory in group
+            )
+            pending_ids = self._delete_provider_memories(remaining_ids)
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
                 pending_ids,
                 error_code=(
                     "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+                    if pending_ids and invalid_identity_ids
+                    else "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
                     if pending_ids
                     else "MEM0_CHARACTER_IDENTITY_MISMATCH"
-                ),
-            )
-        if _CJK_RE.search(f"{user_message}\n{assistant_message}") and any(
-            _CJK_RE.search(memory) is None for _memory_id, memory in acknowledgements
-        ):
-            pending_ids = self._delete_provider_memories(
-                tuple(memory_id for memory_id, _memory in acknowledgements)
-            )
-            return MemoryWriteResult(
-                MemoryWriteStatus.UNAVAILABLE,
-                source_id,
-                pending_ids,
-                error_code=(
-                    "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
-                    if pending_ids
+                    if invalid_identity_ids
                     else "MEM0_LANGUAGE_MISMATCH"
                 ),
             )
-        memory_ids = tuple(memory_id for memory_id, _memory in acknowledgements)
+        if not history_write and invalid_ids:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code=(
+                    "MEM0_CHARACTER_IDENTITY_MISMATCH"
+                    if invalid_identity_ids
+                    else "MEM0_LANGUAGE_MISMATCH"
+                ),
+            )
+        memory_ids = tuple(
+            memory_id for group in valid_groups for memory_id, _memory in group
+        )
         return MemoryWriteResult(
             MemoryWriteStatus.WRITTEN if memory_ids else MemoryWriteStatus.SKIPPED,
             source_id,
