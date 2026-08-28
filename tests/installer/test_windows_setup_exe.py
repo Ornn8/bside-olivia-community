@@ -60,6 +60,8 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     (source / "tests").mkdir()
     (source / "docs").mkdir()
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer" / "assets").mkdir()
+    (source / "installer" / "assets" / "olivia.ico").write_bytes(b"icon")
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "LICENSE").write_text("license", encoding="utf-8")
@@ -78,6 +80,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/assets/olivia.ico",
             "installer/runtime-requirements.txt",
             *BUILD_CONTROL_FILES,
             "LICENSE",
@@ -97,6 +100,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     prepare_setup_payload(source, offline, destination, validate_schema=False)
 
     assert (destination / "installer" / "Install.ps1").read_text() == "install"
+    assert (destination / "installer" / "assets" / "olivia.ico").read_bytes() == b"icon"
     assert (destination / "LICENSE").is_file()
     assert (destination / "local_server.py").is_file()
     assert (destination / "offline" / "offline-core-assets.json").is_file()
@@ -145,6 +149,7 @@ def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("control_center/static/index.html")
     assert _is_release_file("installer/full_patch.py")
     assert _is_release_file("installer/seed-vc-overlap-frames.patch")
+    assert _is_release_file("installer/assets/olivia.ico")
     assert _is_release_file("tools/livetalking_worker.py")
 
     assert not _is_release_file(".gitignore")
@@ -163,6 +168,7 @@ def test_real_head_setup_payload_excludes_build_audit_test_and_scm_files() -> No
 
     assert {
         "installer/Install.ps1",
+        "installer/assets/olivia.ico",
         "installer/full_patch.py",
         "installer/seed-vc-overlap-frames.patch",
         "local_server.py",
@@ -271,6 +277,7 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "CreateAppDir=no" in script
     assert "Uninstallable=no" in script
     assert "LicenseFile=" in script
+    assert "SetupIconFile={#PayloadRoot}\\installer\\assets\\olivia.ico" in script
     assert "Install.ps1" in script
     assert "-NonInteractive" in script
     assert "GetInstallRoot" in script
@@ -304,6 +311,7 @@ def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> N
     assert '{sys}\\wscript.exe' in script
     assert '\\install\\START.vbs' in script
     assert '\\install\\START.cmd' not in script
+    assert 'IconFilename: "{code:GetInstallRoot}\\install\\local_backend\\installer\\assets\\olivia.ico"' in script
 
 
 def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() -> None:
@@ -336,6 +344,15 @@ def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     assert "Olivia-Setup-x64.exe.sha256" in workflow
     assert "windows_setup_smoke.ps1" in workflow
     assert "actions/upload-artifact@v4" in workflow
+
+
+def test_setup_failure_smoke_copies_the_valid_repository_icon() -> None:
+    smoke = (ROOT / "tests" / "installer" / "windows_setup_smoke.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "installer\\assets\\olivia.ico" in smoke
+    assert "Copy-Item -LiteralPath $sourceIcon -Destination $fixtureIcon" in smoke
 
 
 def test_setup_build_requirements_are_exact_and_hash_locked() -> None:

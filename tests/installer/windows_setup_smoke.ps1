@@ -13,15 +13,20 @@ $output = Join-Path $root 'output'
 $install = Join-Path $root 'install'
 $log = Join-Path $root 'setup.log'
 $fixture = Join-Path $payload 'installer\Install.ps1'
+$fixtureIcon = Join-Path $payload 'installer\assets\olivia.ico'
+$setupScriptPath = (Resolve-Path -LiteralPath $SetupScript).Path
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $setupScriptPath)
+$sourceIcon = Join-Path $repositoryRoot 'installer\assets\olivia.ico'
 
 try {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fixture), $output | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fixtureIcon), $output | Out-Null
     $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText(
         (Join-Path $payload 'LICENSE'),
         'Synthetic test payload.',
         $utf8NoBom
     )
+    Copy-Item -LiteralPath $sourceIcon -Destination $fixtureIcon
     $fixtureContent = @'
 param(
     [string]$PayloadRoot,
@@ -42,7 +47,7 @@ exit 23
 '@
     [IO.File]::WriteAllText($fixture, $fixtureContent, $utf8NoBom)
 
-    & $Iscc "/DPayloadRoot=$payload" "/DOutputDir=$output" '/DAppVersion=smoke' $SetupScript
+    & $Iscc "/DPayloadRoot=$payload" "/DOutputDir=$output" '/DAppVersion=smoke' $setupScriptPath
     if ($LASTEXITCODE -ne 0) { throw 'SETUP_SMOKE_COMPILE_FAILED' }
 
     $setup = Join-Path $output 'Olivia-Setup-x64.exe'

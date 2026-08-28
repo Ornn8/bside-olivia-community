@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -382,6 +383,45 @@ def _resolve_state_payload(
     return current
 
 
+def _refresh_existing_shortcuts(root: Path, active_version: Path) -> None:
+    """Best-effort icon refresh for shortcuts that the user kept."""
+
+    if os.name != "nt":
+        return
+    try:
+        script = active_version / "installer" / "Create-Shortcut.ps1"
+        powershell = (
+            Path(os.environ.get("WINDIR", r"C:\Windows"))
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        if not script.is_file() or not powershell.is_file():
+            return
+        subprocess.run(
+            [
+                os.fspath(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                os.fspath(script),
+                "-InstallRoot",
+                os.fspath(root),
+                "-RefreshExisting",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        # A shortcut is optional UI state; activation itself must remain valid.
+        return
+
+
 def apply_component_update(
     installation: str | os.PathLike[str],
     package: str | os.PathLike[str],
@@ -431,6 +471,11 @@ def apply_component_update(
         )
         _write_state(staged_state, next_state)
         os.replace(staged_state, state_path)
+        try:
+            _refresh_existing_shortcuts(root, version_root)
+        except Exception:
+            # Never turn a completed atomic activation into an update failure.
+            pass
         return {"status": "APPLIED", "component": component, "version": version}
     except ComponentUpdateError:
         raise
