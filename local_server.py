@@ -828,8 +828,14 @@ def _official_history_private_world_available() -> bool:
 
 async def _migrate_official_history(
     payload: Mapping[str, object],
+    *,
+    skip_source_record_ids: frozenset[str] = frozenset(),
 ) -> HistoricalMigrationResult:
-    exchanges = exchanges_from_legacy_payload(payload)
+    exchanges = tuple(
+        exchange
+        for exchange in exchanges_from_legacy_payload(payload)
+        if exchange.source_record_id not in skip_source_record_ids
+    )
     result = await asyncio.to_thread(
         migrate_historical_exchanges,
         exchanges,
@@ -1756,6 +1762,37 @@ def _legacy_import_adapter() -> MemoryPort:
     return adapter
 
 
+def _existing_legacy_source_record_ids() -> frozenset[str] | None:
+    if not getattr(memory_adapter, "enabled", False):
+        return frozenset()
+    try:
+        list_legacy = getattr(memory_adapter, "list_legacy", None)
+        if callable(list_legacy):
+            records = list_legacy()
+        else:
+            exported = memory_adapter.export_records(domains=("legacy",))
+            records = exported.get("legacy")
+    except Exception:
+        return None
+    if not isinstance(records, list):
+        return None
+    source_ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            return None
+        source_id = record.get("source_record_id")
+        if not isinstance(source_id, str) or not source_id:
+            return None
+        metadata = record.get("metadata")
+        if (
+            isinstance(metadata, Mapping)
+            and metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
+            == OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+        ):
+            source_ids.add(source_id)
+    return frozenset(source_ids)
+
+
 def _legacy_records(body: dict) -> list[LegacyLetter] | None:
     if body.get("mode") != "read_only":
         return None
@@ -2233,7 +2270,21 @@ async def route(
             })
         migration = None
         if official_import:
-            migration = await _migrate_official_history(body)
+            existing_source_ids = _existing_legacy_source_record_ids()
+            if existing_source_ids is None:
+                return err(503, "MEMORY_UNAVAILABLE", {
+                    "status": "UNAVAILABLE",
+                    "error_code": "MEMORY_UNAVAILABLE",
+                    "retryable": True,
+                })
+            migration = (
+                await _migrate_official_history(
+                    body,
+                    skip_source_record_ids=existing_source_ids,
+                )
+                if existing_source_ids
+                else await _migrate_official_history(body)
+            )
             if migration.status != "completed":
                 error_code = (
                     "PRIVATE_WORLD_HISTORY_UNAVAILABLE"
