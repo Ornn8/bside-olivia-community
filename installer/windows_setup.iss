@@ -34,6 +34,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PayloadRoot}\*"; DestDir: "{tmp}\OliviaPayload"; Flags: recursesubdirs createallsubdirs dontcopy noencryption ignoreversion
 
+[Tasks]
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："; Flags: unchecked
+
+[Icons]
+Name: "{userprograms}\Olivia 本地版"; Filename: "{code:GetInstallRoot}\install\START.cmd"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: runminimized
+Name: "{userdesktop}\Olivia 本地版"; Filename: "{code:GetInstallRoot}\install\START.cmd"; WorkingDir: "{code:GetInstallRoot}\install"; Tasks: desktopicon; Flags: runminimized
+
+[Run]
+Filename: "{code:GetInstallRoot}\install\START.cmd"; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent shellexec
+
 [Code]
 var
   InstallDirPage: TInputDirWizardPage;

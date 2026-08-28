@@ -133,6 +133,57 @@ def test_successful_sign_in_authorizes_on_demand_capability_install(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_successful_sign_in_authorizes_local_component_update(tmp_path: Path) -> None:
+    async def signed_in(_request: web.Request) -> web.Response:
+        return web.json_response({"code": 0, "message": "ok", "data": {}})
+
+    class Updater:
+        applied: list[Path] = []
+
+        def apply(self, package: Path, _manifest_sha256: str):
+            self.applied.append(package)
+            return {"status": "APPLIED", "component": "local_backend", "version": "1.2.3"}
+
+        def rollback(self):
+            return {"status": "ROLLED_BACK", "component": "local_backend", "version": "1.2.2"}
+
+    async def scenario() -> None:
+        package = tmp_path / "update.oliviapatch"
+        package.write_bytes(b"fixture")
+        service = LLMSetupService(
+            tmp_path, protect=lambda value: value, unprotect=lambda value: value,
+            probe=lambda *_args: None,
+        )
+        updater = Updater()
+        runtime = create_original_client_server_runtime(
+            signed_in, setup_service=service, component_updater=updater,
+            trusted_origins=(TRUSTED_ORIGIN,),
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            await client.post("/toy/signIn", headers={"Origin": TRUSTED_ORIGIN})
+            setup = await client.get(
+                "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
+            )
+            token = (await setup.json())["session_token"]
+            response = await client.post(
+                "/toy/updates/local/action",
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    "X-Olivia-Update-Action": "confirmed",
+                    "X-Olivia-Setup-Session": token,
+                },
+                json={
+                    "action": "apply",
+                    "package_path": str(package),
+                    "manifest_sha256": "a" * 64,
+                },
+            )
+            assert response.status == 200
+            assert updater.applied == [package.resolve()]
+
+    asyncio.run(scenario())
+
+
 def test_boolean_false_sign_in_code_does_not_unlock_initial_setup(tmp_path: Path) -> None:
     async def malformed_sign_in(_request: web.Request) -> web.Response:
         return web.json_response({"code": False, "message": "invalid", "data": {}})

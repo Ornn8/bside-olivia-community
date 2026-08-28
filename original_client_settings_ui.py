@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v5"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v6"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -29,11 +29,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const SETUP_COMPLETE_PATH = "/toy/setup/complete";
   const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0";
   const MEM0_CAPABILITY_ACTION_PATH = "/toy/capabilities/mem0/action";
+  const UPDATE_ACTION_PATH = "/toy/updates/local/action";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   const SETUP_CONFIRM_HEADER = "X-Olivia-Setup-Action";
   const SETUP_SESSION_HEADER = "X-Olivia-Setup-Session";
   const CAPABILITY_CONFIRM_HEADER = "X-Olivia-Capability-Action";
+  const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
@@ -330,6 +332,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         || (path === MEM0_CAPABILITY_PATH && payload.capability !== "long_term_memory")
       ) {
         throw new Error("capability-unavailable");
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const requestUpdate = async (body) => {
+    if (!setupSessionToken) {
+      await requestSetup(SETUP_STATUS_PATH);
+    }
+    const endpoint = new URL(UPDATE_ACTION_PATH, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 120000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          [UPDATE_CONFIRM_HEADER]: CONFIRM_VALUE,
+          [SETUP_SESSION_HEADER]: setupSessionToken,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload || typeof payload.status !== "string") {
+        const error = new Error("update-unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          ? payload.error_code
+          : "UPDATE_ACTION_UNAVAILABLE";
+        throw error;
       }
       return payload;
     } finally {
@@ -1015,6 +1052,71 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
   };
 
+  const renderLocalUpdatePanel = (panel) => {
+    const heading = text("h3", "本地补丁", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "从我们的 Release 手动下载 .oliviapatch，再在这里安装。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const patch = document.createElement("input");
+    patch.type = "file";
+    patch.accept = ".oliviapatch";
+    patch.setAttribute("aria-label", "选择 Olivia 补丁文件");
+    patch.style.pointerEvents = "auto";
+    const digest = setupInput("发布页提供的 Manifest SHA-256");
+    digest.input.maxLength = 64;
+    digest.input.autocomplete = "off";
+    const result = text("p", "", "text-text-secondary text-body-m font-regular");
+    result.setAttribute("aria-live", "polite");
+    const install = button("安装本地补丁", async () => {
+      const selected = patch.files && patch.files.length === 1 ? patch.files[0] : null;
+      const packagePath = selected && typeof patch.files[0].path === "string"
+        ? patch.files[0].path
+        : "";
+      const manifestSha256 = digest.input.value.trim().toLowerCase();
+      if (!packagePath) {
+        result.textContent = "请选择已下载的 .oliviapatch 文件。";
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/.test(manifestSha256)) {
+        result.textContent = "请输入发布页提供的 64 位 Manifest SHA-256。";
+        return;
+      }
+      if (!window.confirm("确认校验并安装这个本地补丁？")) return;
+      setButtonsBusy([install, rollback], true);
+      result.textContent = "正在校验并安装补丁……";
+      try {
+        const payload = await requestUpdate({
+          action: "apply",
+          package_path: packagePath,
+          manifest_sha256: manifestSha256,
+        });
+        result.textContent = `版本 ${payload.version} 已安装，关闭并重新打开 Olivia 后生效。`;
+      } catch (error) {
+        result.textContent = `补丁安装失败：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([install, rollback], false);
+      }
+    });
+    const rollback = button("回滚上一版本", async () => {
+      if (!window.confirm("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
+      setButtonsBusy([install, rollback], true);
+      result.textContent = "正在切换到上一版本……";
+      try {
+        const payload = await requestUpdate({ action: "rollback" });
+        result.textContent = `已回滚到版本 ${payload.version}，关闭并重新打开 Olivia 后生效。`;
+      } catch (error) {
+        result.textContent = `无法回滚：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([install, rollback], false);
+      }
+    });
+    const controls = actions();
+    controls.append(install, rollback);
+    panel.replaceChildren(heading, summary, patch, digest.wrapper, controls, result);
+  };
+
   const loadDialogData = async (statusNode, panels, initialMode) => {
     const tasks = [
       renderLlmSetupPanel(panels.llm, initialMode),
@@ -1025,6 +1127,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       await Promise.allSettled(tasks);
       return;
     }
+    tasks.push(Promise.resolve(renderLocalUpdatePanel(panels.update)));
     statusNode.textContent = "正在连接本机陪伴服务……";
     try {
       const payload = await requestJson(STATUS_PATH);
@@ -1151,6 +1254,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : [
           { id: "llm", label: "大模型", key: "llm" },
           { id: "capability", label: "本地能力与下载", key: "capability" },
+          { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
           { id: "private-world", label: "私人世界", key: "privateWorld" },
         ];
