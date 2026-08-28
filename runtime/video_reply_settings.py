@@ -47,7 +47,7 @@ class VideoReplySettingsStore:
             root.mkdir(parents=True, exist_ok=True); path, marker = root / "video_reply_settings.json", root / "video_reply_settings.initialized"
             if not path.exists():
                 if marker.exists(): raise VideoReplySettingsError(_UNAVAILABLE)
-                writer(path, cls._encode({"schema_version": _SCHEMA, "initialized": True, "settings": {_KEY: True}, "ledger": {}})); writer(marker, b"1\n")
+                writer(path, cls._encode({"schema_version": _SCHEMA, "initialized": True, "settings": {_KEY: False}, "ledger": {}})); writer(marker, b"1\n")
         except (OSError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
         return cls(root, writer=writer)
     @classmethod
@@ -57,9 +57,12 @@ class VideoReplySettingsStore:
     def receive_snapshot(self) -> VideoReplyReceiveEligibility: return VideoReplyReceiveEligibility(self._committed.enabled is True)
     def reload(self) -> None:
         with self._lock: self._open()
-    def mutate(self, request_id: object, enabled: object) -> VideoReplySettingMutation:
-        request = self._request(request_id)
+    @classmethod
+    def validate_mutation(cls, request_id: object, enabled: object) -> None:
+        cls._request(request_id)
         if type(enabled) is not bool: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
+    def mutate(self, request_id: object, enabled: object) -> VideoReplySettingMutation:
+        self.validate_mutation(request_id, enabled); request = self._request(request_id)
         with self._lock:
             if self._committed.state != "available": raise VideoReplySettingsError(_UNAVAILABLE)
             ledger = self._ledger(self._document); old = ledger.get(request)

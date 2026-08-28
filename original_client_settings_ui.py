@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v7"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v8"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -15,6 +15,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
+  const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
   const OFFICIAL_LETTER_LIST_PATH = "/toy/letter/list";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
@@ -23,7 +24,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
-  const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";
   const SETUP_STATUS_PATH = "/toy/setup/status";
   const LLM_TEST_PATH = "/toy/setup/llm/test";
   const LLM_SAVE_PATH = "/toy/setup/llm/save";
@@ -41,7 +41,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
-
+  const VIDEO_CAPABILITY_CATALOG = [
+    ["cosyvoice", "语音合成（CosyVoice 3）"],
+    ["livetalking", "视频驱动配置（LiveTalking）"],
+    ["latentsync", "口型视频（LatentSync）"],
+    ["minimax_music3", "音乐生成（MiniMax Music 3）"],
+    ["roformer", "人声分离（RoFormer）"],
+    ["official_video_assets", "Olivia 场景与转场素材"],
+    ["ffmpeg", "媒体工具（FFmpeg）"],
+    ["media_workspace", "媒体工作目录"],
+  ];
   const parseApiBase = (value) => {
     let url;
     try {
@@ -155,7 +164,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const element = document.createElement("article");
     element.style.padding = "14px";
     element.style.borderRadius = "10px";
-    element.style.background = "var(--el-fill-color-light, rgba(0,0,0,0.035))";
+    element.style.background = "#23252a";
     element.style.display = "grid";
     element.style.gap = "8px";
     return element;
@@ -317,7 +326,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         responseBody = null;
       }
-      const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
+      const payload = (path === VIDEO_REPLY_SETTINGS_PATH
+          || path === VIDEO_REPLY_SOURCE_PATH
+          || path === OFFICIAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -326,6 +337,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
+        error.missingDependencies = payload && Array.isArray(payload.missing_dependencies)
+          ? payload.missing_dependencies.filter((item) => typeof item === "string")
+          : [];
         throw error;
       }
       return payload;
@@ -687,13 +701,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           setButtonsBusy([install], true);
           resultState.textContent = "正在安装 Embedding……";
           try {
-            const payload = await requestMutation(MEMORY_EMBEDDING_INSTALL_PATH, {
-              request_id: requestId("memory.embedding.install"),
-              reason: "用户在原版 Olivia 设置中明确安装 Mem0 Embedding。",
+            const payload = await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
+              action: "install",
+              source: "auto",
             });
-            if (payload.status === "APPLIED" || payload.status === "NOOP") {
-              resultState.textContent = "正在安装 Embedding……";
-              await refresh();
+            if (["queued", "downloading", "verifying", "ready"].includes(payload.state)) {
+              resultState.textContent = "已转入本地能力下载；可在“本地能力与下载”查看进度。";
             } else {
               resultState.textContent = "Embedding 安装失败，请重试。";
             }
@@ -710,7 +723,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return;
     }
 
-    const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+    const heading = text("h3", "长期记忆（Mem0 + BGE）", "text-text-title text-title-m");
     const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
     const summary = text(
       "p",
@@ -1052,7 +1065,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
-      const current = typeof payload.current_file === "string" ? `，当前：${payload.current_file}` : "";
+      const currentFile = payload.current_file === "python-dependencies"
+        ? "Python 依赖下载与安装"
+        : payload.current_file;
+      const current = typeof currentFile === "string" ? `，当前：${currentFile}` : "";
       result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;
     } else if (stateValue === "repair") {
       result.textContent = "上次安装未完成，可保留已下载内容并重试。";
@@ -1128,6 +1144,117 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "text-text-secondary text-caption-m font-regular"
     );
     panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
+  };
+
+  const renderVideoCapabilityPanel = async (panel) => {
+    let payload = null;
+    try {
+      payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
+    } catch (_error) {
+      payload = null;
+    }
+    const known = new Map(
+      payload && Array.isArray(payload.dependencies)
+        ? payload.dependencies
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => [item.id, item])
+        : []
+    );
+    const heading = text("h3", "视频回信（说话 + 音乐）", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "开启前会检查整条生成链路；缺少任一项时不会开启。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const list = stack();
+    for (const [id, label] of VIDEO_CAPABILITY_CATALOG) {
+      const dependency = known.get(id);
+      const state = dependency && dependency.state === "ready" ? "ready" : "missing";
+      const installMode = dependency && typeof dependency.install_mode === "string"
+        ? dependency.install_mode
+        : "manual";
+      const modeLabel = installMode === "core"
+        ? "随核心安装器提供"
+        : installMode === "local_import"
+        ? "从本机正版资源导入"
+        : "需手动准备";
+      const source = dependency && typeof dependency.source_summary === "string"
+        ? dependency.source_summary
+        : "下载源状态暂不可用";
+      const sourceChoices = dependency && Array.isArray(dependency.sources)
+        ? dependency.sources.filter((candidate) => candidate
+          && typeof candidate.label === "string"
+          && (candidate.id === "domestic" || candidate.id === "official"))
+        : [];
+      const item = card();
+      item.append(
+        text("div", label, "text-text-body text-label-l"),
+        text(
+          "div",
+          `${state === "ready" ? "已就绪" : "未准备"} · ${modeLabel}`,
+          "text-text-secondary text-body-m font-regular"
+        ),
+        text("div", source, "text-text-secondary text-caption-m font-regular")
+      );
+      if (sourceChoices.length) {
+        const sourceControls = actions();
+        const sourcePicker = document.createElement("select");
+        sourcePicker.setAttribute("aria-label", `选择下载源：${label}`);
+        sourcePicker.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+        for (const candidate of sourceChoices) {
+          const option = document.createElement("option");
+          option.value = candidate.id;
+          option.textContent = candidate.label;
+          sourcePicker.append(option);
+        }
+        const openState = text("div", "", "text-text-secondary text-caption-m font-regular");
+        openState.setAttribute("aria-live", "polite");
+        const openSource = button("打开下载页", async () => {
+          setButtonsBusy([openSource], true);
+          try {
+            await requestMutation(VIDEO_REPLY_SOURCE_PATH, {
+              capability: id,
+              source: sourcePicker.value,
+            });
+            openState.textContent = "已在系统浏览器打开下载页。";
+          } catch (_error) {
+            openState.textContent = "下载页未能打开，请稍后重试。";
+          } finally {
+            setButtonsBusy([openSource], false);
+          }
+        });
+        sourceControls.append(sourcePicker, openSource);
+        item.append(sourceControls, openState);
+      } else if (state !== "ready" && installMode !== "core") {
+        item.append(text(
+          "div",
+          installMode === "local_import"
+            ? "请从本机正版 Olivia 安装目录导入；安装后点击重新检测。"
+            : "尚无许可证和校验清单均已确认的下载源。",
+          "text-text-secondary text-caption-m font-regular"
+        ));
+      }
+      list.append(item);
+    }
+    const refresh = actions();
+    refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
+    panel.replaceChildren(heading, summary, list, refresh);
+  };
+
+  const renderCapabilityPanel = async (panel) => {
+    const heading = text("h3", "本地能力与下载", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "已有自动安装的能力可直接下载；其他能力保留国内源优先、官方源备用。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const memory = card();
+    const video = card();
+    panel.replaceChildren(heading, summary, memory, video);
+    await Promise.allSettled([
+      renderMem0CapabilityPanel(memory),
+      renderVideoCapabilityPanel(video),
+    ]);
   };
 
   const renderLocalUpdatePanel = (panel) => {
@@ -1217,7 +1344,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const loadDialogData = async (statusNode, panels, initialMode) => {
     const tasks = [
       renderLlmSetupPanel(panels.llm, initialMode),
-      renderMem0CapabilityPanel(panels.capability),
+      renderCapabilityPanel(panels.capability),
     ];
     if (initialMode) {
       statusNode.textContent = "先连接大模型；未配置大模型时无法进行真实对话。长期记忆可以稍后按需安装，可在设置 > 本地陪伴中继续。";
@@ -1254,7 +1381,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     document.querySelector(`[${ROOT_ATTR}]`)?.remove();
   };
 
-  const openDialog = (initialMode = false) => {
+  const openDialog = (initialMode = false, initialPanel = "llm") => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
     const backdrop = document.createElement("div");
@@ -1278,9 +1405,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     dialog.style.overflow = "auto";
     dialog.style.borderRadius = "16px";
     dialog.style.padding = "28px";
-    dialog.style.background = "var(--el-bg-color-overlay, var(--el-bg-color, #ffffff))";
+    dialog.style.backgroundColor = "#18191c";
     dialog.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
-    dialog.style.color = "var(--el-text-color-primary, #303133)";
+    dialog.style.color = "#f9fafb";
+    dialog.style.colorScheme = "dark";
     dialog.style.pointerEvents = "auto";
     dialog.style.webkitAppRegion = "no-drag";
 
@@ -1288,20 +1416,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     theme.textContent = `
       [${DIALOG_ATTR}] [role="dialog"] .text-text-title,
       [${DIALOG_ATTR}] [role="dialog"] .text-text-body {
-        color: var(--el-text-color-primary, #303133) !important;
+        color: #f9fafb !important;
       }
       [${DIALOG_ATTR}] [role="dialog"] .text-text-secondary {
-        color: var(--el-text-color-secondary, #606266) !important;
-      }
-      [${DIALOG_ATTR}] [role="dialog"] button {
-        color: var(--el-text-color-primary, #303133) !important;
-        border-color: var(--el-border-color, #dcdfe6) !important;
+        color: #cbd5e1 !important;
       }
       [${DIALOG_ATTR}] [role="dialog"] button,
+      [${DIALOG_ATTR}] [role="dialog"] select,
+      [${DIALOG_ATTR}] [role="dialog"] input,
+      [${DIALOG_ATTR}] [role="dialog"] textarea {
+        color: #f9fafb !important;
+        background-color: #111827 !important;
+        border-color: #6b7280 !important;
+        color-scheme: dark !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] button,
+      [${DIALOG_ATTR}] [role="dialog"] select,
       [${DIALOG_ATTR}] [role="dialog"] input,
       [${DIALOG_ATTR}] [role="dialog"] textarea {
         -webkit-app-region: no-drag !important;
         pointer-events: auto !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] option {
+        color: #f9fafb !important;
+        background-color: #111827 !important;
       }
     `;
 
@@ -1360,7 +1498,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const active = tab.dataset.panelId === id;
         tab.setAttribute("aria-selected", active ? "true" : "false");
         tab.style.background = active
-          ? "var(--el-fill-color, rgba(0,0,0,0.06))"
+          ? "#30333a"
           : "transparent";
       }
       for (const panel of panels.querySelectorAll('[role="tabpanel"]')) {
@@ -1424,7 +1562,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel("llm");
+    showPanel(initialPanel);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -1448,14 +1586,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     state.setAttribute("aria-live", "polite");
     copy.append(text("div", "允许视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
     let enabled = null;
+    let ready = false;
+    let missingDependencies = [];
     let message = "正在读取设置…";
     let toggle = null;
     const render = () => {
       if (!toggle) return;
-      const ready = typeof enabled === "boolean";
-      toggle.disabled = !ready;
-      toggle.textContent = ready ? (enabled ? "已开启" : "已关闭") : "暂不可用";
-      toggle.setAttribute("aria-pressed", ready ? String(enabled) : "false");
+      const settingAvailable = typeof enabled === "boolean";
+      toggle.disabled = !settingAvailable || (!ready && !enabled);
+      toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
+      toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
       state.textContent = message;
     };
     const hydrate = async () => {
@@ -1463,9 +1603,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
         if (payload.state !== "available") throw new Error("setting-unavailable");
         enabled = payload.enabled;
-        message = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
+        ready = payload.ready === true;
+        const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+        missingDependencies = Array.isArray(payload.dependencies)
+          ? payload.dependencies
+            .filter((item) => item && item.state !== "ready" && byId.has(item.id))
+            .map((item) => byId.get(item.id))
+          : [];
+        message = !ready && enabled
+          ? `视频回信偏好已开启，但当前缺少依赖，不会生效：${missingDependencies.join("、") || "请检查本地能力"}`
+          : !ready
+          ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`
+          : enabled
+          ? "新信默认可参与视频路由。"
+          : "新信将直接使用文字回信。";
       } catch (_error) {
         enabled = null;
+        ready = false;
+        missingDependencies = [];
         message = "设置暂不可用，已安全禁用。";
       }
       render();
@@ -1481,7 +1636,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         message = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
       } catch (error) {
         enabled = previous;
-        message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
+        if (error && error.code === "VIDEO_REPLY_DEPENDENCIES_MISSING") {
+          const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+          const labels = (error.missingDependencies || []).flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
+          message = `缺少依赖，无法开启视频回信：${labels.join("、") || "请检查本地能力"}`;
+        } else {
+          message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
+        }
       } finally {
         setButtonsBusy([toggle], false);
         render();
@@ -1489,7 +1650,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     toggle = button("已开启", apply);
     toggle.setAttribute("aria-label", "切换视频回信");
-    row.append(copy, toggle);
+    const controls = actions();
+    controls.append(toggle, button("管理下载", () => openDialog(false, "capability")));
+    row.append(copy, controls);
     section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
     render();
     void hydrate();

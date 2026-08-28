@@ -52,3 +52,19 @@ $thirdPartyRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\third-party'
 | LiveTalking runtime | [lipku/LiveTalking](https://github.com/lipku/LiveTalking) | `a97f01ba366e55eeed94e88d6bae38ed77b3a1b9` | Apache-2.0 | 上游来源页/手动下载 |
 
 这些条目不会带入原版游戏素材、私有参考音频、模型权重或任何生成媒体。只有维护者取得稳定、无凭据的直接 artifact URL，并完成许可证确认和 SHA-256 固定后，才允许把条目加入自动下载 manifest。
+
+## 中国大陆下载路线
+
+客户端应保留“国内源优先 / 仅官方源”两种模式。国内源只改变传输地址，下载结果仍必须按固定 revision、文件大小和 SHA-256 校验；镜像失败或校验不符时，自动模式才回退官方源。不得把镜像的 ETag 当作完整性证据。
+
+| 能力 | 国内优先路线 | 官方兼容路线 | 当前自动安装状态 |
+| --- | --- | --- | --- |
+| BGE 中文 Embedding | `hf-mirror.com/BAAI/bge-small-zh-v1.5` | `huggingface.co/BAAI/bge-small-zh-v1.5` | 已有固定 revision 与逐文件 SHA-256 |
+| CosyVoice 3 模型 | [ModelScope / FunAudioLLM](https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | [Hugging Face / FunAudioLLM](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | 模型镜像已确认；运行时、依赖和完整 BOM 尚未冻结，暂不自动安装 |
+| LatentSync | [ByteDance Gitee 镜像](https://gitee.com/ByteDance/LatentSync)；权重可走 `hf-mirror.com/ByteDance/...` | [GitHub / bytedance](https://github.com/bytedance/LatentSync)；Hugging Face | 当前产品仍按已验收的 1.5 接口运行，代码/权重组合尚未冻结，暂不自动安装 |
+| MiniMax Music 3 权重 | `hf-mirror.com/Comfy-Org/MiniMax-Music-3` | [Hugging Face / Comfy-Org](https://huggingface.co/Comfy-Org/MiniMax-Music-3) | 三个目标权重已定位；ComfyUI 运行时与完整 BOM 尚未冻结，暂不自动安装 |
+| RoFormer | 无可信且许可证明确的国内镜像 | 待选定唯一实现、模型和配置上游 | 仅允许手动导入，不自动下载 |
+
+Hugging Face 镜像 URL 必须使用完整的 40 位 commit：`https://hf-mirror.com/{repo}/resolve/{commit}/{path}`，官方回退保持相同 repo、commit 和 path。HF-Mirror 是社区镜像，不是 Hugging Face 官方服务，因此必须允许用户选择“仅官方源”，并始终在 staging 中完成 SHA-256 校验后再原子转正。
+
+截至 2026-08-28 核验到的候选固定点：CosyVoice ModelScope 模型 commit `9f9c56f2514700ef79d64fd0afb693e0d672373b`（HF 对应仓库使用独立 revision `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`）；ByteDance LatentSync GitHub/Gitee 同步 commit `a229c3948406bc2cf6eaf4873e662e70c6a04746`；Comfy-Org MiniMax Music 3 HF revision `6baad88896848433857c170ba4f05d2ea9d5f218`。这些固定点仍是安装清单候选，不代表已经完成 Windows 运行时、许可证和全文件哈希验收。

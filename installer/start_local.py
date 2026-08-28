@@ -514,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_INSTALL_ROOT": str(root),
         "OLIVIA_PROJECT_ROOT": str(root / "app"),
         "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_PROVIDER_CACHE_ROOT": str(data_root / "provider-cache"),
         "OLIVIA_MEMORY_ROOT": str(data_root / "memory"),
         "OLIVIA_PRIVATE_WORLD_ENABLED": "1",
         "OLIVIA_PRIVATE_WORLD_DB": str(

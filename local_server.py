@@ -14,6 +14,7 @@ import random
 import time
 import uuid
 import hashlib
+import webbrowser as _webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,12 @@ from persona_provider import (
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
 from runtime.media.media_paths import configured_media_path
-from music_reply import MusicReplyError, render_musical_reply
+from music_reply import (
+    MusicReplyError,
+    render_musical_reply,
+    video_reply_dependency_status,
+    video_reply_source_url,
+)
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS
 from runtime.reply.reply_media import ReplyMediaError
 from runtime.reply.reply_delivery import (
@@ -660,6 +666,30 @@ def _create_video_reply_settings_store() -> VideoReplySettingsStore:
 
 
 video_reply_settings_store = _create_video_reply_settings_store()
+
+
+def _open_video_capability_source(capability: object, source: object) -> bool:
+    url = video_reply_source_url(capability, source)
+    if url is None:
+        return False
+    try:
+        return bool(_webbrowser.open(url, new=2, autoraise=True))
+    except (OSError, RuntimeError):
+        return False
+
+
+def _video_reply_dependencies_ready() -> bool:
+    environment = MappingProxyType(dict(_os.environ))
+    try:
+        readiness = video_reply_dependency_status(
+            environment,
+            performance_video_path=_current_music_performance(environment),
+        )
+    except Exception:
+        return False
+    return readiness.get("ready") is True
+
+
 private_world_runtime: PrivateWorldRuntime = create_private_world_runtime(
     user_id=_memory_config.user_id,
 )
@@ -1847,14 +1877,101 @@ async def route(
     if p == "/toy/submitPreferenceSurvey":
         return not_implemented("PREFERENCE_SURVEY_NOT_IMPLEMENTED")
 
+    if p == "/toy/capabilities/video/source":
+        if set(body) != {"capability", "source"}:
+            return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {
+                "status": "FAILED",
+                "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID",
+                "retryable": False,
+            })
+        capability = body.get("capability")
+        source = body.get("source")
+        if video_reply_source_url(capability, source) is None:
+            return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {
+                "status": "FAILED",
+                "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID",
+                "retryable": False,
+            })
+        opened = await asyncio.to_thread(
+            _open_video_capability_source, capability, source
+        )
+        if not opened:
+            return err(503, "VIDEO_REPLY_SETTING_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
+                "retryable": True,
+            })
+        return ok({
+            "status": "OPENED",
+            "capability": capability,
+            "source": source,
+        })
+
     if p == "/toy/settings/video-reply":
         if method == "GET":
-            return ok(video_reply_settings_store.snapshot().to_dict())
+            setting = video_reply_settings_store.snapshot()
+            if setting.state != "available":
+                return ok(setting.to_dict())
+            environment = MappingProxyType(dict(_os.environ))
+            try:
+                readiness = video_reply_dependency_status(
+                    environment,
+                    performance_video_path=_current_music_performance(environment),
+                )
+            except Exception:
+                return ok({
+                    "state": "unavailable",
+                    "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
+                })
+            return ok({
+                "state": "available",
+                "enabled": bool(setting.enabled),
+                "effective_enabled": bool(setting.enabled and readiness["ready"]),
+                "ready": readiness["ready"],
+                "dependencies": readiness["dependencies"],
+            })
         if "enabled" not in body:
             return _missing_field("enabled")
         if "request_id" not in body:
             return _missing_field("request_id")
         request_id = body.get("request_id") if len(body) == 2 else None
+        try:
+            video_reply_settings_store.validate_mutation(request_id, body["enabled"])
+        except VideoReplySettingsError as exc:
+            return err(
+                exc.status,
+                exc.code,
+                {
+                    "status": "UNAVAILABLE" if exc.status == 503 else "FAILED",
+                    "error_code": exc.code,
+                    "retryable": contract.error_metadata(exc.code)["retryable"],
+                },
+            )
+        if body.get("enabled") is True:
+            environment = MappingProxyType(dict(_os.environ))
+            try:
+                readiness = video_reply_dependency_status(
+                    environment,
+                    performance_video_path=_current_music_performance(environment),
+                )
+            except Exception:
+                return err(503, "VIDEO_REPLY_SETTING_UNAVAILABLE", {
+                    "status": "UNAVAILABLE",
+                    "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
+                    "retryable": True,
+                })
+            missing = [
+                item["id"]
+                for item in readiness["dependencies"]
+                if item.get("state") != "ready"
+            ]
+            if not readiness["ready"]:
+                return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {
+                    "status": "FAILED",
+                    "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
+                    "retryable": False,
+                    "missing_dependencies": missing,
+                })
         try:
             result = video_reply_settings_store.mutate(request_id, body["enabled"])
         except VideoReplySettingsError as exc:
@@ -2079,7 +2196,10 @@ async def route(
             "music_duration_seconds": duration,
             # Freeze the setting at the service receive boundary.  Recovery,
             # retry, and media work read this field rather than global state.
-            "video_reply_enabled": video_reply_settings_store.receive_snapshot().enabled,
+            "video_reply_enabled": (
+                video_reply_settings_store.receive_snapshot().enabled
+                and _video_reply_dependencies_ready()
+            ),
         }
         store.letters.insert(0, letter)
         if idempotency_key is not None:

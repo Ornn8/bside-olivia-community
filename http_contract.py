@@ -38,6 +38,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_PAYLOAD_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_REQUEST_CONFLICT": {"http_status": 409, "retryable": False},
+    "VIDEO_REPLY_DEPENDENCIES_MISSING": {"http_status": 409, "retryable": False},
     "VIDEO_REPLY_SETTING_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "LETTER_SUPERSEDED": {"http_status": 410, "retryable": False},
     "INTERNAL_ERROR": {"http_status": 500, "retryable": False},
@@ -131,6 +132,9 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/getPreferenceSurvey": _route(["GET"], "profile.preference.read", read_only=True),
     "/toy/settings/video-reply": _route(
         ["GET", "POST"], "settings.video_reply", evidence="local-extension"
+    ),
+    "/toy/capabilities/video/source": _route(
+        ["POST"], "settings.video_reply", evidence="local-extension"
     ),
     "/toy/submitPreferenceSurvey": _route(
         ["POST"],

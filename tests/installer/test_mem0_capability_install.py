@@ -52,6 +52,14 @@ def test_mem0_bom_closes_runtime_model_hashes_sources_and_license() -> None:
     )
     assert bom.model.repo_id == "BAAI/bge-small-zh-v1.5"
     assert bom.model.revision == "7999e1d3359715c523056ef9478215996d62a620"
+    assert bom.model.sources == (
+        "https://modelscope.cn/api/v1/models",
+        "https://huggingface.co",
+    )
+    assert bom.model.source_revisions == (
+        "8399f11f8da998fe932df2684586c92024219d05",
+        "7999e1d3359715c523056ef9478215996d62a620",
+    )
     assert len(bom.model.files) == 10
     assert bom.model.files["model.safetensors"] == ModelArtifact(
         size_bytes=95_827_648,
@@ -78,9 +86,10 @@ def test_mem0_public_manifests_validate_against_versioned_schemas() -> None:
 
 
 class _Response(io.BytesIO):
-    def __init__(self, payload: bytes, *, status: int) -> None:
+    def __init__(self, payload: bytes, *, status: int, headers=None) -> None:
         super().__init__(payload)
         self.status = status
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -184,6 +193,60 @@ def test_model_download_retries_official_when_mirror_payload_hash_is_wrong(
     downloader.opener = lambda *_args, **_kwargs: pytest.fail("network must not be used")
     downloader.download(revision="a" * 40, relative_path="weights.bin", destination=tmp_path / "cached" / "weights.bin")
     assert downloader.last_source == "https://official.example"
+
+
+def test_modelscope_fixed_revision_resumes_200_content_range_response(
+    tmp_path: Path,
+) -> None:
+    content = b"trusted model bytes"
+    artifact = ModelArtifact(len(content), hashlib.sha256(content).hexdigest())
+    partial = tmp_path / "downloads" / "weights.bin.part"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(content[:8])
+    partial.with_name(partial.name + ".source").write_text(
+        "https://modelscope.cn/api/v1/models", encoding="utf-8"
+    )
+    observed = []
+
+    def opener(request, *, timeout: float):
+        assert timeout == 30
+        observed.append((request.full_url, request.headers.get("Range")))
+        return _Response(
+            content[8:],
+            status=200,
+            headers={"Content-Range": f"bytes 8-{len(content) - 1}/{len(content)}"},
+        )
+
+    downloader = ResumableModelDownloader(
+        repo_id="owner/model",
+        revision="a" * 40,
+        files={"weights.bin": artifact},
+        sources=(
+            "https://modelscope.cn/api/v1/models",
+            "https://huggingface.co",
+        ),
+        source_revisions=("b" * 40, "a" * 40),
+        download_root=tmp_path / "downloads",
+        source_mode="auto",
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+        opener=opener,
+    )
+
+    destination = tmp_path / "stage" / "weights.bin"
+    downloader.download(
+        revision="a" * 40,
+        relative_path="weights.bin",
+        destination=destination,
+    )
+
+    assert observed == [(
+        "https://modelscope.cn/api/v1/models/owner/model/repo"
+        "?Revision=" + "b" * 40 + "&FilePath=weights.bin",
+        "bytes=8-",
+    )]
+    assert destination.read_bytes() == content
+    assert downloader.last_source == "https://modelscope.cn/api/v1/models"
 
 
 def test_model_download_discards_partial_when_falling_back_to_another_source(
@@ -491,14 +554,18 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     requirements.write_bytes(REQUIREMENTS.read_bytes())
     calls: list[list[str]] = []
 
-    def runner(command, *, environment, pause_requested) -> int:
+    def runner(
+        command, *, environment, pause_requested, progress, progress_roots
+    ) -> int:
         assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
         assert not pause_requested.is_set()
         assert "--ignore-installed" in command
+        assert progress_roots
         calls.append(list(command))
         target = Path(command[command.index("--target") + 1])
         target.mkdir(parents=True, exist_ok=True)
         (target / "fixture.dist-info").mkdir(exist_ok=True)
+        progress(50_000_000 if len(calls) == 1 else 120_000_000)
         return 1 if len(calls) == 1 else 0
 
     def verifier(runtime: Path, requirement_file: Path) -> bool:
@@ -521,13 +588,13 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
         verifier=verifier,
         runner=runner,
     )
-    progress: list[str] = []
+    progress: list[tuple[int, int, str]] = []
 
     layer.install(
         source_mode="auto",
         offline_root=None,
         pause_requested=threading.Event(),
-        progress=lambda _done, _total, current: progress.append(current),
+        progress=lambda done, total, current: progress.append((done, total, current)),
     )
 
     assert len(calls) == 2
@@ -542,11 +609,13 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
         str(target / "win32"),
         str(target / "win32" / "lib"),
     ]
-    assert progress == [
+    assert progress[0] == (0, 236_253_351, "python-dependencies")
+    assert any(0 < done < total for done, total, _current in progress)
+    assert progress[-1] == (
+        236_253_351,
+        236_253_351,
         "python-dependencies",
-        "python-dependencies",
-        "python-dependencies",
-    ]
+    )
     marker = target / ".olivia-mem0-runtime-manifest.json"
     owned = marker.read_bytes()
     marker.write_text("{}", encoding="utf-8")

@@ -304,6 +304,9 @@ def test_component_launcher_identifies_and_stops_its_backend(
         active_backend,
         root.resolve(),
     )
+    assert backend_environments[0]["OLIVIA_PROVIDER_CACHE_ROOT"] == str(
+        root / "data" / "provider-cache"
+    )
     assert lifecycle == ["terminate", "wait:5"]
 
 

@@ -87,7 +87,8 @@ CLIENT-SETTINGS-05  安装器接线与原版客户端真实验收
 
 - `GET/POST /toy/settings/video-reply` 读写原版 Settings 中的“视频回信”开关；
 - POST 必须携带布尔 `enabled` 与独立命名空间的 `request_id`；同 ID 同 payload 重放原结果，不同 payload 返回冲突；
-- GET 使用闭合的 `available {state, enabled}` / `unavailable {state, reason_code}` variant；mutation result 只允许 `APPLIED/NOOP/DUPLICATE`，不可用或冲突不得伪造成功；
+- GET 使用闭合的 `available {state, enabled, effective_enabled, ready, dependencies}` / `unavailable {state, reason_code}` variant；`enabled` 始终表示用户持久偏好，`effective_enabled` 表示依赖门禁后的实际状态，不能因依赖缺失覆写用户偏好；mutation result 只允许 `APPLIED/NOOP/DUPLICATE`，不可用、依赖缺失或冲突不得伪造成功；
+- 初始设置与后续 Settings 共用同一能力面板；已有校验清单的能力可在客户端安装，其中 BGE 自动模式优先使用 ModelScope 固定提交并以 Hugging Face 固定提交回退；尚未冻结完整 Windows BOM 的视频依赖只向 bootstrap 返回来源 ID/标签，由本机后端白名单解析后在系统浏览器打开国内/官方来源页，并提供“重新检测”，不得伪装成自动安装成功；
 - 新信在服务端接收边界冻结开关快照；后续恢复、重试和媒体处理只读该信件快照，历史媒体不受设置变化影响。
 
 所有写操作必须继续经过现有 Memory Service、PrivateWorld Command Service、Reducer 和 Ledger，前端不能直接写 SQLite 或 Qdrant。

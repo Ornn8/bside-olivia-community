@@ -79,6 +79,38 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "innerHTML" not in source
 
 
+def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert "renderCapabilityPanel(panels.capability)" in source
+    assert "renderMem0CapabilityPanel(panels.capability)" not in source
+    for label in (
+        "长期记忆（Mem0 + BGE）",
+        "语音合成（CosyVoice 3）",
+        "视频驱动配置（LiveTalking）",
+        "口型视频（LatentSync）",
+        "音乐生成（MiniMax Music 3）",
+        "人声分离（RoFormer）",
+        "Olivia 场景与转场素材",
+        "媒体工具（FFmpeg）",
+        "媒体工作目录",
+    ):
+        assert label in source
+    assert "已有自动安装" in source
+    assert "需手动准备" in source
+    assert "选择下载源" in source
+    assert "打开下载页" in source
+    assert "重新检测" in source
+    assert 'const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";' in source
+    assert "requestMutation(VIDEO_REPLY_SOURCE_PATH" in source
+    assert "downloadLink.href" not in source
+    assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
+    assert "缺少依赖，无法开启视频回信" in source
+    assert "missing_dependencies" in source
+    assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source
+    assert 'button("管理下载", () => openDialog(false, "capability"))' in source
+
+
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:
     node = shutil.which("node")
     if node is None:
