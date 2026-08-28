@@ -109,9 +109,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     ):
         assert visible_text in bootstrap
     for hidden_artifact in (
-        "/toy/companion/private-world",
         "/toy/companion/private-world/candidates",
-        "PRIVATE_WORLD_PATH",
         "CANDIDATES_PATH",
         "待确认的关系建议",
         "批准",
@@ -122,6 +120,8 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "encodeURIComponent",
     ):
         assert hidden_artifact not in bootstrap
+    assert "/toy/companion/private-world" in bootstrap
+    assert "PRIVATE_WORLD_PATH" in bootstrap
     assert "MutationObserver" in bootstrap
     assert "replaceChildren" in bootstrap
     assert 'method: "GET"' in bootstrap
