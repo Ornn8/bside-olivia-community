@@ -327,13 +327,21 @@ def _restore_interrupted_promotions(install_root: Path) -> None:
 class VideoCapabilityInstaller:
     """Threaded, resumable public installer used by the local client API."""
 
-    def __init__(self, *, data_root: Path, manifest: VideoManifest, opener: Callable[..., Any] = urlopen) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: Path,
+        manifest: VideoManifest,
+        opener: Callable[..., Any] = urlopen,
+        readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
+    ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
         self.data_root = data_root.resolve()
         self.install_root = _checked_install_root(self.data_root, create=True)
         self.manifest = manifest
         self._opener = opener
+        self._readiness_probe = readiness_probe
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -399,6 +407,30 @@ class VideoCapabilityInstaller:
             )
         return VideoCapabilityState.READY, None
 
+    def _runtime_dependency_state(
+        self, bundle: VideoBundle
+    ) -> tuple[VideoCapabilityState, str | None]:
+        if self._readiness_probe is None:
+            return self._assembled_state(bundle)
+        try:
+            environment = dict(os.environ)
+            environment.update(load_video_runtime_environment(self.data_root))
+            environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+            result = self._readiness_probe(environment)
+            if bundle.identifier == "ordinary_video":
+                missing = result.get("ordinary_missing_dependencies")
+                ready = isinstance(missing, (list, tuple)) and not missing
+            else:
+                ready = result.get("music_ready") is True
+        except Exception:
+            ready = False
+        if ready:
+            return VideoCapabilityState.READY, None
+        return (
+            VideoCapabilityState.PREREQUISITES_REQUIRED,
+            "VIDEO_RUNTIME_DEPENDENCIES_MISSING",
+        )
+
     def _load_status(self) -> None:
         for bundle in self.manifest.bundles:
             current = self._status.get(bundle.identifier)
@@ -419,7 +451,7 @@ class VideoCapabilityInstaller:
             except (OSError, VideoCapabilityError):
                 ready = False
             if ready:
-                state, reason = self._assembled_state(bundle)
+                state, reason = self._runtime_dependency_state(bundle)
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))

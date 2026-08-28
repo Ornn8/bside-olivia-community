@@ -180,6 +180,55 @@ def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> N
     assert not backup.exists()
 
 
+def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> None:
+    data_root = (tmp_path / "data").resolve()
+    observed: list[dict[str, str]] = []
+
+    def probe(environment):
+        observed.append(dict(environment))
+        return {
+            "music_ready": False,
+            "ordinary_missing_dependencies": [],
+        }
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "ordinary", "FIXED", True, (), ()),
+                VideoBundle("music_video", "music", "FIXED", True, (), ()),
+            ),
+        ),
+        readiness_probe=probe,
+    )
+    for bundle_id in ("ordinary_video", "music_video"):
+        root = installer.install_root / bundle_id
+        root.mkdir(parents=True)
+        (root / ".ready.json").write_text("{}", encoding="utf-8")
+    ffmpeg = (installer.install_root / "ordinary_video" / "ffmpeg.exe").resolve()
+    ffmpeg.write_bytes(b"fixture")
+    (installer.install_root / "runtime-environment.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-runtime-environment.v1",
+                "environment": {"OLIVIA_FFMPEG_EXE": str(ffmpeg)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = installer.status()
+
+    assert [bundle["state"] for bundle in status["bundles"]] == [
+        "ready",
+        "prerequisites_required",
+    ]
+    assert status["bundles"][1]["reason_code"] == "VIDEO_RUNTIME_DEPENDENCIES_MISSING"
+    assert observed[-1]["OLIVIA_LOCAL_DATA_ROOT"] == str(data_root)
+    assert observed[-1]["OLIVIA_FFMPEG_EXE"] == str(ffmpeg)
+
+
 def test_installer_rejects_reparse_install_root(tmp_path: Path, monkeypatch) -> None:
     data_root = (tmp_path / "data").resolve()
     (data_root / "capabilities").mkdir(parents=True)
