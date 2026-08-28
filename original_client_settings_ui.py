@@ -716,11 +716,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     const heading = text("h3", "长期记忆（Mem0 + BGE）", "text-text-title text-title-m");
     const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
-    const summary = text(
-      "p",
-      `状态：${paused ? "已暂停（不检索、不写入）" : stateLabels[state]}${Number.isInteger(capability.count) ? `，共 ${capability.count} 条` : ""}`,
-      "text-text-secondary text-body-m font-regular"
-    );
+    const summary = text("p", "", "text-text-secondary text-body-m font-regular");
+    const updateSummary = (count) => {
+      summary.textContent = `状态：${paused ? "已暂停（不检索、不写入）" : stateLabels[state]}${Number.isInteger(count) ? `，共 ${count} 条` : ""}`;
+    };
+    updateSummary(capability.count);
     const controls = document.createElement("div");
     controls.style.display = "flex";
     controls.style.gap = "10px";
@@ -750,6 +750,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           limit: 50,
         });
         renderMemories(list, payload.memories, load, resultState);
+        if (!input.value.trim()) {
+          const latestStatus = await requestJson(STATUS_PATH);
+          const latestCapabilities = latestStatus.capabilities && typeof latestStatus.capabilities === "object"
+            ? latestStatus.capabilities
+            : {};
+          const latestMemory = latestCapabilities.memory;
+          updateSummary(latestMemory && latestMemory.count);
+        }
         resultState.textContent = input.value.trim()
           ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
