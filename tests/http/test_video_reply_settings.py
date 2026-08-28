@@ -92,10 +92,23 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
         "state": "missing",
         "install_mode": "manual",
         "source_summary": "国内：ModelScope；备用：GitHub / Hugging Face",
+        "sources": [
+            {
+                "id": "domestic",
+                "label": "国内源（ModelScope）",
+                "url": "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            },
+            {
+                "id": "official",
+                "label": "官方源（Hugging Face）",
+                "url": "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            },
+        ],
     }
     assert not list(validator.iter_errors({
         "state": "available",
-        "enabled": False,
+        "enabled": True,
+        "effective_enabled": False,
         "ready": False,
         "dependencies": [dependency],
     }))
@@ -197,6 +210,7 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
     import local_server
 
     settings = VideoReplySettingsStore.initialize(tmp_path)
+    settings.mutate("video_reply_setting:previously-enabled", True)
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     monkeypatch.setattr(
         local_server,
@@ -249,7 +263,8 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
     try:
         assert status["data"] == {
             "state": "available",
-            "enabled": False,
+            "enabled": True,
+            "effective_enabled": False,
             "ready": False,
             "dependencies": [
                 {
@@ -274,6 +289,7 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
             "missing_dependencies": ["cosyvoice"],
         }
         assert disabled["data"]["enabled"] is False
+        assert settings.snapshot().enabled is False
         assert letter["video_reply_enabled"] is False
     finally:
         local_server.store.letters.remove(letter)

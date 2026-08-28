@@ -1879,7 +1879,8 @@ async def route(
                 })
             return ok({
                 "state": "available",
-                "enabled": bool(setting.enabled and readiness["ready"]),
+                "enabled": bool(setting.enabled),
+                "effective_enabled": bool(setting.enabled and readiness["ready"]),
                 "ready": readiness["ready"],
                 "dependencies": readiness["dependencies"],
             })

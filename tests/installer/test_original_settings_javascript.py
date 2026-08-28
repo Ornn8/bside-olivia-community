@@ -98,6 +98,11 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
         assert label in source
     assert "已有自动安装" in source
     assert "需手动准备" in source
+    assert "选择下载源" in source
+    assert "打开下载页" in source
+    assert "重新检测" in source
+    assert 'downloadLink.target = "_blank"' in source
+    assert 'downloadLink.rel = "noopener noreferrer"' in source
     assert "缺少依赖，无法开启视频回信" in source
     assert "missing_dependencies" in source
     assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source

@@ -88,6 +88,17 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     assert "ModelScope" in dependencies["cosyvoice"]["source_summary"]
     assert "HF-Mirror" in dependencies["latentsync"]["source_summary"]
     assert "HF-Mirror" in dependencies["minimax_music3"]["source_summary"]
+    assert [source["id"] for source in dependencies["cosyvoice"]["sources"]] == [
+        "domestic",
+        "official",
+    ]
+    assert [source["id"] for source in dependencies["livetalking"]["sources"]] == [
+        "official"
+    ]
+    assert dependencies["roformer"]["sources"] == []
+    assert "6baad88896848433857c170ba4f05d2ea9d5f218" in dependencies[
+        "minimax_music3"
+    ]["sources"][0]["url"]
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
 

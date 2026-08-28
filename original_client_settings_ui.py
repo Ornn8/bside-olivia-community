@@ -51,6 +51,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     ["ffmpeg", "媒体工具（FFmpeg）"],
     ["media_workspace", "媒体工作目录"],
   ];
+  const CAPABILITY_DOWNLOAD_HOSTS = new Set([
+    "modelscope.cn",
+    "huggingface.co",
+    "hf-mirror.com",
+    "github.com",
+    "gitee.com",
+    "pypi.org",
+  ]);
 
   const parseApiBase = (value) => {
     let url;
@@ -1178,6 +1186,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const source = dependency && typeof dependency.source_summary === "string"
         ? dependency.source_summary
         : "下载源状态暂不可用";
+      const sourceChoices = dependency && Array.isArray(dependency.sources)
+        ? dependency.sources.filter((candidate) => candidate
+          && typeof candidate.label === "string"
+          && typeof candidate.url === "string"
+          && (() => {
+            try {
+              const url = new URL(candidate.url);
+              return url.protocol === "https:" && CAPABILITY_DOWNLOAD_HOSTS.has(url.hostname);
+            } catch (_error) {
+              return false;
+            }
+          })())
+        : [];
       const item = card();
       item.append(
         text("div", label, "text-text-body text-label-l"),
@@ -1188,9 +1209,43 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ),
         text("div", source, "text-text-secondary text-caption-m font-regular")
       );
+      if (sourceChoices.length) {
+        const sourceControls = actions();
+        const sourcePicker = document.createElement("select");
+        sourcePicker.setAttribute("aria-label", `选择下载源：${label}`);
+        sourcePicker.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+        for (const candidate of sourceChoices) {
+          const option = document.createElement("option");
+          option.value = candidate.url;
+          option.textContent = candidate.label;
+          sourcePicker.append(option);
+        }
+        const downloadLink = document.createElement("a");
+        downloadLink.textContent = "打开下载页";
+        downloadLink.target = "_blank";
+        downloadLink.rel = "noopener noreferrer";
+        downloadLink.className = "px-6 py-2.5 rounded-full border border-grey-5 text-text-body text-label-m font-medium cursor-pointer hover:bg-surface-1 transition-colors";
+        const syncDownloadLink = () => {
+          downloadLink.href = sourcePicker.value || sourceChoices[0].url;
+        };
+        sourcePicker.addEventListener("change", syncDownloadLink);
+        syncDownloadLink();
+        sourceControls.append(sourcePicker, downloadLink);
+        item.append(sourceControls);
+      } else if (state !== "ready" && installMode !== "core") {
+        item.append(text(
+          "div",
+          installMode === "local_import"
+            ? "请从本机正版 Olivia 安装目录导入；安装后点击重新检测。"
+            : "尚无许可证和校验清单均已确认的下载源。",
+          "text-text-secondary text-caption-m font-regular"
+        ));
+      }
       list.append(item);
     }
-    panel.replaceChildren(heading, summary, list);
+    const refresh = actions();
+    refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
+    panel.replaceChildren(heading, summary, list, refresh);
   };
 
   const renderCapabilityPanel = async (panel) => {
@@ -1551,7 +1606,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             .filter((item) => item && item.state !== "ready" && byId.has(item.id))
             .map((item) => byId.get(item.id))
           : [];
-        message = !ready
+        message = !ready && enabled
+          ? `视频回信偏好已开启，但当前缺少依赖，不会生效：${missingDependencies.join("、") || "请检查本地能力"}`
+          : !ready
           ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`
           : enabled
           ? "新信默认可参与视频路由。"

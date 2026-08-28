@@ -240,6 +240,7 @@ def video_reply_dependency_status(
         ready: bool,
         install_mode: str,
         source_summary: str,
+        sources: tuple[tuple[str, str, str], ...] = (),
     ) -> dict[str, object]:
         return {
             "id": identifier,
@@ -247,6 +248,10 @@ def video_reply_dependency_status(
             "state": "ready" if ready else "missing",
             "install_mode": install_mode,
             "source_summary": source_summary,
+            "sources": [
+                {"id": source_id, "label": source_label, "url": source_url}
+                for source_id, source_label, source_url in sources
+            ],
         }
 
     dependencies = [
@@ -256,6 +261,18 @@ def video_reply_dependency_status(
             delivery_ready and bool(tts_config and tts_config.is_file()),
             "manual",
             "国内：ModelScope；备用：GitHub / Hugging Face",
+            (
+                (
+                    "domestic",
+                    "国内源（ModelScope）",
+                    "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                ),
+                (
+                    "official",
+                    "官方源（Hugging Face）",
+                    "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                ),
+            ),
         ),
         item(
             "livetalking",
@@ -263,6 +280,13 @@ def video_reply_dependency_status(
             delivery_ready and bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
             "manual",
             "国内镜像待固定；备用：GitHub",
+            (
+                (
+                    "official",
+                    "官方源（GitHub）",
+                    "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+                ),
+            ),
         ),
         item(
             "latentsync",
@@ -270,6 +294,18 @@ def video_reply_dependency_status(
             latentsync_ready,
             "manual",
             "国内：ByteDance Gitee + HF-Mirror；备用：GitHub / Hugging Face",
+            (
+                (
+                    "domestic",
+                    "国内源（ByteDance Gitee）",
+                    "https://gitee.com/ByteDance/LatentSync",
+                ),
+                (
+                    "official",
+                    "官方源（GitHub）",
+                    "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
+                ),
+            ),
         ),
         item(
             "minimax_music3",
@@ -277,6 +313,18 @@ def video_reply_dependency_status(
             minimax_ready,
             "manual",
             "国内：HF-Mirror；备用：Hugging Face",
+            (
+                (
+                    "domestic",
+                    "国内源（HF-Mirror）",
+                    "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
+                ),
+                (
+                    "official",
+                    "官方源（Hugging Face）",
+                    "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
+                ),
+            ),
         ),
         item(
             "roformer",
@@ -298,6 +346,13 @@ def video_reply_dependency_status(
             ffmpeg_ready,
             "manual",
             "当前核心安装器未包含；可使用系统 FFmpeg 或后续受管包",
+            (
+                (
+                    "official",
+                    "官方 Python 包（PyPI）",
+                    "https://pypi.org/project/imageio-ffmpeg/0.6.0/",
+                ),
+            ),
         ),
         item(
             "media_workspace",
