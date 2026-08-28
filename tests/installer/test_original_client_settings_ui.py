@@ -598,14 +598,20 @@ const statusPayload = (status) => ({
         } }) };
       }
       if (endpoint.pathname === "/toy/settings/video-reply") {
-    videoMethods.push(options.method);
-    if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
-    videoWrites += 1;
-    return videoWrites === 1
-      ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
-      : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
-  }
-  if (endpoint.pathname === "/toy/companion/status") {
+        videoMethods.push(options.method);
+        if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
+        videoWrites += 1;
+        return videoWrites === 1
+          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
+          : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
+      }
+      if (endpoint.pathname === "/toy/capabilities/video") {
+        return { ok: true, json: async () => ({ status: "READY", bundles: [] }) };
+      }
+      if (endpoint.pathname === "/toy/capabilities/video/action") {
+        return { ok: true, json: async () => ({ status: "APPLIED" }) };
+      }
+      if (endpoint.pathname === "/toy/companion/status") {
     currentStatus = mutationPaths.length === 3
       ? "UNAVAILABLE"
       : mutationPaths.length > 3
@@ -699,7 +705,7 @@ vm.runInNewContext(source, context);
             "/toy/companion/memory/pause",
             "/toy/companion/memory/clear",
         ],
-        "videoMethods": ["GET", "GET", "POST", "POST"],
+          "videoMethods": ["GET", "POST", "POST"],
         "statusIndex": 3,
     }
 
