@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -450,6 +451,16 @@ def _memory_enabled(value: object) -> str:
     return "0" if normalized in {"0", "false", "no", "off"} else "1"
 
 
+def _memory_write_timeout(environment: dict[str, str]) -> str:
+    try:
+        value = float(environment.get("OLIVIA_LLM_TIMEOUT_SECONDS", "180"))
+    except (TypeError, ValueError):
+        value = 180.0
+    if not math.isfinite(value):
+        value = 180.0
+    return format(min(300.0, max(0.1, value)), "g")
+
+
 def _configure_memory_environment(
     environment: dict[str, str],
     data_root: Path,
@@ -474,6 +485,10 @@ def _configure_memory_environment(
     environment.setdefault(
         "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV",
         environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+    )
+    environment.setdefault(
+        "OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS",
+        _memory_write_timeout(environment),
     )
     environment.update(
         {

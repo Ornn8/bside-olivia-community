@@ -59,6 +59,12 @@ _EMBEDDING_SNAPSHOT_FILES = frozenset(
 )
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_MEMORY_LANGUAGE_INSTRUCTIONS = (
+    "使用与输入消息相同的语言和文字提取长期记忆；"
+    "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
+    "用简洁、自然、适合普通用户阅读的句子记录事实。"
+)
 
 
 class Mem0AdapterError(RuntimeError):
@@ -208,6 +214,7 @@ class Mem0Config:
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
         return {
+            "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
             "vector_store": {
                 "provider": "qdrant",
                 "config": {
@@ -671,6 +678,12 @@ class Mem0ConversationMemoryAdapter:
         *,
         failure_code: str,
     ) -> object | None:
+        pending_state, _pending_value = self._provider_call.settle(
+            timeout_seconds=self.config.search_timeout_seconds,
+        )
+        if pending_state == "timeout":
+            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
+            return None
         state, value = self._provider_call.call(
             lambda: self._locked_provider_call(operation),
             timeout_seconds=self.config.search_timeout_seconds,
@@ -687,13 +700,13 @@ class Mem0ConversationMemoryAdapter:
         with self._lock:
             return operation()
 
-    def _source_id_exists_in_exact_response(
+    def _source_id_records_in_exact_response(
         self,
         value: object,
         *,
         user_id: str,
         source_id: str,
-    ) -> bool | None:
+    ) -> tuple[ConversationMemoryRecord, ...] | None:
         rows = self._exact_source_id_rows(value)
         if rows is None:
             return None
@@ -716,7 +729,20 @@ class Mem0ConversationMemoryAdapter:
         if any(record is None or record.source_id != source_id for record in records):
             return None
         self._last_error_code = None
-        return bool(records)
+        return tuple(record for record in records if record is not None)
+
+    def _delete_provider_memories(
+        self,
+        memory_ids: Sequence[str],
+    ) -> tuple[str, ...]:
+        pending: list[str] = []
+        for memory_id in memory_ids:
+            try:
+                if not _has_delete_acknowledgement(self.backend.delete(memory_id)):
+                    pending.append(memory_id)
+            except Exception:
+                pending.append(memory_id)
+        return tuple(pending)
 
     def _exact_source_id_rows(
         self,
@@ -769,7 +795,7 @@ class Mem0ConversationMemoryAdapter:
             try:
                 exact_response = self.backend.get_all(
                     filters={**self._provider_filters(alias), "source_id": source_id},
-                    top_k=1,
+                    top_k=64,
                 )
             except Exception:
                 return MemoryWriteResult(
@@ -777,18 +803,32 @@ class Mem0ConversationMemoryAdapter:
                     source_id,
                     error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
                 )
-            source_exists = self._source_id_exists_in_exact_response(
+            source_records = self._source_id_records_in_exact_response(
                 exact_response,
                 user_id=alias,
                 source_id=source_id,
             )
-            if source_exists is None:
+            if source_records is None:
                 return MemoryWriteResult(
                     MemoryWriteStatus.UNAVAILABLE,
                     source_id,
                     error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
                 )
-            if source_exists:
+            if source_records and _CJK_RE.search(
+                f"{user_message}\n{assistant_message}"
+            ) and any(_CJK_RE.search(record.text) is None for record in source_records):
+                pending_ids = self._delete_provider_memories(
+                    tuple(record.memory_id for record in source_records)
+                )
+                if pending_ids:
+                    return MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        source_id,
+                        pending_ids,
+                        error_code="MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED",
+                    )
+                continue
+            if source_records:
                 return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
         metadata = {
             "source_id": source_id,
@@ -818,6 +858,22 @@ class Mem0ConversationMemoryAdapter:
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
                 error_code="MEM0_WRITE_FAILED",
+            )
+        if _CJK_RE.search(f"{user_message}\n{assistant_message}") and any(
+            _CJK_RE.search(memory) is None for _memory_id, memory in acknowledgements
+        ):
+            pending_ids = self._delete_provider_memories(
+                tuple(memory_id for memory_id, _memory in acknowledgements)
+            )
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                pending_ids,
+                error_code=(
+                    "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
+                    if pending_ids
+                    else "MEM0_LANGUAGE_MISMATCH"
+                ),
             )
         memory_ids = tuple(memory_id for memory_id, _memory in acknowledgements)
         return MemoryWriteResult(
@@ -881,6 +937,46 @@ class Mem0ConversationMemoryAdapter:
             )
         self._last_error_code = value.error_code
         return value
+
+    def settle_exchange_write(
+        self,
+        *,
+        source_id: str,
+        user_id: str,
+    ) -> MemoryWriteResult:
+        """Resolve a timed-out exchange write by its stable source id."""
+
+        try:
+            user_id = self._normalized_user_id(user_id)
+        except Mem0AdapterError:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_EXCHANGE_INVALID",
+            )
+        if not self._write_gate.acquire(timeout=self.config.write_timeout_seconds):
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_UNCERTAIN",
+            )
+        try:
+            state, value = self._write_call.settle()
+            if (
+                state == "completed"
+                and isinstance(value, MemoryWriteResult)
+                and value.source_id == source_id
+            ):
+                self._last_error_code = value.error_code
+                return value
+            self._last_error_code = "MEM0_WRITE_UNCERTAIN"
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_UNCERTAIN",
+            )
+        finally:
+            self._write_gate.release()
 
     def add_manual_memory(
         self,

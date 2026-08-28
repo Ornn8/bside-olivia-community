@@ -54,6 +54,40 @@ def test_first_install_preserves_an_explicit_memory_opt_out(tmp_path: Path) -> N
     assert environment["OLIVIA_MEMORY_ENABLED"] == "0"
 
 
+def test_launcher_gives_memory_extraction_the_primary_llm_timeout(
+    tmp_path: Path,
+) -> None:
+    inherited = _configure_memory_environment(
+        {"OLIVIA_LLM_TIMEOUT_SECONDS": "180"},
+        tmp_path / "data",
+    )
+    explicit = _configure_memory_environment(
+        {
+            "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
+            "OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS": "240",
+        },
+        tmp_path / "data",
+    )
+    clamped_high = _configure_memory_environment(
+        {"OLIVIA_LLM_TIMEOUT_SECONDS": "600"},
+        tmp_path / "data",
+    )
+    clamped_low = _configure_memory_environment(
+        {"OLIVIA_LLM_TIMEOUT_SECONDS": "0.05"},
+        tmp_path / "data",
+    )
+    invalid = _configure_memory_environment(
+        {"OLIVIA_LLM_TIMEOUT_SECONDS": "not-a-duration"},
+        tmp_path / "data",
+    )
+
+    assert inherited["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "180"
+    assert explicit["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "240"
+    assert clamped_high["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "300"
+    assert clamped_low["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "0.1"
+    assert invalid["OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS"] == "180"
+
+
 @pytest.mark.parametrize("provider", ["sqlite", "none"])
 def test_launcher_preserves_explicit_memory_provider_and_independent_endpoint(
     tmp_path: Path,

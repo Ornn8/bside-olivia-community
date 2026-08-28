@@ -363,6 +363,16 @@ def test_official_import_does_not_publish_mailbox_when_mem0_write_fails(
         "status": "UNAVAILABLE",
         "error_code": "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
         "retryable": True,
+        "migration": {
+            "status": "partial",
+            "total": 1,
+            "processed": 0,
+            "written": 0,
+            "duplicates": 0,
+            "skipped": 0,
+            "private_world_status": None,
+            "error_code": "MEM0_WRITE_FAILED",
+        },
     }
 
 
@@ -627,6 +637,103 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     assert detail["data"]["reply_video_url"] == ""
     assert detail["data"]["read_only"] is True
     assert detail["data"]["scope"] == "legacy"
+
+
+def test_official_duplicate_does_not_retry_a_previously_skipped_memory(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class SkipThenWriteMemory:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def status(self) -> ConversationMemoryStatus:
+            return ConversationMemoryStatus(
+                "available",
+                True,
+                "mem0",
+                "qdrant-local",
+                memory_count=0,
+            )
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.calls += 1
+            source_id = str(kwargs["source_id"])
+            if self.calls == 1:
+                return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                source_id,
+                ("memory.unexpected",),
+            )
+
+    class ExistingPrivateWorld:
+        def snapshot(self) -> PrivateWorldSnapshot:
+            return PrivateWorldSnapshot(version=2, trust=1)
+
+    memory = SkipThenWriteMemory()
+    official_payload = {
+        "mode": "read_only",
+        "account_id": "200717",
+        "letters": [
+            {
+                "source_record_id": "official:200717:skipped-letter",
+                "source": "official-olivia",
+                "occurred_at": 1710000000,
+                "content": "用户来信：你好\n林离回信：你好。",
+                "metadata": {
+                    "user_content": "你好",
+                    "reply_text": "你好。",
+                    "replied_at": 1710000100,
+                    "import_kind": "official_text_reply",
+                    "official_account_id": "200717",
+                },
+            }
+        ],
+    }
+    monkeypatch.setenv("OLIVIA_MEMORY_ROOT", str(tmp_path / "memory"))
+    monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
+    monkeypatch.setattr(local_server.letters_adapter, "memory_port", NullMemoryPort())
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "private_world_port", ExistingPrivateWorld())
+    monkeypatch.setattr(local_server, "private_world_command_service", object())
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: official_payload,
+        raising=False,
+    )
+
+    first = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+    duplicate = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert first["code"] == 0, first
+    assert first["data"]["memory_migration"]["skipped"] == 1
+    assert duplicate["code"] == 0, duplicate
+    assert duplicate["data"]["inserted"] == 0
+    assert duplicate["data"]["duplicates"] == 1
+    assert duplicate["data"]["memory_migration"]["processed"] == 0
+    assert memory.calls == 1
 
 
 def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> None:

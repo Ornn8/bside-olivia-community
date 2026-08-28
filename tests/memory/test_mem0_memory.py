@@ -194,6 +194,8 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     }
     assert mapping["llm"]["config"]["openai_base_url"] == "http://127.0.0.1:9/v1"
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
+    assert "使用与输入消息相同的语言和文字" in mapping["custom_instructions"]
+    assert "不得把中文内容翻译成英文" in mapping["custom_instructions"]
     assert "private_world" not in repr(mapping)
 
 
@@ -383,6 +385,71 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     status = adapter.status().to_dict()
     assert status["status"] == "unavailable"
     assert status["reason_code"] == "MEM0_LIST_FAILED"
+
+
+def test_chinese_exchange_rejects_and_deletes_english_extracted_fact(
+    tmp_path: Path,
+) -> None:
+    class EnglishFactMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "User prefers quiet evenings."
+            value["results"][0]["memory"] = "User prefers quiet evenings."
+            return value
+
+    backend = EnglishFactMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+
+    result = adapter.remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:chinese-language",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
+    assert backend.rows == []
+    assert ("delete", "memory.fixture.1") in backend.calls
+
+
+def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(
+    tmp_path: Path,
+) -> None:
+    class EnglishThenChineseMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            if self.counter == 1:
+                self.rows[-1]["memory"] = "User prefers quiet evenings."
+                value["results"][0]["memory"] = "User prefers quiet evenings."
+            return value
+
+    backend = EnglishThenChineseMem0()
+    backend.fail.add("delete")
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    first = adapter.remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:chinese-retry",
+        user_id="local-user",
+    )
+    assert first.error_code == "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
+    assert len(backend.rows) == 1
+
+    backend.fail.clear()
+    retry = adapter.remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:chinese-retry",
+        user_id="local-user",
+    )
+
+    assert retry.status is MemoryWriteStatus.WRITTEN
+    assert retry.memory_ids == ("memory.fixture.2",)
+    assert [row["memory"] for row in backend.rows] == ["用户在东京工作。"]
 
 
 def test_outbox_retry_after_a_timed_out_source_check_never_adds_duplicate(
@@ -1088,6 +1155,96 @@ def test_exchange_write_timeout_keeps_one_daemon_and_fails_closed_on_retry(
         for thread in threading.enumerate():
             if thread.name == "olivia-mem0-write" and thread not in existing_threads:
                 thread.join(timeout=0.5)
+
+
+def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingAddMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            entered.set()
+            release.wait()
+            return super().add(messages, **kwargs)
+
+    backend = BlockingAddMem0()
+    adapter = Mem0ConversationMemoryAdapter(
+        backend,
+        replace(_config(tmp_path), write_timeout_seconds=0.1),
+    )
+    timed_out = adapter.remember_exchange(
+        user_message="synthetic user",
+        assistant_message="synthetic reply",
+        occurred_at=NOW,
+        source_id="reply:write-timeout:settle",
+        user_id="local-user",
+    )
+    assert entered.is_set()
+    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+
+    release.set()
+    settled = adapter.settle_exchange_write(
+        source_id="reply:write-timeout:settle",
+        user_id="local-user",
+    )
+
+    assert settled.status is MemoryWriteStatus.WRITTEN
+    assert settled.memory_ids == ("memory.fixture.1",)
+
+
+def test_timed_out_duplicate_settles_as_duplicate_without_created_ids(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowDedupMem0(FakeMem0):
+        def get_all(self, **kwargs):
+            entered.set()
+            release.wait()
+            return super().get_all(**kwargs)
+
+    backend = SlowDedupMem0()
+    backend.rows.append(
+        {
+            "id": "memory.existing",
+            "memory": "用户喜欢安静的晚上。",
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "reply:write-timeout:duplicate",
+                "occurred_at": NOW.isoformat(),
+                "domain": "conversation_memory",
+                "canonical": True,
+            },
+            "created_at": NOW.isoformat(),
+        }
+    )
+    adapter = Mem0ConversationMemoryAdapter(
+        backend,
+        replace(_config(tmp_path), write_timeout_seconds=0.1),
+    )
+    timed_out = adapter.remember_exchange(
+        user_message="这是重复消息。",
+        assistant_message="这是重复回复。",
+        occurred_at=NOW,
+        source_id="reply:write-timeout:duplicate",
+        user_id="local-user",
+    )
+    assert entered.is_set()
+    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+
+    release.set()
+    settled = adapter.settle_exchange_write(
+        source_id="reply:write-timeout:duplicate",
+        user_id="local-user",
+    )
+
+    assert settled.status is MemoryWriteStatus.DUPLICATE
+    assert settled.memory_ids == ()
+    assert [row["id"] for row in backend.rows] == ["memory.existing"]
 
 
 def test_exchange_fails_closed_when_exact_source_id_page_is_incomplete(

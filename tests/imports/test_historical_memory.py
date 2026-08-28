@@ -24,6 +24,7 @@ class RecordingMemory:
     def __init__(self, statuses: list[MemoryWriteStatus]) -> None:
         self.statuses = list(statuses)
         self.events: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
 
     def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
         source_id = str(kwargs["source_id"])
@@ -42,6 +43,11 @@ class RecordingMemory:
 
     def status(self):
         return type("Status", (), {"status": "available"})()
+
+    def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        assert user_id == "local-user"
+        self.deleted.append(memory_id)
+        return True
 
 
 def _exchange(name: str, timestamp: int) -> HistoricalExchange:
@@ -107,8 +113,171 @@ def test_migration_stops_at_first_failed_write_and_does_not_finalize() -> None:
     assert result.error_code == "MEM0_WRITE_FAILED"
 
 
-def test_official_history_strict_migration_rejects_skipped_memory_write() -> None:
-    memory = RecordingMemory([MemoryWriteStatus.SKIPPED])
+def test_official_history_strict_migration_accepts_uninformative_skips() -> None:
+    memory = RecordingMemory(
+        [MemoryWriteStatus.SKIPPED, MemoryWriteStatus.WRITTEN]
+    )
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "completed"
+    assert result.processed == 2
+    assert result.written == 1
+    assert result.skipped == 1
+    assert result.error_code is None
+
+
+def test_official_history_strict_migration_rolls_back_new_writes_on_failure() -> None:
+    memory = RecordingMemory(
+        [MemoryWriteStatus.WRITTEN, MemoryWriteStatus.UNAVAILABLE]
+    )
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.error_code == "MEM0_WRITE_FAILED"
+    assert memory.deleted == ["memory.1"]
+
+
+def test_official_history_strict_migration_reconciles_a_timed_out_write() -> None:
+    class TimedOutThenSettledMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            if len(self.events) == 1:
+                self.events.append(("write", str(kwargs["user_message"])))
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    str(kwargs["source_id"]),
+                    error_code="MEM0_WRITE_TIMEOUT",
+                )
+            return super().remember_exchange(**kwargs)
+
+        def settle_exchange_write(self, **kwargs: object) -> MemoryWriteResult:
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                str(kwargs["source_id"]),
+                ("memory.late",),
+            )
+
+    memory = TimedOutThenSettledMemory([MemoryWriteStatus.WRITTEN])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "completed"
+    assert result.processed == 2
+    assert result.written == 2
+    assert memory.deleted == []
+
+
+def test_official_history_does_not_rollback_a_timed_out_duplicate() -> None:
+    class TimedOutDuplicateMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.events.append(("write", str(kwargs["user_message"])))
+            if len(self.events) == 1:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    str(kwargs["source_id"]),
+                    error_code="MEM0_WRITE_TIMEOUT",
+                )
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                str(kwargs["source_id"]),
+                error_code="MEM0_WRITE_FAILED",
+            )
+
+        def settle_exchange_write(self, **kwargs: object) -> MemoryWriteResult:
+            return MemoryWriteResult(
+                MemoryWriteStatus.DUPLICATE,
+                str(kwargs["source_id"]),
+            )
+
+    memory = TimedOutDuplicateMemory([])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.duplicates == 1
+    assert memory.deleted == []
+
+
+def test_official_history_strict_migration_rolls_back_after_invalid_result() -> None:
+    class InvalidSecondResultMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object):
+            if len(self.events) == 1:
+                self.events.append(("write", str(kwargs["user_message"])))
+                return object()
+            return super().remember_exchange(**kwargs)
+
+    memory = InvalidSecondResultMemory([MemoryWriteStatus.WRITTEN])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.error_code == "MEM0_WRITE_RESULT_INVALID"
+    assert memory.deleted == ["memory.1"]
+
+
+def test_official_history_rollback_attempts_every_new_memory_id() -> None:
+    class PartlyFailingDeleteMemory(RecordingMemory):
+        def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+            super().delete_memory(memory_id, user_id=user_id)
+            return memory_id != "memory.2"
+
+    memory = PartlyFailingDeleteMemory(
+        [
+            MemoryWriteStatus.WRITTEN,
+            MemoryWriteStatus.WRITTEN,
+            MemoryWriteStatus.UNAVAILABLE,
+        ]
+    )
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20), _exchange("third", 30)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.error_code == "MEM0_ROLLBACK_FAILED"
+    assert memory.deleted == ["memory.2", "memory.1"]
+
+
+def test_official_history_rolls_back_pending_ids_from_failed_current_write() -> None:
+    class PendingMismatchMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.events.append(("write", str(kwargs["user_message"])))
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                str(kwargs["source_id"]),
+                ("memory.pending",),
+                "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED",
+            )
+
+    memory = PendingMismatchMemory([])
 
     result = migrate_historical_exchanges(
         (_exchange("first", 10),),
@@ -118,10 +287,7 @@ def test_official_history_strict_migration_rejects_skipped_memory_write() -> Non
     )
 
     assert result.status == "partial"
-    assert result.processed == 0
-    assert result.written == 0
-    assert result.skipped == 0
-    assert result.error_code == "MEM0_WRITE_SKIPPED"
+    assert memory.deleted == ["memory.pending"]
 
 
 def test_migration_uses_stable_source_ids_so_a_retry_can_resume_by_deduplication() -> None:
