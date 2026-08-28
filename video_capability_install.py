@@ -20,6 +20,7 @@ import zipfile
 
 from installer.component_update import (
     ComponentUpdateError,
+    _is_reparse_point,
     _validate_relative_path,
     _verify_staged_tree,
 )
@@ -129,13 +130,10 @@ class VideoBundleStatus:
 
 
 def _safe_relative(value: object) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise VideoCapabilityError("VIDEO_MANIFEST_PATH_INVALID")
-    normalized = value.replace("\\", "/").strip()
-    path = PurePosixPath(normalized)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise VideoCapabilityError("VIDEO_MANIFEST_PATH_INVALID")
-    return path.as_posix()
+    try:
+        return _validate_relative_path(value)
+    except ComponentUpdateError as exc:
+        raise VideoCapabilityError("VIDEO_MANIFEST_PATH_INVALID") from exc
 
 
 def _safe_sha(value: object) -> str:
@@ -232,7 +230,7 @@ def load_video_manifest(path: Path) -> VideoManifest:
         if not isinstance(raw.get("label"), str) or raw.get("status") != "FIXED" or type(raw.get("requires_gpu")) is not bool or not isinstance(dependencies, list) or not all(isinstance(item, str) and item for item in dependencies) or not isinstance(files, list):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         parsed_files = tuple(_load_file(item) for item in files)
-        if len({item.identifier for item in parsed_files}) != len(parsed_files) or len({item.relative_path for item in parsed_files}) != len(parsed_files):
+        if len({item.identifier for item in parsed_files}) != len(parsed_files) or len({item.relative_path.casefold() for item in parsed_files}) != len(parsed_files):
             raise VideoCapabilityError("VIDEO_MANIFEST_FILE_INVALID")
         runtime_environment = raw.get("runtime_environment", {})
         if (
@@ -278,6 +276,31 @@ def _inside(root: Path, candidate: Path) -> Path:
     return resolved
 
 
+def _reject_reparse_tree(root: Path) -> None:
+    if _is_reparse_point(root):
+        raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        if any(_is_reparse_point(current_path / name) for name in (*directories, *filenames)):
+            raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+
+
+def _restore_interrupted_promotions(install_root: Path) -> None:
+    for bundle_id in _PUBLIC_BUNDLES:
+        final = install_root / bundle_id
+        backup = install_root / f".{bundle_id}.backup"
+        if not backup.exists():
+            continue
+        try:
+            _reject_reparse_tree(backup)
+            if final.exists():
+                _reject_reparse_tree(final)
+                shutil.rmtree(final)
+            os.replace(backup, final)
+        except (OSError, ComponentUpdateError) as exc:
+            raise VideoCapabilityError("VIDEO_BUNDLE_RECOVERY_FAILED") from exc
+
+
 class VideoCapabilityInstaller:
     """Threaded, resumable public installer used by the local client API."""
 
@@ -293,6 +316,7 @@ class VideoCapabilityInstaller:
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._status: dict[str, VideoBundleStatus] = {}
+        _restore_interrupted_promotions(self.install_root)
         self._load_status()
 
     def _bundle(self, bundle_id: str) -> VideoBundle:
@@ -305,7 +329,13 @@ class VideoCapabilityInstaller:
         return self.install_root / bundle.identifier
 
     def _staging_root(self, bundle: VideoBundle) -> Path:
-        return self.install_root / ".staging" / bundle.identifier
+        staging = self.install_root / ".staging"
+        if staging.exists() and _is_reparse_point(staging):
+            raise VideoCapabilityError("VIDEO_STAGING_INVALID")
+        return staging / f"{bundle.identifier}-{uuid.uuid4().hex}"
+
+    def _download_root(self, bundle: VideoBundle) -> Path:
+        return self.install_root / ".downloads" / bundle.identifier
 
     def _runtime_wiring_ready(self, root: Path, bundle: VideoBundle) -> bool:
         try:
@@ -415,8 +445,9 @@ class VideoCapabilityInstaller:
         backup = self.install_root / f".{final.name}.backup"
         with self._commit_lock:
             if backup.exists():
-                shutil.rmtree(backup)
+                _restore_interrupted_promotions(self.install_root)
             if final.exists():
+                _reject_reparse_tree(final)
                 os.replace(final, backup)
             try:
                 os.replace(staging, final)
@@ -472,27 +503,44 @@ class VideoCapabilityInstaller:
         return self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
 
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
+        root = self._staging_root(bundle)
         try:
-            root = self._staging_root(bundle)
             root.mkdir(parents=True, exist_ok=True)
+            download_root = self._download_root(bundle)
+            download_root.mkdir(parents=True, exist_ok=True)
+            if any(_is_reparse_point(path) for path in (root.parent, root, download_root.parent, download_root)):
+                raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             downloaded = 0
             source_used = source_mode
             for item in bundle.files:
                 if self._pause.is_set():
                     raise InterruptedError
                 self._set(bundle, VideoCapabilityState.DOWNLOADING, downloaded, current=item.relative_path, source=source_used)
+                cached = _inside(download_root, download_root / item.relative_path)
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                if offline_root is not None:
+                    self._copy_offline(offline_root, item, cached)
+                else:
+                    source_used = self._download(item, cached, source_mode)
+                _verify(cached, item)
                 target = _inside(root, root / item.relative_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                if offline_root is not None:
-                    self._copy_offline(offline_root, item, target)
-                else:
-                    source_used = self._download(item, target, source_mode)
-                _verify(target, item)
+                shutil.copy2(cached, target)
                 downloaded += item.size_bytes
-            self._assemble_archives(root, bundle)
+            expected = [
+                {"path": item.relative_path, "size_bytes": item.size_bytes, "sha256": item.sha256}
+                for item in bundle.files
+            ]
+            expected.extend(self._assemble_archives(root, bundle))
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded, source=source_used)
             final = self._final_root(bundle)
             (root / ".ready.json").write_text(json.dumps({"schema_version": "olivia.video-bundle.v1", "bundle": bundle.identifier, "version": self.manifest.version}), encoding="utf-8")
+            expected.append(_tree_entry(root, ".ready.json"))
+            if len({item["path"].casefold() for item in expected}) != len(expected):
+                raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
+            if _is_reparse_point(root):
+                raise VideoCapabilityError("VIDEO_STAGING_INVALID")
+            _verify_staged_tree(root, expected)
             self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
                 state, reason = self._assembled_state(bundle)
@@ -509,18 +557,23 @@ class VideoCapabilityInstaller:
         except Exception:
             with self._lock:
                 self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_mode, reason="VIDEO_BUNDLE_INSTALL_FAILED")
+        finally:
+            if root.exists():
+                shutil.rmtree(root, ignore_errors=True)
 
-    def _assemble_archives(self, root: Path, bundle: VideoBundle) -> None:
+    def _assemble_archives(self, root: Path, bundle: VideoBundle) -> list[dict[str, object]]:
+        expected: list[dict[str, object]] = []
         for item in bundle.files:
             if item.install is None:
                 continue
             archive_path = _inside(root, root / item.relative_path)
             destination = _inside(root, root / item.install.destination)
-            _extract_zip_safely(
+            extracted = _extract_zip_safely(
                 archive_path,
                 destination,
                 strip_components=item.install.strip_components,
             )
+            expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
         seed_root = root / "seed_vc" / "runtime"
         if bundle.identifier == "music_video" and (seed_root / "inference.py").is_file():
             apply_seed_vc_overlap_frames_patch(
@@ -529,6 +582,13 @@ class VideoCapabilityInstaller:
                 / "installer"
                 / "seed-vc-overlap-frames.patch",
             )
+            for relative in (
+                "seed_vc/runtime/inference.py",
+                "seed_vc/runtime/.olivia-overlap-frames-patched.json",
+            ):
+                expected = [entry for entry in expected if entry["path"] != relative]
+                expected.append(_tree_entry(root, relative))
+        return expected
 
     def _copy_offline(self, offline_root: Path, item: VideoFile, target: Path) -> None:
         if offline_root.is_file() and zipfile.is_zipfile(offline_root):
@@ -589,12 +649,18 @@ def _verify_and_true(path: Path, item: VideoFile) -> bool:
     return True
 
 
+def _tree_entry(root: Path, relative: str) -> dict[str, object]:
+    path = _inside(root, root / relative)
+    size, digest = _sha256_file(path)
+    return {"path": relative, "size_bytes": size, "sha256": digest}
+
+
 def _extract_zip_safely(
     archive_path: Path,
     destination: Path,
     *,
     strip_components: int,
-) -> None:
+) -> list[dict[str, object]]:
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
@@ -643,6 +709,7 @@ def _extract_zip_safely(
                         written_bytes += len(chunk)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
         _verify_staged_tree(destination, expected)
+        return expected
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
 
@@ -651,6 +718,7 @@ def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     if not data_root.is_absolute():
         raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
     install_root = data_root.resolve() / "capabilities" / "video"
+    _restore_interrupted_promotions(install_root)
     path = install_root / _RUNTIME_ENVIRONMENT_FILE
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -729,16 +797,4 @@ def apply_seed_vc_overlap_frames_patch(
     )
 
 
-__all__ = [
-    "apply_seed_vc_overlap_frames_patch",
-    "VideoBundle",
-    "VideoBundleStatus",
-    "VideoCapabilityError",
-    "VideoCapabilityInstaller",
-    "VideoCapabilityState",
-    "VideoFile",
-    "VideoFileInstall",
-    "VideoManifest",
-    "load_video_manifest",
-    "load_video_runtime_environment",
-]
+__all__ = ["apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "load_video_manifest", "load_video_runtime_environment"]

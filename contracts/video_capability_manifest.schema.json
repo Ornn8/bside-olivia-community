@@ -12,6 +12,7 @@
     "bundles": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/bundle"}}
   },
   "$defs": {
+    "relativePath": {"type": "string", "pattern": "^(?!/)(?!.*//)(?!.*(?:/$|\\\\))(?!.*[:<>\"|?*])(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.|/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[ .](?:/|$)).+$"},
     "bundle": {
       "type": "object",
       "additionalProperties": false,
@@ -25,7 +26,7 @@
         "runtime_environment": {
           "type": "object",
           "propertyNames": {"enum": ["OLIVIA_FFMPEG_EXE", "OLIVIA_LATENTSYNC_ROOT", "OLIVIA_MINIMAX_COMFY_ROOT", "OLIVIA_SEED_VC_ROOT"]},
-          "additionalProperties": {"type": "string", "pattern": "^[^/].*[^/.]$"}
+          "additionalProperties": {"$ref": "#/$defs/relativePath"}
         },
         "dependencies": {"type": "array", "items": {"type": "string"}},
         "files": {"type": "array", "items": {"$ref": "#/$defs/file"}}
@@ -37,7 +38,7 @@
       "required": ["id", "path", "size_bytes", "sha256", "license", "sources"],
       "properties": {
         "id": {"type": "string"},
-        "path": {"type": "string", "pattern": "^[^/].*[^/.]$"},
+        "path": {"$ref": "#/$defs/relativePath"},
         "size_bytes": {"type": "integer", "minimum": 0},
         "sha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"},
         "license": {"type": "string"},
@@ -48,7 +49,7 @@
           "required": ["kind", "destination", "strip_components"],
           "properties": {
             "kind": {"const": "zip"},
-            "destination": {"type": "string", "pattern": "^[^/].*[^/.]$"},
+            "destination": {"$ref": "#/$defs/relativePath"},
             "strip_components": {"type": "integer", "minimum": 0, "maximum": 4}
           }
         },

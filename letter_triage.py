@@ -31,8 +31,8 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 - spoken_video：因为声音陪伴更合适而选择完整视频回信；
 - musical_video：因为音乐本身构成回应而选择完整视频回信。
 
-spoken_video 和 musical_video 只区分路由理由，不是两种成品。两者的交付物都必须是
-“说话视频 + 官方无声转场 + 音乐演唱视频”；任一视频阶段不可用时只能 text_letter。
+spoken_video 是“语音 + 官方日常动作底片 + LatentSync 口型”的普通视频；
+musical_video 才是“说话视频 + 官方无声转场 + 音乐演唱视频”。两条链分别判断可用性。
 
 总原则：能直接说的话，优先直接说。高情绪、提到音乐、讨论音乐、请求演奏、
 唱歌或改编，都不能单独触发 musical_video。林离可以拒绝、推迟、只讨论，
@@ -70,7 +70,7 @@ current_work_relevance 只能引用 routing_context.current_music_work 中存在
 melody_idea 只能与 spontaneous_motif + compose 同时出现，不能因为用户写了“音乐”
 就声称林离突然想到旋律。
 
-spoken_video 只有在完整视频链可用、routing_context.spoken_video_available=true、
+spoken_video 只有在普通视频链可用、routing_context.spoken_video_available=true、
 直接表达仍足够，但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择
 text_letter。
 普通日常默认 text_letter。不要为了证明人格而音乐化。

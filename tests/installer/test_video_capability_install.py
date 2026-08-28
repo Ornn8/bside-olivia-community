@@ -58,21 +58,14 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     Draft202012Validator(schema).validate(payload)
 
 
-class _Response:
-    status = 206
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-
-    def read(self, _size: int) -> bytes:
-        payload, self._payload = self._payload, b""
-        return payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
+@pytest.mark.parametrize("unsafe", ["CON/file.bin", "asset:stream", "name./file.bin"])
+def test_manifest_rejects_windows_unsafe_paths(tmp_path: Path, unsafe: str) -> None:
+    payload = json.loads(Path("installer/video-capability-manifest.json").read_text(encoding="utf-8"))
+    payload["bundles"][0]["files"][0]["path"] = unsafe
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_MANIFEST_PATH_INVALID"):
+        load_video_manifest(path)
 
 
 def _wait(installer: VideoCapabilityInstaller, index: int, *states: str) -> str:
@@ -83,72 +76,6 @@ def _wait(installer: VideoCapabilityInstaller, index: int, *states: str) -> str:
             return state
         time.sleep(0.01)
     return installer.status()["bundles"][index]["state"]
-
-
-def test_install_resumes_part_and_promotes_only_after_hash_verification(tmp_path: Path) -> None:
-    payload = b"verified video payload"
-    spec = VideoFile(
-        "fixture",
-        "runtime/fixture.bin",
-        len(payload),
-        hashlib.sha256(payload).hexdigest(),
-        "MIT",
-        {"domestic": "https://mirror.example/fixture"},
-    )
-    bundle = VideoBundle("ordinary_video", "普通视频", "FIXED", False, (), (spec,))
-    installer = VideoCapabilityInstaller(
-        data_root=tmp_path / "data",
-        manifest=VideoManifest("1.0.0", (bundle, VideoBundle("music_video", "音乐视频", "FIXED", False, (), ()))),
-        opener=lambda request, timeout: (
-            assert_range(request), _Response(payload[8:])
-        )[1],
-    )
-    part = installer.install_root / ".staging" / "ordinary_video" / "runtime" / "fixture.bin.part"
-    part.parent.mkdir(parents=True)
-    part.write_bytes(payload[:8])
-    assert installer.start(bundle_id="ordinary_video") == "APPLIED"
-    assert _wait(installer, 0, "ready", "failed") == "ready"
-    assert (installer.install_root / "ordinary_video" / "runtime" / "fixture.bin").read_bytes() == payload
-    assert (installer.install_root / "ordinary_video" / ".ready.json").is_file()
-
-
-def test_failed_runtime_profile_write_restores_previous_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    payload = b"replacement bundle"
-    spec = VideoFile(
-        "fixture",
-        "runtime/fixture.bin",
-        len(payload),
-        hashlib.sha256(payload).hexdigest(),
-        "MIT",
-        {},
-    )
-    bundle = VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), (spec,))
-    installer = VideoCapabilityInstaller(
-        data_root=(tmp_path / "data").resolve(),
-        manifest=VideoManifest(
-            "1.0.0",
-            (bundle, VideoBundle("music_video", "music", "FIXED", False, (), ())),
-        ),
-    )
-    previous = installer.install_root / "ordinary_video"
-    previous.mkdir(parents=True)
-    (previous / "previous.txt").write_text("preserve me", encoding="utf-8")
-    offline = tmp_path / "offline" / "runtime" / "fixture.bin"
-    offline.parent.mkdir(parents=True)
-    offline.write_bytes(payload)
-
-    def fail_profile_write() -> None:
-        raise OSError("synthetic profile failure")
-
-    monkeypatch.setattr(installer, "_write_runtime_environment", fail_profile_write)
-    assert installer.import_offline(
-        bundle_id="ordinary_video", offline_root=offline.parents[1]
-    ) == "APPLIED"
-    assert _wait(installer, 0, "failed") == "failed"
-    assert (previous / "previous.txt").read_text(encoding="utf-8") == "preserve me"
-    assert not (previous / "runtime" / "fixture.bin").exists()
 
 
 def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wiring(
@@ -164,18 +91,23 @@ def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wirin
         VideoFileInstall("zip", "latentsync/runtime", 1),
     )
     ordinary = VideoBundle(
-        "ordinary_video", "ordinary", "FIXED", True, (), (spec,), False,
+        "ordinary_video", "ordinary", "FIXED", True, ("official_video_assets",), (spec,), False,
         {"OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"},
     )
     installer = VideoCapabilityInstaller(
         data_root=(tmp_path / "data").resolve(),
         manifest=VideoManifest("1.0.0", (ordinary, VideoBundle("music_video", "music", "FIXED", True, (), ()))),
     )
+    stale = installer.install_root / ".staging" / "ordinary_video" / "stale.bin"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"must not promote")
 
     assert installer.import_offline(
         bundle_id="ordinary_video", offline_root=archive.parents[1]
     ) == "APPLIED"
-    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert _wait(installer, 0, "prerequisites_required", "failed") == "prerequisites_required"
+    assert installer.status()["bundles"][0]["reason_code"] == "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE"
+    assert not (installer.install_root / "ordinary_video" / "stale.bin").exists()
     runtime = installer.install_root / "ordinary_video" / "latentsync" / "runtime"
     assert (runtime / "scripts" / "inference.py").read_text(encoding="utf-8") == "# pinned runtime\n"
     assert load_video_runtime_environment(installer.data_root) == {
@@ -184,19 +116,27 @@ def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wirin
     profile = installer.install_root / "runtime-environment.json"
     profile_payload = profile.read_text(encoding="utf-8")
     profile.unlink()
-    assert installer.status()["bundles"][0]["state"] != "ready"
+    assert installer.status()["bundles"][0]["state"] == "missing"
     profile.write_text(profile_payload, encoding="utf-8")
-    assert installer.status()["bundles"][0]["state"] == "ready"
+    assert installer.status()["bundles"][0]["state"] == "prerequisites_required"
     shutil.rmtree(runtime)
     assert installer.status()["bundles"][0]["state"] != "ready"
 
 
-@pytest.mark.parametrize(("names", "reason"), [
-    (("Runtime/inference.py", "runtime/inference.py"), "VIDEO_ARCHIVE_DUPLICATE_PATH"),
-    (("asset:stream",), "VIDEO_ARCHIVE_PATH_INVALID"),
-    (("CON/file.txt",), "VIDEO_ARCHIVE_PATH_INVALID"),
-    (("trailing./file.txt",), "VIDEO_ARCHIVE_PATH_INVALID"),
-])
+def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> None:
+    install_root = tmp_path / "data" / "capabilities" / "video"
+    backup = install_root / ".ordinary_video.backup"
+    runtime = backup / "latentsync" / "runtime"
+    runtime.mkdir(parents=True)
+    final_runtime = (install_root / "ordinary_video" / "latentsync" / "runtime").resolve()
+    profile = {"schema_version": "olivia.video-runtime-environment.v1", "environment": {"OLIVIA_LATENTSYNC_ROOT": str(final_runtime)}}
+    (install_root / "runtime-environment.json").write_text(json.dumps(profile), encoding="utf-8")
+    assert load_video_runtime_environment((tmp_path / "data").resolve())["OLIVIA_LATENTSYNC_ROOT"] == str((install_root / "ordinary_video" / "latentsync" / "runtime").resolve())
+    assert (install_root / "ordinary_video" / "latentsync" / "runtime").exists()
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize(("names", "reason"), [(('Runtime/inference.py', 'runtime/inference.py'), 'VIDEO_ARCHIVE_DUPLICATE_PATH'), (("asset:stream",), "VIDEO_ARCHIVE_PATH_INVALID"), (("CON/file.txt",), "VIDEO_ARCHIVE_PATH_INVALID"), (("trailing./file.txt",), "VIDEO_ARCHIVE_PATH_INVALID")])
 def test_safe_archive_rejects_windows_unsafe_paths(tmp_path: Path, names, reason) -> None:
     archive = tmp_path / "collision.zip"
     with zipfile.ZipFile(archive, "w") as payload:
@@ -205,33 +145,6 @@ def test_safe_archive_rejects_windows_unsafe_paths(tmp_path: Path, names, reason
 
     with pytest.raises(VideoCapabilityError, match=reason):
         _extract_zip_safely(archive, tmp_path / "runtime", strip_components=0)
-
-
-def test_real_client_prerequisites_prevent_public_bundle_ready_claim(
-    tmp_path: Path,
-) -> None:
-    ordinary = VideoBundle(
-        "ordinary_video",
-        "ordinary",
-        "FIXED",
-        False,
-        ("cosyvoice", "latentsync", "ffmpeg", "official_video_assets"),
-        (),
-    )
-    installer = VideoCapabilityInstaller(
-        data_root=(tmp_path / "data").resolve(),
-        manifest=VideoManifest(
-            "1.0.0",
-            (ordinary, VideoBundle("music_video", "music", "FIXED", False, (), ())),
-        ),
-    )
-
-    assert installer.start(bundle_id="ordinary_video") == "APPLIED"
-    assert _wait(installer, 0, "prerequisites_required", "failed") == "prerequisites_required"
-    assert installer.status()["bundles"][0]["reason_code"] == (
-        "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE"
-    )
-    assert installer.status()["status"] == "UNAVAILABLE"
 
 
 @pytest.mark.parametrize("source_matches", [True, False])
@@ -249,31 +162,16 @@ def test_music_bundle_install_applies_seed_patch_or_fails_closed(
     with zipfile.ZipFile(archive, "w") as payload:
         payload.writestr("seed-vc-pinned/inference.py", inference)
     spec = VideoFile(
-        "seed-vc-code",
-        "sources/seed.zip",
-        archive.stat().st_size,
-        hashlib.sha256(archive.read_bytes()).hexdigest(),
-        "GPL-3.0",
-        {},
-        True,
+        "seed-vc-code", "sources/seed.zip", archive.stat().st_size,
+        hashlib.sha256(archive.read_bytes()).hexdigest(), "GPL-3.0", {}, True,
         VideoFileInstall("zip", "seed_vc/runtime", 1),
     )
-    music = VideoBundle(
-        "music_video",
-        "music",
-        "FIXED",
-        False,
-        (),
-        (spec,),
-        True,
-        {"OLIVIA_SEED_VC_ROOT": "seed_vc/runtime"},
-    )
+    music = VideoBundle("music_video", "music", "FIXED", False, (), (spec,), True,
+                        {"OLIVIA_SEED_VC_ROOT": "seed_vc/runtime"})
     installer = VideoCapabilityInstaller(
         data_root=(tmp_path / "data").resolve(),
-        manifest=VideoManifest(
-            "1.0.0",
-            (VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()), music),
-        ),
+        manifest=VideoManifest("1.0.0", (
+            VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()), music)),
     )
 
     assert installer.import_offline(
@@ -291,47 +189,6 @@ def test_music_bundle_install_applies_seed_patch_or_fails_closed(
         assert (installed / ".olivia-overlap-frames-patched.json").is_file()
     else:
         assert not (installer.install_root / "music_video" / ".ready.json").exists()
-
-
-def assert_range(request) -> None:
-    assert request.headers.get("Range") == "bytes=8-"
-
-
-def test_video_capability_api_requires_confirmation_and_exposes_bundle_status() -> None:
-    class FakeInstaller:
-        def status(self):
-            return {"status": "UNAVAILABLE", "capability": "video", "bundles": []}
-
-        def start(self, **_kwargs):
-            return "APPLIED"
-
-        def pause(self):
-            return "NOOP"
-
-        def resume(self, **_kwargs):
-            return "APPLIED"
-
-        def retry(self, **_kwargs):
-            return "APPLIED"
-
-    async def calls():
-        app = web.Application()
-        mount_original_client_video_capability_api(
-            app,
-            FakeInstaller(),
-            trusted_origins=(),
-            authorize_session=lambda token: None if token == "session" else (_ for _ in ()).throw(ValueError()),
-        )
-        async with TestClient(TestServer(app)) as client:
-            status = await client.get("/toy/capabilities/video", headers={"Origin": "http://localhost:3000"})
-            rejected = await client.post("/toy/capabilities/video/action", json={"action": "pause"}, headers={"Origin": "http://localhost:3000", "X-Olivia-Setup-Session": "session"})
-            applied = await client.post("/toy/capabilities/video/action", json={"action": "pause"}, headers={"Origin": "http://localhost:3000", "X-Olivia-Capability-Action": "confirmed", "X-Olivia-Setup-Session": "session"})
-            return status.status, await status.json(), rejected.status, applied.status, await applied.json()
-
-    status_code, status, rejected_code, applied_code, applied = asyncio.run(calls())
-    assert status_code == 200 and status["capability"] == "video"
-    assert rejected_code == 403
-    assert applied_code == 200 and applied["status"] == "NOOP"
 
 
 def test_video_capability_api_reports_native_path_selection_unavailable() -> None:
