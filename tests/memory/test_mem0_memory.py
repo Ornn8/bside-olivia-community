@@ -497,7 +497,7 @@ def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
     ]
     assert [call["messages"][0]["role"] for call in add_calls] == [
         "user",
-        "assistant",
+        "user",
     ]
     assert "用户本人" in add_calls[0]["prompt"]
     assert "第一人称" in add_calls[1]["prompt"]
@@ -505,6 +505,37 @@ def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
         "用户喜欢 AI 绘画，也喜欢林离的钢琴。",
         "我在回信中鼓励用户继续画画。",
     ]
+
+
+def test_historical_linli_fact_uses_provider_compatible_user_shaped_input(
+    tmp_path: Path,
+) -> None:
+    class RejectsAssistantOnlyMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if len(messages) == 1 and messages[0]["role"] == "assistant":
+                raise RuntimeError("assistant-only input is unsupported")
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            fact = "用户喜欢画画。" if actor == "user" else "我曾鼓励用户继续画画。"
+            self.rows[-1]["memory"] = fact
+            value["results"][0]["memory"] = fact
+            return value
+
+    backend = RejectsAssistantOnlyMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢画画。",
+        assistant_message="我会继续鼓励你画画。",
+        occurred_at=NOW,
+        source_id="history:user-shaped-linli",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    add_calls = [value for name, value in backend.calls if name == "add"]
+    assert [call["messages"][0]["role"] for call in add_calls] == ["user", "user"]
+    assert "林离的历史回信" in add_calls[1]["messages"][0]["content"]
+    assert "我会继续鼓励你画画。" in add_calls[1]["messages"][0]["content"]
+    assert add_calls[1]["metadata"]["history_actor"] == "linli"
 
 
 @pytest.mark.parametrize(
