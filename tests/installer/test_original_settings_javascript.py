@@ -213,7 +213,7 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert "下载并安装" in source
     assert "失败重试" in source
     assert "导入官方素材" not in active_video_panel
-    assert "下载默认国内源优先" in source
+    assert "可用组件优先使用国内源" in source
     assert "LiveTalking 保持独立可选" not in active_video_panel
     assert "重新检测" in source
     assert 'const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";' in source
@@ -240,6 +240,55 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert "尚未提供可迁移运行时归档" in source
     assert "选择离线运行时目录" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source
+
+
+def test_partial_video_install_still_offers_missing_bundle_download() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable for video capability state validation")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+let source = fs.readFileSync(0, "utf8");
+source = source.replace(/\s*schedule\(\);\s*\}\)\(\);\s*$/, `
+  globalThis.videoCapabilityViewState = videoCapabilityViewState;
+})();\n`);
+const context = {
+  URL,
+  document: {
+    currentScript: { dataset: { apiBase: "http://127.0.0.1:8899/" } },
+    documentElement: {},
+  },
+  MutationObserver: class { observe() {} },
+  window: { addEventListener: () => {} },
+};
+vm.runInNewContext(source, context);
+process.stdout.write(JSON.stringify(context.videoCapabilityViewState([
+  { id: "ordinary_video", state: "prerequisites_required" },
+  { id: "music_video", state: "missing" },
+])));
+'''
+    completed = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
+    assert completed.returncode == 0, output
+    assert json.loads(completed.stdout) == {
+        "state": "prerequisites_required",
+        "downloadable": True,
+        "runtimeRequired": False,
+    }
+
+
+def test_video_download_copy_only_promises_available_domestic_mirrors() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert "可用组件优先使用国内源；没有国内镜像的组件会直接使用官方源。" in source
+    assert "下载默认国内源优先，失败自动回退官方源。" not in source
 
 
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:

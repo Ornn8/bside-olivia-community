@@ -57,13 +57,18 @@ def _runtime_root_path(value: object) -> Path:
 def _select_windows_runtime_root() -> Path | None:
     if os.name != "nt":
         raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not system_root:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
     powershell = (
-        Path(os.environ.get("SystemRoot", "C:\\Windows"))
+        Path(system_root)
         / "System32"
         / "WindowsPowerShell"
         / "v1.0"
         / "powershell.exe"
     )
+    if not powershell.is_file():
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;"
