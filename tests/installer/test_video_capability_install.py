@@ -32,6 +32,7 @@ from video_capability_install import (
     VideoFileInstall,
     VideoManifest,
 )
+import original_client_video_capability_api as video_capability_api
 from original_client_video_capability_api import mount_original_client_video_capability_api
 
 
@@ -592,6 +593,24 @@ def test_music_bundle_install_applies_seed_patch_or_fails_closed(
         assert (installed / ".olivia-overlap-frames-patched.json").is_file()
     else:
         assert not (installer.install_root / "music_video" / ".ready.json").exists()
+
+
+def test_windows_runtime_picker_fails_closed_without_a_system_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_capability_api.os, "name", "nt")
+    monkeypatch.delenv("SystemRoot", raising=False)
+    monkeypatch.delenv("WINDIR", raising=False)
+    monkeypatch.setattr(
+        video_capability_api.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("picker process must not start"),
+    )
+
+    with pytest.raises(video_capability_api.VideoCapabilityAPIError) as captured:
+        video_capability_api._select_windows_runtime_root()
+
+    assert captured.value.code == "VIDEO_RUNTIME_PICKER_UNAVAILABLE"
 
 
 def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -> None:

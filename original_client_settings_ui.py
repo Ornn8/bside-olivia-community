@@ -1181,6 +1181,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
   };
 
+  const videoCapabilityViewState = (bundles) => {
+    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
+    const state = states.every((value) => value === "ready")
+      ? "ready"
+      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
+      ? "downloading"
+      : states.some((value) => value === "failed")
+      ? "failed"
+      : states.some((value) => value === "paused")
+      ? "paused"
+      : states.some((value) => value === "license_review_required")
+      ? "license_review_required"
+      : states.some((value) => value === "prerequisites_required")
+      ? "prerequisites_required"
+      : "missing";
+    const downloadable = states.some((value) =>
+      !["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(value)
+    );
+    const runtimeRequired = states.some((value) => value === "prerequisites_required")
+      && states.every((value) => ["ready", "prerequisites_required"].includes(value));
+    return { state, downloadable, runtimeRequired };
+  };
+
   const renderVideoCapabilityPanel = async (panel) => {
     let payload = null;
     try {
@@ -1201,20 +1224,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       downloaded_bytes: 0,
       total_bytes: 0,
     });
-    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
-    const state = states.every((value) => value === "ready")
-      ? "ready"
-      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
-      ? "downloading"
-      : states.some((value) => value === "failed")
-      ? "failed"
-      : states.some((value) => value === "paused")
-      ? "paused"
-      : states.some((value) => value === "license_review_required")
-      ? "license_review_required"
-      : states.some((value) => value === "prerequisites_required")
-      ? "prerequisites_required"
-      : "missing";
+    const { state, downloadable, runtimeRequired } = videoCapabilityViewState(bundles);
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
     let videoSourceMode = "auto";
@@ -1222,7 +1232,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "视频回信固定包含说话与音乐。点击一次自动准备语音、音乐、口型、媒体工具和固定场景所需组件；下载默认国内源优先，失败自动回退官方源。",
+      "视频回信固定包含说话与音乐。点击一次自动准备语音、音乐、口型、媒体工具和固定场景所需组件；可用组件优先使用国内源，没有国内镜像时使用官方源。",
       "text-text-secondary text-body-m font-regular"
     );
     const item = card();
@@ -1239,9 +1249,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : "未安装";
     const result = text("div", "", "text-text-secondary text-caption-m font-regular");
     const sourceControls = actions();
-    const domesticSource = button("国内源优先", () => {
+    const domesticSource = button("自动选择（可用国内源优先）", () => {
       videoSourceMode = "auto";
-      result.textContent = "下载时优先使用国内源，失败后回退官方源。";
+      result.textContent = "可用组件优先使用国内源；没有国内镜像的组件会直接使用官方源。";
     });
     const officialSource = button("仅官方源", () => {
       videoSourceMode = "official";
@@ -1265,7 +1275,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
       });
       item.append(pause);
-    } else if (state !== "ready" && !["license_review_required", "prerequisites_required"].includes(state)) {
+    } else if (downloadable) {
       const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "一键下载并安装";
       const install = button(actionLabel, async () => {
         if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件；下载即表示你已阅读并同意各上游许可证与使用条款。")) return;
@@ -1290,7 +1300,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       item.append(install);
     }
-    if (state === "prerequisites_required") {
+    if (runtimeRequired) {
       const runtimeNote = text(
         "p",
         "公开源当前只安装模型与受管组件，尚未提供可迁移运行时归档；可选择本机已准备且清单匹配的运行时目录。",
