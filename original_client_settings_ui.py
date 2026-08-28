@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v8"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v7"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
