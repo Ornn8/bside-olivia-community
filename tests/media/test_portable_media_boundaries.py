@@ -206,6 +206,7 @@ def test_complete_delivery_resolves_tts_internal_paths_from_project_root(
     )
     environment = {
         "OLIVIA_PROJECT_ROOT": str(project_root),
+        "OLIVIA_COSYVOICE_PYTHON": "providers/cosy-python/python.exe",
         "OLIVIA_REPLY_VOICE_REFERENCE": "voice/reference.wav",
         "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": "cache/quality-override",
     }
@@ -231,6 +232,9 @@ def test_complete_delivery_resolves_tts_internal_paths_from_project_root(
     assert Path(delivery.tts.runtime_root) == project_root / "providers" / "cosyvoice"
     assert Path(delivery.tts.model_dir) == project_root / "providers" / "cosyvoice-model"
     assert Path(delivery.tts.reference_audio) == reference
+    assert delivery.tts.provider_options["external_python"] == str(
+        project_root / "providers" / "cosy-python" / "python.exe"
+    )
     assert delivery.tts.provider_options["numba_cache_dir"] == str(
         project_root / "cache" / "numba"
     )
@@ -415,7 +419,7 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
 
 
 def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
-    executable = tmp_path / "roformer.exe"
+    executable = tmp_path / "python.exe"
     model = tmp_path / "models" / "MelBandRoformer.ckpt"
     config = tmp_path / "models" / "config.yaml"
     song = tmp_path / "song.flac"
@@ -443,7 +447,7 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
         executable=executable,
         model_path=model,
         config_path=config,
-        environment={},
+        environment={"OLIVIA_ROFORMER_PYTHON": str(executable)},
     )
 
     assert observed[0][0][:4] == ["ffmpeg", "-y", "-i", str(song)]
@@ -453,6 +457,11 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
         str(model),
         "--config_path",
         str(config),
+    ]
+    assert observed[1][0][:3] == [
+        str(executable),
+        "-m",
+        "mel_band_roformer.inference",
     ]
     assert observed[1][2]["PYTHONUTF8"] == "1"
     assert observed[1][2]["PYTHONIOENCODING"] == "utf-8"

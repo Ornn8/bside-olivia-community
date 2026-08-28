@@ -228,12 +228,17 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert source.index('states.some((value) => ["queued", "downloading", "verifying"].includes(value))') < source.index('states.some((value) => value === "failed")')
 
 
-def test_video_capability_does_not_offer_fake_native_path_selection() -> None:
+def test_video_capability_offers_verified_runtime_root_selection() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert '{ action: "import_offline"' not in source
-    assert '{ action: "import_official"' not in source
-    assert "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE" not in source
+    assert '{ action: "select_runtime" }' in source
+    assert 'action: "import_runtime"' in source
+    assert "manifest_sha256: runtimeDigest.input.value.trim().toLowerCase()" in source
+    assert 'source: videoSourceMode' in source
+    assert "国内源优先" in source
+    assert "仅官方源" in source
+    assert "尚未提供可迁移运行时归档" in source
+    assert "选择离线运行时目录" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source
 
 

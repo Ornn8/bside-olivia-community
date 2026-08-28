@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import subprocess
 import threading
 from typing import Any
 import uuid
@@ -33,13 +34,28 @@ _SOURCE_IDS = {"domestic", "official"}
 _RUNTIME_ENVIRONMENT_FILE = "runtime-environment.json"
 _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_FFMPEG_EXE",
+    "OLIVIA_COSYVOICE_ROOT",
+    "OLIVIA_COSYVOICE_PYTHON",
+    "OLIVIA_COSYVOICE_MODEL_ROOT",
+    "OLIVIA_LATENTSYNC_PYTHON",
     "OLIVIA_LATENTSYNC_ROOT",
+    "OLIVIA_MINIMAX_COMFY_PYTHON",
     "OLIVIA_MINIMAX_COMFY_ROOT",
+    "OLIVIA_MINIMAX_WORKER",
+    "OLIVIA_ROFORMER_EXE",
+    "OLIVIA_ROFORMER_PYTHON",
     "OLIVIA_ROFORMER_MODEL_PATH",
     "OLIVIA_ROFORMER_CONFIG_PATH",
     "OLIVIA_SEED_VC_ROOT",
+    "OLIVIA_TTS_CONFIG",
+    "OLIVIA_ORDINARY_ACTION_BASE",
+    "OLIVIA_OFFICIAL_REPLY_REFERENCE",
+    "OLIVIA_MUSIC_PERFORMANCE_BASE",
+    "OLIVIA_REPLY_VOICE_REFERENCE",
+    "OLIVIA_PROVIDER_CACHE_ROOT",
 }
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
+_RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
 _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
 _PROMOTION_LOCK = threading.RLock()
 
@@ -68,6 +84,14 @@ class VideoFileInstall:
 
 
 @dataclass(frozen=True)
+class VideoRuntimePatch:
+    identifier: str
+    relative_path: str
+    target_path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class VideoFile:
     identifier: str
     relative_path: str
@@ -93,6 +117,7 @@ class VideoBundle:
     files: tuple[VideoFile, ...]
     license_review_required: bool = False
     runtime_environment: Mapping[str, str] | None = None
+    runtime_patches: tuple[VideoRuntimePatch, ...] = ()
 
     @property
     def id(self) -> str:
@@ -207,6 +232,25 @@ def _load_file(raw: object) -> VideoFile:
     )
 
 
+def _load_runtime_patch(raw: object) -> VideoRuntimePatch:
+    if not isinstance(raw, dict) or set(raw) != {"id", "path", "target", "sha256"}:
+        raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+    identifier = raw.get("id")
+    if (
+        not isinstance(identifier, str)
+        or not identifier
+        or "/" in identifier
+        or "\\" in identifier
+    ):
+        raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+    return VideoRuntimePatch(
+        identifier,
+        _safe_relative(raw.get("path")),
+        _safe_relative(raw.get("target")),
+        _safe_sha(raw.get("sha256")),
+    )
+
+
 def load_video_manifest(path: Path) -> VideoManifest:
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -223,7 +267,7 @@ def load_video_manifest(path: Path) -> VideoManifest:
         if not isinstance(raw, dict):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         required = {"id", "label", "status", "requires_gpu", "dependencies", "files"}
-        if set(raw) - required - {"license_review_required", "runtime_environment"} or not required.issubset(raw):
+        if set(raw) - required - {"license_review_required", "runtime_environment", "runtime_patches"} or not required.issubset(raw):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         identifier = raw.get("id")
         if identifier not in _PUBLIC_BUNDLES or identifier in seen:
@@ -245,8 +289,18 @@ def load_video_manifest(path: Path) -> VideoManifest:
         normalized_runtime = {
             key: _safe_relative(value) for key, value in runtime_environment.items()
         }
+        runtime_patches = raw.get("runtime_patches", [])
+        if not isinstance(runtime_patches, list):
+            raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+        parsed_patches = tuple(_load_runtime_patch(item) for item in runtime_patches)
+        if (
+            len({item.identifier for item in parsed_patches}) != len(parsed_patches)
+            or len({item.target_path.casefold() for item in parsed_patches})
+            != len(parsed_patches)
+        ):
+            raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
         seen.add(identifier)
-        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime))
+        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime, parsed_patches))
     if seen != _PUBLIC_BUNDLES:
         raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
     return VideoManifest(payload["version"], tuple(result))
@@ -268,6 +322,219 @@ def _verify(path: Path, spec: VideoFile) -> None:
     size, digest = _sha256_file(path)
     if size != spec.size_bytes or digest != spec.sha256:
         raise VideoCapabilityError("VIDEO_FILE_VERIFICATION_FAILED")
+
+
+def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
+    if not python.is_file():
+        return False
+    script = (
+        "from pathlib import Path; import sys; "
+        "root=Path(sys.argv[1]).resolve(); "
+        "inside=lambda value: (path:=Path(value).resolve()) == root or root in path.parents; "
+        "assert inside(sys.executable) and inside(sys.prefix) and inside(sys.base_prefix)"
+    )
+    try:
+        completed = subprocess.run(
+            [str(python), "-c", script, str(runtime_root)],
+            cwd=runtime_root,
+            capture_output=True,
+            check=False,
+            timeout=_RUNTIME_PORTABILITY_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _runtime_environment_is_portable(
+    environment: Mapping[str, str], runtime_root: Path
+) -> bool:
+    required = (
+        "OLIVIA_COSYVOICE_PYTHON",
+        "OLIVIA_LATENTSYNC_PYTHON",
+        "OLIVIA_MINIMAX_COMFY_PYTHON",
+        "OLIVIA_ROFORMER_PYTHON",
+    )
+    if any(key not in environment for key in required):
+        return False
+    candidates = [Path(environment[key]) for key in required]
+    if "OLIVIA_ROFORMER_EXE" in environment:
+        executable = Path(environment["OLIVIA_ROFORMER_EXE"])
+        candidates.append(
+            executable
+            if executable.name.casefold() == "python.exe"
+            else executable.parent / "python.exe"
+        )
+    return bool(candidates) and all(
+        _portable_python_runtime(candidate, runtime_root) for candidate in candidates
+    )
+
+
+def _load_runtime_root_manifest(
+    runtime_root: Path,
+    manifest_sha256: str,
+    *,
+    verify_files: bool,
+) -> dict[str, str]:
+    if not runtime_root.is_absolute() or not runtime_root.is_dir():
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    root = runtime_root.resolve(strict=True)
+    if _is_reparse_point(root):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    manifest_path = _inside(root, root / "runtime-manifest.json")
+    try:
+        size, digest = _sha256_file(manifest_path)
+        payload: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
+    if size <= 0 or digest != _safe_sha(manifest_sha256):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "version", "environment", "files"}
+        or payload.get("schema_version") != "olivia.video-runtime-root.v1"
+        or not isinstance(payload.get("version"), str)
+        or not 1 <= len(payload["version"]) <= 64
+        or not isinstance(payload.get("environment"), dict)
+        or not isinstance(payload.get("files"), list)
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    raw_environment = payload["environment"]
+    if (
+        not raw_environment
+        or set(raw_environment) - _RUNTIME_ENVIRONMENT_KEYS
+        or not all(isinstance(key, str) for key in raw_environment)
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    environment: dict[str, str] = {}
+    environment_paths: dict[str, str] = {}
+    for key, raw in raw_environment.items():
+        try:
+            relative = _safe_relative(raw)
+            candidate = _inside(root, root / relative)
+        except (OSError, VideoCapabilityError):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from None
+        if not candidate.exists() or _is_reparse_point(candidate):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        environment[key] = str(candidate)
+        environment_paths[key] = relative
+    files: dict[str, tuple[int, str]] = {}
+    for raw in payload["files"]:
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"path", "size_bytes", "sha256"}
+            or type(raw.get("size_bytes")) is not int
+            or raw["size_bytes"] < 0
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        try:
+            relative = _safe_relative(raw.get("path"))
+            digest = _safe_sha(raw.get("sha256"))
+            candidate = _inside(root, root / relative)
+        except (OSError, VideoCapabilityError):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from None
+        if relative.casefold() in {item.casefold() for item in files}:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        files[relative] = (raw["size_bytes"], digest)
+        if verify_files:
+            try:
+                actual_size, actual_digest = _sha256_file(candidate)
+            except OSError as exc:
+                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
+            if (actual_size, actual_digest) != files[relative]:
+                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    required_files = {
+        relative
+        for key, relative in environment_paths.items()
+        if Path(environment[key]).is_file()
+    }
+    if not required_files or not all(
+        any(path.casefold() == required.casefold() for path in files)
+        for required in required_files
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    if verify_files:
+        declared = {path.casefold() for path in files}
+        actual: set[str] = set()
+        try:
+            for candidate in root.rglob("*"):
+                if candidate.is_dir():
+                    continue
+                relative = candidate.relative_to(root).as_posix()
+                if relative.casefold() == "runtime-manifest.json":
+                    continue
+                if not candidate.is_file() or _is_reparse_point(candidate):
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+                actual.add(relative.casefold())
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
+        if actual != declared:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    return environment
+
+
+def write_runtime_root_manifest(
+    runtime_root: Path,
+    *,
+    version: str,
+    environment: Mapping[str, str],
+) -> str:
+    """Hash an exact portable runtime tree and return its manifest SHA-256."""
+
+    if (
+        not runtime_root.is_absolute()
+        or not runtime_root.is_dir()
+        or not isinstance(version, str)
+        or not 1 <= len(version) <= 64
+        or not environment
+        or set(environment) - _RUNTIME_ENVIRONMENT_KEYS
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    root = runtime_root.resolve(strict=True)
+    _reject_reparse_tree(root)
+    normalized_environment: dict[str, str] = {}
+    for key, raw in environment.items():
+        try:
+            relative = _safe_relative(raw)
+            candidate = _inside(root, root / relative)
+        except (OSError, VideoCapabilityError):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from None
+        if not candidate.exists() or _is_reparse_point(candidate):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        normalized_environment[key] = relative
+    files: list[dict[str, object]] = []
+    for candidate in root.rglob("*"):
+        if candidate.is_dir():
+            continue
+        relative = candidate.relative_to(root).as_posix()
+        if relative.casefold() == "runtime-manifest.json":
+            continue
+        if not candidate.is_file() or _is_reparse_point(candidate):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        size, digest = _sha256_file(candidate)
+        files.append({"path": relative, "size_bytes": size, "sha256": digest})
+    files.sort(key=lambda item: str(item["path"]).casefold())
+    if not files:
+        raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+    payload = {
+        "schema_version": "olivia.video-runtime-root.v1",
+        "version": version,
+        "environment": dict(sorted(normalized_environment.items())),
+        "files": files,
+    }
+    target = root / "runtime-manifest.json"
+    temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+        return _sha256_file(target)[1]
+    except OSError as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_MANIFEST_WRITE_FAILED") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _inside(root: Path, candidate: Path) -> Path:
@@ -322,13 +589,25 @@ def _restore_interrupted_promotions(install_root: Path) -> None:
 class VideoCapabilityInstaller:
     """Threaded, resumable public installer used by the local client API."""
 
-    def __init__(self, *, data_root: Path, manifest: VideoManifest, opener: Callable[..., Any] = urlopen) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: Path,
+        manifest: VideoManifest,
+        opener: Callable[..., Any] = urlopen,
+        readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
+        artifact_roots: tuple[Path, ...] = (),
+    ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
         self.data_root = data_root.resolve()
         self.install_root = _checked_install_root(self.data_root, create=True)
         self.manifest = manifest
         self._opener = opener
+        self._readiness_probe = readiness_probe
+        if any(not root.is_absolute() or not root.is_dir() for root in artifact_roots):
+            raise VideoCapabilityError("VIDEO_ARTIFACT_ROOT_INVALID")
+        self._artifact_roots = tuple(root.resolve() for root in artifact_roots)
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -357,23 +636,16 @@ class VideoCapabilityInstaller:
 
     def _runtime_wiring_ready(self, root: Path, bundle: VideoBundle) -> bool:
         try:
+            persisted = load_video_runtime_environment(self.data_root)
             ready = all(
-                _inside(root, root / relative).exists()
-                for relative in (bundle.runtime_environment or {}).values()
+                key in persisted and Path(persisted[key]).exists()
+                for key in (bundle.runtime_environment or {})
             )
             if "OLIVIA_SEED_VC_ROOT" in (bundle.runtime_environment or {}):
-                seed_root = _inside(
-                    root, root / bundle.runtime_environment["OLIVIA_SEED_VC_ROOT"]
-                )
+                seed_root = Path(persisted["OLIVIA_SEED_VC_ROOT"])
                 ready = ready and (
                     seed_root / ".olivia-overlap-frames-patched.json"
                 ).is_file()
-            if bundle.runtime_environment:
-                persisted = load_video_runtime_environment(self.data_root)
-                ready = ready and all(
-                    persisted.get(key) == str(_inside(root, root / relative))
-                    for key, relative in bundle.runtime_environment.items()
-                )
             return ready
         except (OSError, VideoCapabilityError):
             return False
@@ -394,6 +666,40 @@ class VideoCapabilityInstaller:
             )
         return VideoCapabilityState.READY, None
 
+    def _runtime_dependency_state(
+        self, bundle: VideoBundle
+    ) -> tuple[VideoCapabilityState, str | None]:
+        if self._readiness_probe is None:
+            return self._assembled_state(bundle)
+        try:
+            environment = dict(os.environ)
+            environment.update(load_video_runtime_environment(self.data_root))
+            environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+            result = self._readiness_probe(environment)
+            if bundle.identifier == "ordinary_video":
+                missing = result.get("ordinary_missing_dependencies")
+                ready = isinstance(missing, (list, tuple)) and not missing
+            else:
+                ready = result.get("music_ready") is True
+        except Exception:
+            ready = False
+        if ready:
+            return VideoCapabilityState.READY, None
+        return (
+            VideoCapabilityState.PREREQUISITES_REQUIRED,
+            "VIDEO_RUNTIME_DEPENDENCIES_MISSING",
+        )
+
+    def _installed_state(
+        self, root: Path, bundle: VideoBundle
+    ) -> tuple[VideoCapabilityState, str | None]:
+        if not self._runtime_wiring_ready(root, bundle):
+            return (
+                VideoCapabilityState.PREREQUISITES_REQUIRED,
+                "VIDEO_RUNTIME_PREREQUISITES_MISSING",
+            )
+        return self._runtime_dependency_state(bundle)
+
     def _load_status(self) -> None:
         for bundle in self.manifest.bundles:
             current = self._status.get(bundle.identifier)
@@ -406,15 +712,14 @@ class VideoCapabilityInstaller:
                 continue
             root = self._final_root(bundle)
             try:
-                ready = (
+                content_ready = (
                     (root / ".ready.json").is_file()
                     and all(_verify_and_true(root / item.relative_path, item) for item in bundle.files)
-                    and self._runtime_wiring_ready(root, bundle)
                 )
             except (OSError, VideoCapabilityError):
-                ready = False
-            if ready:
-                state, reason = self._assembled_state(bundle)
+                content_ready = False
+            if content_ready:
+                state, reason = self._installed_state(root, bundle)
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
@@ -442,9 +747,8 @@ class VideoCapabilityInstaller:
                 continue
             for key, relative in (bundle.runtime_environment or {}).items():
                 candidate = _inside(root, root / relative)
-                if not candidate.exists():
-                    raise VideoCapabilityError("VIDEO_RUNTIME_WIRING_INCOMPLETE")
-                environment[key] = str(candidate)
+                if candidate.exists():
+                    environment[key] = str(candidate)
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
@@ -520,6 +824,118 @@ class VideoCapabilityInstaller:
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str:
         return self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
 
+    def import_runtime_root(
+        self,
+        *,
+        runtime_root: Path,
+        manifest_sha256: str,
+    ) -> str:
+        try:
+            root = runtime_root.resolve(strict=True)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
+        _reject_reparse_tree(root)
+        external_environment = _load_runtime_root_manifest(
+            root,
+            manifest_sha256,
+            verify_files=True,
+        )
+        if not _runtime_environment_is_portable(external_environment, root):
+            raise VideoCapabilityError("VIDEO_RUNTIME_NOT_PORTABLE")
+        try:
+            environment = load_video_runtime_environment(self.data_root)
+        except VideoCapabilityError:
+            environment = {}
+        environment.update(external_environment)
+        if "OLIVIA_TTS_CONFIG" not in environment:
+            cosy_root = Path(environment.get("OLIVIA_COSYVOICE_ROOT", ""))
+            model_root = Path(
+                environment.get(
+                    "OLIVIA_COSYVOICE_MODEL_ROOT",
+                    str(
+                        self._final_root(self._bundle("ordinary_video"))
+                        / "cosyvoice"
+                        / "model"
+                    ),
+                )
+            )
+            reference = Path(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", ""))
+            if not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
+                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+            generated_root = self.install_root / "generated"
+            generated_root.mkdir(parents=True, exist_ok=True)
+            generated_config = generated_root / "tts_local.json"
+            generated_temporary = generated_config.with_name(
+                f"{generated_config.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                generated_temporary.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "b10b.module-config.v1",
+                            "module_id": "tts-local",
+                            "profile": "verified-offline-runtime",
+                            "settings": {
+                                "provider": "cosyvoice3",
+                                "runtime_root": str(cosy_root),
+                                "model_dir": str(model_root),
+                                "reference_audio": str(reference),
+                                "fallback": "text",
+                                "fp16": True,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                os.replace(generated_temporary, generated_config)
+            except OSError as exc:
+                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from exc
+            finally:
+                generated_temporary.unlink(missing_ok=True)
+            environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
+        if self._readiness_probe is None:
+            raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_UNAVAILABLE")
+        probe_environment = dict(os.environ)
+        probe_environment.update(environment)
+        probe_environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+        try:
+            readiness = self._readiness_probe(probe_environment)
+            ordinary_missing = readiness.get("ordinary_missing_dependencies")
+            ready = (
+                isinstance(ordinary_missing, (list, tuple))
+                and not ordinary_missing
+                and readiness.get("music_ready") is True
+            )
+        except Exception:
+            ready = False
+        if not ready:
+            raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_FAILED")
+        self.install_root.mkdir(parents=True, exist_ok=True)
+        target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        payload = {
+            "schema_version": "olivia.video-runtime-environment.v1",
+            "environment": environment,
+            "external_environment": external_environment,
+            "runtime_root": str(root),
+            "manifest_sha256": _safe_sha(manifest_sha256),
+        }
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        with self._lock:
+            self._load_status()
+        return "APPLIED"
+
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         root = self._staging_root(bundle)
         try:
@@ -538,6 +954,8 @@ class VideoCapabilityInstaller:
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 if offline_root is not None:
                     self._copy_offline(offline_root, item, cached)
+                elif self._reuse_local_artifact(item, cached):
+                    source_used = "local"
                 else:
                     source_used = self._download(
                         item,
@@ -571,7 +989,7 @@ class VideoCapabilityInstaller:
             _verify_staged_tree(root, expected)
             self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
-                state, reason = self._assembled_state(bundle)
+                state, reason = self._installed_state(final, bundle)
                 self._set(
                     bundle,
                     state,
@@ -589,6 +1007,23 @@ class VideoCapabilityInstaller:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
 
+    def _reuse_local_artifact(self, item: VideoFile, target: Path) -> bool:
+        if _verify_and_true(target, item):
+            return True
+        parts = PurePosixPath(item.relative_path).parts
+        for artifact_root in self._artifact_roots:
+            for offset in range(len(parts)):
+                candidate = _inside(
+                    artifact_root,
+                    artifact_root / Path(*parts[offset:]),
+                )
+                if not _verify_and_true(candidate, item):
+                    continue
+                if candidate != target.resolve():
+                    shutil.copy2(candidate, target)
+                return True
+        return False
+
     def _assemble_archives(self, root: Path, bundle: VideoBundle) -> list[dict[str, object]]:
         expected: list[dict[str, object]] = []
         for item in bundle.files:
@@ -602,6 +1037,23 @@ class VideoCapabilityInstaller:
                 strip_components=item.install.strip_components,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
+        for runtime_patch in bundle.runtime_patches:
+            apply_runtime_text_patch(
+                bundle_root=root,
+                patch_path=_inside(
+                    Path(__file__).resolve().parent,
+                    Path(__file__).resolve().parent / runtime_patch.relative_path,
+                ),
+                target_path=runtime_patch.target_path,
+                expected_sha256=runtime_patch.sha256,
+                patch_id=runtime_patch.identifier,
+            )
+            for relative in (
+                runtime_patch.target_path,
+                f".patches/{runtime_patch.identifier}.json",
+            ):
+                expected = [entry for entry in expected if entry["path"] != relative]
+                expected.append(_tree_entry(root, relative))
         seed_root = root / "seed_vc" / "runtime"
         if bundle.identifier == "music_video" and (seed_root / "inference.py").is_file():
             apply_seed_vc_overlap_frames_patch(
@@ -783,19 +1235,53 @@ def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
         return {}
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID") from exc
+    managed_fields = {"schema_version", "environment"}
+    external_fields = managed_fields | {
+        "external_environment",
+        "runtime_root",
+        "manifest_sha256",
+    }
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"schema_version", "environment"}
+        or set(payload) not in {frozenset(managed_fields), frozenset(external_fields)}
         or payload.get("schema_version") != "olivia.video-runtime-environment.v1"
         or not isinstance(payload.get("environment"), dict)
         or set(payload["environment"]) - _RUNTIME_ENVIRONMENT_KEYS
     ):
         raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+    external_environment: dict[str, str] | None = None
+    if set(payload) == external_fields:
+        raw_root = payload.get("runtime_root")
+        declared_external = payload.get("external_environment")
+        if (
+            not isinstance(raw_root, str)
+            or not Path(raw_root).is_absolute()
+            or not isinstance(declared_external, dict)
+            or set(declared_external) - _RUNTIME_ENVIRONMENT_KEYS
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+        try:
+            external_environment = _load_runtime_root_manifest(
+                Path(raw_root),
+                str(payload.get("manifest_sha256", "")),
+                verify_files=False,
+            )
+        except VideoCapabilityError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID") from exc
+        if external_environment != declared_external:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
     result: dict[str, str] = {}
     for key, raw in payload["environment"].items():
         if not isinstance(raw, str) or not Path(raw).is_absolute():
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
-        candidate = _inside(install_root, Path(raw))
+        candidate = Path(raw).resolve()
+        if external_environment is None:
+            candidate = _inside(install_root, candidate)
+        elif key in external_environment:
+            if external_environment.get(key) != str(candidate):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+        else:
+            candidate = _inside(install_root, candidate)
         if not candidate.exists():
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
         result[key] = str(candidate)
@@ -805,6 +1291,75 @@ def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
 def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     with _PROMOTION_LOCK:
         return _load_video_runtime_environment(data_root)
+
+
+def apply_runtime_text_patch(
+    *,
+    bundle_root: Path,
+    patch_path: Path,
+    target_path: str,
+    expected_sha256: str,
+    patch_id: str,
+) -> None:
+    """Apply one pinned exact-text runtime patch without Git or patch.exe."""
+
+    if _safe_sha(expected_sha256) != _sha256_file(patch_path)[1]:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_HASH_MISMATCH")
+    try:
+        payload: Any = json.loads(patch_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_INVALID") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "target", "replacements"}
+        or payload.get("schema_version") != "olivia.runtime-text-patch.v1"
+        or payload.get("target") != target_path
+        or not isinstance(payload.get("replacements"), list)
+        or not payload["replacements"]
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_INVALID")
+    target = _inside(bundle_root, bundle_root / _safe_relative(target_path))
+    try:
+        with target.open("r", encoding="utf-8", newline="") as stream:
+            source = stream.read()
+    except (OSError, UnicodeError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_TARGET_INVALID") from exc
+    uses_crlf = "\r\n" in source and source.count("\r\n") == source.count("\n")
+    patched = source.replace("\r\n", "\n") if uses_crlf else source
+    for replacement in payload["replacements"]:
+        if (
+            not isinstance(replacement, dict)
+            or set(replacement) != {"before", "after"}
+            or not isinstance(replacement.get("before"), str)
+            or not replacement["before"]
+            or not isinstance(replacement.get("after"), str)
+            or patched.count(replacement["before"]) != 1
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_SOURCE_MISMATCH")
+        patched = patched.replace(replacement["before"], replacement["after"], 1)
+    temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="") as stream:
+            stream.write(patched.replace("\n", "\r\n") if uses_crlf else patched)
+        os.replace(temporary, target)
+        marker = _inside(bundle_root, bundle_root / ".patches" / f"{_safe_relative(patch_id)}.json")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.runtime-patch-marker.v1",
+                    "patch_id": patch_id,
+                    "sha256": expected_sha256,
+                    "target": target_path,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_PATCH_WRITE_FAILED") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def apply_seed_vc_overlap_frames_patch(
@@ -859,4 +1414,29 @@ def apply_seed_vc_overlap_frames_patch(
     )
 
 
-__all__ = ["apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "load_video_manifest", "load_video_runtime_environment"]
+__all__ = ["apply_runtime_text_patch", "apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "VideoRuntimePatch", "load_video_manifest", "load_video_runtime_environment", "write_runtime_root_manifest"]
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build a verified Olivia video runtime root manifest")
+    parser.add_argument("runtime_root", type=Path)
+    parser.add_argument("environment_json", type=Path)
+    parser.add_argument("--version", required=True)
+    arguments = parser.parse_args()
+    raw_environment = json.loads(
+        arguments.environment_json.read_text(encoding="utf-8-sig")
+    )
+    if not isinstance(raw_environment, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in raw_environment.items()
+    ):
+        raise SystemExit("environment_json must contain one string-to-string object")
+    print(
+        write_runtime_root_manifest(
+            arguments.runtime_root.resolve(),
+            version=arguments.version,
+            environment=raw_environment,
+        )
+    )

@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 import json
+import os
+from pathlib import Path
 import re
+import subprocess
 from typing import Protocol, Any
 from urllib.parse import urlsplit
 
@@ -18,6 +21,7 @@ CONFIRM_HEADER = "X-Olivia-Capability-Action"
 CONFIRM_VALUE = "confirmed"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_JSON_BYTES = 2048
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _ORIGINS_KEY = web.AppKey("original_client_video_capability_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_video_capability_mounted", bool)
@@ -35,6 +39,54 @@ class VideoCapabilityAPIInstaller(Protocol):
     def pause(self) -> str: ...
     def resume(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def retry(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
+    def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str) -> str: ...
+
+
+def _runtime_root_path(value: object) -> Path:
+    if not isinstance(value, str) or not value or len(value) > 4_096:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400)
+    path = Path(value).expanduser()
+    try:
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400)
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400) from exc
+
+
+def _select_windows_runtime_root() -> Path | None:
+    if os.name != "nt":
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
+    powershell = (
+        Path(os.environ.get("SystemRoot", "C:\\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;"
+        "$dialog.Description = '选择 Olivia 视频运行时根目录';"
+        "$dialog.ShowNewFolderButton = $false;"
+        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "{ [Console]::Out.Write($dialog.SelectedPath) }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503) from exc
+    if completed.returncode != 0:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
+    selected = completed.stdout.strip()
+    return None if not selected else _runtime_root_path(selected)
 
 
 def _authorize(request: web.Request, *, confirmation: bool) -> str:
@@ -75,12 +127,14 @@ def mount_original_client_video_capability_api(
     *,
     trusted_origins: Sequence[str],
     authorize_session,
+    select_runtime_root=None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("VIDEO_CAPABILITY_API_ALREADY_MOUNTED")
     app[_ORIGINS_KEY] = frozenset(value.rstrip("/") for value in trusted_origins)
     app[_MOUNTED_KEY] = True
     control_lock = asyncio.Lock()
+    runtime_picker = select_runtime_root or _select_windows_runtime_root
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -137,6 +191,32 @@ def mount_original_client_video_capability_api(
             if set(payload) != {"action"}:
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
             call, kwargs = installer.pause, {}
+        elif action_name == "select_runtime":
+            if set(payload) != {"action"}:
+                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
+            selected = await asyncio.to_thread(runtime_picker)
+            result = {"status": "CANCELLED"}
+            if selected is not None:
+                result = {
+                    "status": "SELECTED",
+                    "runtime_root": str(_runtime_root_path(str(selected))),
+                }
+            return web.json_response(
+                result,
+                headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
+            )
+        elif action_name == "import_runtime":
+            if (
+                set(payload) != {"action", "runtime_root", "manifest_sha256"}
+                or not isinstance(payload.get("manifest_sha256"), str)
+                or not _SHA256_RE.fullmatch(str(payload["manifest_sha256"]).lower())
+            ):
+                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
+            call = installer.import_runtime_root
+            kwargs = {
+                "runtime_root": _runtime_root_path(payload.get("runtime_root")),
+                "manifest_sha256": str(payload["manifest_sha256"]).lower(),
+            }
         elif action_name in {"import_official", "import_offline"}:
             expected = {"action"} if action_name == "import_official" else {"action", "bundle_id"}
             if set(payload) != expected or (

@@ -1,0 +1,26 @@
+{
+  "schema_version": "olivia.runtime-text-patch.v1",
+  "target": "latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py",
+  "replacements": [
+    {
+      "before": "    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):\n        video_frames = video_frames[: len(faces)]\n        out_frames = []",
+      "after": "    def restore_video(\n        self,\n        faces: torch.Tensor,\n        video_frames: np.ndarray,\n        boxes: list,\n        affine_matrices: list,\n        memmap_path: Optional[str] = None,\n    ):\n        video_frames = video_frames[: len(faces)]\n        output_shape = (len(faces), *video_frames.shape[1:])\n        if memmap_path:\n            out_frames = np.memmap(memmap_path, dtype=np.uint8, mode=\"w+\", shape=output_shape)\n        else:\n            out_frames = np.empty(output_shape, dtype=np.uint8)"
+    },
+    {
+      "before": "            out_frames.append(out_frame)\n        return np.stack(out_frames, axis=0)",
+      "after": "            out_frames[index] = out_frame\n        if isinstance(out_frames, np.memmap):\n            out_frames.flush()\n        return out_frames"
+    },
+    {
+      "before": "        if os.path.exists(temp_dir):\n            shutil.rmtree(temp_dir)\n        os.makedirs(temp_dir, exist_ok=True)\n\n        write_video(os.path.join(temp_dir, \"video.mp4\"), synced_video_frames, fps=video_fps)",
+      "after": "        write_video(os.path.join(temp_dir, \"video.mp4\"), synced_video_frames, fps=video_fps)"
+    },
+    {
+      "before": "        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)",
+      "after": "        if os.path.exists(temp_dir):\n            shutil.rmtree(temp_dir)\n        os.makedirs(temp_dir, exist_ok=True)\n\n        restored_frames_path = os.path.join(temp_dir, \"restored_frames.uint8\")\n        synced_video_frames = self.restore_video(\n            torch.cat(synced_video_frames),\n            video_frames,\n            boxes,\n            affine_matrices,\n            memmap_path=restored_frames_path,\n        )"
+    },
+    {
+      "before": "        subprocess.run(command, shell=True)",
+      "after": "        subprocess.run(command, shell=True)\n\n        if isinstance(synced_video_frames, np.memmap):\n            synced_video_frames.flush()\n        del synced_video_frames\n        if os.path.exists(restored_frames_path):\n            os.remove(restored_frames_path)"
+    }
+  ]
+}
