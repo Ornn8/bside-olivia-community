@@ -194,6 +194,8 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     }
     assert mapping["llm"]["config"]["openai_base_url"] == "http://127.0.0.1:9/v1"
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
+    assert "使用与输入消息相同的语言和文字" in mapping["custom_instructions"]
+    assert "不得把中文内容翻译成英文" in mapping["custom_instructions"]
     assert "private_world" not in repr(mapping)
 
 

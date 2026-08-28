@@ -24,6 +24,7 @@ class RecordingMemory:
     def __init__(self, statuses: list[MemoryWriteStatus]) -> None:
         self.statuses = list(statuses)
         self.events: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
 
     def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
         source_id = str(kwargs["source_id"])
@@ -42,6 +43,11 @@ class RecordingMemory:
 
     def status(self):
         return type("Status", (), {"status": "available"})()
+
+    def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        assert user_id == "local-user"
+        self.deleted.append(memory_id)
+        return True
 
 
 def _exchange(name: str, timestamp: int) -> HistoricalExchange:
@@ -122,6 +128,23 @@ def test_official_history_strict_migration_rejects_skipped_memory_write() -> Non
     assert result.written == 0
     assert result.skipped == 0
     assert result.error_code == "MEM0_WRITE_SKIPPED"
+
+
+def test_official_history_strict_migration_rolls_back_new_writes_on_failure() -> None:
+    memory = RecordingMemory(
+        [MemoryWriteStatus.WRITTEN, MemoryWriteStatus.UNAVAILABLE]
+    )
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.error_code == "MEM0_WRITE_FAILED"
+    assert memory.deleted == ["memory.1"]
 
 
 def test_migration_uses_stable_source_ids_so_a_retry_can_resume_by_deduplication() -> None:

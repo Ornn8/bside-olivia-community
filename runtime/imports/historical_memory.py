@@ -330,6 +330,7 @@ def migrate_historical_exchanges(
         raise ValueError("historical source ids must be unique")
 
     written = duplicates = skipped = processed = 0
+    created_memory_ids: list[str] = []
     for exchange in ordered:
         try:
             result = memory.remember_exchange(
@@ -348,26 +349,41 @@ def migrate_historical_exchanges(
         if not isinstance(result, MemoryWriteResult):
             return _partial(ordered, processed, written, duplicates, skipped, "MEM0_WRITE_RESULT_INVALID")
         if result.status is MemoryWriteStatus.UNAVAILABLE:
+            failure_code = result.error_code or "MEM0_WRITE_FAILED"
+            if require_persisted:
+                failure_code = _rollback_created_memories(
+                    memory,
+                    created_memory_ids,
+                    user_id=normalized_user_id,
+                    failure_code=failure_code,
+                )
             return _partial(
                 ordered,
                 processed,
                 written,
                 duplicates,
                 skipped,
-                result.error_code or "MEM0_WRITE_FAILED",
+                failure_code,
             )
         if require_persisted and result.status is MemoryWriteStatus.SKIPPED:
+            failure_code = _rollback_created_memories(
+                memory,
+                created_memory_ids,
+                user_id=normalized_user_id,
+                failure_code="MEM0_WRITE_SKIPPED",
+            )
             return _partial(
                 ordered,
                 processed,
                 written,
                 duplicates,
                 skipped,
-                "MEM0_WRITE_SKIPPED",
+                failure_code,
             )
         processed += 1
         if result.status is MemoryWriteStatus.WRITTEN:
             written += 1
+            created_memory_ids.extend(result.memory_ids)
         elif result.status is MemoryWriteStatus.DUPLICATE:
             duplicates += 1
         else:
@@ -406,6 +422,22 @@ def migrate_historical_exchanges(
         skipped,
         private_world_status=private_world_status,
     )
+
+
+def _rollback_created_memories(
+    memory: ConversationMemoryPort,
+    memory_ids: Iterable[str],
+    *,
+    user_id: str,
+    failure_code: str,
+) -> str:
+    try:
+        for memory_id in reversed(tuple(memory_ids)):
+            if memory.delete_memory(memory_id, user_id=user_id) is not True:
+                return "MEM0_ROLLBACK_FAILED"
+    except Exception:
+        return "MEM0_ROLLBACK_FAILED"
+    return failure_code
 
 
 def _partial(

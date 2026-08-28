@@ -363,6 +363,16 @@ def test_official_import_does_not_publish_mailbox_when_mem0_write_fails(
         "status": "UNAVAILABLE",
         "error_code": "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
         "retryable": True,
+        "migration": {
+            "status": "partial",
+            "total": 1,
+            "processed": 0,
+            "written": 0,
+            "duplicates": 0,
+            "skipped": 0,
+            "private_world_status": None,
+            "error_code": "MEM0_WRITE_FAILED",
+        },
     }
 
 

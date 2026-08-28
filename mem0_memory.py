@@ -59,6 +59,11 @@ _EMBEDDING_SNAPSHOT_FILES = frozenset(
 )
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+_MEMORY_LANGUAGE_INSTRUCTIONS = (
+    "使用与输入消息相同的语言和文字提取长期记忆；"
+    "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
+    "用简洁、自然、适合普通用户阅读的句子记录事实。"
+)
 
 
 class Mem0AdapterError(RuntimeError):
@@ -208,6 +213,7 @@ class Mem0Config:
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
         return {
+            "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
             "vector_store": {
                 "provider": "qdrant",
                 "config": {

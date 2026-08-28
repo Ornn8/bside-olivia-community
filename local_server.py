@@ -2244,6 +2244,7 @@ async def route(
                     "status": "UNAVAILABLE",
                     "error_code": error_code,
                     "retryable": True,
+                    "migration": migration.to_dict(),
                 })
             records = [
                 replace(

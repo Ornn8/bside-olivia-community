@@ -475,6 +475,10 @@ def _configure_memory_environment(
         "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV",
         environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
     )
+    environment.setdefault(
+        "OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS",
+        environment.get("OLIVIA_LLM_TIMEOUT_SECONDS", "180"),
+    )
     environment.update(
         {
             "HF_HUB_DISABLE_TELEMETRY": "1",
