@@ -53,6 +53,7 @@ PAYLOAD_ROOT_FILES = {
     "local_server.py",
     "mem0_capability_install.py",
     "original_client_capability_api.py",
+    "original_client_video_capability_api.py",
     "original_client_server.py",
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
@@ -68,6 +69,7 @@ PAYLOAD_ROOT_FILES = {
     "local_memory.py",
     "persona_provider.py",
     "reply_orchestrator.py",
+    "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_ROOT_FILES = {
     "letter_status.py",
@@ -79,10 +81,12 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
     "original_client_update_api.py",
+    "original_client_video_capability_api.py",
     "patch_companion_settings.py",
     "patch_feapp.py",
     "patch_webplayer.py",
     "video_reply_settings.py",
+    "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "contracts/component_update_package.example.json",
@@ -92,6 +96,9 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "contracts/letter_status.py",
     "contracts/third_party_manifest.example.json",
     "contracts/third_party_manifest.schema.json",
+    "contracts/video_capability_action.schema.json",
+    "contracts/video_capability_manifest.schema.json",
+    "contracts/video_capability_status.schema.json",
     "control_center/__init__.py",
     "control_center/app.py",
     "control_center/auth.py",
@@ -103,6 +110,8 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "installer/mem0-capability-manifest.json",
+    "installer/video-capability-manifest.json",
+    "installer/seed-vc-overlap-frames.patch",
     "installer/mem0-runtime-artifacts.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",

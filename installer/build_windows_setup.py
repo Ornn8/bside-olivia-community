@@ -67,6 +67,7 @@ RELEASE_ROOT_FILES = {
     "original_client_letter_contract.py",
     "original_client_media_http.py",
     "original_client_server.py",
+    "original_client_video_capability_api.py",
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
     "original_client_update_api.py",
@@ -95,6 +96,7 @@ RELEASE_ROOT_FILES = {
     "version.json",
     "video_reply_settings.py",
     "voice_direction.py",
+    "video_capability_install.py",
 }
 RELEASE_INSTALLER_FILES = {
     "installer/__init__.py",
@@ -116,6 +118,8 @@ RELEASE_INSTALLER_FILES = {
     "installer/uninstall_safety.py",
     "installer/verify_mem0_runtime.py",
     "installer/version_launcher.py",
+    "installer/video-capability-manifest.json",
+    "installer/seed-vc-overlap-frames.patch",
 }
 RELEASE_TOOL_FILES = {
     "tools/asr_healthcheck.py",

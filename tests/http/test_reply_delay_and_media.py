@@ -134,11 +134,9 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     project_root = tmp_path / "app"
     scene = project_root / "assets" / "scene.mp4"
     tts_config = project_root / "config" / "tts.json"
-    visual_config = project_root / "config" / "visual.json"
-    worker = project_root / "workers" / "visual.py"
     latentsync_python = project_root / "providers" / "latentsync" / "python.exe"
     latentsync_root = project_root / "providers" / "latentsync"
-    for path in (scene, tts_config, visual_config, worker, latentsync_python):
+    for path in (scene, tts_config, latentsync_python):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"synthetic")
 
@@ -148,13 +146,9 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(data_root))
     monkeypatch.setenv("OLIVIA_TTS_CONFIG", "config/tts.json")
-    monkeypatch.setenv("OLIVIA_VISUAL_CONFIG", "config/visual.json")
-    monkeypatch.setenv("OLIVIA_LIVETALKING_WORKER", "workers/visual.py")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "providers/latentsync/python.exe")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "providers/latentsync")
     monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", "assets/scene.mp4")
-    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", "assets/scene.mp4")
-    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", "assets/scene.mp4")
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
 
     async def voice_plan(_letter, text):
@@ -169,12 +163,13 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
 
     observed: dict[str, Path] = {}
 
-    def render(_content, _reply, output, **kwargs):
+    def render(_reply, output, **kwargs):
         observed.update(kwargs)
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_musical_reply", render)
+    monkeypatch.setattr(local_server, "render_reply_video", render, raising=False)
+    monkeypatch.setattr(local_server, "render_musical_reply", lambda *_a, **_k: pytest.fail("music renderer called"))
 
     asyncio.run(
         local_server._render_media_job(
@@ -183,12 +178,10 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     )
 
     assert letter["media_status"] == "COMPLETED"
-    assert observed["spoken_action_base_path"] == scene
-    assert observed["official_reply_reference_path"] == scene
-    assert observed["performance_video_path"] == scene
+    assert observed["scene_path"] == scene
     assert observed["tts_config_path"] == tts_config
-    assert observed["visual_config_path"] == visual_config
-    assert observed["worker_path"] == worker
+    assert observed["latentsync_python_path"] == latentsync_python
+    assert observed["latentsync_root"] == latentsync_root
     assert observed["environment"]["OLIVIA_LATENTSYNC_PYTHON"] == (
         "providers/latentsync/python.exe"
     )
@@ -244,12 +237,12 @@ def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
 
     observed: dict[str, object] = {}
 
-    def render(_content, _reply, output, **kwargs):
+    def render(_reply, output, **kwargs):
         observed.update(kwargs)
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_musical_reply", render)
+    monkeypatch.setattr(local_server, "render_reply_video", render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -259,11 +252,9 @@ def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
 
     assert letter["media_status"] == "COMPLETED"
     assert observed["tts_config_path"] == tts_config
-    assert observed["visual_config_path"] == visual_config
-    assert observed["worker_path"] == worker
-    assert observed["spoken_action_base_path"] == scene
-    assert observed["official_reply_reference_path"] == scene
-    assert observed["performance_video_path"] == scene
+    assert observed["scene_path"] == scene
+    assert observed["latentsync_python_path"] == latentsync_python
+    assert observed["latentsync_root"] == latentsync_root
     assert observed["environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
 
 
@@ -321,11 +312,11 @@ def test_local_data_root_alias_drives_state_and_serves_rendered_media(
             emphasize_sentences=(),
         )
 
-    def render(_content, _reply, output, **_kwargs):
+    def render(_reply, output, **_kwargs):
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_musical_reply", render)
+    monkeypatch.setattr(local_server, "render_reply_video", render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -392,7 +383,7 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
         raise local_server.ReplyMediaError(error_code)
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_musical_reply", fail_render)
+    monkeypatch.setattr(local_server, "render_reply_video", fail_render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -449,7 +440,7 @@ def test_public_detail_projects_every_legacy_internal_media_status(
     assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == expected
 
 
-def test_every_video_route_delivers_spoken_transition_and_music(
+def test_video_routes_use_separate_ordinary_and_musical_renderers(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -515,6 +506,12 @@ def test_every_video_route_delivers_spoken_transition_and_music(
 
     received = {}
 
+    def render_spoken(_text, output, **kwargs):
+        received["ordinary video request"] = (
+            kwargs["voice_performance_plan"], kwargs["scene_path"]
+        )
+        Path(output).write_bytes(b"spoken-video")
+
     def render_musical(content, _text, output, **kwargs):
         received[content] = (
             kwargs["voice_performance_plan"],
@@ -533,6 +530,7 @@ def test_every_video_route_delivers_spoken_transition_and_music(
         "direct_music_voice_performance",
         direct_music_reply,
     )
+    monkeypatch.setattr(local_server, "render_reply_video", render_spoken)
     monkeypatch.setattr(local_server, "render_musical_reply", render_musical)
 
     async def exercise():

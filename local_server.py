@@ -58,7 +58,7 @@ from music_reply import (
     video_reply_source_url,
 )
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS
-from runtime.reply.reply_media import ReplyMediaError
+from runtime.reply.reply_media import ReplyMediaError, render_reply_video
 from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
     build_ordinary_video_repair_content,
@@ -2134,11 +2134,13 @@ async def route(
                     "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
                     "retryable": True,
                 })
-            missing = [
-                item["id"]
-                for item in readiness["dependencies"]
-                if item.get("state") != "ready"
-            ]
+            missing = readiness.get("ordinary_missing_dependencies")
+            if not isinstance(missing, list):
+                missing = [
+                    item["id"]
+                    for item in readiness["dependencies"]
+                    if item.get("state") != "ready"
+                ]
             if not readiness["ready"]:
                 return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {
                     "status": "FAILED",
@@ -2574,18 +2576,25 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 return configured if configured is not None else Path()
 
             tts_config = runtime_path("OLIVIA_TTS_CONFIG")
-            visual_config = runtime_path("OLIVIA_VISUAL_CONFIG")
-            worker = runtime_path("OLIVIA_LIVETALKING_WORKER")
-            if reply_mode in {
-                ReplyMode.SPOKEN_VIDEO.value,
-                ReplyMode.MUSICAL_VIDEO.value,
-            }:
-                if reply_mode == ReplyMode.MUSICAL_VIDEO.value:
-                    voice_plan = await _music_voice_plan_for_letter(
-                        letter, reply_text
-                    )
-                else:
-                    voice_plan = await _voice_plan_for_letter(letter, reply_text)
+            if reply_mode == ReplyMode.SPOKEN_VIDEO.value:
+                voice_plan = await _voice_plan_for_letter(letter, reply_text)
+                spoken_action_base = runtime_path("OLIVIA_ORDINARY_ACTION_BASE")
+                await asyncio.to_thread(
+                    render_reply_video,
+                    reply_text,
+                    output_path,
+                    tts_config_path=tts_config,
+                    visual_config_path=Path(),
+                    worker_path=Path(),
+                    scene_path=spoken_action_base,
+                    latentsync_python_path=runtime_path("OLIVIA_LATENTSYNC_PYTHON"),
+                    latentsync_root=runtime_path("OLIVIA_LATENTSYNC_ROOT"),
+                    adaptive_delivery=True,
+                    voice_performance_plan=voice_plan,
+                    environment=environment,
+                )
+            elif reply_mode == ReplyMode.MUSICAL_VIDEO.value:
+                voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(environment)
                 if performance_scene is None or not performance_scene.is_file():
@@ -2616,8 +2625,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     ),
                     official_reply_reference_path=official_reply_reference,
                     tts_config_path=tts_config,
-                    visual_config_path=visual_config,
-                    worker_path=worker,
+                    visual_config_path=runtime_path("OLIVIA_VISUAL_CONFIG"),
+                    worker_path=runtime_path("OLIVIA_LIVETALKING_WORKER"),
                     performance_video_path=performance_scene,
                     duration_seconds=music_duration_seconds,
                     spoken_action_base_path=spoken_action_base,

@@ -81,6 +81,7 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "minimax_music3",
         "roformer",
         "official_video_assets",
+        "music_video_assets",
         "ffmpeg",
         "media_workspace",
     ]
@@ -99,11 +100,107 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     assert dependencies["roformer"]["sources"] == []
     assert music_reply.video_reply_source_url("minimax_music3", "domestic") == (
         "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/"
-        "6baad88896848433857c170ba4f05d2ea9d5f218"
+        "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6"
     )
     assert music_reply.video_reply_source_url("roformer", "domestic") is None
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
+
+
+def test_video_reply_readiness_does_not_require_livetalking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tts_config = _write(tmp_path / "config" / "tts.json")
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    minimax_root = tmp_path / "minimax"
+    for relative in (
+        "main.py",
+        "comfy_extras/nodes_minimax_music.py",
+        "models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+        "models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        "models/vae/minimax_music3_dav.safetensors",
+    ):
+        _write(minimax_root / relative)
+    latentsync_root = tmp_path / "latentsync"
+    for relative in (
+        "scripts/inference.py",
+        "configs/unet/stage2_efficient.yaml",
+        "checkpoints/latentsync_unet.pt",
+    ):
+        _write(latentsync_root / relative)
+    performance = _write(tmp_path / "private" / "performance.mp4")
+    ffmpeg = _write(tmp_path / "ffmpeg.exe")
+    environment = {
+        "OLIVIA_TTS_CONFIG": str(tts_config),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": str(_write(tmp_path / "minimax-python.exe")),
+        "OLIVIA_MINIMAX_WORKER": str(_write(tmp_path / "minimax-worker.py")),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_LATENTSYNC_PYTHON": str(_write(tmp_path / "latentsync-python.exe")),
+        "OLIVIA_ROFORMER_EXE": str(_write(tmp_path / "roformer.exe")),
+        "OLIVIA_ROFORMER_MODEL_PATH": str(_write(tmp_path / "roformer.ckpt")),
+        "OLIVIA_ROFORMER_CONFIG_PATH": str(_write(tmp_path / "roformer.yaml")),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(_write(tmp_path / "private" / "action.mp4")),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(_write(tmp_path / "private" / "reply.mp4")),
+        "OLIVIA_PROVIDER_CACHE_ROOT": str(tmp_path / "cache"),
+    }
+    monkeypatch.setattr(
+        music_reply, "assemble_latentsync_video_delivery", lambda *_args, **_kwargs: object(), raising=False
+    )
+    monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
+    monkeypatch.setattr(music_reply, "musical_reply_configured", lambda *_args, **_kwargs: True)
+
+    status = music_reply.video_reply_dependency_status(
+        environment, performance_video_path=performance
+    )
+    dependencies = {item["id"]: item for item in status["dependencies"]}
+
+    assert dependencies["livetalking"]["state"] == "missing"
+    assert status["ready"] is True
+
+
+def test_ordinary_video_readiness_does_not_require_music_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    latentsync_root = tmp_path / "latentsync"
+    for relative in (
+        "scripts/inference.py",
+        "configs/unet/stage2_efficient.yaml",
+        "checkpoints/latentsync_unet.pt",
+    ):
+        _write(latentsync_root / relative)
+    ffmpeg = _write(tmp_path / "ffmpeg.exe")
+    environment = {
+        "OLIVIA_TTS_CONFIG": str(_write(tmp_path / "config" / "tts.json")),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_LATENTSYNC_PYTHON": str(_write(tmp_path / "latentsync-python.exe")),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(
+            _write(tmp_path / "private" / "action.mp4")
+        ),
+    }
+    monkeypatch.setattr(
+        music_reply,
+        "assemble_latentsync_video_delivery",
+        lambda *_args, **_kwargs: object(),
+        raising=False,
+    )
+    monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
+    monkeypatch.setattr(
+        music_reply, "musical_reply_configured", lambda *_args, **_kwargs: False
+    )
+
+    status = music_reply.video_reply_dependency_status(
+        environment, performance_video_path=None
+    )
+
+    assert status["ready"] is True
+    assert status["music_ready"] is False
+    assert status["ordinary_missing_dependencies"] == []
 
 
 def _value_after(command: list[str], flag: str) -> str:

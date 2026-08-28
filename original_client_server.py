@@ -46,6 +46,11 @@ from original_client_companion_mutation_backend import (
     MemoryAdminMutationService,
 )
 from original_client_capability_api import mount_original_client_capability_api
+from original_client_video_capability_api import mount_original_client_video_capability_api
+from video_capability_install import (
+    VideoCapabilityInstaller,
+    load_video_manifest,
+)
 from original_client_setup_api import (
     LLMSetupService,
     mount_original_client_setup_api,
@@ -307,6 +312,7 @@ class OriginalClientServerRuntime:
     candidate_decisions: CandidateReviewBackend | None
     mutation_backend: DirectOriginalClientCompanionMutationBackend
     capability_installer: Mem0CapabilityInstaller | None
+    video_capability_installer: VideoCapabilityInstaller | None
 
     def public_status(self) -> dict[str, object]:
         """Return component presence only; never paths, content, or hidden scores."""
@@ -333,6 +339,7 @@ def create_original_client_server_runtime(
     letter_collection: LetterCollection | None = None,
     setup_service: LLMSetupService | None = None,
     capability_installer: Mem0CapabilityInstaller | None = None,
+    video_capability_installer: VideoCapabilityInstaller | None = None,
     component_updater: ComponentUpdater | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
@@ -387,6 +394,13 @@ def create_original_client_server_runtime(
                 trusted_origins=origins,
                 authorize_session=setup_service.require_session,
             )
+        if video_capability_installer is not None:
+            mount_original_client_video_capability_api(
+                app,
+                video_capability_installer,
+                trusted_origins=origins,
+                authorize_session=setup_service.require_session,
+            )
         if component_updater is not None:
             mount_original_client_update_api(
                 app,
@@ -421,6 +435,7 @@ def create_original_client_server_runtime(
         candidate_decisions,
         mutation_backend,
         capability_installer,
+        video_capability_installer,
     )
     app[_RUNTIME_KEY] = runtime
     return runtime
@@ -452,6 +467,20 @@ def _configured_capability_installer(
             python_executable=Path(sys.executable),
             backend_root=Path(__file__).resolve().parent,
         )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _configured_video_capability_installer(
+    environ: Mapping[str, str], data_root: Path | None,
+) -> VideoCapabilityInstaller | None:
+    if data_root is None:
+        return None
+    try:
+        manifest = load_video_manifest(
+            Path(__file__).resolve().parent / "installer" / "video-capability-manifest.json"
+        )
+        return VideoCapabilityInstaller(data_root=data_root, manifest=manifest)
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
@@ -620,6 +649,7 @@ def create_configured_original_client_server_runtime(
         else None
     )
     capability_installer = _configured_capability_installer(values, data_root)
+    video_capability_installer = _configured_video_capability_installer(values, data_root)
     component_updater = _configured_component_updater(values)
     runtime = create_original_client_server_runtime(
         fallback,
@@ -631,6 +661,7 @@ def create_configured_original_client_server_runtime(
         letter_collection=collection if callable(collection) else None,
         setup_service=setup_service,
         capability_installer=capability_installer,
+        video_capability_installer=video_capability_installer,
         component_updater=component_updater,
         trusted_origins=origins,
     )

@@ -21,6 +21,10 @@ from patch_companion_settings import (
     CompanionSettingsPatchError,
     patch_companion_settings,
 )
+from video_capability_install import (
+    VideoCapabilityError,
+    load_video_runtime_environment,
+)
 
 
 def _load_dpapi_key(path: Path) -> str:
@@ -53,6 +57,21 @@ def _load_dpapi_key(path: Path) -> str:
 
 
 _LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def _load_video_environment(
+    environment: dict[str, str], data_root: Path
+) -> dict[str, str]:
+    """Load only verified paths persisted by the video bundle assembler."""
+
+    values = environment.copy()
+    try:
+        persisted = load_video_runtime_environment(data_root.resolve())
+    except (OSError, TypeError, ValueError, VideoCapabilityError):
+        return values
+    for key, value in persisted.items():
+        values.setdefault(key, value)
+    return values
 
 
 def _load_llm_environment(
@@ -556,6 +575,8 @@ def main(argv: list[str] | None = None) -> int:
     backend_environment.update(runtime_environment)
     backend_environment["OLIVIA_BACKEND_ID"] = expected_backend_id
     client_environment.update(runtime_environment)
+    backend_environment = _load_video_environment(backend_environment, data_root)
+    client_environment = _load_video_environment(client_environment, data_root)
     backend_environment = _load_llm_environment(
         backend_environment, data_root, include_secret=True
     )

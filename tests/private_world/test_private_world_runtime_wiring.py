@@ -173,7 +173,7 @@ async def fixed_voice_plan(letter, text):
         emphasize_sentences=(),
     )
 
-def render_reply(content, text, output_path, **kwargs):
+def render_reply(text, output_path, **kwargs):
     Path(output_path).write_bytes(b'synthetic media retry')
     return {}
 
@@ -184,7 +184,7 @@ local_server._persist_store_state = lambda: None
 local_server._persist_media_state = lambda: None
 local_server.letters_adapter.remember_conversation = lambda *args: None
 local_server._voice_plan_for_letter = fixed_voice_plan
-local_server.render_musical_reply = render_reply
+local_server.render_reply_video = render_reply
 
 if os.environ.get('OLIVIA_TEST_PRIVATE_WORLD_SQLITE_FAILURE') == '1':
     def unavailable_snapshot():

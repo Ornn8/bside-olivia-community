@@ -26,7 +26,7 @@ from runtime.media.media_paths import configured_media_path
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from runtime.reply.reply_media import (
     ReplyMediaError,
-    assemble_complete_video_delivery,
+    assemble_latentsync_video_delivery,
     render_reply_video,
 )
 from runtime.media.song_content import plan_song_content
@@ -101,8 +101,6 @@ def musical_reply_configured(
     transition_reference = configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE")
     delivery_paths = (
         configured_path("OLIVIA_TTS_CONFIG"),
-        configured_path("OLIVIA_VISUAL_CONFIG"),
-        configured_path("OLIVIA_LIVETALKING_WORKER"),
         configured_path("OLIVIA_LOCAL_DATA_ROOT"),
     )
     if minimax_root is None or latentsync_root is None or any(
@@ -110,11 +108,9 @@ def musical_reply_configured(
     ):
         return False
     try:
-        assemble_complete_video_delivery(
+        assemble_latentsync_video_delivery(
             delivery_paths[0],
             delivery_paths[1],
-            delivery_paths[2],
-            delivery_paths[3],
             env,
         )
     except ReplyMediaError:
@@ -156,9 +152,9 @@ _VIDEO_REPLY_SOURCE_URLS = {
     ("livetalking", "official"): "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
     ("latentsync", "domestic"): "https://gitee.com/ByteDance/LatentSync",
     ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
-    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
-    ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
-    ("ffmpeg", "official"): "https://pypi.org/project/imageio-ffmpeg/0.6.0/",
+    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("ffmpeg", "official"): "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
 }
 
 
@@ -187,12 +183,10 @@ def video_reply_dependency_status(
     visual_worker = configured("OLIVIA_LIVETALKING_WORKER")
     local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
     delivery_ready = False
-    if all(path is not None for path in (tts_config, visual_config, visual_worker, local_data_root)):
+    if all(path is not None for path in (tts_config, local_data_root)):
         try:
-            assemble_complete_video_delivery(
+            assemble_latentsync_video_delivery(
                 tts_config,
-                visual_config,
-                visual_worker,
                 local_data_root,
                 env,
             )
@@ -239,9 +233,9 @@ def video_reply_dependency_status(
             "OLIVIA_ROFORMER_CONFIG_PATH",
         )
     )
-    assets_ready = bool(
-        file("OLIVIA_ORDINARY_ACTION_BASE")
-        and file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
+    ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
+    music_assets_ready = bool(
+        file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
         and performance_video_path is not None
         and performance_video_path.is_file()
     )
@@ -295,7 +289,7 @@ def video_reply_dependency_status(
         item(
             "livetalking",
             "视频驱动配置（LiveTalking）",
-            delivery_ready and bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
+            bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
             "manual",
             "国内镜像待固定；备用：GitHub",
             (
@@ -354,7 +348,14 @@ def video_reply_dependency_status(
         item(
             "official_video_assets",
             "Olivia 场景与转场素材",
-            assets_ready,
+            ordinary_assets_ready,
+            "local_import",
+            "从用户本机正版 Olivia 导入，不联网下载",
+        ),
+        item(
+            "music_video_assets",
+            "Olivia 音乐视频与转场素材",
+            music_assets_ready,
             "local_import",
             "从用户本机正版 Olivia 导入，不联网下载",
         ),
@@ -380,14 +381,31 @@ def video_reply_dependency_status(
             "由客户端自动创建，无需下载",
         ),
     ]
-    ready = bool(
-        all(item["state"] == "ready" for item in dependencies)
-        and musical_reply_configured(
-            env,
-            performance_video_path=performance_video_path,
-        )
+    ordinary_ids = {
+        "cosyvoice",
+        "latentsync",
+        "official_video_assets",
+        "ffmpeg",
+    }
+    ordinary_missing = [
+        item["id"]
+        for item in dependencies
+        if item["id"] in ordinary_ids and item["state"] != "ready"
+    ]
+    ordinary_ready = not ordinary_missing
+    music_ready = bool(
+        ordinary_ready
+        and minimax_ready
+        and roformer_ready
+        and music_assets_ready
+        and musical_reply_configured(env, performance_video_path=performance_video_path)
     )
-    return {"ready": ready, "dependencies": dependencies}
+    return {
+        "ready": ordinary_ready,
+        "music_ready": music_ready,
+        "ordinary_missing_dependencies": ordinary_missing,
+        "dependencies": dependencies,
+    }
 
 
 class MiniMaxMusic3Worker:

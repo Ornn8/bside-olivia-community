@@ -1,0 +1,20 @@
+--- a/inference.py
++++ b/inference.py
+@@ -272,7 +272,7 @@
+     sr = 22050 if not f0_condition else 44100
+     hop_length = 256 if not f0_condition else 512
+     max_context_window = sr // hop_length * 30
+-    overlap_frame_len = 16
++    overlap_frame_len = args.overlap_frames
+     overlap_wave_len = overlap_frame_len * hop_length
+
+     # Process audio
+@@ -420,6 +420,7 @@
+     parser.add_argument("--semi-tone-shift", type=int, default=0)
+     parser.add_argument("--checkpoint", type=str, help="Path to the checkpoint file", default=None)
+     parser.add_argument("--config", type=str, help="Path to the config file", default=None)
+-    parser.add_argument("--fp16", type=str2bool, default=True)
++    parser.add_argument("--fp16", type=str2bool, default=True)
++    parser.add_argument("--overlap-frames", type=int, default=16)
+     args = parser.parse_args()
+     main(args)
