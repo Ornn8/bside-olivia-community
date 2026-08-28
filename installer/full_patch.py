@@ -109,6 +109,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
     "installer/version_launcher.py",
+    "installer/assets/olivia.ico",
     "installer/mem0-capability-manifest.json",
     "installer/video-capability-manifest.json",
     "installer/cosyvoice-windows-audio.patch.json",

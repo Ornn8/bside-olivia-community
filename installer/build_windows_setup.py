@@ -105,6 +105,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/component_update.py",
     "installer/configure.py",
     "installer/Create-Shortcut.ps1",
+    "installer/assets/olivia.ico",
     "installer/full_patch.py",
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
