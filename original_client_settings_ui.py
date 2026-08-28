@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v8"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v9"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -14,6 +14,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const DIALOG_ATTR = "data-olivia-companion-settings-dialog";
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
+  const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
@@ -849,15 +850,49 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       && /^[A-Z][A-Z0-9_]{0,95}$/.test(privateCapability.reason_code)
       ? privateCapability.reason_code
       : null;
-    panel.replaceChildren(
-      heading,
-      summary,
-      text(
-        "p",
-        reasonCode ? `原因代码：${reasonCode}` : "原因代码：无",
-        "text-text-secondary text-body-m font-regular"
-      )
-    );
+    if (privateState !== "available") {
+      panel.replaceChildren(
+        heading,
+        summary,
+        text(
+          "p",
+          reasonCode ? `原因代码：${reasonCode}` : "原因代码：无",
+          "text-text-secondary text-body-m font-regular"
+        )
+      );
+      return;
+    }
+    try {
+      const payload = await requestJson(PRIVATE_WORLD_PATH);
+      const stages = { unknown: "尚未形成", acquaintance: "初识", familiar: "熟悉", close: "亲近" };
+      const levelLabels = { unknown: "未知", low: "低", medium: "中", high: "高" };
+      const fields = [
+        ["familiarity", "熟悉度"], ["trust", "信任"], ["comfort", "舒适"],
+        ["closeness", "亲密"], ["tension", "紧张"],
+      ];
+      const levels = payload && payload.levels;
+      if (
+        !payload || payload.status !== "READY" || !stages[payload.relationship_stage]
+        || !levels || fields.some(([key]) => !levelLabels[levels[key]])
+      ) throw new Error("PRIVATE_WORLD_SUMMARY_INVALID");
+      panel.replaceChildren(
+        heading,
+        summary,
+        text("p", `关系阶段：${stages[payload.relationship_stage]}`, "text-text-body text-body-m font-regular"),
+        text(
+          "p",
+          fields.map(([key, label]) => `${label}：${levelLabels[levels[key]]}`).join(" · "),
+          "text-text-secondary text-body-m font-regular"
+        ),
+        text("p", "该状态由林离与用户的历史来信和回信形成，不是可手动修改的分数。", "text-text-secondary text-caption-m font-regular")
+      );
+    } catch (_error) {
+      panel.replaceChildren(
+        heading,
+        summary,
+        text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m font-regular")
+      );
+    }
   };
 
   const setupInput = (label, type = "text") => {
@@ -1689,7 +1724,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入官方文字信件", "text-text-body text-label-l"),
-      text("div", "导入后将按原时间进入信箱并写入长期记忆。只导入原信和文字回信，不导入视频；重复信件会自动跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "原信和林离的文字回信会按原时间进入信箱；双方内容会形成长期语义记忆，历史往来会初始化关系状态。不导入视频，重复信件自动跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     const importButton = button("导入", async () => {
@@ -1719,7 +1754,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryText = migration && migration.status === "completed"
           ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
           : "长期记忆写入未完成，历史信件未发布。";
-        importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}`;
+        const relationText = migration && ["initialized", "already_initialized"].includes(migration.private_world_status)
+          ? "林离的历史关系状态已同步。"
+          : "关系状态未更新。";
+        importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}${relationText}`;
       } catch (error) {
         importState.textContent = error && [
           "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
