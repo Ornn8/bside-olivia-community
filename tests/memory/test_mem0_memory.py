@@ -539,6 +539,7 @@ def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
     ]
     assert "用户本人" in add_calls[0]["prompt"]
     assert "第一人称" in add_calls[1]["prompt"]
+    assert all("不得翻译为英文" in call["prompt"] for call in add_calls)
     assert [row["memory"] for row in backend.rows] == [
         "用户喜欢 AI 绘画，也喜欢林离的钢琴。",
         "我在回信中鼓励用户继续画画。",
