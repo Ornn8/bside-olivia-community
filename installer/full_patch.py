@@ -502,6 +502,13 @@ def _write_start_scripts(root: Path, port: int) -> None:
         f"@echo off\nsetlocal\nset ROOT=%~dp0\nset OLIVIA_PORT={port}\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" start --port %OLIVIA_PORT%\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
     )
+    (root / "START.vbs").write_text(
+        'Set shell = CreateObject("WScript.Shell")\n'
+        'Set fso = CreateObject("Scripting.FileSystemObject")\n'
+        'root = fso.GetParentFolderName(WScript.ScriptFullName)\n'
+        'shell.Run Chr(34) & root & "\\START.cmd" & Chr(34), 0, False\n',
+        encoding="utf-8",
+    )
     (root / "UNINSTALL.cmd").write_text(
         "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" uninstall --apply\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
@@ -528,6 +535,7 @@ def _refresh_existing_install(
         "local_backend",
         "launcher",
         "START.cmd",
+        "START.vbs",
         "CONFIGURE.cmd",
         "UNINSTALL.cmd",
         MARKER_NAME,

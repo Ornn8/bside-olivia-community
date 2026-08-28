@@ -15,6 +15,7 @@ OWNED_PATHS = (
     "launcher",
     "versions",
     "START.cmd",
+    "START.vbs",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",
     "runtime/mem0-site-packages",

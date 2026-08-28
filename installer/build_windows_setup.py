@@ -69,6 +69,7 @@ RELEASE_ROOT_FILES = {
     "original_client_server.py",
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
+    "original_client_update_api.py",
     "patch_companion_settings.py",
     "patch_feapp.py",
     "patch_webplayer.py",

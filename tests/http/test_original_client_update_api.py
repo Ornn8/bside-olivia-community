@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from jsonschema import Draft202012Validator
 
 from original_client_update_api import (
     ACTION_PATH,
@@ -15,6 +17,7 @@ from original_client_update_api import (
 
 
 TRUSTED_ORIGIN = "https://client.example"
+ROOT = Path(__file__).parents[2]
 
 
 class _Updater:
@@ -43,6 +46,7 @@ def test_update_api_requires_login_confirmation_and_applies_or_rolls_back(
             app,
             updater,
             trusted_origins=(TRUSTED_ORIGIN,),
+            select_patch=lambda: package,
             authorize_session=lambda value: (
                 None
                 if value == "signed-in-session"
@@ -68,6 +72,17 @@ def test_update_api_requires_login_confirmation_and_applies_or_rolls_back(
                 CONFIRM_HEADER: "confirmed",
                 SESSION_HEADER: "signed-in-session",
             }
+            selected = await client.post(
+                ACTION_PATH,
+                headers=headers,
+                json={"action": "select"},
+            )
+            assert selected.status == 200
+            assert await selected.json() == {
+                "status": "SELECTED",
+                "package_path": str(package.resolve()),
+                "restart_required": False,
+            }
             applied = await client.post(ACTION_PATH, headers=headers, json=body)
             assert applied.status == 200
             assert await applied.json() == {
@@ -88,3 +103,25 @@ def test_update_api_requires_login_confirmation_and_applies_or_rolls_back(
             assert updater.rollbacks == 1
 
     asyncio.run(scenario())
+
+
+def test_update_api_contract_matches_its_schema() -> None:
+    contract = json.loads(
+        (ROOT / "contracts" / "local_update_api_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    schema = json.loads(
+        (ROOT / "contracts" / "local_update_api_contract.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not list(Draft202012Validator(schema).iter_errors(contract))
+    route = contract["routes"][ACTION_PATH]
+    assert route["actions"]["select"]["response_fields"] == [
+        "status",
+        "package_path",
+        "restart_required",
+    ]
+    assert route["actions"]["apply"]["restart_required"] is True
+    assert route["actions"]["rollback"]["restart_required"] is True

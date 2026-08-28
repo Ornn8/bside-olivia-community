@@ -109,6 +109,8 @@ webplayer.dat.orig
 
 普通用户在客户端 Settings 的“补丁更新”中选择已下载的 `.oliviapatch`，粘贴发布页提供的 Manifest SHA-256 后安装；成功后关闭并重新打开 Olivia。该页面也提供回滚到上一版本的入口。命令行入口继续保留用于维护和故障排查。
 
+客户端补丁入口的鉴权、请求、响应、重启语义和稳定错误码见 `contracts/local_update_api_contract.json` 及其 schema。
+
 - `contracts/component_update_package.schema.json`
 - `contracts/component_update_package.example.json`
 - `contracts/component_update_state.schema.json`

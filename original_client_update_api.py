@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 import json
+import os
 import re
 from pathlib import Path
+import subprocess
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -45,6 +47,7 @@ class ComponentUpdater(Protocol):
 
 
 SessionAuthorizer = Callable[[str], None]
+PatchPicker = Callable[[], Path | None]
 
 
 class LocalComponentUpdater:
@@ -149,6 +152,42 @@ def _package_path(value: object) -> Path:
         raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400) from exc
 
 
+def _select_windows_patch() -> Path | None:
+    if os.name != "nt":
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503)
+    powershell = (
+        Path(os.environ.get("SystemRoot", "C:\\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "$dialog.Filter = 'Olivia patch (*.oliviapatch)|*.oliviapatch';"
+        "$dialog.CheckFileExists = $true;"
+        "$dialog.Multiselect = $false;"
+        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "{ [Console]::Out.Write($dialog.FileName) }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503) from exc
+    if completed.returncode != 0:
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503)
+    selected = completed.stdout.strip()
+    return None if not selected else _package_path(selected)
+
+
 def _public_result(value: Mapping[str, object]) -> dict[str, object]:
     status = value.get("status")
     component = value.get("component")
@@ -174,6 +213,7 @@ def mount_original_client_update_api(
     *,
     trusted_origins: Sequence[str],
     authorize_session: SessionAuthorizer,
+    select_patch: PatchPicker | None = None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("UPDATE_API_ALREADY_MOUNTED")
@@ -182,6 +222,7 @@ def mount_original_client_update_api(
     app[_ORIGINS_KEY] = _normalize_origins(trusted_origins)
     app[_MOUNTED_KEY] = True
     control_lock = asyncio.Lock()
+    picker = select_patch or _select_windows_patch
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -207,6 +248,22 @@ def mount_original_client_update_api(
         except Exception as exc:
             raise UpdateAPIError("UPDATE_LOGIN_REQUIRED", status=403) from exc
         payload = await _json_body(request)
+        if payload == {"action": "select"}:
+            try:
+                selected = await asyncio.to_thread(picker)
+                if selected is None:
+                    result = {"status": "CANCELLED", "restart_required": False}
+                else:
+                    result = {
+                        "status": "SELECTED",
+                        "package_path": str(_package_path(str(selected))),
+                        "restart_required": False,
+                    }
+            except UpdateAPIError:
+                raise
+            except Exception as exc:
+                raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503) from exc
+            return web.json_response(result, headers=_headers(origin))
         if payload.get("action") == "apply" and set(payload) == {
             "action", "package_path", "manifest_sha256"
         }:
@@ -240,6 +297,7 @@ __all__ = [
     "ACTION_PATH",
     "CONFIRM_HEADER",
     "LocalComponentUpdater",
+    "PatchPicker",
     "SESSION_HEADER",
     "UpdateAPIError",
     "mount_original_client_update_api",

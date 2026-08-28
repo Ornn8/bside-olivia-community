@@ -345,7 +345,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const endpoint = new URL(UPDATE_ACTION_PATH, apiBase);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 120000);
+    const timeoutMs = body.action === "select" ? 310000 : 120000;
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -1059,21 +1060,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "从我们的 Release 手动下载 .oliviapatch，再在这里安装。",
       "text-text-secondary text-body-m font-regular"
     );
-    const patch = document.createElement("input");
-    patch.type = "file";
-    patch.accept = ".oliviapatch";
-    patch.setAttribute("aria-label", "选择 Olivia 补丁文件");
-    patch.style.pointerEvents = "auto";
+    let packagePath = "";
+    const selectedPatch = text(
+      "p",
+      "尚未选择补丁文件。",
+      "text-text-secondary text-body-m font-regular"
+    );
     const digest = setupInput("发布页提供的 Manifest SHA-256");
     digest.input.maxLength = 64;
     digest.input.autocomplete = "off";
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
+    const choose = button("选择已下载的补丁", async () => {
+      setButtonsBusy([choose], true);
+      try {
+        const payload = await requestUpdate({ action: "select" });
+        if (payload.status === "SELECTED" && typeof payload.package_path === "string") {
+          packagePath = payload.package_path;
+          selectedPatch.textContent = `已选择：${packagePath.split(/[\\/]/).pop()}`;
+          result.textContent = "";
+        }
+      } catch (error) {
+        result.textContent = `无法选择补丁：${error && error.code ? error.code : "UPDATE_PICKER_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([choose], false);
+      }
+    });
     const install = button("安装本地补丁", async () => {
-      const selected = patch.files && patch.files.length === 1 ? patch.files[0] : null;
-      const packagePath = selected && typeof patch.files[0].path === "string"
-        ? patch.files[0].path
-        : "";
       const manifestSha256 = digest.input.value.trim().toLowerCase();
       if (!packagePath) {
         result.textContent = "请选择已下载的 .oliviapatch 文件。";
@@ -1113,8 +1126,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     const controls = actions();
-    controls.append(install, rollback);
-    panel.replaceChildren(heading, summary, patch, digest.wrapper, controls, result);
+    controls.append(choose, install, rollback);
+    panel.replaceChildren(
+      heading,
+      summary,
+      selectedPatch,
+      digest.wrapper,
+      controls,
+      result
+    );
   };
 
   const loadDialogData = async (statusNode, panels, initialMode) => {

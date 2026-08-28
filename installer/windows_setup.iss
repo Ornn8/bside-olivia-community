@@ -38,11 +38,11 @@ Source: "{#PayloadRoot}\*"; DestDir: "{tmp}\OliviaPayload"; Flags: recursesubdir
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："; Flags: unchecked
 
 [Icons]
-Name: "{userprograms}\Olivia 本地版"; Filename: "{code:GetInstallRoot}\install\START.cmd"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: runminimized
-Name: "{userdesktop}\Olivia 本地版"; Filename: "{code:GetInstallRoot}\install\START.cmd"; WorkingDir: "{code:GetInstallRoot}\install"; Tasks: desktopicon; Flags: runminimized
+Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"
+Name: "{userdesktop}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; Tasks: desktopicon
 
 [Run]
-Filename: "{code:GetInstallRoot}\install\START.cmd"; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent shellexec
+Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent
 
 [Code]
 var

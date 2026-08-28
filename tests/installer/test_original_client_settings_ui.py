@@ -53,8 +53,11 @@ def test_original_settings_can_apply_a_user_downloaded_patch_and_roll_back() -> 
     source = BOOTSTRAP_JAVASCRIPT
 
     assert 'const UPDATE_ACTION_PATH = "/toy/updates/local/action";' in source
-    assert 'patch.accept = ".oliviapatch";' in source
-    assert "patch.files[0].path" in source
+    assert 'action: "select"' in source
+    assert "选择已下载的补丁" in source
+    assert "payload.package_path" in source
+    assert "File.path" not in source
+    assert "patch.files" not in source
     assert "发布页提供的 Manifest SHA-256" in source
     assert 'action: "apply"' in source
     assert 'action: "rollback"' in source

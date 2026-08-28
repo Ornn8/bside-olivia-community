@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "local_update_api_contract.schema.json",
+  "title": "Signed-in local component update API contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status_schema_version",
+    "execution",
+    "authorization",
+    "routes",
+    "error_http_statuses",
+    "component_error_pattern",
+    "component_error_http_status"
+  ],
+  "properties": {
+    "schema_version": {"const": "olivia.local-update-api-contract.v1"},
+    "status_schema_version": {"const": "olivia.local-update.v1"},
+    "execution": {"const": "serialized-apply-rollback-off-event-loop"},
+    "authorization": {
+      "const": {
+        "origins": "explicit-trusted-https-or-loopback-only",
+        "login_required": true,
+        "session_header": "X-Olivia-Setup-Session",
+        "confirmation_header": {
+          "name": "X-Olivia-Update-Action",
+          "value": "confirmed"
+        }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["/toy/updates/local/action"],
+      "properties": {
+        "/toy/updates/local/action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["methods", "actions"],
+          "properties": {
+            "methods": {"const": ["POST", "OPTIONS"]},
+            "actions": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["select", "apply", "rollback"],
+              "properties": {
+                "select": {"$ref": "#/$defs/action"},
+                "apply": {"$ref": "#/$defs/action"},
+                "rollback": {"$ref": "#/$defs/action"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "error_http_statuses": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"enum": [400, 403, 409, 413, 415, 503]}
+    },
+    "component_error_pattern": {"const": "UPDATE_[A-Z0-9_]{3,90}"},
+    "component_error_http_status": {"const": 409}
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_fields",
+        "response_fields",
+        "status_values",
+        "restart_required"
+      ],
+      "properties": {
+        "request_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string"}
+        },
+        "response_fields": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string"}
+        },
+        "status_values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"}
+        },
+        "restart_required": {"type": "boolean"}
+      }
+    }
+  }
+}

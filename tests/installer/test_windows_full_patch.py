@@ -1194,6 +1194,10 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert not (installed / "local_backend" / "memory_store.json").exists()
     assert not (installed / "local_backend" / "llm_config.json").exists()
     assert (installed / "CONFIGURE.cmd").is_file()
+    start_hidden = (installed / "START.vbs").read_text(encoding="utf-8")
+    assert "START.cmd" in start_hidden
+    assert ".Run" in start_hidden
+    assert ", 0, False" in start_hidden
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start
