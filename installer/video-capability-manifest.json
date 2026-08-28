@@ -19,7 +19,7 @@
       "status": "FIXED",
       "requires_gpu": true,
       "dependencies": ["cosyvoice", "latentsync", "ffmpeg"],
-      "runtime_environment": {"OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"},
+      "runtime_environment": {"OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime", "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json"},
       "files": [
         {"id":"cosyvoice-code","path":"sources/CosyVoice-074ca6dc.zip","size_bytes":1633232,"sha256":"4e7b1ce909f97abcc8afa0a890f92ccf2839ff435c698d4f04a1ba7aa71a022f","license":"Apache-2.0","sources":{"domestic":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc","official":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"},"install":{"kind":"zip","destination":"cosyvoice/runtime","strip_components":1}},
         {"id":"latentsync-code","path":"sources/LatentSync-a229c394.zip","size_bytes":8562500,"sha256":"3a1eddcd604eebc4d3b104f3f649101dbe58bb2e1c52e80cf0845c335aebcb69","license":"Apache-2.0","sources":{"official":"https://codeload.github.com/bytedance/LatentSync/zip/a229c3948406bc2cf6eaf4873e662e70c6a04746"},"install":{"kind":"zip","destination":"latentsync/runtime","strip_components":1}},
@@ -55,7 +55,7 @@
       "status": "FIXED",
       "requires_gpu": true,
       "dependencies": ["ordinary_video", "minimax_music3", "roformer"],
-      "runtime_environment": {"OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml"},
+      "runtime_environment": {"OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe", "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py", "OLIVIA_ROFORMER_EXE": "roformer/runtime/python/Scripts/melband-roformer-infer.exe", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml"},
       "files": [
         {"id":"comfyui-code","path":"sources/ComfyUI-a7365071.zip","size_bytes":12390092,"sha256":"cf8936fbf1f526dafdec12d030c99e2133f598e5649cace6f1ef296ed836f838","license":"GPL-3.0","sources":{"domestic":"https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581","official":"https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581"},"install":{"kind":"zip","destination":"minimax/runtime","strip_components":1}},
         {"id":"roformer-code","path":"sources/melband-roformer-a21cb300.zip","size_bytes":132436,"sha256":"410c48245212667f63359c3cc915d4aaa334f52bddb3738e5cb125c3dac94f5b","license":"MIT","sources":{"domestic":"https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226","official":"https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226"},"install":{"kind":"zip","destination":"roformer/runtime","strip_components":1}},

@@ -70,14 +70,19 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
     assert ordinary.runtime_environment == {
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
+        "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
+        "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json",
     }
     music_file_ids = {item.identifier for item in music.files}
     assert "seed-vc-code" not in music_file_ids
     assert "demucs-htdemucs6s" not in music_file_ids
     assert {"roformer-code", "roformer-checkpoint"} <= music_file_ids
     assert music.runtime_environment == {
+        "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
+        "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
+        "OLIVIA_ROFORMER_EXE": "roformer/runtime/python/Scripts/melband-roformer-infer.exe",
         "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
         "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
     }
