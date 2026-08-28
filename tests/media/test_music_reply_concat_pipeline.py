@@ -243,6 +243,7 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
         imports=("torch", "provider.module"),
         accepted_torch_versions=("2.9.1+cu128",),
     )
+    assert observed["command"][1] == "-B"
     script = observed["command"][-1]
     assert "sys.version_info[:2]" in script
     assert "import_module" in script

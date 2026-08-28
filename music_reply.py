@@ -93,7 +93,7 @@ def _python_runtime_ready(
         "assert torch.cuda.is_available(); "
         "torch.ones(1, device='cuda')"
     )
-    return _run_runtime_probe([str(executable), "-c", script], cwd=cwd)
+    return _run_runtime_probe([str(executable), "-B", "-c", script], cwd=cwd)
 
 
 def _executable_runtime_ready(executable: Path | None) -> bool:
