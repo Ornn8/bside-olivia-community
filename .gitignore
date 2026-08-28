@@ -169,6 +169,8 @@ docs/reviews/*
 !docs/REPOSITORY_LAYOUT.md
 !docs/EXPERIMENTAL_MODULES.md
 !docs/THIRD_PARTY_DOWNLOADS.md
+!docs/releases/
+!docs/releases/*.md
 !docs/archive/
 !docs/archive/README.md
 !docs/archive/2026-08-12-current-state-audit.md

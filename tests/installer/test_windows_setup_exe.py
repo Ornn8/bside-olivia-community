@@ -353,3 +353,42 @@ def test_third_party_notices_cover_setup_compiler_and_chinese_messages() -> None
     assert "ChineseSimplified.isl" in notices
     assert "is-6_7_1" in notices
     assert "7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278" in notices
+
+
+def test_runtime_third_party_notices_cover_every_locked_offline_wheel() -> None:
+    requirements = (ROOT / "installer" / "runtime-requirements.txt").read_text(
+        encoding="utf-8"
+    )
+    notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    packages = {
+        line.split("==", maxsplit=1)[0]
+        for line in requirements.splitlines()
+        if line and not line.startswith("#")
+    }
+
+    assert packages
+    assert all(f"`{package}`" in notices for package in packages)
+    assert "Python 3.12.10 embeddable package" in notices
+    assert "`pip` 25.2" in notices
+
+
+def test_first_release_notes_cover_user_facing_release_boundaries() -> None:
+    notes = (ROOT / "docs" / "releases" / "v0.1.0.md").read_text(
+        encoding="utf-8"
+    )
+
+    for heading in ("已验证能力", "需要用户准备", "已知限制", "升级与回滚"):
+        assert f"## {heading}" in notes
+    assert "Olivia-Setup-x64.exe" in notes
+    assert "未进行 Authenticode" in notes
+    assert "未知发布者" in notes
+    assert "SHA-256" in notes
+
+
+def test_readme_release_status_matches_deferred_optional_model_install() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Mem0 一键新装仍是发布阻断" not in readme
+    assert "可选模型在登录后的初始设置中按需安装" in readme
+    assert "当前状态：发布候选" not in readme
+    assert "发布边界" in readme

@@ -23,9 +23,9 @@
 - [x] 已选择并提交代码许可证（Apache-2.0，见根目录 `LICENSE` 和 `NOTICE`）。
 - [x] 已声明原版、角色、商标、模型、用户内容和生成媒体不属于项目许可证（见 `ASSET_POLICY.md`）。
 - [x] `pyproject.toml` 中的直接运行依赖已在 `THIRD_PARTY_NOTICES.md` 记录来源和许可证；若 wheel 包含额外二进制，仍须核对该二进制的随附声明。
-- [ ] 第三方模型、运行时和原版资源的许可证已分别记录，并已按实际锁定发行环境核对完整依赖树。
-- [ ] `CONTRIBUTING.md`、`SECURITY.md` 和 `CODE_OF_CONDUCT.md` 已更新。
-- [ ] 发布说明包含已验证能力、未验证边界、已知限制和回滚方式。
+- [x] 实际随安装器分发的 Python、pip 和 14 个锁定 wheel 已按文件内许可证元数据核对并记录在 `THIRD_PARTY_NOTICES.md`；第三方模型、媒体运行时和原版资源不随安装器分发，由用户按需提供。
+- [x] `CONTRIBUTING.md`、`SECURITY.md` 和 `CODE_OF_CONDUCT.md` 已复核，覆盖贡献验证、私密报告、凭据和第三方内容边界。
+- [x] [`releases/v0.1.0.md`](releases/v0.1.0.md) 已记录用户安装方式、已验证能力、未验证边界、已知限制和回滚方式。
 
 当前公开门禁只覆盖 HTTP/media 基线；实验模块必须按 [`EXPERIMENTAL_MODULES.md`](EXPERIMENTAL_MODULES.md) 单独报告，不能把实验结果写成整体发布通过。
 
@@ -35,3 +35,5 @@
 - [ ] 安装前校验版本和哈希，失败时不写入目标目录。
 - [ ] 卸载只删除补丁拥有的文件，保留用户数据和原版文件。
 - [ ] 发布包不自动下载模型、不内置密钥、不绕过 provider 许可或来源校验。
+
+当前社区预览不购买代码签名证书，安装器会显示未知发布者；发布页必须同时提供构建生成的 `.sha256` 文件，并在发布说明中明确这一限制。Authenticode 不作为本版本发布阻断项。

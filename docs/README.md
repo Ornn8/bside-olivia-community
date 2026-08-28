@@ -8,6 +8,7 @@ README 只提供项目入口。本目录保存用户安装、产品边界、实�
 - [`THIRD_PARTY_DOWNLOADS.md`](THIRD_PARTY_DOWNLOADS.md)：第三方模型与运行时的官方下载入口。
 - [`PUBLIC_REPOSITORY.md`](PUBLIC_REPOSITORY.md)：原版资源、私人数据和公开代码边界。
 - [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)：发布前检查。
+- [`releases/v0.1.0.md`](releases/v0.1.0.md)：首个 Windows 社区预览版发布说明。
 - [`REPOSITORY_LAYOUT.md`](REPOSITORY_LAYOUT.md)：代码与目录职责。
 
 ## 产品与架构
