@@ -183,6 +183,49 @@ def test_launcher_prefers_valid_saved_key_to_inherited_generic_keys(
     assert environment["DEEPSEEK_API_KEY"] == "saved-key-for-test"
 
 
+def test_launcher_prefers_explicit_olivia_key_to_valid_saved_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'b' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_bytes(b"synthetic-protected-key")
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "key_file": key_name,
+                "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start_local,
+        "_load_dpapi_key",
+        lambda _path: pytest.fail("explicit Olivia key must skip DPAPI"),
+    )
+    inherited = {
+        "OLIVIA_LLM_API_KEY": "explicit-olivia-key",
+        "DEEPSEEK_API_KEY": "inherited-deepseek-key",
+        "OPENAI_API_KEY": "inherited-openai-key",
+    }
+
+    environment = start_local._load_llm_environment(
+        inherited, data_root, include_secret=True
+    )
+
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+    assert environment["OLIVIA_LLM_API_KEY"] == inherited["OLIVIA_LLM_API_KEY"]
+    assert environment["DEEPSEEK_API_KEY"] == inherited["DEEPSEEK_API_KEY"]
+    assert environment["OPENAI_API_KEY"] == inherited["OPENAI_API_KEY"]
+
+
 def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> None:
     data_root = (tmp_path / "data").resolve()
     runtime_root = data_root / "capabilities" / "video" / "ordinary_video" / "latentsync" / "runtime"

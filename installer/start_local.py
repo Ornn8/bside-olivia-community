@@ -141,6 +141,8 @@ def _load_llm_environment(
         "OLIVIA_LLM_MAX_RETRIES": "0",
     }.items():
         values.setdefault(name, value)
+    if values.get("OLIVIA_LLM_API_KEY"):
+        values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
     generic_key_present = any(
         values.get(name) for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
     )
