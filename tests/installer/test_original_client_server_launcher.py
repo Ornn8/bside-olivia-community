@@ -188,6 +188,7 @@ def test_launcher_starts_combined_server_before_original_client(
         return 0
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -216,6 +217,46 @@ def test_launcher_starts_combined_server_before_original_client(
     assert client_commands[0][0].endswith("Olivia.exe")
     assert not backend_command[-1].endswith("local_server.py")
     assert frontend_repairs == [(root.resolve(), 8899)]
+
+
+def test_component_launcher_starts_the_backend_that_owns_start_local(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    active_backend = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
+    (active_backend / "installer").mkdir(parents=True)
+    (active_backend / "local_server.py").write_text("# active", encoding="utf-8")
+    active_entrypoint = active_backend / "original_client_server.py"
+    active_entrypoint.write_text("# active", encoding="utf-8")
+    health = iter(("UNAVAILABLE", "READY", "READY"))
+    commands: list[list[str]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_backend_executable", lambda: Path("pythonw.exe"))
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda command, **_kwargs: commands.append(
+            [str(value) for value in command]
+        )
+        or Process(),
+    )
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        start_local,
+        "_repair_client_frontend",
+        lambda *_args: "PATCHED",
+    )
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert commands[0][3:] == [str(active_backend), str(active_entrypoint)]
 
 
 def test_launcher_allows_mem0_cold_start_before_opening_client(
@@ -414,9 +455,11 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
 
 def test_launcher_refuses_payload_without_combined_entrypoint(
     tmp_path: Path,
+    monkeypatch,
     capsys,
 ) -> None:
     root = _installation(tmp_path, with_entrypoint=False)
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
 
     assert start_local.main(["--install-root", str(root)]) == 2
     assert capsys.readouterr().out.strip() == "PATCH_PAYLOAD_INCOMPLETE"

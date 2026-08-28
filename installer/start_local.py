@@ -248,6 +248,12 @@ def _backend_entrypoint(backend: Path) -> Path:
     return backend / "original_client_server.py"
 
 
+def _active_backend() -> Path:
+    """Resolve the complete backend tree that owns this launcher module."""
+
+    return Path(__file__).resolve().parents[1]
+
+
 _BACKEND_BOOTSTRAP = (
     "import runpy,sys; "
     "backend,entrypoint,*args=sys.argv[1:]; "
@@ -304,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-only", action="store_true")
     args = parser.parse_args(argv)
     root = args.install_root.expanduser().resolve()
-    backend = root / "local_backend"
+    backend = _active_backend()
     entrypoint = _backend_entrypoint(backend)
     if not (backend / "local_server.py").is_file() or not entrypoint.is_file():
         print("PATCH_PAYLOAD_INCOMPLETE")

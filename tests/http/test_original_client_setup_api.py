@@ -209,6 +209,35 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
     asyncio.run(scenario())
 
 
+def test_setup_connection_probe_identifies_the_client_to_provider(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        seen: dict[str, str | None] = {}
+
+        async def completion(request: web.Request) -> web.Response:
+            seen["user_agent"] = request.headers.get("User-Agent")
+            return web.json_response(
+                {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", completion)
+        async with TestClient(TestServer(app)) as client:
+            service = LLMSetupService(tmp_path)
+            await service.test(
+                {
+                    "base_url": str(client.make_url("/v1")),
+                    "model": "deepseek-v4-flash",
+                    "api_key": "fixture-private-key",
+                }
+            )
+
+        assert seen["user_agent"] == "Olivia-Community/0.1"
+
+    asyncio.run(scenario())
+
+
 def test_setup_rejects_untrusted_origin_and_marks_skipped_setup_complete(
     tmp_path: Path,
 ) -> None:
