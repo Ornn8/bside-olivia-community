@@ -196,6 +196,8 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
     assert "使用与输入消息相同的语言和文字" in mapping["custom_instructions"]
     assert "不得把中文内容翻译成英文" in mapping["custom_instructions"]
+    assert "林离的第一人称" in mapping["custom_instructions"]
+    assert "不得称为助手" in mapping["custom_instructions"]
     assert "private_world" not in repr(mapping)
 
 
@@ -412,6 +414,95 @@ def test_chinese_exchange_rejects_and_deletes_english_extracted_fact(
     assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
     assert backend.rows == []
     assert ("delete", "memory.fixture.1") in backend.calls
+
+
+@pytest.mark.parametrize(
+    "legacy_text",
+    (
+        "Ornn 第一天给弹钢琴的助手写信。",
+        "AI 表示很高兴收到 Ornn 的信。",
+        "林离说她很高兴收到 Ornn 的信。",
+    ),
+)
+def test_historical_exchange_replaces_non_first_person_identity_memory(
+    tmp_path: Path, legacy_text: str,
+) -> None:
+    backend = FakeMem0()
+    backend.rows.append(
+        {
+            "id": "memory.legacy.assistant",
+            "memory": legacy_text,
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "history:fixture",
+                "domain": "conversation_memory",
+                "canonical": True,
+            },
+            "created_at": NOW.isoformat(),
+        }
+    )
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+
+    result = adapter.remember_exchange(
+        user_message="这是我第一天写信。",
+        assistant_message="很高兴收到你的信。",
+        occurred_at=NOW,
+        source_id="history:fixture",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert ("delete", "memory.legacy.assistant") in backend.calls
+    assert len([name for name, _value in backend.calls if name == "add"]) == 1
+
+
+@pytest.mark.parametrize("bad_text", ("AI 回复了来信。", "林离说她回复了来信。"))
+def test_historical_exchange_rejects_non_first_person_new_memory(
+    tmp_path: Path, bad_text: str,
+) -> None:
+    class NonFirstPersonMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = bad_text
+            value["results"][0]["memory"] = bad_text
+            return value
+
+    backend = NonFirstPersonMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="这是我的旧信。",
+        assistant_message="这是过去的回信。",
+        occurred_at=NOW,
+        source_id="history:non-first-person",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_CHARACTER_IDENTITY_MISMATCH"
+    assert backend.rows == []
+
+
+def test_historical_identity_rejection_reports_rollback_failure(tmp_path: Path) -> None:
+    class NonFirstPersonMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "林离说她回复了来信。"
+            value["results"][0]["memory"] = "林离说她回复了来信。"
+            return value
+
+    backend = NonFirstPersonMem0()
+    backend.fail.add("delete")
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="这是我的旧信。",
+        assistant_message="这是过去的回信。",
+        occurred_at=NOW,
+        source_id="history:rollback-failure",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+    assert result.memory_ids == ("memory.fixture.1",)
 
 
 def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(

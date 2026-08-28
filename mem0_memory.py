@@ -60,10 +60,16 @@ _EMBEDDING_SNAPSHOT_FILES = frozenset(
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_HISTORY_CHARACTER_IDENTITY_MISMATCH_RE = re.compile(
+    r"助手|assistant|(?<![A-Za-z])AI(?![A-Za-z])|林离",
+    re.IGNORECASE,
+)
 _MEMORY_LANGUAGE_INSTRUCTIONS = (
     "使用与输入消息相同的语言和文字提取长期记忆；"
     "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
-    "用简洁、自然、适合普通用户阅读的句子记录事实。"
+    "这些记忆属于角色林离：涉及林离自身的经历、想法、言行与回信时，"
+    "必须用林离的第一人称‘我’来记录，不得称为助手、AI、assistant 或第三人称林离；"
+    "涉及来信用户时保留其姓名或称呼；用简洁、自然、适合普通用户阅读的句子记录事实。"
 )
 
 
@@ -814,6 +820,21 @@ class Mem0ConversationMemoryAdapter:
                     source_id,
                     error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
                 )
+            if source_id.startswith("history:") and any(
+                _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(record.text)
+                for record in source_records
+            ):
+                pending_ids = self._delete_provider_memories(
+                    tuple(record.memory_id for record in source_records)
+                )
+                if pending_ids:
+                    return MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        source_id,
+                        pending_ids,
+                        error_code="MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED",
+                    )
+                continue
             if source_records and _CJK_RE.search(
                 f"{user_message}\n{assistant_message}"
             ) and any(_CJK_RE.search(record.text) is None for record in source_records):
@@ -858,6 +879,23 @@ class Mem0ConversationMemoryAdapter:
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
                 error_code="MEM0_WRITE_FAILED",
+            )
+        if source_id.startswith("history:") and any(
+            _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
+            for _memory_id, memory in acknowledgements
+        ):
+            pending_ids = self._delete_provider_memories(
+                tuple(memory_id for memory_id, _memory in acknowledgements)
+            )
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                pending_ids,
+                error_code=(
+                    "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+                    if pending_ids
+                    else "MEM0_CHARACTER_IDENTITY_MISMATCH"
+                ),
             )
         if _CJK_RE.search(f"{user_message}\n{assistant_message}") and any(
             _CJK_RE.search(memory) is None for _memory_id, memory in acknowledgements

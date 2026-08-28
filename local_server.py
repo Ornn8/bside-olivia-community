@@ -11,6 +11,7 @@ import json
 import os as _os
 import re as _re
 import random
+import sqlite3
 import time
 import uuid
 import hashlib
@@ -803,6 +804,8 @@ private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
 )
 OFFICIAL_HISTORY_PUBLISH_STATUS_KEY = "official_history_publish_status"
 OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED = "completed_v1"
+OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY = "official_history_memory_semantics"
+OFFICIAL_HISTORY_MEMORY_SEMANTICS_VERSION = "linli_first_person_v1"
 
 
 def _official_history_memory_available() -> bool:
@@ -1655,6 +1658,12 @@ def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
     if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
         try:
             return list(getattr(memory_adapter, "list_legacy")())
+        except sqlite3.OperationalError as exc:
+            if "no such table: legacy_letters" in str(exc):
+                return store.legacy_letters
+            if strict:
+                raise
+            _safe_log("memory_read_skipped", domain="legacy_letters")
         except Exception:
             if strict:
                 raise
@@ -1772,6 +1781,10 @@ def _existing_legacy_source_record_ids() -> frozenset[str] | None:
         else:
             exported = memory_adapter.export_records(domains=("legacy",))
             records = exported.get("legacy")
+    except sqlite3.OperationalError as exc:
+        if "no such table: legacy_letters" not in str(exc):
+            return None
+        records = store.legacy_letters
     except Exception:
         return None
     if not isinstance(records, list):
@@ -1788,6 +1801,8 @@ def _existing_legacy_source_record_ids() -> frozenset[str] | None:
             isinstance(metadata, Mapping)
             and metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
             == OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+            and metadata.get(OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY)
+            == OFFICIAL_HISTORY_MEMORY_SEMANTICS_VERSION
         ):
             source_ids.add(source_id)
     return frozenset(source_ids)
@@ -1808,6 +1823,7 @@ def _legacy_records(body: dict) -> list[LegacyLetter] | None:
             return None
         metadata = dict(submitted_metadata)
         metadata.pop(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY, None)
+        metadata.pop(OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY, None)
         records.append(
             LegacyLetter(
                 content=item.get("content", ""),
@@ -2304,6 +2320,9 @@ async def route(
                         **dict(record.metadata),
                         OFFICIAL_HISTORY_PUBLISH_STATUS_KEY: (
                             OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+                        ),
+                        OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY: (
+                            OFFICIAL_HISTORY_MEMORY_SEMANTICS_VERSION
                         ),
                     },
                 )
