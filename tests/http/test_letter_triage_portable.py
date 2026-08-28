@@ -492,6 +492,7 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "1",
         "OLIVIA_ORDINARY_ACTION_BASE": scene,
         "OLIVIA_MUSIC_PERFORMANCE_BASE": performance,
+        "OLIVIA_SPOKEN_SCENE_CANDIDATES": str(tmp_path / "stale-candidate.mp4"),
     }
     ffmpeg = tmp_path / "runtime" / "ffmpeg.exe"
     ffmpeg.parent.mkdir(parents=True, exist_ok=True)
