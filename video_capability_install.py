@@ -39,6 +39,7 @@ _RUNTIME_ENVIRONMENT_KEYS = {
 }
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
+_PROMOTION_LOCK = threading.RLock()
 
 
 class VideoCapabilityError(ValueError):
@@ -285,20 +286,35 @@ def _reject_reparse_tree(root: Path) -> None:
             raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
 
 
+def _checked_install_root(data_root: Path, *, create: bool) -> Path:
+    if create:
+        data_root.mkdir(parents=True, exist_ok=True)
+    current = data_root
+    for name in ("capabilities", "video"):
+        current = current / name
+        if current.exists():
+            if _is_reparse_point(current) or not current.is_dir():
+                raise VideoCapabilityError("VIDEO_INSTALL_ROOT_INVALID")
+        elif create:
+            current.mkdir()
+    return current
+
+
 def _restore_interrupted_promotions(install_root: Path) -> None:
-    for bundle_id in _PUBLIC_BUNDLES:
-        final = install_root / bundle_id
-        backup = install_root / f".{bundle_id}.backup"
-        if not backup.exists():
-            continue
-        try:
-            _reject_reparse_tree(backup)
-            if final.exists():
-                _reject_reparse_tree(final)
-                shutil.rmtree(final)
-            os.replace(backup, final)
-        except (OSError, ComponentUpdateError) as exc:
-            raise VideoCapabilityError("VIDEO_BUNDLE_RECOVERY_FAILED") from exc
+    with _PROMOTION_LOCK:
+        for bundle_id in _PUBLIC_BUNDLES:
+            final = install_root / bundle_id
+            backup = install_root / f".{bundle_id}.backup"
+            if not backup.exists():
+                continue
+            try:
+                _reject_reparse_tree(backup)
+                if final.exists():
+                    _reject_reparse_tree(final)
+                    shutil.rmtree(final)
+                os.replace(backup, final)
+            except (OSError, ComponentUpdateError) as exc:
+                raise VideoCapabilityError("VIDEO_BUNDLE_RECOVERY_FAILED") from exc
 
 
 class VideoCapabilityInstaller:
@@ -308,11 +324,11 @@ class VideoCapabilityInstaller:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
         self.data_root = data_root.resolve()
-        self.install_root = self.data_root / "capabilities" / "video"
+        self.install_root = _checked_install_root(self.data_root, create=True)
         self.manifest = manifest
         self._opener = opener
         self._lock = threading.RLock()
-        self._commit_lock = threading.Lock()
+        self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._status: dict[str, VideoBundleStatus] = {}
@@ -714,10 +730,10 @@ def _extract_zip_safely(
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
 
 
-def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
+def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     if not data_root.is_absolute():
         raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
-    install_root = data_root.resolve() / "capabilities" / "video"
+    install_root = _checked_install_root(data_root.resolve(), create=False)
     _restore_interrupted_promotions(install_root)
     path = install_root / _RUNTIME_ENVIRONMENT_FILE
     try:
@@ -743,6 +759,11 @@ def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
         result[key] = str(candidate)
     return result
+
+
+def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
+    with _PROMOTION_LOCK:
+        return _load_video_runtime_environment(data_root)
 
 
 def apply_seed_vc_overlap_frames_patch(

@@ -89,7 +89,7 @@ flowchart LR
 
 ### 视频回信
 
-`spoken_video` 与 `musical_video` 只是内部路由理由，不是两种产品。两条路由都交付同一个完整结构：**说话视频 → 固定原版转身/黑屏转场 → 固定钢琴场景演唱视频 → 渐暗收尾**。说话段使用一个经过验收的固定动作底片；歌曲、歌词和表演方向由同一封信的 canonical reply 派生。
+`spoken_video` 交付 **CosyVoice 说话 + 固定原版日常动作底片 + LatentSync 口型**；`musical_video` 才追加固定原版转身/黑屏转场、钢琴场景演唱与渐暗收尾。两条运行链分别判定 readiness；LiveTalking 仅是独立可选的实时能力。歌曲、歌词和表演方向由同一封信的 canonical reply 派生。
 
 后台阶段清单 schema v3 将固定说话动作底片纳入内容指纹；旧版清单会自动失效并重建对应阶段。代码入口与 provider 合约已经接入，但不同机器上的 TTS、口型、面部稳定性和场景衔接仍需人工视听验收。
 

@@ -5,6 +5,7 @@ import json
 import hashlib
 from pathlib import Path
 import shutil
+import threading
 import time
 import zipfile
 
@@ -136,6 +137,26 @@ def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> N
     assert not backup.exists()
 
 
+def test_installer_rejects_reparse_install_root(tmp_path: Path, monkeypatch) -> None:
+    data_root = (tmp_path / "data").resolve()
+    (data_root / "capabilities").mkdir(parents=True)
+    monkeypatch.setattr("video_capability_install._is_reparse_point", lambda path: path.name == "capabilities")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_INSTALL_ROOT_INVALID"):
+        VideoCapabilityInstaller(data_root=data_root, manifest=VideoManifest("1.0", ()))
+
+
+def test_runtime_profile_read_waits_for_promotion_lock(tmp_path: Path, monkeypatch) -> None:
+    installer = VideoCapabilityInstaller(data_root=(tmp_path / "data").resolve(), manifest=VideoManifest("1.0", ()))
+    entered = threading.Event()
+    monkeypatch.setattr("video_capability_install._load_video_runtime_environment", lambda _: entered.set() or {})
+    with installer._commit_lock:
+        worker = threading.Thread(target=load_video_runtime_environment, args=(installer.data_root,))
+        worker.start()
+        assert not entered.wait(0.1)
+    worker.join(timeout=1)
+    assert entered.is_set()
+
+
 @pytest.mark.parametrize(("names", "reason"), [(('Runtime/inference.py', 'runtime/inference.py'), 'VIDEO_ARCHIVE_DUPLICATE_PATH'), (("asset:stream",), "VIDEO_ARCHIVE_PATH_INVALID"), (("CON/file.txt",), "VIDEO_ARCHIVE_PATH_INVALID"), (("trailing./file.txt",), "VIDEO_ARCHIVE_PATH_INVALID")])
 def test_safe_archive_rejects_windows_unsafe_paths(tmp_path: Path, names, reason) -> None:
     archive = tmp_path / "collision.zip"
@@ -194,7 +215,7 @@ def test_music_bundle_install_applies_seed_patch_or_fails_closed(
 def test_video_capability_api_reports_native_path_selection_unavailable() -> None:
     class FakeInstaller:
         def status(self):
-            return {"status": "UNAVAILABLE", "capability": "video", "bundles": []}
+            return {"schema_version": "olivia.video-capability-status.v1", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
 
         def __getattr__(self, _name):
             raise AssertionError("path selection must fail before installer dispatch")
@@ -208,6 +229,9 @@ def test_video_capability_api_reports_native_path_selection_unavailable() -> Non
             authorize_session=lambda _token: None,
         )
         async with TestClient(TestServer(app)) as client:
+            status_response = await client.get(
+                "/toy/capabilities/video", headers={"Origin": "http://localhost:3000"}
+            )
             response = await client.post(
                 "/toy/capabilities/video/action",
                 json={"action": "import_offline", "bundle_id": "ordinary_video"},
@@ -217,9 +241,13 @@ def test_video_capability_api_reports_native_path_selection_unavailable() -> Non
                     "X-Olivia-Setup-Session": "session",
                 },
             )
-            return response.status, await response.json()
+            return await status_response.json(), response.status, await response.json()
 
-    status, payload = asyncio.run(call())
+    status_payload, status, payload = asyncio.run(call())
+    for name, document in (("status", status_payload), ("action", {"action": "pause"})):
+        schema = json.loads(Path(f"contracts/video_capability_{name}.schema.json").read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(document)
     assert status == 503
     assert payload == {
         "status": "FAILED",
