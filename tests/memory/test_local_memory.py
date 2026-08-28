@@ -360,6 +360,45 @@ def test_legacy_import_is_idempotent_and_original_body_is_immutable(tmp_path: Pa
         adapter.close()
 
 
+def test_trusted_duplicate_promotion_is_atomic_and_restores_read_only_guard(
+    tmp_path: Path,
+) -> None:
+    adapter = make_adapter(tmp_path)
+    try:
+        adapter.import_legacy_records(
+            [LegacyLetter("same official pair", "old-id", "old-source", 10, {})]
+        )
+
+        promoted = adapter.import_legacy_records(
+            [
+                LegacyLetter(
+                    "same official pair",
+                    "official-id",
+                    "official-olivia",
+                    20,
+                    {"official_history_publish_status": "completed_v1"},
+                )
+            ],
+            promote_duplicate_metadata=True,
+        )
+
+        assert promoted.duplicates == 1
+        archived = adapter.export_records(domains=(LEGACY_LETTERS,))[LEGACY_LETTERS]
+        assert archived[0]["source_record_id"] == "official-id"
+        assert archived[0]["source"] == "official-olivia"
+        assert archived[0]["occurred_at"] == "20"
+        assert archived[0]["metadata"] == {
+            "official_history_publish_status": "completed_v1"
+        }
+        with pytest.raises(sqlite3.DatabaseError):
+            adapter.connection.execute(
+                "UPDATE legacy_letters SET content = ? WHERE memory_id = ?",
+                ("rewritten", archived[0]["memory_id"]),
+            )
+    finally:
+        adapter.close()
+
+
 def test_read_only_domain_isolated_from_chat_clear_and_requires_whole_library_delete(tmp_path: Path) -> None:
     adapter = make_adapter(tmp_path)
     try:

@@ -17,7 +17,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
-  const OFFICIAL_LETTER_LIST_PATH = "/toy/letter/list";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
@@ -272,29 +271,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         throw new Error("unavailable");
-      }
-      return payload;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  };
-
-  const requestLegacyLetterList = async () => {
-    const endpoint = new URL(`${OFFICIAL_LETTER_LIST_PATH}?scope=legacy`, apiBase);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8000);
-    try {
-      const response = await fetch(endpoint, {
-        method: "GET",
-        cache: "no-store",
-        credentials: "omit",
-        headers: { "Accept": "application/json" },
-        signal: controller.signal,
-      });
-      const responseBody = await response.json();
-      const payload = responseBody && responseBody.data;
-      if (!response.ok || !payload || payload.scope !== "legacy" || !Array.isArray(payload.list)) {
-        throw new Error("legacy-list-unavailable");
       }
       return payload;
     } finally {
@@ -1659,55 +1635,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const mountOfficialLetterImport = (section) => {
-    const legacyList = document.createElement("ul");
-    legacyList.style.display = "grid";
-    legacyList.style.gap = "8px";
-    legacyList.style.padding = "0";
-    legacyList.style.margin = "0";
-    legacyList.style.listStyle = "none";
-    const renderLegacyLetters = (payload) => {
-      legacyList.replaceChildren();
-      const letters = Array.isArray(payload.list) ? payload.list : [];
-      if (!letters.length) {
-        legacyList.append(text("li", "暂无已导入的历史信件。", "text-text-secondary text-body-m font-regular"));
-        return;
-      }
-      for (const letter of letters) {
-        const item = document.createElement("li");
-        item.style.display = "flex";
-        item.style.flexDirection = "column";
-        item.style.gap = "2px";
-        item.style.padding = "8px 10px";
-        item.style.borderRadius = "8px";
-        item.style.backgroundColor = "rgba(0, 0, 0, 0.035)";
-        const summary = typeof letter.summary === "string" && letter.summary.trim()
-          ? letter.summary.trim()
-          : "（无正文摘要）";
-        item.append(text("span", summary, "text-text-body text-body-m font-regular"));
-        const createdAt = formatTime(letter.created_at);
-        if (createdAt) {
-          item.append(text("span", createdAt, "text-text-secondary text-caption-m font-regular"));
-        }
-        legacyList.append(item);
-      }
-    };
-    const refreshLegacyLetters = async () => {
-      try {
-        const payload = await requestLegacyLetterList();
-        renderLegacyLetters(payload);
-        return true;
-      } catch (_error) {
-        legacyList.replaceChildren(text("li", "历史信件暂时无法读取，请稍后重试。", "text-text-secondary text-body-m font-regular"));
-        return false;
-      }
-    };
-    const history = stack();
-    history.style.marginTop = "12px";
-    history.append(
-      text("div", "已导入历史信件（只读）", "text-text-body text-label-l"),
-      text("div", "历史信件不会进入当前收件箱，也不会改变未读数。", "text-text-secondary text-body-m font-regular"),
-      legacyList
-    );
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const importCopy = document.createElement("div");
@@ -1716,10 +1643,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入官方文字信件", "text-text-body text-label-l"),
-      text("div", "只导入原信和文字回信，不导入视频。重复信件会自动跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "导入后将按原时间进入信箱并写入长期记忆。只导入原信和文字回信，不导入视频；重复信件会自动跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     const importButton = button("导入", async () => {
+      try {
+        const companion = await requestJson(STATUS_PATH);
+        const capabilities = companion && companion.capabilities;
+        const memory = capabilities && capabilities.memory;
+        const privateWorld = capabilities && capabilities.private_world;
+        if (!memory || memory.state !== "available" || !privateWorld || privateWorld.state !== "available") {
+          importState.textContent = "请先安装并启用长期记忆组件，确认私人世界可用并重启客户端后再导入。";
+          return;
+        }
+      } catch (_error) {
+        importState.textContent = "无法确认长期记忆组件状态，请重启客户端后再试。";
+        return;
+      }
       if (!await confirmOfficialImport("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
         return;
       }
@@ -1732,11 +1672,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const migration = payload.memory_migration;
         const memoryText = migration && migration.status === "completed"
           ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
-          : "信件已保存；长期记忆尚未全部处理，可稍后重试。";
+          : "长期记忆写入未完成，历史信件未发布。";
         importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}`;
-        await refreshLegacyLetters();
-      } catch (_error) {
-        importState.textContent = "导入失败。请先启动官方客户端并登录，再重试。";
+      } catch (error) {
+        importState.textContent = error && [
+          "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+          "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
+          "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        ].includes(error.code)
+          ? "长期记忆未就绪或写入失败，未发布任何历史信件。请检查记忆组件后重试。"
+          : "导入失败。请先启动官方客户端并登录，再重试。";
       } finally {
         setButtonsBusy([importButton], false);
       }
@@ -1744,10 +1689,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importRow.append(importCopy, importButton);
     section.append(
       text("div", "历史信件", "text-text-body text-title-m"),
-      importRow,
-      history
+      importRow
     );
-    void refreshLegacyLetters();
     return;
 
   };

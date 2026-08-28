@@ -258,7 +258,9 @@ class UnavailableMemoryPort(NullMemoryPort):
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
+        promote_duplicate_metadata: bool = False,
     ) -> LegacyImportResult:
+        del promote_duplicate_metadata
         raise MemoryUnavailable(self.reason)
 
 
@@ -610,11 +612,50 @@ class LocalMemoryAdapter:
             rows = self.connection.execute("SELECT content_hash FROM legacy_letters").fetchall()
             return {str(row[0]) for row in rows}
 
+    def _promote_legacy_duplicate(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        source_record_id: str,
+        source: str,
+        occurred_at: str | None,
+        digest: str,
+        metadata: str,
+    ) -> None:
+        row = conn.execute(
+            "SELECT memory_id FROM legacy_letters WHERE content_hash = ?",
+            (digest,),
+        ).fetchone()
+        if row is None:
+            raise sqlite3.IntegrityError("legacy duplicate disappeared")
+        memory_id = str(row[0])
+        conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_update")
+        try:
+            conn.execute(
+                """
+                UPDATE legacy_letters
+                SET source_record_id = ?, source = ?, occurred_at = ?, metadata_json = ?
+                WHERE memory_id = ?
+                """,
+                (source_record_id, source, occurred_at, metadata, memory_id),
+            )
+            if self._fts5:
+                conn.execute(
+                    "UPDATE legacy_letters_fts SET source = ? WHERE memory_id = ?",
+                    (source, memory_id),
+                )
+        finally:
+            conn.execute(
+                "CREATE TRIGGER legacy_letters_no_update BEFORE UPDATE ON legacy_letters "
+                "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
+            )
+
     def import_legacy_records(
         self,
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
+        promote_duplicate_metadata: bool = False,
     ) -> LegacyImportResult:
         self._require_writable()
         materialized = list(records)
@@ -642,6 +683,15 @@ class LocalMemoryAdapter:
                 batch: set[str] = set()
                 for content, source_record_id, source, occurred_at, digest, metadata in normalized:
                     if digest in existing or digest in batch:
+                        if promote_duplicate_metadata and digest in existing:
+                            self._promote_legacy_duplicate(
+                                conn,
+                                source_record_id=source_record_id,
+                                source=source,
+                                occurred_at=occurred_at,
+                                digest=digest,
+                                metadata=metadata,
+                            )
                         duplicates += 1
                         batch.add(digest)
                         continue
