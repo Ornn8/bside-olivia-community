@@ -205,7 +205,7 @@ def _repair_client_frontend(root: Path, port: int) -> str:
     client = _client_executable(root)
     feapp = client.parent / "resources" / "feapp.dat"
     if not feapp.is_file():
-        return "NOT_AVAILABLE"
+        raise CompanionSettingsPatchError("COMPANION_ARCHIVE_NOT_FOUND")
     result = patch_companion_settings(
         feapp,
         f"http://127.0.0.1:{port}/",

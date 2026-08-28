@@ -14,7 +14,9 @@ import pytest
 
 from installer import configure
 import installer.start_local as start_local
+from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, SETTINGS_UI_VERSION
 from original_client_setup_api import _dpapi_protect
+from patch_companion_settings import CompanionSettingsPatchError
 
 
 def _installation(
@@ -39,6 +41,31 @@ def _installation(
     client = root / "app" / client_version / "Olivia.exe"
     client.parent.mkdir(parents=True)
     client.write_bytes(b"fixture")
+    resources = client.parent / "resources"
+    resources.mkdir()
+    main_member = (
+        "assets/main-31595bd3.js"
+        if client_version == "0.0.9.627"
+        else "assets/main-917d29fc.js"
+    )
+    index = (
+        '<!doctype html><html><head>'
+        f'<script type="module" src="./{main_member}"></script>'
+        '<script src="./assets/olivia-companion-settings.js" '
+        'data-olivia-companion-settings="p03.original-settings-shell.v1" '
+        f'data-ui-version="{SETTINGS_UI_VERSION}" '
+        'data-api-base="http://127.0.0.1:8899/"></script>'
+        '</head><body><div id="app"></div></body></html>'
+    )
+    main = (
+        b'synthetic-main"hide-write":!1'
+        if client_version == "0.0.9.627"
+        else b"synthetic-main"
+    )
+    with zipfile.ZipFile(resources / "feapp.dat", "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("index.html", index)
+        archive.writestr(main_member, main)
+        archive.writestr("assets/olivia-companion-settings.js", BOOTSTRAP_JAVASCRIPT)
     return root
 
 
@@ -47,13 +74,10 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
 ) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
     resources = root / "app" / "0.0.9.627" / "resources"
-    resources.mkdir()
     index = """<!doctype html><html><head>
 <script type="module" src="./assets/main-31595bd3.js"></script>
 <script src="./assets/olivia-companion-settings.js" data-olivia-companion-settings="p03.original-settings-shell.v1" data-ui-version="p03.original-settings-manage.v6" data-api-base="http://127.0.0.1:8899/"></script>
 </head><body><div id="app"></div></body></html>"""
-    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
-
     old_bootstrap = BOOTSTRAP_JAVASCRIPT.replace(
         '    document.querySelector(`[${ROOT_ATTR}]`)?.remove();\n',
         '    document.querySelector(`[${ROOT_ATTR}]`)?.remove();\n'
@@ -76,6 +100,16 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
         main = archive.read("assets/main-31595bd3.js").decode()
     assert bootstrap == BOOTSTRAP_JAVASCRIPT
     assert '"hide-write":!1' in main
+
+
+def test_launcher_rejects_missing_frontend_archive(tmp_path: Path) -> None:
+    root = _installation(tmp_path, client_version="0.0.9.627")
+    (root / "app" / "0.0.9.627" / "resources" / "feapp.dat").unlink()
+
+    with pytest.raises(CompanionSettingsPatchError) as error:
+        start_local._repair_client_frontend(root, 8899)
+
+    assert error.value.code == "COMPANION_ARCHIVE_NOT_FOUND"
 
 
 def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: Path) -> None:
