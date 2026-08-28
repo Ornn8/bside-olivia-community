@@ -523,6 +523,26 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
             return PrivateWorldSnapshot(version=2, trust=1)
 
     memory = PersistingMemory()
+    official_payload = {
+        "mode": "read_only",
+        "account_id": "200717",
+        "letters": [
+            {
+                "source_record_id": "official:200717:letter-1",
+                "source": "official-olivia",
+                "occurred_at": 1710000000,
+                "content": "用户来信：旧信正文\n林离回信：旧文字回信",
+                "metadata": {
+                    "user_content": "旧信正文",
+                    "reply_text": "旧文字回信",
+                    "replied_at": 1710000100,
+                    "import_kind": "official_text_reply",
+                    "official_account_id": "200717",
+                    "official_history_publish_status": "completed_v1",
+                },
+            }
+        ],
+    }
     monkeypatch.setenv("OLIVIA_MEMORY_ROOT", str(tmp_path / "memory"))
     monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
     monkeypatch.setattr(local_server.letters_adapter, "memory_port", NullMemoryPort())
@@ -532,28 +552,21 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     monkeypatch.setattr(
         local_server,
         "collect_default_official_text_replies",
-        lambda: {
-            "mode": "read_only",
-            "account_id": "200717",
-            "letters": [
-                {
-                    "source_record_id": "official:200717:letter-1",
-                    "source": "official-olivia",
-                    "occurred_at": 1710000000,
-                    "content": "用户来信：旧信正文\n林离回信：旧文字回信",
-                    "metadata": {
-                        "user_content": "旧信正文",
-                        "reply_text": "旧文字回信",
-                        "replied_at": 1710000100,
-                        "import_kind": "official_text_reply",
-                        "official_account_id": "200717",
-                    },
-                }
-            ],
-        },
+        lambda: official_payload,
         raising=False,
     )
 
+    forged = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/import",
+            official_payload,
+            {},
+        )
+    )
+    before_success = asyncio.run(
+        local_server.route("GET", "/toy/letter/list", {}, {})
+    )
     imported = asyncio.run(
         local_server.route(
             "POST",
@@ -591,7 +604,11 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
         )
     )
 
-    assert imported["data"]["inserted"] == 1
+    assert forged["code"] == 0
+    assert forged["data"]["inserted"] == 1
+    assert before_success["data"]["total"] == 0
+    assert imported["data"]["inserted"] == 0
+    assert imported["data"]["duplicates"] == 1
     assert duplicate["data"]["inserted"] == 0
     assert duplicate["data"]["duplicates"] == 1
     archived = local_server._legacy_letter_collection()

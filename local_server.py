@@ -1701,9 +1701,11 @@ def _legacy_records(body: dict) -> list[LegacyLetter] | None:
     for item in letters:
         if not isinstance(item, dict) or "source_record_id" not in item:
             return None
-        metadata = item.get("metadata", {})
-        if not isinstance(metadata, dict):
+        submitted_metadata = item.get("metadata", {})
+        if not isinstance(submitted_metadata, dict):
             return None
+        metadata = dict(submitted_metadata)
+        metadata.pop(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY, None)
         records.append(
             LegacyLetter(
                 content=item.get("content", ""),
@@ -2198,7 +2200,11 @@ async def route(
                 "retryable": True,
             })
         try:
-            result = adapter.import_legacy_records(records, atomic=True)
+            result = adapter.import_legacy_records(
+                records,
+                atomic=True,
+                promote_duplicate_metadata=official_import,
+            )
         except Exception:
             return err(503, "MEMORY_UNAVAILABLE", {
                 "status": "UNAVAILABLE",

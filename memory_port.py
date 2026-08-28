@@ -110,6 +110,7 @@ class MemoryPort(Protocol):
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
+        promote_duplicate_metadata: bool = False,
     ) -> LegacyImportResult: ...
 
     def legacy_content_hashes(self) -> set[str]: ...
@@ -175,7 +176,9 @@ class NullMemoryPort:
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
+        promote_duplicate_metadata: bool = False,
     ) -> LegacyImportResult:
+        del promote_duplicate_metadata
         materialized = list(records)
         return LegacyImportResult(
             seen=len(materialized),
