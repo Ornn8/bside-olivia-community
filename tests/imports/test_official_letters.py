@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -25,6 +26,76 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
     monkeypatch.setattr(
         local_server, "_official_history_private_world_available", lambda: True
     )
+
+
+def test_history_skip_requires_current_first_person_semantics(monkeypatch) -> None:
+    import local_server
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            return [
+                {
+                    "source_record_id": "official:old",
+                    "metadata": {"official_history_publish_status": "completed_v1"},
+                },
+                {
+                    "source_record_id": "official:first-person-v1",
+                    "metadata": {
+                        "official_history_publish_status": "completed_v1",
+                        "official_history_memory_semantics": "linli_first_person_v1",
+                    },
+                },
+                {
+                    "source_record_id": "official:current",
+                    "metadata": {
+                        "official_history_publish_status": "completed_v1",
+                        "official_history_memory_semantics": "actor_split_first_person_v2",
+                    },
+                },
+            ]
+
+    monkeypatch.setattr(local_server, "memory_adapter", Archive())
+
+    assert local_server._existing_legacy_source_record_ids() == frozenset(
+        {"official:current"}
+    )
+
+
+def test_missing_legacy_table_uses_empty_bootstrap_store(monkeypatch) -> None:
+    import local_server
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            raise sqlite3.OperationalError("no such table: legacy_letters")
+
+    monkeypatch.setattr(local_server, "memory_adapter", Archive())
+    monkeypatch.setattr(local_server.store, "legacy_letters", [])
+
+    assert local_server._legacy_letter_collection(strict=True) == []
+    assert local_server._existing_legacy_source_record_ids() == frozenset()
+
+
+def test_other_legacy_sqlite_errors_fail_closed(monkeypatch) -> None:
+    import local_server
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(local_server, "memory_adapter", Archive())
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        local_server._legacy_letter_collection(strict=True)
+    assert local_server._existing_legacy_source_record_ids() is None
 
 
 def test_official_text_replies_become_read_only_legacy_pairs() -> None:
@@ -623,6 +694,9 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     assert duplicate["data"]["duplicates"] == 1
     archived = local_server._legacy_letter_collection()
     assert archived[0]["metadata"]["official_history_publish_status"] == "completed_v1"
+    assert archived[0]["metadata"]["official_history_memory_semantics"] == (
+        "actor_split_first_person_v2"
+    )
     assert len(memory.list_memories(user_id="local-user")) == 1
     remembered = memory.list_memories(user_id="local-user")[0]
     assert remembered["user_message"] == "旧信正文"
