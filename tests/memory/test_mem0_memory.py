@@ -66,7 +66,14 @@ class FakeMem0:
         self.calls.append(("add", {"messages": messages, **kwargs}))
         self.counter += 1
         metadata = dict(kwargs.get("metadata", {}))
-        text = messages if isinstance(messages, str) else "用户在东京工作。"
+        actor = metadata.get("history_actor")
+        text = (
+            messages
+            if isinstance(messages, str)
+            else "我记得自己曾认真回复这封信。"
+            if actor == "linli"
+            else "用户在东京工作。"
+        )
         row = {
             "id": f"memory.fixture.{self.counter}",
             "memory": text,
@@ -196,6 +203,8 @@ def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> N
     assert mapping["llm"]["config"]["api_key"] == "fixture-secret"
     assert "使用与输入消息相同的语言和文字" in mapping["custom_instructions"]
     assert "不得把中文内容翻译成英文" in mapping["custom_instructions"]
+    assert "林离的第一人称" in mapping["custom_instructions"]
+    assert "不得称为助手" in mapping["custom_instructions"]
     assert "private_world" not in repr(mapping)
 
 
@@ -412,6 +421,343 @@ def test_chinese_exchange_rejects_and_deletes_english_extracted_fact(
     assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
     assert backend.rows == []
     assert ("delete", "memory.fixture.1") in backend.calls
+
+
+def test_non_history_language_mismatch_rolls_back_valid_siblings(tmp_path: Path) -> None:
+    class MixedLanguageMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "用户喜欢安静的晚上。"
+            value["results"][0]["memory"] = "用户喜欢安静的晚上。"
+            invalid = {
+                "id": "memory.fixture.english-sibling",
+                "memory": "User prefers quiet evenings.",
+                "user_id": kwargs["user_id"],
+                "agent_id": kwargs["agent_id"],
+                "metadata": dict(kwargs["metadata"]),
+                "created_at": NOW.isoformat(),
+            }
+            self.rows.append(invalid)
+            value["results"].append(
+                {
+                    "id": invalid["id"],
+                    "memory": invalid["memory"],
+                    "event": "ADD",
+                }
+            )
+            return value
+
+    backend = MixedLanguageMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:mixed-language",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
+    assert backend.rows == []
+
+
+@pytest.mark.parametrize(
+    "legacy_text",
+    (
+        "Ornn 第一天给弹钢琴的助手写信。",
+        "AI 表示很高兴收到 Ornn 的信。",
+        "林离说她很高兴收到 Ornn 的信。",
+    ),
+)
+def test_historical_exchange_replaces_non_first_person_identity_memory(
+    tmp_path: Path, legacy_text: str,
+) -> None:
+    backend = FakeMem0()
+    backend.rows.append(
+        {
+            "id": "memory.legacy.assistant",
+            "memory": legacy_text,
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "history:fixture",
+                "domain": "conversation_memory",
+                "canonical": True,
+            },
+            "created_at": NOW.isoformat(),
+        }
+    )
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+
+    result = adapter.remember_exchange(
+        user_message="这是我第一天写信。",
+        assistant_message="很高兴收到你的信。",
+        occurred_at=NOW,
+        source_id="history:fixture",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert ("delete", "memory.legacy.assistant") in backend.calls
+    assert len([name for name, _value in backend.calls if name == "add"]) == 2
+
+
+def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
+    tmp_path: Path,
+) -> None:
+    class ActorAwareMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            fact = (
+                "用户喜欢 AI 绘画，也喜欢林离的钢琴。"
+                if actor == "user"
+                else "我在回信中鼓励用户继续画画。"
+            )
+            self.rows[-1]["memory"] = fact
+            value["results"][0]["memory"] = fact
+            return value
+
+    backend = ActorAwareMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画，也喜欢林离的钢琴。",
+        assistant_message="我会继续用钢琴陪你画画。",
+        occurred_at=NOW,
+        source_id="history:actor-split",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    add_calls = [value for name, value in backend.calls if name == "add"]
+    assert [call["metadata"]["history_actor"] for call in add_calls] == [
+        "user",
+        "linli",
+    ]
+    assert [call["messages"][0]["role"] for call in add_calls] == [
+        "user",
+        "user",
+    ]
+    assert "用户本人" in add_calls[0]["prompt"]
+    assert "第一人称" in add_calls[1]["prompt"]
+    assert all("不得翻译为英文" in call["prompt"] for call in add_calls)
+    assert [row["memory"] for row in backend.rows] == [
+        "用户喜欢 AI 绘画，也喜欢林离的钢琴。",
+        "我在回信中鼓励用户继续画画。",
+    ]
+
+
+def test_historical_linli_fact_uses_provider_compatible_user_shaped_input(
+    tmp_path: Path,
+) -> None:
+    class RejectsAssistantOnlyMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if len(messages) == 1 and messages[0]["role"] == "assistant":
+                raise RuntimeError("assistant-only input is unsupported")
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            fact = "用户喜欢画画。" if actor == "user" else "我曾鼓励用户继续画画。"
+            self.rows[-1]["memory"] = fact
+            value["results"][0]["memory"] = fact
+            return value
+
+    backend = RejectsAssistantOnlyMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢画画。",
+        assistant_message="我会继续鼓励你画画。",
+        occurred_at=NOW,
+        source_id="history:user-shaped-linli",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    add_calls = [value for name, value in backend.calls if name == "add"]
+    assert [call["messages"][0]["role"] for call in add_calls] == ["user", "user"]
+    assert "林离的历史回信" in add_calls[1]["messages"][0]["content"]
+    assert "我会继续鼓励你画画。" in add_calls[1]["messages"][0]["content"]
+    assert add_calls[1]["metadata"]["history_actor"] == "linli"
+
+
+@pytest.mark.parametrize(
+    "bad_text",
+    ("AI 回复了来信。", "林离说她回复了来信。", "过去曾温柔地回复这封信。"),
+)
+def test_historical_exchange_rejects_non_first_person_new_memory(
+    tmp_path: Path, bad_text: str,
+) -> None:
+    class NonFirstPersonMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = bad_text
+            value["results"][0]["memory"] = bad_text
+            return value
+
+    backend = NonFirstPersonMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="这是我的旧信。",
+        assistant_message="这是过去的回信。",
+        occurred_at=NOW,
+        source_id="history:non-first-person",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_CHARACTER_IDENTITY_MISMATCH"
+    assert backend.rows == []
+
+
+def test_historical_actor_split_rebuilds_a_partial_source(tmp_path: Path) -> None:
+    backend = FakeMem0()
+    backend.rows.append(
+        {
+            "id": "memory.partial.user",
+            "memory": "用户喜欢 AI 绘画。",
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "history:partial",
+                "domain": "conversation_memory",
+                "canonical": True,
+                "history_actor": "user",
+            },
+            "created_at": NOW.isoformat(),
+        }
+    )
+
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画。",
+        assistant_message="我会记住。",
+        occurred_at=NOW,
+        source_id="history:partial",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert ("delete", "memory.partial.user") in backend.calls
+    assert {
+        row["metadata"]["history_actor"] for row in backend.rows
+    } == {"user", "linli"}
+
+
+def test_historical_identity_rejection_reports_rollback_failure(tmp_path: Path) -> None:
+    class NonFirstPersonMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "林离说她回复了来信。"
+            value["results"][0]["memory"] = "林离说她回复了来信。"
+            return value
+
+    backend = NonFirstPersonMem0()
+    backend.fail.add("delete")
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="这是我的旧信。",
+        assistant_message="这是过去的回信。",
+        occurred_at=NOW,
+        source_id="history:rollback-failure",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
+    assert result.memory_ids == ("memory.fixture.1", "memory.fixture.2")
+
+
+def test_historical_actor_split_rolls_back_user_fact_when_linli_add_fails(
+    tmp_path: Path,
+) -> None:
+    class LinliAddFails(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs["metadata"]["history_actor"] == "linli":
+                raise RuntimeError("synthetic provider failure")
+            return super().add(messages, **kwargs)
+
+    backend = LinliAddFails()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画。",
+        assistant_message="我会记住。",
+        occurred_at=NOW,
+        source_id="history:actor-rollback",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_WRITE_FAILED"
+    assert backend.rows == []
+
+
+def test_historical_actor_split_discards_only_invalid_candidate(tmp_path: Path) -> None:
+    class MixedLanguageMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            valid = (
+                "用户最近改成夜班，也会使用 AI 整理会议记录。"
+                if actor == "user"
+                else "我记得自己曾认真回复过这封信。"
+            )
+            self.rows[-1]["memory"] = valid
+            value["results"][0]["memory"] = valid
+            if actor == "linli":
+                invalid = {
+                    "id": "memory.fixture.english",
+                    "memory": "The assistant summarized the user's letter in English.",
+                    "user_id": kwargs["user_id"],
+                    "agent_id": kwargs["agent_id"],
+                    "metadata": dict(kwargs["metadata"]),
+                    "created_at": NOW.isoformat(),
+                }
+                self.rows.append(invalid)
+                value["results"].append(
+                    {
+                        "id": invalid["id"],
+                        "memory": invalid["memory"],
+                        "event": "ADD",
+                    }
+                )
+            return value
+
+    backend = MixedLanguageMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="最近改成夜班，也会用 AI 整理会议记录。",
+        assistant_message="我记得自己曾认真回复过这封信。",
+        occurred_at=NOW,
+        source_id="history:mixed-language-candidates",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert result.memory_ids == ("memory.fixture.1", "memory.fixture.2")
+    assert {row["id"] for row in backend.rows} == {
+        "memory.fixture.1",
+        "memory.fixture.2",
+    }
+    assert ("delete", "memory.fixture.english") in backend.calls
+
+
+def test_historical_actor_split_allows_an_actor_with_no_durable_fact(
+    tmp_path: Path,
+) -> None:
+    class EmptyLinliFactsMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs["metadata"]["history_actor"] == "linli":
+                self.calls.append(("add", {"messages": messages, **kwargs}))
+                return {"results": []}
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "用户最近改成夜班。"
+            value["results"][0]["memory"] = "用户最近改成夜班。"
+            return value
+
+    backend = EmptyLinliFactsMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="最近改成夜班。",
+        assistant_message="我知道了。",
+        occurred_at=NOW,
+        source_id="history:empty-linli-facts",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert result.memory_ids == ("memory.fixture.1",)
+    assert [row["memory"] for row in backend.rows] == ["用户最近改成夜班。"]
 
 
 def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(
