@@ -551,6 +551,21 @@ def test_safe_archive_rejects_windows_unsafe_paths(tmp_path: Path, names, reason
         _extract_zip_safely(archive, tmp_path / "runtime", strip_components=0)
 
 
+def test_safe_archive_preserves_preinstalled_model_files(tmp_path: Path) -> None:
+    destination = tmp_path / "runtime"
+    model = destination / "models" / "weights.bin"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"model")
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("source-main/inference.py", "print('ready')\n")
+
+    _extract_zip_safely(archive, destination, strip_components=1)
+
+    assert model.read_bytes() == b"model"
+    assert (destination / "inference.py").read_text(encoding="utf-8") == "print('ready')\n"
+
+
 @pytest.mark.parametrize("source_matches", [True, False])
 def test_music_bundle_install_applies_seed_patch_or_fails_closed(
     tmp_path: Path, source_matches: bool
