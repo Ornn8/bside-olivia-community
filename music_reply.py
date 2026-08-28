@@ -150,6 +150,173 @@ def musical_reply_configured(
     )
 
 
+def video_reply_dependency_status(
+    env: Mapping[str, str],
+    *,
+    performance_video_path: Path | None,
+) -> dict[str, object]:
+    """Describe the complete speech-plus-music closure without exposing local paths."""
+
+    def configured(name: str) -> Path | None:
+        return configured_media_path(env, name)
+
+    def file(name: str) -> bool:
+        path = configured(name)
+        return path is not None and path.is_file()
+
+    tts_config = configured("OLIVIA_TTS_CONFIG")
+    visual_config = configured("OLIVIA_VISUAL_CONFIG")
+    visual_worker = configured("OLIVIA_LIVETALKING_WORKER")
+    local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
+    delivery_ready = False
+    if all(path is not None for path in (tts_config, visual_config, visual_worker, local_data_root)):
+        try:
+            assemble_complete_video_delivery(
+                tts_config,
+                visual_config,
+                visual_worker,
+                local_data_root,
+                env,
+            )
+            delivery_ready = True
+        except ReplyMediaError:
+            pass
+
+    minimax_root = configured("OLIVIA_MINIMAX_COMFY_ROOT")
+    minimax_ready = bool(
+        minimax_root is not None
+        and minimax_root.is_dir()
+        and file("OLIVIA_MINIMAX_COMFY_PYTHON")
+        and file("OLIVIA_MINIMAX_WORKER")
+        and all(
+            path.is_file()
+            for path in (
+                minimax_root / "main.py",
+                minimax_root / "comfy_extras" / "nodes_minimax_music.py",
+                minimax_root / "models" / "diffusion_models" / "minimax_music3_dit_int8_convrot.safetensors",
+                minimax_root / "models" / "text_encoders" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+                minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
+            )
+        )
+    )
+    latentsync_root = configured("OLIVIA_LATENTSYNC_ROOT")
+    latentsync_ready = bool(
+        latentsync_root is not None
+        and latentsync_root.is_dir()
+        and file("OLIVIA_LATENTSYNC_PYTHON")
+        and all(
+            path.is_file()
+            for path in (
+                latentsync_root / "scripts" / "inference.py",
+                latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
+                latentsync_root / "checkpoints" / "latentsync_unet.pt",
+            )
+        )
+    )
+    roformer_ready = all(
+        file(name)
+        for name in (
+            "OLIVIA_ROFORMER_EXE",
+            "OLIVIA_ROFORMER_MODEL_PATH",
+            "OLIVIA_ROFORMER_CONFIG_PATH",
+        )
+    )
+    assets_ready = bool(
+        file("OLIVIA_ORDINARY_ACTION_BASE")
+        and file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
+        and performance_video_path is not None
+        and performance_video_path.is_file()
+    )
+    try:
+        ffmpeg_ready = resolve_ffmpeg_executable(env).is_file()
+    except LatentSyncReplyError:
+        ffmpeg_ready = False
+    provider_cache = configured("OLIVIA_PROVIDER_CACHE_ROOT")
+    workspace_ready = bool(provider_cache is not None and provider_cache.is_absolute())
+
+    def item(
+        identifier: str,
+        label: str,
+        ready: bool,
+        install_mode: str,
+        source_summary: str,
+    ) -> dict[str, object]:
+        return {
+            "id": identifier,
+            "label": label,
+            "state": "ready" if ready else "missing",
+            "install_mode": install_mode,
+            "source_summary": source_summary,
+        }
+
+    dependencies = [
+        item(
+            "cosyvoice",
+            "语音合成（CosyVoice 3）",
+            delivery_ready and bool(tts_config and tts_config.is_file()),
+            "manual",
+            "国内：ModelScope；备用：GitHub / Hugging Face",
+        ),
+        item(
+            "livetalking",
+            "视频驱动配置（LiveTalking）",
+            delivery_ready and bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
+            "manual",
+            "国内镜像待固定；备用：GitHub",
+        ),
+        item(
+            "latentsync",
+            "口型视频（LatentSync）",
+            latentsync_ready,
+            "manual",
+            "国内：ByteDance Gitee + HF-Mirror；备用：GitHub / Hugging Face",
+        ),
+        item(
+            "minimax_music3",
+            "音乐生成（MiniMax Music 3）",
+            minimax_ready,
+            "manual",
+            "国内：HF-Mirror；备用：Hugging Face",
+        ),
+        item(
+            "roformer",
+            "人声分离（RoFormer）",
+            roformer_ready,
+            "manual",
+            "国内镜像和固定校验清单待确认",
+        ),
+        item(
+            "official_video_assets",
+            "Olivia 场景与转场素材",
+            assets_ready,
+            "local_import",
+            "从用户本机正版 Olivia 导入，不联网下载",
+        ),
+        item(
+            "ffmpeg",
+            "媒体工具（FFmpeg）",
+            ffmpeg_ready,
+            "manual",
+            "当前核心安装器未包含；可使用系统 FFmpeg 或后续受管包",
+        ),
+        item(
+            "media_workspace",
+            "媒体工作目录",
+            workspace_ready,
+            "core",
+            "由客户端自动创建，无需下载",
+        ),
+    ]
+    ready = bool(
+        all(item["state"] == "ready" for item in dependencies)
+        and musical_reply_configured(
+            env,
+            performance_video_path=performance_video_path,
+        )
+    )
+    return {"ready": ready, "dependencies": dependencies}
+
+
 class MiniMaxMusic3Worker:
     """One-shot local MiniMax Music 3 process adapter."""
 

@@ -57,6 +57,41 @@ def _write(path: Path, data: bytes = b"synthetic") -> Path:
     return path
 
 
+def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        music_reply,
+        "resolve_ffmpeg_executable",
+        lambda _environment: (_ for _ in ()).throw(
+            music_reply.LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        ),
+    )
+    status = music_reply.video_reply_dependency_status(
+        {},
+        performance_video_path=None,
+    )
+
+    assert status["ready"] is False
+    dependencies = {item["id"]: item for item in status["dependencies"]}
+    assert list(dependencies) == [
+        "cosyvoice",
+        "livetalking",
+        "latentsync",
+        "minimax_music3",
+        "roformer",
+        "official_video_assets",
+        "ffmpeg",
+        "media_workspace",
+    ]
+    assert all(item["state"] == "missing" for item in dependencies.values())
+    assert "ModelScope" in dependencies["cosyvoice"]["source_summary"]
+    assert "HF-Mirror" in dependencies["latentsync"]["source_summary"]
+    assert "HF-Mirror" in dependencies["minimax_music3"]["source_summary"]
+    assert dependencies["official_video_assets"]["install_mode"] == "local_import"
+    assert dependencies["ffmpeg"]["install_mode"] == "manual"
+
+
 def _value_after(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 

@@ -12,23 +12,26 @@ def test_legacy_module_reexports_canonical_settings() -> None:
     assert legacy_video_reply_settings.VideoReplySettingsStore is VideoReplySettingsStore
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_default_and_valid_legacy_store_are_enabled(tmp_path, legacy):
+def test_fresh_store_is_disabled_and_valid_legacy_store_keeps_compatibility(tmp_path, legacy):
     if legacy:
         (tmp_path / "video_reply_settings.json").write_text(
             json.dumps({"schema_version": 1, "settings": {}, "ledger": {}}), encoding="utf-8"
         )
     store = VideoReplySettingsStore(tmp_path) if legacy else VideoReplySettingsStore.initialize(tmp_path)
-    assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
+    assert store.snapshot().to_dict() == {
+        "state": "available",
+        "enabled": legacy,
+    }
     if not legacy:
         assert (tmp_path / "video_reply_settings.initialized").is_file()
 def test_open_missing_store_is_unavailable_until_explicit_initialize(tmp_path):
     assert VideoReplySettingsStore(tmp_path).snapshot().state == "unavailable"
     assert not (tmp_path / "video_reply_settings.json").exists()
-    assert VideoReplySettingsStore.initialize(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": True}
+    assert VideoReplySettingsStore.initialize(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": False}
 def test_mutation_is_atomic_namespaced_and_replayed_after_restart(tmp_path):
     store = VideoReplySettingsStore.initialize(tmp_path)
     first = store.mutate("video_reply_setting:same", False)
-    assert first.to_dict() == {"request_id": "video_reply_setting:same", "status": "APPLIED", "enabled": False}
+    assert first.to_dict() == {"request_id": "video_reply_setting:same", "status": "NOOP", "enabled": False}
     assert VideoReplySettingsStore(tmp_path).mutate("video_reply_setting:same", False).to_dict() == first.to_dict()
     with pytest.raises(VideoReplySettingsError) as conflict:
         store.mutate("video_reply_setting:same", True)
@@ -50,9 +53,9 @@ def test_write_failure_keeps_committed_snapshot_and_corrupt_store_fails_closed(t
     assert failed.value.code == "VIDEO_REPLY_SETTING_UNAVAILABLE"
     assert store.snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
     assert store.receive_snapshot().enabled is False
-    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": True}
+    assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "available", "enabled": False}
     store.reload()
-    assert store.snapshot().to_dict() == {"state": "available", "enabled": True}
+    assert store.snapshot().to_dict() == {"state": "available", "enabled": False}
     (tmp_path / "video_reply_settings.json").write_text("not-json", encoding="utf-8")
     assert VideoReplySettingsStore(tmp_path).snapshot().to_dict() == {"state": "unavailable", "reason_code": "VIDEO_REPLY_SETTING_UNAVAILABLE"}
 
@@ -83,6 +86,29 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     schema = json.loads(Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
     assert not list(validator.iter_errors({"state": "available", "enabled": True}))
+    dependency = {
+        "id": "cosyvoice",
+        "label": "语音合成（CosyVoice 3）",
+        "state": "missing",
+        "install_mode": "manual",
+        "source_summary": "国内：ModelScope；备用：GitHub / Hugging Face",
+    }
+    assert not list(validator.iter_errors({
+        "state": "available",
+        "enabled": False,
+        "ready": False,
+        "dependencies": [dependency],
+    }))
+    assert not list(validator.iter_errors({
+        "code": 409,
+        "message": "missing",
+        "data": {
+            "status": "FAILED",
+            "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
+            "retryable": False,
+            "missing_dependencies": ["cosyvoice"],
+        },
+    }))
     assert not list(validator.iter_errors({"state": "unavailable", "reason_code": "SETTING_UNAVAILABLE"}))
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
@@ -143,7 +169,7 @@ def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatc
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     async def route_check():
         result = await local_server.route("POST", "/toy/settings/video-reply", {"enabled": False, "request_id": "video_reply_setting:ui"}, {})
-        assert result["data"]["status"] == "APPLIED"
+        assert result["data"]["status"] == "NOOP"
         monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_a, **_k: None)
         sent = await local_server.route("POST", "/toy/letter/send", {"content": "synthetic"}, {}, defer_reply=True)
         return next(item for item in local_server.store.letters if item["letter_id"] == sent["data"]["letter_id"])
@@ -161,6 +187,94 @@ def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatc
     try:
         assert asyncio.run(local_server.generate_reply(letter["letter_id"], letter["content"]))
         assert letter["video_reply_enabled"] is False and "media_status" not in letter
+    finally:
+        local_server.store.letters.remove(letter)
+
+
+def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencies_are_missing(
+    tmp_path, monkeypatch
+):
+    import local_server
+
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
+    monkeypatch.setattr(
+        local_server,
+        "video_reply_dependency_status",
+        lambda _environment, *, performance_video_path: {
+            "ready": False,
+            "dependencies": [
+                {
+                    "id": "cosyvoice",
+                    "label": "语音合成（CosyVoice 3）",
+                    "state": "missing",
+                    "install_mode": "manual",
+                },
+                {
+                    "id": "latentsync",
+                    "label": "口型视频（LatentSync）",
+                    "state": "ready",
+                    "install_mode": "manual",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(local_server, "_current_music_performance", lambda _environment: None)
+
+    async def route_check():
+        status = await local_server.route("GET", "/toy/settings/video-reply", {}, {})
+        blocked = await local_server.route(
+            "POST",
+            "/toy/settings/video-reply",
+            {"enabled": True, "request_id": "video_reply_setting:missing"},
+            {},
+        )
+        disabled = await local_server.route(
+            "POST",
+            "/toy/settings/video-reply",
+            {"enabled": False, "request_id": "video_reply_setting:disable"},
+            {},
+        )
+        monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_a, **_k: None)
+        sent = await local_server.route(
+            "POST", "/toy/letter/send", {"content": "synthetic missing media"}, {}, defer_reply=True
+        )
+        letter = next(
+            item for item in local_server.store.letters
+            if item["letter_id"] == sent["data"]["letter_id"]
+        )
+        return status, blocked, disabled, letter
+
+    status, blocked, disabled, letter = asyncio.run(route_check())
+    try:
+        assert status["data"] == {
+            "state": "available",
+            "enabled": False,
+            "ready": False,
+            "dependencies": [
+                {
+                    "id": "cosyvoice",
+                    "label": "语音合成（CosyVoice 3）",
+                    "state": "missing",
+                    "install_mode": "manual",
+                },
+                {
+                    "id": "latentsync",
+                    "label": "口型视频（LatentSync）",
+                    "state": "ready",
+                    "install_mode": "manual",
+                },
+            ],
+        }
+        assert blocked["code"] == 409
+        assert blocked["data"] == {
+            "status": "FAILED",
+            "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
+            "retryable": False,
+            "missing_dependencies": ["cosyvoice"],
+        }
+        assert disabled["data"]["enabled"] is False
+        assert letter["video_reply_enabled"] is False
     finally:
         local_server.store.letters.remove(letter)
 def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch):

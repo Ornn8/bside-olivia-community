@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v7"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v8"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -41,6 +41,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
+  const VIDEO_CAPABILITY_CATALOG = [
+    ["cosyvoice", "语音合成（CosyVoice 3）"],
+    ["livetalking", "视频驱动配置（LiveTalking）"],
+    ["latentsync", "口型视频（LatentSync）"],
+    ["minimax_music3", "音乐生成（MiniMax Music 3）"],
+    ["roformer", "人声分离（RoFormer）"],
+    ["official_video_assets", "Olivia 场景与转场素材"],
+    ["ffmpeg", "媒体工具（FFmpeg）"],
+    ["media_workspace", "媒体工作目录"],
+  ];
 
   const parseApiBase = (value) => {
     let url;
@@ -326,6 +336,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
+        error.missingDependencies = payload && Array.isArray(payload.missing_dependencies)
+          ? payload.missing_dependencies.filter((item) => typeof item === "string")
+          : [];
         throw error;
       }
       return payload;
@@ -710,7 +723,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return;
     }
 
-    const heading = text("h3", "长期记忆", "text-text-title text-title-m");
+    const heading = text("h3", "长期记忆（Mem0 + BGE）", "text-text-title text-title-m");
     const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
     const summary = text(
       "p",
@@ -1130,6 +1143,72 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
   };
 
+  const renderVideoCapabilityPanel = async (panel) => {
+    let payload = null;
+    try {
+      payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
+    } catch (_error) {
+      payload = null;
+    }
+    const known = new Map(
+      payload && Array.isArray(payload.dependencies)
+        ? payload.dependencies
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => [item.id, item])
+        : []
+    );
+    const heading = text("h3", "视频回信（说话 + 音乐）", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "开启前会检查整条生成链路；缺少任一项时不会开启。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const list = stack();
+    for (const [id, label] of VIDEO_CAPABILITY_CATALOG) {
+      const dependency = known.get(id);
+      const state = dependency && dependency.state === "ready" ? "ready" : "missing";
+      const installMode = dependency && typeof dependency.install_mode === "string"
+        ? dependency.install_mode
+        : "manual";
+      const modeLabel = installMode === "core"
+        ? "随核心安装器提供"
+        : installMode === "local_import"
+        ? "从本机正版资源导入"
+        : "需手动准备";
+      const source = dependency && typeof dependency.source_summary === "string"
+        ? dependency.source_summary
+        : "下载源状态暂不可用";
+      const item = card();
+      item.append(
+        text("div", label, "text-text-body text-label-l"),
+        text(
+          "div",
+          `${state === "ready" ? "已就绪" : "未准备"} · ${modeLabel}`,
+          "text-text-secondary text-body-m font-regular"
+        ),
+        text("div", source, "text-text-secondary text-caption-m font-regular")
+      );
+      list.append(item);
+    }
+    panel.replaceChildren(heading, summary, list);
+  };
+
+  const renderCapabilityPanel = async (panel) => {
+    const heading = text("h3", "本地能力与下载", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "已有自动安装的能力可直接下载；其他能力保留国内源优先、官方源备用。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const memory = card();
+    const video = card();
+    panel.replaceChildren(heading, summary, memory, video);
+    await Promise.allSettled([
+      renderMem0CapabilityPanel(memory),
+      renderVideoCapabilityPanel(video),
+    ]);
+  };
+
   const renderLocalUpdatePanel = (panel) => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
@@ -1217,7 +1296,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const loadDialogData = async (statusNode, panels, initialMode) => {
     const tasks = [
       renderLlmSetupPanel(panels.llm, initialMode),
-      renderMem0CapabilityPanel(panels.capability),
+      renderCapabilityPanel(panels.capability),
     ];
     if (initialMode) {
       statusNode.textContent = "先连接大模型；未配置大模型时无法进行真实对话。长期记忆可以稍后按需安装，可在设置 > 本地陪伴中继续。";
@@ -1254,7 +1333,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     document.querySelector(`[${ROOT_ATTR}]`)?.remove();
   };
 
-  const openDialog = (initialMode = false) => {
+  const openDialog = (initialMode = false, initialPanel = "llm") => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
     const backdrop = document.createElement("div");
@@ -1424,7 +1503,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel("llm");
+    showPanel(initialPanel);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -1448,14 +1527,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     state.setAttribute("aria-live", "polite");
     copy.append(text("div", "允许视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
     let enabled = null;
+    let ready = false;
+    let missingDependencies = [];
     let message = "正在读取设置…";
     let toggle = null;
     const render = () => {
       if (!toggle) return;
-      const ready = typeof enabled === "boolean";
-      toggle.disabled = !ready;
-      toggle.textContent = ready ? (enabled ? "已开启" : "已关闭") : "暂不可用";
-      toggle.setAttribute("aria-pressed", ready ? String(enabled) : "false");
+      const settingAvailable = typeof enabled === "boolean";
+      toggle.disabled = !settingAvailable || (!ready && !enabled);
+      toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
+      toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
       state.textContent = message;
     };
     const hydrate = async () => {
@@ -1463,9 +1544,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
         if (payload.state !== "available") throw new Error("setting-unavailable");
         enabled = payload.enabled;
-        message = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
+        ready = payload.ready === true;
+        const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+        missingDependencies = Array.isArray(payload.dependencies)
+          ? payload.dependencies
+            .filter((item) => item && item.state !== "ready" && byId.has(item.id))
+            .map((item) => byId.get(item.id))
+          : [];
+        message = !ready
+          ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`
+          : enabled
+          ? "新信默认可参与视频路由。"
+          : "新信将直接使用文字回信。";
       } catch (_error) {
         enabled = null;
+        ready = false;
+        missingDependencies = [];
         message = "设置暂不可用，已安全禁用。";
       }
       render();
@@ -1481,7 +1575,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         message = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
       } catch (error) {
         enabled = previous;
-        message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
+        if (error && error.code === "VIDEO_REPLY_DEPENDENCIES_MISSING") {
+          const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+          const labels = (error.missingDependencies || []).flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
+          message = `缺少依赖，无法开启视频回信：${labels.join("、") || "请检查本地能力"}`;
+        } else {
+          message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
+        }
       } finally {
         setButtonsBusy([toggle], false);
         render();
@@ -1489,7 +1589,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     toggle = button("已开启", apply);
     toggle.setAttribute("aria-label", "切换视频回信");
-    row.append(copy, toggle);
+    const controls = actions();
+    controls.append(toggle, button("管理下载", () => openDialog(false, "capability")));
+    row.append(copy, controls);
     section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
     render();
     void hydrate();
