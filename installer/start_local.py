@@ -417,6 +417,19 @@ def _backend_entrypoint(backend: Path) -> Path:
     return backend / "original_client_server.py"
 
 
+def _append_launcher_event(data_root: Path, event: str, **fields: object) -> None:
+    """Persist path-free startup diagnostics without environment or credentials."""
+
+    try:
+        log_root = data_root / "logs"
+        log_root.mkdir(parents=True, exist_ok=True)
+        record = {"event": event, **fields}
+        with (log_root / "launcher.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def _active_backend() -> Path:
     """Resolve the complete backend tree that owns this launcher module."""
 
@@ -536,9 +549,11 @@ def main(argv: list[str] | None = None) -> int:
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
+    client_started = False
     try:
         if health != "READY":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            _append_launcher_event(data_root, "backend_start")
             server = subprocess.Popen(
                 [
                     str(_backend_executable()),
@@ -560,11 +575,18 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(0.25)
             health = _health(args.port)
             if health != "READY":
+                _append_launcher_event(
+                    data_root,
+                    "backend_unavailable",
+                    health=health,
+                    exit_code=server.poll(),
+                )
                 if health == "PORT_CONFLICT":
                     print("PORT_CONFLICT")
                     return 2
                 print("LOCAL_SERVER_UNAVAILABLE")
                 return 2
+            _append_launcher_event(data_root, "backend_ready")
         client = _client_executable(root)
         if not client.is_file():
             print("ISOLATED_CLIENT_NOT_FOUND")
@@ -579,13 +601,16 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
+        client_started = True
         return subprocess.call(
             _client_command(client, local),
             cwd=root / "app",
             env=_client_environment(client_environment, roaming, local),
         )
     finally:
-        if server is not None:
+        # Keep a healthy loopback backend alive so reopening the copied client
+        # (including from its taskbar icon) does not degrade into Network Error.
+        if server is not None and not client_started:
             _stop_backend_server(server)
 
 

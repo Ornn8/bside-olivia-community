@@ -217,6 +217,12 @@ def test_launcher_starts_combined_server_before_original_client(
     assert client_commands[0][0].endswith("Olivia.exe")
     assert not backend_command[-1].endswith("local_server.py")
     assert frontend_repairs == [(root.resolve(), 8899)]
+    launcher_log = (root / "data" / "logs" / "launcher.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert '"event": "backend_start"' in launcher_log
+    assert '"event": "backend_ready"' in launcher_log
+    assert "DEEPSEEK_API_KEY" not in launcher_log
 
 
 def test_component_launcher_starts_the_backend_that_owns_start_local(
@@ -259,7 +265,7 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
     assert commands[0][3:] == [str(active_backend), str(active_entrypoint)]
 
 
-def test_component_launcher_identifies_and_stops_its_backend(
+def test_component_launcher_keeps_its_backend_for_client_reentry(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -307,7 +313,7 @@ def test_component_launcher_identifies_and_stops_its_backend(
     assert backend_environments[0]["OLIVIA_PROVIDER_CACHE_ROOT"] == str(
         root / "data" / "provider-cache"
     )
-    assert lifecycle == ["terminate", "wait:5"]
+    assert lifecycle == []
 
 
 def test_launcher_replaces_a_verified_stale_backend_before_starting_active_version(

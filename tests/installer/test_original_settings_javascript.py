@@ -33,6 +33,14 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert '"Content-Type": "application/json"' in source
     assert 'const CONFIRM_VALUE = "confirmed"' in source
     assert "window.confirm" not in source
+
+
+def test_llm_save_and_delete_copy_says_changes_apply_immediately() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert "已保存。下一次发送立即生效。" in source
+    assert "API key 已删除。下一次发送立即生效。" in source
+    assert "重启 Olivia 后生效" not in source
     assert "confirmAction" in source
     assert "window.open" not in source
     assert "innerHTML" not in source

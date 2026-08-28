@@ -953,7 +953,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           api_key: key.input.value.trim(),
         });
         key.input.value = "";
-        state.textContent = "已保存。重启 Olivia 后生效。";
+        state.textContent = "已保存。下一次发送立即生效。";
       } catch (_error) {
         state.textContent = "保存失败，请重新测试连接。";
       } finally {
@@ -965,14 +965,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     save.disabled = true;
     const removeKey = button("删除 API key", async () => {
-      if (!await confirmAction("确认删除这台电脑上保存的 API key？删除后需重启 Olivia。")) {
+      if (!await confirmAction("确认删除这台电脑上保存的 API key？")) {
         return;
       }
       setButtonsBusy([testConnection, save, removeKey], true);
       try {
         await requestSetup(LLM_DELETE_PATH, {});
         key.input.value = "";
-        state.textContent = "API key 已删除。重启 Olivia 后生效。";
+        state.textContent = "API key 已删除。下一次发送立即生效。";
       } catch (_error) {
         state.textContent = "API key 删除失败，请重试。";
       } finally {

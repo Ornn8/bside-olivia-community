@@ -610,7 +610,15 @@ def create_configured_original_client_server_runtime(
     )
     collection = getattr(server_module, "_letter_collection", None)
     data_root = _absolute_data_root(values)
-    setup_service = LLMSetupService(data_root) if data_root is not None else None
+    apply_runtime = getattr(server_module, "apply_runtime_llm_config", None)
+    setup_service = (
+        LLMSetupService(
+            data_root,
+            apply_runtime=apply_runtime if callable(apply_runtime) else None,
+        )
+        if data_root is not None
+        else None
+    )
     capability_installer = _configured_capability_installer(values, data_root)
     component_updater = _configured_component_updater(values)
     runtime = create_original_client_server_runtime(
