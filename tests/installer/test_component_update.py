@@ -154,6 +154,125 @@ def test_valid_local_backend_component_update_is_activated_atomically(
     }
 
 
+def test_component_update_refreshes_existing_shortcuts_from_the_active_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, _active = _managed_installation(tmp_path)
+    package = tmp_path / "local-backend.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={
+            "installer/Create-Shortcut.ps1": b"# fixture",
+            "installer/assets/olivia.ico": b"icon",
+        },
+    )
+    observed: list[tuple[Path, Path, bool]] = []
+
+    def observe(root: Path, active_version: Path) -> None:
+        observed.append(
+            (
+                root,
+                active_version,
+                (root / ".olivia-update-state.json").is_file(),
+            )
+        )
+
+    monkeypatch.setattr(component_update, "_refresh_existing_shortcuts", observe)
+
+    apply_component_update(
+        installation,
+        package,
+        expected_manifest_sha256=manifest_sha256,
+    )
+
+    assert observed == [
+        (
+            installation,
+            installation
+            / "versions"
+            / "local_backend"
+            / f"1.1.0-{manifest_sha256}",
+            True,
+        )
+    ]
+
+
+def test_component_update_stays_applied_when_shortcut_refresh_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, _active = _managed_installation(tmp_path)
+    package = tmp_path / "local-backend.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={"new.py": b"new"},
+    )
+
+    def fail_refresh(_root: Path, _active_version: Path) -> None:
+        raise RuntimeError("synthetic optional shortcut failure")
+
+    monkeypatch.setattr(component_update, "_refresh_existing_shortcuts", fail_refresh)
+
+    result = apply_component_update(
+        installation,
+        package,
+        expected_manifest_sha256=manifest_sha256,
+    )
+
+    assert result["status"] == "APPLIED"
+    assert (installation / ".olivia-update-state.json").is_file()
+
+
+@pytest.mark.parametrize("failure", ["probe", "timeout", "nonzero"])
+def test_shortcut_refresh_ignores_probe_timeout_and_nonzero_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    active_version = tmp_path / "active"
+    script = active_version / "installer" / "Create-Shortcut.ps1"
+    script.parent.mkdir(parents=True)
+    script.write_text("# fixture", encoding="utf-8")
+
+    if failure == "probe":
+        original_is_file = Path.is_file
+
+        def fail_script_probe(path: Path) -> bool:
+            if path == script:
+                raise OSError("synthetic probe failure")
+            return original_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", fail_script_probe)
+    elif failure == "timeout":
+        monkeypatch.setattr(
+            component_update.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired("powershell.exe", 30)
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            component_update.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 23),
+        )
+
+    component_update._refresh_existing_shortcuts(tmp_path, active_version)
+
+
+def test_windows_patch_docs_define_shortcut_refresh_as_best_effort() -> None:
+    documentation = (
+        Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"
+    ).read_text(encoding="utf-8")
+
+    assert "桌面和开始菜单中仍然存在的快捷方式" in documentation
+    assert "不会撤销已经完成的补丁激活" in documentation
+
+
 def test_stable_launcher_resolves_the_atomically_selected_backend(
     tmp_path: Path,
 ) -> None:
