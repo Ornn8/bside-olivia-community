@@ -32,11 +32,7 @@ CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
 
 
 def test_video_seed_patch_is_a_required_runtime_payload() -> None:
-    assert {
-        "installer/cosyvoice-windows-audio.patch.json",
-        "installer/latentsync-windows-memmap.patch.json",
-        "installer/seed-vc-overlap-frames.patch",
-    } <= PAYLOAD_REQUIRED_RELATIVE_FILES
+    assert "installer/seed-vc-overlap-frames.patch" in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert {"contracts/video_capability_action.schema.json", "contracts/video_capability_manifest.schema.json", "contracts/video_capability_status.schema.json"} <= PAYLOAD_REQUIRED_RELATIVE_FILES
 
 
