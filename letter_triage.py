@@ -1,9 +1,8 @@
 """Persona-aware reply-mode routing for current letters.
 
-The router separates music eligibility from the final expression choice. A
-music topic, a performance request, or strong emotion can make music relevant,
-but none of them automatically selects a musical video. Invalid, contradictory,
-or unavailable choices fail closed to a direct text letter.
+The router chooses either a text letter or the product's single video-reply
+format: spoken reply plus music. Invalid, contradictory, or unavailable choices
+fail closed to a direct text letter.
 """
 
 from __future__ import annotations
@@ -28,11 +27,9 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 
 可选模式只有：
 - text_letter：文字信；
-- spoken_video：因为声音陪伴更合适而选择完整视频回信；
-- musical_video：因为音乐本身构成回应而选择完整视频回信。
+- musical_video：固定包含“说话视频 + 官方无声转场 + 音乐演唱视频”的完整视频回信。
 
-spoken_video 是“语音 + 官方日常动作底片 + LatentSync 口型”的普通视频；
-musical_video 才是“说话视频 + 官方无声转场 + 音乐演唱视频”。两条链分别判断可用性。
+不存在只说话的普通视频回信；只需要声音而不需要音乐时选择 text_letter。
 
 总原则：能直接说的话，优先直接说。高情绪、提到音乐、讨论音乐、请求演奏、
 唱歌或改编，都不能单独触发 musical_video。林离可以拒绝、推迟、只讨论，
@@ -70,14 +67,12 @@ current_work_relevance 只能引用 routing_context.current_music_work 中存在
 melody_idea 只能与 spontaneous_motif + compose 同时出现，不能因为用户写了“音乐”
 就声称林离突然想到旋律。
 
-spoken_video 只有在普通视频链可用、routing_context.spoken_video_available=true、
-直接表达仍足够，但听见她的声音明显比文字更合适时选择。媒体不可用时必须选择
-text_letter。
+媒体不可用时必须选择 text_letter。
 普通日常默认 text_letter。不要为了证明人格而音乐化。
 
 必须调用 select_reply_mode，不要输出 Markdown 或解释。参数必须符合：
 {
-  "mode":"text_letter|spoken_video|musical_video",
+  "mode":"text_letter|musical_video",
   "reason_code":"lower_snake_case",
   "emotion_level":"normal|high|mixed|unknown",
   "music_contexts":["允许值"],
@@ -94,7 +89,7 @@ text_letter。
 # Backward-compatible exported name for callers that still refer to triage.
 TRIAGE_SYSTEM_PROMPT = ROUTER_SYSTEM_PROMPT
 
-_ALLOWED_MODES = frozenset({"text_letter", "spoken_video", "musical_video"})
+_ALLOWED_MODES = frozenset({"text_letter", "musical_video"})
 _ALLOWED_EMOTIONS = frozenset({"normal", "high", "mixed", "unknown"})
 _ALLOWED_MUSIC_CONTEXTS = frozenset(
     {
@@ -347,15 +342,6 @@ def _validated_result(
                 explicit_request
                 and disposition not in {"discuss", "refuse", "defer"}
             )
-        ):
-            return None
-    elif mode == "spoken_video":
-        if (
-            not context.spoken_video_available
-            or not direct
-            or not voice_better
-            or role in _ACTIVE_MUSIC_ROLES
-            or (explicit_request and disposition not in {"discuss", "refuse", "defer"})
         ):
             return None
     else:
