@@ -263,8 +263,8 @@ def _stop_backend_server(server: object) -> None:
     except subprocess.TimeoutExpired:
         kill = getattr(server, "kill", None)
         if callable(kill):
-            kill()
             try:
+                kill()
                 wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
