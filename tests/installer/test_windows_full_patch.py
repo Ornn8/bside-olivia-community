@@ -97,6 +97,28 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
         / "v1.0"
         / "powershell.exe"
     )
+    shortcut.parent.mkdir(parents=True)
+    stale = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "$s.TargetPath=$env:COMSPEC;"
+                "$s.Arguments='//B //Nologo \"F:\\old\\START.vbs\"';"
+                "$s.Save()"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert stale.returncode == 0, stale.stderr or stale.stdout
     result = subprocess.run(
         [
             powershell,
@@ -127,7 +149,7 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
             (
                 "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
                 "[Console]::In.ReadToEnd().Trim());"
-                "[pscustomobject]@{target=$s.TargetPath;working=$s.WorkingDirectory;"
+                "[pscustomobject]@{target=$s.TargetPath;arguments=$s.Arguments;working=$s.WorkingDirectory;"
                 "icon=$s.IconLocation}|ConvertTo-Json -Compress"
             ),
         ],
@@ -139,11 +161,12 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
     )
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
+    assert metadata["arguments"] == ""
     assert Path(metadata["working"]) == install_root
     assert metadata["icon"] == f"{icon},0"
 
 
-def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
+def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
     tmp_path: Path,
 ) -> None:
     if os.name != "nt":
@@ -262,7 +285,7 @@ def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
     )
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
-    assert metadata["arguments"] == arguments
+    assert metadata["arguments"] == ""
     assert metadata["icon"] == f"{active_icon},0"
 
 
