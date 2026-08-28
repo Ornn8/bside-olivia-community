@@ -1170,8 +1170,6 @@ def _extract_zip_safely(
     *,
     strip_components: int,
 ) -> list[dict[str, object]]:
-    if destination.exists():
-        shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     written: set[str] = set()
     expected: list[dict[str, object]] = []
@@ -1217,7 +1215,9 @@ def _extract_zip_safely(
                         digest.update(chunk)
                         written_bytes += len(chunk)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
-        _verify_staged_tree(destination, expected)
+        for item in expected:
+            if _tree_entry(destination, str(item["path"])) != item:
+                raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
         return expected
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
