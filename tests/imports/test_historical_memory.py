@@ -113,21 +113,23 @@ def test_migration_stops_at_first_failed_write_and_does_not_finalize() -> None:
     assert result.error_code == "MEM0_WRITE_FAILED"
 
 
-def test_official_history_strict_migration_rejects_skipped_memory_write() -> None:
-    memory = RecordingMemory([MemoryWriteStatus.SKIPPED])
+def test_official_history_strict_migration_accepts_uninformative_skips() -> None:
+    memory = RecordingMemory(
+        [MemoryWriteStatus.SKIPPED, MemoryWriteStatus.WRITTEN]
+    )
 
     result = migrate_historical_exchanges(
-        (_exchange("first", 10),),
+        (_exchange("first", 10), _exchange("second", 20)),
         memory=memory,
         user_id="local-user",
         require_persisted=True,
     )
 
-    assert result.status == "partial"
-    assert result.processed == 0
-    assert result.written == 0
-    assert result.skipped == 0
-    assert result.error_code == "MEM0_WRITE_SKIPPED"
+    assert result.status == "completed"
+    assert result.processed == 2
+    assert result.written == 1
+    assert result.skipped == 1
+    assert result.error_code is None
 
 
 def test_official_history_strict_migration_rolls_back_new_writes_on_failure() -> None:

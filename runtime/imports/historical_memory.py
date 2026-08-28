@@ -409,21 +409,6 @@ def migrate_historical_exchanges(
                 skipped,
                 failure_code,
             )
-        if require_persisted and result.status is MemoryWriteStatus.SKIPPED:
-            failure_code = _rollback_created_memories(
-                memory,
-                created_memory_ids,
-                user_id=normalized_user_id,
-                failure_code="MEM0_WRITE_SKIPPED",
-            )
-            return _partial(
-                ordered,
-                processed,
-                written,
-                duplicates,
-                skipped,
-                failure_code,
-            )
         processed += 1
         if result.status is MemoryWriteStatus.WRITTEN:
             written += 1
