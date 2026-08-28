@@ -141,6 +141,7 @@ def test_prepare_setup_payload_rejects_dirty_tracked_release_file(
 
 def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("local_server.py")
+    assert _is_release_file("original_client_update_api.py")
     assert _is_release_file("control_center/static/index.html")
     assert _is_release_file("installer/full_patch.py")
     assert _is_release_file("tools/livetalking_worker.py")
@@ -286,6 +287,21 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "{param:OfficialRoot|" in script
     assert "API" not in script
     assert "Hugging Face" not in script
+
+
+def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> None:
+    script = (ROOT / "installer" / "windows_setup.iss").read_text(encoding="utf-8")
+
+    assert '[Tasks]' in script
+    assert 'Name: "desktopicon"' in script
+    assert '[Icons]' in script
+    assert '{userprograms}\\Olivia 本地版' in script
+    assert '{userdesktop}\\Olivia 本地版' in script
+    assert '[Run]' in script
+    assert 'Description: "立即启动 Olivia"' in script
+    assert '{sys}\\wscript.exe' in script
+    assert '\\install\\START.vbs' in script
+    assert '\\install\\START.cmd' not in script
 
 
 def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() -> None:

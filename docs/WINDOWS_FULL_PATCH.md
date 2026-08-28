@@ -6,8 +6,8 @@
 
 1. 下载 `Olivia-Setup-x64.exe` 及同目录的 `.sha256` 文件，并先核对 SHA-256。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
-3. 安装成功后双击 `START.cmd`。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。长期记忆、PrivateWorld 和媒体接口都挂在同一个进程中。
-4. 本版本提供登录后初始设置的本机 API；原版客户端界面接线在后续独立补丁中交付。在界面接线前仍通过启动环境提供 LLM key，也可继续使用 `CONFIGURE.cmd` 管理参考音频/视频。这些文件不进入补丁包。
+3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
+4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。`CONFIGURE.cmd` 仍可用于管理参考音频/视频。这些文件不进入补丁包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
@@ -106,6 +106,10 @@ webplayer.dat.orig
 安装后的 `START.cmd`、`CONFIGURE.cmd` 和 `UNINSTALL.cmd` 只调用安装根目录中的稳定启动器 `launcher/version_launcher.py`。稳定启动器读取一次 `.olivia-update-state.json` 原子指针，从 `versions/local_backend/<version>-<manifest-sha256>` 选择完整后端；没有更新状态时继续使用初装的 `local_backend`。因此更新期间不会把正在使用的后端目录临时移走，也不会要求用户重新运行完整安装器。
 
 当前版本只提供经过外部渠道取得的本地 `.oliviapatch` 文件安装，不联网检查或下载更新。包必须是 ZIP，并且只能包含一个 `manifest.json` 和清单声明的 `payload/...` 普通文件。`local_backend` 包必须包含 `installer/start_local.py`、`installer/configure.py` 和 `installer/uninstall.py` 三个普通文件入口，否则不会激活。公开契约及示例见：
+
+普通用户在客户端 Settings 的“补丁更新”中选择已下载的 `.oliviapatch`，粘贴发布页提供的 Manifest SHA-256 后安装；成功后关闭并重新打开 Olivia。该页面也提供回滚到上一版本的入口。命令行入口继续保留用于维护和故障排查。
+
+客户端补丁入口的鉴权、请求、响应、重启语义和稳定错误码见 `contracts/local_update_api_contract.json` 及其 schema。
 
 - `contracts/component_update_package.schema.json`
 - `contracts/component_update_package.example.json`

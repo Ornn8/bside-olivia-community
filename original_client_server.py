@@ -50,6 +50,11 @@ from original_client_setup_api import (
     LLMSetupService,
     mount_original_client_setup_api,
 )
+from original_client_update_api import (
+    ComponentUpdater,
+    LocalComponentUpdater,
+    mount_original_client_update_api,
+)
 from original_client_letter_contract import (
     OriginalClientContractError,
     serialize_letter_detail,
@@ -328,6 +333,7 @@ def create_original_client_server_runtime(
     letter_collection: LetterCollection | None = None,
     setup_service: LLMSetupService | None = None,
     capability_installer: Mem0CapabilityInstaller | None = None,
+    component_updater: ComponentUpdater | None = None,
     trusted_origins: Sequence[str] = (),
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
@@ -378,6 +384,13 @@ def create_original_client_server_runtime(
             mount_original_client_capability_api(
                 app,
                 capability_installer,
+                trusted_origins=origins,
+                authorize_session=setup_service.require_session,
+            )
+        if component_updater is not None:
+            mount_original_client_update_api(
+                app,
+                component_updater,
                 trusted_origins=origins,
                 authorize_session=setup_service.require_session,
             )
@@ -439,6 +452,21 @@ def _configured_capability_installer(
             python_executable=Path(sys.executable),
             backend_root=Path(__file__).resolve().parent,
         )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _configured_component_updater(
+    environ: Mapping[str, str],
+) -> LocalComponentUpdater | None:
+    raw = str(environ.get("OLIVIA_INSTALL_ROOT", "")).strip()
+    if not raw:
+        return None
+    install_root = Path(raw).expanduser()
+    if not install_root.is_absolute() or not install_root.is_dir():
+        return None
+    try:
+        return LocalComponentUpdater(install_root.resolve())
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
@@ -584,6 +612,7 @@ def create_configured_original_client_server_runtime(
     data_root = _absolute_data_root(values)
     setup_service = LLMSetupService(data_root) if data_root is not None else None
     capability_installer = _configured_capability_installer(values, data_root)
+    component_updater = _configured_component_updater(values)
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -594,6 +623,7 @@ def create_configured_original_client_server_runtime(
         letter_collection=collection if callable(collection) else None,
         setup_service=setup_service,
         capability_installer=capability_installer,
+        component_updater=component_updater,
         trusted_origins=origins,
     )
     install_reply_task_lifecycle = getattr(

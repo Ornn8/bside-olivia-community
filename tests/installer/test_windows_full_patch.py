@@ -1172,9 +1172,10 @@ def test_install_isolated_copy_activates_original_client_surfaces(
         main = archive.read("assets/main-917d29fc.js").decode("utf-8")
     assert "assets/olivia-companion-settings.js" in names
     assert "data-olivia-companion-settings" in index
-    assert "data-ui-version=\"p03.original-settings-manage.v5\"" in index
+    assert "data-ui-version=\"p03.original-settings-manage.v6\"" in index
     assert (installed / "local_backend" / "original_client_setup_api.py").is_file()
     assert (installed / "local_backend" / "original_client_capability_api.py").is_file()
+    assert (installed / "local_backend" / "original_client_update_api.py").is_file()
     assert "toyApiUrl" in main
     assert "await t.replace({name:ye.Collection})" in main
 
@@ -1193,6 +1194,10 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert not (installed / "local_backend" / "memory_store.json").exists()
     assert not (installed / "local_backend" / "llm_config.json").exists()
     assert (installed / "CONFIGURE.cmd").is_file()
+    start_hidden = (installed / "START.vbs").read_text(encoding="utf-8")
+    assert "START.cmd" in start_hidden
+    assert ".Run" in start_hidden
+    assert ", 0, False" in start_hidden
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start

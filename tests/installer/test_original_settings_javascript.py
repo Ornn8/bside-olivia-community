@@ -27,7 +27,7 @@ def test_original_settings_bootstrap_has_valid_javascript(tmp_path: Path) -> Non
 
 def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     source = BOOTSTRAP_JAVASCRIPT
-    assert source.count('method: "POST"') == 1
+    assert source.count('method: "POST"') == 2
     assert source.count('method: "GET"') == 1
     assert '"Content-Type": "application/json"' in source
     assert 'const CONFIRM_VALUE = "confirmed"' in source

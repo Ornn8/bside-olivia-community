@@ -1,0 +1,54 @@
+{
+  "schema_version": "olivia.local-update-api-contract.v1",
+  "status_schema_version": "olivia.local-update.v1",
+  "execution": "serialized-apply-rollback-off-event-loop",
+  "authorization": {
+    "origins": "explicit-trusted-https-or-loopback-only",
+    "login_required": true,
+    "session_header": "X-Olivia-Setup-Session",
+    "confirmation_header": {
+      "name": "X-Olivia-Update-Action",
+      "value": "confirmed"
+    }
+  },
+  "routes": {
+    "/toy/updates/local/action": {
+      "methods": ["POST", "OPTIONS"],
+      "actions": {
+        "select": {
+          "request_fields": ["action"],
+          "response_fields": ["status", "package_path", "restart_required"],
+          "status_values": ["SELECTED", "CANCELLED"],
+          "restart_required": false
+        },
+        "apply": {
+          "request_fields": ["action", "package_path", "manifest_sha256"],
+          "response_fields": ["status", "component", "version", "restart_required"],
+          "status_values": ["APPLIED"],
+          "restart_required": true
+        },
+        "rollback": {
+          "request_fields": ["action"],
+          "response_fields": ["status", "component", "version", "restart_required"],
+          "status_values": ["ROLLED_BACK"],
+          "restart_required": true
+        }
+      }
+    }
+  },
+  "error_http_statuses": {
+    "UPDATE_FIELDS_INVALID": 400,
+    "UPDATE_JSON_INVALID": 400,
+    "UPDATE_CONFIRMATION_REQUIRED": 403,
+    "UPDATE_HOST_FORBIDDEN": 403,
+    "UPDATE_LOGIN_REQUIRED": 403,
+    "UPDATE_ORIGIN_FORBIDDEN": 403,
+    "UPDATE_REQUEST_TOO_LARGE": 413,
+    "UPDATE_CONTENT_TYPE_INVALID": 415,
+    "UPDATE_ACTION_UNAVAILABLE": 503,
+    "UPDATE_PICKER_UNAVAILABLE": 503,
+    "UPDATE_RESULT_INVALID": 503
+  },
+  "component_error_pattern": "UPDATE_[A-Z0-9_]{3,90}",
+  "component_error_http_status": 409
+}

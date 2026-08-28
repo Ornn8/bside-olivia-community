@@ -14,7 +14,7 @@ from original_client_settings_ui import (
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v5"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v6"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -28,7 +28,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 1
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 1
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 2
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
@@ -47,6 +47,23 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'panel.style.display = active ? "grid" : "none";' in BOOTSTRAP_JAVASCRIPT
     assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
     assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
+
+
+def test_original_settings_can_apply_a_user_downloaded_patch_and_roll_back() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert 'const UPDATE_ACTION_PATH = "/toy/updates/local/action";' in source
+    assert 'action: "select"' in source
+    assert "选择已下载的补丁" in source
+    assert "payload.package_path" in source
+    assert "File.path" not in source
+    assert "patch.files" not in source
+    assert "发布页提供的 Manifest SHA-256" in source
+    assert 'action: "apply"' in source
+    assert 'action: "rollback"' in source
+    assert "安装本地补丁" in source
+    assert "回滚上一版本" in source
+    assert "关闭并重新打开 Olivia 后生效" in source
 
 
 def test_original_settings_can_import_official_text_reply_history() -> None:
