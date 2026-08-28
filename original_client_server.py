@@ -491,10 +491,20 @@ def _configured_video_capability_installer(
                 ),
             )
 
+        artifact_roots = tuple(
+            path.resolve()
+            for raw in str(environ.get("OLIVIA_VIDEO_ARTIFACT_ROOTS", "")).split(
+                os.pathsep
+            )
+            if (path := Path(raw.strip()).expanduser()).is_absolute()
+            and path.is_dir()
+        )
+
         return VideoCapabilityInstaller(
             data_root=data_root,
             manifest=manifest,
             readiness_probe=readiness,
+            artifact_roots=artifact_roots,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         return None

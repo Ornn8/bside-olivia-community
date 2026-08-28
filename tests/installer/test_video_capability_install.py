@@ -282,6 +282,51 @@ def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> Non
     assert observed[-1]["OLIVIA_FFMPEG_EXE"] == str(ffmpeg)
 
 
+def test_auto_install_reuses_verified_local_artifact_before_network(
+    tmp_path: Path,
+) -> None:
+    payload = b"accepted-runtime-model"
+    accepted_root = (tmp_path / "accepted-latentsync").resolve()
+    accepted = accepted_root / "checkpoints" / "model.pt"
+    accepted.parent.mkdir(parents=True)
+    accepted.write_bytes(payload)
+    spec = VideoFile(
+        "model",
+        "latentsync/runtime/checkpoints/model.pt",
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        "fixture",
+        {"official": "https://example.invalid/model.pt"},
+    )
+
+    def no_network(*_args, **_kwargs):
+        raise AssertionError("verified local artifact should win")
+
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "ordinary", "FIXED", True, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", True, (), ()),
+            ),
+        ),
+        opener=no_network,
+        artifact_roots=(accepted_root,),
+    )
+
+    assert installer.start(bundle_id="ordinary_video") == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert (
+        installer.install_root
+        / "ordinary_video"
+        / "latentsync"
+        / "runtime"
+        / "checkpoints"
+        / "model.pt"
+    ).read_bytes() == payload
+
+
 def test_installer_rejects_reparse_install_root(tmp_path: Path, monkeypatch) -> None:
     data_root = (tmp_path / "data").resolve()
     (data_root / "capabilities").mkdir(parents=True)

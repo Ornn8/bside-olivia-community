@@ -372,6 +372,7 @@ class VideoCapabilityInstaller:
         manifest: VideoManifest,
         opener: Callable[..., Any] = urlopen,
         readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
+        artifact_roots: tuple[Path, ...] = (),
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -380,6 +381,9 @@ class VideoCapabilityInstaller:
         self.manifest = manifest
         self._opener = opener
         self._readiness_probe = readiness_probe
+        if any(not root.is_absolute() or not root.is_dir() for root in artifact_roots):
+            raise VideoCapabilityError("VIDEO_ARTIFACT_ROOT_INVALID")
+        self._artifact_roots = tuple(root.resolve() for root in artifact_roots)
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -613,6 +617,8 @@ class VideoCapabilityInstaller:
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 if offline_root is not None:
                     self._copy_offline(offline_root, item, cached)
+                elif self._reuse_local_artifact(item, cached):
+                    source_used = "local"
                 else:
                     source_used = self._download(
                         item,
@@ -663,6 +669,23 @@ class VideoCapabilityInstaller:
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
+
+    def _reuse_local_artifact(self, item: VideoFile, target: Path) -> bool:
+        if _verify_and_true(target, item):
+            return True
+        parts = PurePosixPath(item.relative_path).parts
+        for artifact_root in self._artifact_roots:
+            for offset in range(len(parts)):
+                candidate = _inside(
+                    artifact_root,
+                    artifact_root / Path(*parts[offset:]),
+                )
+                if not _verify_and_true(candidate, item):
+                    continue
+                if candidate != target.resolve():
+                    shutil.copy2(candidate, target)
+                return True
+        return False
 
     def _assemble_archives(self, root: Path, bundle: VideoBundle) -> list[dict[str, object]]:
         expected: list[dict[str, object]] = []
