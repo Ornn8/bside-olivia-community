@@ -31,6 +31,33 @@ from video_capability_install import (
 from original_client_video_capability_api import mount_original_client_video_capability_api
 
 
+def test_repository_bom_freezes_accepted_latentsync_15_256_profile() -> None:
+    manifest_path = Path("installer/video-capability-manifest.json")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_video_manifest(manifest_path)
+    ordinary = manifest.bundles[0]
+    provenance = payload["provenance"]["latentsync_model"]
+
+    assert provenance == {
+        "repo": "ByteDance/LatentSync-1.5",
+        "revision": "32a20d29aead0498e3e885e90dbbe8027da1b61b",
+        "unet_sha256": "6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51",
+        "tiny_sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+        "buffalo_l_sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+        "config_path": "configs/unet/stage2_efficient.yaml",
+        "config_resolution": 256,
+        "config_sha256": "72e263b0adb072935a08d5cc3ce304ce5c471fab9f7e233b7304e5902bba24ce",
+        "license": "OpenRAIL++",
+    }
+    unet = next(item for item in ordinary.files if item.identifier == "latentsync-unet")
+    assert unet.size_bytes == 5_072_348_184
+    assert unet.sha256 == provenance["unet_sha256"]
+    assert unet.sources == {
+        "domestic": "https://hf-mirror.com/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt",
+        "official": "https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt",
+    }
+
+
 def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     manifest_path = Path("installer/video-capability-manifest.json")
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -55,16 +82,8 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
     }
     provenance = payload["provenance"]
-    assert provenance["latentsync_model"] == {
-        "repo": "ByteDance/LatentSync-1.6",
-        "revision": "c42c7e6c8e9c213626389fa7d9a3c444b8536353",
-        "unet_sha256": "0a478e89eb660f82da4c35dbdde8a5adfb27f99d1b4e50edd03729e1e98316d3",
-        "tiny_sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
-        "buffalo_l_sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
-        "license": "OpenRAIL++",
-    }
     latentsync_unet = next(item for item in ordinary.files if item.identifier == "latentsync-unet")
-    assert latentsync_unet.size_bytes == 5072222488
+    assert latentsync_unet.size_bytes == 5072348184
     assert latentsync_unet.sha256 == provenance["latentsync_model"]["unet_sha256"]
     assert latentsync_unet.license == "OpenRAIL++"
     latentsync_tiny = next(item for item in ordinary.files if item.identifier == "latentsync-tiny")
