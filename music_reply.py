@@ -34,7 +34,7 @@ from voice_direction import VoicePerformancePlan
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
-_MUSIC_STAGE_MANIFEST_VERSION = 2
+_MUSIC_STAGE_MANIFEST_VERSION = 3
 
 
 class MusicReplyError(RuntimeError):
@@ -86,30 +86,6 @@ def normalize_music_duration(value: object) -> int:
         raise MusicReplyError("MUSIC_DURATION_INVALID") from None
 
 
-def speaking_scene_candidates(env: Mapping[str, str]) -> tuple[Path, ...]:
-    """Return configured speaking-scene candidates; legacy singleton is a fallback."""
-
-    raw = str(env.get("OLIVIA_SPOKEN_SCENE_CANDIDATES", ""))
-    values = raw.split(os.pathsep) if raw else [str(env.get("OLIVIA_OFFICIAL_REPLY_REFERENCE", ""))]
-    result: list[Path] = []
-    for value in values:
-        candidate_env = dict(env)
-        candidate_env["_OLIVIA_SCENE_CANDIDATE"] = value
-        candidate = configured_media_path(candidate_env, "_OLIVIA_SCENE_CANDIDATE")
-        if candidate is not None and candidate not in result:
-            result.append(candidate)
-    return tuple(result)
-
-
-def select_speaking_scene(
-    candidates: tuple[Path, ...], *, expression: str | None = None
-) -> Path | None:
-    """Stable default seam; future expression/lip-sync selection can replace this."""
-
-    del expression
-    return candidates[0] if candidates else None
-
-
 def musical_reply_configured(
     env: Mapping[str, str],
     *,
@@ -122,7 +98,7 @@ def musical_reply_configured(
 
     minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
     latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
-    speaking_scene = select_speaking_scene(speaking_scene_candidates(env))
+    transition_reference = configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE")
     delivery_paths = (
         configured_path("OLIVIA_TTS_CONFIG"),
         configured_path("OLIVIA_VISUAL_CONFIG"),
@@ -151,10 +127,10 @@ def musical_reply_configured(
         configured_path("OLIVIA_MINIMAX_WORKER"),
         configured_path("OLIVIA_LATENTSYNC_PYTHON"),
     )
-    if speaking_scene is None or any(path is None for path in configured_files):
+    if transition_reference is None or any(path is None for path in configured_files):
         return False
     required = (
-        speaking_scene,
+        transition_reference,
         *configured_files[:6],
         minimax_root / "main.py",
         minimax_root / "comfy_extras" / "nodes_minimax_music.py",
@@ -707,15 +683,6 @@ def concat_videos(
         result.replace(output_path)
 
 
-def _official_transition_reference(environment: Mapping[str, str]) -> Path:
-    reference = select_speaking_scene(speaking_scene_candidates(environment))
-    if reference is None:
-        raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
-    if not reference.is_file():
-        raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
-    return reference
-
-
 def _completed_stage(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0
@@ -752,6 +719,7 @@ def _build_music_stage_manifest(
     duration_seconds: int,
     *,
     official_reply_reference_path: Path,
+    spoken_action_base_path: Path | None,
     transition_reference: Path,
     performance_video_path: Path,
     tts_config_path: Path,
@@ -788,6 +756,7 @@ def _build_music_stage_manifest(
         },
         "assets": {
             "official_reply_reference": _file_fingerprint(official_reply_reference_path),
+            "spoken_action_base": _file_fingerprint(spoken_action_base_path),
             "official_transition_reference": _file_fingerprint(transition_reference),
             "performance_video": _file_fingerprint(performance_video_path),
             "tts_config": _file_fingerprint(tts_config_path),
@@ -939,6 +908,7 @@ def render_musical_reply(
     worker_path: Path,
     performance_video_path: Path,
     duration_seconds: int,
+    spoken_action_base_path: Path | None = None,
     voice_performance_plan: VoicePerformancePlan | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
@@ -946,7 +916,9 @@ def render_musical_reply(
 
     duration_seconds = normalize_music_duration(duration_seconds)
     provider_paths = _music_provider_path_snapshot(environment)
-    transition_reference = _official_transition_reference(provider_paths.environment)
+    transition_reference = Path(official_reply_reference_path)
+    if not transition_reference.is_file():
+        raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     minimax_python = provider_paths.minimax_python
     minimax_root = provider_paths.minimax_root
     minimax_worker = provider_paths.minimax_worker
@@ -977,6 +949,7 @@ def render_musical_reply(
         song_plan,
         duration_seconds,
         official_reply_reference_path=official_reply_reference_path,
+        spoken_action_base_path=spoken_action_base_path,
         transition_reference=transition_reference,
         performance_video_path=performance_video_path,
         tts_config_path=tts_config_path,
@@ -999,7 +972,13 @@ def render_musical_reply(
     if not manifest_compatible:
         _write_stage_manifest(manifest_path, manifest)
 
-    spoken_base = stage_root / "official-spoken-000-035s.mp4"
+    spoken_base = (
+        Path(spoken_action_base_path)
+        if spoken_action_base_path is not None
+        else stage_root / "official-spoken-000-035s.mp4"
+    )
+    if spoken_action_base_path is not None and not spoken_base.is_file():
+        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
     if _stage_reusable(
         manifest,
         "normal_video",
@@ -1008,7 +987,10 @@ def render_musical_reply(
     ):
         normal_metadata = {"spoken_stage": "reused"}
     else:
-        if not _stage_reusable(manifest, "spoken_base", spoken_base):
+        if (
+            spoken_action_base_path is None
+            and not _stage_reusable(manifest, "spoken_base", spoken_base)
+        ):
             spoken_base.unlink(missing_ok=True)
             prepare_official_spoken_base(
                 official_reply_reference_path,

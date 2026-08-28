@@ -797,24 +797,6 @@ def test_all_video_paths_share_explicit_ffmpeg_override(
     assert reply_media._ffmpeg() == str(executable.resolve())
 
 
-def test_speaking_scene_candidates_are_stable_and_legacy_compatible(tmp_path: Path) -> None:
-    first = tmp_path / "first.mp4"
-    second = tmp_path / "second.mp4"
-    env = {"OLIVIA_SPOKEN_SCENE_CANDIDATES": os.pathsep.join((str(first), str(second), str(first)))}
-    candidates = music_reply.speaking_scene_candidates(env)
-    assert candidates == (first, second)
-    assert music_reply.select_speaking_scene(candidates) == first
-    assert music_reply.speaking_scene_candidates({"OLIVIA_OFFICIAL_REPLY_REFERENCE": str(second)}) == (second,)
-    assert music_reply.speaking_scene_candidates(
-        {
-            "OLIVIA_PROJECT_ROOT": str(tmp_path),
-            "OLIVIA_SPOKEN_SCENE_CANDIDATES": os.pathsep.join(
-                ("first.mp4", "second.mp4")
-            ),
-        }
-    ) == (first, second)
-
-
 def test_musical_renderer_rejects_relative_latentsync_paths_without_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

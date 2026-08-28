@@ -130,6 +130,21 @@ def test_pipeline_blocks_candidate_when_single_rewrite_fails() -> None:
     assert result.violation_codes == ("INTERNAL_CONTROL_MARKUP",)
 
 
+def test_pipeline_preserves_only_length_blocked_video_copy_for_duration_repair() -> None:
+    pipeline = ReplyPipeline(
+        CompletedOrchestrator("太短。"),
+        reviewer=PassingReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(pipeline.run(object(), _context(ReplyMode.SPOKEN_VIDEO)))
+
+    assert result.state is ReplyState.FAILED
+    assert result.text == "太短。"
+    assert result.error_code == "REWRITE_FAILED"
+    assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+
+
 class RecordingProvider:
     stream_enabled = False
 
@@ -342,6 +357,7 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
         "reply_text": "",
         "letter_status": "PENDING",
     }
+    canonical_text = "林" * 190
     scheduled: list[tuple[object, ...]] = []
     remembered: list[tuple[str, str]] = []
     monkeypatch.setattr(local_server.store, "letters", [letter])
@@ -365,7 +381,7 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
             PipelineResult(
                 "letter-1",
                 ReplyState.COMPLETED,
-                text="canonical final text",
+                text=canonical_text,
                 quality_status="accepted",
                 violation_codes=("SYNTHETIC_FIXED",),
                 reviewer_calls=2,
@@ -380,12 +396,12 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
         )
         is True
     )
-    assert letter["reply_text"] == "canonical final text"
+    assert letter["reply_text"] == canonical_text
     assert letter["letter_status"] == "COMPLETED"
     assert letter["quality_status"] == "accepted"
     assert letter["quality_violation_codes"] == ["SYNTHETIC_FIXED"]
-    assert scheduled[0][2] == "canonical final text"
-    assert remembered == [("candidate input", "canonical final text")]
+    assert scheduled[0][2] == canonical_text
+    assert remembered == [("candidate input", canonical_text)]
 
 
 def test_blocked_candidate_never_reaches_storage_or_media(

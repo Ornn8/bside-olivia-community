@@ -13,7 +13,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -483,7 +482,7 @@ def routing_context_from_environment(
 def _spoken_video_configured(env: Mapping[str, str]) -> bool:
     data_root = configured_media_path(env, "OLIVIA_LOCAL_DATA_ROOT")
     tts_config = configured_media_path(env, "OLIVIA_TTS_CONFIG")
-    scene = _current_scene(env)
+    scene = configured_media_path(env, "OLIVIA_ORDINARY_ACTION_BASE")
     latentsync_python = configured_media_path(env, "OLIVIA_LATENTSYNC_PYTHON")
     latentsync_root = configured_media_path(env, "OLIVIA_LATENTSYNC_ROOT")
     return bool(
@@ -507,41 +506,10 @@ def _musical_video_configured(env: Mapping[str, str]) -> bool:
     )
 
 
-def _current_scene(env: Mapping[str, str]) -> Path | None:
-    hour = datetime.now().hour
-    key = (
-        "MORNING"
-        if 5 <= hour < 10
-        else "DAY"
-        if 10 <= hour < 17
-        else "DUSK"
-        if 17 <= hour < 20
-        else "NIGHT"
-    )
-    return configured_media_path(env, f"OLIVIA_SCENE_{key}")
-
-
 def _current_music_performance(
     env: Mapping[str, str],
-    *,
-    hour: int | None = None,
 ) -> Path | None:
-    """Choose the evidenced piano scene from host local time.
-
-    No separate morning asset has been verified, so 05:00-09:00 explicitly
-    falls back to the day scene.  A single generic performance path is not
-    accepted because it would silently bypass the time-of-day contract.
-    """
-
-    local_hour = datetime.now().hour if hour is None else int(hour)
-    key = (
-        "DAY"
-        if 5 <= local_hour < 16
-        else "DUSK"
-        if 16 <= local_hour < 19
-        else "NIGHT"
-    )
-    return configured_media_path(env, f"OLIVIA_MUSIC_SCENE_{key}")
+    return configured_media_path(env, "OLIVIA_MUSIC_PERFORMANCE_BASE")
 
 
 def _context_items(value: object) -> tuple[str, ...]:

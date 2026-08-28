@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -201,12 +202,8 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     normal = tmp_path / "spoken.mp4"
     song_video = tmp_path / "performance.mp4"
     official_reference = _write(tmp_path / "official-complete-reply.mp4")
-    official_spoken = (
-        tmp_path
-        / "final-music-v2-40s-stages"
-        / "official-spoken-000-035s.mp4"
-    )
-    transition = _write(tmp_path / "official-transition.mp4")
+    spoken_action_base = _write(tmp_path / "accepted-action-base.mp4")
+    stale_candidate = _write(tmp_path / "stale-candidate.mp4")
     order: list[str] = []
     observed: dict[str, object] = {}
 
@@ -218,6 +215,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", "synthetic-worker")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
+    monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", str(stale_candidate))
 
     def fake_plan(content, reply_text, duration_seconds):
         order.append("plan")
@@ -267,20 +265,14 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
-        lambda reference, destination, **_kwargs: (
-            observed.setdefault(
-                "spoken_reference", (Path(reference), Path(destination))
-            )
-            and _write(Path(destination), b"official-spoken")
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the accepted action base must be used directly")
         ),
     )
     monkeypatch.setattr(music_reply, "render_reply_video", fake_normal)
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
-    monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda _environment: transition
-    )
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
     result = music_reply.render_musical_reply(
@@ -295,6 +287,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         worker_path=tmp_path / "visual-worker.py",
         performance_video_path=tmp_path / "base-performance.mp4",
         duration_seconds=40,
+        spoken_action_base_path=spoken_action_base,
     )
 
     assert order == [
@@ -308,17 +301,23 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert observed["minimax"][3]["lyrics"] == semantic.lyrics
     assert observed["minimax"][3]["caption"] == caption
     assert observed["spoken"][2]["adaptive_delivery"] is True
-    assert observed["spoken"][2]["scene_path"] == official_spoken
-    assert observed["spoken_reference"] == (official_reference, official_spoken)
+    assert observed["spoken"][2]["scene_path"] == spoken_action_base
     assert observed["concat"] == (
         normal,
         song_video,
         output,
         {
-            "transition_video_path": transition,
+            "transition_video_path": official_reference,
             "ffmpeg_path": tmp_path / "ffmpeg.exe",
         },
     )
+    manifest = json.loads(
+        (tmp_path / "final-music-v2-40s-stages" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["schema_version"] == 3
+    assert manifest["assets"]["spoken_action_base"]["status"] == "present"
     assert output.read_bytes() == b"final"
     assert result["reply_structure"] == (
         "normal_video_then_official_transition_then_song_video"
@@ -352,8 +351,7 @@ def test_render_musical_reply_fails_closed_without_official_transition(
             duration_seconds=40,
         ),
     )
-    monkeypatch.delenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", raising=False)
-    official_reference = _write(tmp_path / "official.mp4")
+    official_reference = tmp_path / "missing-official.mp4"
 
     with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_TRANSITION_UNAVAILABLE"):
         music_reply.render_musical_reply(
@@ -432,10 +430,6 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
             _write(Path(destination), b"performance")
             and {"performance_stage": "completed"}
         ),
-    )
-    transition = _write(tmp_path / "official-transition.mp4")
-    monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda _environment: transition
     )
     monkeypatch.setattr(
         music_reply,
@@ -548,10 +542,6 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
-    transition = _write(tmp_path / "official-transition.mp4")
-    monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda _environment: transition
-    )
     monkeypatch.setattr(
         music_reply,
         "concat_videos",
@@ -659,10 +649,6 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
-    transition = _write(tmp_path / "official-transition.mp4")
-    monkeypatch.setattr(
-        music_reply, "_official_transition_reference", lambda _environment: transition
-    )
     monkeypatch.setattr(
         music_reply,
         "concat_videos",

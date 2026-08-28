@@ -84,11 +84,10 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     }
     local_server.store.letters[:] = [letter]
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
-    monkeypatch.setenv("OLIVIA_SCENE_DAY", str(scene))
-    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_DAY", str(scene))
-    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_DUSK", str(scene))
-    monkeypatch.setenv("OLIVIA_MUSIC_SCENE_NIGHT", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene))
     monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(official_reference))
+    monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", str(scene))
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", str(scene))
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
     observed = {}
 
@@ -121,6 +120,7 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert letter["media_status"] == "COMPLETED"
     assert letter["media_error_code"] is None
     assert observed["official_reply_reference_path"] == official_reference
+    assert observed["spoken_action_base_path"] == scene
     assert observed["performance_video_path"] == scene
     assert "normal_scene_path" not in observed
     assert observed["normal_video_path"].name.endswith("-official-spoken-v1.mp4")
@@ -152,8 +152,9 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     monkeypatch.setenv("OLIVIA_LIVETALKING_WORKER", "workers/visual.py")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "providers/latentsync/python.exe")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "providers/latentsync")
-    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
-        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", "assets/scene.mp4")
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
 
     async def voice_plan(_letter, text):
@@ -168,12 +169,12 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
 
     observed: dict[str, Path] = {}
 
-    def render(_reply, output, **kwargs):
+    def render(_content, _reply, output, **kwargs):
         observed.update(kwargs)
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_reply_video", render)
+    monkeypatch.setattr(local_server, "render_musical_reply", render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -182,12 +183,18 @@ def test_spoken_media_resolves_relative_renderer_paths_from_project_root(
     )
 
     assert letter["media_status"] == "COMPLETED"
-    assert observed["scene_path"] == scene
+    assert observed["spoken_action_base_path"] == scene
+    assert observed["official_reply_reference_path"] == scene
+    assert observed["performance_video_path"] == scene
     assert observed["tts_config_path"] == tts_config
     assert observed["visual_config_path"] == visual_config
     assert observed["worker_path"] == worker
-    assert observed["latentsync_python_path"] == latentsync_python
-    assert observed["latentsync_root"] == latentsync_root
+    assert observed["environment"]["OLIVIA_LATENTSYNC_PYTHON"] == (
+        "providers/latentsync/python.exe"
+    )
+    assert observed["environment"]["OLIVIA_LATENTSYNC_ROOT"] == (
+        "providers/latentsync"
+    )
 
 
 def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
@@ -212,9 +219,10 @@ def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
         "OLIVIA_LIVETALKING_WORKER": "workers/visual.py",
         "OLIVIA_LATENTSYNC_PYTHON": "providers/latentsync/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "providers/latentsync",
+        "OLIVIA_ORDINARY_ACTION_BASE": "assets/scene.mp4",
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": "assets/scene.mp4",
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": "assets/scene.mp4",
     }
-    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
-        environment[f"OLIVIA_SCENE_{period}"] = "assets/scene.mp4"
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path / "data"))
@@ -236,12 +244,12 @@ def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
 
     observed: dict[str, object] = {}
 
-    def render(_reply, output, **kwargs):
+    def render(_content, _reply, output, **kwargs):
         observed.update(kwargs)
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_reply_video", render)
+    monkeypatch.setattr(local_server, "render_musical_reply", render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -253,9 +261,9 @@ def test_spoken_media_keeps_its_entry_environment_across_voice_plan_await(
     assert observed["tts_config_path"] == tts_config
     assert observed["visual_config_path"] == visual_config
     assert observed["worker_path"] == worker
-    assert observed["scene_path"] == scene
-    assert observed["latentsync_python_path"] == latentsync_python
-    assert observed["latentsync_root"] == latentsync_root
+    assert observed["spoken_action_base_path"] == scene
+    assert observed["official_reply_reference_path"] == scene
+    assert observed["performance_video_path"] == scene
     assert observed["environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
 
 
@@ -288,8 +296,9 @@ def test_local_data_root_alias_drives_state_and_serves_rendered_media(
     monkeypatch.chdir(unrelated_cwd)
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", root_alias)
-    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
-        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", "assets/scene.mp4")
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", "assets/scene.mp4")
 
     letter = {
         "letter_id": "relative-data-root",
@@ -312,11 +321,11 @@ def test_local_data_root_alias_drives_state_and_serves_rendered_media(
             emphasize_sentences=(),
         )
 
-    def render(_reply, output, **_kwargs):
+    def render(_content, _reply, output, **_kwargs):
         Path(output).write_bytes(b"video")
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_reply_video", render)
+    monkeypatch.setattr(local_server, "render_musical_reply", render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -364,8 +373,9 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
     scene = tmp_path / "scene.mp4"
     scene.write_bytes(b"synthetic scene")
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
-    for period in ("MORNING", "DAY", "DUSK", "NIGHT"):
-        monkeypatch.setenv(f"OLIVIA_SCENE_{period}", str(scene))
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", str(scene))
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene))
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
 
     async def voice_plan(_letter, text):
@@ -382,7 +392,7 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
         raise local_server.ReplyMediaError(error_code)
 
     monkeypatch.setattr(local_server, "_voice_plan_for_letter", voice_plan)
-    monkeypatch.setattr(local_server, "render_reply_video", fail_render)
+    monkeypatch.setattr(local_server, "render_musical_reply", fail_render)
 
     asyncio.run(
         local_server._render_media_job(
@@ -439,7 +449,7 @@ def test_public_detail_projects_every_legacy_internal_media_status(
     assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == expected
 
 
-def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
+def test_every_video_route_delivers_spoken_transition_and_music(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -484,9 +494,8 @@ def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
     local_server.store.letters[:] = letters
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(official))
-    for key in ("MORNING", "DAY", "DUSK", "NIGHT"):
-        monkeypatch.setenv(f"OLIVIA_SCENE_{key}", str(scene))
-        monkeypatch.setenv(f"OLIVIA_MUSIC_SCENE_{key}", str(scene))
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", str(scene))
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene))
     monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
 
     directed_requests = []
@@ -506,15 +515,17 @@ def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
 
     received = {}
 
-    def render_spoken(_text, output, **kwargs):
-        received["spoken_video"] = kwargs["voice_performance_plan"]
-        Path(output).write_bytes(b"spoken")
-        return {}
-
-    def render_musical(_content, _text, output, **kwargs):
-        received["musical_video"] = kwargs["voice_performance_plan"]
-        Path(output).write_bytes(b"musical")
-        return {}
+    def render_musical(content, _text, output, **kwargs):
+        received[content] = (
+            kwargs["voice_performance_plan"],
+            kwargs["spoken_action_base_path"],
+        )
+        Path(output).write_bytes(b"spoken-transition-music")
+        return {
+            "reply_structure": (
+                "normal_video_then_official_transition_then_song_video"
+            )
+        }
 
     monkeypatch.setattr(local_server, "direct_voice_performance", direct_frozen_reply)
     monkeypatch.setattr(
@@ -522,7 +533,6 @@ def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
         "direct_music_voice_performance",
         direct_music_reply,
     )
-    monkeypatch.setattr(local_server, "render_reply_video", render_spoken)
     monkeypatch.setattr(local_server, "render_musical_reply", render_musical)
 
     async def exercise():
@@ -535,7 +545,11 @@ def test_ordinary_a_direction_and_music_legacy_direction_are_isolated(
 
     asyncio.run(exercise())
 
-    assert received == {"spoken_video": plan, "musical_video": music_plan}
+    assert received == {
+        "ordinary video request": (plan, scene),
+        "spoken plus music request": (music_plan, scene),
+    }
+    assert all(letter["media_status"] == "COMPLETED" for letter in letters)
     assert directed_requests == [
         "letter-reply:spoken-entry:voice-direction",
         "letter-reply:musical-entry:voice-direction",
@@ -796,8 +810,15 @@ def test_generate_reply_preserves_the_router_selected_video_route(
     )
 
 
-def test_generate_reply_repairs_then_rechecks_video_copy_length(monkeypatch):
-    letter_id = "synthetic-duration-repair"
+@pytest.mark.parametrize(
+    "video_mode",
+    (ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value),
+)
+def test_generate_reply_repairs_then_rechecks_video_copy_length(
+    monkeypatch,
+    video_mode,
+):
+    letter_id = f"synthetic-duration-repair-{video_mode}"
     letter = {
         "letter_id": letter_id,
         "content": "synthetic current letter",
@@ -811,7 +832,7 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(monkeypatch):
     async def classify(_content):
         return TriageResult(
             "high",
-            ReplyMode.SPOKEN_VIDEO.value,
+            video_mode,
             "voice_adds_presence",
             "completed",
             True,
@@ -821,8 +842,23 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(monkeypatch):
 
     async def run_pipeline(request, _context):
         requests.append(request)
-        text = "林" * 190 if request.request_id.endswith(":duration-repair") else "太短"
-        return PipelineResult(letter_id, ReplyState.COMPLETED, text=text)
+        if request.request_id.endswith(":duration-repair"):
+            return PipelineResult(
+                letter_id,
+                ReplyState.COMPLETED,
+                text="林" * 190,
+                quality_status="accepted",
+            )
+        return PipelineResult(
+            letter_id,
+            ReplyState.FAILED,
+            text="太短",
+            error_code="REWRITE_FAILED",
+            quality_status="blocked",
+            violation_codes=("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",),
+            reviewer_calls=1,
+            rewrite_calls=1,
+        )
 
     monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
     monkeypatch.setattr(local_server.reply_pipeline, "run", run_pipeline)

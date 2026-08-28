@@ -55,26 +55,12 @@ def test_router_timeout_uses_portable_environment_configuration():
     assert router.timeout_seconds == 90.0
 
 
-def test_music_performance_uses_system_tod_with_day_morning_fallback(tmp_path):
-    day = tmp_path / "TOD1200.mp4"
-    dusk = tmp_path / "TOD1730.mp4"
-    night = tmp_path / "TOD2000.mp4"
-    for path in (day, dusk, night):
-        path.write_bytes(b"scene")
-    environ = {
-        "OLIVIA_MUSIC_SCENE_DAY": str(day),
-        "OLIVIA_MUSIC_SCENE_DUSK": str(dusk),
-        "OLIVIA_MUSIC_SCENE_NIGHT": str(night),
-    }
+def test_music_performance_uses_one_fixed_accepted_base(tmp_path):
+    performance = tmp_path / "accepted-performance.mp4"
+    performance.write_bytes(b"scene")
+    environ = {"OLIVIA_MUSIC_PERFORMANCE_BASE": str(performance)}
 
-    assert _current_music_performance(environ, hour=5) == day
-    assert _current_music_performance(environ, hour=8) == day
-    assert _current_music_performance(environ, hour=9) == day
-    assert _current_music_performance(environ, hour=15) == day
-    assert _current_music_performance(environ, hour=16) == dusk
-    assert _current_music_performance(environ, hour=18) == dusk
-    assert _current_music_performance(environ, hour=19) == night
-    assert _current_music_performance(environ, hour=4) == night
+    assert _current_music_performance(environ) == performance
 
 
 def _route_arguments(**overrides) -> dict[str, object]:
@@ -504,14 +490,9 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
         "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
         "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "1",
-        **{
-            f"OLIVIA_SCENE_{tod}": scene
-            for tod in ("MORNING", "DAY", "DUSK", "NIGHT")
-        },
-        **{
-            f"OLIVIA_MUSIC_SCENE_{tod}": performance
-            for tod in ("DAY", "DUSK", "NIGHT")
-        },
+        "OLIVIA_ORDINARY_ACTION_BASE": scene,
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": performance,
+        "OLIVIA_SPOKEN_SCENE_CANDIDATES": str(tmp_path / "stale-candidate.mp4"),
     }
     ffmpeg = tmp_path / "runtime" / "ffmpeg.exe"
     ffmpeg.parent.mkdir(parents=True, exist_ok=True)
