@@ -553,24 +553,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if health != "READY":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            log_root = data_root / "logs"
-            log_root.mkdir(parents=True, exist_ok=True)
             _append_launcher_event(data_root, "backend_start")
-            with (log_root / "backend.log").open("ab", buffering=0) as backend_log:
-                server = subprocess.Popen(
-                    [
-                        str(_backend_executable()),
-                        "-c",
-                        _BACKEND_BOOTSTRAP,
-                        str(backend),
-                        str(entrypoint),
-                    ],
-                    cwd=backend,
-                    env=backend_environment,
-                    stdout=backend_log,
-                    stderr=subprocess.STDOUT,
-                    creationflags=creationflags,
-                )
+            server = subprocess.Popen(
+                [
+                    str(_backend_executable()),
+                    "-c",
+                    _BACKEND_BOOTSTRAP,
+                    str(backend),
+                    str(entrypoint),
+                ],
+                cwd=backend,
+                env=backend_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
             deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
             while time.monotonic() < deadline and server.poll() is None:
                 if _health(args.port) == "READY":

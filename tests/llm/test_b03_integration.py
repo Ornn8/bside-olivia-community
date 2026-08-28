@@ -14,7 +14,7 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
         provider="openai_compatible",
         base_url="https://old.example/v1",
         model="old-model",
-        api_key_env="DEEPSEEK_API_KEY",
+        api_key_env="OLIVIA_LLM_RUNTIME_KEY_OLD",
         requires_api_key=True,
     )
     marker = object()
@@ -40,7 +40,11 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     )
     monkeypatch.setattr(local_server.reply_engine, "timeout_seconds", previous.timeout_seconds)
     monkeypatch.setattr(local_server, "create_gateway", lambda config: marker)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OLIVIA_LLM_RUNTIME_KEY_OLD", "old-inflight-key")
+    existing_slots = {
+        name for name in local_server._os.environ
+        if name.startswith("OLIVIA_LLM_RUNTIME_KEY_")
+    }
 
     local_server.apply_runtime_llm_config(
         "https://gateway.example/v1",
@@ -53,7 +57,15 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     assert candidate_analyzer.timeout_seconds == 180.0
     assert local_server.letters_adapter.config.base_url == "https://gateway.example/v1"
     assert local_server.letters_adapter.config.model == "new-model"
-    assert local_server.letters_adapter.config.api_key_env == "DEEPSEEK_API_KEY"
+    assert local_server.letters_adapter.config.api_key_env.startswith(
+        "OLIVIA_LLM_RUNTIME_KEY_"
+    )
+    assert local_server.letters_adapter.config.api_key_env not in existing_slots
+    assert (
+        local_server._os.environ[local_server.letters_adapter.config.api_key_env]
+        == "synthetic-runtime-key"
+    )
+    assert local_server._os.environ["OLIVIA_LLM_RUNTIME_KEY_OLD"] == "old-inflight-key"
     assert local_server.LLM_CONFIG is local_server.letters_adapter.config
     assert local_server.reply_engine.timeout_seconds == 180.0
     assert local_server.LLM_CFG["model"] == "new-model"
@@ -65,12 +77,10 @@ def test_failed_llm_runtime_replacement_keeps_the_previous_gateway(monkeypatch) 
 
     previous_gateway = object()
     monkeypatch.setattr(local_server.letters_adapter, "gateway", previous_gateway)
-    monkeypatch.setattr(
-        local_server,
-        "LLM_CONFIG",
-        GatewayConfig(api_key_env="DEEPSEEK_API_KEY"),
-    )
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "previous-key")
+    existing_slots = {
+        name for name in local_server._os.environ
+        if name.startswith("OLIVIA_LLM_RUNTIME_KEY_")
+    }
 
     def fail(_config):
         raise RuntimeError("synthetic gateway failure")
@@ -89,7 +99,10 @@ def test_failed_llm_runtime_replacement_keeps_the_previous_gateway(monkeypatch) 
         raise AssertionError("runtime replacement failure must remain visible")
 
     assert local_server.letters_adapter.gateway is previous_gateway
-    assert local_server._os.environ["DEEPSEEK_API_KEY"] == "previous-key"
+    assert {
+        name for name in local_server._os.environ
+        if name.startswith("OLIVIA_LLM_RUNTIME_KEY_")
+    } == existing_slots
 
 
 def test_unconfigured_send_is_explicit_and_never_writes_reply(monkeypatch) -> None:

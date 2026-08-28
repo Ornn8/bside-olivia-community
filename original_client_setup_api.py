@@ -393,6 +393,12 @@ class LLMSetupService:
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
         protected_bytes = (self._protect(api_key) + "\n").encode("utf-8")
         self._config_root.mkdir(parents=True, exist_ok=True)
+        try:
+            previous_config = (
+                self._config_path.read_bytes() if self._config_path.is_file() else None
+            )
+        except OSError as exc:
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         generation = secrets.token_hex(16)
         key_path = self._config_root / f"deepseek_api_key.{generation}.dpapi"
         key_staging = key_path.with_suffix(key_path.suffix + ".staging")
@@ -413,6 +419,21 @@ class LLMSetupService:
             key_staging.unlink(missing_ok=True)
             key_path.unlink(missing_ok=True)
             raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        if self._apply_runtime is not None:
+            try:
+                self._apply_runtime(base_url, model, api_key)
+            except Exception as exc:
+                try:
+                    if previous_config is None:
+                        self._config_path.unlink(missing_ok=True)
+                    else:
+                        staging = self._config_path.with_suffix(".json.rollback")
+                        staging.write_bytes(previous_config)
+                        staging.replace(self._config_path)
+                except OSError:
+                    pass
+                key_path.unlink(missing_ok=True)
+                raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         for stale in self._config_root.glob("deepseek_api_key.*.dpapi"):
             if stale != key_path and _KEY_FILE_RE.fullmatch(stale.name):
                 try:
@@ -424,17 +445,17 @@ class LLMSetupService:
         except OSError:
             pass
         self._tested_digest = None
-        if self._apply_runtime is None:
-            return False
-        try:
-            self._apply_runtime(base_url, model, api_key)
-        except Exception as exc:
-            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
-        return True
+        return self._apply_runtime is not None
 
     def delete(self) -> bool:
         configured = self._config()
         active = self._active_key_path()
+        try:
+            previous_config = (
+                self._config_path.read_bytes() if self._config_path.is_file() else None
+            )
+        except OSError as exc:
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         try:
             _atomic_json(
                 self._config_path,
@@ -446,6 +467,24 @@ class LLMSetupService:
             )
         except OSError as exc:
             raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        if self._apply_runtime is not None:
+            try:
+                self._apply_runtime(
+                    str(configured["base_url"]),
+                    str(configured["model"]),
+                    None,
+                )
+            except Exception as exc:
+                try:
+                    if previous_config is None:
+                        self._config_path.unlink(missing_ok=True)
+                    else:
+                        staging = self._config_path.with_suffix(".json.rollback")
+                        staging.write_bytes(previous_config)
+                        staging.replace(self._config_path)
+                except OSError:
+                    pass
+                raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         if active is not None:
             try:
                 active.unlink(missing_ok=True)
@@ -456,17 +495,7 @@ class LLMSetupService:
         except OSError:
             pass
         self._tested_digest = None
-        if self._apply_runtime is None:
-            return False
-        try:
-            self._apply_runtime(
-                str(configured["base_url"]),
-                str(configured["model"]),
-                None,
-            )
-        except Exception as exc:
-            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
-        return True
+        return self._apply_runtime is not None
 
     def complete(self, *, skipped: object) -> bool:
         if type(skipped) is not bool:

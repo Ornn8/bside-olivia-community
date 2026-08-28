@@ -465,6 +465,84 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_runtime_apply_failure_rolls_back_saved_config_and_key(tmp_path: Path) -> None:
+    async def probe(_base_url: str, _model: str, _api_key: str) -> None:
+        return None
+
+    config_root = tmp_path / "config"
+    config_root.mkdir(parents=True)
+    config_path = config_root / "llm.json"
+    previous_config = (
+        '{"schema_version":1,"base_url":"https://old.example/v1",'
+        '"model":"old-model"}\n'
+    ).encode("utf-8")
+    config_path.write_bytes(previous_config)
+    old_key = config_root / "deepseek_api_key.dpapi"
+    old_key.write_text("protected:old\n", encoding="utf-8")
+
+    def fail_apply(_base_url: str, _model: str, _api_key: str | None) -> None:
+        raise RuntimeError("synthetic apply failure")
+
+    service = LLMSetupService(
+        tmp_path,
+        protect=lambda value: f"protected:{len(value)}",
+        unprotect=lambda _value: "stored-secret",
+        probe=probe,
+        apply_runtime=fail_apply,
+    )
+    asyncio.run(
+        service.test(
+            {
+                "base_url": "https://new.example/v1",
+                "model": "new-model",
+                "api_key": "replacement-key",
+            }
+        )
+    )
+
+    with pytest.raises(LLMSetupError, match="LLM_SETUP_SAVE_FAILED"):
+        service.save(
+            {
+                "base_url": "https://new.example/v1",
+                "model": "new-model",
+                "api_key": "replacement-key",
+            }
+        )
+
+    assert config_path.read_bytes() == previous_config
+    assert old_key.read_text(encoding="utf-8") == "protected:old\n"
+    assert list(config_root.glob("deepseek_api_key.*.dpapi")) == []
+
+
+def test_runtime_apply_failure_rolls_back_key_deletion(tmp_path: Path) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir(parents=True)
+    config_path = config_root / "llm.json"
+    previous_config = (
+        '{"schema_version":1,"base_url":"https://old.example/v1",'
+        '"model":"old-model"}\n'
+    ).encode("utf-8")
+    config_path.write_bytes(previous_config)
+    old_key = config_root / "deepseek_api_key.dpapi"
+    old_key.write_text("protected:old\n", encoding="utf-8")
+
+    service = LLMSetupService(
+        tmp_path,
+        protect=lambda value: value,
+        unprotect=lambda value: value,
+        probe=lambda *_args: None,
+        apply_runtime=lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("synthetic apply failure")
+        ),
+    )
+
+    with pytest.raises(LLMSetupError, match="LLM_SETUP_SAVE_FAILED"):
+        service.delete()
+
+    assert config_path.read_bytes() == previous_config
+    assert old_key.read_text(encoding="utf-8") == "protected:old\n"
+
+
 def test_interrupted_save_keeps_previous_provider_key_generation_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

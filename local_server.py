@@ -174,11 +174,8 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
     """Atomically switch future reply requests to freshly saved local settings."""
 
     global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG
-    key_env = LLM_CONFIG.api_key_env or "DEEPSEEK_API_KEY"
-    previous_key = _os.environ.get(key_env)
-    if api_key is None:
-        _os.environ.pop(key_env, None)
-    else:
+    key_env = f"OLIVIA_LLM_RUNTIME_KEY_{uuid.uuid4().hex.upper()}"
+    if api_key is not None:
         _os.environ[key_env] = api_key
     candidate = replace(
         LLM_CONFIG,
@@ -195,10 +192,7 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
     try:
         gateway = create_gateway(candidate)
     except Exception:
-        if previous_key is None:
-            _os.environ.pop(key_env, None)
-        else:
-            _os.environ[key_env] = previous_key
+        _os.environ.pop(key_env, None)
         raise
     letters_adapter.config = candidate
     letters_adapter.gateway = gateway
