@@ -411,7 +411,6 @@ def _verify_archive(
         'method: "DELETE"',
         "eval(",
         "new Function",
-        "PRIVATE_WORLD_PATH",
         "CANDIDATES_PATH",
         "待确认的关系建议",
         "批准",

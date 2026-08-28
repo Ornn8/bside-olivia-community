@@ -14,7 +14,7 @@ from original_client_settings_ui import (
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v8"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v9"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -94,7 +94,9 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
         'const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";'
     ) == 1
     assert "导入官方文字信件" in BOOTSTRAP_JAVASCRIPT
-    assert "只导入原信和文字回信，不导入视频" in BOOTSTRAP_JAVASCRIPT
+    assert "原信和林离的文字回信会按原时间进入信箱" in BOOTSTRAP_JAVASCRIPT
+    assert "双方内容会形成长期语义记忆" in BOOTSTRAP_JAVASCRIPT
+    assert "历史往来会初始化关系状态" in BOOTSTRAP_JAVASCRIPT
     assert "requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
     assert "path === OFFICIAL_LETTER_IMPORT_PATH ? 600000 : 8000" in BOOTSTRAP_JAVASCRIPT
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
@@ -287,13 +289,12 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
     }
 
 
-def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:
+def test_original_settings_private_world_entry_shows_safe_relationship_summary() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
     assert "私人世界状态" in source
     assert "原因代码" in source
     for forbidden in (
-        "PRIVATE_WORLD_PATH",
         "CANDIDATES_PATH",
         "legacyPrivateWorldLabels",
         "legacyCandidateRoute",
@@ -307,6 +308,17 @@ def test_original_settings_private_world_entry_is_limited_to_safe_status() -> No
         "renderPrivateWorldPanel(\n          panels.privateWorld,\n          capabilities.private_world,",
     ):
         assert forbidden not in source
+    for required in (
+        "PRIVATE_WORLD_PATH",
+        "relationship_stage",
+        "关系阶段",
+        "熟悉度",
+        "信任",
+        "舒适",
+        "亲密",
+        "紧张",
+    ):
+        assert required in source
 
 
 def test_original_settings_private_world_status_fails_closed() -> None:
@@ -338,8 +350,22 @@ const document = {
 };
 const context = {
   URL, AbortController, document,
+  fetch: async (url) => ({
+    ok: true,
+    json: async () => ({
+      status: "READY",
+      relationship_stage: "familiar",
+      levels: {
+        familiarity: "high", trust: "medium", comfort: "medium",
+        closeness: "low", tension: "low",
+      },
+    }),
+  }),
   MutationObserver: class { constructor() {} observe() {} },
-  window: { requestAnimationFrame: () => {}, addEventListener: () => {} },
+  window: {
+    requestAnimationFrame: () => {}, addEventListener: () => {},
+    setTimeout: () => 1, clearTimeout: () => {},
+  },
 };
 vm.runInNewContext(source, context);
 (async () => {
@@ -379,6 +405,8 @@ vm.runInNewContext(source, context);
     assert rendered[3][2] == "原因代码：无"
     assert rendered[4][2] == "原因代码：无"
     assert rendered[7][2] == "原因代码：无"
+    assert rendered[0][2] == "关系阶段：熟悉"
+    assert rendered[0][3] == "熟悉度：高 · 信任：中 · 舒适：中 · 亲密：低 · 紧张：低"
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
