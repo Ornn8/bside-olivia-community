@@ -31,10 +31,10 @@ class VideoCapabilityAPIError(RuntimeError):
 
 class VideoCapabilityAPIInstaller(Protocol):
     def status(self) -> dict[str, object]: ...
-    def start(self, *, bundle_id: str, source_mode: str = "auto") -> str: ...
+    def start(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def pause(self) -> str: ...
-    def resume(self, *, bundle_id: str, source_mode: str = "auto") -> str: ...
-    def retry(self, *, bundle_id: str, source_mode: str = "auto") -> str: ...
+    def resume(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
+    def retry(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def import_configured_assets(self, environment) -> str: ...
     def import_configured_offline(self, *, bundle_id: str, environment) -> str: ...
 
@@ -122,22 +122,33 @@ def mount_original_client_video_capability_api(
         bundle_id = payload.get("bundle_id")
         source = payload.get("source", "auto")
         if action_name in {"install", "resume", "retry"}:
-            if set(payload) != {"action", "bundle_id", "source"} or not isinstance(bundle_id, str) or source not in {"auto", "official"}:
+            fields = {"action", "bundle_id", "source"}
+            if (
+                set(payload) not in (fields, fields | {"accept_licenses"})
+                or not isinstance(bundle_id, str)
+                or source not in {"auto", "official"}
+                or type(payload.get("accept_licenses", False)) is not bool
+            ):
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            call = getattr(installer, str(action_name))
-            kwargs = {"bundle_id": bundle_id, "source_mode": str(source)}
+            call = installer.start if action_name == "install" else getattr(installer, str(action_name))
+            kwargs = {
+                "bundle_id": bundle_id,
+                "source_mode": str(source),
+                "accept_licenses": payload.get("accept_licenses", False),
+            }
         elif action_name == "pause":
             if set(payload) != {"action"}:
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
             call, kwargs = installer.pause, {}
-        elif action_name == "import_official":
-            if set(payload) != {"action"}:
+        elif action_name in {"import_official", "import_offline"}:
+            expected = {"action"} if action_name == "import_official" else {"action", "bundle_id"}
+            if set(payload) != expected or (
+                action_name == "import_offline" and not isinstance(bundle_id, str)
+            ):
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            call, kwargs = installer.import_configured_assets, {"environment": environment}
-        elif action_name == "import_offline":
-            if set(payload) != {"action", "bundle_id"} or not isinstance(bundle_id, str):
-                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            call, kwargs = installer.import_configured_offline, {"bundle_id": bundle_id, "environment": environment}
+            raise VideoCapabilityAPIError(
+                "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE", status=503
+            )
         else:
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
         try:

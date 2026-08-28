@@ -22,6 +22,11 @@
         "status": {"const": "FIXED"},
         "requires_gpu": {"type": "boolean"},
         "license_review_required": {"type": "boolean"},
+        "runtime_environment": {
+          "type": "object",
+          "propertyNames": {"enum": ["OLIVIA_FFMPEG_EXE", "OLIVIA_LATENTSYNC_ROOT", "OLIVIA_MINIMAX_COMFY_ROOT", "OLIVIA_SEED_VC_ROOT"]},
+          "additionalProperties": {"type": "string", "pattern": "^[^/].*[^/.]$"}
+        },
         "dependencies": {"type": "array", "items": {"type": "string"}},
         "files": {"type": "array", "items": {"$ref": "#/$defs/file"}}
       }
@@ -37,6 +42,16 @@
         "sha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"},
         "license": {"type": "string"},
         "redistributable": {"type": "boolean"},
+        "install": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "destination", "strip_components"],
+          "properties": {
+            "kind": {"const": "zip"},
+            "destination": {"type": "string", "pattern": "^[^/].*[^/.]$"},
+            "strip_components": {"type": "integer", "minimum": 0, "maximum": 4}
+          }
+        },
         "sources": {"type": "object", "propertyNames": {"enum": ["domestic", "official"]}, "additionalProperties": {"type": "string", "format": "uri"}}
       }
     }

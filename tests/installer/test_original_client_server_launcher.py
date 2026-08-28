@@ -134,6 +134,30 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
 
 
+def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> None:
+    data_root = (tmp_path / "data").resolve()
+    runtime_root = data_root / "capabilities" / "video" / "ordinary_video" / "latentsync" / "runtime"
+    runtime_root.mkdir(parents=True)
+    profile = data_root / "capabilities" / "video" / "runtime-environment.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-runtime-environment.v1",
+                "environment": {"OLIVIA_LATENTSYNC_ROOT": str(runtime_root)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    environment = start_local._load_video_environment({}, data_root)
+
+    assert environment["OLIVIA_LATENTSYNC_ROOT"] == str(runtime_root)
+    explicit = start_local._load_video_environment(
+        {"OLIVIA_LATENTSYNC_ROOT": "D:/managed/latentsync"}, data_root
+    )
+    assert explicit["OLIVIA_LATENTSYNC_ROOT"] == "D:/managed/latentsync"
+
+
 def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     config_root = data_root / "config"

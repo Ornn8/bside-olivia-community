@@ -106,6 +106,60 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
 
 
+def test_video_reply_readiness_does_not_require_livetalking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tts_config = _write(tmp_path / "config" / "tts.json")
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    minimax_root = tmp_path / "minimax"
+    for relative in (
+        "main.py",
+        "comfy_extras/nodes_minimax_music.py",
+        "models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+        "models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        "models/vae/minimax_music3_dav.safetensors",
+    ):
+        _write(minimax_root / relative)
+    latentsync_root = tmp_path / "latentsync"
+    for relative in (
+        "scripts/inference.py",
+        "configs/unet/stage2_efficient.yaml",
+        "checkpoints/latentsync_unet.pt",
+    ):
+        _write(latentsync_root / relative)
+    performance = _write(tmp_path / "private" / "performance.mp4")
+    ffmpeg = _write(tmp_path / "ffmpeg.exe")
+    environment = {
+        "OLIVIA_TTS_CONFIG": str(tts_config),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": str(_write(tmp_path / "minimax-python.exe")),
+        "OLIVIA_MINIMAX_WORKER": str(_write(tmp_path / "minimax-worker.py")),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_LATENTSYNC_PYTHON": str(_write(tmp_path / "latentsync-python.exe")),
+        "OLIVIA_ROFORMER_EXE": str(_write(tmp_path / "roformer.exe")),
+        "OLIVIA_ROFORMER_MODEL_PATH": str(_write(tmp_path / "roformer.ckpt")),
+        "OLIVIA_ROFORMER_CONFIG_PATH": str(_write(tmp_path / "roformer.yaml")),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(_write(tmp_path / "private" / "action.mp4")),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(_write(tmp_path / "private" / "reply.mp4")),
+        "OLIVIA_PROVIDER_CACHE_ROOT": str(tmp_path / "cache"),
+    }
+    monkeypatch.setattr(
+        music_reply, "assemble_latentsync_video_delivery", lambda *_args, **_kwargs: object(), raising=False
+    )
+    monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
+    monkeypatch.setattr(music_reply, "musical_reply_configured", lambda *_args, **_kwargs: True)
+
+    status = music_reply.video_reply_dependency_status(
+        environment, performance_video_path=performance
+    )
+    dependencies = {item["id"]: item for item in status["dependencies"]}
+
+    assert dependencies["livetalking"]["state"] == "missing"
+    assert status["ready"] is True
+
+
 def _value_after(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 

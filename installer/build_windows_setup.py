@@ -119,6 +119,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/verify_mem0_runtime.py",
     "installer/version_launcher.py",
     "installer/video-capability-manifest.json",
+    "installer/seed-vc-overlap-frames.patch",
 }
 RELEASE_TOOL_FILES = {
     "tools/asr_healthcheck.py",

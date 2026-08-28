@@ -4,11 +4,13 @@
 
 ## 客户端内一键安装视频能力
 
-安装后的客户端在“本地能力与下载”中提供两个独立 bundle：普通视频和音乐视频扩展。普通视频包含 CosyVoice 3、LatentSync、FFmpeg 和用户正版 Olivia 私有素材导入；音乐视频扩展另外包含 MiniMax Music 3、Demucs，并显示 RoFormer/Seed-VC 的许可证审查与缺失状态。LiveTalking 是独立可选能力，不是普通视频回信的阻塞依赖。
+安装后的客户端在“本地能力与下载”中提供两个独立 bundle：普通视频和音乐视频扩展。普通视频组装 CosyVoice 3、LatentSync 与 FFmpeg 的公开部分；音乐视频扩展另外组装 MiniMax Music 3、Demucs 和固定 revision 的 Seed-VC GPL 源码。LiveTalking 是独立可选能力，不参与普通/LatentSync 视频回信的 readiness。
 
-下载器默认选择国内源，失败后回退官方源；每个文件都校验声明的 size 和 SHA-256，使用 `.part` + HTTP Range 续传，在 staging 完整校验后原子安装。安装状态支持暂停、恢复、失败重试和离线目录/zip 导入，目标固定为用户数据根下的 `data/capabilities/video` 逻辑位置，不写 C 盘临时目录。
+下载器默认选择国内源，失败后回退官方源；每个文件都校验声明的 size 和 SHA-256，使用 `.part` + HTTP Range 续传。声明了 `install.kind=zip` 的归档会在 staging 内拒绝绝对路径、父目录逃逸、符号链接、重复路径和超限展开，然后按固定目标安全解包；运行时路径写入 `data/capabilities/video/runtime-environment.json`，下次由 Windows 启动器验证并加载。只有下载、校验、解包和持久化接线全部完成才会标记 bundle `ready`。
 
-RoFormer 和 Seed-VC 的权重属于 `license_review_required` 且不可公开捆绑的资产，不会被清单自动下载；官方 Olivia 素材也只从用户本机已配置的正版安装导入并逐文件校验，不进入公共仓库或下载源。
+音乐 bundle 必须由用户显式确认已阅读上游条款才会开始下载；组装公开文件后仍保持 `license_review_required`，不会在 RoFormer/Seed-VC 受限依赖缺失时标记 `ready`。RoFormer 和 Seed-VC 权重不会进入公共清单。Seed-VC GPL 源码会实际应用并验证 [`seed-vc-overlap-frames.patch`](../installer/seed-vc-overlap-frames.patch)。
+
+当前客户端没有经过审计的原生文件/目录选择桥，因此“导入离线包”和“导入官方 Olivia 素材”在 UI 中禁用，API 返回 `VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE`；不得通过预置环境变量把它们描述成客户端内选择或完成状态。该限制也意味着真实正版素材未导入前，完整视频运行能力保持不可用。
 
 ## 准备清单
 

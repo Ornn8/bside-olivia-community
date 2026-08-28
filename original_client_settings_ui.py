@@ -1178,7 +1178,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         text("div", label, "text-text-body text-label-l"),
         text(
           "div",
-          `${state === "ready" ? "已就绪" : state === "paused" ? "已暂停" : state === "failed" ? "安装失败，可重试" : ["downloading", "queued", "verifying"].includes(state) ? "正在安装" : "未安装"}`,
+          `${state === "ready" ? "已就绪" : state === "license_review_required" ? "许可证审查与受限依赖未完成" : state === "paused" ? "已暂停" : state === "failed" ? "安装失败，可重试" : ["downloading", "queued", "verifying"].includes(state) ? "正在安装" : "未安装"}`,
           "text-text-secondary text-body-m font-regular"
         ),
         text("div", description, "text-text-secondary text-caption-m font-regular"),
@@ -1190,14 +1190,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           await renderVideoCapabilityPanel(panel);
         });
         item.append(pause);
+      } else if (state === "license_review_required") {
+        item.append(text("div", "公共文件已组装；RoFormer/Seed-VC 受限权重未公开捆绑，完成本地许可证审查前不会标记就绪。", "text-text-secondary text-caption-m font-regular"));
       } else if (state !== "ready") {
         const action = state === "paused" ? "resume" : state === "failed" ? "retry" : "install";
         const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "下载并安装";
         const install = button(actionLabel, async () => {
           if (!await confirmAction(`确认下载并安装${label}？文件会保存到本地数据目录。`)) return;
+          if (id === "music_video" && !await confirmAction("确认已阅读 MiniMax Music 3、RoFormer 与 Seed-VC 的上游许可证；受限权重不会由公共清单下载，缺失时能力保持不可用。")) return;
           setButtonsBusy([install], true);
           try {
-            await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action, bundle_id: id, source: "auto" });
+            await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action, bundle_id: id, source: "auto", accept_licenses: id === "music_video" });
             await renderVideoCapabilityPanel(panel);
           } catch (_error) {
             setButtonsBusy([install], false);
@@ -1207,24 +1210,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       const offline = button("导入离线包", async () => {
         try {
-          await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "import_offline", bundle_id: id });
-          await renderVideoCapabilityPanel(panel);
+          throw new Error("VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE");
         } catch (_error) {
-          // The native installer supplies the selected offline package path; no path is shown here.
+          // This web-hosted client cannot securely obtain a native filesystem path.
         }
       });
+      offline.disabled = true;
+      offline.dataset.reasonCode = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
+      offline.title = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
       item.append(offline);
       list.append(item);
     }
-    const privateState = text("div", "官方 Olivia 私有素材不会公共下载或再分发。若自动检测不到已配置的正版素材，可在这里导入并逐文件 SHA 校验。", "text-text-secondary text-caption-m font-regular");
+    const privateState = text("div", "官方 Olivia 私有素材不会公共下载或再分发。当前客户端不提供可信的本机路径选择，因此官方目录与离线包导入均不可用，视频能力保持 UNAVAILABLE。", "text-text-secondary text-caption-m font-regular");
     const privateImport = button("导入官方素材", async () => {
       try {
-        await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "import_official" });
-        privateState.textContent = "官方素材已导入并校验；请重新检测视频能力。";
+        throw new Error("VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE");
       } catch (_error) {
         privateState.textContent = "未找到已配置的官方 Olivia 素材；请先在客户端内选择官方安装目录或离线包。";
       }
     });
+    privateImport.disabled = true;
+    privateImport.dataset.reasonCode = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
+    privateImport.title = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
     list.append(privateState, privateImport);
     const refresh = actions();
     refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));

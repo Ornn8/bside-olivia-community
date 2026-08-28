@@ -81,10 +81,12 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
     "original_client_update_api.py",
+    "original_client_video_capability_api.py",
     "patch_companion_settings.py",
     "patch_feapp.py",
     "patch_webplayer.py",
     "video_reply_settings.py",
+    "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "contracts/component_update_package.example.json",
@@ -106,6 +108,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "installer/version_launcher.py",
     "installer/mem0-capability-manifest.json",
     "installer/video-capability-manifest.json",
+    "installer/seed-vc-overlap-frames.patch",
     "installer/mem0-runtime-artifacts.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",

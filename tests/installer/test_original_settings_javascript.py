@@ -223,6 +223,15 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert 'button("管理下载", () => openDialog(false, "capability"))' in source
 
 
+def test_video_capability_does_not_offer_fake_native_path_selection() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert '{ action: "import_offline"' not in source
+    assert '{ action: "import_official"' not in source
+    assert "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE" in source
+    assert 'accept_licenses: id === "music_video"' in source
+
+
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:
     node = shutil.which("node")
     if node is None:

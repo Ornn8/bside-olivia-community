@@ -59,6 +59,7 @@ py-modules = [
     "original_client_media_http",
     "original_client_server",
     "original_client_settings_ui",
+    "original_client_video_capability_api",
     "patch_companion_settings",
     "patch_feapp",
     "persona_loader",
@@ -101,6 +102,7 @@ include = [
 contracts = ["*.json"]
 "contracts.asset_baseline" = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
+installer = ["video-capability-manifest.json", "seed-vc-overlap-frames.patch"]
 linli_character = [
     "persona_release_v2.json",
     "persona_release_provenance_v2.json",

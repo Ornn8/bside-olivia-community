@@ -38,6 +38,11 @@ class CompleteVideoDelivery:
     worker: Path
 
 
+@dataclass(frozen=True)
+class LatentSyncVideoDelivery:
+    tts: TTSConfig
+
+
 def _bounded_voice_reference(source: Path, temporary_root: Path) -> Path:
     """Use only the reviewed clean 4.85-second voice prompt."""
 
@@ -214,6 +219,33 @@ def assemble_complete_video_delivery(
     return CompleteVideoDelivery(tts, visual, worker)
 
 
+def assemble_latentsync_video_delivery(
+    tts_config_path: Path,
+    temporary_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    require_quality_gate: bool = False,
+) -> LatentSyncVideoDelivery:
+    """Assemble the ordinary LatentSync path without the optional LiveTalking provider."""
+
+    try:
+        tts = _tts_config(
+            tts_config_path,
+            temporary_root,
+            ordinary_video=True,
+            env=env,
+        )
+    except (ReplyMediaError, ValueError, TypeError) as exc:
+        raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE") from exc
+    if not delivery_configured(tts) or not media_runtime_available(env):
+        raise ReplyMediaError("COMPLETE_VIDEO_CONFIG_UNAVAILABLE")
+    if require_quality_gate and not delivery_configured(
+        tts, require_quality_gate=True
+    ):
+        raise ReplyMediaError("TTS_CONTENT_GATE_UNAVAILABLE")
+    return LatentSyncVideoDelivery(tts)
+
+
 def _encode_frames(frames: Path, audio: Path, output: Path, duration: float) -> None:
     temporary = output.with_suffix(".rendering.mp4")
     command = [
@@ -282,14 +314,22 @@ def render_reply_video(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-reply-", dir=output_path.parent) as temporary:
         root = Path(temporary)
-        delivery = assemble_complete_video_delivery(
-            tts_config_path,
-            visual_config_path,
-            worker_path,
-            root,
-            environment,
-            require_quality_gate=enforce_content_gate,
-        )
+        if scene_path is not None:
+            delivery = assemble_latentsync_video_delivery(
+                tts_config_path,
+                root,
+                environment,
+                require_quality_gate=enforce_content_gate,
+            )
+        else:
+            delivery = assemble_complete_video_delivery(
+                tts_config_path,
+                visual_config_path,
+                worker_path,
+                root,
+                environment,
+                require_quality_gate=enforce_content_gate,
+            )
         audio_path = root / "reply.wav"
         frames = root / "frames"
         delivery_plan: ReplyDeliveryPlan | VoicePerformancePlan | None = None

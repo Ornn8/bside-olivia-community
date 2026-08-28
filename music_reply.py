@@ -26,7 +26,7 @@ from runtime.media.media_paths import configured_media_path
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from runtime.reply.reply_media import (
     ReplyMediaError,
-    assemble_complete_video_delivery,
+    assemble_latentsync_video_delivery,
     render_reply_video,
 )
 from runtime.media.song_content import plan_song_content
@@ -101,8 +101,6 @@ def musical_reply_configured(
     transition_reference = configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE")
     delivery_paths = (
         configured_path("OLIVIA_TTS_CONFIG"),
-        configured_path("OLIVIA_VISUAL_CONFIG"),
-        configured_path("OLIVIA_LIVETALKING_WORKER"),
         configured_path("OLIVIA_LOCAL_DATA_ROOT"),
     )
     if minimax_root is None or latentsync_root is None or any(
@@ -110,11 +108,9 @@ def musical_reply_configured(
     ):
         return False
     try:
-        assemble_complete_video_delivery(
+        assemble_latentsync_video_delivery(
             delivery_paths[0],
             delivery_paths[1],
-            delivery_paths[2],
-            delivery_paths[3],
             env,
         )
     except ReplyMediaError:
@@ -187,12 +183,10 @@ def video_reply_dependency_status(
     visual_worker = configured("OLIVIA_LIVETALKING_WORKER")
     local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
     delivery_ready = False
-    if all(path is not None for path in (tts_config, visual_config, visual_worker, local_data_root)):
+    if all(path is not None for path in (tts_config, local_data_root)):
         try:
-            assemble_complete_video_delivery(
+            assemble_latentsync_video_delivery(
                 tts_config,
-                visual_config,
-                visual_worker,
                 local_data_root,
                 env,
             )
@@ -295,7 +289,7 @@ def video_reply_dependency_status(
         item(
             "livetalking",
             "视频驱动配置（LiveTalking）",
-            delivery_ready and bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
+            bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
             "manual",
             "国内镜像待固定；备用：GitHub",
             (
@@ -380,8 +374,11 @@ def video_reply_dependency_status(
             "由客户端自动创建，无需下载",
         ),
     ]
+    required_dependencies = [
+        item for item in dependencies if item["id"] != "livetalking"
+    ]
     ready = bool(
-        all(item["state"] == "ready" for item in dependencies)
+        all(item["state"] == "ready" for item in required_dependencies)
         and musical_reply_configured(
             env,
             performance_video_path=performance_video_path,
