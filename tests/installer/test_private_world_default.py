@@ -27,6 +27,11 @@ def test_start_local_configures_private_world_under_install_data(
     monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
     monkeypatch.setattr(start_local, "_load_dpapi_key", lambda _path: "")
     monkeypatch.setattr(start_local, "_client_executable", lambda _root: client)
+    monkeypatch.setattr(
+        start_local,
+        "_repair_client_frontend",
+        lambda _root, _port: "ALREADY_PATCHED",
+    )
 
     def fake_call(command, *, cwd, env):
         observed.update({"command": command, "cwd": cwd, "env": env})

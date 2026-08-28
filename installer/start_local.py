@@ -16,6 +16,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
+from patch_companion_settings import (
+    CompanionSettingsPatchError,
+    patch_companion_settings,
+)
+
 
 def _load_dpapi_key(path: Path) -> str:
     if os.name != "nt" or not path.is_file():
@@ -194,6 +199,21 @@ def _client_executable(root: Path) -> Path:
     return root / "app" / version / "Olivia.exe"
 
 
+def _repair_client_frontend(root: Path, port: int) -> str:
+    """Upgrade repository-owned UI in an existing isolated client copy."""
+
+    client = _client_executable(root)
+    feapp = client.parent / "resources" / "feapp.dat"
+    if not feapp.is_file():
+        raise CompanionSettingsPatchError("COMPANION_ARCHIVE_NOT_FOUND")
+    result = patch_companion_settings(
+        feapp,
+        f"http://127.0.0.1:{port}/",
+        work_root=feapp.parent,
+    )
+    return result["status"]
+
+
 def _client_command(client: Path, local: Path) -> list[str]:
     """Match the first-party launcher's only client argument."""
 
@@ -356,6 +376,11 @@ def main(argv: list[str] | None = None) -> int:
     client = _client_executable(root)
     if not client.is_file():
         print("ISOLATED_CLIENT_NOT_FOUND")
+        return 2
+    try:
+        _repair_client_frontend(root, args.port)
+    except (CompanionSettingsPatchError, OSError):
+        print("CLIENT_FRONTEND_REPAIR_FAILED")
         return 2
     profile = root / "profile"
     roaming = profile / "Roaming"

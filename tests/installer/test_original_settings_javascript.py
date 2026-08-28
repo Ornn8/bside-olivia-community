@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -76,3 +77,49 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert 'local_data_root: "本地数据目录"' in source
     assert "|| isSettingsRoute()" not in source
     assert "innerHTML" not in source
+
+
+def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable for JavaScript behavior validation")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+let source = fs.readFileSync(0, "utf8");
+source = source.replace(/\}\)\(\);\s*$/, `
+  globalThis.mountSettingsShell = mountShell;
+})();\n`);
+
+let dialogRemoved = false;
+const dialog = { remove: () => { dialogRemoved = true; } };
+const document = {
+  currentScript: { dataset: { apiBase: "http://127.0.0.1:8899/" } },
+  documentElement: {},
+  querySelector: (selector) => selector.includes("settings-dialog") ? dialog : null,
+  querySelectorAll: () => [],
+};
+const context = {
+  URL, AbortController, document,
+  MutationObserver: class { observe() {} },
+  window: {
+    location: { pathname: "/collection", hash: "" },
+    requestAnimationFrame: () => {},
+    addEventListener: () => {},
+    setInterval: () => 1,
+  },
+};
+vm.runInNewContext(source, context);
+context.mountSettingsShell();
+process.stdout.write(JSON.stringify({ dialogRemoved }));
+'''
+    completed = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
+    assert completed.returncode == 0, output
+    assert json.loads(completed.stdout)["dialogRemoved"] is False

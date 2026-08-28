@@ -1083,6 +1083,7 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
         '"query.response":io(a)}}),t(c)},onFailure:'
         '!z.isNew||$?(await t.replace({name:ve.Home}),'
         'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+        '"hide-write":o(p)||!o(N3)'
     )
     with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(main_member, javascript)
@@ -1101,6 +1102,8 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert 'localStorage.setItem("appMode","lite")' in patched
     assert "await t.replace({name:ve.Collection})" in patched
     assert "await t.replace({name:ve.Home})" not in patched
+    assert '"hide-write":!1' in patched
+    assert '"hide-write":o(p)||!o(N3)' not in patched
 
 
 def test_patch_feapp_requires_explicit_local_ws_and_rolls_back_on_failure(tmp_path: Path) -> None:
