@@ -33,6 +33,7 @@ CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
 
 def test_video_seed_patch_is_a_required_runtime_payload() -> None:
     assert "installer/seed-vc-overlap-frames.patch" in PAYLOAD_REQUIRED_RELATIVE_FILES
+    assert "installer/assets/olivia.ico" in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert {"contracts/video_capability_action.schema.json", "contracts/video_capability_manifest.schema.json", "contracts/video_capability_status.schema.json"} <= PAYLOAD_REQUIRED_RELATIVE_FILES
 
 
@@ -76,10 +77,13 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
     script = repo_root / "installer" / "Create-Shortcut.ps1"
     install_root = tmp_path / "selected install with spaces"
     client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
+    icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
     start = install_root / "START.cmd"
     shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
     client.parent.mkdir(parents=True)
+    icon.parent.mkdir(parents=True)
     client.write_bytes(b"synthetic client")
+    icon.write_bytes(b"synthetic icon")
     start.write_text("@exit /b 0\n", encoding="utf-8")
     (install_root / ".olivia-full-patch.json").write_text(
         json.dumps({"client_version": "0.0.9.615"}),
@@ -136,7 +140,109 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
     assert Path(metadata["working"]) == install_root
-    assert metadata["icon"] == f"{client},0"
+    assert metadata["icon"] == f"{icon},0"
+
+
+def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows shortcuts are only available on Windows")
+
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "installer" / "Create-Shortcut.ps1"
+    install_root = tmp_path / "installation"
+    client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
+    legacy_icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
+    active_root = install_root / "versions" / "local_backend" / f"1.1.0-{'a' * 64}"
+    active_icon = active_root / "installer" / "assets" / "olivia.ico"
+    start = install_root / "START.cmd"
+    shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
+    client.parent.mkdir(parents=True)
+    legacy_icon.parent.mkdir(parents=True)
+    active_icon.parent.mkdir(parents=True)
+    client.write_bytes(b"synthetic client")
+    legacy_icon.write_bytes(b"legacy icon")
+    active_icon.write_bytes(b"active icon")
+    start.write_text("@exit /b 0\n", encoding="utf-8")
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"client_version": "0.0.9.615"}),
+        encoding="utf-8",
+    )
+
+    powershell = str(
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    base_command = [
+        powershell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-InstallRoot",
+        str(install_root),
+        "-ShortcutPath",
+        str(shortcut),
+    ]
+    created = subprocess.run(
+        base_command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    (install_root / ".olivia-update-state.json").write_text(
+        json.dumps(
+            {
+                "active_components": {
+                    "local_backend": {
+                        "payload_path": active_root.relative_to(install_root).as_posix()
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = subprocess.run(
+        [*base_command, "-RefreshExisting"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert refreshed.returncode == 0, refreshed.stderr or refreshed.stdout
+    inspect = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "[pscustomobject]@{target=$s.TargetPath;icon=$s.IconLocation}"
+                "|ConvertTo-Json -Compress"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    metadata = json.loads(inspect.stdout)
+    assert Path(metadata["target"]) == start
+    assert metadata["icon"] == f"{active_icon},0"
 
 
 def test_install_entrypoint_prioritizes_selected_payload() -> None:

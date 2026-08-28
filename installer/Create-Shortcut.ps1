@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallRoot,
-    [string]$ShortcutPath = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Olivia 本地版.lnk')
+    [string]$ShortcutPath,
+    [switch]$RefreshExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,19 +23,75 @@ if (-not (Test-Path -LiteralPath $client -PathType Leaf)) {
     throw 'ISOLATED_CLIENT_NOT_FOUND'
 }
 
-$shortcutParent = Split-Path -Parent $ShortcutPath
-if ($shortcutParent) {
-    New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
+function Resolve-OliviaIcon {
+    $statePath = Join-Path $root '.olivia-update-state.json'
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        try {
+            $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+            $payloadPath = [string]$state.active_components.local_backend.payload_path
+            if ($payloadPath -and -not [IO.Path]::IsPathRooted($payloadPath) -and
+                ($payloadPath -split '[\\/]') -notcontains '..') {
+                $activeIcon = Join-Path $root (Join-Path ($payloadPath -replace '/', '\') 'installer\assets\olivia.ico')
+                if (Test-Path -LiteralPath $activeIcon -PathType Leaf) {
+                    return (Resolve-Path -LiteralPath $activeIcon).Path
+                }
+            }
+        }
+        catch {
+            # Fall back to the initial packaged icon or client executable.
+        }
+    }
+    $packagedIcon = Join-Path $root 'local_backend\installer\assets\olivia.ico'
+    if (Test-Path -LiteralPath $packagedIcon -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $packagedIcon).Path
+    }
+    return $client
 }
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($ShortcutPath)
-$shortcut.TargetPath = $start
-$shortcut.WorkingDirectory = $root
-$shortcut.IconLocation = "$client,0"
-$shortcut.Description = 'Olivia local client and backend'
-$shortcut.Save()
 
+$icon = Resolve-OliviaIcon
+$shell = New-Object -ComObject WScript.Shell
+
+if ($RefreshExisting) {
+    if ($ShortcutPath) {
+        $shortcutPaths = @($ShortcutPath) | Where-Object {
+            Test-Path -LiteralPath $_ -PathType Leaf
+        }
+    }
+    else {
+        $shortcutPaths = @(
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Olivia 本地版.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Olivia 本地版.lnk')
+        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    }
+}
+elseif ($ShortcutPath) {
+    $shortcutPaths = @($ShortcutPath)
+}
+else {
+    $shortcutPaths = @(
+        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Olivia 本地版.lnk')
+    )
+}
+
+foreach ($path in $shortcutPaths) {
+    $shortcutParent = Split-Path -Parent $path
+    if ($shortcutParent) {
+        New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
+    }
+    $shortcut = $shell.CreateShortcut($path)
+    if (-not $RefreshExisting) {
+        $shortcut.TargetPath = $start
+        $shortcut.WorkingDirectory = $root
+        $shortcut.Description = 'Olivia local client and backend'
+    }
+    $shortcut.IconLocation = "$icon,0"
+    $shortcut.Save()
+}
+
+$resultStatus = if ($RefreshExisting) { 'SHORTCUTS_REFRESHED' } else { 'SHORTCUT_CREATED' }
+$resultShortcut = if (@($shortcutPaths).Count -eq 1) { [string]$shortcutPaths[0] } else { $null }
 [pscustomobject]@{
-    status = 'SHORTCUT_CREATED'
-    shortcut = $ShortcutPath
+    status = $resultStatus
+    shortcut = $resultShortcut
+    shortcuts = @($shortcutPaths)
 } | ConvertTo-Json -Compress

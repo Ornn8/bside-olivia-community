@@ -154,6 +154,51 @@ def test_valid_local_backend_component_update_is_activated_atomically(
     }
 
 
+def test_component_update_refreshes_existing_shortcuts_from_the_active_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, _active = _managed_installation(tmp_path)
+    package = tmp_path / "local-backend.oliviapatch"
+    manifest_sha256 = _write_component_package(
+        package,
+        version="1.1.0",
+        files={
+            "installer/Create-Shortcut.ps1": b"# fixture",
+            "installer/assets/olivia.ico": b"icon",
+        },
+    )
+    observed: list[tuple[Path, Path, bool]] = []
+
+    def observe(root: Path, active_version: Path) -> None:
+        observed.append(
+            (
+                root,
+                active_version,
+                (root / ".olivia-update-state.json").is_file(),
+            )
+        )
+
+    monkeypatch.setattr(component_update, "_refresh_existing_shortcuts", observe)
+
+    apply_component_update(
+        installation,
+        package,
+        expected_manifest_sha256=manifest_sha256,
+    )
+
+    assert observed == [
+        (
+            installation,
+            installation
+            / "versions"
+            / "local_backend"
+            / f"1.1.0-{manifest_sha256}",
+            True,
+        )
+    ]
+
+
 def test_stable_launcher_resolves_the_atomically_selected_backend(
     tmp_path: Path,
 ) -> None:
