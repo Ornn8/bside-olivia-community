@@ -124,6 +124,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const confirmation = document.createElement("section");
     confirmation.setAttribute("role", "dialog");
     confirmation.setAttribute("aria-modal", "true");
+    confirmation.setAttribute("aria-labelledby", "olivia-companion-confirm-message");
     confirmation.style.width = "min(520px, calc(100vw - 48px))";
     confirmation.style.padding = "24px";
     confirmation.style.borderRadius = "12px";
@@ -139,6 +140,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       resolve(accepted);
     };
     const messageNode = text("p", message, "text-text-body text-body-m font-regular");
+    messageNode.id = "olivia-companion-confirm-message";
     messageNode.style.color = "#f9fafb";
     const actionsNode = actions();
     actionsNode.style.justifyContent = "flex-end";
@@ -156,6 +158,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     actionsNode.append(cancel, confirm);
     confirmation.append(messageNode, actionsNode);
     backdrop.append(confirmation);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
     (document.body || document.documentElement).append(backdrop);
     confirm.focus();
   });
@@ -164,7 +178,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const element = document.createElement("article");
     element.style.padding = "14px";
     element.style.borderRadius = "10px";
-    element.style.background = "#23252a";
+    element.style.background = "#2b2e35";
     element.style.display = "grid";
     element.style.gap = "8px";
     return element;
@@ -1418,6 +1432,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         color: #f9fafb !important;
         background-color: #111827 !important;
       }
+      [${DIALOG_ATTR}] [role="tab"][aria-selected="true"] {
+        color: #ffffff !important;
+        background-color: #374151 !important;
+        border-color: #93c5fd !important;
+      }
+      [${DIALOG_ATTR}] [role="tab"][aria-selected="false"] {
+        color: #cbd5e1 !important;
+        background-color: #111827 !important;
+        border-color: #6b7280 !important;
+      }
     `;
 
     const header = document.createElement("div");
@@ -1474,9 +1498,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       for (const tab of tabs.querySelectorAll('[role="tab"]')) {
         const active = tab.dataset.panelId === id;
         tab.setAttribute("aria-selected", active ? "true" : "false");
-        tab.style.background = active
-          ? "#30333a"
-          : "transparent";
       }
       for (const panel of panels.querySelectorAll('[role="tabpanel"]')) {
         const active = panel.dataset.panelId === id;
@@ -1499,7 +1520,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panel.setAttribute("role", "tabpanel");
       panel.style.padding = "18px";
       panel.style.borderRadius = "12px";
-      panel.style.background = "#23252a";
+      panel.style.background = "#202228";
       panel.style.display = "grid";
       panel.style.gap = "14px";
       panel.append(

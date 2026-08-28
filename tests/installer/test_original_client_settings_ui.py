@@ -54,8 +54,22 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'color: #cbd5e1 !important;' in BOOTSTRAP_JAVASCRIPT
     assert '[role="dialog"] select' in BOOTSTRAP_JAVASCRIPT
     assert 'background-color: #111827 !important;' in BOOTSTRAP_JAVASCRIPT
-    assert 'panel.style.background = "#23252a";' in BOOTSTRAP_JAVASCRIPT
+    assert 'panel.style.background = "#202228";' in BOOTSTRAP_JAVASCRIPT
+    assert 'element.style.background = "#2b2e35";' in BOOTSTRAP_JAVASCRIPT
     assert "var(--el-fill-color-light" not in BOOTSTRAP_JAVASCRIPT
+
+
+def test_selected_settings_tab_keeps_a_distinct_visual_state() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    generic_controls = '[${DIALOG_ATTR}] [role="dialog"] button,'
+    selected_tab = '[${DIALOG_ATTR}] [role="tab"][aria-selected="true"] {'
+    unselected_tab = '[${DIALOG_ATTR}] [role="tab"][aria-selected="false"] {'
+
+    assert selected_tab in source
+    assert unselected_tab in source
+    assert source.index(generic_controls) < source.index(selected_tab)
+    assert "background-color: #374151 !important;" in source
+    assert "tab.style.background =" not in source
 
 
 def test_original_settings_can_apply_a_user_downloaded_patch_and_roll_back() -> None:
