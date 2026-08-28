@@ -213,11 +213,60 @@ def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wirin
     profile = installer.install_root / "runtime-environment.json"
     profile_payload = profile.read_text(encoding="utf-8")
     profile.unlink()
-    assert installer.status()["bundles"][0]["state"] == "missing"
+    assert installer.status()["bundles"][0]["state"] == "prerequisites_required"
     profile.write_text(profile_payload, encoding="utf-8")
     assert installer.status()["bundles"][0]["state"] == "prerequisites_required"
     shutil.rmtree(runtime)
     assert installer.status()["bundles"][0]["state"] != "ready"
+
+
+def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missing(
+    tmp_path: Path,
+) -> None:
+    payload = b"verified model"
+    offline_root = tmp_path / "offline"
+    source = offline_root / "models" / "model.bin"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+    spec = VideoFile(
+        "model",
+        "models/model.bin",
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        "fixture",
+        {},
+    )
+    ordinary = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        True,
+        (),
+        (spec,),
+        False,
+        {"OLIVIA_LATENTSYNC_PYTHON": "runtime/python/python.exe"},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                ordinary,
+                VideoBundle("music_video", "music", "FIXED", True, (), ()),
+            ),
+        ),
+    )
+
+    assert installer.import_offline(
+        bundle_id="ordinary_video", offline_root=offline_root
+    ) == "APPLIED"
+    assert _wait(installer, 0, "prerequisites_required", "failed") == "prerequisites_required"
+    status = installer.status()["bundles"][0]
+    assert status["reason_code"] == "VIDEO_RUNTIME_PREREQUISITES_MISSING"
+    assert (
+        installer.install_root / "ordinary_video" / "models" / "model.bin"
+    ).read_bytes() == payload
+    assert load_video_runtime_environment(installer.data_root) == {}
 
 
 def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> None:

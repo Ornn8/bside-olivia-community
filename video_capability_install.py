@@ -473,6 +473,16 @@ class VideoCapabilityInstaller:
             "VIDEO_RUNTIME_DEPENDENCIES_MISSING",
         )
 
+    def _installed_state(
+        self, root: Path, bundle: VideoBundle
+    ) -> tuple[VideoCapabilityState, str | None]:
+        if not self._runtime_wiring_ready(root, bundle):
+            return (
+                VideoCapabilityState.PREREQUISITES_REQUIRED,
+                "VIDEO_RUNTIME_PREREQUISITES_MISSING",
+            )
+        return self._runtime_dependency_state(bundle)
+
     def _load_status(self) -> None:
         for bundle in self.manifest.bundles:
             current = self._status.get(bundle.identifier)
@@ -485,15 +495,14 @@ class VideoCapabilityInstaller:
                 continue
             root = self._final_root(bundle)
             try:
-                ready = (
+                content_ready = (
                     (root / ".ready.json").is_file()
                     and all(_verify_and_true(root / item.relative_path, item) for item in bundle.files)
-                    and self._runtime_wiring_ready(root, bundle)
                 )
             except (OSError, VideoCapabilityError):
-                ready = False
-            if ready:
-                state, reason = self._runtime_dependency_state(bundle)
+                content_ready = False
+            if content_ready:
+                state, reason = self._installed_state(root, bundle)
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
@@ -521,9 +530,8 @@ class VideoCapabilityInstaller:
                 continue
             for key, relative in (bundle.runtime_environment or {}).items():
                 candidate = _inside(root, root / relative)
-                if not candidate.exists():
-                    raise VideoCapabilityError("VIDEO_RUNTIME_WIRING_INCOMPLETE")
-                environment[key] = str(candidate)
+                if candidate.exists():
+                    environment[key] = str(candidate)
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
@@ -652,7 +660,7 @@ class VideoCapabilityInstaller:
             _verify_staged_tree(root, expected)
             self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
-                state, reason = self._runtime_dependency_state(bundle)
+                state, reason = self._installed_state(final, bundle)
                 self._set(
                     bundle,
                     state,

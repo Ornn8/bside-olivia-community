@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -148,10 +150,20 @@ def test_video_reply_readiness_does_not_require_livetalking(
         "OLIVIA_PROVIDER_CACHE_ROOT": str(tmp_path / "cache"),
     }
     monkeypatch.setattr(
-        music_reply, "assemble_latentsync_video_delivery", lambda *_args, **_kwargs: object(), raising=False
+        music_reply,
+        "assemble_latentsync_video_delivery",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tts=SimpleNamespace(
+                provider_options={"external_python": str(tmp_path / "cosy-python.exe")},
+                runtime_root=str(tmp_path),
+            )
+        ),
+        raising=False,
     )
     monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
     monkeypatch.setattr(music_reply, "musical_reply_configured", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(music_reply, "_python_runtime_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(music_reply, "_executable_runtime_ready", lambda *_args, **_kwargs: True)
 
     status = music_reply.video_reply_dependency_status(
         environment, performance_video_path=performance
@@ -187,13 +199,19 @@ def test_video_reply_readiness_requires_speech_and_music_dependencies(
     monkeypatch.setattr(
         music_reply,
         "assemble_latentsync_video_delivery",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tts=SimpleNamespace(
+                provider_options={"external_python": str(tmp_path / "cosy-python.exe")},
+                runtime_root=str(tmp_path),
+            )
+        ),
         raising=False,
     )
     monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
     monkeypatch.setattr(
         music_reply, "musical_reply_configured", lambda *_args, **_kwargs: False
     )
+    monkeypatch.setattr(music_reply, "_python_runtime_ready", lambda *_args, **_kwargs: True)
 
     status = music_reply.video_reply_dependency_status(
         environment, performance_video_path=None
@@ -202,6 +220,44 @@ def test_video_reply_readiness_requires_speech_and_music_dependencies(
     assert status["ready"] is False
     assert status["music_ready"] is False
     assert status["ordinary_missing_dependencies"] == []
+
+
+def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    python = _write(tmp_path / "python.exe")
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout=b"ready", stderr=b"")
+
+    monkeypatch.setattr(music_reply.subprocess, "run", fake_run)
+
+    assert music_reply._python_runtime_ready(
+        python,
+        cwd=tmp_path,
+        imports=("torch", "provider.module"),
+        accepted_torch_versions=("2.9.1+cu128",),
+    )
+    script = observed["command"][-1]
+    assert "sys.version_info[:2]" in script
+    assert "import_module" in script
+    assert "torch.cuda.is_available()" in script
+    assert "2.9.1+cu128" in script
+    assert observed["timeout"] == music_reply._RUNTIME_PROBE_TIMEOUT_SECONDS
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("python", 1)
+
+    monkeypatch.setattr(music_reply.subprocess, "run", timeout)
+    assert not music_reply._python_runtime_ready(
+        python,
+        cwd=tmp_path,
+        imports=("torch",),
+        accepted_torch_versions=("2.9.1+cu128",),
+    )
 
 
 def _value_after(command: list[str], flag: str) -> str:

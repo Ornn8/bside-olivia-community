@@ -35,6 +35,7 @@ from voice_direction import VoicePerformancePlan
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
 _MUSIC_STAGE_MANIFEST_VERSION = 3
+_RUNTIME_PROBE_TIMEOUT_SECONDS = 20.0
 
 
 class MusicReplyError(RuntimeError):
@@ -56,6 +57,51 @@ class MusicProviderPathSnapshot:
     latentsync_root: Path | None
     ffmpeg_executable: Path | None
     provider_cache_root: Path | None
+
+
+def _run_runtime_probe(command: list[str], *, cwd: Path) -> bool:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            timeout=_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _python_runtime_ready(
+    executable: Path | None,
+    *,
+    cwd: Path | None,
+    imports: tuple[str, ...],
+    accepted_torch_versions: tuple[str, ...],
+) -> bool:
+    if executable is None or not executable.is_file() or cwd is None or not cwd.is_dir():
+        return False
+    script = (
+        "import importlib, os, sys; "
+        "assert sys.version_info[:2] >= (3, 10); "
+        "sys.path.insert(0, os.getcwd()); "
+        f"[importlib.import_module(name) for name in {imports!r}]; "
+        "import torch; "
+        f"assert torch.__version__ in {accepted_torch_versions!r}; "
+        "assert torch.version.cuda; "
+        "assert torch.cuda.is_available(); "
+        "torch.ones(1, device='cuda')"
+    )
+    return _run_runtime_probe([str(executable), "-c", script], cwd=cwd)
+
+
+def _executable_runtime_ready(executable: Path | None) -> bool:
+    return bool(
+        executable is not None
+        and executable.is_file()
+        and _run_runtime_probe([str(executable), "--help"], cwd=executable.parent)
+    )
 
 
 def _music_provider_path_snapshot(
@@ -183,14 +229,24 @@ def video_reply_dependency_status(
     tts_config = configured("OLIVIA_TTS_CONFIG")
     local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
     delivery_ready = False
+    cosyvoice_runtime_ready = False
     if all(path is not None for path in (tts_config, local_data_root)):
         try:
-            assemble_latentsync_video_delivery(
+            delivery = assemble_latentsync_video_delivery(
                 tts_config,
                 local_data_root,
                 env,
             )
             delivery_ready = True
+            external_python = Path(
+                str(delivery.tts.provider_options.get("external_python", ""))
+            )
+            cosyvoice_runtime_ready = _python_runtime_ready(
+                external_python,
+                cwd=Path(delivery.tts.runtime_root),
+                imports=("torch", "torchaudio", "cosyvoice.cli.cosyvoice"),
+                accepted_torch_versions=("2.9.1+cu128",),
+            )
         except ReplyMediaError:
             pass
 
@@ -210,6 +266,12 @@ def video_reply_dependency_status(
                 minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
             )
         )
+        and _python_runtime_ready(
+            configured("OLIVIA_MINIMAX_COMFY_PYTHON"),
+            cwd=minimax_root,
+            imports=("torch", "comfy", "comfy_extras.nodes_minimax_music"),
+            accepted_torch_versions=("2.13.0+cu130",),
+        )
     )
     latentsync_root = configured("OLIVIA_LATENTSYNC_ROOT")
     latentsync_ready = bool(
@@ -224,7 +286,14 @@ def video_reply_dependency_status(
                 latentsync_root / "checkpoints" / "latentsync_unet.pt",
             )
         )
+        and _python_runtime_ready(
+            configured("OLIVIA_LATENTSYNC_PYTHON"),
+            cwd=latentsync_root,
+            imports=("torch", "diffusers", "latentsync"),
+            accepted_torch_versions=("2.5.1+cu121", "2.9.1+cu128"),
+        )
     )
+    roformer_executable = configured("OLIVIA_ROFORMER_EXE")
     roformer_ready = all(
         file(name)
         for name in (
@@ -232,7 +301,7 @@ def video_reply_dependency_status(
             "OLIVIA_ROFORMER_MODEL_PATH",
             "OLIVIA_ROFORMER_CONFIG_PATH",
         )
-    )
+    ) and _executable_runtime_ready(roformer_executable)
     ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
     music_assets_ready = bool(
         file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
@@ -270,7 +339,9 @@ def video_reply_dependency_status(
         item(
             "cosyvoice",
             "语音合成（CosyVoice 3）",
-            delivery_ready and bool(tts_config and tts_config.is_file()),
+            delivery_ready
+            and cosyvoice_runtime_ready
+            and bool(tts_config and tts_config.is_file()),
             "manual",
             "国内：ModelScope；备用：GitHub / Hugging Face",
             (
