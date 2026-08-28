@@ -214,7 +214,7 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert "失败重试" in source
     assert "导入官方素材" not in active_video_panel
     assert "下载默认国内源优先" in source
-    assert "LiveTalking 保持独立可选" in source
+    assert "LiveTalking 保持独立可选" not in active_video_panel
     assert "重新检测" in source
     assert 'const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";' in source
     assert 'const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";' in source
@@ -222,10 +222,10 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert "requestCapability(VIDEO_CAPABILITY_ACTION_PATH" in active_video_panel
     assert "downloadLink.href" not in source
     assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
-    assert "官方 Olivia 私有素材不会公共下载或再分发" in source
     assert "missing_dependencies" in source
     assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source
     assert 'button("下载缺失组件", () => openDialog(false, "capability"))' in source
+    assert source.index('states.some((value) => ["queued", "downloading", "verifying"].includes(value))') < source.index('states.some((value) => value === "failed")')
 
 
 def test_video_capability_does_not_offer_fake_native_path_selection() -> None:
@@ -233,8 +233,8 @@ def test_video_capability_does_not_offer_fake_native_path_selection() -> None:
 
     assert '{ action: "import_offline"' not in source
     assert '{ action: "import_official"' not in source
-    assert "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE" in source
-    assert 'accept_licenses: id === "music_video"' in source
+    assert "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE" not in source
+    assert 'accept_licenses: dependency.id === "music_video"' in source
 
 
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:

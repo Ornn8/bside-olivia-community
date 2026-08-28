@@ -657,7 +657,7 @@ class VideoCapabilityInstaller:
     ) -> str:
         sources = [source_mode] if source_mode == "official" else ["domestic", "official"]
         part = target.with_name(target.name + ".part")
-        for source_id in sources:
+        for source_index, source_id in enumerate(sources):
             url = item.sources.get(source_id)
             if not url:
                 continue
@@ -688,6 +688,8 @@ class VideoCapabilityInstaller:
             except InterruptedError:
                 raise
             except (HTTPError, URLError, OSError, TimeoutError, VideoCapabilityError):
+                if any(item.sources.get(candidate) for candidate in sources[source_index + 1 :]):
+                    part.unlink(missing_ok=True)
                 continue
         raise VideoCapabilityError("VIDEO_DOWNLOAD_FAILED")
 

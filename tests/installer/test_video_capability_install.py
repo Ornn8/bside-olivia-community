@@ -322,3 +322,62 @@ def test_download_progress_updates_before_a_large_file_finishes(tmp_path: Path) 
     assert installer.status()["bundles"][0]["downloaded_bytes"] == 3
     release.set()
     assert _wait(installer, 0, "ready", "failed") == "ready"
+
+
+def test_source_fallback_restarts_instead_of_resuming_bytes_from_another_mirror(
+    tmp_path: Path,
+) -> None:
+    content = b"abc"
+    requests = []
+
+    class Response:
+        def __init__(self, body: bytes, status: int) -> None:
+            self.body = body
+            self.status = status
+            self.sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            if self.sent:
+                return b""
+            self.sent = True
+            return self.body
+
+    def opener(request, **_kwargs):
+        requests.append(request)
+        if "domestic.invalid" in request.full_url:
+            return Response(b"wrong", 200)
+        return Response(content, 206 if request.get_header("Range") else 200)
+
+    spec = VideoFile(
+        "fixture",
+        "models/fixture.bin",
+        len(content),
+        hashlib.sha256(content).hexdigest(),
+        "MIT",
+        {
+            "domestic": "https://domestic.invalid/fixture.bin",
+            "official": "https://official.invalid/fixture.bin",
+        },
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0.0",
+            (
+                VideoBundle("ordinary_video", "video", "FIXED", False, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        opener=opener,
+    )
+
+    assert installer.start(bundle_id="ordinary_video", source_mode="auto") == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert len(requests) == 2
+    assert requests[1].get_header("Range") is None
