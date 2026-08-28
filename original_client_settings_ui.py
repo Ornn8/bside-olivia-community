@@ -1330,7 +1330,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         try {
           const selected = await requestCapability(
             VIDEO_CAPABILITY_ACTION_PATH,
-            { action: "select_runtime" }
+            { action: "select_runtime" },
+            310000
           );
           if (selected.status === "SELECTED" && typeof selected.runtime_root === "string") {
             runtimeRoot = selected.runtime_root;

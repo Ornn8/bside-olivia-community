@@ -232,6 +232,7 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
     assert '{ action: "select_runtime" }' in source
+    assert '{ action: "select_runtime" },\n            310000' in source
     assert 'action: "import_runtime"' in source
     assert "manifest_sha256: runtimeDigest.input.value.trim().toLowerCase()" in source
     assert 'source: videoSourceMode' in source
