@@ -460,6 +460,49 @@ def test_runtime_manifest_generator_hashes_the_exact_sorted_tree(tmp_path: Path)
     assert not any(str(runtime_root) in value for value in payload["environment"].values())
 
 
+def test_runtime_manifest_duplicate_check_is_linear(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CountingPath(str):
+        calls = 0
+
+        def casefold(self) -> str:
+            type(self).calls += 1
+            return super().casefold()
+
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python")
+    manifest_path = runtime_root / "runtime-manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    digest = "a" * 64
+    paths = [CountingPath("python/python.exe")]
+    paths.extend(CountingPath(f"packages/item-{index}.bin") for index in range(99))
+    payload = {
+        "schema_version": "olivia.video-runtime-root.v1",
+        "version": "2026.08.29",
+        "environment": {"OLIVIA_LATENTSYNC_PYTHON": paths[0]},
+        "files": [
+            {"path": path, "size_bytes": 1, "sha256": "0" * 64}
+            for path in paths
+        ],
+    }
+    monkeypatch.setattr(video_capability_install, "_safe_relative", lambda value: value)
+    monkeypatch.setattr(video_capability_install, "_sha256_file", lambda _path: (1, digest))
+    monkeypatch.setattr(video_capability_install.json, "loads", lambda _raw: payload)
+
+    environment = video_capability_install._load_runtime_root_manifest(
+        runtime_root,
+        digest,
+        verify_files=False,
+    )
+
+    assert environment["OLIVIA_LATENTSYNC_PYTHON"] == str(python)
+    assert CountingPath.calls <= len(paths) * 4
+
+
 def test_portable_python_probe_rejects_a_runtime_outside_its_base_prefix(
     tmp_path: Path,
 ) -> None:
