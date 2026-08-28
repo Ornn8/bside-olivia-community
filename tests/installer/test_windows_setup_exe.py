@@ -346,6 +346,15 @@ def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     assert "actions/upload-artifact@v4" in workflow
 
 
+def test_setup_failure_smoke_copies_the_valid_repository_icon() -> None:
+    smoke = (ROOT / "tests" / "installer" / "windows_setup_smoke.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "installer\\assets\\olivia.ico" in smoke
+    assert "Copy-Item -LiteralPath $sourceIcon -Destination $fixtureIcon" in smoke
+
+
 def test_setup_build_requirements_are_exact_and_hash_locked() -> None:
     requirements = (
         ROOT / "installer" / "setup-build-requirements.txt"
