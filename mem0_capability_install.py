@@ -365,6 +365,7 @@ class ResumableModelDownloader:
         self._completed: set[str] = set()
         self.last_source: str | None = None
         self._source_history: list[str] = []
+        self._failed_sources: set[str] = set()
 
     def _record_source(self, source: str) -> None:
         if source not in self._source_history:
@@ -392,7 +393,11 @@ class ResumableModelDownloader:
                 partial.unlink()
                 partial_source.unlink(missing_ok=True)
             last_error: Exception | None = None
+            attempted = False
             for source in self.sources:
+                if source in self._failed_sources:
+                    continue
+                attempted = True
                 try:
                     try:
                         recorded_source = partial_source.read_text(encoding="utf-8")
@@ -413,8 +418,9 @@ class ResumableModelDownloader:
                 except _DownloadPaused:
                     raise
                 except (OSError, RuntimeError) as exc:
+                    self._failed_sources.add(source)
                     last_error = exc
-            if last_error is not None:
+            if not attempted or last_error is not None:
                 raise RuntimeError("MEM0_MODEL_DOWNLOAD_FAILED") from last_error
             partial.replace(cached)
             partial_source.unlink(missing_ok=True)

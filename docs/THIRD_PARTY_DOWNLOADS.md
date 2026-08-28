@@ -69,7 +69,7 @@ $thirdPartyRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\third-party'
 
 | 能力 | 国内优先路线 | 官方兼容路线 | 当前自动安装状态 |
 | --- | --- | --- | --- |
-| BGE 中文 Embedding | `hf-mirror.com/BAAI/bge-small-zh-v1.5` | `huggingface.co/BAAI/bge-small-zh-v1.5` | 已有固定 revision 与逐文件 SHA-256 |
+| BGE 中文 Embedding | [ModelScope / BAAI](https://modelscope.cn/models/BAAI/bge-small-zh-v1.5)，固定 revision `9534737c4ead352e88e6eb6faf4dab9ec1be9eed` | [Hugging Face / BAAI](https://huggingface.co/BAAI/bge-small-zh-v1.5) | 国内源失败后自动回退官方源；逐文件校验大小与 SHA-256 |
 | CosyVoice 3 模型 | [ModelScope / FunAudioLLM](https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | [Hugging Face / FunAudioLLM](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | `ordinary_video` 固定 BOM，一键下载并逐文件校验 |
 | LatentSync | [ByteDance Gitee 镜像](https://gitee.com/ByteDance/LatentSync)；权重走 `hf-mirror.com/ByteDance/...` | [GitHub / bytedance](https://github.com/bytedance/LatentSync)；Hugging Face | `ordinary_video` 固定 BOM，一键下载并逐文件校验 |
 | MiniMax Music 3 权重 | `hf-mirror.com/Comfy-Org/MiniMax-Music-3` | [Hugging Face / Comfy-Org](https://huggingface.co/Comfy-Org/MiniMax-Music-3) | `music_video` 固定三文件 BOM，一键下载并逐文件校验 |
