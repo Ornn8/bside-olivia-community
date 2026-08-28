@@ -196,31 +196,36 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
 
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
     source = BOOTSTRAP_JAVASCRIPT
+    active_video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
 
     assert "renderCapabilityPanel(panels.capability)" in source
     assert "renderMem0CapabilityPanel(panels.capability)" not in source
     for label in (
         "长期记忆（Mem0 + BGE）",
-        "普通视频",
-        "音乐视频扩展",
+        "视频回信（说话 + 音乐）",
     ):
         assert label in source
+    assert "普通视频" not in active_video_panel
+    assert "音乐视频扩展" not in active_video_panel
     assert "已有自动安装" in source
     assert "下载并安装" in source
     assert "失败重试" in source
-    assert "导入官方素材" in source
+    assert "导入官方素材" not in active_video_panel
     assert "下载默认国内源优先" in source
     assert "LiveTalking 保持独立可选" in source
     assert "重新检测" in source
     assert 'const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";' in source
     assert 'const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";' in source
-    assert "requestMutation(VIDEO_CAPABILITY_ACTION_PATH" in source
+    assert "requestMutation(VIDEO_CAPABILITY_ACTION_PATH" not in active_video_panel
+    assert "requestCapability(VIDEO_CAPABILITY_ACTION_PATH" in active_video_panel
     assert "downloadLink.href" not in source
     assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
     assert "官方 Olivia 私有素材不会公共下载或再分发" in source
     assert "missing_dependencies" in source
     assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source
-    assert 'button("管理下载", () => openDialog(false, "capability"))' in source
+    assert 'button("下载缺失组件", () => openDialog(false, "capability"))' in source
 
 
 def test_video_capability_does_not_offer_fake_native_path_selection() -> None:

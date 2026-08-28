@@ -41,10 +41,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
-  const VIDEO_CAPABILITY_CATALOG = [
-    ["ordinary_video", "普通视频", "CosyVoice 3 + LatentSync + FFmpeg + Olivia 私有素材"],
-    ["music_video", "音乐视频扩展", "MiniMax Music 3 + RoFormer + Seed-VC + Demucs + 普通视频"],
-  ];
+  const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
   const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
     ["cosyvoice", "语音合成（CosyVoice 3）"],
     ["livetalking", "实时驱动（LiveTalking，可选）"],
@@ -1149,7 +1146,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
   };
 
-  const renderVideoCapabilityPanel = async (panel) => {
+  const renderLegacyVideoCapabilityPanel = async (panel) => {
     let payload = null;
     try {
       payload = await requestJson(VIDEO_CAPABILITY_PATH);
@@ -1238,6 +1235,113 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refresh = actions();
     refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
     panel.replaceChildren(heading, summary, list, refresh);
+  };
+
+  const renderVideoCapabilityPanel = async (panel) => {
+    let payload = null;
+    try {
+      payload = await requestJson(VIDEO_CAPABILITY_PATH);
+    } catch (_error) {
+      payload = null;
+    }
+    const known = new Map(
+      payload && Array.isArray(payload.bundles)
+        ? payload.bundles
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => [item.id, item])
+        : []
+    );
+    const bundles = VIDEO_CAPABILITY_BUNDLES.map((id) => known.get(id) || {
+      id,
+      state: "missing",
+      downloaded_bytes: 0,
+      total_bytes: 0,
+    });
+    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
+    const state = states.every((value) => value === "ready")
+      ? "ready"
+      : states.some((value) => value === "failed")
+      ? "failed"
+      : states.some((value) => value === "paused")
+      ? "paused"
+      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
+      ? "downloading"
+      : states.some((value) => value === "license_review_required")
+      ? "license_review_required"
+      : states.some((value) => value === "prerequisites_required")
+      ? "prerequisites_required"
+      : "missing";
+    const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
+    const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
+    const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
+    const summary = text(
+      "p",
+      "视频回信固定包含说话与音乐。点击一次自动准备语音、音乐、口型、媒体工具和固定场景所需组件；下载默认国内源优先，失败自动回退官方源。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const item = card();
+    const stateLabel = state === "ready"
+      ? "已就绪"
+      : state === "paused"
+      ? "已暂停"
+      : state === "failed"
+      ? "安装失败，可重试"
+      : state === "downloading"
+      ? "正在下载并安装"
+      : ["license_review_required", "prerequisites_required"].includes(state)
+      ? "安装包组件不完整，请更新到完整发布包"
+      : "未安装";
+    const result = text("div", "", "text-text-secondary text-caption-m font-regular");
+    item.append(
+      text("div", "视频回信（说话 + 音乐）", "text-text-body text-label-l"),
+      text("div", stateLabel, "text-text-secondary text-body-m font-regular"),
+      text("div", "包含 CosyVoice 3、LatentSync、MiniMax Music 3、RoFormer、Seed-VC、Demucs 与 FFmpeg。", "text-text-secondary text-caption-m font-regular"),
+      text("div", totalBytes ? `已处理 ${downloadedBytes} / ${totalBytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
+    );
+    if (state === "downloading") {
+      const pause = button("暂停下载", async () => {
+        try {
+          await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, { action: "pause" });
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          result.textContent = "暂停失败，请稍后重试。";
+        }
+      });
+      item.append(pause);
+    } else if (state !== "ready" && !["license_review_required", "prerequisites_required"].includes(state)) {
+      const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "一键下载并安装";
+      const install = button(actionLabel, async () => {
+        if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件，文件保存在本地数据目录。")) return;
+        setButtonsBusy([install], true);
+        result.textContent = "正在启动后台下载…";
+        try {
+          for (const dependency of bundles) {
+            if (["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(dependency.state)) continue;
+            const action = dependency.state === "paused" ? "resume" : dependency.state === "failed" ? "retry" : "install";
+            await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {
+              action,
+              bundle_id: dependency.id,
+              source: "auto",
+              accept_licenses: dependency.id === "music_video",
+            });
+          }
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          result.textContent = "下载未能启动，请检查网络后重试。";
+          setButtonsBusy([install], false);
+        }
+      });
+      item.append(install);
+    }
+    item.append(result);
+    const list = stack();
+    list.append(item);
+    const refresh = actions();
+    refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
+    panel.replaceChildren(heading, summary, list, refresh);
+    if (state === "downloading") {
+      window.setTimeout(() => renderVideoCapabilityPanel(panel), 1000);
+    }
   };
 
   const renderCapabilityPanel = async (panel) => {
@@ -1596,12 +1700,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let missingDependencies = [];
     let message = "正在读取设置…";
     let toggle = null;
+    let downloads = null;
     const render = () => {
-      if (!toggle) return;
+      if (!toggle || !downloads) return;
       const settingAvailable = typeof enabled === "boolean";
       toggle.disabled = !settingAvailable || (!ready && !enabled);
       toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
       toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
+      downloads.textContent = ready ? "管理下载" : "下载缺失组件";
       state.textContent = message;
     };
     const hydrate = async () => {
@@ -1656,8 +1762,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     toggle = button("已开启", apply);
     toggle.setAttribute("aria-label", "切换视频回信");
+    downloads = button("下载缺失组件", () => openDialog(false, "capability"));
     const controls = actions();
-    controls.append(toggle, button("管理下载", () => openDialog(false, "capability")));
+    controls.append(toggle, downloads);
     row.append(copy, controls);
     section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
     render();

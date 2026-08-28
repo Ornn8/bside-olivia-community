@@ -537,7 +537,17 @@ class VideoCapabilityInstaller:
                 if offline_root is not None:
                     self._copy_offline(offline_root, item, cached)
                 else:
-                    source_used = self._download(item, cached, source_mode)
+                    source_used = self._download(
+                        item,
+                        cached,
+                        source_mode,
+                        progress=lambda current, source: self._update_download_progress(
+                            bundle,
+                            downloaded + current,
+                            current=item.relative_path,
+                            source=source,
+                        ),
+                    )
                 _verify(cached, item)
                 target = _inside(root, root / item.relative_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -620,7 +630,31 @@ class VideoCapabilityInstaller:
             raise VideoCapabilityError("VIDEO_OFFLINE_FILE_MISSING")
         shutil.copy2(source, target)
 
-    def _download(self, item: VideoFile, target: Path, source_mode: str) -> str:
+    def _update_download_progress(
+        self,
+        bundle: VideoBundle,
+        downloaded: int,
+        *,
+        current: str,
+        source: str,
+    ) -> None:
+        with self._lock:
+            self._set(
+                bundle,
+                VideoCapabilityState.DOWNLOADING,
+                downloaded,
+                current=current,
+                source=source,
+            )
+
+    def _download(
+        self,
+        item: VideoFile,
+        target: Path,
+        source_mode: str,
+        *,
+        progress: Callable[[int, str], None] | None = None,
+    ) -> str:
         sources = [source_mode] if source_mode == "official" else ["domestic", "official"]
         part = target.with_name(target.name + ".part")
         for source_id in sources:
@@ -643,6 +677,9 @@ class VideoCapabilityInstaller:
                         if self._pause.is_set():
                             raise InterruptedError
                         stream.write(chunk)
+                        existing += len(chunk)
+                        if progress is not None:
+                            progress(existing, source_id)
                 if part.stat().st_size != item.size_bytes:
                     raise VideoCapabilityError("VIDEO_FILE_SIZE_INVALID")
                 _verify(part, item)

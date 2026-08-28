@@ -161,7 +161,7 @@ def test_video_reply_readiness_does_not_require_livetalking(
     assert status["ready"] is True
 
 
-def test_ordinary_video_readiness_does_not_require_music_dependencies(
+def test_video_reply_readiness_requires_speech_and_music_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_root = tmp_path / "data"
@@ -198,7 +198,7 @@ def test_ordinary_video_readiness_does_not_require_music_dependencies(
         environment, performance_video_path=None
     )
 
-    assert status["ready"] is True
+    assert status["ready"] is False
     assert status["music_ready"] is False
     assert status["ordinary_missing_dependencies"] == []
 

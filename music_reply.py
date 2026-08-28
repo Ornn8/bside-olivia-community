@@ -401,7 +401,7 @@ def video_reply_dependency_status(
         and musical_reply_configured(env, performance_video_path=performance_video_path)
     )
     return {
-        "ready": ordinary_ready,
+        "ready": music_ready,
         "music_ready": music_ready,
         "ordinary_missing_dependencies": ordinary_missing,
         "dependencies": dependencies,
