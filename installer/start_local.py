@@ -138,6 +138,7 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
 )
 _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
 _BACKEND_START_TIMEOUT_SECONDS = 120
+_BACKEND_ID_RE = re.compile(r"[0-9A-Za-z.+-]{1,160}")
 
 
 def _port_is_bindable(port: int) -> bool:
@@ -185,6 +186,65 @@ def _health(port: int) -> str:
         return "PORT_CONFLICT"
     except Exception:
         return "UNAVAILABLE" if _port_is_bindable(port) else "PORT_CONFLICT"
+
+
+def _backend_id(backend: Path) -> str:
+    """Return a path-free identity for the selected backend tree."""
+
+    if backend.name == "local_backend":
+        return "legacy"
+    if (
+        backend.parent.name == "local_backend"
+        and backend.parent.parent.name == "versions"
+        and _BACKEND_ID_RE.fullmatch(backend.name)
+    ):
+        return backend.name
+    return "invalid"
+
+
+def _server_backend_id(port: int) -> str | None:
+    """Read the path-free identity published by the backend on this port."""
+
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{port}/health?profile=core",
+            timeout=1.5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        data = payload.get("data") if isinstance(payload, dict) else None
+        backend_id = data.get("backend_id") if isinstance(data, dict) else None
+        if (
+            response.status == 200
+            and payload.get("code") == 0
+            and isinstance(backend_id, str)
+            and _BACKEND_ID_RE.fullmatch(backend_id)
+        ):
+            return backend_id
+    except Exception:
+        pass
+    return None
+
+
+def _stop_backend_server(server: object) -> None:
+    """Best-effort cleanup for the backend process owned by this launcher."""
+
+    terminate = getattr(server, "terminate", None)
+    wait = getattr(server, "wait", None)
+    if not callable(terminate) or not callable(wait):
+        return
+    try:
+        terminate()
+        wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill = getattr(server, "kill", None)
+        if callable(kill):
+            kill()
+            try:
+                wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    except OSError:
+        pass
 
 
 def _client_executable(root: Path) -> Path:
@@ -323,6 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     if health == "PORT_CONFLICT":
         print("PORT_CONFLICT")
         return 2
+    expected_backend_id = _backend_id(backend)
+    if health == "READY" and _server_backend_id(args.port) != expected_backend_id:
+        print("STALE_BACKEND_RUNNING")
+        return 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()
@@ -342,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_PORT": str(args.port),
     }
     backend_environment.update(runtime_environment)
+    backend_environment["OLIVIA_BACKEND_ID"] = expected_backend_id
     client_environment.update(runtime_environment)
     backend_environment = _load_llm_environment(
         backend_environment, data_root, include_secret=True
@@ -351,49 +416,57 @@ def main(argv: list[str] | None = None) -> int:
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
-    if health != "READY":
-        detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        server = subprocess.Popen(
-            [
-                str(_backend_executable()),
-                "-c",
-                _BACKEND_BOOTSTRAP,
-                str(backend),
-                str(entrypoint),
-            ],
-            cwd=backend,
-            env=backend_environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=detached,
-        )
-        deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline and server.poll() is None:
-            if _health(args.port) == "READY":
-                break
-            time.sleep(0.25)
-        health = _health(args.port)
-        if health != "READY":
-            if health == "PORT_CONFLICT":
-                print("PORT_CONFLICT")
-                return 2
-            print("LOCAL_SERVER_UNAVAILABLE")
-            return 2
-    client = _client_executable(root)
-    if not client.is_file():
-        print("ISOLATED_CLIENT_NOT_FOUND")
-        return 2
     try:
-        _repair_client_frontend(root, args.port)
-    except (CompanionSettingsPatchError, OSError):
-        print("CLIENT_FRONTEND_REPAIR_FAILED")
-        return 2
-    profile = root / "profile"
-    roaming = profile / "Roaming"
-    local = profile / "Local"
-    roaming.mkdir(parents=True, exist_ok=True)
-    local.mkdir(parents=True, exist_ok=True)
-    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(client_environment, roaming, local))
+        if health != "READY":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            server = subprocess.Popen(
+                [
+                    str(_backend_executable()),
+                    "-c",
+                    _BACKEND_BOOTSTRAP,
+                    str(backend),
+                    str(entrypoint),
+                ],
+                cwd=backend,
+                env=backend_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
+            while time.monotonic() < deadline and server.poll() is None:
+                if _health(args.port) == "READY":
+                    break
+                time.sleep(0.25)
+            health = _health(args.port)
+            if health != "READY":
+                if health == "PORT_CONFLICT":
+                    print("PORT_CONFLICT")
+                    return 2
+                print("LOCAL_SERVER_UNAVAILABLE")
+                return 2
+        client = _client_executable(root)
+        if not client.is_file():
+            print("ISOLATED_CLIENT_NOT_FOUND")
+            return 2
+        try:
+            _repair_client_frontend(root, args.port)
+        except (CompanionSettingsPatchError, OSError):
+            print("CLIENT_FRONTEND_REPAIR_FAILED")
+            return 2
+        profile = root / "profile"
+        roaming = profile / "Roaming"
+        local = profile / "Local"
+        roaming.mkdir(parents=True, exist_ok=True)
+        local.mkdir(parents=True, exist_ok=True)
+        return subprocess.call(
+            _client_command(client, local),
+            cwd=root / "app",
+            env=_client_environment(client_environment, roaming, local),
+        )
+    finally:
+        if server is not None:
+            _stop_backend_server(server)
 
 
 if __name__ == "__main__":

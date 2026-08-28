@@ -259,6 +259,113 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
     assert commands[0][3:] == [str(active_backend), str(active_entrypoint)]
 
 
+def test_component_launcher_identifies_and_stops_its_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    active_backend = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
+    (active_backend / "installer").mkdir(parents=True)
+    (active_backend / "local_server.py").write_text("# active", encoding="utf-8")
+    (active_backend / "original_client_server.py").write_text(
+        "# active",
+        encoding="utf-8",
+    )
+    health = iter(("UNAVAILABLE", "READY", "READY"))
+    backend_environments: list[dict[str, str]] = []
+    lifecycle: list[str] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate() -> None:
+            lifecycle.append("terminate")
+
+        @staticmethod
+        def wait(*, timeout: float) -> int:
+            lifecycle.append(f"wait:{timeout}")
+            return 0
+
+    def popen(_command, **kwargs):
+        backend_environments.append(kwargs["env"])
+        return Process()
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert backend_environments[0]["OLIVIA_BACKEND_ID"] == "0.1.2-digest"
+    assert lifecycle == ["terminate", "wait:5"]
+
+
+def test_launcher_refuses_to_reuse_a_ready_backend_with_another_identity(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    root = _installation(tmp_path)
+    active_backend = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
+    (active_backend / "installer").mkdir(parents=True)
+    (active_backend / "local_server.py").write_text("# active", encoding="utf-8")
+    (active_backend / "original_client_server.py").write_text(
+        "# active",
+        encoding="utf-8",
+    )
+    client_calls: list[list[str]] = []
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: "legacy")
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "call",
+        lambda command, **_kwargs: client_calls.append(command) or 0,
+    )
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 2
+    assert capsys.readouterr().out.strip() == "STALE_BACKEND_RUNNING"
+    assert client_calls == []
+
+
+def test_launcher_reads_backend_identity_from_health_response(monkeypatch) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "data": {"backend_id": "0.1.2-digest"},
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(start_local, "urlopen", lambda *_args, **_kwargs: Response())
+
+    assert start_local._server_backend_id(8899) == "0.1.2-digest"
+
+
+def test_backend_identity_tracks_versioned_and_legacy_selection(tmp_path: Path) -> None:
+    legacy = tmp_path / "local_backend"
+    versioned = tmp_path / "versions" / "local_backend" / "0.1.2-digest"
+
+    assert start_local._backend_id(legacy) == "legacy"
+    assert start_local._backend_id(versioned) == "0.1.2-digest"
+
+
 def test_launcher_allows_mem0_cold_start_before_opening_client(
     tmp_path: Path,
     monkeypatch,
