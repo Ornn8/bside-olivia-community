@@ -1,8 +1,10 @@
 """Add a bounded companion panel to the supported Olivia settings view.
 
-The patch only changes a staged ``feapp.dat`` archive. It keeps the client main
-module byte-for-byte intact, inserts one repository-owned local script into
-``index.html``, and rolls the archive back if any validation step fails.
+The patch only changes a staged ``feapp.dat`` archive. It inserts one
+repository-owned local script into ``index.html`` and, for the supported
+0.0.9.627 bundle, replaces exactly one known mailbox write-visibility anchor.
+Every other existing member stays byte-for-byte intact, and any validation
+failure rolls the archive back.
 """
 
 from __future__ import annotations
@@ -334,7 +336,9 @@ def _repair_mailbox_write_access(root: Path) -> str:
         return "PATCHED"
     if anchor_count == 0 and replacement_count == 1:
         return "ALREADY_PATCHED"
-    return "UNCHANGED"
+    raise CompanionSettingsPatchError(
+        "COMPANION_MAILBOX_WRITE_ANCHOR_INVALID"
+    )
 
 
 def _verify_archive(

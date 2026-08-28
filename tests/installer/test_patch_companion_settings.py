@@ -150,7 +150,10 @@ def test_patch_supports_original_client_0_0_9_627_main_module(
     path = tmp_path / "feapp.dat"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(INDEX_MEMBER, index)
-        archive.writestr(main_member, b"synthetic-0.0.9.627-main-module")
+        archive.writestr(
+            main_member,
+            b'synthetic-0.0.9.627-main-module"hide-write":!1',
+        )
         archive.writestr("assets/index.css", b"body{display:block}")
 
     result = patch_companion_settings(
@@ -161,7 +164,7 @@ def test_patch_supports_original_client_0_0_9_627_main_module(
 
     after = _members(path)
     assert result["status"] == "PATCHED"
-    assert after[main_member] == b"synthetic-0.0.9.627-main-module"
+    assert after[main_member] == b'synthetic-0.0.9.627-main-module"hide-write":!1'
     assert PATCH_MARKER in after[INDEX_MEMBER].decode()
     assert BOOTSTRAP_MEMBER in after
 
@@ -256,6 +259,29 @@ def test_repository_owned_bootstrap_upgrade_restores_0627_mailbox_write_access(
     main = after[main_member].decode()
     assert '"hide-write":!1' in main
     assert '"hide-write":o(p)||!o(N3)' not in main
+
+
+def test_0627_mailbox_write_repair_rejects_missing_anchor_without_mutation(
+    tmp_path: Path,
+) -> None:
+    main_member = "assets/main-31595bd3.js"
+    index = INDEX.replace("main-917d29fc.js", "main-31595bd3.js")
+    path = tmp_path / "feapp.dat"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(INDEX_MEMBER, index)
+        archive.writestr(main_member, b"unsupported-main")
+        archive.writestr("assets/index.css", b"body{display:block}")
+    before = path.read_bytes()
+
+    with pytest.raises(CompanionSettingsPatchError) as error:
+        patch_companion_settings(
+            path,
+            "http://127.0.0.1:8899",
+            work_root=tmp_path,
+        )
+
+    assert error.value.code == "COMPANION_MAILBOX_WRITE_ANCHOR_INVALID"
+    assert path.read_bytes() == before
 
 
 def test_repatch_with_a_different_api_base_is_rejected_without_mutation(
