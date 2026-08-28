@@ -5,6 +5,7 @@ import json
 import hashlib
 from pathlib import Path
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -817,6 +818,22 @@ def test_safe_archive_rejects_windows_unsafe_paths(tmp_path: Path, names, reason
         _extract_zip_safely(archive, tmp_path / "runtime", strip_components=0)
 
 
+def test_safe_archive_still_bounds_expanded_regular_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("video_capability_install._MAX_ARCHIVE_EXPANDED_BYTES", 4)
+    archive = tmp_path / "oversized.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("runtime/worker.py", b"12345")
+
+    destination = tmp_path / "runtime"
+    with pytest.raises(VideoCapabilityError, match="VIDEO_ARCHIVE_TOO_LARGE"):
+        _extract_zip_safely(archive, destination, strip_components=0)
+
+    assert not (destination / "runtime" / "worker.py").exists()
+
+
 def test_safe_archive_preserves_preinstalled_model_files(tmp_path: Path) -> None:
     destination = tmp_path / "runtime"
     model = destination / "models" / "weights.bin"
@@ -830,6 +847,104 @@ def test_safe_archive_preserves_preinstalled_model_files(tmp_path: Path) -> None
 
     assert model.read_bytes() == b"model"
     assert (destination / "inference.py").read_text(encoding="utf-8") == "print('ready')\n"
+
+
+def test_current_cosyvoice_snapshot_shape_installs_without_archive_symlinks(
+    tmp_path: Path,
+) -> None:
+    revision = "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
+    prefix = f"CosyVoice-{revision}"
+    symlinks = {
+        "examples/libritts/cosyvoice2/local": "../cosyvoice/local",
+        "examples/libritts/cosyvoice2/path.sh": "../cosyvoice/path.sh",
+        "examples/libritts/cosyvoice2/tts_text.json": "../cosyvoice/tts_text.json",
+        "examples/libritts/cosyvoice3/local": "../cosyvoice/local",
+        "examples/libritts/cosyvoice3/path.sh": "../cosyvoice/path.sh",
+        "examples/magicdata-read/cosyvoice/conf": "../../libritts/cosyvoice/conf",
+        "examples/magicdata-read/cosyvoice/path.sh": "../../libritts/cosyvoice/path.sh",
+        "runtime/triton_trtllm/token2wav_dit.py": (
+            "model_repo/token2wav_dit/1/token2wav_dit.py"
+        ),
+    }
+    archive = tmp_path / "offline" / "sources" / "CosyVoice-074ca6dc.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr(f"{prefix}/cosyvoice/__init__.py", "# pinned runtime\n")
+        for relative, target in symlinks.items():
+            member = zipfile.ZipInfo(f"{prefix}/{relative}")
+            member.create_system = 3
+            member.external_attr = (stat.S_IFLNK | 0o777) << 16
+            payload.writestr(member, target)
+    spec = VideoFile(
+        "cosyvoice-code",
+        "sources/CosyVoice-074ca6dc.zip",
+        archive.stat().st_size,
+        hashlib.sha256(archive.read_bytes()).hexdigest(),
+        "Apache-2.0",
+        {},
+        True,
+        VideoFileInstall("zip", "cosyvoice/runtime", 1),
+    )
+    ordinary = VideoBundle(
+        "ordinary_video", "ordinary", "FIXED", True, (), (spec,)
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                ordinary,
+                VideoBundle("music_video", "music", "FIXED", True, (), ()),
+            ),
+        ),
+    )
+
+    assert installer.import_offline(
+        bundle_id="ordinary_video", offline_root=archive.parents[1]
+    ) == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    runtime = installer.install_root / "ordinary_video" / "cosyvoice" / "runtime"
+    assert (runtime / "cosyvoice" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "# pinned runtime\n"
+    for relative in symlinks:
+        skipped = runtime / Path(relative)
+        assert not skipped.exists()
+        assert not skipped.is_symlink()
+
+
+def test_safe_archive_does_not_materialize_symlink_target(tmp_path: Path) -> None:
+    archive = tmp_path / "malicious-target.zip"
+    link = zipfile.ZipInfo("snapshot/runtime/link.py")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr(link, "../../outside.py")
+        payload.writestr("snapshot/runtime/worker.py", "# safe file\n")
+
+    destination = tmp_path / "runtime"
+    extracted = _extract_zip_safely(archive, destination, strip_components=1)
+
+    assert [entry["path"] for entry in extracted] == ["runtime/worker.py"]
+    assert not (destination / "runtime" / "link.py").exists()
+    assert not (destination / "runtime" / "link.py").is_symlink()
+    assert not (tmp_path / "outside.py").exists()
+
+
+def test_safe_archive_rejects_traversal_symlink_member_without_writing(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "traversal-link.zip"
+    link = zipfile.ZipInfo("snapshot/../../outside.py")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr(link, "runtime/worker.py")
+
+    with pytest.raises(VideoCapabilityError, match="VIDEO_ARCHIVE_PATH_INVALID"):
+        _extract_zip_safely(archive, tmp_path / "runtime", strip_components=1)
+
+    assert not (tmp_path / "outside.py").exists()
 
 
 @pytest.mark.parametrize("source_matches", [True, False])

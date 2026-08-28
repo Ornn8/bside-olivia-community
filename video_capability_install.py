@@ -1229,8 +1229,6 @@ def _extract_zip_safely(
         with zipfile.ZipFile(archive_path) as archive:
             for member in archive.infolist():
                 mode = (member.external_attr >> 16) & 0o170000
-                if mode == 0o120000:
-                    raise VideoCapabilityError("VIDEO_ARCHIVE_LINK_FORBIDDEN")
                 raw = member.filename[:-1] if member.is_dir() and member.filename.endswith("/") else member.filename
                 try:
                     validated = _validate_relative_path(raw)
@@ -1246,6 +1244,8 @@ def _extract_zip_safely(
                     relative = _validate_relative_path(PurePosixPath(*parts).as_posix())
                 except ComponentUpdateError as exc:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_PATH_INVALID") from exc
+                if mode == 0o120000:
+                    continue
                 collision_key = relative.casefold()
                 if collision_key in written:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_DUPLICATE_PATH")
