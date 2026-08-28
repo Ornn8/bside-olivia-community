@@ -21,6 +21,25 @@ from llm_gateway import (
 )
 
 
+def test_bound_gateway_key_does_not_follow_later_environment_changes(
+    monkeypatch,
+) -> None:
+    config = GatewayConfig(
+        provider="openai_compatible",
+        base_url="https://old.example/v1",
+        model="old-model",
+        api_key_env="SHARED_KEY",
+        requires_api_key=True,
+    )
+    monkeypatch.setenv("SHARED_KEY", "new-key")
+    adapter = OpenAICompatibleAdapter(
+        config,
+        key_resolver=lambda: "old-key",
+    )
+
+    assert adapter._key() == "old-key"
+
+
 ROOT_MESSAGES = (
     {"role": "system", "content": "draft system"},
     {"role": "user", "content": "synthetic letter"},

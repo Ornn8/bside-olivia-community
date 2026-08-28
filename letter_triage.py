@@ -415,6 +415,7 @@ class LetterReplyRouter:
         self.environ = environ
 
     async def classify(self, content: str) -> TriageResult:
+        gateway = self.gateway
         if not isinstance(content, str) or not content.strip():
             return _failed("router_invalid_content", called=False)
         context = self.routing_context or routing_context_from_environment(
@@ -426,7 +427,7 @@ class LetterReplyRouter:
         }
         try:
             calls = await asyncio.wait_for(
-                self.gateway.complete_with_tools(
+                gateway.complete_with_tools(
                     messages=[
                         {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                         {

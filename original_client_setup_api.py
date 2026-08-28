@@ -423,6 +423,7 @@ class LLMSetupService:
             try:
                 self._apply_runtime(base_url, model, api_key)
             except Exception as exc:
+                rollback_succeeded = True
                 try:
                     if previous_config is None:
                         self._config_path.unlink(missing_ok=True)
@@ -431,8 +432,9 @@ class LLMSetupService:
                         staging.write_bytes(previous_config)
                         staging.replace(self._config_path)
                 except OSError:
-                    pass
-                key_path.unlink(missing_ok=True)
+                    rollback_succeeded = False
+                if rollback_succeeded:
+                    key_path.unlink(missing_ok=True)
                 raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         for stale in self._config_root.glob("deepseek_api_key.*.dpapi"):
             if stale != key_path and _KEY_FILE_RE.fullmatch(stale.name):
@@ -616,7 +618,7 @@ def mount_original_client_setup_api(
             {
                 "status": "SAVED",
                 "reload_applied": reload_applied,
-                "restart_required": not reload_applied,
+                "restart_required": True,
             },
             headers=_headers(origin),
         )
@@ -631,7 +633,7 @@ def mount_original_client_setup_api(
             {
                 "status": "DELETED",
                 "reload_applied": reload_applied,
-                "restart_required": not reload_applied,
+                "restart_required": True,
             },
             headers=_headers(origin),
         )

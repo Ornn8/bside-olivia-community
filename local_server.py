@@ -174,9 +174,7 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
     """Atomically switch future reply requests to freshly saved local settings."""
 
     global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG
-    key_env = f"OLIVIA_LLM_RUNTIME_KEY_{uuid.uuid4().hex.upper()}"
-    if api_key is not None:
-        _os.environ[key_env] = api_key
+    key_env = "OLIVIA_LLM_RUNTIME_KEY_CONFIGURED"
     candidate = replace(
         LLM_CONFIG,
         provider="openai_compatible",
@@ -190,23 +188,29 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         requires_api_key=True,
     )
     try:
-        gateway = create_gateway(candidate)
+        gateway = create_gateway(
+            candidate,
+            key_resolver=lambda key=api_key: key,
+        )
     except Exception:
-        _os.environ.pop(key_env, None)
         raise
-    letters_adapter.config = candidate
-    letters_adapter.gateway = gateway
+    letters_adapter.replace_runtime(candidate, gateway)
     if isinstance(
         private_world_candidate_analyzer,
         GatewayPrivateWorldCandidateAnalyzer,
     ):
         private_world_candidate_analyzer.gateway = gateway
         private_world_candidate_analyzer.timeout_seconds = candidate.timeout_seconds
+    emotion_triage.gateway = gateway
     reply_engine.timeout_seconds = candidate.timeout_seconds
     LLM_CONFIG = candidate
     LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
     LLM_CFG = candidate.public_dict()
     LLM_CFG["persona_file"] = candidate.persona_file
+    if api_key is None:
+        _os.environ.pop(key_env, None)
+    else:
+        _os.environ[key_env] = "1"
 
 
 def _persona() -> str:
@@ -302,27 +306,28 @@ class LetterAdapter:
         private_world_port: PrivateWorldPort | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        self.config = config or LLM_CONFIG
+        runtime_config = config or LLM_CONFIG
         try:
-            self.gateway = create_gateway(self.config)
+            runtime_gateway = create_gateway(runtime_config)
         except GatewayError:
-            self.gateway = UnconfiguredAdapter()
+            runtime_gateway = UnconfiguredAdapter()
+        self._runtime = (runtime_config, runtime_gateway)
         self.memory_port: MemoryPort = memory_port or NullMemoryPort()
         self.conversation_memory = conversation_memory
         self.private_world_port: PrivateWorldPort = (
             private_world_port or NullPrivateWorldPort()
         )
         self._now = now or (lambda: datetime.now(timezone.utc))
-        persona_path = Path(self.config.persona_file)
+        persona_path = Path(runtime_config.persona_file)
         if not persona_path.is_absolute():
             persona_path = Path(__file__).resolve().parent / persona_path
-        persona_config_path = Path(self.config.persona_config)
+        persona_config_path = Path(runtime_config.persona_config)
         if not persona_config_path.is_absolute():
             persona_config_path = Path(__file__).resolve().parent / persona_config_path
-        persona_evidence_path = Path(self.config.persona_evidence_file)
+        persona_evidence_path = Path(runtime_config.persona_evidence_file)
         if not persona_evidence_path.is_absolute():
             persona_evidence_path = Path(__file__).resolve().parent / persona_evidence_path
-        persona_v2_path = Path(self.config.persona_v2_file)
+        persona_v2_path = Path(runtime_config.persona_v2_file)
         if not persona_v2_path.is_absolute():
             persona_v2_path = Path(__file__).resolve().parent / persona_v2_path
         self.persona_v2_path = persona_v2_path
@@ -333,7 +338,7 @@ class LetterAdapter:
                 JsonPersonaEvidencePort(persona_evidence_path),
                 MemoryReferenceEvidencePort(self.memory_port),
             ),
-            feature_enabled=self.config.feature_enabled,
+            feature_enabled=runtime_config.feature_enabled,
         )
         self.memory_prompt_builder = (
             MemoryPromptBuilder(self.memory_port)
@@ -343,6 +348,25 @@ class LetterAdapter:
                 conversation_memory=conversation_memory,
             )
         )
+
+    @property
+    def config(self) -> GatewayConfig:
+        return self._runtime[0]
+
+    @config.setter
+    def config(self, value: GatewayConfig) -> None:
+        self._runtime = (value, self._runtime[1])
+
+    @property
+    def gateway(self) -> Gateway:
+        return self._runtime[1]
+
+    @gateway.setter
+    def gateway(self, value: Gateway) -> None:
+        self._runtime = (self._runtime[0], value)
+
+    def replace_runtime(self, config: GatewayConfig, gateway: Gateway) -> None:
+        self._runtime = (config, gateway)
 
     def get_system_prompt(self) -> str:
         return self.persona_provider.snapshot().system_prompt
@@ -536,10 +560,11 @@ class LetterAdapter:
         *,
         request_id: str | None = None,
     ) -> str:
+        config, gateway = self._runtime
         try:
             messages = self._messages(content, context)
             return asyncio.run(
-                self.gateway.complete(messages, request_id=request_id)
+                gateway.complete(messages, request_id=request_id)
             ).text
         except GatewayError as exc:
             code = "LLM_TIMEOUT" if isinstance(exc, ProviderTimeout) else "LLM_UNAVAILABLE"
@@ -547,10 +572,10 @@ class LetterAdapter:
                 code = "LLM_PROVIDER_REJECTED"
             elif exc.code == "PROVIDER_PROTOCOL":
                 code = "LLM_PROTOCOL_ERROR"
-            _safe_log("llm_failure", provider=self.config.provider, error_code=code)
+            _safe_log("llm_failure", provider=config.provider, error_code=code)
             raise LLMError(code) from None
         except (ValueError, RuntimeError):
-            _safe_log("llm_failure", provider=self.config.provider, error_code="LLM_UNAVAILABLE")
+            _safe_log("llm_failure", provider=config.provider, error_code="LLM_UNAVAILABLE")
             raise LLMError("LLM_UNAVAILABLE") from None
 
 

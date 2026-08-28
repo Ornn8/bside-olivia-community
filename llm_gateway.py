@@ -520,11 +520,20 @@ class OfflineDeterministicAdapter(Gateway):
 class OpenAICompatibleAdapter(Gateway):
     """Chat Completions and Responses shaped HTTP adapter."""
 
-    def __init__(self, config: GatewayConfig) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        *,
+        key_resolver: Callable[[], str | None] | None = None,
+    ) -> None:
         self.config = config
         self.stream_enabled = bool(config.stream)
+        self._key_resolver = key_resolver
 
     def _key(self) -> str | None:
+        if self._key_resolver is not None:
+            value = self._key_resolver()
+            return value if value else None
         if not self.config.api_key_env:
             return None
         value = os.environ.get(self.config.api_key_env)
@@ -852,20 +861,27 @@ def register_provider(name: str, factory: ProviderFactory) -> None:
     _PROVIDERS[normalized] = factory
 
 
-def create_gateway(config: GatewayConfig) -> Gateway:
-    def build_base(current: GatewayConfig) -> Gateway:
+def create_gateway(
+    config: GatewayConfig,
+    *,
+    key_resolver: Callable[[], str | None] | None = None,
+) -> Gateway:
+    def build_base(
+        current: GatewayConfig,
+        resolver: Callable[[], str | None] | None = None,
+    ) -> Gateway:
         if not current.feature_enabled or current.provider in {"", "none"}:
             return UnconfiguredAdapter()
         if current.provider == "mock":
             return OfflineDeterministicAdapter(current)
         if current.provider == "openai_compatible":
-            return OpenAICompatibleAdapter(current)
+            return OpenAICompatibleAdapter(current, key_resolver=resolver)
         factory = _PROVIDERS.get(current.provider)
         if factory is None:
             raise ProviderUnavailable()
         return factory(current)
 
-    primary = build_base(config)
+    primary = build_base(config, key_resolver)
     fallback_name = config.fallback_provider.strip().lower()
     if fallback_name in {"", "none", config.provider}:
         return primary
