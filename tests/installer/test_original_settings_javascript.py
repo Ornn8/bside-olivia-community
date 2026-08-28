@@ -32,7 +32,8 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert source.count('method: "GET"') == 1
     assert '"Content-Type": "application/json"' in source
     assert 'const CONFIRM_VALUE = "confirmed"' in source
-    assert "window.confirm" in source
+    assert "window.confirm" not in source
+    assert "confirmAction" in source
     assert "window.open" not in source
     assert "innerHTML" not in source
     assert "document.write" not in source
@@ -41,6 +42,112 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert "<iframe" not in source.casefold()
     assert 'method: "DELETE"' not in source
     assert 'method: "PUT"' not in source
+
+
+def test_confirmation_dialog_can_be_cancelled_by_backdrop_or_escape() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable for confirmation behavior validation")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+let source = fs.readFileSync(0, "utf8");
+source = source.replace(/\s*schedule\(\);\s*\}\)\(\);\s*$/, `
+  globalThis.confirmAction = confirmAction;
+})();\n`);
+
+class Element {
+  constructor(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this.attributes = {};
+    this.listeners = {};
+    this.style = {};
+    this.parent = null;
+  }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] || null; }
+  addEventListener(name, listener) {
+    (this.listeners[name] ||= []).push(listener);
+  }
+  append(...children) {
+    for (const child of children) {
+      child.parent = this;
+      this.children.push(child);
+    }
+  }
+  remove() {
+    if (this.parent) {
+      this.parent.children = this.parent.children.filter((child) => child !== this);
+    }
+  }
+  focus() {}
+}
+
+const body = new Element("body");
+const document = {
+  currentScript: { dataset: { apiBase: "http://127.0.0.1:8899/" } },
+  body,
+  documentElement: body,
+  createElement: (tag) => new Element(tag),
+  querySelector: () => body.children[body.children.length - 1] || null,
+};
+const context = {
+  URL,
+  document,
+  MutationObserver: class { observe() {} },
+  window: { addEventListener: () => {} },
+};
+vm.runInNewContext(source, context);
+
+(async () => {
+  const backdropPending = context.confirmAction("确认删除？");
+  const backdrop = body.children[0];
+  const confirmation = backdrop.children[0];
+  const message = confirmation.children[0];
+  let clickPrevented = false;
+  for (const listener of backdrop.listeners.click || []) {
+    listener({ target: backdrop, preventDefault: () => { clickPrevented = true; } });
+  }
+  const backdropResult = await backdropPending;
+
+  const escapePending = context.confirmAction("确认回滚？");
+  const escapeBackdrop = body.children[0];
+  let escapePrevented = false;
+  for (const listener of escapeBackdrop.listeners.keydown || []) {
+    listener({ key: "Escape", preventDefault: () => { escapePrevented = true; } });
+  }
+  const escapeResult = await escapePending;
+
+  process.stdout.write(JSON.stringify({
+    backdropResult,
+    escapeResult,
+    clickPrevented,
+    escapePrevented,
+    labelledBy: confirmation.getAttribute("aria-labelledby"),
+    messageId: message.id || null,
+    remainingBackdrops: body.children.length,
+  }));
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+'''
+    completed = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
+    assert completed.returncode == 0, output
+    assert json.loads(completed.stdout) == {
+        "backdropResult": False,
+        "escapeResult": False,
+        "clickPrevented": True,
+        "escapePrevented": True,
+        "labelledBy": "olivia-companion-confirm-message",
+        "messageId": "olivia-companion-confirm-message",
+        "remainingBackdrops": 0,
+    }
 
 
 def test_original_settings_reuses_llm_setup_after_login() -> None:
