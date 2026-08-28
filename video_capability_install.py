@@ -391,7 +391,7 @@ class VideoCapabilityInstaller:
         return "APPLIED"
 
     def import_configured_assets(self, environment: Mapping[str, str]) -> str:
-        """Copy the three already-selected official files without publishing paths."""
+        """Copy the three already-selected licensed files without publishing paths."""
         project_root = Path(str(environment.get("OLIVIA_PROJECT_ROOT", ""))).expanduser()
         assets: list[dict[str, object]] = []
         for asset_id, key in (
