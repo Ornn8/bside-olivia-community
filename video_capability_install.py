@@ -713,10 +713,13 @@ class VideoCapabilityInstaller:
             root = self._final_root(bundle)
             try:
                 content_ready = (
-                    (root / ".ready.json").is_file()
-                    and all(_verify_and_true(root / item.relative_path, item) for item in bundle.files)
+                    _ready_marker_matches(root, bundle, self.manifest.version)
+                    and all(
+                        _size_matches(root, root / item.relative_path, item)
+                        for item in bundle.files
+                    )
                 )
-            except (OSError, VideoCapabilityError):
+            except (OSError, ComponentUpdateError, VideoCapabilityError):
                 content_ready = False
             if content_ready:
                 state, reason = self._installed_state(root, bundle)
@@ -980,13 +983,21 @@ class VideoCapabilityInstaller:
             expected.extend(self._assemble_archives(root, bundle))
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded, source=source_used)
             final = self._final_root(bundle)
-            (root / ".ready.json").write_text(json.dumps({"schema_version": "olivia.video-bundle.v1", "bundle": bundle.identifier, "version": self.manifest.version}), encoding="utf-8")
-            expected.append(_tree_entry(root, ".ready.json"))
             if len({item["path"].casefold() for item in expected}) != len(expected):
                 raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
             if _is_reparse_point(root):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             _verify_staged_tree(root, expected)
+            (root / ".ready.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "olivia.video-bundle.v1",
+                        "bundle": bundle.identifier,
+                        "version": self.manifest.version,
+                    }
+                ),
+                encoding="utf-8",
+            )
             self._promote_directory(root, final, refresh_environment=True)
             with self._lock:
                 state, reason = self._installed_state(final, bundle)
@@ -1156,6 +1167,46 @@ def _verify_and_true(path: Path, item: VideoFile) -> bool:
     except (OSError, VideoCapabilityError):
         return False
     return True
+
+
+def _ready_marker_matches(root: Path, bundle: VideoBundle, version: str) -> bool:
+    marker = root / ".ready.json"
+    if not _regular_file_without_reparse_ancestors(root, marker):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ComponentUpdateError, UnicodeError, json.JSONDecodeError):
+        return False
+    return payload == {
+        "schema_version": "olivia.video-bundle.v1",
+        "bundle": bundle.identifier,
+        "version": version,
+    }
+
+
+def _regular_file_without_reparse_ancestors(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+        if not root.is_dir() or _is_reparse_point(root):
+            return False
+        current = root
+        for part in relative.parts[:-1]:
+            current /= part
+            if not current.is_dir() or _is_reparse_point(current):
+                return False
+        return path.is_file() and not _is_reparse_point(path)
+    except (OSError, ComponentUpdateError, ValueError):
+        return False
+
+
+def _size_matches(root: Path, path: Path, item: VideoFile) -> bool:
+    try:
+        return (
+            _regular_file_without_reparse_ancestors(root, path)
+            and path.stat().st_size == item.size_bytes
+        )
+    except (OSError, ComponentUpdateError):
+        return False
 
 
 def _tree_entry(root: Path, relative: str) -> dict[str, object]:
