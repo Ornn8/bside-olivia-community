@@ -81,6 +81,7 @@ py-modules = [
     "reply_reviewer",
     "song_content",
     "video_reply_settings",
+    "video_capability_install",
     "voice_direction",
 ]
 

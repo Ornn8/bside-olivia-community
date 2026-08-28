@@ -156,9 +156,9 @@ _VIDEO_REPLY_SOURCE_URLS = {
     ("livetalking", "official"): "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
     ("latentsync", "domestic"): "https://gitee.com/ByteDance/LatentSync",
     ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
-    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
-    ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
-    ("ffmpeg", "official"): "https://pypi.org/project/imageio-ffmpeg/0.6.0/",
+    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("ffmpeg", "official"): "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
 }
 
 

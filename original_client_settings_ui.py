@@ -15,7 +15,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
-  const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";
+  const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
+  const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
@@ -41,15 +42,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
   const VIDEO_CAPABILITY_CATALOG = [
+    ["ordinary_video", "普通视频", "CosyVoice 3 + LatentSync + FFmpeg + Olivia 私有素材"],
+    ["music_video", "音乐视频扩展", "MiniMax Music 3 + RoFormer + Seed-VC + Demucs + 普通视频"],
+  ];
+  const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
     ["cosyvoice", "语音合成（CosyVoice 3）"],
-    ["livetalking", "视频驱动配置（LiveTalking）"],
+    ["livetalking", "实时驱动（LiveTalking，可选）"],
     ["latentsync", "口型视频（LatentSync）"],
     ["minimax_music3", "音乐生成（MiniMax Music 3）"],
     ["roformer", "人声分离（RoFormer）"],
     ["official_video_assets", "Olivia 场景与转场素材"],
     ["ffmpeg", "媒体工具（FFmpeg）"],
     ["media_workspace", "媒体工作目录"],
-  ];
+  ]);
   const parseApiBase = (value) => {
     let url;
     try {
@@ -318,7 +323,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
-          || path === VIDEO_REPLY_SOURCE_PATH
           || path === OFFICIAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
@@ -1148,93 +1152,80 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const renderVideoCapabilityPanel = async (panel) => {
     let payload = null;
     try {
-      payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
+      payload = await requestJson(VIDEO_CAPABILITY_PATH);
     } catch (_error) {
       payload = null;
     }
     const known = new Map(
-      payload && Array.isArray(payload.dependencies)
-        ? payload.dependencies
+      payload && Array.isArray(payload.bundles)
+        ? payload.bundles
           .filter((item) => item && typeof item.id === "string")
           .map((item) => [item.id, item])
         : []
     );
-    const heading = text("h3", "视频回信（说话 + 音乐）", "text-text-title text-title-m");
+    const heading = text("h3", "视频能力一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "开启前会检查整条生成链路；缺少任一项时不会开启。",
+      "普通视频与音乐视频分开下载、校验和启用；LiveTalking 保持独立可选，不会阻塞视频回信。下载默认国内源优先，失败自动回退官方源。",
       "text-text-secondary text-body-m font-regular"
     );
     const list = stack();
-    for (const [id, label] of VIDEO_CAPABILITY_CATALOG) {
-      const dependency = known.get(id);
-      const state = dependency && dependency.state === "ready" ? "ready" : "missing";
-      const installMode = dependency && typeof dependency.install_mode === "string"
-        ? dependency.install_mode
-        : "manual";
-      const modeLabel = installMode === "core"
-        ? "随核心安装器提供"
-        : installMode === "local_import"
-        ? "从本机正版资源导入"
-        : "需手动准备";
-      const source = dependency && typeof dependency.source_summary === "string"
-        ? dependency.source_summary
-        : "下载源状态暂不可用";
-      const sourceChoices = dependency && Array.isArray(dependency.sources)
-        ? dependency.sources.filter((candidate) => candidate
-          && typeof candidate.label === "string"
-          && (candidate.id === "domestic" || candidate.id === "official"))
-        : [];
+    for (const [id, label, description] of VIDEO_CAPABILITY_CATALOG) {
+      const dependency = known.get(id) || { state: "missing", downloaded_bytes: 0, total_bytes: 0 };
+      const state = typeof dependency.state === "string" ? dependency.state : "missing";
       const item = card();
       item.append(
         text("div", label, "text-text-body text-label-l"),
         text(
           "div",
-          `${state === "ready" ? "已就绪" : "未准备"} · ${modeLabel}`,
+          `${state === "ready" ? "已就绪" : state === "paused" ? "已暂停" : state === "failed" ? "安装失败，可重试" : ["downloading", "queued", "verifying"].includes(state) ? "正在安装" : "未安装"}`,
           "text-text-secondary text-body-m font-regular"
         ),
-        text("div", source, "text-text-secondary text-caption-m font-regular")
+        text("div", description, "text-text-secondary text-caption-m font-regular"),
+        text("div", dependency.total_bytes ? `已处理 ${dependency.downloaded_bytes || 0} / ${dependency.total_bytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
       );
-      if (sourceChoices.length) {
-        const sourceControls = actions();
-        const sourcePicker = document.createElement("select");
-        sourcePicker.setAttribute("aria-label", `选择下载源：${label}`);
-        sourcePicker.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-        for (const candidate of sourceChoices) {
-          const option = document.createElement("option");
-          option.value = candidate.id;
-          option.textContent = candidate.label;
-          sourcePicker.append(option);
-        }
-        const openState = text("div", "", "text-text-secondary text-caption-m font-regular");
-        openState.setAttribute("aria-live", "polite");
-        const openSource = button("打开下载页", async () => {
-          setButtonsBusy([openSource], true);
+      if (["queued", "downloading", "verifying"].includes(state)) {
+        const pause = button("暂停下载", async () => {
+          await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "pause" });
+          await renderVideoCapabilityPanel(panel);
+        });
+        item.append(pause);
+      } else if (state !== "ready") {
+        const action = state === "paused" ? "resume" : state === "failed" ? "retry" : "install";
+        const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "下载并安装";
+        const install = button(actionLabel, async () => {
+          if (!await confirmAction(`确认下载并安装${label}？文件会保存到本地数据目录。`)) return;
+          setButtonsBusy([install], true);
           try {
-            await requestMutation(VIDEO_REPLY_SOURCE_PATH, {
-              capability: id,
-              source: sourcePicker.value,
-            });
-            openState.textContent = "已在系统浏览器打开下载页。";
+            await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action, bundle_id: id, source: "auto" });
+            await renderVideoCapabilityPanel(panel);
           } catch (_error) {
-            openState.textContent = "下载页未能打开，请稍后重试。";
-          } finally {
-            setButtonsBusy([openSource], false);
+            setButtonsBusy([install], false);
           }
         });
-        sourceControls.append(sourcePicker, openSource);
-        item.append(sourceControls, openState);
-      } else if (state !== "ready" && installMode !== "core") {
-        item.append(text(
-          "div",
-          installMode === "local_import"
-            ? "请从本机正版 Olivia 安装目录导入；安装后点击重新检测。"
-            : "尚无许可证和校验清单均已确认的下载源。",
-          "text-text-secondary text-caption-m font-regular"
-        ));
+        item.append(install);
       }
+      const offline = button("导入离线包", async () => {
+        try {
+          await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "import_offline", bundle_id: id });
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          // The native installer supplies the selected offline package path; no path is shown here.
+        }
+      });
+      item.append(offline);
       list.append(item);
     }
+    const privateState = text("div", "官方 Olivia 私有素材不会公共下载或再分发。若自动检测不到已配置的正版素材，可在这里导入并逐文件 SHA 校验。", "text-text-secondary text-caption-m font-regular");
+    const privateImport = button("导入官方素材", async () => {
+      try {
+        await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "import_official" });
+        privateState.textContent = "官方素材已导入并校验；请重新检测视频能力。";
+      } catch (_error) {
+        privateState.textContent = "未找到已配置的官方 Olivia 素材；请先在客户端内选择官方安装目录或离线包。";
+      }
+    });
+    list.append(privateState, privateImport);
     const refresh = actions();
     refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
     panel.replaceChildren(heading, summary, list, refresh);
@@ -1610,7 +1601,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (payload.state !== "available") throw new Error("setting-unavailable");
         enabled = payload.enabled;
         ready = payload.ready === true;
-        const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+        const byId = VIDEO_REPLY_DEPENDENCY_LABELS;
         missingDependencies = Array.isArray(payload.dependencies)
           ? payload.dependencies
             .filter((item) => item && item.state !== "ready" && byId.has(item.id))
@@ -1643,7 +1634,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (error) {
         enabled = previous;
         if (error && error.code === "VIDEO_REPLY_DEPENDENCIES_MISSING") {
-          const byId = new Map(VIDEO_CAPABILITY_CATALOG);
+          const byId = VIDEO_REPLY_DEPENDENCY_LABELS;
           const labels = (error.missingDependencies || []).flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
           message = `缺少依赖，无法开启视频回信：${labels.join("、") || "请检查本地能力"}`;
         } else {

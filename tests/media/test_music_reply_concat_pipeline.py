@@ -99,7 +99,7 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     assert dependencies["roformer"]["sources"] == []
     assert music_reply.video_reply_source_url("minimax_music3", "domestic") == (
         "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/"
-        "6baad88896848433857c170ba4f05d2ea9d5f218"
+        "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6"
     )
     assert music_reply.video_reply_source_url("roformer", "domestic") is None
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"

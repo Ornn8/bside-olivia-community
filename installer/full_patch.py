@@ -53,6 +53,7 @@ PAYLOAD_ROOT_FILES = {
     "local_server.py",
     "mem0_capability_install.py",
     "original_client_capability_api.py",
+    "original_client_video_capability_api.py",
     "original_client_server.py",
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
@@ -68,6 +69,7 @@ PAYLOAD_ROOT_FILES = {
     "local_memory.py",
     "persona_provider.py",
     "reply_orchestrator.py",
+    "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_ROOT_FILES = {
     "letter_status.py",
@@ -103,6 +105,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "installer/mem0-capability-manifest.json",
+    "installer/video-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",
