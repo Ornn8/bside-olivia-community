@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import music_reply
 from runtime.media import latentsync_reply
 import tts.delivery as tts_delivery
 from letter_triage import (
@@ -462,6 +463,13 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        music_reply, "_python_runtime_ready", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        music_reply, "_executable_runtime_ready", lambda *_args, **_kwargs: True
+    )
+
     def write(relative: str) -> str:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
