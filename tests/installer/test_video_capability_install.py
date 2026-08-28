@@ -16,6 +16,7 @@ from jsonschema import Draft202012Validator
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import video_capability_install
 from video_capability_install import (
     apply_runtime_text_patch,
     _extract_zip_safely,
@@ -281,6 +282,53 @@ def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missi
     assert load_video_runtime_environment(installer.data_root) == {}
 
 
+def test_install_fully_verifies_staged_payload_before_writing_ready_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"verified model"
+    offline_root = tmp_path / "offline"
+    source = offline_root / "models" / "model.bin"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+    bundle = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (
+            VideoFile(
+                "model",
+                "models/model.bin",
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+                "fixture",
+                {},
+            ),
+        ),
+    )
+    marker_presence_during_verification: list[bool] = []
+    original_verify_staged_tree = video_capability_install._verify_staged_tree
+
+    def observe_verification(root: Path, expected: list[dict[str, object]]) -> None:
+        marker_presence_during_verification.append((root / ".ready.json").exists())
+        original_verify_staged_tree(root, expected)
+
+    monkeypatch.setattr(
+        video_capability_install, "_verify_staged_tree", observe_verification
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest("1.0", (bundle,)),
+    )
+
+    assert installer.import_offline(
+        bundle_id=bundle.identifier, offline_root=offline_root
+    ) == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert marker_presence_during_verification == [False]
+
+
 def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -342,7 +390,16 @@ def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
     )
     final = installer.install_root / "ordinary_video"
     final.mkdir(parents=True)
-    (final / ".ready.json").write_text("{}", encoding="utf-8")
+    (final / ".ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": "ordinary_video",
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert installer.import_runtime_root(
         runtime_root=runtime_root,
@@ -451,7 +508,16 @@ def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> Non
     for bundle_id in ("ordinary_video", "music_video"):
         root = installer.install_root / bundle_id
         root.mkdir(parents=True)
-        (root / ".ready.json").write_text("{}", encoding="utf-8")
+        (root / ".ready.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.video-bundle.v1",
+                    "bundle": bundle_id,
+                    "version": "1.0",
+                }
+            ),
+            encoding="utf-8",
+        )
     ffmpeg = (installer.install_root / "ordinary_video" / "ffmpeg.exe").resolve()
     ffmpeg.write_bytes(b"fixture")
     (installer.install_root / "runtime-environment.json").write_text(
@@ -473,6 +539,110 @@ def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> Non
     assert status["bundles"][1]["reason_code"] == "VIDEO_RUNTIME_DEPENDENCIES_MISSING"
     assert observed[-1]["OLIVIA_LOCAL_DATA_ROOT"] == str(data_root)
     assert observed[-1]["OLIVIA_FFMPEG_EXE"] == str(ffmpeg)
+
+
+def test_ready_status_does_not_rehash_installed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = (tmp_path / "data").resolve()
+    bundle = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (
+            VideoFile(
+                "model",
+                "models/model.bin",
+                7,
+                hashlib.sha256(b"fixture").hexdigest(),
+                "MIT",
+                {},
+            ),
+        ),
+    )
+    root = data_root / "capabilities" / "video" / bundle.identifier
+    (root / "models").mkdir(parents=True)
+    (root / "models" / "model.bin").write_bytes(b"fixture")
+    (root / ".ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": bundle.identifier,
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def reject_hash(*_args, **_kwargs):
+        raise AssertionError("steady-state status must not hash installed files")
+
+    monkeypatch.setattr(video_capability_install, "_sha256_file", reject_hash)
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest("1.0", (bundle,)),
+    )
+
+    assert installer.status()["bundles"][0]["state"] == "ready"
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ("corrupt_marker", "wrong_bundle", "wrong_version", "missing_file", "wrong_size"),
+)
+def test_ready_status_fails_closed_on_stale_marker_or_payload_shape(
+    tmp_path: Path, damage: str
+) -> None:
+    data_root = (tmp_path / damage / "data").resolve()
+    bundle = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (
+            VideoFile(
+                "model",
+                "models/model.bin",
+                7,
+                hashlib.sha256(b"fixture").hexdigest(),
+                "MIT",
+                {},
+            ),
+        ),
+    )
+    root = data_root / "capabilities" / "video" / bundle.identifier
+    model = root / "models" / "model.bin"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"fixture")
+    marker = root / ".ready.json"
+    marker_payload = {
+        "schema_version": "olivia.video-bundle.v1",
+        "bundle": bundle.identifier,
+        "version": "1.0",
+    }
+    if damage == "corrupt_marker":
+        marker.write_text("{", encoding="utf-8")
+    else:
+        if damage == "wrong_bundle":
+            marker_payload["bundle"] = "music_video"
+        elif damage == "wrong_version":
+            marker_payload["version"] = "0.9"
+        elif damage == "missing_file":
+            model.unlink()
+        elif damage == "wrong_size":
+            model.write_bytes(b"fixture!")
+        marker.write_text(json.dumps(marker_payload), encoding="utf-8")
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest("1.0", (bundle,)),
+    )
+
+    assert installer.status()["bundles"][0]["state"] == "missing"
 
 
 def test_auto_install_reuses_verified_local_artifact_before_network(
