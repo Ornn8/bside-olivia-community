@@ -1220,7 +1220,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     } else if (state !== "ready" && !["license_review_required", "prerequisites_required"].includes(state)) {
       const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "一键下载并安装";
       const install = button(actionLabel, async () => {
-        if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件，文件保存在本地数据目录。")) return;
+        if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件；下载即表示你已阅读并同意各上游许可证与使用条款。")) return;
         setButtonsBusy([install], true);
         result.textContent = "正在启动后台下载…";
         try {
