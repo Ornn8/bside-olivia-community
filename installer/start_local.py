@@ -88,6 +88,7 @@ def _load_llm_environment(
     provider = "openai_compatible"
     key_path = data_root / "config" / "deepseek_api_key.dpapi"
     config_path = data_root / "config" / "llm.json"
+    saved_key_binding = False
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         candidate_url = str(payload["base_url"]).strip().rstrip("/")
@@ -121,6 +122,7 @@ def _load_llm_environment(
                 key_path = config_path.parent / name
                 if hashlib.sha256(key_path.read_bytes()).hexdigest() != expected_hash:
                     raise ValueError("invalid key binding")
+                saved_key_binding = True
         else:
             raise ValueError("invalid LLM config")
     except FileNotFoundError:
@@ -139,9 +141,18 @@ def _load_llm_environment(
         "OLIVIA_LLM_MAX_RETRIES": "0",
     }.items():
         values.setdefault(name, value)
-    if include_secret and key_path != Path() and not any(
-        values.get(name)
-        for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+    if values.get("OLIVIA_LLM_API_KEY"):
+        values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
+    generic_key_present = any(
+        values.get(name) for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+    )
+    # A schema-v2 binding is the user's explicit saved choice; inherited generic
+    # keys must not outrank it.  The Olivia-specific override remains explicit.
+    if (
+        include_secret
+        and key_path != Path()
+        and not values.get("OLIVIA_LLM_API_KEY")
+        and (saved_key_binding or not generic_key_present)
     ):
         configured_key = _load_dpapi_key(key_path)
         if configured_key:
