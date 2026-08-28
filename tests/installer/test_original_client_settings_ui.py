@@ -12,6 +12,115 @@ from original_client_settings_ui import (
 )
 
 
+def _render_ready_mem0_status(*, companion_state: str | None) -> str:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    companion_response = (
+        "throw new Error('offline');"
+        if companion_state is None
+        else f'''return {{ ok: true, json: async () => ({{
+          status: "READY",
+          capabilities: {{ memory: {{ state: "{companion_state}" }} }},
+        }}) }};'''
+    )
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+let source = fs.readFileSync(0, "utf8");
+source = source.replace(/\}\)\(\);\s*$/, `
+  globalThis.renderMem0CapabilityStatus = renderMem0CapabilityPanel;
+})();\n`);
+
+class Element {
+  constructor(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this.style = {};
+    this.textContent = "";
+    this.className = "";
+    this.attributes = {};
+    this.disabled = false;
+  }
+  append(...items) { this.children.push(...items); }
+  replaceChildren(...items) { this.children = items; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  addEventListener() {}
+}
+
+const document = {
+  currentScript: { dataset: { apiBase: "http://127.0.0.1:8899" } },
+  createElement: (tag) => new Element(tag),
+  querySelectorAll: () => [],
+  querySelector: () => null,
+  documentElement: new Element("html"),
+};
+const fetch = async (endpoint) => {
+  if (endpoint.pathname === "/toy/capabilities/mem0") {
+    return { ok: true, json: async () => ({
+      status: "READY",
+      capability: "long_term_memory",
+      state: "ready",
+      total_bytes: 332631647,
+      remaining_bytes: 0,
+      installed_bytes: 1015840112,
+      requires_gpu: false,
+      install_locations: [],
+    }) };
+  }
+  if (endpoint.pathname === "/toy/companion/status") {
+    __COMPANION_RESPONSE__
+  }
+  throw new Error(`unexpected request: ${endpoint.pathname}`);
+};
+const context = {
+  URL, AbortController, document, fetch,
+  MutationObserver: class { constructor() {} observe() {} },
+  window: {
+    location: { pathname: "/collection", hash: "" },
+    requestAnimationFrame: () => {}, addEventListener: () => {},
+    setTimeout: () => 1, clearTimeout: () => {},
+  },
+};
+vm.runInNewContext(source, context);
+(async () => {
+  const panel = new Element("section");
+  await context.renderMem0CapabilityStatus(panel);
+  const metadata = panel.children[2];
+  const statusRow = metadata && metadata.children[0];
+  const statusValue = statusRow && statusRow.children[1];
+  if (!statusValue) throw new Error("Mem0 status field was not rendered");
+  process.stdout.write(statusValue.textContent);
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+'''.replace("__COMPANION_RESPONSE__", companion_response)
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+    assert result.returncode == 0, output
+    return result.stdout.decode("utf-8")
+
+
+def test_ready_mem0_reports_loaded_when_companion_runtime_is_available() -> None:
+    assert _render_ready_mem0_status(companion_state="available") == "已安装并已加载"
+
+
+def test_ready_mem0_requests_restart_when_companion_runtime_is_unavailable() -> None:
+    assert _render_ready_mem0_status(companion_state="unavailable") == (
+        "已安装，重启 Olivia 后加载"
+    )
+
+
+def test_ready_mem0_preserves_restart_fallback_when_companion_is_offline() -> None:
+    assert _render_ready_mem0_status(companion_state=None) == (
+        "已安装，重启 Olivia 后加载"
+    )
+
+
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v9"

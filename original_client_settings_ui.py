@@ -1057,12 +1057,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const allowedStates = ["missing", "queued", "downloading", "verifying", "ready", "paused", "repair", "incompatible"];
     const stateValue = allowedStates.includes(payload.state) ? payload.state : "repair";
+    let runtimeLoaded = false;
+    if (stateValue === "ready") {
+      try {
+        const companion = await requestJson(STATUS_PATH);
+        runtimeLoaded = companion && companion.capabilities
+          && companion.capabilities.memory
+          && companion.capabilities.memory.state === "available";
+      } catch (_error) {
+        runtimeLoaded = false;
+      }
+    }
     const labels = {
       missing: "未安装",
       queued: "等待下载",
       downloading: "下载中",
       verifying: "校验中",
-      ready: "可用（重启 Olivia 后加载）",
+      ready: runtimeLoaded ? "已安装并已加载" : "已安装，重启 Olivia 后加载",
       paused: "已暂停",
       repair: "需修复",
       incompatible: "不兼容",
