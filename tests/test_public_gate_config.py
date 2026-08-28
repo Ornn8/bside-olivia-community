@@ -31,3 +31,16 @@ def test_pytest_ini_is_the_single_public_gate_configuration() -> None:
 
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "[tool.pytest.ini_options]" not in pyproject
+
+
+def test_community_policies_publish_actionable_private_reporting_routes() -> None:
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    conduct = (ROOT / "CODE_OF_CONDUCT.md").read_text(encoding="utf-8")
+
+    advisory_url = (
+        "https://github.com/Ornn8/bside-olivia-community/security/advisories/new"
+    )
+    contact = "zzhiyuan717@gmail.com"
+    assert advisory_url in security
+    assert contact in security
+    assert contact in conduct

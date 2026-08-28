@@ -13,7 +13,7 @@
 
 ## 报告问题
 
-公开 issue 只报告不含敏感数据的复现步骤。涉及凭据泄露、路径泄露、任意文件读写、非预期网络访问或数据删除的问题，请先通过项目维护者指定的私密渠道报告，不要直接贴出原始日志。
+公开 issue 只报告不含敏感数据的复现步骤。涉及凭据泄露、路径泄露、任意文件读写、非预期网络访问或数据删除的问题，请使用 GitHub 的 [Private vulnerability reporting](https://github.com/Ornn8/bside-olivia-community/security/advisories/new) 私密提交；如果该页面暂时不可用，请发送邮件至 `zzhiyuan717@gmail.com`。首次报告只需提供影响、受影响版本和最小复现摘要，不要附带真实密钥、私人数据或完整原始日志。
 
 ## 安全边界
 
