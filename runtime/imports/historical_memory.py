@@ -390,6 +390,11 @@ def migrate_historical_exchanges(
         if result.status is MemoryWriteStatus.UNAVAILABLE:
             failure_code = result.error_code or "MEM0_WRITE_FAILED"
             if require_persisted:
+                created_memory_ids.extend(
+                    memory_id
+                    for memory_id in result.memory_ids
+                    if memory_id not in created_memory_ids
+                )
                 failure_code = _rollback_created_memories(
                     memory,
                     created_memory_ids,

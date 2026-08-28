@@ -181,6 +181,42 @@ def test_official_history_strict_migration_reconciles_a_timed_out_write() -> Non
     assert memory.deleted == []
 
 
+def test_official_history_does_not_rollback_a_timed_out_duplicate() -> None:
+    class TimedOutDuplicateMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.events.append(("write", str(kwargs["user_message"])))
+            if len(self.events) == 1:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    str(kwargs["source_id"]),
+                    error_code="MEM0_WRITE_TIMEOUT",
+                )
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                str(kwargs["source_id"]),
+                error_code="MEM0_WRITE_FAILED",
+            )
+
+        def settle_exchange_write(self, **kwargs: object) -> MemoryWriteResult:
+            return MemoryWriteResult(
+                MemoryWriteStatus.DUPLICATE,
+                str(kwargs["source_id"]),
+            )
+
+    memory = TimedOutDuplicateMemory([])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.duplicates == 1
+    assert memory.deleted == []
+
+
 def test_official_history_strict_migration_rolls_back_after_invalid_result() -> None:
     class InvalidSecondResultMemory(RecordingMemory):
         def remember_exchange(self, **kwargs: object):
@@ -226,6 +262,30 @@ def test_official_history_rollback_attempts_every_new_memory_id() -> None:
 
     assert result.error_code == "MEM0_ROLLBACK_FAILED"
     assert memory.deleted == ["memory.2", "memory.1"]
+
+
+def test_official_history_rolls_back_pending_ids_from_failed_current_write() -> None:
+    class PendingMismatchMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.events.append(("write", str(kwargs["user_message"])))
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                str(kwargs["source_id"]),
+                ("memory.pending",),
+                "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED",
+            )
+
+    memory = PendingMismatchMemory([])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10),),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert memory.deleted == ["memory.pending"]
 
 
 def test_migration_uses_stable_source_ids_so_a_retry_can_resume_by_deduplication() -> None:
