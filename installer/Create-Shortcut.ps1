@@ -49,19 +49,34 @@ function Resolve-OliviaIcon {
 }
 
 $icon = Resolve-OliviaIcon
-$shell = New-Object -ComObject WScript.Shell
 
 if ($RefreshExisting) {
+    $shortcutPaths = @()
     if ($ShortcutPath) {
-        $shortcutPaths = @($ShortcutPath) | Where-Object {
-            Test-Path -LiteralPath $_ -PathType Leaf
+        try {
+            if (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) {
+                $shortcutPaths += $ShortcutPath
+            }
+        }
+        catch {
+            # Explicit refresh is optional; leave the candidate list empty.
         }
     }
     else {
-        $shortcutPaths = @(
-            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Olivia 本地版.lnk'),
-            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Olivia 本地版.lnk')
-        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+        foreach ($folderName in @('Desktop', 'Programs')) {
+            try {
+                $folder = [Environment]::GetFolderPath($folderName)
+                if ($folder) {
+                    $candidate = Join-Path $folder 'Olivia 本地版.lnk'
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                        $shortcutPaths += $candidate
+                    }
+                }
+            }
+            catch {
+                # One unavailable shell folder must not suppress the other.
+            }
+        }
     }
 }
 elseif ($ShortcutPath) {
@@ -73,19 +88,28 @@ else {
     )
 }
 
+$shell = New-Object -ComObject WScript.Shell
 foreach ($path in $shortcutPaths) {
-    $shortcutParent = Split-Path -Parent $path
-    if ($shortcutParent) {
-        New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
+    try {
+        $shortcutParent = Split-Path -Parent $path
+        if ($shortcutParent) {
+            New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
+        }
+        $shortcut = $shell.CreateShortcut($path)
+        if (-not $RefreshExisting) {
+            $shortcut.TargetPath = $start
+            $shortcut.WorkingDirectory = $root
+            $shortcut.Description = 'Olivia local client and backend'
+        }
+        $shortcut.IconLocation = "$icon,0"
+        $shortcut.Save()
     }
-    $shortcut = $shell.CreateShortcut($path)
-    if (-not $RefreshExisting) {
-        $shortcut.TargetPath = $start
-        $shortcut.WorkingDirectory = $root
-        $shortcut.Description = 'Olivia local client and backend'
+    catch {
+        if (-not $RefreshExisting) {
+            throw
+        }
+        # Refresh every other discovered shortcut even if one cannot be saved.
     }
-    $shortcut.IconLocation = "$icon,0"
-    $shortcut.Save()
 }
 
 $resultStatus = if ($RefreshExisting) { 'SHORTCUTS_REFRESHED' } else { 'SHORTCUT_CREATED' }

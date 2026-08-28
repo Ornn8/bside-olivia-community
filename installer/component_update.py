@@ -388,17 +388,17 @@ def _refresh_existing_shortcuts(root: Path, active_version: Path) -> None:
 
     if os.name != "nt":
         return
-    script = active_version / "installer" / "Create-Shortcut.ps1"
-    powershell = (
-        Path(os.environ.get("WINDIR", r"C:\Windows"))
-        / "System32"
-        / "WindowsPowerShell"
-        / "v1.0"
-        / "powershell.exe"
-    )
-    if not script.is_file() or not powershell.is_file():
-        return
     try:
+        script = active_version / "installer" / "Create-Shortcut.ps1"
+        powershell = (
+            Path(os.environ.get("WINDIR", r"C:\Windows"))
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        if not script.is_file() or not powershell.is_file():
+            return
         subprocess.run(
             [
                 os.fspath(powershell),
@@ -417,7 +417,7 @@ def _refresh_existing_shortcuts(root: Path, active_version: Path) -> None:
             timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.SubprocessError):
+    except Exception:
         # A shortcut is optional UI state; activation itself must remain valid.
         return
 
@@ -471,7 +471,11 @@ def apply_component_update(
         )
         _write_state(staged_state, next_state)
         os.replace(staged_state, state_path)
-        _refresh_existing_shortcuts(root, version_root)
+        try:
+            _refresh_existing_shortcuts(root, version_root)
+        except Exception:
+            # Never turn a completed atomic activation into an update failure.
+            pass
         return {"status": "APPLIED", "component": component, "version": version}
     except ComponentUpdateError:
         raise

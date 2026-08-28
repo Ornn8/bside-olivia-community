@@ -199,6 +199,25 @@ def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
         check=False,
     )
     assert created.returncode == 0, created.stderr or created.stdout
+    arguments = '--preserve "two words"'
+    configured = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                f"$s.Arguments='{arguments}';$s.Save()"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert configured.returncode == 0, configured.stderr or configured.stdout
     (install_root / ".olivia-update-state.json").write_text(
         json.dumps(
             {
@@ -231,7 +250,8 @@ def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
             (
                 "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
                 "[Console]::In.ReadToEnd().Trim());"
-                "[pscustomobject]@{target=$s.TargetPath;icon=$s.IconLocation}"
+                "[pscustomobject]@{target=$s.TargetPath;arguments=$s.Arguments;"
+                "icon=$s.IconLocation}"
                 "|ConvertTo-Json -Compress"
             ),
         ],
@@ -242,7 +262,18 @@ def test_shortcut_refresh_uses_the_active_patch_icon_without_changing_target(
     )
     metadata = json.loads(inspect.stdout)
     assert Path(metadata["target"]) == start
+    assert metadata["arguments"] == arguments
     assert metadata["icon"] == f"{active_icon},0"
+
+
+def test_shortcut_refresh_discovers_desktop_and_programs_independently() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = (repo_root / "installer" / "Create-Shortcut.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "foreach ($folderName in @('Desktop', 'Programs'))" in script
+    assert "[Environment]::GetFolderPath($folderName)" in script
 
 
 def test_install_entrypoint_prioritizes_selected_payload() -> None:
