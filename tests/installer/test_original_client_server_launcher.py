@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -134,6 +135,54 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
 
 
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        {"DEEPSEEK_API_KEY": "inherited-deepseek-key"},
+        {"OPENAI_API_KEY": "inherited-openai-key"},
+        {
+            "DEEPSEEK_API_KEY": "inherited-deepseek-key",
+            "OPENAI_API_KEY": "inherited-openai-key",
+        },
+    ],
+)
+def test_launcher_prefers_valid_saved_key_to_inherited_generic_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inherited: dict[str, str],
+) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'a' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_bytes(b"synthetic-protected-key")
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "key_file": key_name,
+                "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start_local,
+        "_load_dpapi_key",
+        lambda path: "saved-key-for-test" if path == key_path else "",
+    )
+
+    environment = start_local._load_llm_environment(
+        inherited, data_root, include_secret=True
+    )
+
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
+    assert environment["DEEPSEEK_API_KEY"] == "saved-key-for-test"
+
+
 def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> None:
     data_root = (tmp_path / "data").resolve()
     runtime_root = data_root / "capabilities" / "video" / "ordinary_video" / "latentsync" / "runtime"
@@ -188,14 +237,19 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
         "synthetic-ciphertext\n", encoding="utf-8"
     )
 
+    inherited = {
+        "DEEPSEEK_API_KEY": "inherited-deepseek-key",
+        "OPENAI_API_KEY": "inherited-openai-key",
+    }
     environment = start_local._load_llm_environment(
-        {}, data_root, include_secret=True
+        inherited, data_root, include_secret=True
     )
 
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.deepseek.com"
     assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
-    assert "DEEPSEEK_API_KEY" not in environment
+    assert environment["DEEPSEEK_API_KEY"] == inherited["DEEPSEEK_API_KEY"]
+    assert environment["OPENAI_API_KEY"] == inherited["OPENAI_API_KEY"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI is required")
