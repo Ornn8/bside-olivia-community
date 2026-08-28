@@ -102,6 +102,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/__init__.py",
     "installer/__main__.py",
     "installer/bootstrap_install.py",
+    "installer/component_package.py",
     "installer/component_update.py",
     "installer/configure.py",
     "installer/Create-Shortcut.ps1",

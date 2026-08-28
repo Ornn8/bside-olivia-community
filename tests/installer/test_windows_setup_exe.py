@@ -148,6 +148,7 @@ def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("original_client_update_api.py")
     assert _is_release_file("control_center/static/index.html")
     assert _is_release_file("installer/full_patch.py")
+    assert _is_release_file("installer/component_package.py")
     assert _is_release_file("installer/seed-vc-overlap-frames.patch")
     assert _is_release_file("installer/assets/olivia.ico")
     assert _is_release_file("tools/livetalking_worker.py")
@@ -170,6 +171,7 @@ def test_real_head_setup_payload_excludes_build_audit_test_and_scm_files() -> No
         "installer/Install.ps1",
         "installer/assets/olivia.ico",
         "installer/full_patch.py",
+        "installer/component_package.py",
         "installer/seed-vc-overlap-frames.patch",
         "local_server.py",
         "control_center/static/index.html",
