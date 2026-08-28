@@ -263,8 +263,8 @@ def _stop_backend_server(server: object) -> None:
     except subprocess.TimeoutExpired:
         kill = getattr(server, "kill", None)
         if callable(kill):
-            kill()
             try:
+                kill()
                 wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
@@ -604,7 +604,6 @@ def main(argv: list[str] | None = None) -> int:
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
-    client_started = False
     try:
         if health != "READY":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -656,16 +655,15 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
-        client_started = True
         return subprocess.call(
             _client_command(client, local),
             cwd=root / "app",
             env=_client_environment(client_environment, roaming, local),
         )
     finally:
-        # Keep a healthy loopback backend alive so reopening the copied client
-        # (including from its taskbar icon) does not degrade into Network Error.
-        if server is not None and not client_started:
+        # Stop only the backend process spawned and owned by this launcher.
+        # A healthy backend reused from an earlier launcher has no local handle.
+        if server is not None:
             _stop_backend_server(server)
 
 

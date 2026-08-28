@@ -307,7 +307,7 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
     assert commands[0][3:] == [str(active_backend), str(active_entrypoint)]
 
 
-def test_component_launcher_keeps_its_backend_for_client_reentry(
+def test_component_launcher_stops_its_owned_backend_after_client_exit(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -355,7 +355,73 @@ def test_component_launcher_keeps_its_backend_for_client_reentry(
     assert backend_environments[0]["OLIVIA_PROVIDER_CACHE_ROOT"] == str(
         root / "data" / "provider-cache"
     )
-    assert lifecycle == []
+    assert lifecycle == ["terminate", "wait:5"]
+
+
+def test_component_launcher_does_not_stop_a_reused_ready_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    backend = root / "local_backend"
+    expected_backend_id = start_local._backend_id(backend, root.resolve())
+    stopped: list[object] = []
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: expected_backend_id,
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("must not start a second backend"),
+    )
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
+    monkeypatch.setattr(
+        start_local,
+        "_stop_backend_server",
+        lambda process: stopped.append(process),
+    )
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert stopped == []
+
+
+@pytest.mark.parametrize("failure", ["none", "kill_oserror", "second_wait_timeout"])
+def test_owned_backend_stop_escalation_remains_best_effort(failure: str) -> None:
+    lifecycle: list[str] = []
+    waits = 0
+
+    class Process:
+        @staticmethod
+        def terminate() -> None:
+            lifecycle.append("terminate")
+
+        @staticmethod
+        def kill() -> None:
+            lifecycle.append("kill")
+            if failure == "kill_oserror":
+                raise OSError("synthetic process-exit race")
+
+        @staticmethod
+        def wait(*, timeout: float) -> int:
+            nonlocal waits
+            waits += 1
+            lifecycle.append(f"wait:{timeout}")
+            if waits == 1 or failure == "second_wait_timeout":
+                raise start_local.subprocess.TimeoutExpired("backend", timeout)
+            return 0
+
+    start_local._stop_backend_server(Process())
+
+    expected = ["terminate", "wait:5", "kill"]
+    if failure != "kill_oserror":
+        expected.append("wait:5")
+    assert lifecycle == expected
 
 
 def test_launcher_replaces_a_verified_stale_backend_before_starting_active_version(
