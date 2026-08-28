@@ -38,14 +38,22 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     ordinary, music = manifest.bundles
     assert len([item for item in ordinary.files if item.identifier.startswith("cosy-")]) == 20
     assert sum(item.size_bytes for item in ordinary.files if item.identifier.startswith("cosy-")) == 9747516745
-    assert music.license_review_required is True
+    assert music.license_review_required is False
+    assert "official_video_assets" not in ordinary.dependencies
+    assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
     assert ordinary.runtime_environment == {
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
     }
-    seed_source = next(item for item in music.files if item.identifier == "seed-vc-code")
-    assert seed_source.install is not None
-    assert seed_source.install.destination == "seed_vc/runtime"
+    music_file_ids = {item.identifier for item in music.files}
+    assert "seed-vc-code" not in music_file_ids
+    assert "demucs-htdemucs6s" not in music_file_ids
+    assert {"roformer-code", "roformer-checkpoint"} <= music_file_ids
+    assert music.runtime_environment == {
+        "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
+        "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
+        "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
+    }
     provenance = payload["provenance"]
     assert provenance["latentsync_model"] == {
         "repo": "ByteDance/LatentSync-1.6",
@@ -62,12 +70,8 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     latentsync_tiny = next(item for item in ordinary.files if item.identifier == "latentsync-tiny")
     assert latentsync_tiny.relative_path == "latentsync/runtime/checkpoints/whisper/tiny.pt"
     assert latentsync_tiny.license == "OpenRAIL++"
-    assert provenance["roformer"]["license_review_required"] is True
-    assert provenance["seed_vc"]["overlap_frames_patch"] == "installer/seed-vc-overlap-frames.patch"
-    assert provenance["seed_vc"]["overlap_frames_patch_sha256"] == hashlib.sha256(
-        Path("installer/seed-vc-overlap-frames.patch").read_text(encoding="utf-8").encode("utf-8")
-    ).hexdigest()
-    assert provenance["seed_vc"]["weights_redistributable"] is False
+    assert provenance["roformer"]["license"] == "MIT + CC-BY-NC-SA-4.0 checkpoint"
+    assert provenance["roformer"]["config_sha256"] == "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"
 
     schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
