@@ -71,6 +71,7 @@ class ModelBOM:
     revision: str
     license: str
     sources: tuple[str, str]
+    source_revisions: tuple[str, str]
     files: Mapping[str, ModelArtifact]
 
     @property
@@ -196,10 +197,12 @@ def load_mem0_capability_bom(
         "install_mode",
         "status",
         "sources",
+        "source_revisions",
         "files",
     }:
         raise ValueError("capability model BOM is invalid")
     model_sources = model.get("sources")
+    model_source_revisions = model.get("source_revisions")
     raw_files = model.get("files")
     if (
         model.get("artifact_id") != "BAAI/bge-small-zh-v1.5"
@@ -216,6 +219,12 @@ def load_mem0_capability_bom(
         or model.get("status") != "FIXED"
         or not isinstance(model_sources, dict)
         or set(model_sources) != {"mirror", "official"}
+        or not isinstance(model_source_revisions, dict)
+        or set(model_source_revisions) != {"mirror", "official"}
+        or any(
+            not isinstance(value, str) or not _REVISION_RE.fullmatch(value)
+            for value in model_source_revisions.values()
+        )
         or not isinstance(raw_files, dict)
         or len(raw_files) != 10
     ):
@@ -311,6 +320,10 @@ def load_mem0_capability_bom(
                 _https_source(model_sources["mirror"]),
                 _https_source(model_sources["official"]),
             ),
+            source_revisions=(
+                model_source_revisions["mirror"],
+                model_source_revisions["official"],
+            ),
             files=files,
         ),
         license_summary=payload["license_summary"],
@@ -328,6 +341,7 @@ class ResumableModelDownloader:
         revision: str,
         files: Mapping[str, ModelArtifact],
         sources: tuple[str, str],
+        source_revisions: tuple[str, str] | None = None,
         download_root: Path,
         source_mode: str,
         pause_requested: threading.Event,
@@ -340,6 +354,8 @@ class ResumableModelDownloader:
         self.revision = revision
         self.files = files
         self.sources = sources[1:] if source_mode == "official" else sources
+        revisions = source_revisions or (revision, revision)
+        self.source_revisions = dict(zip(sources, revisions, strict=True))
         self.download_root = download_root
         self.pause_requested = pause_requested
         self.progress = progress
@@ -427,14 +443,34 @@ class ResumableModelDownloader:
         artifact: ModelArtifact,
     ) -> None:
         offset = partial.stat().st_size if partial.is_file() else 0
-        url = (
-            f"{source}/{self.repo_id}/resolve/{self.revision}/"
-            f"{quote(relative_path, safe='/')}"
-        )
+        source_revision = self.source_revisions[source]
+        if urlsplit(source).hostname == "modelscope.cn":
+            url = (
+                f"{source}/{quote(self.repo_id, safe='/')}/repo"
+                f"?Revision={source_revision}"
+                f"&FilePath={quote(relative_path, safe='/')}"
+            )
+        else:
+            url = (
+                f"{source}/{self.repo_id}/resolve/{source_revision}/"
+                f"{quote(relative_path, safe='/')}"
+            )
         request = Request(url, headers={"Range": f"bytes={offset}-"} if offset else {})
         with self.opener(request, timeout=30) as response:
             status = getattr(response, "status", 200)
-            append = bool(offset and status == 206)
+            content_range = getattr(response, "headers", {}).get(
+                "Content-Range", ""
+            )
+            append = bool(
+                offset
+                and (
+                    status == 206
+                    or re.fullmatch(
+                        rf"bytes {offset}-\d+/{artifact.size_bytes}",
+                        content_range,
+                    )
+                )
+            )
             if offset and not append:
                 offset = 0
             mode = "ab" if append else "wb"
@@ -443,7 +479,7 @@ class ResumableModelDownloader:
                 while True:
                     if self.pause_requested.is_set():
                         raise _DownloadPaused
-                    block = response.read(1 << 20)
+                    block = response.read(1 << 16)
                     if not block:
                         break
                     stream.write(block)
@@ -490,18 +526,38 @@ CommandRunner = Callable[..., int]
 RuntimeVerifier = Callable[[Path, Path], bool]
 
 
+def _tree_size(paths: tuple[Path, ...]) -> int:
+    total = 0
+    for root in paths:
+        try:
+            candidates = root.rglob("*") if root.is_dir() else ()
+            for candidate in candidates:
+                try:
+                    if candidate.is_file() and not candidate.is_symlink():
+                        total += candidate.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return total
+
+
 def _run_command(
     command: list[str],
     *,
     environment: Mapping[str, str],
     pause_requested: threading.Event,
+    progress: Callable[[int], None],
+    progress_roots: tuple[Path, ...],
 ) -> int:
+    baseline = _tree_size(progress_roots)
     process = subprocess.Popen(
         command,
         env=dict(environment),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    next_measurement = time.monotonic()
     while process.poll() is None:
         if pause_requested.is_set():
             process.terminate()
@@ -511,6 +567,10 @@ def _run_command(
                 process.kill()
                 process.wait(timeout=5)
             raise _DownloadPaused
+        now = time.monotonic()
+        if now >= next_measurement:
+            progress(max(0, _tree_size(progress_roots) - baseline))
+            next_measurement = now + 1.0
         time.sleep(0.1)
     return int(process.returncode or 0)
 
@@ -585,23 +645,26 @@ class ManagedMem0Runtime:
             ):
                 return False
             self.last_source = marker["source"]
-            tracked = (
-                self.target,
-                self.target / ".olivia-mem0-runtime-manifest.json",
-                self._pth(),
-                self.requirements,
-            )
-            fingerprint = tuple(
-                value
-                for path in tracked
-                for value in (path.stat().st_mtime_ns, path.stat().st_size)
-            )
+            fingerprint = self._fingerprint()
             if fingerprint != self._ready_fingerprint:
                 self._ready_result = self._verify(self.target)
                 self._ready_fingerprint = fingerprint
             return self._ready_result
         except Exception:
             return False
+
+    def _fingerprint(self) -> tuple[int, ...]:
+        tracked = (
+            self.target,
+            self.target / ".olivia-mem0-runtime-manifest.json",
+            self._pth(),
+            self.requirements,
+        )
+        return tuple(
+            value
+            for path in tracked
+            for value in (path.stat().st_mtime_ns, path.stat().st_size)
+        )
 
     def _verify(self, runtime: Path) -> bool:
         if self.verifier is not None:
@@ -706,6 +769,20 @@ class ManagedMem0Runtime:
             }
         )
         installed = False
+        reported_progress = 0
+
+        def report_observed(observed_bytes: int) -> None:
+            nonlocal reported_progress
+            reported_progress = max(
+                reported_progress,
+                min(max(0, observed_bytes), self.download_bytes - 1),
+            )
+            progress(
+                reported_progress,
+                self.download_bytes,
+                "python-dependencies",
+            )
+
         for source, wheelhouse in attempts:
             shutil.rmtree(self.staging, ignore_errors=True)
             self.staging.mkdir(parents=True, exist_ok=True)
@@ -719,11 +796,13 @@ class ManagedMem0Runtime:
                 json.dumps(marker, sort_keys=True), encoding="utf-8"
             )
             self.last_source = source
-            progress(0, self.download_bytes, "python-dependencies")
+            progress(reported_progress, self.download_bytes, "python-dependencies")
             result = self.runner(
                 self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
                 environment=environment,
                 pause_requested=pause_requested,
+                progress=report_observed,
+                progress_roots=(self.cache, self.staging),
             )
             if result == 0:
                 self.last_source = "offline" if wheelhouse is not None else source
@@ -751,7 +830,8 @@ class ManagedMem0Runtime:
             self._pth().write_bytes(old_pth)
             raise
         shutil.rmtree(backup, ignore_errors=True)
-        self._ready_fingerprint = None
+        self._ready_fingerprint = self._fingerprint()
+        self._ready_result = True
         progress(self.download_bytes, self.download_bytes, "python-dependencies")
 
     def uninstall(self) -> None:
@@ -956,6 +1036,7 @@ class ManagedEmbeddingModel:
             revision=self.bom.revision,
             files=self.bom.files,
             sources=self.bom.sources,
+            source_revisions=self.bom.source_revisions,
             download_root=self.download_root,
             source_mode=source_mode,
             pause_requested=pause_requested,

@@ -101,8 +101,10 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert "选择下载源" in source
     assert "打开下载页" in source
     assert "重新检测" in source
-    assert 'downloadLink.target = "_blank"' in source
-    assert 'downloadLink.rel = "noopener noreferrer"' in source
+    assert 'const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";' in source
+    assert "requestMutation(VIDEO_REPLY_SOURCE_PATH" in source
+    assert "downloadLink.href" not in source
+    assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
     assert "缺少依赖，无法开启视频回信" in source
     assert "missing_dependencies" in source
     assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source

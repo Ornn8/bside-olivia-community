@@ -14,6 +14,7 @@ import random
 import time
 import uuid
 import hashlib
+import webbrowser as _webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,12 @@ from persona_provider import (
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
 from runtime.media.media_paths import configured_media_path
-from music_reply import MusicReplyError, render_musical_reply, video_reply_dependency_status
+from music_reply import (
+    MusicReplyError,
+    render_musical_reply,
+    video_reply_dependency_status,
+    video_reply_source_url,
+)
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS
 from runtime.reply.reply_media import ReplyMediaError
 from runtime.reply.reply_delivery import (
@@ -660,6 +666,16 @@ def _create_video_reply_settings_store() -> VideoReplySettingsStore:
 
 
 video_reply_settings_store = _create_video_reply_settings_store()
+
+
+def _open_video_capability_source(capability: object, source: object) -> bool:
+    url = video_reply_source_url(capability, source)
+    if url is None:
+        return False
+    try:
+        return bool(_webbrowser.open(url, new=2, autoraise=True))
+    except (OSError, RuntimeError):
+        return False
 
 
 def _video_reply_dependencies_ready() -> bool:
@@ -1860,6 +1876,36 @@ async def route(
         return ok({"questions": []})
     if p == "/toy/submitPreferenceSurvey":
         return not_implemented("PREFERENCE_SURVEY_NOT_IMPLEMENTED")
+
+    if p == "/toy/capabilities/video/source":
+        if set(body) != {"capability", "source"}:
+            return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {
+                "status": "FAILED",
+                "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID",
+                "retryable": False,
+            })
+        capability = body.get("capability")
+        source = body.get("source")
+        if video_reply_source_url(capability, source) is None:
+            return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {
+                "status": "FAILED",
+                "error_code": "VIDEO_REPLY_SETTING_PAYLOAD_INVALID",
+                "retryable": False,
+            })
+        opened = await asyncio.to_thread(
+            _open_video_capability_source, capability, source
+        )
+        if not opened:
+            return err(503, "VIDEO_REPLY_SETTING_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
+                "retryable": True,
+            })
+        return ok({
+            "status": "OPENED",
+            "capability": capability,
+            "source": source,
+        })
 
     if p == "/toy/settings/video-reply":
         if method == "GET":

@@ -150,6 +150,24 @@ def musical_reply_configured(
     )
 
 
+_VIDEO_REPLY_SOURCE_URLS = {
+    ("cosyvoice", "domestic"): "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+    ("cosyvoice", "official"): "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+    ("livetalking", "official"): "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
+    ("latentsync", "domestic"): "https://gitee.com/ByteDance/LatentSync",
+    ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
+    ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
+    ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6baad88896848433857c170ba4f05d2ea9d5f218",
+    ("ffmpeg", "official"): "https://pypi.org/project/imageio-ffmpeg/0.6.0/",
+}
+
+
+def video_reply_source_url(capability_id: object, source_id: object) -> str | None:
+    if not isinstance(capability_id, str) or not isinstance(source_id, str):
+        return None
+    return _VIDEO_REPLY_SOURCE_URLS.get((capability_id, source_id))
+
+
 def video_reply_dependency_status(
     env: Mapping[str, str],
     *,
@@ -249,8 +267,8 @@ def video_reply_dependency_status(
             "install_mode": install_mode,
             "source_summary": source_summary,
             "sources": [
-                {"id": source_id, "label": source_label, "url": source_url}
-                for source_id, source_label, source_url in sources
+                {"id": source_id, "label": source_label}
+                for source_id, source_label, _source_url in sources
             ],
         }
 

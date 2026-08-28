@@ -34,8 +34,12 @@
     "install_mode": "on_demand",
     "status": "FIXED",
     "sources": {
-      "mirror": "https://hf-mirror.com",
+      "mirror": "https://modelscope.cn/api/v1/models",
       "official": "https://huggingface.co"
+    },
+    "source_revisions": {
+      "mirror": "8399f11f8da998fe932df2684586c92024219d05",
+      "official": "7999e1d3359715c523056ef9478215996d62a620"
     },
     "files": {
       "1_Pooling/config.json": {"size_bytes": 190, "sha256": "aaa8861589f80c961a03cc86c7eeaef7605c1676b9ab55329d33a304738769c6"},

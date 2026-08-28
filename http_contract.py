@@ -133,6 +133,9 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/settings/video-reply": _route(
         ["GET", "POST"], "settings.video_reply", evidence="local-extension"
     ),
+    "/toy/capabilities/video/source": _route(
+        ["POST"], "settings.video_reply", evidence="local-extension"
+    ),
     "/toy/submitPreferenceSurvey": _route(
         ["POST"],
         "profile.preference.write",

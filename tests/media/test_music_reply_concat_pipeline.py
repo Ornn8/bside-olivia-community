@@ -92,13 +92,16 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "domestic",
         "official",
     ]
+    assert all("url" not in source for source in dependencies["cosyvoice"]["sources"])
     assert [source["id"] for source in dependencies["livetalking"]["sources"]] == [
         "official"
     ]
     assert dependencies["roformer"]["sources"] == []
-    assert "6baad88896848433857c170ba4f05d2ea9d5f218" in dependencies[
-        "minimax_music3"
-    ]["sources"][0]["url"]
+    assert music_reply.video_reply_source_url("minimax_music3", "domestic") == (
+        "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/"
+        "6baad88896848433857c170ba4f05d2ea9d5f218"
+    )
+    assert music_reply.video_reply_source_url("roformer", "domestic") is None
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
 

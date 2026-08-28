@@ -15,6 +15,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const STATUS_PATH = "/toy/companion/status";
   const MEMORY_PATH = "/toy/companion/memory";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
+  const VIDEO_REPLY_SOURCE_PATH = "/toy/capabilities/video/source";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
   const OFFICIAL_LETTER_LIST_PATH = "/toy/letter/list";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
@@ -23,7 +24,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
-  const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";
   const SETUP_STATUS_PATH = "/toy/setup/status";
   const LLM_TEST_PATH = "/toy/setup/llm/test";
   const LLM_SAVE_PATH = "/toy/setup/llm/save";
@@ -51,15 +51,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     ["ffmpeg", "媒体工具（FFmpeg）"],
     ["media_workspace", "媒体工作目录"],
   ];
-  const CAPABILITY_DOWNLOAD_HOSTS = new Set([
-    "modelscope.cn",
-    "huggingface.co",
-    "hf-mirror.com",
-    "github.com",
-    "gitee.com",
-    "pypi.org",
-  ]);
-
   const parseApiBase = (value) => {
     let url;
     try {
@@ -173,7 +164,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const element = document.createElement("article");
     element.style.padding = "14px";
     element.style.borderRadius = "10px";
-    element.style.background = "var(--el-fill-color-light, rgba(0,0,0,0.035))";
+    element.style.background = "#23252a";
     element.style.display = "grid";
     element.style.gap = "8px";
     return element;
@@ -335,7 +326,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         responseBody = null;
       }
-      const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
+      const payload = (path === VIDEO_REPLY_SETTINGS_PATH
+          || path === VIDEO_REPLY_SOURCE_PATH
+          || path === OFFICIAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -708,13 +701,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           setButtonsBusy([install], true);
           resultState.textContent = "正在安装 Embedding……";
           try {
-            const payload = await requestMutation(MEMORY_EMBEDDING_INSTALL_PATH, {
-              request_id: requestId("memory.embedding.install"),
-              reason: "用户在原版 Olivia 设置中明确安装 Mem0 Embedding。",
+            const payload = await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
+              action: "install",
+              source: "auto",
             });
-            if (payload.status === "APPLIED" || payload.status === "NOOP") {
-              resultState.textContent = "正在安装 Embedding……";
-              await refresh();
+            if (["queued", "downloading", "verifying", "ready"].includes(payload.state)) {
+              resultState.textContent = "已转入本地能力下载；可在“本地能力与下载”查看进度。";
             } else {
               resultState.textContent = "Embedding 安装失败，请重试。";
             }
@@ -1073,7 +1065,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
-      const current = typeof payload.current_file === "string" ? `，当前：${payload.current_file}` : "";
+      const currentFile = payload.current_file === "python-dependencies"
+        ? "Python 依赖下载与安装"
+        : payload.current_file;
+      const current = typeof currentFile === "string" ? `，当前：${currentFile}` : "";
       result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;
     } else if (stateValue === "repair") {
       result.textContent = "上次安装未完成，可保留已下载内容并重试。";
@@ -1189,15 +1184,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const sourceChoices = dependency && Array.isArray(dependency.sources)
         ? dependency.sources.filter((candidate) => candidate
           && typeof candidate.label === "string"
-          && typeof candidate.url === "string"
-          && (() => {
-            try {
-              const url = new URL(candidate.url);
-              return url.protocol === "https:" && CAPABILITY_DOWNLOAD_HOSTS.has(url.hostname);
-            } catch (_error) {
-              return false;
-            }
-          })())
+          && (candidate.id === "domestic" || candidate.id === "official"))
         : [];
       const item = card();
       item.append(
@@ -1216,22 +1203,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         sourcePicker.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
         for (const candidate of sourceChoices) {
           const option = document.createElement("option");
-          option.value = candidate.url;
+          option.value = candidate.id;
           option.textContent = candidate.label;
           sourcePicker.append(option);
         }
-        const downloadLink = document.createElement("a");
-        downloadLink.textContent = "打开下载页";
-        downloadLink.target = "_blank";
-        downloadLink.rel = "noopener noreferrer";
-        downloadLink.className = "px-6 py-2.5 rounded-full border border-grey-5 text-text-body text-label-m font-medium cursor-pointer hover:bg-surface-1 transition-colors";
-        const syncDownloadLink = () => {
-          downloadLink.href = sourcePicker.value || sourceChoices[0].url;
-        };
-        sourcePicker.addEventListener("change", syncDownloadLink);
-        syncDownloadLink();
-        sourceControls.append(sourcePicker, downloadLink);
-        item.append(sourceControls);
+        const openState = text("div", "", "text-text-secondary text-caption-m font-regular");
+        openState.setAttribute("aria-live", "polite");
+        const openSource = button("打开下载页", async () => {
+          setButtonsBusy([openSource], true);
+          try {
+            await requestMutation(VIDEO_REPLY_SOURCE_PATH, {
+              capability: id,
+              source: sourcePicker.value,
+            });
+            openState.textContent = "已在系统浏览器打开下载页。";
+          } catch (_error) {
+            openState.textContent = "下载页未能打开，请稍后重试。";
+          } finally {
+            setButtonsBusy([openSource], false);
+          }
+        });
+        sourceControls.append(sourcePicker, openSource);
+        item.append(sourceControls, openState);
       } else if (state !== "ready" && installMode !== "core") {
         item.append(text(
           "div",
@@ -1412,9 +1405,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     dialog.style.overflow = "auto";
     dialog.style.borderRadius = "16px";
     dialog.style.padding = "28px";
-    dialog.style.background = "var(--el-bg-color-overlay, var(--el-bg-color, #ffffff))";
+    dialog.style.backgroundColor = "#18191c";
     dialog.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
-    dialog.style.color = "var(--el-text-color-primary, #303133)";
+    dialog.style.color = "#f9fafb";
+    dialog.style.colorScheme = "dark";
     dialog.style.pointerEvents = "auto";
     dialog.style.webkitAppRegion = "no-drag";
 
@@ -1422,20 +1416,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     theme.textContent = `
       [${DIALOG_ATTR}] [role="dialog"] .text-text-title,
       [${DIALOG_ATTR}] [role="dialog"] .text-text-body {
-        color: var(--el-text-color-primary, #303133) !important;
+        color: #f9fafb !important;
       }
       [${DIALOG_ATTR}] [role="dialog"] .text-text-secondary {
-        color: var(--el-text-color-secondary, #606266) !important;
-      }
-      [${DIALOG_ATTR}] [role="dialog"] button {
-        color: var(--el-text-color-primary, #303133) !important;
-        border-color: var(--el-border-color, #dcdfe6) !important;
+        color: #cbd5e1 !important;
       }
       [${DIALOG_ATTR}] [role="dialog"] button,
+      [${DIALOG_ATTR}] [role="dialog"] select,
+      [${DIALOG_ATTR}] [role="dialog"] input,
+      [${DIALOG_ATTR}] [role="dialog"] textarea {
+        color: #f9fafb !important;
+        background-color: #111827 !important;
+        border-color: #6b7280 !important;
+        color-scheme: dark !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] button,
+      [${DIALOG_ATTR}] [role="dialog"] select,
       [${DIALOG_ATTR}] [role="dialog"] input,
       [${DIALOG_ATTR}] [role="dialog"] textarea {
         -webkit-app-region: no-drag !important;
         pointer-events: auto !important;
+      }
+      [${DIALOG_ATTR}] [role="dialog"] option {
+        color: #f9fafb !important;
+        background-color: #111827 !important;
       }
     `;
 
@@ -1494,7 +1498,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const active = tab.dataset.panelId === id;
         tab.setAttribute("aria-selected", active ? "true" : "false");
         tab.style.background = active
-          ? "var(--el-fill-color, rgba(0,0,0,0.06))"
+          ? "#30333a"
           : "transparent";
       }
       for (const panel of panels.querySelectorAll('[role="tabpanel"]')) {

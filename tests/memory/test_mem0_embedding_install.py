@@ -625,7 +625,9 @@ def test_download_fault_cleans_staging_and_concurrent_or_ready_retries_are_idemp
 def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_honest(
     tmp_path: Path,
 ) -> None:
-    assert 'const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";' in BOOTSTRAP_JAVASCRIPT
+    assert 'const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";' not in BOOTSTRAP_JAVASCRIPT
+    assert "requestCapability(MEM0_CAPABILITY_ACTION_PATH" in BOOTSTRAP_JAVASCRIPT
+    assert 'source: "auto"' in BOOTSTRAP_JAVASCRIPT
     assert "MEM0_EMBEDDING_CACHE_UNAVAILABLE" in BOOTSTRAP_JAVASCRIPT
     assert "安装 Embedding" in BOOTSTRAP_JAVASCRIPT
     assert "正在安装 Embedding" in BOOTSTRAP_JAVASCRIPT

@@ -85,7 +85,7 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     from jsonschema import Draft202012Validator
     schema = json.loads(Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
-    assert not list(validator.iter_errors({"state": "available", "enabled": True}))
+    assert list(validator.iter_errors({"state": "available", "enabled": True}))
     dependency = {
         "id": "cosyvoice",
         "label": "语音合成（CosyVoice 3）",
@@ -96,12 +96,10 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
             {
                 "id": "domestic",
                 "label": "国内源（ModelScope）",
-                "url": "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
             },
             {
                 "id": "official",
                 "label": "官方源（Hugging Face）",
-                "url": "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
             },
         ],
     }
@@ -126,6 +124,8 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "status": "DUPLICATE", "enabled": False}))
+    assert not list(validator.iter_errors({"capability": "cosyvoice", "source": "domestic"}))
+    assert not list(validator.iter_errors({"status": "OPENED", "capability": "cosyvoice", "source": "domestic"}))
     for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}, {"code": 400, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": False}}):
         assert list(validator.iter_errors(value))
 @pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
@@ -293,6 +293,42 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
         assert letter["video_reply_enabled"] is False
     finally:
         local_server.store.letters.remove(letter)
+
+
+def test_video_reply_source_page_is_opened_only_through_the_server_allowlist(monkeypatch):
+    import local_server
+
+    opened = []
+    monkeypatch.setattr(
+        local_server,
+        "_open_video_capability_source",
+        lambda capability, source: opened.append((capability, source)) or True,
+    )
+
+    async def route_check():
+        success = await local_server.route(
+            "POST",
+            "/toy/capabilities/video/source",
+            {"capability": "cosyvoice", "source": "domestic"},
+            {},
+        )
+        rejected = await local_server.route(
+            "POST",
+            "/toy/capabilities/video/source",
+            {"capability": "roformer", "source": "domestic"},
+            {},
+        )
+        return success, rejected
+
+    success, rejected = asyncio.run(route_check())
+    assert success["data"] == {
+        "status": "OPENED",
+        "capability": "cosyvoice",
+        "source": "domestic",
+    }
+    assert rejected["code"] == 400
+    assert rejected["data"]["error_code"] == "VIDEO_REPLY_SETTING_PAYLOAD_INVALID"
+    assert opened == [("cosyvoice", "domestic")]
 def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch):
     import local_server
     off = {"letter_id": "off", "content": "x", "reply_text": "r", "letter_status": "COMPLETED", "reply_mode": "spoken_video", "media_status": "QUEUED", "video_reply_enabled": False}

@@ -46,7 +46,12 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'dialog.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
     assert 'panel.style.display = active ? "grid" : "none";' in BOOTSTRAP_JAVASCRIPT
     assert '-webkit-app-region: no-drag !important;' in BOOTSTRAP_JAVASCRIPT
-    assert 'var(--el-text-color-primary, #303133)' in BOOTSTRAP_JAVASCRIPT
+    assert 'dialog.style.backgroundColor = "#18191c";' in BOOTSTRAP_JAVASCRIPT
+    assert 'dialog.style.color = "#f9fafb";' in BOOTSTRAP_JAVASCRIPT
+    assert 'dialog.style.colorScheme = "dark";' in BOOTSTRAP_JAVASCRIPT
+    assert 'color: #cbd5e1 !important;' in BOOTSTRAP_JAVASCRIPT
+    assert '[role="dialog"] select' in BOOTSTRAP_JAVASCRIPT
+    assert 'background-color: #111827 !important;' in BOOTSTRAP_JAVASCRIPT
 
 
 def test_original_settings_can_apply_a_user_downloaded_patch_and_roll_back() -> None:
