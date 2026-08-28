@@ -116,6 +116,14 @@ webplayer.dat.orig
 - `contracts/component_update_state.schema.json`
 - `contracts/component_update_state.example.json`
 
+维护者应从干净、已冻结的 Git 提交生成补丁及两个独立摘要文件：
+
+```powershell
+python -m installer build-update --source <源码目录> --output <发布目录>\olivia-local-backend-<版本>.oliviapatch --version <版本> --source-commit <40位提交SHA>
+```
+
+命令拒绝 tracked 文件有改动或 HEAD 与 `--source-commit` 不一致的源码，并生成 `.manifest.sha256`（供客户端安装页粘贴）和 `.sha256`（用于核对整个补丁文件）。相同源码提交和版本会生成字节一致的包。
+
 安装命令：
 
 ```powershell
