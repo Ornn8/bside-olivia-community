@@ -93,6 +93,7 @@ from runtime.memory.private_world_delivery import (
     PrivateWorldDeliveryCommitter,
 )
 from private_world_candidate import (
+    GatewayPrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateRequest,
     PrivateWorldCandidateRuntime,
@@ -167,6 +168,51 @@ LLM_CONFIG: GatewayConfig = load_gateway_config()
 LLM_TIMEOUT_SECONDS = LLM_CONFIG.timeout_seconds
 LLM_CFG = LLM_CONFIG.public_dict()
 LLM_CFG["persona_file"] = LLM_CONFIG.persona_file
+
+
+def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> None:
+    """Atomically switch future reply requests to freshly saved local settings."""
+
+    global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG
+    key_env = LLM_CONFIG.api_key_env or "DEEPSEEK_API_KEY"
+    previous_key = _os.environ.get(key_env)
+    if api_key is None:
+        _os.environ.pop(key_env, None)
+    else:
+        _os.environ[key_env] = api_key
+    candidate = replace(
+        LLM_CONFIG,
+        provider="openai_compatible",
+        base_url=base_url,
+        model=model,
+        api_key_env=key_env,
+        api_style="chat_completions",
+        stream=True,
+        timeout_seconds=180.0,
+        max_retries=0,
+        requires_api_key=True,
+    )
+    try:
+        gateway = create_gateway(candidate)
+    except Exception:
+        if previous_key is None:
+            _os.environ.pop(key_env, None)
+        else:
+            _os.environ[key_env] = previous_key
+        raise
+    letters_adapter.config = candidate
+    letters_adapter.gateway = gateway
+    if isinstance(
+        private_world_candidate_analyzer,
+        GatewayPrivateWorldCandidateAnalyzer,
+    ):
+        private_world_candidate_analyzer.gateway = gateway
+        private_world_candidate_analyzer.timeout_seconds = candidate.timeout_seconds
+    reply_engine.timeout_seconds = candidate.timeout_seconds
+    LLM_CONFIG = candidate
+    LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
+    LLM_CFG = candidate.public_dict()
+    LLM_CFG["persona_file"] = candidate.persona_file
 
 
 def _persona() -> str:

@@ -5,6 +5,93 @@ import asyncio
 from llm_gateway import GatewayConfig, OfflineDeterministicAdapter, UnconfiguredAdapter
 
 
+def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    previous = GatewayConfig(
+        provider="openai_compatible",
+        base_url="https://old.example/v1",
+        model="old-model",
+        api_key_env="DEEPSEEK_API_KEY",
+        requires_api_key=True,
+    )
+    marker = object()
+    monkeypatch.setattr(local_server, "LLM_CONFIG", previous)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", previous.timeout_seconds)
+    monkeypatch.setattr(local_server, "LLM_CFG", previous.public_dict())
+    monkeypatch.setattr(local_server.letters_adapter, "config", previous)
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", object())
+    candidate_analyzer = type(
+        "CandidateAnalyzer",
+        (),
+        {"gateway": object(), "timeout_seconds": 1.0},
+    )()
+    monkeypatch.setattr(
+        local_server,
+        "GatewayPrivateWorldCandidateAnalyzer",
+        type(candidate_analyzer),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "private_world_candidate_analyzer",
+        candidate_analyzer,
+    )
+    monkeypatch.setattr(local_server.reply_engine, "timeout_seconds", previous.timeout_seconds)
+    monkeypatch.setattr(local_server, "create_gateway", lambda config: marker)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    local_server.apply_runtime_llm_config(
+        "https://gateway.example/v1",
+        "new-model",
+        "synthetic-runtime-key",
+    )
+
+    assert local_server.letters_adapter.gateway is marker
+    assert candidate_analyzer.gateway is marker
+    assert candidate_analyzer.timeout_seconds == 180.0
+    assert local_server.letters_adapter.config.base_url == "https://gateway.example/v1"
+    assert local_server.letters_adapter.config.model == "new-model"
+    assert local_server.letters_adapter.config.api_key_env == "DEEPSEEK_API_KEY"
+    assert local_server.LLM_CONFIG is local_server.letters_adapter.config
+    assert local_server.reply_engine.timeout_seconds == 180.0
+    assert local_server.LLM_CFG["model"] == "new-model"
+    assert "synthetic-runtime-key" not in repr(local_server.LLM_CFG)
+
+
+def test_failed_llm_runtime_replacement_keeps_the_previous_gateway(monkeypatch) -> None:
+    import local_server
+
+    previous_gateway = object()
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", previous_gateway)
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        GatewayConfig(api_key_env="DEEPSEEK_API_KEY"),
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "previous-key")
+
+    def fail(_config):
+        raise RuntimeError("synthetic gateway failure")
+
+    monkeypatch.setattr(local_server, "create_gateway", fail)
+
+    try:
+        local_server.apply_runtime_llm_config(
+            "https://gateway.example/v1",
+            "new-model",
+            "replacement-key",
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("runtime replacement failure must remain visible")
+
+    assert local_server.letters_adapter.gateway is previous_gateway
+    assert local_server._os.environ["DEEPSEEK_API_KEY"] == "previous-key"
+
+
 def test_unconfigured_send_is_explicit_and_never_writes_reply(monkeypatch) -> None:
     import local_server
 

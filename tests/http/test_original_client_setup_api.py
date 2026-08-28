@@ -138,7 +138,19 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
 ) -> None:
     async def scenario() -> None:
         probes: list[tuple[str, str, str]] = []
-        service = _service(tmp_path, probes)
+        applied: list[tuple[str, str, str | None]] = []
+        async def probe(base_url: str, model: str, api_key: str) -> None:
+            probes.append((base_url, model, api_key))
+
+        service = LLMSetupService(
+            tmp_path,
+            protect=lambda value: f"protected:{len(value)}",
+            unprotect=lambda value: "x" * int(value.split(":", 1)[1]),
+            probe=probe,
+            apply_runtime=lambda base_url, model, api_key: applied.append(
+                (base_url, model, api_key)
+            ),
+        )
         service.observe_login(success=True)
         app = web.Application()
         mount_original_client_setup_api(
@@ -178,9 +190,16 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             assert saved.status == 200
             assert await saved.json() == {
                 "status": "SAVED",
-                "reload_applied": False,
-                "restart_required": True,
+                "reload_applied": True,
+                "restart_required": False,
             }
+            assert applied == [
+                (
+                    "https://opencode.ai/zen/go/v1",
+                    "deepseek-v4-flash",
+                    "fixture-private-key",
+                )
+            ]
 
             status_payload = await (await client.get(
                 "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}

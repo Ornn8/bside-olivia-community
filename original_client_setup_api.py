@@ -33,6 +33,7 @@ _ORIGINS_KEY = web.AppKey("original_client_setup_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_setup_mounted", bool)
 Probe = Callable[[str, str, str], Awaitable[None]]
 Protector = Callable[[str], str]
+RuntimeApply = Callable[[str, str, str | None], None]
 
 PUBLIC_ROUTE_CONTRACT = {
     SETUP_STATUS_PATH: {
@@ -243,6 +244,7 @@ class LLMSetupService:
         protect: Protector = _dpapi_protect,
         unprotect: Protector = _dpapi_unprotect,
         probe: Probe = _probe_openai_compatible,
+        apply_runtime: RuntimeApply | None = None,
     ) -> None:
         self._config_root = Path(data_root) / "config"
         self._key_path = self._config_root / "deepseek_api_key.dpapi"
@@ -251,6 +253,7 @@ class LLMSetupService:
         self._protect = protect
         self._unprotect = unprotect
         self._probe = probe
+        self._apply_runtime = apply_runtime
         self._login_observed = False
         self._session_token: str | None = None
         self._tested_digest: str | None = None
@@ -378,7 +381,7 @@ class LLMSetupService:
         await self._probe(base_url, model, api_key)
         self._tested_digest = self._digest(base_url, model, api_key)
 
-    def save(self, payload: dict[str, object]) -> None:
+    def save(self, payload: dict[str, object]) -> bool:
         if set(payload) != {"base_url", "model", "api_key"}:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
         base_url = _base_url(payload.get("base_url"))
@@ -421,8 +424,15 @@ class LLMSetupService:
         except OSError:
             pass
         self._tested_digest = None
+        if self._apply_runtime is None:
+            return False
+        try:
+            self._apply_runtime(base_url, model, api_key)
+        except Exception as exc:
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        return True
 
-    def delete(self) -> None:
+    def delete(self) -> bool:
         configured = self._config()
         active = self._active_key_path()
         try:
@@ -446,6 +456,17 @@ class LLMSetupService:
         except OSError:
             pass
         self._tested_digest = None
+        if self._apply_runtime is None:
+            return False
+        try:
+            self._apply_runtime(
+                str(configured["base_url"]),
+                str(configured["model"]),
+                None,
+            )
+        except Exception as exc:
+            raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
+        return True
 
     def complete(self, *, skipped: object) -> bool:
         if type(skipped) is not bool:
@@ -561,12 +582,12 @@ def mount_original_client_setup_api(
     async def save(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
         service.require_session(request.headers.get(SESSION_HEADER, ""))
-        service.save(await _body(request))
+        reload_applied = service.save(await _body(request))
         return web.json_response(
             {
                 "status": "SAVED",
-                "reload_applied": False,
-                "restart_required": True,
+                "reload_applied": reload_applied,
+                "restart_required": not reload_applied,
             },
             headers=_headers(origin),
         )
@@ -576,12 +597,12 @@ def mount_original_client_setup_api(
         service.require_session(request.headers.get(SESSION_HEADER, ""))
         if await _body(request):
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-        service.delete()
+        reload_applied = service.delete()
         return web.json_response(
             {
                 "status": "DELETED",
-                "reload_applied": False,
-                "restart_required": True,
+                "reload_applied": reload_applied,
+                "restart_required": not reload_applied,
             },
             headers=_headers(origin),
         )
