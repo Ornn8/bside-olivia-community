@@ -423,6 +423,44 @@ def test_chinese_exchange_rejects_and_deletes_english_extracted_fact(
     assert ("delete", "memory.fixture.1") in backend.calls
 
 
+def test_non_history_language_mismatch_rolls_back_valid_siblings(tmp_path: Path) -> None:
+    class MixedLanguageMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "用户喜欢安静的晚上。"
+            value["results"][0]["memory"] = "用户喜欢安静的晚上。"
+            invalid = {
+                "id": "memory.fixture.english-sibling",
+                "memory": "User prefers quiet evenings.",
+                "user_id": kwargs["user_id"],
+                "agent_id": kwargs["agent_id"],
+                "metadata": dict(kwargs["metadata"]),
+                "created_at": NOW.isoformat(),
+            }
+            self.rows.append(invalid)
+            value["results"].append(
+                {
+                    "id": invalid["id"],
+                    "memory": invalid["memory"],
+                    "event": "ADD",
+                }
+            )
+            return value
+
+    backend = MixedLanguageMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:mixed-language",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
+    assert backend.rows == []
+
+
 @pytest.mark.parametrize(
     "legacy_text",
     (
