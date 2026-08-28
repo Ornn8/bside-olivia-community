@@ -24,7 +24,13 @@ def test_start_local_configures_private_world_under_install_data(
     client.write_bytes(b"synthetic")
     observed: dict[str, object] = {}
 
+    monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
     monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(backend, root.resolve()),
+    )
     monkeypatch.setattr(start_local, "_load_dpapi_key", lambda _path: "")
     monkeypatch.setattr(start_local, "_client_executable", lambda _root: client)
     monkeypatch.setattr(

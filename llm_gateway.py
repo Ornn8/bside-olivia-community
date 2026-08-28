@@ -19,6 +19,9 @@ from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 import aiohttp
 
 
+PROVIDER_USER_AGENT = "Olivia-Community/0.1"
+
+
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
 
@@ -540,7 +543,11 @@ class OpenAICompatibleAdapter(Gateway):
         return self.config.base_url.rstrip("/") + "/" + suffix
 
     def _headers(self, key: str | None, request_id: str) -> dict[str, str]:
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": PROVIDER_USER_AGENT,
+        }
         if key:
             headers["Authorization"] = "Bearer " + key
         if request_id.startswith("letter-reply:"):

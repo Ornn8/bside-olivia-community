@@ -1384,10 +1384,17 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
         profile_status = "HEALTHY" if native_asr_status.get("status") == "available" else "UNAVAILABLE"
     else:
         profile_status = "HEALTHY" if memory_status == "available" else "UNAVAILABLE"
+    raw_backend_id = _os.environ.get("OLIVIA_BACKEND_ID", "legacy")
+    backend_id = (
+        raw_backend_id
+        if _re.fullmatch(r"[0-9A-Za-z.+-]{1,160}", raw_backend_id)
+        else "invalid"
+    )
     return ok(
         {
             "schema_version": contract.SCHEMA_VERSION,
             "contract_version": contract.CONTRACT_VERSION,
+            "backend_id": backend_id,
             "profile": profile,
             "status": profile_status,
             "providers": {

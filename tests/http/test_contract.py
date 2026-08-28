@@ -48,6 +48,7 @@ def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities(
     assert data["status"] == "HEALTHY"
     assert data["contract_version"] == "b02.v1"
     assert data["schema_version"] == 1
+    assert data["backend_id"] == "legacy"
     assert data["privacy"]["logs_include_request_body"] is False
     assert data["privacy"]["logs_include_query_values"] is False
     for capability in ("native.websocket", "native.asr", "native.tts", "native.live"):

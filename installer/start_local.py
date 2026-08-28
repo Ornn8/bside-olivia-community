@@ -138,6 +138,7 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
 )
 _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
 _BACKEND_START_TIMEOUT_SECONDS = 120
+_BACKEND_ID_RE = re.compile(r"[0-9A-Za-z.+-]{1,160}")
 
 
 def _port_is_bindable(port: int) -> bool:
@@ -185,6 +186,174 @@ def _health(port: int) -> str:
         return "PORT_CONFLICT"
     except Exception:
         return "UNAVAILABLE" if _port_is_bindable(port) else "PORT_CONFLICT"
+
+
+def _backend_id(backend: Path, root: Path) -> str:
+    """Return a path-free identity for the selected backend tree."""
+
+    if backend.name == "local_backend":
+        component_id = "legacy"
+    elif (
+        backend.parent.name == "local_backend"
+        and backend.parent.parent.name == "versions"
+        and _BACKEND_ID_RE.fullmatch(backend.name)
+    ):
+        component_id = backend.name
+    else:
+        component_id = "invalid"
+    installation_id = hashlib.sha256(
+        os.path.normcase(os.fspath(root)).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{component_id}.{installation_id}"
+
+
+def _server_backend_id(port: int) -> str | None:
+    """Read the path-free identity published by the backend on this port."""
+
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{port}/health?profile=core",
+            timeout=1.5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        data = payload.get("data") if isinstance(payload, dict) else None
+        backend_id = data.get("backend_id") if isinstance(data, dict) else None
+        if (
+            response.status == 200
+            and payload.get("code") == 0
+            and isinstance(backend_id, str)
+            and _BACKEND_ID_RE.fullmatch(backend_id)
+        ):
+            return backend_id
+    except Exception:
+        pass
+    return None
+
+
+def _stop_backend_server(server: object) -> None:
+    """Best-effort cleanup for the backend process owned by this launcher."""
+
+    terminate = getattr(server, "terminate", None)
+    wait = getattr(server, "wait", None)
+    if not callable(terminate) or not callable(wait):
+        return
+    try:
+        terminate()
+        wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill = getattr(server, "kill", None)
+        if callable(kill):
+            kill()
+            try:
+                wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    except OSError:
+        pass
+
+
+def _listening_process_id(port: int) -> int | None:
+    """Resolve the Windows PID that owns one listening TCP port."""
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class TcpRowOwnerPid(ctypes.Structure):
+        _fields_ = [
+            ("state", wintypes.DWORD),
+            ("local_address", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_address", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("process_id", wintypes.DWORD),
+        ]
+
+    size = wintypes.ULONG()
+    table = ctypes.WinDLL("iphlpapi", use_last_error=True).GetExtendedTcpTable
+    table(None, ctypes.byref(size), False, socket.AF_INET, 3, 0)
+    if not size.value:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if table(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 0:
+        return None
+    count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    offset = ctypes.sizeof(wintypes.DWORD)
+    row_size = ctypes.sizeof(TcpRowOwnerPid)
+    for index in range(count):
+        row = TcpRowOwnerPid.from_buffer_copy(buffer, offset + index * row_size)
+        if socket.ntohs(row.local_port & 0xFFFF) == port:
+            return int(row.process_id)
+    return None
+
+
+def _runtime_owns_executable(executable: Path, root: Path) -> bool:
+    """Limit legacy migration to Python bundled beside this installation."""
+
+    if executable.name.casefold() not in {"python.exe", "pythonw.exe"}:
+        return False
+    candidate = os.path.normcase(os.fspath(executable.absolute()))
+    for runtime in (root.parent / "runtime", root / "runtime"):
+        boundary = os.path.normcase(os.fspath(runtime.absolute()))
+        try:
+            if os.path.commonpath((candidate, boundary)) == boundary:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _terminate_runtime_process(process_id: int, root: Path) -> bool:
+    """Terminate a listener only when its executable belongs to this install."""
+
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    process_access = 0x0001 | 0x1000 | 0x00100000
+    handle = kernel32.OpenProcess(process_access, False, process_id)
+    if not handle:
+        return False
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(
+            handle,
+            0,
+            buffer,
+            ctypes.byref(length),
+        ) or not _runtime_owns_executable(Path(buffer.value), root):
+            return False
+        if not kernel32.TerminateProcess(handle, 0):
+            return False
+        return kernel32.WaitForSingleObject(handle, 5000) == 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _stop_stale_backend(port: int, root: Path) -> bool:
+    """Stop a legacy listener only after proving it uses this install runtime."""
+
+    process_id = _listening_process_id(port)
+    return process_id is not None and _terminate_runtime_process(process_id, root)
 
 
 def _client_executable(root: Path) -> Path:
@@ -248,6 +417,12 @@ def _backend_entrypoint(backend: Path) -> Path:
     return backend / "original_client_server.py"
 
 
+def _active_backend() -> Path:
+    """Resolve the complete backend tree that owns this launcher module."""
+
+    return Path(__file__).resolve().parents[1]
+
+
 _BACKEND_BOOTSTRAP = (
     "import runpy,sys; "
     "backend,entrypoint,*args=sys.argv[1:]; "
@@ -304,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--health-only", action="store_true")
     args = parser.parse_args(argv)
     root = args.install_root.expanduser().resolve()
-    backend = root / "local_backend"
+    backend = _active_backend()
     entrypoint = _backend_entrypoint(backend)
     if not (backend / "local_server.py").is_file() or not entrypoint.is_file():
         print("PATCH_PAYLOAD_INCOMPLETE")
@@ -317,6 +492,20 @@ def main(argv: list[str] | None = None) -> int:
     if health == "PORT_CONFLICT":
         print("PORT_CONFLICT")
         return 2
+    expected_backend_id = _backend_id(backend, root)
+    if health == "READY" and _server_backend_id(args.port) != expected_backend_id:
+        if not _stop_stale_backend(args.port, root):
+            print("STALE_BACKEND_RUNNING")
+            return 2
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            health = _health(args.port)
+            if health == "UNAVAILABLE":
+                break
+            time.sleep(0.1)
+        if health != "UNAVAILABLE":
+            print("STALE_BACKEND_RUNNING")
+            return 2
     data_root = root / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()
@@ -336,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_PORT": str(args.port),
     }
     backend_environment.update(runtime_environment)
+    backend_environment["OLIVIA_BACKEND_ID"] = expected_backend_id
     client_environment.update(runtime_environment)
     backend_environment = _load_llm_environment(
         backend_environment, data_root, include_secret=True
@@ -345,49 +535,57 @@ def main(argv: list[str] | None = None) -> int:
     if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
-    if health != "READY":
-        detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        server = subprocess.Popen(
-            [
-                str(_backend_executable()),
-                "-c",
-                _BACKEND_BOOTSTRAP,
-                str(backend),
-                str(entrypoint),
-            ],
-            cwd=backend,
-            env=backend_environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=detached,
-        )
-        deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline and server.poll() is None:
-            if _health(args.port) == "READY":
-                break
-            time.sleep(0.25)
-        health = _health(args.port)
-        if health != "READY":
-            if health == "PORT_CONFLICT":
-                print("PORT_CONFLICT")
-                return 2
-            print("LOCAL_SERVER_UNAVAILABLE")
-            return 2
-    client = _client_executable(root)
-    if not client.is_file():
-        print("ISOLATED_CLIENT_NOT_FOUND")
-        return 2
     try:
-        _repair_client_frontend(root, args.port)
-    except (CompanionSettingsPatchError, OSError):
-        print("CLIENT_FRONTEND_REPAIR_FAILED")
-        return 2
-    profile = root / "profile"
-    roaming = profile / "Roaming"
-    local = profile / "Local"
-    roaming.mkdir(parents=True, exist_ok=True)
-    local.mkdir(parents=True, exist_ok=True)
-    return subprocess.call(_client_command(client, local), cwd=root / "app", env=_client_environment(client_environment, roaming, local))
+        if health != "READY":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            server = subprocess.Popen(
+                [
+                    str(_backend_executable()),
+                    "-c",
+                    _BACKEND_BOOTSTRAP,
+                    str(backend),
+                    str(entrypoint),
+                ],
+                cwd=backend,
+                env=backend_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
+            while time.monotonic() < deadline and server.poll() is None:
+                if _health(args.port) == "READY":
+                    break
+                time.sleep(0.25)
+            health = _health(args.port)
+            if health != "READY":
+                if health == "PORT_CONFLICT":
+                    print("PORT_CONFLICT")
+                    return 2
+                print("LOCAL_SERVER_UNAVAILABLE")
+                return 2
+        client = _client_executable(root)
+        if not client.is_file():
+            print("ISOLATED_CLIENT_NOT_FOUND")
+            return 2
+        try:
+            _repair_client_frontend(root, args.port)
+        except (CompanionSettingsPatchError, OSError):
+            print("CLIENT_FRONTEND_REPAIR_FAILED")
+            return 2
+        profile = root / "profile"
+        roaming = profile / "Roaming"
+        local = profile / "Local"
+        roaming.mkdir(parents=True, exist_ok=True)
+        local.mkdir(parents=True, exist_ok=True)
+        return subprocess.call(
+            _client_command(client, local),
+            cwd=root / "app",
+            env=_client_environment(client_environment, roaming, local),
+        )
+    finally:
+        if server is not None:
+            _stop_backend_server(server)
 
 
 if __name__ == "__main__":

@@ -109,6 +109,7 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
 
         async def handler(request: web.Request) -> web.Response:
             seen["auth"] = request.headers.get("Authorization")
+            seen["user_agent"] = request.headers.get("User-Agent")
             seen["idempotency_key"] = request.headers.get("Idempotency-Key")
             seen["request_id"] = request.headers.get("X-Request-ID")
             seen["body"] = await request.json()
@@ -129,6 +130,7 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
     assert response.text == "mock reply"
     assert response.request_id == "request-1"
     assert seen["auth"] == "Bearer TEST"
+    assert seen["user_agent"] == "Olivia-Community/0.1"
     assert seen["idempotency_key"] is None
     assert seen["request_id"] == "request-1"
     assert seen["body"]["model"] == "synthetic-model"

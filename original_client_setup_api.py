@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 
+PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 SETUP_STATUS_PATH = "/toy/setup/status"
 LLM_TEST_PATH = "/toy/setup/llm/test"
 LLM_SAVE_PATH = "/toy/setup/llm/save"
@@ -200,7 +201,10 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
         async with ClientSession(timeout=ClientTimeout(total=20)) as session:
             async with session.post(
                 f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": PROVIDER_USER_AGENT,
+                },
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Reply with OK."}],
