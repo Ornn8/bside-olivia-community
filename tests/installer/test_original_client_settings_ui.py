@@ -27,7 +27,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const CONFIRM_VALUE = "confirmed";',
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 1
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
     assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 2
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
@@ -77,6 +77,158 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
     assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
+
+
+def test_official_import_uses_visible_confirmation_and_refreshes_legacy_list() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync(0, "utf8");
+
+class Element {
+  constructor(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this.parentElement = null;
+    this.style = {};
+    this.attributes = {};
+    this.listeners = {};
+    this.textContent = "";
+    this.className = "";
+    this.disabled = false;
+  }
+  append(...items) {
+    for (const item of items) {
+      item.parentElement = this;
+      this.children.push(item);
+    }
+  }
+  replaceChildren(...items) {
+    this.children = [];
+    this.append(...items);
+  }
+  remove() {
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
+    this.parentElement = null;
+  }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  addEventListener(name, handler) { this.listeners[name] = handler; }
+  async click() { return this.listeners.click && this.listeners.click({ target: this }); }
+  focus() {}
+  matches(selector) {
+    if (selector.startsWith(".")) return this.className.split(/\s+/).includes(selector.slice(1));
+    if (selector.startsWith("[")) {
+      const match = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+      return Boolean(match) && Object.prototype.hasOwnProperty.call(this.attributes, match[1])
+        && (!match[2] || this.attributes[match[1]] === match[2]);
+    }
+    return this.tagName === selector;
+  }
+  querySelectorAll(selector) {
+    const selectors = selector.split(",").map((item) => item.trim());
+    const found = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (selectors.some((item) => child.matches(item))) found.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return found;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+}
+
+const body = new Element("body");
+const main = new Element("main");
+const settings = new Element("section");
+settings.className = "tp-settings-item";
+const container = new Element("div");
+container.append(settings);
+main.append(container);
+body.append(main);
+const document = {
+  body,
+  documentElement: new Element("html"),
+  currentScript: { dataset: { apiBase: "http://127.0.0.1:8899" } },
+  createElement: (tag) => new Element(tag),
+  querySelectorAll: (selector) => body.querySelectorAll(selector),
+  querySelector: (selector) => body.querySelector(selector),
+};
+let nativeConfirmCalls = 0;
+const calls = [];
+const fetch = async (endpoint, options) => {
+  calls.push({ path: endpoint.pathname, method: options.method, headers: options.headers });
+  if (endpoint.pathname === "/toy/setup/status") {
+    return { ok: true, json: async () => ({ status: "READY", setup_completed: true, show_initial_setup: false }) };
+  }
+  if (endpoint.pathname === "/toy/settings/video-reply") {
+    return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: false } }) };
+  }
+  if (endpoint.pathname === "/toy/letter/list") {
+    return { ok: true, json: async () => ({ code: 0, data: {
+      list: [{ letter_id: "legacy-1", summary: "legacy-summary", created_at: "2026-08-27T00:00:00Z" }],
+      total: 1, scope: "legacy", read_only: true,
+    } }) };
+  }
+  if (endpoint.pathname === "/toy/letter/legacy/official-import") {
+    return { ok: true, json: async () => ({ code: 0, data: {
+      status: "APPLIED", inserted: 1, duplicates: 0,
+      memory_migration: { status: "completed", processed: 1 },
+    } }) };
+  }
+  throw new Error(`unexpected request: ${endpoint.pathname}`);
+};
+const window = {
+  location: { pathname: "/collection", hash: "#/settings" },
+  requestAnimationFrame: (callback) => callback(),
+  addEventListener: () => {},
+  setTimeout: (callback) => { callback(); return 1; },
+  clearTimeout: () => {},
+  confirm: () => { nativeConfirmCalls += 1; throw new Error("native confirmation is unusable"); },
+};
+const context = {
+  URL, AbortController, document, window, fetch,
+  MutationObserver: class { constructor() {} observe() {} },
+};
+vm.runInNewContext(source, context);
+const flush = async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve(); };
+(async () => {
+  await flush();
+  const buttons = body.querySelectorAll("button");
+  const importButton = buttons[buttons.length - 1];
+  if (!importButton) throw new Error("official import button missing");
+  if (!body.querySelectorAll("span").some((item) => item.textContent === "legacy-summary")) {
+    throw new Error("persisted legacy letter was not rendered");
+  }
+  const importPending = importButton.click();
+  const confirmDialog = body.querySelector("[data-olivia-companion-official-import-confirm]");
+  if (!confirmDialog) throw new Error("visible official import confirmation missing");
+  const confirmButton = confirmDialog.querySelectorAll("button")[1];
+  if (!confirmButton || confirmButton.style.pointerEvents !== "auto") throw new Error("confirmation button is not actionable");
+  await confirmButton.click();
+  await importPending;
+  await flush();
+  const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import");
+  if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("official import confirmation header missing");
+  if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");
+  process.stdout.write(JSON.stringify({ legacyListRequests: calls.filter((item) => item.path === "/toy/letter/list").length }));
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+'''
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+    assert result.returncode == 0, output
+    assert json.loads(result.stdout.decode("utf-8")) == {"legacyListRequests": 2}
 
 
 def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:
@@ -375,7 +527,12 @@ const statusPayload = (status) => ({
           version: "fixture",
           license_summary: "fixture",
           requires_gpu: false,
-        }) };
+          }) };
+      }
+      if (endpoint.pathname === "/toy/letter/list") {
+        return { ok: true, json: async () => ({ code: 0, data: {
+          list: [], total: 0, scope: "legacy", read_only: true,
+        } }) };
       }
       if (endpoint.pathname === "/toy/settings/video-reply") {
     videoMethods.push(options.method);

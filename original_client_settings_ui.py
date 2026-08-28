@@ -16,6 +16,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_PATH = "/toy/companion/memory";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
+  const OFFICIAL_LETTER_LIST_PATH = "/toy/letter/list";
+  const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
   const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
@@ -96,6 +98,58 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       item.style.cursor = busy ? "default" : "pointer";
     }
   };
+
+  const confirmOfficialImport = (message) => new Promise((resolve) => {
+    document.querySelector(`[${OFFICIAL_IMPORT_CONFIRM_ATTR}]`)?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.setAttribute(OFFICIAL_IMPORT_CONFIRM_ATTR, "");
+    backdrop.style.position = "fixed";
+    backdrop.style.inset = "0";
+    backdrop.style.zIndex = "2147483000";
+    backdrop.style.display = "grid";
+    backdrop.style.placeItems = "center";
+    backdrop.style.padding = "24px";
+    backdrop.style.backgroundColor = "rgba(0, 0, 0, 0.72)";
+    backdrop.style.pointerEvents = "auto";
+    backdrop.style.webkitAppRegion = "no-drag";
+
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.style.width = "min(520px, calc(100vw - 48px))";
+    dialog.style.padding = "24px";
+    dialog.style.borderRadius = "12px";
+    dialog.style.backgroundColor = "#ffffff";
+    dialog.style.color = "#1f2937";
+    dialog.style.boxShadow = "0 24px 80px rgba(0, 0, 0, 0.45)";
+    dialog.style.pointerEvents = "auto";
+    dialog.style.webkitAppRegion = "no-drag";
+
+    const finish = (accepted) => {
+      backdrop.remove();
+      resolve(accepted);
+    };
+    const messageNode = text("p", message, "text-text-body text-body-m font-regular");
+    messageNode.style.color = "#1f2937";
+    const actionsNode = actions();
+    actionsNode.style.justifyContent = "flex-end";
+    const cancel = button("取消", () => finish(false));
+    const confirm = button("确定", () => finish(true));
+    for (const item of [cancel, confirm]) {
+      item.style.color = "#1f2937";
+      item.style.backgroundColor = "#ffffff";
+      item.style.borderColor = "#9ca3af";
+      item.style.pointerEvents = "auto";
+      item.style.webkitAppRegion = "no-drag";
+    }
+    confirm.style.backgroundColor = "#2563eb";
+    confirm.style.color = "#ffffff";
+    actionsNode.append(cancel, confirm);
+    dialog.append(messageNode, actionsNode);
+    backdrop.append(dialog);
+    (document.body || document.documentElement).append(backdrop);
+    confirm.focus();
+  });
 
   const card = () => {
     const element = document.createElement("article");
@@ -209,6 +263,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         throw new Error("unavailable");
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const requestLegacyLetterList = async () => {
+    const endpoint = new URL(`${OFFICIAL_LETTER_LIST_PATH}?scope=legacy`, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        cache: "no-store",
+        credentials: "omit",
+        headers: { "Accept": "application/json" },
+        signal: controller.signal,
+      });
+      const responseBody = await response.json();
+      const payload = responseBody && responseBody.data;
+      if (!response.ok || !payload || payload.scope !== "legacy" || !Array.isArray(payload.list)) {
+        throw new Error("legacy-list-unavailable");
       }
       return payload;
     } finally {
@@ -1419,23 +1496,72 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const mountOfficialLetterImport = (section) => {
-    const row = document.createElement("div");
-    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
-    const copy = document.createElement("div");
-    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
-    const state = text("div", "", "text-text-secondary text-caption-m font-regular");
-    state.setAttribute("aria-live", "polite");
-    copy.append(
+    const legacyList = document.createElement("ul");
+    legacyList.style.display = "grid";
+    legacyList.style.gap = "8px";
+    legacyList.style.padding = "0";
+    legacyList.style.margin = "0";
+    legacyList.style.listStyle = "none";
+    const renderLegacyLetters = (payload) => {
+      legacyList.replaceChildren();
+      const letters = Array.isArray(payload.list) ? payload.list : [];
+      if (!letters.length) {
+        legacyList.append(text("li", "暂无已导入的历史信件。", "text-text-secondary text-body-m font-regular"));
+        return;
+      }
+      for (const letter of letters) {
+        const item = document.createElement("li");
+        item.style.display = "flex";
+        item.style.flexDirection = "column";
+        item.style.gap = "2px";
+        item.style.padding = "8px 10px";
+        item.style.borderRadius = "8px";
+        item.style.backgroundColor = "rgba(0, 0, 0, 0.035)";
+        const summary = typeof letter.summary === "string" && letter.summary.trim()
+          ? letter.summary.trim()
+          : "（无正文摘要）";
+        item.append(text("span", summary, "text-text-body text-body-m font-regular"));
+        const createdAt = formatTime(letter.created_at);
+        if (createdAt) {
+          item.append(text("span", createdAt, "text-text-secondary text-caption-m font-regular"));
+        }
+        legacyList.append(item);
+      }
+    };
+    const refreshLegacyLetters = async () => {
+      try {
+        const payload = await requestLegacyLetterList();
+        renderLegacyLetters(payload);
+        return true;
+      } catch (_error) {
+        legacyList.replaceChildren(text("li", "历史信件暂时无法读取，请稍后重试。", "text-text-secondary text-body-m font-regular"));
+        return false;
+      }
+    };
+    const history = stack();
+    history.style.marginTop = "12px";
+    history.append(
+      text("div", "已导入历史信件（只读）", "text-text-body text-label-l"),
+      text("div", "历史信件不会进入当前收件箱，也不会改变未读数。", "text-text-secondary text-body-m font-regular"),
+      legacyList
+    );
+    const importRow = document.createElement("div");
+    importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
+    const importCopy = document.createElement("div");
+    importCopy.className = "flex flex-col gap-0 flex-1 min-w-0";
+    const importState = text("div", "", "text-text-secondary text-caption-m font-regular");
+    importState.setAttribute("aria-live", "polite");
+    importCopy.append(
       text("div", "导入官方文字信件", "text-text-body text-label-l"),
       text("div", "只导入原信和文字回信，不导入视频。重复信件会自动跳过。", "text-text-secondary text-body-m font-regular"),
-      state
+      importState
     );
     const importButton = button("导入", async () => {
-      if (!window.confirm("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
+      if (!await confirmOfficialImport("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
         return;
       }
       setButtonsBusy([importButton], true);
-      state.textContent = "正在读取官方文字信件……";
+      importState.textContent = "正在读取官方文字信件……";
       try {
         const payload = await requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
@@ -1444,15 +1570,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryText = migration && migration.status === "completed"
           ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
           : "信件已保存；长期记忆尚未全部处理，可稍后重试。";
-        state.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}`;
+        importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}`;
+        await refreshLegacyLetters();
       } catch (_error) {
-        state.textContent = "导入失败。请先启动官方客户端并登录，再重试。";
+        importState.textContent = "导入失败。请先启动官方客户端并登录，再重试。";
       } finally {
         setButtonsBusy([importButton], false);
       }
     });
-    row.append(copy, importButton);
-    section.append(text("div", "历史信件", "text-text-body text-title-m"), row);
+    importRow.append(importCopy, importButton);
+    section.append(
+      text("div", "历史信件", "text-text-body text-title-m"),
+      importRow,
+      history
+    );
+    void refreshLegacyLetters();
+    return;
+
   };
 
   const mountShell = () => {
