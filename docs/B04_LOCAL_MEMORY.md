@@ -29,7 +29,7 @@ metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储�
 
 `official_history_publish_status` 是服务端保留 metadata；通用 legacy import 会丢弃调用方提交的同名字段。官方历史成功重试若命中旧版同内容归档，会在同一 SQLite 事务内升级该归档的来源、原时间和完成标记，并在事务结束前恢复只读 update trigger。
 
-`official_history_memory_semantics` 也是服务端保留 metadata。只有值为 `linli_first_person_v1` 的官方历史才可跳过记忆重建；旧记录或仍以“助手 / AI / assistant / 第三人称林离”描述角色的记录会先删除，再按林离第一人称“我”重建。首次导入时 SQLite 尚未创建 `legacy_letters` 表属于空库引导状态，可安全回退到进程内空归档；其他 SQLite 错误继续失败关闭。
+`official_history_memory_semantics` 也是服务端保留 metadata。只有值为 `actor_split_first_person_v2` 的官方历史才可跳过记忆重建；旧记录会先删除，再按 actor 分别提取来信用户事实与林离事实，只有林离事实必须使用第一人称“我”。首次导入时 SQLite 尚未创建 `legacy_letters` 表属于空库引导状态，可安全回退到进程内空归档；其他 SQLite 错误继续失败关闭。
 
 ## 健康检查与验证
 

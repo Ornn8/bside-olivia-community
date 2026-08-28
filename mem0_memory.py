@@ -64,6 +64,18 @@ _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE = re.compile(
     r"助手|assistant|(?<![A-Za-z])AI(?![A-Za-z])|林离",
     re.IGNORECASE,
 )
+_HISTORY_FIRST_PERSON_RE = re.compile(r"我")
+_HISTORY_ACTOR_KEY = "history_actor"
+_HISTORY_USER_ACTOR = "user"
+_HISTORY_LINLI_ACTOR = "linli"
+_HISTORY_USER_FACT_PROMPT = (
+    "只从这封用户来信提取用户本人的长期事实；保留用户姓名、称呼和原意；"
+    "不要把用户提到的 AI、助手或林离改写成角色自述。"
+)
+_HISTORY_LINLI_FACT_PROMPT = (
+    "只从林离的这封回信提取林离自身的长期事实。每条事实必须包含第一人称‘我’；"
+    "不得称为助手、AI、assistant 或第三人称林离。"
+)
 _MEMORY_LANGUAGE_INSTRUCTIONS = (
     "使用与输入消息相同的语言和文字提取长期记忆；"
     "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
@@ -820,10 +832,31 @@ class Mem0ConversationMemoryAdapter:
                     source_id,
                     error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
                 )
-            if source_id.startswith("history:") and any(
-                _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(record.text)
-                for record in source_records
-            ):
+            if source_id.startswith("history:") and source_records:
+                exact_rows = self._exact_source_id_rows(exact_response)
+                actors = {
+                    row.get("metadata", {}).get(_HISTORY_ACTOR_KEY)
+                    for row in exact_rows or ()
+                    if isinstance(row.get("metadata"), Mapping)
+                }
+                linli_facts = tuple(
+                    str(row.get("memory", ""))
+                    for row in exact_rows or ()
+                    if isinstance(row.get("metadata"), Mapping)
+                    and row["metadata"].get(_HISTORY_ACTOR_KEY)
+                    == _HISTORY_LINLI_ACTOR
+                )
+                history_is_current = (
+                    actors == {_HISTORY_USER_ACTOR, _HISTORY_LINLI_ACTOR}
+                    and bool(linli_facts)
+                    and all(
+                        _HISTORY_FIRST_PERSON_RE.search(fact)
+                        and not _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(fact)
+                        for fact in linli_facts
+                    )
+                )
+                if history_is_current:
+                    return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
                 pending_ids = self._delete_provider_memories(
                     tuple(record.memory_id for record in source_records)
                 )
@@ -857,32 +890,96 @@ class Mem0ConversationMemoryAdapter:
             "domain": _DOMAIN,
             "canonical": True,
         }
+        values: list[object] = []
+        created_ids: list[str] = []
         try:
-            value = self.backend.add(
-                [
-                    {"role": "user", "content": str(user_message)},
-                    {"role": "assistant", "content": str(assistant_message)},
-                ],
-                user_id=user_id,
-                agent_id=self.config.agent_id,
-                metadata=metadata,
-            )
+            if source_id.startswith("history:"):
+                for actor, role, content, prompt in (
+                    (
+                        _HISTORY_USER_ACTOR,
+                        "user",
+                        user_message,
+                        _HISTORY_USER_FACT_PROMPT,
+                    ),
+                    (
+                        _HISTORY_LINLI_ACTOR,
+                        "assistant",
+                        assistant_message,
+                        _HISTORY_LINLI_FACT_PROMPT,
+                    ),
+                ):
+                    value = self.backend.add(
+                        [{"role": role, "name": actor, "content": str(content)}],
+                        user_id=user_id,
+                        agent_id=self.config.agent_id,
+                        metadata={**metadata, _HISTORY_ACTOR_KEY: actor},
+                        prompt=prompt,
+                    )
+                    values.append(value)
+                    acknowledgements = _add_acknowledgements(value)
+                    if acknowledgements:
+                        created_ids.extend(
+                            memory_id for memory_id, _memory in acknowledgements
+                        )
+            else:
+                values.append(
+                    self.backend.add(
+                        [
+                            {"role": "user", "content": str(user_message)},
+                            {"role": "assistant", "content": str(assistant_message)},
+                        ],
+                        user_id=user_id,
+                        agent_id=self.config.agent_id,
+                        metadata=metadata,
+                    )
+                )
         except Exception:
+            pending_ids = self._delete_provider_memories(tuple(created_ids))
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
-                error_code="MEM0_WRITE_FAILED",
+                pending_ids,
+                error_code=(
+                    "MEM0_WRITE_ROLLBACK_FAILED"
+                    if pending_ids
+                    else "MEM0_WRITE_FAILED"
+                ),
             )
-        acknowledgements = _add_acknowledgements(value)
-        if acknowledgements is None:
+        acknowledgement_groups = tuple(_add_acknowledgements(value) for value in values)
+        history_write = source_id.startswith("history:")
+        if any(
+            acknowledgements is None for acknowledgements in acknowledgement_groups
+        ) or (
+            history_write
+            and any(not acknowledgements for acknowledgements in acknowledgement_groups)
+        ):
+            created_ids = tuple(
+                memory_id
+                for acknowledgements in acknowledgement_groups
+                if acknowledgements
+                for memory_id, _memory in acknowledgements
+            )
+            pending_ids = self._delete_provider_memories(created_ids)
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
-                error_code="MEM0_WRITE_FAILED",
+                pending_ids,
+                error_code=(
+                    "MEM0_WRITE_ROLLBACK_FAILED"
+                    if pending_ids
+                    else "MEM0_WRITE_FAILED"
+                ),
             )
-        if source_id.startswith("history:") and any(
-            _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
-            for _memory_id, memory in acknowledgements
+        acknowledgements = tuple(
+            acknowledgement
+            for group in acknowledgement_groups
+            if group
+            for acknowledgement in group
+        )
+        if history_write and any(
+            not _HISTORY_FIRST_PERSON_RE.search(memory)
+            or _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
+            for _memory_id, memory in acknowledgement_groups[1] or ()
         ):
             pending_ids = self._delete_provider_memories(
                 tuple(memory_id for memory_id, _memory in acknowledgements)

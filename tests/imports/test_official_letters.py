@@ -42,10 +42,17 @@ def test_history_skip_requires_current_first_person_semantics(monkeypatch) -> No
                     "metadata": {"official_history_publish_status": "completed_v1"},
                 },
                 {
-                    "source_record_id": "official:current",
+                    "source_record_id": "official:first-person-v1",
                     "metadata": {
                         "official_history_publish_status": "completed_v1",
                         "official_history_memory_semantics": "linli_first_person_v1",
+                    },
+                },
+                {
+                    "source_record_id": "official:current",
+                    "metadata": {
+                        "official_history_publish_status": "completed_v1",
+                        "official_history_memory_semantics": "actor_split_first_person_v2",
                     },
                 },
             ]
@@ -688,7 +695,7 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     archived = local_server._legacy_letter_collection()
     assert archived[0]["metadata"]["official_history_publish_status"] == "completed_v1"
     assert archived[0]["metadata"]["official_history_memory_semantics"] == (
-        "linli_first_person_v1"
+        "actor_split_first_person_v2"
     )
     assert len(memory.list_memories(user_id="local-user")) == 1
     remembered = memory.list_memories(user_id="local-user")[0]

@@ -805,7 +805,7 @@ private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
 OFFICIAL_HISTORY_PUBLISH_STATUS_KEY = "official_history_publish_status"
 OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED = "completed_v1"
 OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY = "official_history_memory_semantics"
-OFFICIAL_HISTORY_MEMORY_SEMANTICS_VERSION = "linli_first_person_v1"
+OFFICIAL_HISTORY_MEMORY_SEMANTICS_VERSION = "actor_split_first_person_v2"
 
 
 def _official_history_memory_available() -> bool:

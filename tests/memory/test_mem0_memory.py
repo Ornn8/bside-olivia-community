@@ -66,7 +66,14 @@ class FakeMem0:
         self.calls.append(("add", {"messages": messages, **kwargs}))
         self.counter += 1
         metadata = dict(kwargs.get("metadata", {}))
-        text = messages if isinstance(messages, str) else "用户在东京工作。"
+        actor = metadata.get("history_actor")
+        text = (
+            messages
+            if isinstance(messages, str)
+            else "我记得自己曾认真回复这封信。"
+            if actor == "linli"
+            else "用户在东京工作。"
+        )
         row = {
             "id": f"memory.fixture.{self.counter}",
             "memory": text,
@@ -454,10 +461,56 @@ def test_historical_exchange_replaces_non_first_person_identity_memory(
 
     assert result.status is MemoryWriteStatus.WRITTEN
     assert ("delete", "memory.legacy.assistant") in backend.calls
-    assert len([name for name, _value in backend.calls if name == "add"]) == 1
+    assert len([name for name, _value in backend.calls if name == "add"]) == 2
 
 
-@pytest.mark.parametrize("bad_text", ("AI 回复了来信。", "林离说她回复了来信。"))
+def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
+    tmp_path: Path,
+) -> None:
+    class ActorAwareMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            actor = kwargs["metadata"]["history_actor"]
+            fact = (
+                "用户喜欢 AI 绘画，也喜欢林离的钢琴。"
+                if actor == "user"
+                else "我在回信中鼓励用户继续画画。"
+            )
+            self.rows[-1]["memory"] = fact
+            value["results"][0]["memory"] = fact
+            return value
+
+    backend = ActorAwareMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画，也喜欢林离的钢琴。",
+        assistant_message="我会继续用钢琴陪你画画。",
+        occurred_at=NOW,
+        source_id="history:actor-split",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    add_calls = [value for name, value in backend.calls if name == "add"]
+    assert [call["metadata"]["history_actor"] for call in add_calls] == [
+        "user",
+        "linli",
+    ]
+    assert [call["messages"][0]["role"] for call in add_calls] == [
+        "user",
+        "assistant",
+    ]
+    assert "用户本人" in add_calls[0]["prompt"]
+    assert "第一人称" in add_calls[1]["prompt"]
+    assert [row["memory"] for row in backend.rows] == [
+        "用户喜欢 AI 绘画，也喜欢林离的钢琴。",
+        "我在回信中鼓励用户继续画画。",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad_text",
+    ("AI 回复了来信。", "林离说她回复了来信。", "过去曾温柔地回复这封信。"),
+)
 def test_historical_exchange_rejects_non_first_person_new_memory(
     tmp_path: Path, bad_text: str,
 ) -> None:
@@ -482,6 +535,39 @@ def test_historical_exchange_rejects_non_first_person_new_memory(
     assert backend.rows == []
 
 
+def test_historical_actor_split_rebuilds_a_partial_source(tmp_path: Path) -> None:
+    backend = FakeMem0()
+    backend.rows.append(
+        {
+            "id": "memory.partial.user",
+            "memory": "用户喜欢 AI 绘画。",
+            "user_id": "local-user",
+            "agent_id": "linli",
+            "metadata": {
+                "source_id": "history:partial",
+                "domain": "conversation_memory",
+                "canonical": True,
+                "history_actor": "user",
+            },
+            "created_at": NOW.isoformat(),
+        }
+    )
+
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画。",
+        assistant_message="我会记住。",
+        occurred_at=NOW,
+        source_id="history:partial",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert ("delete", "memory.partial.user") in backend.calls
+    assert {
+        row["metadata"]["history_actor"] for row in backend.rows
+    } == {"user", "linli"}
+
+
 def test_historical_identity_rejection_reports_rollback_failure(tmp_path: Path) -> None:
     class NonFirstPersonMem0(FakeMem0):
         def add(self, messages, **kwargs):
@@ -502,7 +588,30 @@ def test_historical_identity_rejection_reports_rollback_failure(tmp_path: Path) 
 
     assert result.status is MemoryWriteStatus.UNAVAILABLE
     assert result.error_code == "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED"
-    assert result.memory_ids == ("memory.fixture.1",)
+    assert result.memory_ids == ("memory.fixture.1", "memory.fixture.2")
+
+
+def test_historical_actor_split_rolls_back_user_fact_when_linli_add_fails(
+    tmp_path: Path,
+) -> None:
+    class LinliAddFails(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs["metadata"]["history_actor"] == "linli":
+                raise RuntimeError("synthetic provider failure")
+            return super().add(messages, **kwargs)
+
+    backend = LinliAddFails()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢 AI 绘画。",
+        assistant_message="我会记住。",
+        occurred_at=NOW,
+        source_id="history:actor-rollback",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_WRITE_FAILED"
+    assert backend.rows == []
 
 
 def test_chinese_exchange_retries_cleanup_instead_of_accepting_english_duplicate(
