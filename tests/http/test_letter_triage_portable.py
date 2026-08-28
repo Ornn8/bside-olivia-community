@@ -94,7 +94,7 @@ def _route(*, context=None, **overrides):
     return result, gateway
 
 
-def test_high_emotion_can_choose_direct_spoken_video_without_music():
+def test_spoken_only_video_mode_fails_closed_to_text():
     result, _ = _route(
         mode="spoken_video",
         reason_code="voice_adds_presence",
@@ -102,8 +102,23 @@ def test_high_emotion_can_choose_direct_spoken_video_without_music():
         direct_response_sufficient=True,
         voice_materially_better=True,
     )
-    assert result.reply_mode == "spoken_video"
+    assert result.reply_mode == "text_letter"
+    assert result.status == "unavailable"
     assert result.music_contexts == ()
+
+
+def test_router_offers_only_text_or_spoken_plus_music_video() -> None:
+    _, gateway = _route()
+
+    mode_schema = gateway.requests[0]["tools"][0]["function"]["parameters"]["properties"]["mode"]
+    assert mode_schema["enum"] == ["musical_video", "text_letter"]
+
+
+def test_router_prompt_marks_voice_only_flag_obsolete_for_complete_video() -> None:
+    _, gateway = _route()
+
+    system_prompt = gateway.requests[0]["messages"][0]["content"]
+    assert "完整视频时 voice_materially_better=false" in system_prompt
 
 
 def test_music_discussion_remains_text_when_words_are_enough():
@@ -248,16 +263,6 @@ def test_router_rejects_noncanonical_tool_schema_arguments(
     ("expected_mode", "overrides"),
     [
         ("text_letter", {}),
-        (
-            "spoken_video",
-            {
-                "mode": "spoken_video",
-                "reason_code": "voice_adds_presence",
-                "emotion_level": "high",
-                "direct_response_sufficient": True,
-                "voice_materially_better": True,
-            },
-        ),
         (
             "musical_video",
             {
