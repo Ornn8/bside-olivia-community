@@ -158,6 +158,24 @@ def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> N
     assert explicit["OLIVIA_LATENTSYNC_ROOT"] == "D:/managed/latentsync"
 
 
+def test_launcher_uses_fixed_scene_assets_from_the_installed_client(tmp_path: Path) -> None:
+    root = _installation(tmp_path, client_version="0.0.9.627")
+    assets = root / "app" / "0.0.9.627" / "assets" / "Wallpaper_Presence"
+    assets.mkdir(parents=True)
+    scene = assets / "A_R1_2000.mp4"
+    transition = assets / "A_Transition_2000_1200.mp4"
+    scene.write_bytes(b"scene")
+    transition.write_bytes(b"transition")
+
+    environment = start_local._load_fixed_video_assets_environment({}, root)
+
+    assert environment == {
+        "OLIVIA_ORDINARY_ACTION_BASE": str(scene.resolve()),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(transition.resolve()),
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": str(scene.resolve()),
+    }
+
+
 def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     config_root = data_root / "config"

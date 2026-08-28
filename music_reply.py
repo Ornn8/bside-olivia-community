@@ -154,6 +154,8 @@ _VIDEO_REPLY_SOURCE_URLS = {
     ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
     ("minimax_music3", "domestic"): "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
     ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+    ("roformer", "domestic"): "https://hf-mirror.com/KimberleyJSN/melbandroformer",
+    ("roformer", "official"): "https://huggingface.co/KimberleyJSN/melbandroformer",
     ("ffmpeg", "official"): "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
 }
 
@@ -179,8 +181,6 @@ def video_reply_dependency_status(
         return path is not None and path.is_file()
 
     tts_config = configured("OLIVIA_TTS_CONFIG")
-    visual_config = configured("OLIVIA_VISUAL_CONFIG")
-    visual_worker = configured("OLIVIA_LIVETALKING_WORKER")
     local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
     delivery_ready = False
     if all(path is not None for path in (tts_config, local_data_root)):
@@ -287,20 +287,6 @@ def video_reply_dependency_status(
             ),
         ),
         item(
-            "livetalking",
-            "视频驱动配置（LiveTalking）",
-            bool(visual_config and visual_config.is_file() and visual_worker and visual_worker.is_file()),
-            "manual",
-            "国内镜像待固定；备用：GitHub",
-            (
-                (
-                    "official",
-                    "官方源（GitHub）",
-                    "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
-                ),
-            ),
-        ),
-        item(
             "latentsync",
             "口型视频（LatentSync）",
             latentsync_ready,
@@ -342,8 +328,20 @@ def video_reply_dependency_status(
             "roformer",
             "人声分离（RoFormer）",
             roformer_ready,
-            "manual",
-            "国内镜像和固定校验清单待确认",
+            "automatic",
+            "国内：HF-Mirror；备用：Hugging Face",
+            (
+                (
+                    "domestic",
+                    "国内源（HF-Mirror）",
+                    "https://hf-mirror.com/KimberleyJSN/melbandroformer",
+                ),
+                (
+                    "official",
+                    "官方源（Hugging Face）",
+                    "https://huggingface.co/KimberleyJSN/melbandroformer",
+                ),
+            ),
         ),
         item(
             "official_video_assets",
@@ -401,7 +399,7 @@ def video_reply_dependency_status(
         and musical_reply_configured(env, performance_video_path=performance_video_path)
     )
     return {
-        "ready": ordinary_ready,
+        "ready": music_ready,
         "music_ready": music_ready,
         "ordinary_missing_dependencies": ordinary_missing,
         "dependencies": dependencies,

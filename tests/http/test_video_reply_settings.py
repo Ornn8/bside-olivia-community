@@ -312,23 +312,26 @@ def test_video_reply_source_page_is_opened_only_through_the_server_allowlist(mon
             {"capability": "cosyvoice", "source": "domestic"},
             {},
         )
-        rejected = await local_server.route(
+        roformer = await local_server.route(
             "POST",
             "/toy/capabilities/video/source",
             {"capability": "roformer", "source": "domestic"},
             {},
         )
-        return success, rejected
+        return success, roformer
 
-    success, rejected = asyncio.run(route_check())
+    success, roformer = asyncio.run(route_check())
     assert success["data"] == {
         "status": "OPENED",
         "capability": "cosyvoice",
         "source": "domestic",
     }
-    assert rejected["code"] == 400
-    assert rejected["data"]["error_code"] == "VIDEO_REPLY_SETTING_PAYLOAD_INVALID"
-    assert opened == [("cosyvoice", "domestic")]
+    assert roformer["data"] == {
+        "status": "OPENED",
+        "capability": "roformer",
+        "source": "domestic",
+    }
+    assert opened == [("cosyvoice", "domestic"), ("roformer", "domestic")]
 def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch):
     import local_server
     off = {"letter_id": "off", "content": "x", "reply_text": "r", "letter_status": "COMPLETED", "reply_mode": "spoken_video", "media_status": "QUEUED", "video_reply_enabled": False}

@@ -4,13 +4,13 @@
 
 ## 客户端内一键安装视频能力
 
-安装后的客户端在“本地能力与下载”中提供两个独立 bundle：普通视频和音乐视频扩展。普通视频组装 CosyVoice 3、LatentSync 与 FFmpeg 的公开部分；音乐视频扩展另外组装 MiniMax Music 3、Demucs 和固定 revision 的 Seed-VC GPL 源码。LiveTalking 是独立可选能力，不参与普通/LatentSync 视频回信的 readiness。
+安装后的客户端在“本地能力与下载”中只提供一个“视频回信（说话 + 音乐）”入口。点击一次会按依赖顺序组装 CosyVoice 3、LatentSync、MiniMax Music 3、RoFormer 与 FFmpeg 的公开部分；内部 bundle 仅用于断点续传和依赖编排，不作为用户选择项。LiveTalking、Seed-VC 与 Demucs 不参与这条固定产品链路的 readiness。
 
-下载器默认选择国内源，失败后回退官方源；每个文件都校验声明的 size 和 SHA-256，使用 `.part` + HTTP Range 续传。声明了 `install.kind=zip` 的归档复用 Windows 更新包路径规则，在 staging 内拒绝路径逃逸、ADS、设备名、尾随点/空格、链接、重复路径和超限展开，并在解包后复验完整文件树。公开文件组装后会持久化运行时根路径；真实清单仍保持 `prerequisites_required` 或 `license_review_required`，不会把缺少 Python/TTS/正版素材或受限依赖的状态标记为 `ready`。
+下载器默认选择国内源，失败后回退官方源；切换来源时丢弃原来源的 `.part`，同一来源内使用 HTTP Range 续传。每个文件都校验声明的 size 和 SHA-256。声明了 `install.kind=zip` 的归档复用 Windows 更新包路径规则，在 staging 内拒绝路径逃逸、ADS、设备名、尾随点/空格、链接、重复路径和超限展开，并在解包后复验完整文件树。公开文件组装后会持久化运行时根路径；缺少运行时、正版素材或任一清单文件时不会把视频能力标记为 `ready`。
 
-音乐 bundle 必须由用户显式确认已阅读上游条款才会开始下载；组装公开文件后仍保持 `license_review_required`，不会在 RoFormer/Seed-VC 受限依赖缺失时标记 `ready`。RoFormer 和 Seed-VC 权重不会进入公共清单。Seed-VC GPL 源码会实际应用并验证 [`seed-vc-overlap-frames.patch`](../installer/seed-vc-overlap-frames.patch)。
+用户点击“下载并安装”前会明确确认已阅读并同意各上游许可证与使用条款；项目不再设置第二个许可证阻塞状态。清单只记录公开下载地址、固定 revision、大小、SHA-256 和许可证边界，不在仓库或安装包中捆绑 RoFormer、MiniMax 等第三方权重。
 
-当前客户端没有经过审计的原生文件/目录选择桥，因此“导入离线包”和“导入官方 Olivia 素材”在 UI 中禁用，API 返回 `VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE`；不得通过预置环境变量把它们描述成客户端内选择或完成状态。该限制也意味着真实正版素材未导入前，完整视频运行能力保持不可用。
+固定视频回信只使用已安装正版 Olivia 客户端中的固定场景与转场素材。启动器仅在已知相对路径下自动发现文件，不复制、不上传、不重新分发；文件缺失时素材依赖保持不可用。离线包仍不通过未审计的原生路径选择桥导入。
 
 ## 准备清单
 
@@ -73,8 +73,8 @@ $thirdPartyRoot = Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\third-party'
 | CosyVoice 3 模型 | [ModelScope / FunAudioLLM](https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | [Hugging Face / FunAudioLLM](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | `ordinary_video` 固定 BOM，一键下载并逐文件校验 |
 | LatentSync | [ByteDance Gitee 镜像](https://gitee.com/ByteDance/LatentSync)；权重走 `hf-mirror.com/ByteDance/...` | [GitHub / bytedance](https://github.com/bytedance/LatentSync)；Hugging Face | `ordinary_video` 固定 BOM，一键下载并逐文件校验 |
 | MiniMax Music 3 权重 | `hf-mirror.com/Comfy-Org/MiniMax-Music-3` | [Hugging Face / Comfy-Org](https://huggingface.co/Comfy-Org/MiniMax-Music-3) | `music_video` 固定三文件 BOM，一键下载并逐文件校验 |
-| RoFormer | 无可信且许可证明确的国内镜像 | 固定 upstream reference | `license_review_required`；不可公开捆绑权重，缺失时音乐开关保持禁用 |
+| RoFormer | `hf-mirror.com/KimberleyJSN/melbandroformer` | [Hugging Face / KimberleyJSN](https://huggingface.co/KimberleyJSN/melbandroformer) | 固定 revision、大小与 SHA-256；只下载到用户本机，缺失时视频开关保持禁用 |
 
 Hugging Face 镜像 URL 必须使用完整的 40 位 commit：`https://hf-mirror.com/{repo}/resolve/{commit}/{path}`，官方回退保持相同 repo、commit 和 path。HF-Mirror 是社区镜像，不是 Hugging Face 官方服务，因此必须允许用户选择“仅官方源”，并始终在 staging 中完成 SHA-256 校验后再原子转正。
 
-截至 2026-08-28 核验到的候选固定点：CosyVoice ModelScope 模型 commit `9f9c56f2514700ef79d64fd0afb693e0d672373b`（HF 对应仓库使用独立 revision `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`）；ByteDance LatentSync GitHub/Gitee 同步 commit `a229c3948406bc2cf6eaf4873e662e70c6a04746`；Comfy-Org MiniMax Music 3 HF revision `6baad88896848433857c170ba4f05d2ea9d5f218`。这些固定点仍是安装清单候选，不代表已经完成 Windows 运行时、许可证和全文件哈希验收。
+截至 2026-08-28 核验并写入清单的固定点：CosyVoice ModelScope 模型 commit `9f9c56f2514700ef79d64fd0afb693e0d672373b`（HF 对应仓库使用独立 revision `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`）；ByteDance LatentSync GitHub/Gitee 同步 commit `a229c3948406bc2cf6eaf4873e662e70c6a04746`；Comfy-Org MiniMax Music 3 HF revision `6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6`；RoFormer checkpoint revision `ac9b0614ab3cd7f77219e18ba494dfd93956c348`。固定点与哈希只证明下载内容可复现，不代表已完成干净机器 GPU 运行时验收。

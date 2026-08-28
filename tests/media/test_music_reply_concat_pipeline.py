@@ -76,7 +76,6 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     dependencies = {item["id"]: item for item in status["dependencies"]}
     assert list(dependencies) == [
         "cosyvoice",
-        "livetalking",
         "latentsync",
         "minimax_music3",
         "roformer",
@@ -94,15 +93,17 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "official",
     ]
     assert all("url" not in source for source in dependencies["cosyvoice"]["sources"])
-    assert [source["id"] for source in dependencies["livetalking"]["sources"]] == [
-        "official"
+    assert [source["id"] for source in dependencies["roformer"]["sources"]] == [
+        "domestic",
+        "official",
     ]
-    assert dependencies["roformer"]["sources"] == []
     assert music_reply.video_reply_source_url("minimax_music3", "domestic") == (
         "https://hf-mirror.com/Comfy-Org/MiniMax-Music-3/tree/"
         "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6"
     )
-    assert music_reply.video_reply_source_url("roformer", "domestic") is None
+    assert music_reply.video_reply_source_url("roformer", "domestic") == (
+        "https://hf-mirror.com/KimberleyJSN/melbandroformer"
+    )
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
 
@@ -157,11 +158,11 @@ def test_video_reply_readiness_does_not_require_livetalking(
     )
     dependencies = {item["id"]: item for item in status["dependencies"]}
 
-    assert dependencies["livetalking"]["state"] == "missing"
+    assert "livetalking" not in dependencies
     assert status["ready"] is True
 
 
-def test_ordinary_video_readiness_does_not_require_music_dependencies(
+def test_video_reply_readiness_requires_speech_and_music_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_root = tmp_path / "data"
@@ -198,7 +199,7 @@ def test_ordinary_video_readiness_does_not_require_music_dependencies(
         environment, performance_video_path=None
     )
 
-    assert status["ready"] is True
+    assert status["ready"] is False
     assert status["music_ready"] is False
     assert status["ordinary_missing_dependencies"] == []
 

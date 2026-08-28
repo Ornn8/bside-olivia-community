@@ -8,7 +8,8 @@
 | `imageio-ffmpeg` | 运行时 FFmpeg 包装器 | [imageio/imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) | Python 包为 BSD-2-Clause；PyPI wheel 可能附带 FFmpeg 可执行文件，发行时必须按所用二进制的实际来源、许可证和 NOTICE 另行核对。 |
 | LatentSync source and declared checkpoints | Optional local lip-sync provider | [bytedance/LatentSync at `a229c394`](https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746) | Apache-2.0 |
 | MiniMax Music 3 repackaged weights | Optional local music provider | [Comfy-Org/MiniMax-Music-3 at `6444666`](https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6) | Apache-2.0 model-card metadata |
-| Seed-VC source | Optional source-only adapter; weights are not bundled | [Plachtaa/seed-vc at `51383efd`](https://github.com/Plachtaa/seed-vc/tree/51383efd921027683c89e5348211d93ff12ac2a8) | GPL-3.0; the packaged patch records the modification |
+| Mel-Band RoFormer inference source | Optional local vocal-separation provider | [openmirlab/melband-roformer-infer at `a21cb300`](https://github.com/openmirlab/melband-roformer-infer/tree/a21cb300e7637b878f46c500a68737aeb5aa2226) | MIT |
+| MelBandRoformer checkpoint | Optional local vocal-separation checkpoint; downloaded directly to the user's machine and not bundled | [KimberleyJSN/melbandroformer at `ac9b0614`](https://huggingface.co/KimberleyJSN/melbandroformer/tree/ac9b0614ab3cd7f77219e18ba494dfd93956c348) | CC-BY-NC-SA-4.0 repository metadata |
 | `jsonschema` | 运行时 JSON Schema 校验 | [python-jsonschema/jsonschema](https://github.com/python-jsonschema/jsonschema) | MIT |
 | `pytest` | 开发测试 | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | MIT |
 | `numpy` | 可选开发/媒体测试依赖 | [numpy/numpy](https://github.com/numpy/numpy) | BSD-3-Clause |

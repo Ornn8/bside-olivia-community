@@ -41,10 +41,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_CHARACTER_LIMIT = 1200;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
-  const VIDEO_CAPABILITY_CATALOG = [
-    ["ordinary_video", "普通视频", "CosyVoice 3 + LatentSync + FFmpeg + Olivia 私有素材"],
-    ["music_video", "音乐视频扩展", "MiniMax Music 3 + RoFormer + Seed-VC + Demucs + 普通视频"],
-  ];
+  const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
   const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
     ["cosyvoice", "语音合成（CosyVoice 3）"],
     ["livetalking", "实时驱动（LiveTalking，可选）"],
@@ -1163,81 +1160,97 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           .map((item) => [item.id, item])
         : []
     );
-    const heading = text("h3", "视频能力一键安装", "text-text-title text-title-m");
+    const bundles = VIDEO_CAPABILITY_BUNDLES.map((id) => known.get(id) || {
+      id,
+      state: "missing",
+      downloaded_bytes: 0,
+      total_bytes: 0,
+    });
+    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
+    const state = states.every((value) => value === "ready")
+      ? "ready"
+      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
+      ? "downloading"
+      : states.some((value) => value === "failed")
+      ? "failed"
+      : states.some((value) => value === "paused")
+      ? "paused"
+      : states.some((value) => value === "license_review_required")
+      ? "license_review_required"
+      : states.some((value) => value === "prerequisites_required")
+      ? "prerequisites_required"
+      : "missing";
+    const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
+    const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
+    const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "普通视频与音乐视频分开下载、校验和启用；LiveTalking 保持独立可选，不会阻塞视频回信。下载默认国内源优先，失败自动回退官方源。",
+      "视频回信固定包含说话与音乐。点击一次自动准备语音、音乐、口型、媒体工具和固定场景所需组件；下载默认国内源优先，失败自动回退官方源。",
       "text-text-secondary text-body-m font-regular"
     );
-    const list = stack();
-    for (const [id, label, description] of VIDEO_CAPABILITY_CATALOG) {
-      const dependency = known.get(id) || { state: "missing", downloaded_bytes: 0, total_bytes: 0 };
-      const state = typeof dependency.state === "string" ? dependency.state : "missing";
-      const item = card();
-      item.append(
-        text("div", label, "text-text-body text-label-l"),
-        text(
-          "div",
-          `${state === "ready" ? "已就绪" : state === "license_review_required" ? "许可证审查与受限依赖未完成" : state === "paused" ? "已暂停" : state === "failed" ? "安装失败，可重试" : ["downloading", "queued", "verifying"].includes(state) ? "正在安装" : "未安装"}`,
-          "text-text-secondary text-body-m font-regular"
-        ),
-        text("div", description, "text-text-secondary text-caption-m font-regular"),
-        text("div", dependency.total_bytes ? `已处理 ${dependency.downloaded_bytes || 0} / ${dependency.total_bytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
-      );
-      if (["queued", "downloading", "verifying"].includes(state)) {
-        const pause = button("暂停下载", async () => {
-          await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action: "pause" });
-          await renderVideoCapabilityPanel(panel);
-        });
-        item.append(pause);
-      } else if (state === "license_review_required") {
-        item.append(text("div", "公共文件已组装；RoFormer/Seed-VC 受限权重未公开捆绑，完成本地许可证审查前不会标记就绪。", "text-text-secondary text-caption-m font-regular"));
-      } else if (state === "prerequisites_required") {
-        item.append(text("div", "公共文件已组装；当前客户端无法选择官方 Olivia 目录或离线包，因此运行前置条件未完成，不标记就绪。", "text-text-secondary text-caption-m font-regular"));
-      } else if (state !== "ready") {
-        const action = state === "paused" ? "resume" : state === "failed" ? "retry" : "install";
-        const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "下载并安装";
-        const install = button(actionLabel, async () => {
-          if (!await confirmAction(`确认下载并安装${label}？文件会保存到本地数据目录。`)) return;
-          if (id === "music_video" && !await confirmAction("确认已阅读 MiniMax Music 3、RoFormer 与 Seed-VC 的上游许可证；受限权重不会由公共清单下载，缺失时能力保持不可用。")) return;
-          setButtonsBusy([install], true);
-          try {
-            await requestMutation(VIDEO_CAPABILITY_ACTION_PATH, { action, bundle_id: id, source: "auto", accept_licenses: id === "music_video" });
-            await renderVideoCapabilityPanel(panel);
-          } catch (_error) {
-            setButtonsBusy([install], false);
-          }
-        });
-        item.append(install);
-      }
-      const offline = button("导入离线包", async () => {
+    const item = card();
+    const stateLabel = state === "ready"
+      ? "已就绪"
+      : state === "paused"
+      ? "已暂停"
+      : state === "failed"
+      ? "安装失败，可重试"
+      : state === "downloading"
+      ? "正在下载并安装"
+      : ["license_review_required", "prerequisites_required"].includes(state)
+      ? "安装包组件不完整，请更新到完整发布包"
+      : "未安装";
+    const result = text("div", "", "text-text-secondary text-caption-m font-regular");
+    item.append(
+      text("div", "视频回信（说话 + 音乐）", "text-text-body text-label-l"),
+      text("div", stateLabel, "text-text-secondary text-body-m font-regular"),
+      text("div", "语音、音乐、口型和媒体工具会自动准备，无需逐项选择。", "text-text-secondary text-caption-m font-regular"),
+      text("div", totalBytes ? `已处理 ${downloadedBytes} / ${totalBytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
+    );
+    if (state === "downloading") {
+      const pause = button("暂停下载", async () => {
         try {
-          throw new Error("VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE");
+          await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, { action: "pause" });
+          await renderVideoCapabilityPanel(panel);
         } catch (_error) {
-          // This web-hosted client cannot securely obtain a native filesystem path.
+          result.textContent = "暂停失败，请稍后重试。";
         }
       });
-      offline.disabled = true;
-      offline.dataset.reasonCode = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
-      offline.title = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
-      item.append(offline);
-      list.append(item);
+      item.append(pause);
+    } else if (state !== "ready" && !["license_review_required", "prerequisites_required"].includes(state)) {
+      const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "一键下载并安装";
+      const install = button(actionLabel, async () => {
+        if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件；下载即表示你已阅读并同意各上游许可证与使用条款。")) return;
+        setButtonsBusy([install], true);
+        result.textContent = "正在启动后台下载…";
+        try {
+          for (const dependency of bundles) {
+            if (["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(dependency.state)) continue;
+            const action = dependency.state === "paused" ? "resume" : dependency.state === "failed" ? "retry" : "install";
+            await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {
+              action,
+              bundle_id: dependency.id,
+              source: "auto",
+              accept_licenses: dependency.id === "music_video",
+            });
+          }
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          result.textContent = "下载未能启动，请检查网络后重试。";
+          setButtonsBusy([install], false);
+        }
+      });
+      item.append(install);
     }
-    const privateState = text("div", "官方 Olivia 私有素材不会公共下载或再分发。当前客户端不提供可信的本机路径选择，因此官方目录与离线包导入均不可用，视频能力保持 UNAVAILABLE。", "text-text-secondary text-caption-m font-regular");
-    const privateImport = button("导入官方素材", async () => {
-      try {
-        throw new Error("VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE");
-      } catch (_error) {
-        privateState.textContent = "未找到已配置的官方 Olivia 素材；请先在客户端内选择官方安装目录或离线包。";
-      }
-    });
-    privateImport.disabled = true;
-    privateImport.dataset.reasonCode = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
-    privateImport.title = "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE";
-    list.append(privateState, privateImport);
+    item.append(result);
+    const list = stack();
+    list.append(item);
     const refresh = actions();
     refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
     panel.replaceChildren(heading, summary, list, refresh);
+    if (state === "downloading") {
+      window.setTimeout(() => renderVideoCapabilityPanel(panel), 1000);
+    }
   };
 
   const renderCapabilityPanel = async (panel) => {
@@ -1596,12 +1609,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let missingDependencies = [];
     let message = "正在读取设置…";
     let toggle = null;
+    let downloads = null;
     const render = () => {
-      if (!toggle) return;
+      if (!toggle || !downloads) return;
       const settingAvailable = typeof enabled === "boolean";
       toggle.disabled = !settingAvailable || (!ready && !enabled);
       toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
       toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
+      downloads.textContent = ready ? "管理下载" : "下载缺失组件";
       state.textContent = message;
     };
     const hydrate = async () => {
@@ -1656,8 +1671,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     toggle = button("已开启", apply);
     toggle.setAttribute("aria-label", "切换视频回信");
+    downloads = button("下载缺失组件", () => openDialog(false, "capability"));
     const controls = actions();
-    controls.append(toggle, button("管理下载", () => openDialog(false, "capability")));
+    controls.append(toggle, downloads);
     row.append(copy, controls);
     section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
     render();

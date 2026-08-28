@@ -388,6 +388,23 @@ def _client_executable(root: Path) -> Path:
     return root / "app" / version / "Olivia.exe"
 
 
+def _load_fixed_video_assets_environment(
+    environment: dict[str, str], root: Path
+) -> dict[str, str]:
+    """Use the one fixed scene already shipped with the isolated Olivia client."""
+
+    values = environment.copy()
+    assets = _client_executable(root).parent / "assets" / "Wallpaper_Presence"
+    scene = assets / "A_R1_2000.mp4"
+    transition = assets / "A_Transition_2000_1200.mp4"
+    if not scene.is_file() or not transition.is_file():
+        return values
+    values.setdefault("OLIVIA_ORDINARY_ACTION_BASE", str(scene.resolve()))
+    values.setdefault("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(transition.resolve()))
+    values.setdefault("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene.resolve()))
+    return values
+
+
 def _repair_client_frontend(root: Path, port: int) -> str:
     """Upgrade repository-owned UI in an existing isolated client copy."""
 
@@ -577,6 +594,8 @@ def main(argv: list[str] | None = None) -> int:
     client_environment.update(runtime_environment)
     backend_environment = _load_video_environment(backend_environment, data_root)
     client_environment = _load_video_environment(client_environment, data_root)
+    backend_environment = _load_fixed_video_assets_environment(backend_environment, root)
+    client_environment = _load_fixed_video_assets_environment(client_environment, root)
     backend_environment = _load_llm_environment(
         backend_environment, data_root, include_secret=True
     )

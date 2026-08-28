@@ -2134,13 +2134,11 @@ async def route(
                     "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE",
                     "retryable": True,
                 })
-            missing = readiness.get("ordinary_missing_dependencies")
-            if not isinstance(missing, list):
-                missing = [
-                    item["id"]
-                    for item in readiness["dependencies"]
-                    if item.get("state") != "ready"
-                ]
+            missing = [
+                item["id"]
+                for item in readiness["dependencies"]
+                if item.get("state") != "ready"
+            ]
             if not readiness["ready"]:
                 return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {
                     "status": "FAILED",

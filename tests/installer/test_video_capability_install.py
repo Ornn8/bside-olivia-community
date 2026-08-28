@@ -38,21 +38,40 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     ordinary, music = manifest.bundles
     assert len([item for item in ordinary.files if item.identifier.startswith("cosy-")]) == 20
     assert sum(item.size_bytes for item in ordinary.files if item.identifier.startswith("cosy-")) == 9747516745
-    assert music.license_review_required is True
+    assert music.license_review_required is False
+    assert "official_video_assets" not in ordinary.dependencies
+    assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
     assert ordinary.runtime_environment == {
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
     }
-    seed_source = next(item for item in music.files if item.identifier == "seed-vc-code")
-    assert seed_source.install is not None
-    assert seed_source.install.destination == "seed_vc/runtime"
+    music_file_ids = {item.identifier for item in music.files}
+    assert "seed-vc-code" not in music_file_ids
+    assert "demucs-htdemucs6s" not in music_file_ids
+    assert {"roformer-code", "roformer-checkpoint"} <= music_file_ids
+    assert music.runtime_environment == {
+        "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
+        "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
+        "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
+    }
     provenance = payload["provenance"]
-    assert provenance["roformer"]["license_review_required"] is True
-    assert provenance["seed_vc"]["overlap_frames_patch"] == "installer/seed-vc-overlap-frames.patch"
-    assert provenance["seed_vc"]["overlap_frames_patch_sha256"] == hashlib.sha256(
-        Path("installer/seed-vc-overlap-frames.patch").read_text(encoding="utf-8").encode("utf-8")
-    ).hexdigest()
-    assert provenance["seed_vc"]["weights_redistributable"] is False
+    assert provenance["latentsync_model"] == {
+        "repo": "ByteDance/LatentSync-1.6",
+        "revision": "c42c7e6c8e9c213626389fa7d9a3c444b8536353",
+        "unet_sha256": "0a478e89eb660f82da4c35dbdde8a5adfb27f99d1b4e50edd03729e1e98316d3",
+        "tiny_sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+        "buffalo_l_sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+        "license": "OpenRAIL++",
+    }
+    latentsync_unet = next(item for item in ordinary.files if item.identifier == "latentsync-unet")
+    assert latentsync_unet.size_bytes == 5072222488
+    assert latentsync_unet.sha256 == provenance["latentsync_model"]["unet_sha256"]
+    assert latentsync_unet.license == "OpenRAIL++"
+    latentsync_tiny = next(item for item in ordinary.files if item.identifier == "latentsync-tiny")
+    assert latentsync_tiny.relative_path == "latentsync/runtime/checkpoints/whisper/tiny.pt"
+    assert latentsync_tiny.license == "OpenRAIL++"
+    assert provenance["roformer"]["license"] == "MIT + CC-BY-NC-SA-4.0 checkpoint"
+    assert provenance["roformer"]["config_sha256"] == "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"
 
     schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
@@ -253,3 +272,116 @@ def test_video_capability_api_reports_native_path_selection_unavailable() -> Non
         "status": "FAILED",
         "error_code": "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE",
     }
+
+
+def test_download_progress_updates_before_a_large_file_finishes(tmp_path: Path) -> None:
+    first_chunk = threading.Event()
+    release = threading.Event()
+    content = b"abcdef"
+
+    class SlowResponse:
+        status = 200
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            self.calls += 1
+            if self.calls == 1:
+                first_chunk.set()
+                return content[:3]
+            if self.calls == 2:
+                assert release.wait(1)
+                return content[3:]
+            return b""
+
+    spec = VideoFile(
+        "fixture",
+        "models/fixture.bin",
+        len(content),
+        hashlib.sha256(content).hexdigest(),
+        "MIT",
+        {"official": "https://example.invalid/fixture.bin"},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0.0",
+            (
+                VideoBundle("ordinary_video", "video", "FIXED", False, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        opener=lambda *_args, **_kwargs: SlowResponse(),
+    )
+
+    assert installer.start(bundle_id="ordinary_video", source_mode="official") == "APPLIED"
+    assert first_chunk.wait(1)
+    assert installer.status()["bundles"][0]["downloaded_bytes"] == 3
+    release.set()
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+
+
+def test_source_fallback_restarts_instead_of_resuming_bytes_from_another_mirror(
+    tmp_path: Path,
+) -> None:
+    content = b"abc"
+    requests = []
+
+    class Response:
+        def __init__(self, body: bytes, status: int) -> None:
+            self.body = body
+            self.status = status
+            self.sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            if self.sent:
+                return b""
+            self.sent = True
+            return self.body
+
+    def opener(request, **_kwargs):
+        requests.append(request)
+        if "domestic.invalid" in request.full_url:
+            return Response(b"wrong", 200)
+        return Response(content, 206 if request.get_header("Range") else 200)
+
+    spec = VideoFile(
+        "fixture",
+        "models/fixture.bin",
+        len(content),
+        hashlib.sha256(content).hexdigest(),
+        "MIT",
+        {
+            "domestic": "https://domestic.invalid/fixture.bin",
+            "official": "https://official.invalid/fixture.bin",
+        },
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0.0",
+            (
+                VideoBundle("ordinary_video", "video", "FIXED", False, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        opener=opener,
+    )
+
+    assert installer.start(bundle_id="ordinary_video", source_mode="auto") == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert len(requests) == 2
+    assert requests[1].get_header("Range") is None
