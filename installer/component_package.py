@@ -11,7 +11,7 @@ import stat
 import subprocess
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from installer.full_patch import PatchInstallError, copy_project_payload
 
@@ -51,12 +51,55 @@ def _verify_source(source: Path, expected_source_commit: str) -> str:
     expected = expected_source_commit.lower()
     if not _COMMIT_RE.fullmatch(expected):
         raise ComponentPackageBuildError("UPDATE_SOURCE_COMMIT_INVALID")
+    top_level = Path(_git(source, "rev-parse", "--show-toplevel")).resolve()
+    if top_level != source:
+        raise ComponentPackageBuildError("UPDATE_SOURCE_NOT_TOPLEVEL")
     actual = _git(source, "rev-parse", "HEAD").lower()
     if actual != expected:
         raise ComponentPackageBuildError("UPDATE_SOURCE_COMMIT_MISMATCH")
     if _git(source, "status", "--porcelain=v1", "--untracked-files=no"):
         raise ComponentPackageBuildError("UPDATE_SOURCE_DIRTY")
     return actual
+
+
+def _export_commit(source: Path, commit: str, destination: Path, archive_path: Path) -> None:
+    try:
+        with archive_path.open("wb") as stream:
+            subprocess.run(
+                ["git", "-C", str(source), "archive", "--format=zip", commit],
+                check=True,
+                stdout=stream,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        with zipfile.ZipFile(archive_path) as archive:
+            for info in archive.infolist():
+                name = info.filename
+                relative = PurePosixPath(name)
+                member_kind = stat.S_IFMT(info.external_attr >> 16)
+                if (
+                    not name
+                    or "\\" in name
+                    or relative.is_absolute()
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                    or (not info.is_dir() and member_kind not in {0, stat.S_IFREG})
+                ):
+                    raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_UNSAFE")
+                target = destination.joinpath(*relative.parts)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(info))
+    except ComponentPackageBuildError:
+        raise
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        zipfile.BadZipFile,
+    ) as exc:
+        raise ComponentPackageBuildError("UPDATE_SOURCE_ARCHIVE_FAILED") from exc
 
 
 def _payload_files(root: Path) -> list[Path]:
@@ -103,9 +146,17 @@ def build_component_package(
 
     staging = Path(tempfile.mkdtemp(prefix=".olivia-update-build-", dir=package.parent))
     try:
+        exported_source = staging / "source"
+        exported_source.mkdir()
+        _export_commit(
+            source_root,
+            source_commit,
+            exported_source,
+            staging / "source.zip",
+        )
         payload = staging / "payload"
         try:
-            copy_project_payload(source_root, payload)
+            copy_project_payload(exported_source, payload)
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
         _verify_source(source_root, source_commit)

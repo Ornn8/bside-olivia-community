@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -171,3 +172,44 @@ def test_cli_builds_component_package(tmp_path: Path, capsys: pytest.CaptureFixt
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["status"] == "BUILT"
     assert package.is_file()
+
+
+def test_rejects_an_untracked_nested_tree_as_the_claimed_source(tmp_path: Path) -> None:
+    source, commit = _clean_payload_repo(tmp_path)
+    nested = source / "untracked-export"
+    nested.mkdir()
+    for child in source.iterdir():
+        if child.name in {".git", nested.name}:
+            continue
+        if child.is_dir():
+            shutil.copytree(child, nested / child.name)
+        else:
+            shutil.copy2(child, nested / child.name)
+
+    with pytest.raises(ComponentPackageBuildError, match="UPDATE_SOURCE_NOT_TOPLEVEL"):
+        build_component_package(
+            nested,
+            tmp_path / "nested.oliviapatch",
+            version="0.1.1",
+            expected_source_commit=commit,
+        )
+
+
+def test_packages_git_objects_not_an_assume_unchanged_worktree_file(
+    tmp_path: Path,
+) -> None:
+    source, commit = _clean_payload_repo(tmp_path)
+    committed = (source / "local_server.py").read_bytes()
+    _run_git(source, "update-index", "--assume-unchanged", "local_server.py")
+    (source / "local_server.py").write_text("hidden worktree mutation\n", encoding="utf-8")
+    package = tmp_path / "object-backed.oliviapatch"
+
+    build_component_package(
+        source,
+        package,
+        version="0.1.1",
+        expected_source_commit=commit,
+    )
+
+    with zipfile.ZipFile(package) as archive:
+        assert archive.read("payload/local_server.py") == committed
