@@ -27,7 +27,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const CONFIRM_VALUE = "confirmed";',
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 2
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
@@ -82,9 +82,10 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
     assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
+    assert "已导入历史信件（只读）" not in BOOTSTRAP_JAVASCRIPT
 
 
-def test_official_import_uses_visible_confirmation_and_refreshes_legacy_list() -> None:
+def test_official_import_uses_visible_confirmation_without_settings_history_list() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is not installed")
@@ -165,6 +166,7 @@ const document = {
   querySelector: (selector) => body.querySelector(selector),
 };
 let nativeConfirmCalls = 0;
+let memoryAvailable = false;
 const calls = [];
 const fetch = async (endpoint, options) => {
   calls.push({ path: endpoint.pathname, method: options.method, headers: options.headers });
@@ -173,6 +175,16 @@ const fetch = async (endpoint, options) => {
   }
   if (endpoint.pathname === "/toy/settings/video-reply") {
     return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: false } }) };
+  }
+  if (endpoint.pathname === "/toy/companion/status") {
+    return { ok: true, json: async () => ({
+      status: "READY",
+      capabilities: {
+        memory: { state: memoryAvailable ? "available" : "missing" },
+        private_world: { state: "available" },
+        candidates: { state: "available" },
+      },
+    }) };
   }
   if (endpoint.pathname === "/toy/letter/list") {
     return { ok: true, json: async () => ({ code: 0, data: {
@@ -207,10 +219,20 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   const buttons = body.querySelectorAll("button");
   const importButton = buttons[buttons.length - 1];
   if (!importButton) throw new Error("official import button missing");
-  if (!body.querySelectorAll("span").some((item) => item.textContent === "legacy-summary")) {
-    throw new Error("persisted legacy letter was not rendered");
+  if (body.querySelectorAll("span").some((item) => item.textContent === "legacy-summary")) {
+    throw new Error("history must be rendered in the mailbox, not settings");
   }
+  await importButton.click();
+  await flush();
+  if (body.querySelector("[data-olivia-companion-official-import-confirm]")) {
+    throw new Error("confirmation opened while memory was unavailable");
+  }
+  if (calls.some((item) => item.path === "/toy/letter/legacy/official-import")) {
+    throw new Error("official import ran while memory was unavailable");
+  }
+  memoryAvailable = true;
   const importPending = importButton.click();
+  await flush();
   const confirmDialog = body.querySelector("[data-olivia-companion-official-import-confirm]");
   if (!confirmDialog) throw new Error("visible official import confirmation missing");
   const confirmButton = confirmDialog.querySelectorAll("button")[1];
@@ -219,9 +241,16 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   await importPending;
   await flush();
   const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import");
+  const statusIndex = calls.findIndex((item) => item.path === "/toy/companion/status");
+  const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import");
   if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("official import confirmation header missing");
+  if (statusIndex < 0 || statusIndex >= importIndex) throw new Error("memory preflight did not run before official import");
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");
-  process.stdout.write(JSON.stringify({ legacyListRequests: calls.filter((item) => item.path === "/toy/letter/list").length }));
+  process.stdout.write(JSON.stringify({
+    legacyListRequests: calls.filter((item) => item.path === "/toy/letter/list").length,
+    memoryBlocked: true,
+    memoryPreflight: true,
+  }));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 '''
     result = subprocess.run(
@@ -233,7 +262,11 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
     )
     output = (result.stderr or result.stdout).decode("utf-8", errors="replace")
     assert result.returncode == 0, output
-    assert json.loads(result.stdout.decode("utf-8")) == {"legacyListRequests": 2}
+    assert json.loads(result.stdout.decode("utf-8")) == {
+        "legacyListRequests": 0,
+        "memoryBlocked": True,
+        "memoryPreflight": True,
+    }
 
 
 def test_original_settings_private_world_entry_is_limited_to_safe_status() -> None:

@@ -4,11 +4,27 @@ import asyncio
 
 import pytest
 
+from conversation_memory_port import (
+    ConversationMemoryStatus,
+    MemoryWriteResult,
+    MemoryWriteStatus,
+    NullConversationMemoryPort,
+)
 from memory_port import NullMemoryPort
+from private_world_port import PrivateWorldSnapshot
 from runtime.imports.official_letters import (
     build_legacy_import_payload,
     collect_official_text_replies,
 )
+
+
+def _allow_official_history_preflight(monkeypatch, local_server) -> None:
+    monkeypatch.setattr(
+        local_server, "_official_history_memory_available", lambda: True
+    )
+    monkeypatch.setattr(
+        local_server, "_official_history_private_world_available", lambda: True
+    )
 
 
 def test_official_text_replies_become_read_only_legacy_pairs() -> None:
@@ -227,15 +243,263 @@ def test_official_import_fails_closed_when_any_letter_detail_is_unavailable(
         collect_official_text_replies(log_path, request_json=request_json)
 
 
-def test_official_import_route_keeps_read_only_pair_in_legacy_mailbox(
+def test_official_import_requires_available_mem0_before_collecting_history(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        NullConversationMemoryPort(),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: calls.append("collect") or {},
+    )
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_import_adapter",
+        lambda: (_ for _ in ()).throw(AssertionError("archive must not open")),
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response == {
+        "code": 503,
+        "message": "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+        "data": {
+            "status": "UNAVAILABLE",
+            "error_code": "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+            "retryable": True,
+        },
+    }
+    assert calls == []
+
+
+def test_official_import_does_not_publish_mailbox_when_mem0_write_fails(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+
+    class ReadyMemory:
+        enabled = True
+
+        def status(self):
+            return type(
+                "Status",
+                (),
+                {"status": "available", "enabled": True, "provider": "mem0"},
+            )()
+
+    payload = {
+        "mode": "read_only",
+        "account_id": "200717",
+        "letters": [
+            {
+                "source_record_id": "official:200717:letter-1",
+                "source": "official-olivia",
+                "occurred_at": 1710000000,
+                "content": "historical pair",
+                "metadata": {
+                    "user_content": "historical user letter",
+                    "reply_text": "historical reply",
+                    "import_kind": "official_text_reply",
+                    "official_account_id": "200717",
+                },
+            }
+        ],
+    }
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", ReadyMemory())
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: payload,
+    )
+    monkeypatch.setattr(local_server, "_official_account_conflicts", lambda _body: False)
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_import_adapter",
+        lambda: (_ for _ in ()).throw(AssertionError("archive must not publish")),
+    )
+
+    async def failed_migration(_body):
+        return local_server.HistoricalMigrationResult(
+            "partial",
+            1,
+            0,
+            0,
+            0,
+            0,
+            error_code="MEM0_WRITE_FAILED",
+        )
+
+    monkeypatch.setattr(local_server, "_migrate_official_history", failed_migration)
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response["code"] == 503
+    assert response["data"] == {
+        "status": "UNAVAILABLE",
+        "error_code": "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
+        "retryable": True,
+    }
+
+
+def test_official_import_requires_private_world_before_collecting_history(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class ReadyMemory:
+        enabled = True
+
+        def status(self):
+            return type(
+                "Status",
+                (),
+                {"status": "available", "enabled": True, "provider": "mem0"},
+            )()
+
+    calls: list[str] = []
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", ReadyMemory())
+    monkeypatch.setattr(local_server, "private_world_command_service", None)
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: calls.append("collect") or {},
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    assert response["code"] == 503
+    assert response["data"] == {
+        "status": "UNAVAILABLE",
+        "error_code": "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+        "retryable": True,
+    }
+    assert calls == []
+
+
+def test_official_history_is_visible_in_current_mailbox_without_unread_pollution(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    imported = {
+        "letter_id": "legacy-official-1",
+        "created_at": 1710000000,
+        "content": "historical user letter",
+        "reply_text": "historical reply",
+        "reply_video_url": "",
+        "is_read": 0,
+        "read_only": True,
+        "metadata": {"import_kind": "official_text_reply"},
+    }
+    monkeypatch.setattr(local_server.store, "letters", [])
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_letter_collection",
+        lambda *, strict=False: [imported],
+    )
+
+    listed = asyncio.run(local_server.route("GET", "/toy/letter/list", {}, {}))
+    unread = asyncio.run(
+        local_server.route("GET", "/toy/letter/unread_count", {}, {})
+    )
+    detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"letter_id": "legacy-official-1"},
+        )
+    )
+
+    assert listed["data"]["total"] == 1
+    assert listed["data"]["list"][0]["summary"] == "historical user letter"
+    assert unread["data"]["unread_count"] == 0
+    assert detail["data"]["content"] == "historical user letter"
+    assert detail["data"]["reply_text"] == "historical reply"
+    assert detail["data"]["scope"] == "legacy"
+    assert detail["data"]["read_only"] is True
+
+
+def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     tmp_path,
     monkeypatch,
 ) -> None:
     import local_server
 
+    class PersistingMemory:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.records: dict[str, dict[str, object]] = {}
+
+        def status(self) -> ConversationMemoryStatus:
+            return ConversationMemoryStatus(
+                "available",
+                True,
+                "mem0",
+                "qdrant-local",
+                memory_count=len(self.records),
+            )
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            source_id = str(kwargs["source_id"])
+            if source_id in self.records:
+                return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+            self.records[source_id] = dict(kwargs)
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                source_id,
+                (f"memory.{len(self.records)}",),
+            )
+
+        def list_memories(self, *, user_id: str, limit: int = 100):
+            del user_id
+            return tuple(self.records.values())[:limit]
+
+    class ExistingPrivateWorld:
+        def snapshot(self) -> PrivateWorldSnapshot:
+            return PrivateWorldSnapshot(version=2, trust=1)
+
+    memory = PersistingMemory()
     monkeypatch.setenv("OLIVIA_MEMORY_ROOT", str(tmp_path / "memory"))
     monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
     monkeypatch.setattr(local_server.letters_adapter, "memory_port", NullMemoryPort())
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "private_world_port", ExistingPrivateWorld())
+    monkeypatch.setattr(local_server, "private_world_command_service", object())
     monkeypatch.setattr(
         local_server,
         "collect_default_official_text_replies",
@@ -286,22 +550,27 @@ def test_official_import_route_keeps_read_only_pair_in_legacy_mailbox(
     current_unread = asyncio.run(
         local_server.route("GET", "/toy/letter/unread_count", {}, {})
     )
-    letter_id = listed["data"]["list"][0]["letter_id"]
+    assert imported["code"] == 0, imported
+    assert duplicate["code"] == 0, duplicate
+    letter_id = current["data"]["list"][0]["letter_id"]
     detail = asyncio.run(
         local_server.route(
             "GET",
             "/toy/letter/detail",
             {},
-            {"scope": "legacy", "letter_id": letter_id},
+            {"letter_id": letter_id},
         )
     )
 
-    assert imported["code"] == 0
     assert imported["data"]["inserted"] == 1
-    assert duplicate["code"] == 0
     assert duplicate["data"]["inserted"] == 0
     assert duplicate["data"]["duplicates"] == 1
-    assert current["data"]["total"] == 0
+    assert len(memory.list_memories(user_id="local-user")) == 1
+    remembered = memory.list_memories(user_id="local-user")[0]
+    assert remembered["user_message"] == "旧信正文"
+    assert remembered["assistant_message"] == "旧文字回信"
+    assert current["data"]["total"] == 1
+    assert current["data"]["list"][0]["summary"] == "旧信正文"
     assert current_unread["data"]["unread_count"] == 0
     assert listed["data"]["total"] == 1
     assert listed["data"]["list"][0]["summary"] == "旧信正文"
@@ -309,10 +578,13 @@ def test_official_import_route_keeps_read_only_pair_in_legacy_mailbox(
     assert detail["data"]["reply_text"] == "旧文字回信"
     assert detail["data"]["reply_video_url"] == ""
     assert detail["data"]["read_only"] is True
+    assert detail["data"]["scope"] == "legacy"
 
 
 def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> None:
     import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
 
     private_value = "secret-token-and-private-letter"
     monkeypatch.setattr(
@@ -345,6 +617,8 @@ def test_official_import_route_rejects_invalid_timestamp_before_archiving(
     monkeypatch,
 ) -> None:
     import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
 
     monkeypatch.setattr(
         local_server,
@@ -406,6 +680,8 @@ def test_official_import_rejects_a_different_account_before_persisting(
 ) -> None:
     import local_server
 
+    _allow_official_history_preflight(monkeypatch, local_server)
+
     existing = {
         "letter_id": "existing",
         "source_record_id": "official:account-a:letter-1",
@@ -444,6 +720,8 @@ def test_official_import_fails_closed_when_account_binding_cannot_be_read(
     monkeypatch,
 ) -> None:
     import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
 
     class UnreadableArchive:
         enabled = True

@@ -311,6 +311,7 @@ def migrate_historical_exchanges(
     memory: ConversationMemoryPort,
     user_id: str,
     finalize_private_world: Callable[[tuple[HistoricalExchange, ...]], str] | None = None,
+    require_persisted: bool = False,
 ) -> HistoricalMigrationResult:
     """Write one exchange at a time; never advance after a failed write."""
 
@@ -354,6 +355,15 @@ def migrate_historical_exchanges(
                 duplicates,
                 skipped,
                 result.error_code or "MEM0_WRITE_FAILED",
+            )
+        if require_persisted and result.status is MemoryWriteStatus.SKIPPED:
+            return _partial(
+                ordered,
+                processed,
+                written,
+                duplicates,
+                skipped,
+                "MEM0_WRITE_SKIPPED",
             )
         processed += 1
         if result.status is MemoryWriteStatus.WRITTEN:

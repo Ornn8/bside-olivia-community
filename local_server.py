@@ -738,6 +738,27 @@ private_world_candidate_store: SQLitePrivateWorldCandidateStore | None = (
 )
 
 
+def _official_history_memory_available() -> bool:
+    try:
+        status = conversation_memory_adapter.status()
+    except Exception:
+        return False
+    return bool(
+        status.status == "available"
+        and status.enabled is True
+        and status.provider == "mem0"
+    )
+
+
+def _official_history_private_world_available() -> bool:
+    if private_world_command_service is None:
+        return False
+    try:
+        return isinstance(private_world_port.snapshot(), PrivateWorldSnapshot)
+    except Exception:
+        return False
+
+
 async def _migrate_official_history(
     payload: Mapping[str, object],
 ) -> HistoricalMigrationResult:
@@ -747,6 +768,7 @@ async def _migrate_official_history(
         exchanges,
         memory=conversation_memory_adapter,
         user_id=_memory_config.user_id,
+        require_persisted=True,
     )
     if result.status != "completed" or not exchanges:
         return result
@@ -1585,11 +1607,40 @@ def _official_account_conflicts(payload: Mapping[str, object]) -> bool:
     return bool(existing and existing != {incoming})
 
 
+def _mailbox_created_at(letter: Mapping[str, object]) -> float:
+    value = letter.get("created_at")
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _official_history_mailbox_projection() -> list[dict]:
+    projected: list[dict] = []
+    for letter in _legacy_letter_collection():
+        metadata = letter.get("metadata")
+        if not isinstance(metadata, Mapping) or metadata.get("import_kind") != "official_text_reply":
+            continue
+        projected.append({**letter, "is_read": 1, "read_only": True})
+    return projected
+
+
 def _letter_collection(scope: str):
     if scope == "legacy":
         return _legacy_letter_collection()
     _mark_superseded_failed_retries()
-    return [letter for letter in store.letters if not letter.get("superseded_by")]
+    current = [letter for letter in store.letters if not letter.get("superseded_by")]
+    return sorted(
+        [*current, *_official_history_mailbox_projection()],
+        key=lambda letter: (_mailbox_created_at(letter), str(letter.get("letter_id", ""))),
+        reverse=True,
+    )
 
 
 def _bind_memory_adapter(adapter: MemoryPort) -> None:
@@ -1828,6 +1879,18 @@ async def route(
                 "status": "FAILED",
                 "error_code": "COMPANION_CONFIRMATION_REQUIRED",
                 "retryable": False,
+            })
+        if not _official_history_memory_available():
+            return err(503, "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+                "retryable": True,
+            })
+        if not _official_history_private_world_available():
+            return err(503, "PRIVATE_WORLD_HISTORY_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+                "retryable": True,
             })
         official_import = True
         try:
@@ -2094,6 +2157,20 @@ async def route(
                 "status": "FAILED",
                 "error_code": "INVALID_BODY",
             })
+        migration = None
+        if official_import:
+            migration = await _migrate_official_history(body)
+            if migration.status != "completed":
+                error_code = (
+                    "PRIVATE_WORLD_HISTORY_UNAVAILABLE"
+                    if str(migration.error_code or "").startswith("PRIVATE_WORLD_")
+                    else "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED"
+                )
+                return err(503, error_code, {
+                    "status": "UNAVAILABLE",
+                    "error_code": error_code,
+                    "retryable": True,
+                })
         adapter = _legacy_import_adapter()
         if not getattr(adapter, "enabled", False):
             return err(503, "MEMORY_UNAVAILABLE", {
@@ -2119,8 +2196,7 @@ async def route(
                 "error_code": "INVALID_CONTENT",
                 **payload,
             })
-        if official_import:
-            migration = await _migrate_official_history(body)
+        if official_import and migration is not None:
             payload["memory_migration"] = migration.to_dict()
         return ok(payload)
     if p == "/toy/letter/send":
