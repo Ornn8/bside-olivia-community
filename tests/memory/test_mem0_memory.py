@@ -387,6 +387,33 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     assert status["reason_code"] == "MEM0_LIST_FAILED"
 
 
+def test_chinese_exchange_rejects_and_deletes_english_extracted_fact(
+    tmp_path: Path,
+) -> None:
+    class EnglishFactMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]["memory"] = "User prefers quiet evenings."
+            value["results"][0]["memory"] = "User prefers quiet evenings."
+            return value
+
+    backend = EnglishFactMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+
+    result = adapter.remember_exchange(
+        user_message="我喜欢安静的晚上。",
+        assistant_message="我会记住的。",
+        occurred_at=NOW,
+        source_id="letter:fixture:chinese-language",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_LANGUAGE_MISMATCH"
+    assert backend.rows == []
+    assert ("delete", "memory.fixture.1") in backend.calls
+
+
 def test_outbox_retry_after_a_timed_out_source_check_never_adds_duplicate(
     tmp_path: Path,
 ) -> None:
@@ -1090,6 +1117,43 @@ def test_exchange_write_timeout_keeps_one_daemon_and_fails_closed_on_retry(
         for thread in threading.enumerate():
             if thread.name == "olivia-mem0-write" and thread not in existing_threads:
                 thread.join(timeout=0.5)
+
+
+def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingAddMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            entered.set()
+            release.wait()
+            return super().add(messages, **kwargs)
+
+    backend = BlockingAddMem0()
+    adapter = Mem0ConversationMemoryAdapter(
+        backend,
+        replace(_config(tmp_path), write_timeout_seconds=0.1),
+    )
+    timed_out = adapter.remember_exchange(
+        user_message="synthetic user",
+        assistant_message="synthetic reply",
+        occurred_at=NOW,
+        source_id="reply:write-timeout:settle",
+        user_id="local-user",
+    )
+    assert entered.is_set()
+    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+
+    release.set()
+    settled = adapter.settle_exchange_write(
+        source_id="reply:write-timeout:settle",
+        user_id="local-user",
+    )
+
+    assert settled.status is MemoryWriteStatus.WRITTEN
+    assert settled.memory_ids == ("memory.fixture.1",)
 
 
 def test_exchange_fails_closed_when_exact_source_id_page_is_incomplete(

@@ -147,6 +147,87 @@ def test_official_history_strict_migration_rolls_back_new_writes_on_failure() ->
     assert memory.deleted == ["memory.1"]
 
 
+def test_official_history_strict_migration_reconciles_a_timed_out_write() -> None:
+    class TimedOutThenSettledMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            if len(self.events) == 1:
+                self.events.append(("write", str(kwargs["user_message"])))
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    str(kwargs["source_id"]),
+                    error_code="MEM0_WRITE_TIMEOUT",
+                )
+            return super().remember_exchange(**kwargs)
+
+        def settle_exchange_write(self, **kwargs: object) -> MemoryWriteResult:
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                str(kwargs["source_id"]),
+                ("memory.late",),
+            )
+
+    memory = TimedOutThenSettledMemory([MemoryWriteStatus.WRITTEN])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "completed"
+    assert result.processed == 2
+    assert result.written == 2
+    assert memory.deleted == []
+
+
+def test_official_history_strict_migration_rolls_back_after_invalid_result() -> None:
+    class InvalidSecondResultMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs: object):
+            if len(self.events) == 1:
+                self.events.append(("write", str(kwargs["user_message"])))
+                return object()
+            return super().remember_exchange(**kwargs)
+
+    memory = InvalidSecondResultMemory([MemoryWriteStatus.WRITTEN])
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.status == "partial"
+    assert result.error_code == "MEM0_WRITE_RESULT_INVALID"
+    assert memory.deleted == ["memory.1"]
+
+
+def test_official_history_rollback_attempts_every_new_memory_id() -> None:
+    class PartlyFailingDeleteMemory(RecordingMemory):
+        def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+            super().delete_memory(memory_id, user_id=user_id)
+            return memory_id != "memory.2"
+
+    memory = PartlyFailingDeleteMemory(
+        [
+            MemoryWriteStatus.WRITTEN,
+            MemoryWriteStatus.WRITTEN,
+            MemoryWriteStatus.UNAVAILABLE,
+        ]
+    )
+
+    result = migrate_historical_exchanges(
+        (_exchange("first", 10), _exchange("second", 20), _exchange("third", 30)),
+        memory=memory,
+        user_id="local-user",
+        require_persisted=True,
+    )
+
+    assert result.error_code == "MEM0_ROLLBACK_FAILED"
+    assert memory.deleted == ["memory.2", "memory.1"]
+
+
 def test_migration_uses_stable_source_ids_so_a_retry_can_resume_by_deduplication() -> None:
     exchange = _exchange("same", 10)
     first = RecordingMemory([MemoryWriteStatus.WRITTEN])

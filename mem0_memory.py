@@ -59,6 +59,7 @@ _EMBEDDING_SNAPSHOT_FILES = frozenset(
 )
 _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _MEMORY_LANGUAGE_INSTRUCTIONS = (
     "使用与输入消息相同的语言和文字提取长期记忆；"
     "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
@@ -825,6 +826,25 @@ class Mem0ConversationMemoryAdapter:
                 source_id,
                 error_code="MEM0_WRITE_FAILED",
             )
+        if _CJK_RE.search(f"{user_message}\n{assistant_message}") and any(
+            _CJK_RE.search(memory) is None for _memory_id, memory in acknowledgements
+        ):
+            cleanup_failed = False
+            for memory_id, _memory in acknowledgements:
+                try:
+                    if not _has_delete_acknowledgement(self.backend.delete(memory_id)):
+                        cleanup_failed = True
+                except Exception:
+                    cleanup_failed = True
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code=(
+                    "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED"
+                    if cleanup_failed
+                    else "MEM0_LANGUAGE_MISMATCH"
+                ),
+            )
         memory_ids = tuple(memory_id for memory_id, _memory in acknowledgements)
         return MemoryWriteResult(
             MemoryWriteStatus.WRITTEN if memory_ids else MemoryWriteStatus.SKIPPED,
@@ -887,6 +907,90 @@ class Mem0ConversationMemoryAdapter:
             )
         self._last_error_code = value.error_code
         return value
+
+    def settle_exchange_write(
+        self,
+        *,
+        source_id: str,
+        user_id: str,
+    ) -> MemoryWriteResult:
+        """Resolve a timed-out exchange write by its stable source id."""
+
+        try:
+            user_id = self._normalized_user_id(user_id)
+        except Mem0AdapterError:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_EXCHANGE_INVALID",
+            )
+        deadline = time.monotonic() + self.config.write_timeout_seconds
+        if not self._write_gate.acquire(timeout=self.config.write_timeout_seconds):
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_WRITE_UNCERTAIN",
+            )
+        try:
+            while self._write_call.inflight:
+                if time.monotonic() >= deadline:
+                    return MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        source_id,
+                        error_code="MEM0_WRITE_UNCERTAIN",
+                    )
+                time.sleep(0.01)
+            memory_ids: list[str] = []
+            for alias in self._configured_user_aliases(user_id):
+                try:
+                    value = self._locked_provider_call(
+                        lambda alias=alias: self.backend.get_all(
+                            filters={
+                                **self._provider_filters(alias),
+                                "source_id": source_id,
+                            },
+                            top_k=64,
+                        )
+                    )
+                except Exception:
+                    return MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        source_id,
+                        error_code="MEM0_WRITE_UNCERTAIN",
+                    )
+                rows = self._exact_source_id_rows(value)
+                if rows is None:
+                    return MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        source_id,
+                        error_code="MEM0_WRITE_UNCERTAIN",
+                    )
+                for row in rows:
+                    record = _row_to_record(
+                        row,
+                        user_id=alias,
+                        agent_id=self.config.agent_id,
+                    )
+                    if record is None or record.source_id != source_id:
+                        return MemoryWriteResult(
+                            MemoryWriteStatus.UNAVAILABLE,
+                            source_id,
+                            error_code="MEM0_WRITE_UNCERTAIN",
+                        )
+                    memory_ids.append(record.memory_id)
+            if not memory_ids:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_WRITE_FAILED",
+                )
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                source_id,
+                tuple(dict.fromkeys(memory_ids)),
+            )
+        finally:
+            self._write_gate.release()
 
     def add_manual_memory(
         self,

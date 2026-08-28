@@ -347,7 +347,46 @@ def migrate_historical_exchanges(
                 error_code="MEM0_WRITE_FAILED",
             )
         if not isinstance(result, MemoryWriteResult):
-            return _partial(ordered, processed, written, duplicates, skipped, "MEM0_WRITE_RESULT_INVALID")
+            failure_code = "MEM0_WRITE_RESULT_INVALID"
+            if require_persisted:
+                failure_code = _rollback_created_memories(
+                    memory,
+                    created_memory_ids,
+                    user_id=normalized_user_id,
+                    failure_code=failure_code,
+                )
+            return _partial(
+                ordered,
+                processed,
+                written,
+                duplicates,
+                skipped,
+                failure_code,
+            )
+        if (
+            require_persisted
+            and result.status is MemoryWriteStatus.UNAVAILABLE
+            and result.error_code == "MEM0_WRITE_TIMEOUT"
+        ):
+            settle_exchange_write = getattr(memory, "settle_exchange_write", None)
+            if callable(settle_exchange_write):
+                try:
+                    settled = settle_exchange_write(
+                        source_id=exchange.memory_source_id,
+                        user_id=normalized_user_id,
+                    )
+                except Exception:
+                    settled = None
+                result = (
+                    settled
+                    if isinstance(settled, MemoryWriteResult)
+                    and settled.source_id == exchange.memory_source_id
+                    else MemoryWriteResult(
+                        MemoryWriteStatus.UNAVAILABLE,
+                        exchange.memory_source_id,
+                        error_code="MEM0_WRITE_UNCERTAIN",
+                    )
+                )
         if result.status is MemoryWriteStatus.UNAVAILABLE:
             failure_code = result.error_code or "MEM0_WRITE_FAILED"
             if require_persisted:
@@ -431,13 +470,14 @@ def _rollback_created_memories(
     user_id: str,
     failure_code: str,
 ) -> str:
-    try:
-        for memory_id in reversed(tuple(memory_ids)):
+    cleanup_failed = False
+    for memory_id in reversed(tuple(memory_ids)):
+        try:
             if memory.delete_memory(memory_id, user_id=user_id) is not True:
-                return "MEM0_ROLLBACK_FAILED"
-    except Exception:
-        return "MEM0_ROLLBACK_FAILED"
-    return failure_code
+                cleanup_failed = True
+        except Exception:
+            cleanup_failed = True
+    return "MEM0_ROLLBACK_FAILED" if cleanup_failed else failure_code
 
 
 def _partial(
