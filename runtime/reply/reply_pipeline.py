@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+import hashlib
 from typing import Any, Mapping, Protocol
 
 from persona_assembly import UntrustedFragment, assemble_persona
@@ -13,6 +14,11 @@ from runtime.reply.reply_context import ReplyContext
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from runtime.reply.reply_quality_gate import ReviewerPort, RewriterPort, run_reply_quality_gate
 from runtime.reply.reply_reviewer import NullReviewer
+from runtime.memory.memory_port import CONVERSATION_MEMORY, MemoryRecord
+
+
+_CHARACTER_REPLY_HISTORY_LIMIT = 1200
+_CHARACTER_REPLY_PREFIX = "character_reply: "
 
 
 class OrchestratorPort(Protocol):
@@ -170,11 +176,7 @@ def _prepare_generation_request(
             request.content,
             max_chars=memory_limit,
         )
-    history = (
-        (UntrustedFragment("memory.references", memory_context.text),)
-        if memory_context.text
-        else ()
-    )
+    history = _selected_history(memory_context)
     messages = assemble_persona(
         loaded.snapshot,
         context,
@@ -183,6 +185,61 @@ def _prepare_generation_request(
         history=history,
     ).to_messages()
     return replace(request, content=None, messages=messages)
+
+
+def _selected_history(memory_context: object) -> tuple[UntrustedFragment, ...]:
+    character_replies: list[UntrustedFragment] = []
+    remaining = _CHARACTER_REPLY_HISTORY_LIMIT
+    references = getattr(memory_context, "references", ())
+    if isinstance(references, tuple):
+        for reference in references:
+            fragment = _character_reply_fragment(reference, remaining=remaining)
+            if fragment is None:
+                continue
+            character_replies.append(fragment)
+            remaining -= len(fragment.text)
+            if remaining <= len(_CHARACTER_REPLY_PREFIX):
+                break
+    memory_text = getattr(memory_context, "text", "")
+    memory_reference = (
+        (UntrustedFragment("memory.references", memory_text),)
+        if isinstance(memory_text, str) and memory_text
+        else ()
+    )
+    return (*character_replies, *memory_reference)
+
+
+def _character_reply_fragment(
+    reference: object,
+    *,
+    remaining: int,
+) -> UntrustedFragment | None:
+    if not isinstance(reference, MemoryRecord):
+        return None
+    source_id = reference.provenance.get("source_record_id")
+    if (
+        reference.domain != CONVERSATION_MEMORY
+        or not isinstance(source_id, str)
+        or not source_id.startswith("history:")
+        or reference.metadata.get("canonical") is not True
+        or reference.metadata.get("history_actor") != "linli"
+    ):
+        return None
+    text = reference.text.strip()
+    available = remaining - len(_CHARACTER_REPLY_PREFIX)
+    if (
+        available <= 0
+        or not text
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+    ):
+        return None
+    digest = hashlib.sha256(
+        f"{source_id}\0{reference.memory_id}".encode("utf-8")
+    ).hexdigest()
+    return UntrustedFragment(
+        f"character_reply.{digest}",
+        f"{_CHARACTER_REPLY_PREFIX}{text[:available]}",
+    )
 
 
 def _generation_messages(

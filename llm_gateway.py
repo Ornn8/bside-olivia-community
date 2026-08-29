@@ -92,7 +92,7 @@ class GatewayConfig:
     max_input_chars: int = 10000
     max_output_chars: int = 10000
     fallback_provider: str = "none"
-    persona_file: str = "linli_character/system_prompt.md"
+    persona_file: str = ""
     persona_config: str = "linli_character/persona_config.json"
     persona_evidence_file: str = "linli_character/provenance.json"
     persona_v2_file: str = "linli_character/persona_release_v2.json"
@@ -149,7 +149,7 @@ class GatewayConfig:
             max_input_chars=_bounded_int(data.get("max_input_chars", 10000), 10000, 1, 100000),
             max_output_chars=_bounded_int(data.get("max_output_chars", 10000), 10000, 1, 100000),
             fallback_provider=str(data.get("fallback_provider", "none") or "none").strip().lower(),
-            persona_file=str(data.get("persona_file", "linli_character/system_prompt.md") or ""),
+            persona_file=str(data.get("persona_file", "") or ""),
             persona_config=str(data.get("persona_config", "linli_character/persona_config.json") or ""),
             persona_evidence_file=str(
                 data.get("persona_evidence_file", "linli_character/provenance.json") or ""

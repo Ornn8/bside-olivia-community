@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
+from llm_gateway import GatewayConfig
 from runtime.media.music_caption import validate_minimax_caption
 from runtime.media.song_content import (
     SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
     SongContentPlan,
     plan_song_content,
 )
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _lyrics(duration: int) -> str:
@@ -62,9 +67,11 @@ class Response:
 
 
 class RecordingGateway:
-    def __init__(self, payload: str) -> None:
+    def __init__(self, payload: str, *, config: GatewayConfig | None = None) -> None:
         self.payload = payload
         self.calls: list[tuple[tuple[dict[str, str], ...], str | None]] = []
+        if config is not None:
+            self.config = config
 
     async def complete(self, messages, request_id=None):
         self.calls.append((tuple(messages), request_id))
@@ -98,6 +105,9 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
     assert "piano_texture" in system
     assert "caption" in system
     assert "Traditional East Asian" not in system
+    assert '"mode":"musical_video"' in system
+    assert "Persona status is DRAFT" not in system
+    assert sum(len(message["content"]) for message in messages) <= 10_000
 
     user = json.loads(messages[1]["content"])
     assert user == {
@@ -136,6 +146,51 @@ def test_invalid_planner_output_never_falls_back_to_a_free_caption() -> None:
 
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_FIELDS_INVALID"):
         plan_song_content("synthetic", "synthetic", 40, gateway=gateway)
+
+
+def test_song_planner_legacy_persona_requires_explicit_opt_in() -> None:
+    gateway = RecordingGateway(
+        json.dumps(_payload(), ensure_ascii=False),
+        config=GatewayConfig(
+            provider="mock",
+            persona_v2_enabled=False,
+            persona_file=str(ROOT / "linli_character" / "system_prompt.md"),
+        ),
+    )
+
+    plan_song_content("synthetic", "synthetic", 40, gateway=gateway)
+
+    system = gateway.calls[0][0][0]["content"]
+    assert "PERSONA STATUS: DRAFT" in system
+    assert '"mode":"musical_video"' not in system
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        GatewayConfig(
+            provider="mock",
+            persona_v2_file="missing-persona-v2.json",
+        ),
+        GatewayConfig(
+            provider="mock",
+            persona_v2_file=str(
+                ROOT / "linli_character" / "persona_release_v2.json"
+            ),
+            max_input_chars=100,
+        ),
+    ),
+)
+def test_song_persona_failure_stops_before_provider_call(config) -> None:
+    gateway = RecordingGateway(
+        json.dumps(_payload(), ensure_ascii=False),
+        config=config,
+    )
+
+    with pytest.raises((RuntimeError, ValueError)):
+        plan_song_content("synthetic", "synthetic", 40, gateway=gateway)
+
+    assert gateway.calls == []
 
 
 @pytest.mark.parametrize("duration", [40, 60])

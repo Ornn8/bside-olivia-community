@@ -76,6 +76,15 @@ class _ConversationMemoryView:
             "occurred_at": occurred_at or "",
             "current_conversation": True,
         }
+        metadata: dict[str, object] = {}
+        history_actor = record.metadata.get("history_actor")
+        if (
+            record.source_id.startswith("history:")
+            and record.metadata.get("canonical") is True
+            and history_actor in {"user", "linli"}
+        ):
+            metadata["canonical"] = True
+            metadata["history_actor"] = history_actor
         return MemoryRecord(
             memory_id=record.memory_id,
             domain=CONVERSATION_MEMORY,
@@ -85,7 +94,7 @@ class _ConversationMemoryView:
             occurred_at=occurred_at,
             score=float(record.score or 0.0),
             provenance=provenance,
-            metadata={},
+            metadata=metadata,
         )
 
 

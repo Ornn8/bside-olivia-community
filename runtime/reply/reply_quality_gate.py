@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -46,6 +46,17 @@ class RewriterPort(Protocol):
     ) -> str: ...
 
 
+def _stable_codes(*groups: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for group in groups:
+        for code in group:
+            if code not in seen:
+                seen.add(code)
+                ordered.append(code)
+    return tuple(ordered)
+
+
 def run_reply_quality_gate(
     candidate: str,
     context: ReplyContext,
@@ -55,21 +66,46 @@ def run_reply_quality_gate(
     generation_messages: Sequence[Mapping[str, Any]] = (),
     intimacy_claims: tuple[IntimacyClaim, ...] = (),
 ) -> QualityGateResult:
-    deterministic = scan_reply(
-        candidate,
-        context,
-        intimacy_claims=intimacy_claims,
-    )
     review = _review_candidate(
         reviewer,
         candidate,
         context,
         generation_messages,
     )
+    if intimacy_claims and review.status is ReviewStatus.COMPLETED:
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            candidate,
+            (),
+            deterministic_checks=0,
+            reviewer_calls=1,
+            rewrite_calls=0,
+            error_code="INTIMACY_CLAIM_SOURCE_CONFLICT",
+        )
+    reviewed_context = (
+        replace(context, intimacy_request=review.intimacy_request)
+        if review.status is ReviewStatus.COMPLETED
+        else context
+    )
+    effective_intimacy_claims = (
+        intimacy_claims
+        if intimacy_claims
+        else (
+            review.intimacy_claims or ()
+            if review.status is ReviewStatus.COMPLETED
+            else ()
+        )
+    )
+    deterministic = scan_reply(
+        candidate,
+        reviewed_context,
+        intimacy_claims=effective_intimacy_claims,
+    )
     deterministic_codes = tuple(
         item.code.value for item in deterministic.violations
     )
     review_codes = tuple(item.code for item in review.violations)
+    initial_codes = _stable_codes(deterministic_codes, review_codes)
     if (
         review.verdict is ReviewVerdict.UNAVAILABLE
         and review.status is not ReviewStatus.DISABLED
@@ -105,7 +141,7 @@ def run_reply_quality_gate(
                 else QualityGateStatus.ACCEPTED
             ),
             candidate,
-            deterministic_codes + review_codes,
+            initial_codes,
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=0,
@@ -114,15 +150,15 @@ def run_reply_quality_gate(
         rewritten = _rewrite_candidate(
             rewriter,
             candidate,
-            context,
-            deterministic_codes + review_codes,
+            reviewed_context,
+            initial_codes,
             generation_messages,
         )
     except Exception:
         return QualityGateResult(
             QualityGateStatus.BLOCKED,
             candidate,
-            deterministic_codes + review_codes,
+            initial_codes,
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=1,
@@ -132,35 +168,76 @@ def run_reply_quality_gate(
         return QualityGateResult(
             QualityGateStatus.BLOCKED,
             candidate,
-            deterministic_codes + review_codes,
+            initial_codes,
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=1,
             error_code="REWRITE_FAILED",
         )
-    if intimacy_claims:
-        # Intimacy spans are bound to the original candidate. PR-4 will
-        # supply reviewer-generated claims for rewritten text; until then,
-        # accepting the rewrite without fresh evidence would fail open.
+    if (
+        effective_intimacy_claims
+        and review.status is not ReviewStatus.COMPLETED
+    ):
+        # Explicit claims are bound to the original candidate. A disabled or
+        # unavailable reviewer cannot produce fresh evidence for rewritten
+        # text, so accepting here would fail open.
         return QualityGateResult(
             QualityGateStatus.BLOCKED,
             rewritten,
-            deterministic_codes + review_codes,
+            initial_codes,
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=1,
             error_code="FRESH_INTIMACY_CLAIMS_REQUIRED",
         )
-    final_deterministic = scan_reply(rewritten, context)
     final_review = _review_candidate(
         reviewer,
         rewritten,
-        context,
+        reviewed_context,
         generation_messages,
     )
-    final_codes = tuple(
-        item.code.value for item in final_deterministic.violations
-    ) + tuple(item.code for item in final_review.violations)
+    if (
+        final_review.status is ReviewStatus.COMPLETED
+        and final_review.intimacy_request
+        is not reviewed_context.intimacy_request
+    ):
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            rewritten,
+            initial_codes,
+            deterministic_checks=1,
+            reviewer_calls=2,
+            rewrite_calls=1,
+            error_code="INTIMACY_REQUEST_INCONSISTENT",
+        )
+    if (
+        effective_intimacy_claims
+        and final_review.status is not ReviewStatus.COMPLETED
+    ):
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            rewritten,
+            initial_codes,
+            deterministic_checks=1,
+            reviewer_calls=2,
+            rewrite_calls=1,
+            error_code="FRESH_INTIMACY_CLAIMS_REQUIRED",
+        )
+    final_deterministic = scan_reply(
+        rewritten,
+        reviewed_context,
+        intimacy_claims=(
+            final_review.intimacy_claims or ()
+            if final_review.status is ReviewStatus.COMPLETED
+            else ()
+        ),
+    )
+    final_codes = _stable_codes(
+        tuple(
+            item.code.value for item in final_deterministic.violations
+        ),
+        tuple(item.code for item in final_review.violations),
+    )
     if (
         not final_deterministic.passed
         or final_review.verdict is ReviewVerdict.BLOCK

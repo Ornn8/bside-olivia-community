@@ -11,7 +11,12 @@ from typing import Mapping, Protocol
 
 from jsonschema import Draft202012Validator
 
-from runtime.reply.reply_context import ReplyContext
+from runtime.reply.reply_context import (
+    IntimacyRequest,
+    IntimacyTier,
+    ReplyContext,
+)
+from runtime.reply.reply_policy import IntimacyClaim
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "contracts" / "reply_review.schema.json"
@@ -87,7 +92,27 @@ class ReviewResult:
     verdict: ReviewVerdict
     violations: tuple[ReviewerViolation, ...]
     scores: ReviewerScores
+    intimacy_request: IntimacyRequest | None
+    intimacy_claims: tuple[IntimacyClaim, ...] | None
     error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        completed = self.status is ReviewStatus.COMPLETED
+        if completed != isinstance(self.intimacy_request, IntimacyRequest):
+            raise ValueError("completed review requires intimacy request")
+        if completed != isinstance(self.intimacy_claims, tuple):
+            raise ValueError("completed review requires intimacy claims")
+        if self.intimacy_claims is not None:
+            if any(
+                not isinstance(claim, IntimacyClaim)
+                for claim in self.intimacy_claims
+            ):
+                raise ValueError("intimacy claims must be typed")
+            claim_ids = tuple(
+                claim.claim_id for claim in self.intimacy_claims
+            )
+            if len(set(claim_ids)) != len(claim_ids):
+                raise ValueError("intimacy claim ids must be unique")
 
 
 @dataclass(frozen=True)
@@ -182,6 +207,17 @@ class JsonReviewerAdapter:
                     context.private_behavior.known_continuations
                 )
             ],
+            "relationship_context": {
+                "relationship_stage": (
+                    context.private_behavior.relationship_stage.value
+                ),
+                "intimacy_ceiling": (
+                    context.private_behavior.intimacy_ceiling.value
+                ),
+                "granted_intimacy": (
+                    context.private_behavior.granted_intimacy.value
+                ),
+            },
             "references": [
                 reference.to_dict()
                 for reference in references
@@ -228,6 +264,24 @@ class JsonReviewerAdapter:
                     ReviewStatus.INVALID_RESPONSE,
                     "REVIEWER_RESPONSE_INVALID",
                 )
+            intimacy_claims = tuple(
+                IntimacyClaim(
+                    claim_id=str(item["claim_id"]),
+                    tier=IntimacyTier(str(item["tier"])),
+                    start=int(item["start"]),
+                    end=int(item["end"]),
+                )
+                for item in response["intimacy_claims"]
+            )
+            if (
+                len({claim.claim_id for claim in intimacy_claims})
+                != len(intimacy_claims)
+                or any(claim.end > len(candidate) for claim in intimacy_claims)
+            ):
+                return _failure(
+                    ReviewStatus.INVALID_RESPONSE,
+                    "REVIEWER_RESPONSE_INVALID",
+                )
             return ReviewResult(
                 status=ReviewStatus(
                     str(response["status"])
@@ -242,6 +296,10 @@ class JsonReviewerAdapter:
                     int(scores["relationship_boundary"]),
                     int(scores["mode_compliance"]),
                 ),
+                intimacy_request=IntimacyRequest(
+                    str(response["intimacy_request"])
+                ),
+                intimacy_claims=intimacy_claims,
             )
         except (KeyError, TypeError, ValueError):
             return _failure(
@@ -259,5 +317,7 @@ def _failure(
         verdict=ReviewVerdict.UNAVAILABLE,
         violations=(),
         scores=ReviewerScores(0, 0, 0, 0),
+        intimacy_request=None,
+        intimacy_claims=None,
         error_code=error_code,
     )

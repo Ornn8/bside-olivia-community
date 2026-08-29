@@ -7,7 +7,7 @@
 - LLM 是唯一允许通过 API 调用的组件；HTTP 适配器只支持 OpenAI-compatible Chat Completions 与 Responses 形状。
 - `mock` 是完全离线、确定性的文本 provider；`none` 是默认状态。未配置 API 时不会因为启动 core 失败，也不会偷偷访问默认地址。
 - HTTP 表面继续使用 B02 `b02.v1` envelope、`/toy/*` 路径和真正的 `501` 未实现边界。当前 HTTP 没有宣称 SSE、WebSocket 或 Live；流式事件只在内部异步窄接口中提供。
-- `linli_character/system_prompt.md` 只作为只读 DRAFT 输入。健康信息和每次编排状态都标记 `DRAFT`，不能解释为已完成公开资料人格蒸馏。
+- 默认运行使用 `linli_character/persona_release_v2.json`，并按实际回复模式装配 Persona 2.0。`linli_character/system_prompt.md` 仅在显式设置 `persona_v2_enabled=false` 时作为 legacy DRAFT 输入。
 - B03 只通过 `memory_port.MemoryPort` 的可选窄端口读取安全分区；没有 memory 时继续使用普通文本 prompt。B04 的 `legacy_letters` 不作为当前对话记忆；新信件成功后只有在 opt-in profile 启用时才写入 `conversation_memory` 摘要/事实。B02 current 信件与 legacy 视图保持隔离。
 
 ## 安装、启用、停用
@@ -45,7 +45,8 @@ rtk python tools/healthcheck.py --profile llm
 | `stream` | 内部事件编排是否消费 provider 流；HTTP `/toy` 仍是非 SSE 响应 |
 | `max_input_chars` / `max_output_chars` | 输入消息总长度和输出长度上限 |
 | `fallback_provider` | 显式降级登记；默认 `none`，不会无提示生成占位回信 |
-| persona_file / feature_enabled | 只读 DRAFT 文件和总开关 |
+| persona_v2_file / persona_v2_enabled | 默认 Persona 2.0 release 文件与开关；关闭该开关才进入 legacy 路径 |
+| persona_file / feature_enabled | 可选 legacy DRAFT 文件和总开关；默认配置不再引用该文件 |
 | persona_config / persona_evidence_file | 候选结构化配置与短 provenance/evidence 索引；候选包默认独立关闭，不会替换 DRAFT |
 
 代码可通过 `llm_gateway.register_provider("name", factory)` 注册 provider。factory 接收 `GatewayConfig`，返回实现 `Gateway.complete()` 与可选 `Gateway.stream()` 的对象；异常只能使用 `GatewayError` 的稳定 code/retryable 分类，不能把响应 body、header、key 或 prompt 放入异常文本。

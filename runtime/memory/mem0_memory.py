@@ -544,7 +544,13 @@ def _row_to_record(
     safe_metadata = {
         key: value
         for key, value in metadata.items()
-        if key in {"category", "canonical", "manual", "actor"}
+        if key in {
+            "category",
+            "canonical",
+            "manual",
+            "actor",
+            _HISTORY_ACTOR_KEY,
+        }
         and (value is None or isinstance(value, (bool, int, float, str)))
     }
     try:

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from conversation_memory_port import (
@@ -216,7 +217,14 @@ def test_release_defaults_enable_a_ready_public_persona() -> None:
 
     assert config.persona_v2_enabled is True
     assert config.persona_v2_file == "linli_character/persona_release_v2.json"
+    assert config.persona_file == ""
     loaded = load_persona(ROOT / config.persona_v2_file)
     assert loaded.snapshot.status == "READY"
     assert loaded.snapshot.declarations
     assert all(row.allowed_public_release for row in loaded.snapshot.declarations)
+
+
+def test_shipped_config_examples_do_not_point_to_the_draft_prompt() -> None:
+    for name in ("llm_config.example.json", "memory_config.example.json"):
+        payload = json.loads((ROOT / "contracts" / name).read_text(encoding="utf-8"))
+        assert "linli_character/system_prompt.md" not in json.dumps(payload)

@@ -10,7 +10,7 @@
         "repository": "Ornn8/bside-olivia-local",
         "path": "linli_character/persona_v2.json",
         "revision": "a91dc0309d2bbe0a004ba4a84f55fa93713b15ce",
-        "sha256": "880ddc5fe31f31ce0f366000c94eeceb92a578cead53ad248173b98581a602e2"
+        "sha256": "0e1c1c83dd6e01a68bf7811a977e0fcd98026d9389db2eba71f91045e1fcc73e"
       },
       "publisher": "bside-olivia-local maintainers",
       "published_at": "2026-08-22",
@@ -38,7 +38,10 @@
         "constitution.no_private_claims",
         "constitution.no_hidden_fields",
         "constitution.no_long_source_copy",
-        "constitution.respectful_relationship",
+        "constitution.no_product_promise",
+        "constitution.relationship_may_commit",
+        "constitution.intimacy_on_request",
+        "constitution.intimacy_not_reversible",
         "constitution.no_professional_claims",
         "constitution.no_real_person_claim",
         "constitution.crisis_safety",
@@ -47,7 +50,7 @@
         "constitution.concise_concrete",
         "constitution.language_match"
       ],
-      "exclusion_reason": ""
+      "exclusion_reason": "Migration trace: constitution.respectful_relationship was split into separate product-promise, confirmed-relationship, request-gated intimacy, and append-only intimacy declarations."
     },
     {
       "source_id": "S001",
@@ -112,6 +115,13 @@
     }
   ],
   "evidence": [
+    {
+      "evidence_id": "P02.CONSTITUTION.intimacy-migration",
+      "source_id": "P02.CONSTITUTION",
+      "kind": "declaration_migration",
+      "summary": "The configurable Persona v2 asset replaces constitution.respectful_relationship with four narrower declarations while preserving the existing real-person, crisis, hidden-field, and other safety rules.",
+      "reference": "WORKORDER-intimacy-model PR-4 section 4.1"
+    },
     {
       "evidence_id": "S002.summary",
       "source_id": "S002",

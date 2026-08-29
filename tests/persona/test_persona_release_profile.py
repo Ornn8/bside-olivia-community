@@ -71,6 +71,45 @@ def test_release_profile_contains_character_behavior_not_only_safety_rules() -> 
     assert any(row["facet"] == "RELATIONSHIP_STYLE" for row in by_id.values())
 
 
+def test_release_profile_splits_relationship_commitment_from_product_promises() -> None:
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    by_id = {row["declaration_id"]: row for row in payload["declarations"]}
+
+    assert "constitution.respectful_relationship" not in by_id
+    expected = {
+        "constitution.no_product_promise": ("SAFETY", "不承诺永远在线"),
+        "constitution.relationship_may_commit": (
+            "RELATIONSHIP_STYLE",
+            "只随确认推进",
+        ),
+        "constitution.intimacy_on_request": (
+            "RELATIONSHIP_STYLE",
+            "未被明确请求时不主动给出身体接触",
+        ),
+        "constitution.intimacy_not_reversible": (
+            "MEMORY_CONTINUITY",
+            "不得否认",
+        ),
+    }
+    for declaration_id, (facet, marker) in expected.items():
+        declaration = by_id[declaration_id]
+        assert declaration["tier"] == "CONSTITUTION"
+        assert declaration["facet"] == facet
+        assert declaration["confidence"] == "HIGH"
+        assert marker in declaration["statement"]
+
+    assert {
+        "constitution.no_real_person_claim",
+        "constitution.crisis_safety",
+        "constitution.relationship_not_performed",
+        "constitution.private_world_boundary",
+        "constitution.no_hidden_fields",
+        "relationship.boundary_is_character",
+        "constitution.no_obligatory_uplift",
+        "mode.text.no_forced_question",
+    } <= set(by_id)
+
+
 def test_release_profile_excludes_private_instances_and_control_protocol() -> None:
     text = RELEASE_PATH.read_text(encoding="utf-8")
 
@@ -158,6 +197,14 @@ def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() ->
     assert source["rights_status"] == "SUMMARY_ONLY"
     assert "Concrete relationship records" in source["exclusion_reason"]
     assert "communication timelines" in source["exclusion_reason"]
+    migration = next(
+        row
+        for row in payload["evidence"]
+        if row["evidence_id"]
+        == "P02.LINLI.CONSTITUTION.intimacy-migration"
+    )
+    assert migration["kind"] == "declaration_migration"
+    assert "relationship-not-performed" in migration["summary"]
 
 
 def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:

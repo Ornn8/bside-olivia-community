@@ -1,18 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "p02.reply-review.v1",
+  "$id": "p02.reply-review.v2",
   "title": "P02 reply reviewer response",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "status", "verdict", "violations", "scores"],
+  "required": ["schema_version", "status", "verdict", "violations", "intimacy_request", "intimacy_claims", "scores"],
   "properties": {
-    "schema_version": {"const": "p02.reply-review.v1"},
+    "schema_version": {"const": "p02.reply-review.v2"},
     "status": {"const": "completed"},
     "verdict": {"enum": ["pass", "rewrite", "block"]},
     "violations": {
       "type": "array",
       "maxItems": 32,
       "items": {"$ref": "#/$defs/violation"}
+    },
+    "intimacy_request": {"enum": ["none", "requested"]},
+    "intimacy_claims": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/intimacy_claim"}
     },
     "scores": {"$ref": "#/$defs/scores"}
   },
@@ -33,6 +39,22 @@
             "end": {"type": "integer", "minimum": 1}
           }
         }
+      }
+    },
+    "intimacy_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "tier", "start", "end"],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+        },
+        "tier": {
+          "enum": ["none", "light_contact", "close_contact"]
+        },
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1}
       }
     },
     "scores": {
