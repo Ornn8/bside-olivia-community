@@ -1052,14 +1052,26 @@ async def _music_voice_plan_for_letter(
     if persisted_request_id is None:
         letter["voice_direction_request_id"] = request_id
         _persist_media_state()
-    plan = await asyncio.wait_for(
-        direct_music_voice_performance(
-            reply_text,
-            letters_adapter.gateway,
-            request_id=request_id,
-        ),
-        timeout=LLM_TIMEOUT_SECONDS,
-    )
+    try:
+        plan = await asyncio.wait_for(
+            direct_music_voice_performance(
+                reply_text,
+                letters_adapter.gateway,
+                request_id=request_id,
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except VoiceDirectionError as exc:
+        if str(exc) != "VOICE_DIRECTION_INVALID":
+            raise
+        plan = await asyncio.wait_for(
+            direct_music_voice_performance(
+                reply_text,
+                letters_adapter.gateway,
+                request_id=f"{request_id}:repair",
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
     if plan.reply_text != reply_text:
         raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
     letter["voice_performance_plan"] = plan.to_dict()
