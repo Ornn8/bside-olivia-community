@@ -872,12 +872,19 @@ class LiveSession:
             snapshot = self._persona_provider.snapshot()
             if isinstance(snapshot, PersonaV2Snapshot):
                 history = tuple(
-                    UntrustedFragment(
-                        f"turn-{index}",
-                        f"user: {previous_user}\nassistant: {previous_reply}",
-                    )
+                    fragment
                     for index, (previous_user, previous_reply) in enumerate(
                         self._history[-self.config.max_history_turns :]
+                    )
+                    for fragment in (
+                        UntrustedFragment(
+                            f"turn-{index}-user",
+                            f"user_message: {previous_user}",
+                        ),
+                        UntrustedFragment(
+                            f"turn-{index}-assistant",
+                            f"character_reply: {previous_reply}",
+                        ),
                     )
                 )
                 evidence = (

@@ -75,6 +75,9 @@ def test_live_default_loads_ready_persona_v2_for_future_im(monkeypatch) -> None:
         assert '"mode":"future_im"' in messages[0]["content"]
         assert "Persona status is DRAFT" not in messages[0]["content"]
     assert gateways[0].calls[0][0]["content"] != gateways[0].calls[1][0]["content"]
+    second_system = gateways[0].calls[1][0]["content"]
+    assert "user_message: synthetic first message" in second_system
+    assert "character_reply: synthetic live reply" in second_system
     assert gateways[0].calls[1][1]["content"] == "synthetic current message"
 
 

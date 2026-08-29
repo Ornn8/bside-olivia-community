@@ -122,6 +122,19 @@ def test_valid_reviewer_json_becomes_a_typed_result_from_limited_context() -> No
     assert "trust" not in repr(request)
 
 
+def test_character_refusal_sample_produces_no_violation() -> None:
+    adapter = JsonReviewerAdapter(_Transport(_valid_response()), ReviewerConfig("reviewer-small"))
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+    result = adapter.review(
+        "今天不想见面，我想自己休息。",
+        context,
+    )
+    assert (result.status, result.verdict, result.violations) == (ReviewStatus.COMPLETED, ReviewVerdict.PASS, ())
+
+
 def test_public_schema_rejects_unknown_fields_and_out_of_range_scores() -> None:
     schema = json.loads(
         (ROOT / "contracts" / "reply_review.schema.json").read_text(encoding="utf-8")

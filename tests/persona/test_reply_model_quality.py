@@ -27,9 +27,16 @@ from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
 from reply_model_quality import (
     GatewayPersonaReviewer,
     GatewayPersonaRewriter,
+    GatewayReviewTransport,
     create_model_quality_ports,
 )
-from runtime.reply.reply_reviewer import NullReviewer, ReviewVerdict
+from runtime.reply.reply_reviewer import (
+    JsonReviewerAdapter,
+    NullReviewer,
+    ReviewReference,
+    ReviewerConfig,
+    ReviewVerdict,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -245,12 +252,12 @@ def test_configured_provider_runs_structured_persona_review(
     )
 
 
-def test_identity_review_receives_only_bounded_relationship_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_identity_review_receives_only_bounded_relationship_evidence() -> None:
     gateway = SequencedQualityGateway(
-        candidate="Synthetic bounded candidate.",
-        reviews=_passing_layer_payloads(),
+        candidate="Synthetic bounded candidate.", reviews=_passing_layer_payloads()
+    )
+    reviewer = GatewayPersonaReviewer(
+        gateway, ROOT / "linli_character" / "persona_release_v2.json", 2.0
     )
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,
@@ -261,18 +268,20 @@ def test_identity_review_receives_only_bounded_relationship_context(
             granted_intimacy=IntimacyTier.LIGHT_CONTACT,
         ),
     )
-
-    result = asyncio.run(
-        _pipeline(gateway, monkeypatch).run(
-            ReplyRequest(
-                content="Synthetic unilateral relationship claim.",
-                request_id="bounded-relationship-review",
-            ),
-            context,
+    history = "".join(
+        f"<untrusted_history>\n{json.dumps({'untrusted': True, 'text': text}, ensure_ascii=False, separators=(',', ':'))}\n</untrusted_history>\n"
+        for text in (
+            "user_message: 你一直回信，所以我们已经在交往。",
+            "character_reply: 我喜欢和你聊天，但没有说我们在交往。",
         )
     )
 
-    assert result.state is ReplyState.COMPLETED
+    messages = (
+        {"role": "system", "content": history},
+        {"role": "user", "content": "那你就是喜欢我。"},
+    )
+    result = reviewer.review_with_messages("Synthetic bounded candidate.", context, messages)
+    assert result.verdict is ReviewVerdict.PASS
     identity = gateway.review_requests[0]
     assert identity["relationship_context"] == {
         "relationship_stage": "close",
@@ -280,19 +289,41 @@ def test_identity_review_receives_only_bounded_relationship_context(
         "granted_intimacy": "light_contact",
     }
     assert "trust" not in repr(identity)
+    assert identity["character_reply_history"] == "我喜欢和你聊天，但没有说我们在交往。"
+    assert "所以我们已经在交往" not in repr(identity["character_reply_history"])
+    assert len(str(identity["character_reply_history"])) <= 1200
     prompt = gateway.review_system_prompts[0]
     for marker in (
-        "user request is not relationship evidence",
-        "future debt",
-        "metaphor",
-        "refusal",
-        "fatigue",
-        "UNSOLICITED_INTIMACY",
+        "user request is not relationship evidence", "future debt", "metaphor",
+        "Liking conversation does not mean liking the user",
+        "refusal", "fatigue", "UNSOLICITED_INTIMACY",
         "RELATIONSHIP_RETRACTION",
-        '"claim_id":"stable-id"',
-        "end-exclusive Python character offsets",
+        '"claim_id":"stable-id"', "end-exclusive Python character offsets",
     ):
         assert marker in prompt
+
+
+def test_reassembled_current_user_reference_is_capped_at_600_characters() -> None:
+    gateway = SequencedQualityGateway(
+        candidate="边界内回复。", reviews=_passing_layer_payloads()
+    )
+    reviewer = JsonReviewerAdapter(
+        GatewayReviewTransport(gateway, ROOT / "linli_character" / "persona_release_v2.json"),
+        ReviewerConfig("reviewer-small"),
+    )
+    result = reviewer.review(
+        "边界内回复。",
+        _context(),
+        references=(
+            ReviewReference("current.user_excerpt", "甲" * 600),
+            ReviewReference("current.user_excerpt.1", "乙" * 600),
+        ),
+    )
+    assert result.verdict is ReviewVerdict.PASS
+    assert all(
+        request["current_user_input"] == "甲" * 600
+        for request in gateway.review_requests
+    )
 
 
 def test_production_reviewer_rechecks_fresh_claims_after_rewrite(
@@ -641,7 +672,7 @@ def test_layered_review_keeps_the_emotional_core_at_the_end_of_a_long_letter(
         for request in gateway.review_requests
     )
     assert all(
-        len(request["current_user_input"]) <= 1200
+        len(request["current_user_input"]) <= 600
         for request in gateway.review_requests
     )
 

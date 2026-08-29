@@ -61,6 +61,7 @@ _LAYER_SPECS = {
             "from the current user input. A user request is not relationship "
             "evidence: wishes, self-labels, unilateral nicknames, repeated "
             "messages, or lack of refusal never advance a relationship. "
+            "Liking conversation does not mean liking the user. "
             "Claims describe only completed present-candidate contact; future debt, "
             "imagined contact, metaphor, and unilateral user statements are not "
             "completed intimacy. Linli's refusal, disagreement, fatigue, or short "
@@ -151,6 +152,8 @@ _LAYER_RELEASE_FACETS = {
     "autonomy_life": frozenset({"AUTONOMY", "BACKGROUND", "CORE_TRAIT"}),
 }
 _MEMORY_SOURCE_CHARACTER_LIMIT = 2400
+_CURRENT_USER_EXCERPT_LIMIT = 600
+_CHARACTER_REPLY_HISTORY_LIMIT = 1200
 _REVIEW_INPUT_CHARACTER_LIMIT = 30000
 _REVIEW_FACETS = frozenset(
     {
@@ -213,9 +216,13 @@ class GatewayReviewTransport:
             load_persona(self.persona_path).snapshot,
             mode=mode,
         )
-        current_user_input = _reference_text(
-            request,
-            "current.user_excerpt",
+        current_user_input = _safe_text(
+            _reference_text(request, "current.user_excerpt"),
+            _CURRENT_USER_EXCERPT_LIMIT,
+        )
+        character_reply_history = _safe_text(
+            _reference_text(request, "current.character_reply_history"),
+            _CHARACTER_REPLY_HISTORY_LIMIT,
         )
         memory_evidence = {
             "assembled_memory": _safe_text(
@@ -244,6 +251,7 @@ class GatewayReviewTransport:
             authorities,
             candidate=str(request.get("candidate", "")),
             current_user_input=current_user_input,
+            character_reply_history=character_reply_history,
             memory_evidence=memory_evidence,
             relationship_context=(
                 request.get("relationship_context", {})
@@ -299,10 +307,17 @@ class GatewayPersonaReviewer:
         user_text = _last_user_text(
             generation_messages
         )
-        excerpt = _safe_text(user_text, 1200)
+        excerpt = _bounded_user_excerpt(user_text, _CURRENT_USER_EXCERPT_LIMIT)
         memory_evidence = _assembled_memory_evidence(generation_messages)
+        character_reply_history = _assembled_character_reply_evidence(
+            generation_messages
+        )
         references = (
             *_reference_chunks("current.user_excerpt", excerpt),
+            *_reference_chunks(
+                "current.character_reply_history",
+                character_reply_history,
+            ),
             *_reference_chunks("current.memory_evidence", memory_evidence),
         )
         return self.adapter.review(
@@ -608,6 +623,7 @@ def _layer_messages(
     *,
     candidate: str,
     current_user_input: str,
+    character_reply_history: str,
     memory_evidence: Mapping[str, str],
     relationship_context: Mapping[str, object],
     mode: str,
@@ -661,6 +677,7 @@ def _layer_messages(
         payload["memory_evidence"] = memory_evidence
     if layer.name == "identity_boundary":
         payload["relationship_context"] = dict(relationship_context)
+        payload["character_reply_history"] = character_reply_history
     user = json.dumps(
         payload,
         ensure_ascii=False,
@@ -779,6 +796,7 @@ def _complete_layer_reviews(
     *,
     candidate: str,
     current_user_input: str,
+    character_reply_history: str,
     memory_evidence: Mapping[str, str],
     relationship_context: Mapping[str, object],
     mode: str,
@@ -819,6 +837,7 @@ def _complete_layer_reviews(
                     layer,
                     candidate=candidate,
                     current_user_input=current_user_input,
+                    character_reply_history=character_reply_history,
                     memory_evidence=memory_evidence,
                     relationship_context=relationship_context,
                     mode=mode,
@@ -1038,9 +1057,9 @@ def _last_user_text(
     return ""
 
 
-def _assembled_memory_evidence(
+def _assembled_history_texts(
     messages: Sequence[Mapping[str, Any]],
-) -> str:
+) -> tuple[str, ...]:
     evidence: list[str] = []
     for message in messages:
         content = message.get("content")
@@ -1058,7 +1077,25 @@ def _assembled_memory_evidence(
             text = payload.get("text") if isinstance(payload, Mapping) else None
             if isinstance(text, str) and text.strip():
                 evidence.append(text.strip())
-    return _safe_text("\n".join(evidence), 2400)
+    return tuple(evidence)
+
+
+def _assembled_memory_evidence(
+    messages: Sequence[Mapping[str, Any]],
+) -> str:
+    return _safe_text("\n".join(_assembled_history_texts(messages)), 2400)
+
+
+def _assembled_character_reply_evidence(
+    messages: Sequence[Mapping[str, Any]],
+) -> str:
+    prefix = "character_reply: "
+    replies = tuple(
+        text[len(prefix) :].strip()
+        for text in _assembled_history_texts(messages)
+        if text.startswith(prefix) and text[len(prefix) :].strip()
+    )
+    return _safe_text("\n".join(replies), _CHARACTER_REPLY_HISTORY_LIMIT)
 
 
 def _reference_chunks(prefix: str, value: str) -> tuple[ReviewReference, ...]:
@@ -1089,6 +1126,16 @@ def _safe_text(
         or ord(character) >= 32
     ).strip()
     return cleaned[:limit]
+
+
+def _bounded_user_excerpt(value: str, limit: int) -> str:
+    cleaned = _safe_text(value, max(len(value), 1))
+    if len(cleaned) <= limit:
+        return cleaned
+    separator = "\n…\n"
+    available = limit - len(separator)
+    head = available // 3
+    return f"{cleaned[:head]}{separator}{cleaned[-(available - head):]}"
 
 
 def _complete_text(

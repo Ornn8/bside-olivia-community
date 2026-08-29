@@ -29,6 +29,8 @@ The model reviewer receives only:
 - the public Persona profile and a bounded set of current-mode/personality
   rules;
 - at most 600 characters of the current user message as an identified excerpt.
+- for the identity/relationship layer only, at most 1,200 characters from Linli's
+  prior replies in assembled turn history; prior user messages are excluded.
 
 It does not receive PrivateWorld numeric values, raw home-access records,
 pending/control-only continuation facts, databases, filesystem paths, provider
@@ -43,7 +45,8 @@ self-labels, unilateral nicknames, repeated messages, or lack of refusal do
 not advance a relationship. Future debt, imagined contact, metaphor, and a
 user's unilateral claim are not completed intimacy. Linli's refusal,
 disagreement, fatigue, or short reply is autonomy rather than a violation
-unless it contradicts confirmed history.
+unless it contradicts confirmed history. Liking the conversation is not
+evidence that Linli likes the user.
 
 Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
