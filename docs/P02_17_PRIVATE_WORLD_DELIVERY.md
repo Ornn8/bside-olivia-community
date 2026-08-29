@@ -4,6 +4,12 @@ The only relationship delivery point is a quality-gate accepted canonical reply
 persisted with `reply_revision`. Its stable `delivery_id` is
 `letter_id:reply_revision`; the SQLite ledger applies it once.
 
+`DeliveryEvent` accepts only `CANONICAL_REPLY_DELIVERED` and has no stage,
+intimacy, nickname, home-access, or continuation mutation payload. Confirmed
+relationship and intimacy changes must use a typed command through
+`PrivateWorldCommandService`; canonical delivery cannot act as an authorization
+adapter.
+
 The letter is first stored with `private_world_status=PENDING`, then committed.
 Startup recovery retries pending records without changing or deleting canonical
 text. An unavailable backend leaves the reply intact and records only a stable
