@@ -8,6 +8,7 @@ import pytest
 
 from private_world_commands import (
     ConfirmRelationshipStage,
+    GrantIntimacy,
     GrantNickname,
     PrivateWorldActor,
     PrivateWorldCommandSource,
@@ -28,7 +29,7 @@ from private_world_service import (
     PrivateWorldCommandService,
     PrivateWorldCommandServiceError,
 )
-from runtime.reply.reply_context import RelationshipStage
+from runtime.reply.reply_context import IntimacyTier, RelationshipStage
 
 
 NOW = datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc)
@@ -200,6 +201,79 @@ def test_noop_is_audited_without_incrementing_snapshot() -> None:
     assert noop.snapshot_version == 2
     assert len(ledger.items) == 2
     assert ledger.items[1].payload["applied"] is False
+
+
+def test_intimacy_grant_uses_authorized_atomic_audit_without_values() -> None:
+    ledger = FakeLedger()
+    ledger.current = PrivateWorldSnapshot(relationship_stage="close")
+    service = PrivateWorldCommandService(ledger)
+    command = GrantIntimacy(
+        **_common(1),
+        grant_id="intimacy.synthetic-service",
+        tier=IntimacyTier.LIGHT_CONTACT,
+        statement="A synthetic private consent statement.",
+    )
+
+    applied = service.execute(command)
+    duplicate = service.execute(command)
+    repeated_grant = service.execute(
+        GrantIntimacy(
+            **_common(2),
+            grant_id=command.grant_id,
+            tier=command.tier,
+            statement=command.statement,
+        )
+    )
+
+    assert applied.status is CommandExecutionStatus.APPLIED
+    assert duplicate.status is CommandExecutionStatus.DUPLICATE
+    assert repeated_grant.status is CommandExecutionStatus.NOOP
+    assert repeated_grant.reason_code == "INTIMACY_ALREADY_GRANTED"
+    assert ledger.current.closeness == 2
+    assert ledger.current.growth_used == 2
+    assert len(ledger.items) == 2
+    audit = ledger.items[0].payload
+    assert audit["payload_fields"] == ["grant_id", "statement", "tier"]
+    serialized = repr(audit)
+    assert command.grant_id not in serialized
+    assert command.statement not in serialized
+    assert command.tier.value not in serialized
+
+
+@pytest.mark.parametrize(
+    ("actor", "source"),
+    [
+        (
+            PrivateWorldActor.SYSTEM_CANDIDATE,
+            PrivateWorldCommandSource.APPROVED_CANDIDATE,
+        ),
+        (
+            PrivateWorldActor.LOCAL_USER,
+            PrivateWorldCommandSource.APPROVED_CANDIDATE,
+        ),
+        (
+            PrivateWorldActor.MIGRATION,
+            PrivateWorldCommandSource.MIGRATION,
+        ),
+        (
+            PrivateWorldActor.MIGRATION,
+            PrivateWorldCommandSource.IMPORT,
+        ),
+    ],
+)
+def test_intimacy_grant_rejects_candidate_authority(
+    actor: PrivateWorldActor,
+    source: PrivateWorldCommandSource,
+) -> None:
+    command = GrantIntimacy(
+        **_common(actor=actor, source=source),
+        grant_id="intimacy.synthetic-forbidden",
+        tier=IntimacyTier.LIGHT_CONTACT,
+        statement="A synthetic private consent statement.",
+    )
+
+    with pytest.raises(PrivateWorldCommandServiceError):
+        PrivateWorldCommandService(FakeLedger()).execute(command)
 
 
 @pytest.mark.parametrize(

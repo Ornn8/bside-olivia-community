@@ -7,9 +7,11 @@ import pytest
 from private_world_commands import (
     ConfirmRelationshipStage,
     DeleteContinuationFact,
+    GrantIntimacy,
     GrantNickname,
     PrivateWorldActor,
     PrivateWorldCommandSource,
+    PrivateWorldCommandError,
     RecordBoundaryRespected,
     RecordConflict,
     RecordRepair,
@@ -29,6 +31,7 @@ from private_world_reducer import (
     reduce_private_world_command,
 )
 from runtime.reply.reply_context import RelationshipStage
+from runtime.reply.reply_context import IntimacyTier
 
 
 NOW = datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc)
@@ -44,6 +47,57 @@ def _common(sequence: int = 1) -> dict[str, object]:
         "reason": "synthetic confirmed change",
         "evidence_refs": (f"letter:synthetic-{sequence}",),
     }
+
+
+def test_intimacy_grant_command_is_typed_and_serializable() -> None:
+    command = GrantIntimacy(
+        **_common(),
+        grant_id="intimacy.synthetic-1",
+        tier=IntimacyTier.LIGHT_CONTACT,
+        statement="A synthetic consent statement.",
+    )
+
+    assert command.to_dict()["kind"] == "grant_intimacy"
+    assert command.to_dict()["payload"] == {
+        "grant_id": "intimacy.synthetic-1",
+        "tier": "light_contact",
+        "statement": "A synthetic consent statement.",
+    }
+
+    with pytest.raises(PrivateWorldCommandError):
+        GrantIntimacy(
+            **_common(2),
+            grant_id="intimacy.synthetic-none",
+            tier=IntimacyTier.NONE,
+            statement="A synthetic non-grant.",
+        )
+
+
+def test_intimacy_grant_command_is_idempotent_without_a_revoke_path() -> None:
+    import private_world_commands
+
+    command = GrantIntimacy(
+        **_common(),
+        grant_id="intimacy.synthetic-1",
+        tier=IntimacyTier.LIGHT_CONTACT,
+        statement="A synthetic consent statement.",
+    )
+    before = PrivateWorldSnapshot(
+        version=4,
+        relationship_stage="close",
+    )
+
+    added = reduce_private_world_command(before, command)
+    assert added.delta.reason_code == "INTIMACY_GRANTED"
+    assert added.snapshot.intimacy_grants[0].grant_id == command.grant_id
+    assert added.snapshot.closeness == 2
+    assert added.snapshot.growth_used == 2
+
+    duplicate = reduce_private_world_command(added.snapshot, command)
+    assert duplicate.snapshot == added.snapshot
+    assert duplicate.delta.applied is False
+    assert duplicate.delta.reason_code == "INTIMACY_ALREADY_GRANTED"
+    assert not hasattr(private_world_commands, "RevokeIntimacy")
 
 
 def test_relationship_commands_reuse_slow_bounded_reducer_policy() -> None:
@@ -70,7 +124,12 @@ def test_relationship_commands_reuse_slow_bounded_reducer_policy() -> None:
     assert boundary.delta.reason_code == "BOUNDARY_RESPECTED"
     assert tuple(
         change.field for change in boundary.delta.changes
-    ) == ("trust",)
+    ) == (
+        "trust",
+        "familiarity",
+        "growth_window_start",
+        "growth_used",
+    )
 
     conflict = reduce_private_world_command(
         boundary.snapshot,

@@ -12,13 +12,68 @@ from runtime.memory.private_world_delivery import (
     PrivateWorldDeliveryCommitter,
 )
 from private_world_ledger import LedgerEvent, SQLitePrivateWorldLedger
-from private_world_port import PrivateWorldSnapshot
+from private_world_port import IntimacyGrant, PrivateWorldSnapshot
 from private_world_reducer import ReducerEventKind
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
+from runtime.reply.reply_context import IntimacyTier
 
 
 NOW = datetime(2026, 8, 22, tzinfo=timezone.utc)
+
+
+def test_delivery_event_validates_intimacy_payload_without_stage_fields(
+    tmp_path: Path,
+) -> None:
+    grant = IntimacyGrant(
+        grant_id="intimacy.synthetic-delivery",
+        tier=IntimacyTier.LIGHT_CONTACT,
+        statement="A synthetic consent statement.",
+    )
+    delivery = DeliveryEvent(
+        delivery_id="letter-intimacy:1",
+        kind=ReducerEventKind.INTIMACY_GRANTED,
+        occurred_at=NOW,
+        semantic_key="intimacy.synthetic-delivery",
+        intimacy_grant=grant,
+    )
+
+    with pytest.raises(ValueError):
+        DeliveryEvent(
+            delivery_id="letter-intimacy-missing:1",
+            kind=ReducerEventKind.INTIMACY_GRANTED,
+            occurred_at=NOW,
+            semantic_key="intimacy.synthetic-missing",
+        )
+    with pytest.raises(ValueError):
+        DeliveryEvent(
+            delivery_id="letter-intimacy-stage:1",
+            kind=ReducerEventKind.INTIMACY_GRANTED,
+            occurred_at=NOW,
+            semantic_key="intimacy.synthetic-stage",
+            target_stage="close",
+            basis_event_ids=("basis.synthetic",),
+            intimacy_grant=grant,
+        )
+
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
+    ledger.apply_once(
+        LedgerEvent(
+            event_id="seed.intimacy-stage",
+            delivery_id="seed.intimacy-stage",
+            event_type="stage_confirmed",
+            payload={"synthetic": True},
+            occurred_at=NOW.isoformat(),
+        ),
+        PrivateWorldSnapshot(relationship_stage="close"),
+    )
+    committer = PrivateWorldDeliveryCommitter(ledger)
+    assert committer.commit(delivery) is DeliveryStatus.COMMITTED
+    assert committer.commit(delivery) is DeliveryStatus.DUPLICATE
+    reopened = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
+    assert reopened.snapshot().intimacy_grants == (grant,)
+    assert reopened.snapshot().closeness == 2
+    assert reopened.snapshot().growth_used == 2
 
 
 def test_delivery_commits_once_with_stable_delivery_id(tmp_path: Path) -> None:

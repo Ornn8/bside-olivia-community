@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 
 from private_world_commands import (
     ConfirmRelationshipStage,
+    GrantIntimacy,
     PrivateWorldActor,
     PrivateWorldCommand,
     PrivateWorldCommandKind,
@@ -164,6 +165,16 @@ class PrivateWorldCommandService:
 
     @staticmethod
     def _authorize(command: PrivateWorldCommand) -> None:
+        if isinstance(command, GrantIntimacy):
+            if (
+                command.actor is not PrivateWorldActor.LOCAL_USER
+                or command.source
+                is not PrivateWorldCommandSource.CONTROL_CENTER
+            ):
+                raise PrivateWorldCommandServiceError(
+                    "PRIVATE_WORLD_COMMAND_SOURCE_FORBIDDEN"
+                )
+            return
         if command.actor is PrivateWorldActor.SYSTEM_CANDIDATE:
             raise PrivateWorldCommandServiceError(
                 "PRIVATE_WORLD_COMMAND_APPROVAL_REQUIRED"
