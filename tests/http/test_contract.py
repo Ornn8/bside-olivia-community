@@ -682,6 +682,10 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
         "letter_id": "letter-restart-uncertain",
         "content": "synthetic uncertain provider input",
         "letter_status": "PROCESSING",
+        "reply_mode": "musical_video",
+        "media_status": "PENDING",
+        "media_error_code": "STALE_MEDIA_ERROR",
+        "media_retryable": True,
     })
     local_server.store.request_keys["restart-key"] = pending["letter_id"]
     local_server._persist_store_state()
@@ -712,10 +716,19 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     assert detail["data"]["reply_text"] == "synthetic recovered reply"
     assert interrupted["data"]["letter_status"] == "FAILED"
     assert interrupted["data"]["error_code"] == "LLM_INTERRUPTED"
+    assert interrupted["data"]["media_status"] == "NOT_REQUESTED"
+    assert interrupted["data"]["media_error_code"] is None
+    assert interrupted["data"]["media_retryable"] is False
     assert generated_contents == ["synthetic persisted input"]
     persisted_by_id = {item["letter_id"]: item for item in persisted["letters"]}
     assert persisted_by_id[pending["letter_id"]]["letter_status"] == "COMPLETED"
     assert persisted_by_id["letter-restart-uncertain"]["letter_status"] == "FAILED"
+    assert (
+        persisted_by_id["letter-restart-uncertain"]["media_status"]
+        == "NOT_REQUESTED"
+    )
+    assert "media_error_code" not in persisted_by_id["letter-restart-uncertain"]
+    assert persisted_by_id["letter-restart-uncertain"]["media_retryable"] is False
     assert persisted["request_keys"]["restart-key"] == pending["letter_id"]
 
 

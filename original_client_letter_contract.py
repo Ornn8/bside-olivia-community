@@ -283,6 +283,7 @@ def serialize_letter_detail(
                 "reply_video_url": media_url,
                 "media_status": letter.get("media_status", "NOT_REQUESTED"),
                 "media_error_code": letter.get("media_error_code"),
+                "media_retryable": bool(letter.get("media_retryable", False)),
                 "scope": scope,
                 "read_only": scope == "legacy",
             }

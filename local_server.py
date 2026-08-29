@@ -689,6 +689,17 @@ def _state_root() -> Path | None:
     return _local_data_root()
 
 
+def _mark_media_not_requested(letter: dict) -> None:
+    if _exact_reply_mode(letter.get("reply_mode")) not in {
+        ReplyMode.SPOKEN_VIDEO.value,
+        ReplyMode.MUSICAL_VIDEO.value,
+    }:
+        return
+    letter["media_status"] = "NOT_REQUESTED"
+    letter.pop("media_error_code", None)
+    letter["media_retryable"] = False
+
+
 def _load_store_state() -> None:
     root = _state_root()
     if root is None:
@@ -712,6 +723,7 @@ def _load_store_state() -> None:
                     if item.get("letter_status") == "PROCESSING":
                         item["letter_status"] = "FAILED"
                         item["error_code"] = "LLM_INTERRUPTED"
+                        _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
                         item["media_status"] = "QUEUED"
@@ -2896,6 +2908,7 @@ async def _run_reply_job(
         }:
             letter["letter_status"] = "FAILED"
             letter["error_code"] = "LLM_UNAVAILABLE"
+            _mark_media_not_requested(letter)
             _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
         return False
@@ -3196,9 +3209,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
     }:
-        letter["media_status"] = "UNAVAILABLE"
-        letter["media_error_code"] = "MEDIA_PROVIDER_UNAVAILABLE"
-        letter["media_retryable"] = True
+        letter["media_status"] = "PENDING"
+        letter.pop("media_error_code", None)
+        letter["media_retryable"] = False
     _schedule_text_reply_delay(letter, exact_mode)
     _persist_store_state()
 
@@ -3234,18 +3247,21 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_INTERRUPTED"
+        _mark_media_not_requested(letter)
         _persist_store_state()
         _safe_log("letter_cancelled")
         raise
     except asyncio.TimeoutError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_TIMEOUT"
+        _mark_media_not_requested(letter)
         _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_TIMEOUT")
         return False
     except (ValueError, RuntimeError):
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_UNAVAILABLE"
+        _mark_media_not_requested(letter)
         _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
         return False
@@ -3257,6 +3273,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         public_code, _retryable = _public_llm_error(result.error_code)
         letter["letter_status"] = "FAILED"
         letter["error_code"] = public_code
+        _mark_media_not_requested(letter)
         _persist_store_state()
         _safe_log("letter_failed", error_code=public_code)
         return False
@@ -3270,6 +3287,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     ):
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_REPLY_LENGTH_INVALID"
+        _mark_media_not_requested(letter)
         _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_REPLY_LENGTH_INVALID")
         return False

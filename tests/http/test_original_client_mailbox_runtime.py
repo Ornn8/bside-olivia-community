@@ -65,6 +65,8 @@ def _letters() -> list[dict[str, object]]:
             "reply_mode": "text_letter",
             "reply_not_before": 0.0,
             "media_status": "NOT_REQUESTED",
+            "error_code": "REPLY_QUALITY_BLOCKED",
+            "retryable": False,
             "is_read": 1,
             "created_at": 1_700_000_004,
         },
@@ -142,6 +144,8 @@ def _fallback_factory(letters: list[dict[str, object]]):
                     "data": {
                         "letter_id": letter_id,
                         "reply_text": value.get("reply_text", ""),
+                        "error_code": value.get("error_code"),
+                        "retryable": value.get("retryable", False),
                     },
                 },
                 headers=common_headers,
@@ -238,6 +242,17 @@ def test_original_collection_detail_keeps_text_and_only_exposes_completed_local_
             assert pending_data["replyType"] == 0
             assert pending_data["replyText"] == ""
             assert pending_data["replyVideoUrl"] == ""
+
+            failed = await client.get(
+                "/toy/letter/detail?letter_id=letter.failed"
+            )
+            failed_data = (await failed.json())["data"]
+            assert failed_data["letterStatus"] == 5
+            assert failed_data["error_code"] == "REPLY_QUALITY_BLOCKED"
+            assert failed_data["retryable"] is False
+            assert failed_data["media_status"] == "NOT_REQUESTED"
+            assert failed_data["media_error_code"] is None
+            assert failed_data["media_retryable"] is False
 
     asyncio.run(scenario())
 

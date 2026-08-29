@@ -581,6 +581,81 @@ def test_blocked_candidate_never_reaches_storage_or_media(
     assert letter["reply_text"] == ""
     assert letter["letter_status"] == "FAILED"
     assert letter["quality_status"] == "blocked"
+    assert letter["media_status"] == "NOT_REQUESTED"
+    assert letter.get("media_error_code") is None
     assert scheduled == []
     assert "review_prompt" not in letter
     assert "private_world" not in letter
+
+
+def test_video_reply_timeout_does_not_masquerade_as_a_media_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    class TimeoutPipeline:
+        async def run(self, request: object, context: ReplyContext) -> PipelineResult:
+            assert context.mode is ReplyMode.MUSICAL_VIDEO
+            raise asyncio.TimeoutError
+
+    letter = {
+        "letter_id": "letter-timeout",
+        "reply_text": "",
+        "letter_status": "PENDING",
+    }
+    monkeypatch.setattr(local_server.store, "letters", [letter])
+    monkeypatch.setattr(local_server, "emotion_triage", FakeTriageService())
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(
+        local_server, "_schedule_text_reply_delay", lambda *args: None
+    )
+    monkeypatch.setattr(local_server, "reply_pipeline", TimeoutPipeline())
+
+    assert (
+        asyncio.run(
+            local_server.generate_reply("letter-timeout", "candidate input")
+        )
+        is False
+    )
+    assert letter["letter_status"] == "FAILED"
+    assert letter["error_code"] == "LLM_TIMEOUT"
+    assert letter["media_status"] == "NOT_REQUESTED"
+    assert letter.get("media_error_code") is None
+
+
+def test_unexpected_video_reply_exception_does_not_leave_media_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    async def explode(*_args: object, **_kwargs: object) -> bool:
+        raise Exception("synthetic unexpected failure")
+
+    letter = {
+        "letter_id": "letter-unexpected",
+        "content": "candidate input",
+        "letter_status": "PROCESSING",
+        "reply_mode": "musical_video",
+        "media_status": "PENDING",
+        "media_error_code": "STALE_MEDIA_ERROR",
+        "media_retryable": True,
+    }
+    monkeypatch.setattr(local_server.store, "letters", [letter])
+    monkeypatch.setattr(local_server, "generate_reply", explode)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+
+    assert (
+        asyncio.run(
+            local_server._run_reply_job(
+                "letter-unexpected",
+                "candidate input",
+                idempotency_key=None,
+            )
+        )
+        is False
+    )
+    assert letter["letter_status"] == "FAILED"
+    assert letter["error_code"] == "LLM_UNAVAILABLE"
+    assert letter["media_status"] == "NOT_REQUESTED"
+    assert letter.get("media_error_code") is None
+    assert letter["media_retryable"] is False
