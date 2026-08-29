@@ -1387,7 +1387,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             },
             30 * 60 * 1000
           );
-          await renderVideoCapabilityPanel(panel);
+          result.textContent = "离线包已检查并安装完成。请重启 Olivia 一次以启用视频回信。";
+          setButtonsBusy([chooseRuntime, importRuntime], false);
         } catch (_error) {
           result.textContent = "离线包检查未通过，请重新下载并完整解压后再试。";
           setButtonsBusy([chooseRuntime, importRuntime], false);

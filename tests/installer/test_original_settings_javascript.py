@@ -230,6 +230,9 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
 
 def test_video_capability_offers_verified_runtime_root_selection() -> None:
     source = BOOTSTRAP_JAVASCRIPT
+    runtime_import = source.split(
+        'const importRuntime = button("开始检查并安装"', 1
+    )[1].split("item.append(", 1)[0]
 
     assert '{ action: "select_runtime" }' in source
     assert '{ action: "select_runtime" },\n            310000' in source
@@ -246,6 +249,8 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert "已检查 ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}" in source
     assert "window.setInterval(updateRuntimeProgress, 1000)" in source
     assert "window.clearInterval(progressTimer)" in source
+    assert "离线包已检查并安装完成。请重启 Olivia 一次" in runtime_import
+    assert "await renderVideoCapabilityPanel(panel)" not in runtime_import
     assert "尚未提供可迁移运行时归档" not in source
     assert "runtimeDigest" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source
