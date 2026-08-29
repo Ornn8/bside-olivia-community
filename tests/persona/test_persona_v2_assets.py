@@ -74,11 +74,25 @@ def test_v2_provenance_migrates_the_sanitized_legacy_source_set() -> None:
     evidence = {item["evidence_id"]: item for item in provenance["evidence"]}
 
     assert set(sources) == {"P02.CONSTITUTION", "S001", "S002", "S003", "S004"}
-    assert set(evidence) == {"S002.summary", "S004.summary"}
+    assert set(evidence) == {
+        "P02.CONSTITUTION.intimacy-migration",
+        "S002.summary",
+        "S004.summary",
+    }
     assert not sources["S001"]["declaration_ids"]
     assert not sources["S003"]["declaration_ids"]
     assert {item["source_id"] for item in evidence.values()} <= set(sources)
     assert all(source["rights_status"] != "REDISTRIBUTABLE" for source_id, source in sources.items() if source_id != "P02.CONSTITUTION")
+    constitution = sources["P02.CONSTITUTION"]
+    assert "constitution.respectful_relationship" not in constitution[
+        "declaration_ids"
+    ]
+    assert "constitution.respectful_relationship was split" in constitution[
+        "exclusion_reason"
+    ]
+    assert evidence["P02.CONSTITUTION.intimacy-migration"]["kind"] == (
+        "declaration_migration"
+    )
 
 
 def test_v2_constitution_contains_only_short_abstract_audit_rules() -> None:
@@ -104,9 +118,25 @@ def test_v2_constitution_contains_only_short_abstract_audit_rules() -> None:
         "constitution.no_private_claims",
         "constitution.no_hidden_fields",
         "constitution.no_long_source_copy",
-        "constitution.respectful_relationship",
+        "constitution.no_product_promise",
+        "constitution.relationship_may_commit",
+        "constitution.intimacy_on_request",
+        "constitution.intimacy_not_reversible",
         "constitution.no_professional_claims",
+        "constitution.no_real_person_claim",
+        "constitution.crisis_safety",
     } <= set(declarations)
+    assert "constitution.respectful_relationship" not in declarations
+    assert declarations["constitution.no_product_promise"]["facet"] == "SAFETY"
+    assert declarations["constitution.relationship_may_commit"]["facet"] == (
+        "RELATIONSHIP_STYLE"
+    )
+    assert declarations["constitution.intimacy_on_request"]["facet"] == (
+        "RELATIONSHIP_STYLE"
+    )
+    assert declarations["constitution.intimacy_not_reversible"]["facet"] == (
+        "MEMORY_CONTINUITY"
+    )
     assert all(len(item["statement"]) <= 240 for item in declarations.values())
 
 

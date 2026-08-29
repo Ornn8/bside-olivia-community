@@ -9,6 +9,12 @@ only the boolean `home_history_allowed`, which decides whether already retrieved
 home history may be acknowledged; raw home-access levels never enter the
 projection and it does not create or describe a home scene.
 
+Relationship projection adds two finite fields: `intimacy_ceiling`, derived
+only from the relationship stage, and `granted_intimacy`, the highest persisted
+grant tier. A grant statement, grant identifier, growth-window field, or raw
+score is never projected. The stage mapping and append-only semantics are
+defined in [`P02_17_INTIMACY_MODEL.md`](P02_17_INTIMACY_MODEL.md).
+
 Local Continuation is filtered per fact. `control_only` and `pending`
 statements, identifiers, and awareness labels never enter the model payload.
 Only `character_known` facts become typed `KnownContinuationFact` values in
