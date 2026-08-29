@@ -31,9 +31,23 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
     )
 
 
-def test_official_import_progress_response_matches_public_schema() -> None:
+def test_official_import_progress_response_matches_public_schema(monkeypatch) -> None:
     import local_server
 
+    monkeypatch.setattr(
+        local_server,
+        "_official_import_progress",
+        {
+            "status": "RUNNING",
+            "stage": "reading",
+            "total": 6,
+            "processed": 2,
+            "imported": 0,
+            "skipped": 0,
+            "last_updated_at": "2026-08-29T13:30:00+00:00",
+            "retryable": False,
+        },
+    )
     response = asyncio.run(
         local_server.route("GET", "/toy/letter/legacy/official-import", {}, {})
     )

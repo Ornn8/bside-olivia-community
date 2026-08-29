@@ -27,6 +27,7 @@
           "enum": [
             "idle",
             "listing",
+            "reading",
             "memory",
             "relationship",
             "importing",
