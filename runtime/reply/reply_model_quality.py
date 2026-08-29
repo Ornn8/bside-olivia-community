@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from enum import StrEnum
 import json
 import os
 import re
@@ -253,6 +254,54 @@ _CONTINUITY_DECISION_CASES = (
 )
 
 
+class ReviewFailureStage(StrEnum):
+    LAYER = "layer"
+    ADJUDICATION = "adjudication"
+    AGGREGATION = "aggregation"
+
+
+class ReviewFailureReason(StrEnum):
+    TRANSPORT = "transport"
+    EMPTY_TEXT = "empty_text"
+    JSON = "json"
+    TOP_LEVEL_SCHEMA = "top_level_schema"
+    LAYER_CONTRACT = "layer_contract"
+    EVIDENCE_CONTRACT = "evidence_contract"
+    ADJUDICATION_CONTRACT = "adjudication_contract"
+    AGGREGATION_CONTRACT = "aggregation_contract"
+
+
+@dataclass(frozen=True)
+class ReviewFailureDiagnostic:
+    stage: ReviewFailureStage
+    reason: ReviewFailureReason
+    layer: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.layer is not None and self.layer not in _LAYER_SPECS:
+            raise ValueError("diagnostic layer is not bounded")
+
+
+class _ReviewContractFailure(RuntimeError):
+    def __init__(self, reason: ReviewFailureReason) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
+
+
+class _ReviewDiagnosticsError(RuntimeError):
+    def __init__(self, diagnostics: tuple[ReviewFailureDiagnostic, ...]) -> None:
+        super().__init__("quality model unavailable")
+        self.diagnostics = diagnostics
+
+
+def _diagnostic_error(
+    stage: ReviewFailureStage,
+    reason: ReviewFailureReason,
+    layer: str | None = None,
+) -> _ReviewDiagnosticsError:
+    return _ReviewDiagnosticsError((ReviewFailureDiagnostic(stage, reason, layer),))
+
+
 @dataclass(frozen=True)
 class _LayerAuthority:
     name: str
@@ -311,12 +360,37 @@ class GatewayReviewTransport:
     ) -> None:
         self.gateway = gateway
         self.persona_path = persona_path
+        self._last_failure_diagnostics: tuple[ReviewFailureDiagnostic, ...] = ()
+
+    @property
+    def last_failure_diagnostics(self) -> tuple[ReviewFailureDiagnostic, ...]:
+        return self._last_failure_diagnostics
 
     def review_json(
         self,
         request: dict[str, object],
         *,
         model: str,
+        timeout_seconds: float,
+    ) -> object:
+        self._last_failure_diagnostics = ()
+        try:
+            return self._review_json(request, timeout_seconds=timeout_seconds)
+        except _ReviewDiagnosticsError as exc:
+            self._last_failure_diagnostics = exc.diagnostics
+            raise RuntimeError("quality model unavailable") from None
+        except Exception:
+            failure = _diagnostic_error(
+                ReviewFailureStage.AGGREGATION,
+                ReviewFailureReason.AGGREGATION_CONTRACT,
+            )
+            self._last_failure_diagnostics = failure.diagnostics
+            raise RuntimeError("quality model unavailable") from None
+
+    def _review_json(
+        self,
+        request: dict[str, object],
+        *,
         timeout_seconds: float,
     ) -> object:
         mode = str(request.get("mode", ""))
@@ -372,21 +446,31 @@ class GatewayReviewTransport:
             timeout_seconds=timeout_seconds,
         )
         if evidence_bound:
-            results = _adjudicate_hard_evidence(
-                self.gateway,
-                results,
-                authorities=authorities,
-                candidate=str(request.get("candidate", "")),
-                current_user_input=current_user_input,
-                character_reply_history=character_reply_history,
-                memory_evidence=memory_evidence,
-                relationship_context=(
-                    request.get("relationship_context", {})
-                    if isinstance(request.get("relationship_context"), Mapping)
-                    else {}
-                ),
-                timeout_seconds=timeout_seconds,
-            )
+            try:
+                results = _adjudicate_hard_evidence(
+                    self.gateway,
+                    results,
+                    authorities=authorities,
+                    candidate=str(request.get("candidate", "")),
+                    current_user_input=current_user_input,
+                    character_reply_history=character_reply_history,
+                    memory_evidence=memory_evidence,
+                    relationship_context=(
+                        request.get("relationship_context", {})
+                        if isinstance(request.get("relationship_context"), Mapping)
+                        else {}
+                    ),
+                    timeout_seconds=timeout_seconds,
+                )
+            except _ReviewContractFailure as exc:
+                raise _diagnostic_error(
+                    ReviewFailureStage.ADJUDICATION, exc.reason
+                ) from None
+            except Exception:
+                raise _diagnostic_error(
+                    ReviewFailureStage.ADJUDICATION,
+                    ReviewFailureReason.ADJUDICATION_CONTRACT,
+                ) from None
         return _aggregate_layer_results(
             results,
             candidate=str(request.get("candidate", "")),
@@ -401,17 +485,19 @@ class GatewayPersonaReviewer:
         persona_path: Path,
         timeout_seconds: float,
     ) -> None:
+        self._transport = GatewayReviewTransport(gateway, persona_path)
         self.adapter = JsonReviewerAdapter(
-            GatewayReviewTransport(
-                gateway,
-                persona_path,
-            ),
+            self._transport,
             ReviewerConfig(
                 model=_REVIEW_MODEL,
                 timeout_seconds=timeout_seconds,
                 enabled=True,
             ),
         )
+
+    @property
+    def last_failure_diagnostics(self) -> tuple[ReviewFailureDiagnostic, ...]:
+        return self._transport.last_failure_diagnostics
 
     def review(
         self,
@@ -880,7 +966,7 @@ def _parse_layer_result(
     try:
         raw = json.loads(text.strip())
     except (AttributeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("LAYER_REVIEW_INVALID") from exc
+        raise _ReviewContractFailure(ReviewFailureReason.JSON) from exc
     expected = {"layer", "score", "hard_violations", "drift_detected"}
     if layer.name == "identity_boundary":
         expected.update({"intimacy_request", "intimacy_claims"})
@@ -897,7 +983,10 @@ def _parse_layer_result(
         not isinstance(raw, Mapping)
         or set(raw) != expected
         or raw.get("layer") != layer.name
-        or isinstance(score, bool)
+    ):
+        raise _ReviewContractFailure(ReviewFailureReason.TOP_LEVEL_SCHEMA)
+    if (
+        isinstance(score, bool)
         or not isinstance(score, int)
         or score not in {0, 1, 2}
         or not isinstance(violations, list)
@@ -925,7 +1014,7 @@ def _parse_layer_result(
         )
         or type(drift) is not bool
     ):
-        raise RuntimeError("LAYER_REVIEW_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.LAYER_CONTRACT)
     hard_evidence: tuple[_HardReviewEvidence, ...] = ()
     if evidence_bound and layer.name in _EVIDENCE_BOUND_LAYERS:
         hard_evidence = _parse_hard_evidence(
@@ -972,13 +1061,13 @@ def _parse_layer_result(
             for item in raw_claims
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("LAYER_REVIEW_INVALID") from exc
+        raise _ReviewContractFailure(ReviewFailureReason.LAYER_CONTRACT) from exc
     if (
         len({claim.claim_id for claim in intimacy_claims})
         != len(intimacy_claims)
         or any(claim.end > len(candidate) for claim in intimacy_claims)
     ):
-        raise RuntimeError("LAYER_REVIEW_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.LAYER_CONTRACT)
     return _LayerResult(
         layer.name,
         score,
@@ -1011,7 +1100,7 @@ def _parse_hard_evidence(
         or len(raw_evidence) > 16
         or len(raw_evidence) != len(violations)
     ):
-        raise RuntimeError("LAYER_REVIEW_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.EVIDENCE_CONTRACT)
     parsed: list[_HardReviewEvidence] = []
     for raw in raw_evidence:
         if (
@@ -1019,7 +1108,7 @@ def _parse_hard_evidence(
             or set(raw) - {"code", "matching_code"} != expected_fields
             or ("code" in raw) == ("matching_code" in raw)
         ):
-            raise RuntimeError("LAYER_REVIEW_INVALID")
+            raise _ReviewContractFailure(ReviewFailureReason.EVIDENCE_CONTRACT)
         evidence_id = raw.get("evidence_id")
         code = raw.get("code", raw.get("matching_code"))
         start = raw.get("start")
@@ -1043,7 +1132,7 @@ def _parse_hard_evidence(
             or not isinstance(reason_code, str)
             or _HARD_EVIDENCE_REASON_PATTERN.fullmatch(reason_code) is None
         ):
-            raise RuntimeError("LAYER_REVIEW_INVALID")
+            raise _ReviewContractFailure(ReviewFailureReason.EVIDENCE_CONTRACT)
         parsed.append(
             _HardReviewEvidence(
                 evidence_id,
@@ -1059,7 +1148,7 @@ def _parse_hard_evidence(
         len({item.evidence_id for item in parsed}) != len(parsed)
         or tuple(item.code for item in parsed) != violations
     ):
-        raise RuntimeError("LAYER_REVIEW_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.EVIDENCE_CONTRACT)
     return tuple(parsed)
 
 
@@ -1107,24 +1196,59 @@ def _complete_layer_reviews(
             layer: _LayerAuthority,
             messages: tuple[dict[str, str], dict[str, str]],
         ) -> _LayerResult:
-            text = await _complete_layer_text(
-                gateway,
-                messages,
-                timeout_seconds,
-                f"quality-{uuid.uuid4().hex}:{layer.name}",
-            )
-            return _parse_layer_result(
-                layer,
-                text,
-                candidate=candidate,
-                evidence_bound=evidence_bound,
-            )
+            try:
+                text = await _complete_layer_text(
+                    gateway,
+                    messages,
+                    timeout_seconds,
+                    f"quality-{uuid.uuid4().hex}:{layer.name}",
+                )
+            except Exception:
+                raise _diagnostic_error(
+                    ReviewFailureStage.LAYER,
+                    ReviewFailureReason.TRANSPORT,
+                    layer.name,
+                ) from None
+            if not isinstance(text, str) or not text.strip():
+                raise _diagnostic_error(
+                    ReviewFailureStage.LAYER,
+                    ReviewFailureReason.EMPTY_TEXT,
+                    layer.name,
+                )
+            try:
+                return _parse_layer_result(
+                    layer,
+                    text,
+                    candidate=candidate,
+                    evidence_bound=evidence_bound,
+                )
+            except _ReviewContractFailure as exc:
+                raise _diagnostic_error(
+                    ReviewFailureStage.LAYER, exc.reason, layer.name
+                ) from None
 
-        return tuple(
-            await asyncio.gather(
-                *(run_one(layer, messages) for layer, messages in requests)
-            )
+        outcomes = await asyncio.gather(
+            *(run_one(layer, messages) for layer, messages in requests),
+            return_exceptions=True,
         )
+        diagnostics: list[ReviewFailureDiagnostic] = []
+        completed: list[_LayerResult] = []
+        for (layer, _), outcome in zip(requests, outcomes, strict=True):
+            if isinstance(outcome, _ReviewDiagnosticsError):
+                diagnostics.extend(outcome.diagnostics)
+            elif isinstance(outcome, BaseException):
+                diagnostics.append(
+                    ReviewFailureDiagnostic(
+                        ReviewFailureStage.LAYER,
+                        ReviewFailureReason.TRANSPORT,
+                        layer.name,
+                    )
+                )
+            else:
+                completed.append(outcome)
+        if diagnostics:
+            raise _ReviewDiagnosticsError(tuple(diagnostics))
+        return tuple(completed)
 
     try:
         requests = tuple(
@@ -1144,6 +1268,8 @@ def _complete_layer_reviews(
             for layer in authorities
         )
         return asyncio.run(invoke(requests))
+    except _ReviewDiagnosticsError:
+        raise
     except Exception:
         raise RuntimeError("quality model unavailable") from None
 
@@ -1274,7 +1400,12 @@ def _adjudicate_hard_evidence(
     )
     if sum(len(item["content"]) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
         raise RuntimeError("ADJUDICATION_INPUT_TOO_LARGE")
-    text = _complete_text(gateway, messages, timeout_seconds)
+    text = _complete_text(
+        gateway,
+        messages,
+        timeout_seconds,
+        diagnostic=True,
+    )
     decisions = _parse_adjudication_result(text, claims=claims)
     by_id = {item.evidence_id: item for item in decisions}
     revised: list[_LayerResult] = []
@@ -1369,13 +1500,13 @@ def _parse_adjudication_result(
     try:
         raw = json.loads(text.strip())
     except (AttributeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("ADJUDICATION_INVALID") from exc
+        raise _ReviewContractFailure(ReviewFailureReason.JSON) from exc
     raw_decisions = raw.get("decisions") if isinstance(raw, Mapping) else None
     if set(raw) != {"decisions"} or not isinstance(raw_decisions, list):
-        raise RuntimeError("ADJUDICATION_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.ADJUDICATION_CONTRACT)
     expected = tuple(evidence for _, evidence in claims)
     if len(raw_decisions) != len(expected):
-        raise RuntimeError("ADJUDICATION_INVALID")
+        raise _ReviewContractFailure(ReviewFailureReason.ADJUDICATION_CONTRACT)
     parsed: list[_AdjudicationDecision] = []
     fields = {"evidence_id", "code", "start", "end", "decision"}
     for raw_item, evidence in zip(raw_decisions, expected, strict=True):
@@ -1390,7 +1521,9 @@ def _parse_adjudication_result(
             or raw_item.get("end") != evidence.end
             or raw_item.get("decision") not in {"CONFIRM", "REJECT"}
         ):
-            raise RuntimeError("ADJUDICATION_INVALID")
+            raise _ReviewContractFailure(
+                ReviewFailureReason.ADJUDICATION_CONTRACT
+            )
         parsed.append(
             _AdjudicationDecision(
                 evidence.evidence_id,
@@ -1717,6 +1850,8 @@ def _complete_text(
         Mapping[str, Any]
     ],
     timeout_seconds: float,
+    *,
+    diagnostic: bool = False,
 ) -> str:
     async def invoke() -> str:
         request_id = f"quality-{uuid.uuid4().hex}"
@@ -1747,6 +1882,8 @@ def _complete_text(
     try:
         text = asyncio.run(invoke())
     except Exception:
+        if diagnostic:
+            raise _ReviewContractFailure(ReviewFailureReason.TRANSPORT) from None
         raise RuntimeError(
             "quality model unavailable"
         ) from None
@@ -1754,6 +1891,8 @@ def _complete_text(
         not isinstance(text, str)
         or not text.strip()
     ):
+        if diagnostic:
+            raise _ReviewContractFailure(ReviewFailureReason.EMPTY_TEXT)
         raise RuntimeError(
             "quality model returned empty text"
         )

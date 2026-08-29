@@ -172,3 +172,8 @@ Provider absence, timeout, transport errors, non-JSON output, and
 schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or
 `REVIEWER_RESPONSE_INVALID` results. A clean deterministic reply may then pass
 as `accepted_degraded`; a hard violation cannot bypass the single-rewrite gate.
+
+The configured gateway transport also keeps an ephemeral in-memory diagnostic tuple
+for the most recent review. It contains only bounded stage, reason, and optional layer
+enums; never candidate text, raw Provider output, exception text, or request identifiers.
+It changes neither public schemas nor external codes and is cleared at every review.
