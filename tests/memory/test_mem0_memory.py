@@ -519,7 +519,8 @@ def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
             return value
 
     backend = ActorAwareMem0()
-    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    result = adapter.remember_exchange(
         user_message="我喜欢 AI 绘画，也喜欢林离的钢琴。",
         assistant_message="我会继续用钢琴陪你画画。",
         occurred_at=NOW,
@@ -543,6 +544,11 @@ def test_historical_exchange_extracts_user_and_linli_facts_by_actor(
     assert [row["memory"] for row in backend.rows] == [
         "用户喜欢 AI 绘画，也喜欢林离的钢琴。",
         "我在回信中鼓励用户继续画画。",
+    ]
+    selected = adapter.search_context("画画", user_id="local-user", limit=8)
+    assert [record.metadata["history_actor"] for record in selected] == [
+        "user",
+        "linli",
     ]
 
 

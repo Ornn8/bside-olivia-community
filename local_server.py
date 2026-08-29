@@ -480,42 +480,6 @@ class LetterAdapter:
             )
         return self.memory_prompt_builder.build(content, max_chars=max_chars)
 
-    def character_reply_history(
-        self, memory_context: object, *, max_chars: int
-    ) -> tuple[str, ...]:
-        """Return only bounded, canonical character-authored reply text."""
-
-        candidates = [
-            letter.get("reply_text")
-            for letter in sorted(
-                store.letters, key=_mailbox_created_at, reverse=True
-            )
-            if letter.get("letter_status") == "COMPLETED"
-            and letter.get("reply_not_before", 0.0) <= time.time()
-        ]
-        for record in getattr(memory_context, "references", ()):
-            metadata = getattr(record, "metadata", {})
-            if (
-                isinstance(metadata, Mapping)
-                and metadata.get("import_kind") == "official_text_reply"
-            ):
-                candidates.append(metadata.get("reply_text"))
-        replies: list[str] = []
-        used = 0
-        for candidate in candidates:
-            if (
-                not isinstance(candidate, str)
-                or not candidate.strip()
-                or candidate.strip() in replies
-            ):
-                continue
-            remaining = max_chars - used - bool(replies)
-            if remaining <= 0:
-                break
-            replies.append(candidate.strip()[:remaining])
-            used += len(replies[-1]) + (1 if len(replies) > 1 else 0)
-        return tuple(replies)
-
     def _memory_context_limit(self) -> int:
         """Keep Mem0 and Archive prompt budgets independently bounded."""
 

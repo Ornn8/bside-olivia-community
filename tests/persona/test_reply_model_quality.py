@@ -322,46 +322,6 @@ def test_identity_review_receives_only_bounded_relationship_evidence() -> None:
         assert marker in prompt
 
 
-def test_letter_pipeline_supplies_only_published_character_replies(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import local_server
-
-    prior_reply = "我喜欢和你聊天，但没有说我们在交往。"
-    monkeypatch.setattr(local_server.store, "letters", [
-        {"letter_status": "COMPLETED", "reply_text": "旧" * 2000,
-         "content": "用户说我们早就在一起了。", "created_at": 1, "reply_not_before": 0},
-        {"letter_status": "COMPLETED", "reply_text": prior_reply,
-         "content": "用户说你肯定喜欢我。", "created_at": 2, "reply_not_before": 0},
-        {"letter_status": "COMPLETED", "reply_text": "尚未发布的回复。",
-         "content": "future", "created_at": 3, "reply_not_before": 10**20},
-    ])
-    gateway = SequencedQualityGateway(
-        candidate="我会按我们真实说过的话回答。", reviews=_passing_layer_payloads()
-    )
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("OLIVIA_REPLY_REWRITE_ENABLED", "true")
-    monkeypatch.setattr("runtime.reply.reply_model_quality.create_gateway", lambda _: gateway)
-    adapter = local_server.LetterAdapter(GatewayConfig(
-        provider="openai_compatible", base_url="http://127.0.0.1:9/v1",
-        model="synthetic", persona_v2_enabled=True,
-    ), memory_port=NullMemoryPort())
-    adapter.gateway = gateway
-    pipeline = ReplyPipeline(
-        ReplyOrchestrator(CompatibilityBridge(adapter), timeout_seconds=2),
-        reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
-    )
-
-    result = asyncio.run(pipeline.run(
-        ReplyRequest(content="你以前是不是承认喜欢我？", request_id="letter-history"),
-        _context(),
-    ))
-    history = str(gateway.review_requests[0]["character_reply_history"])
-    assert result.state is ReplyState.COMPLETED
-    assert prior_reply in history and len(history) <= 1200
-    assert "用户说" not in history and "尚未发布" not in history
-
-
 def test_reassembled_current_user_reference_is_capped_at_600_characters() -> None:
     gateway = SequencedQualityGateway(
         candidate="边界内回复。", reviews=_passing_layer_payloads()

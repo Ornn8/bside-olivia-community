@@ -30,8 +30,8 @@ The model reviewer receives only:
   rules;
 - at most 600 characters of the current user message as an identified excerpt.
 - for the identity/relationship layer only, at most 1,200 characters from
-  Linli's published canonical replies and official reply metadata selected by
-  the existing Letter history boundary; prior user messages are excluded.
+  canonical `history:` records in the current memory selection that are
+  explicitly attributed to Linli; prior user and unmarked records are excluded.
 
 It does not receive PrivateWorld numeric values, raw home-access records,
 pending/control-only continuation facts, databases, filesystem paths, provider

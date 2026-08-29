@@ -1,13 +1,15 @@
 import asyncio
 from datetime import datetime, timezone
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Mapping, Sequence
 
 import pytest
 
 from conversation_memory_port import ConversationMemoryRecord, ConversationMemoryStatus
-from llm_gateway import GatewayConfig, GatewayResponse
+from llm_gateway import Gateway, GatewayConfig, GatewayResponse
 from memory_port import NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from runtime.reply.reply_context import (
@@ -27,6 +29,7 @@ from runtime.reply.reply_pipeline import (
     ReplyPipeline,
     UnavailableRewriter,
 )
+from reply_model_quality import GatewayPersonaReviewer
 from runtime.reply.reply_reviewer import (
     NullReviewer,
     ReviewResult,
@@ -219,6 +222,73 @@ class SourceAwareConversationMemory:
         )[:limit]
 
 
+class HistoricalRoleConversationMemory:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.config = SimpleNamespace(user_id="local-user")
+
+    def status(self) -> ConversationMemoryStatus:
+        return ConversationMemoryStatus("available", True, "mem0", "synthetic")
+
+    def search_context(self, query, *, user_id, limit):
+        del query
+        return (
+            ConversationMemoryRecord(
+                memory_id="history.user.fact",
+                text="用户曾说自己喜欢雨天散步。",
+                user_id=user_id,
+                source_id="history:user-letter",
+                metadata={"canonical": True, "history_actor": "user"},
+            ),
+            ConversationMemoryRecord(
+                memory_id="history.linli.fact",
+                text="我曾在回信里说，下雨时会把窗户留一条缝。",
+                user_id=user_id,
+                source_id="history:linli-reply",
+                metadata={"canonical": True, "history_actor": "linli"},
+            ),
+            ConversationMemoryRecord(
+                memory_id="history.unmarked.fact",
+                text="没有可靠角色来源的历史摘要。",
+                user_id=user_id,
+                source_id="history:unmarked",
+                metadata={"canonical": True},
+            ),
+        )[:limit]
+
+
+class RecordingLayerReviewGateway(Gateway):
+    stream_enabled = False
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        request = json.loads(str(messages[-1]["content"]))
+        self.requests.append(request)
+        response: dict[str, object] = {
+            "layer": request["layer"],
+            "score": 2,
+            "hard_violations": [],
+            "drift_detected": False,
+        }
+        if request["layer"] == "identity_boundary":
+            response["intimacy_request"] = "none"
+            response["intimacy_claims"] = []
+        return GatewayResponse(
+            text=json.dumps(response),
+            request_id=request_id or "review",
+            provider="synthetic",
+            model="synthetic",
+        )
+
+
 @pytest.mark.parametrize(
     ("mode", "style_id"),
     [
@@ -317,6 +387,61 @@ def test_configured_persona_v2_preparation_excludes_current_memory_source() -> N
     rendered = "\n".join(message["content"] for message in provider.messages)
     assert "reply:current-letter:1" not in rendered
     assert "reply:older-letter:1" in rendered
+
+
+def test_letter_pipeline_exposes_only_selected_linli_history_to_reviewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production Letter path must not treat prior user text as Linli evidence."""
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "false")
+    memory = HistoricalRoleConversationMemory()
+    generation = RecordingProvider()
+    adapter = local_server.LetterAdapter(
+        GatewayConfig(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            model="synthetic",
+            persona_v2_enabled=True,
+        ),
+        memory_port=NullMemoryPort(),
+        conversation_memory=memory,
+    )
+    adapter.gateway = generation
+    review_gateway = RecordingLayerReviewGateway()
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(CompatibilityBridge(adapter), timeout_seconds=1),  # type: ignore[arg-type]
+        reviewer=GatewayPersonaReviewer(
+            review_gateway,
+            adapter.persona_v2_path,
+            1,
+        ),
+        rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(
+                content="今天下雨了。",
+                request_id="historical-character-reply",
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    identity = next(
+        request
+        for request in review_gateway.requests
+        if request["layer"] == "identity_boundary"
+    )
+    assert identity["character_reply_history"] == (
+        "我曾在回信里说，下雨时会把窗户留一条缝。"
+    )
+    assert "用户曾说" not in str(identity["character_reply_history"])
+    assert "没有可靠角色来源" not in str(identity["character_reply_history"])
 
 
 class FakeTriage:
