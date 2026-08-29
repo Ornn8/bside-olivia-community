@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import re
 
 from private_world_commands import (
     ConfirmRelationshipStage,
     DeleteContinuationFact,
+    GrantIntimacy,
     GrantNickname,
     InitializeHistoricalRelationship,
     PrivateWorldCommand,
@@ -22,8 +23,14 @@ from private_world_commands import (
     UpsertContinuationFact,
 )
 from private_world_port import (
+    IntimacyGrant,
     LocalContinuationFact,
     PrivateWorldSnapshot,
+)
+from runtime.reply.reply_context import (
+    IntimacyTier,
+    ReplyContextError,
+    intimacy_ceiling_for_stage,
 )
 
 
@@ -37,6 +44,7 @@ class ReducerEventKind(str, Enum):
     CONFLICT = "conflict"
     REPAIR = "repair"
     STAGE_CONFIRMED = "stage_confirmed"
+    INTIMACY_GRANTED = "intimacy_granted"
     HIGH_FREQUENCY_MESSAGE = "high_frequency_message"
     GIFT = "gift"
     REPEATED_PHRASE = "repeated_phrase"
@@ -47,6 +55,13 @@ class ReducerEventKind(str, Enum):
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _STAGE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _DEDUPLICATION_WINDOW = timedelta(hours=24)
+_GROWTH_WINDOW = timedelta(days=7)
+_WEEKLY_GROWTH_CAP = 6
+_INTIMACY_TIER_ORDER = (
+    IntimacyTier.NONE,
+    IntimacyTier.LIGHT_CONTACT,
+    IntimacyTier.CLOSE_CONTACT,
+)
 _NO_EFFECT_KINDS = {
     ReducerEventKind.CANONICAL_REPLY_DELIVERED,
     ReducerEventKind.HIGH_FREQUENCY_MESSAGE,
@@ -65,6 +80,7 @@ class ReducerEvent:
     last_equivalent_at: datetime | None = None
     target_stage: str | None = None
     basis_event_ids: tuple[str, ...] = ()
+    intimacy_grant: IntimacyGrant | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ReducerEventKind):
@@ -96,6 +112,10 @@ class ReducerEvent:
                 tuple(self.basis_event_ids),
             )
         if self.kind is ReducerEventKind.STAGE_CONFIRMED:
+            if self.intimacy_grant is not None:
+                raise ReducerInputError(
+                    "stage confirmation cannot carry an intimacy grant"
+                )
             if not isinstance(self.target_stage, str) or not _STAGE_RE.fullmatch(
                 self.target_stage
             ):
@@ -114,9 +134,26 @@ class ReducerEvent:
                 raise ReducerInputError(
                     "stage confirmation requires explicit evidence"
                 )
-        elif self.target_stage is not None or self.basis_event_ids:
+        elif self.kind is ReducerEventKind.INTIMACY_GRANTED:
+            if not isinstance(self.intimacy_grant, IntimacyGrant):
+                raise ReducerInputError(
+                    "intimacy grant event requires a typed grant"
+                )
+            if self.intimacy_grant.tier is IntimacyTier.NONE:
+                raise ReducerInputError(
+                    "intimacy grant tier must grant contact"
+                )
+            if self.target_stage is not None or self.basis_event_ids:
+                raise ReducerInputError(
+                    "intimacy grant cannot carry stage evidence"
+                )
+        elif (
+            self.target_stage is not None
+            or self.basis_event_ids
+            or self.intimacy_grant is not None
+        ):
             raise ReducerInputError(
-                "stage evidence is only valid for stage confirmation"
+                "event payload is invalid for this event kind"
             )
 
 
@@ -150,6 +187,33 @@ def _duplicate(event: ReducerEvent) -> bool:
     return (
         event.occurred_at - event.last_equivalent_at
         < _DEDUPLICATION_WINDOW
+    )
+
+
+def _growth_window(
+    snapshot: PrivateWorldSnapshot,
+    now: datetime,
+) -> tuple[str, int]:
+    now_utc = now.astimezone(timezone.utc)
+    if snapshot.growth_window_start:
+        started_at = datetime.fromisoformat(
+            snapshot.growth_window_start.replace("Z", "+00:00")
+        )
+        if now_utc - started_at < _GROWTH_WINDOW:
+            return snapshot.growth_window_start, snapshot.growth_used
+    return now_utc.isoformat(), 0
+
+
+def _intimacy_exceeds_stage(
+    stage: str,
+    tier: IntimacyTier,
+) -> bool:
+    try:
+        ceiling = intimacy_ceiling_for_stage(stage)
+    except ReplyContextError:
+        ceiling = IntimacyTier.NONE
+    return _INTIMACY_TIER_ORDER.index(tier) > _INTIMACY_TIER_ORDER.index(
+        ceiling
     )
 
 
@@ -203,11 +267,26 @@ def reduce_private_world(
         return _no_change(snapshot, "SEMANTIC_DUPLICATE")
 
     updates: dict[str, object] = {}
+    reason_code = event.kind.value.upper()
     if event.kind is ReducerEventKind.BOUNDARY_RESPECTED:
         updates = {
             "trust": _bounded(snapshot.trust, 1),
             "comfort": _bounded(snapshot.comfort, 1),
         }
+        growth_start, growth_used = _growth_window(
+            snapshot,
+            event.occurred_at,
+        )
+        if growth_used + 1 <= _WEEKLY_GROWTH_CAP:
+            updates.update(
+                {
+                    "familiarity": _bounded(snapshot.familiarity, 1),
+                    "growth_window_start": growth_start,
+                    "growth_used": growth_used + 1,
+                }
+            )
+        else:
+            reason_code = "GROWTH_CAP_REACHED"
     elif event.kind is ReducerEventKind.CONFLICT:
         updates = {
             "trust": _bounded(snapshot.trust, -2),
@@ -224,11 +303,57 @@ def reduce_private_world(
         updates = {
             "relationship_stage": event.target_stage or "unknown",
         }
+        if event.target_stage != snapshot.relationship_stage:
+            updates.update(
+                {
+                    "closeness": _bounded(snapshot.closeness, 5),
+                    "familiarity": _bounded(snapshot.familiarity, 3),
+                }
+            )
+    elif event.kind is ReducerEventKind.INTIMACY_GRANTED:
+        grant = event.intimacy_grant
+        if grant is None:
+            raise ReducerInputError("intimacy grant event is invalid")
+        if _intimacy_exceeds_stage(snapshot.relationship_stage, grant.tier):
+            return _no_change(snapshot, "INTIMACY_EXCEEDS_STAGE")
+        if any(
+            existing.grant_id == grant.grant_id
+            for existing in snapshot.intimacy_grants
+        ):
+            return _no_change(snapshot, "INTIMACY_ALREADY_GRANTED")
+        if len(snapshot.intimacy_grants) >= 16:
+            return _no_change(snapshot, "INTIMACY_LIMIT_REACHED")
+        updates = {
+            "intimacy_grants": (*snapshot.intimacy_grants, grant),
+        }
+        growth_start, growth_used = _growth_window(
+            snapshot,
+            event.occurred_at,
+        )
+        if growth_used + 2 <= _WEEKLY_GROWTH_CAP:
+            updates.update(
+                {
+                    "closeness": _bounded(snapshot.closeness, 2),
+                    "growth_window_start": growth_start,
+                    "growth_used": growth_used + 2,
+                }
+            )
+        else:
+            return _apply_updates(
+                snapshot,
+                updates,
+                reason_code="GROWTH_CAP_REACHED",
+            )
 
     return _apply_updates(
         snapshot,
         updates,
-        reason_code=event.kind.value.upper(),
+        reason_code=reason_code,
+        unchanged_reason=(
+            "GROWTH_CAP_REACHED"
+            if reason_code == "GROWTH_CAP_REACHED"
+            else "BOUNDED_NO_CHANGE"
+        ),
     )
 
 
@@ -248,6 +373,17 @@ def _relationship_command_event(
             semantic_key=command.idempotency_key,
             target_stage=command.target_stage.value,
             basis_event_ids=command.basis_event_ids,
+        )
+    elif isinstance(command, GrantIntimacy):
+        return ReducerEvent(
+            kind=ReducerEventKind.INTIMACY_GRANTED,
+            occurred_at=command.occurred_at,
+            semantic_key=command.idempotency_key,
+            intimacy_grant=IntimacyGrant(
+                grant_id=command.grant_id,
+                tier=command.tier,
+                statement=command.statement,
+            ),
         )
     else:
         return None

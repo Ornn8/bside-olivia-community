@@ -10,6 +10,7 @@ import re
 import sqlite3
 
 from private_world_ledger import LedgerEvent, LedgerWriteError, SQLitePrivateWorldLedger
+from private_world_port import IntimacyGrant
 from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private_world
 
 
@@ -31,6 +32,7 @@ class DeliveryEvent:
     last_equivalent_at: datetime | None = None
     target_stage: str | None = None
     basis_event_ids: tuple[str, ...] = ()
+    intimacy_grant: IntimacyGrant | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.delivery_id, str) or not _ID_RE.fullmatch(
@@ -38,12 +40,13 @@ class DeliveryEvent:
         ):
             raise ValueError("delivery_id is invalid")
         ReducerEvent(
-            self.kind,
-            self.occurred_at,
-            self.semantic_key,
-            self.last_equivalent_at,
-            self.target_stage,
-            self.basis_event_ids,
+            kind=self.kind,
+            occurred_at=self.occurred_at,
+            semantic_key=self.semantic_key,
+            last_equivalent_at=self.last_equivalent_at,
+            target_stage=self.target_stage,
+            basis_event_ids=self.basis_event_ids,
+            intimacy_grant=self.intimacy_grant,
         )
 
 
@@ -55,12 +58,13 @@ class PrivateWorldDeliveryCommitter:
         if not isinstance(delivery, DeliveryEvent):
             raise TypeError("typed delivery is required")
         event = ReducerEvent(
-            delivery.kind,
-            delivery.occurred_at,
-            delivery.semantic_key,
-            delivery.last_equivalent_at,
-            delivery.target_stage,
-            delivery.basis_event_ids,
+            kind=delivery.kind,
+            occurred_at=delivery.occurred_at,
+            semantic_key=delivery.semantic_key,
+            last_equivalent_at=delivery.last_equivalent_at,
+            target_stage=delivery.target_stage,
+            basis_event_ids=delivery.basis_event_ids,
+            intimacy_grant=delivery.intimacy_grant,
         )
         try:
             snapshot = self.ledger.snapshot()

@@ -8,11 +8,12 @@ from enum import StrEnum
 import re
 from typing import ClassVar, TypeAlias
 
-from runtime.reply.reply_context import RelationshipStage
+from runtime.reply.reply_context import IntimacyTier, RelationshipStage
 
 from .port import (
     ContinuationAwareness,
     HomeAccess,
+    IntimacyGrant,
     LocalContinuationFact,
     PrivateWorldError,
 )
@@ -40,6 +41,7 @@ class PrivateWorldCommandKind(StrEnum):
     RECORD_CONFLICT = "record_conflict"
     RECORD_REPAIR = "record_repair"
     CONFIRM_RELATIONSHIP_STAGE = "confirm_relationship_stage"
+    GRANT_INTIMACY = "grant_intimacy"
     GRANT_NICKNAME = "grant_nickname"
     REVOKE_NICKNAME = "revoke_nickname"
     SET_HOME_ACCESS = "set_home_access"
@@ -214,6 +216,42 @@ class ConfirmRelationshipStage(PrivateWorldCommand):
         return {
             "target_stage": self.target_stage.value,
             "basis_event_ids": list(self.basis_event_ids),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class GrantIntimacy(PrivateWorldCommand):
+    grant_id: str
+    tier: IntimacyTier
+    statement: str
+
+    kind: ClassVar[PrivateWorldCommandKind] = (
+        PrivateWorldCommandKind.GRANT_INTIMACY
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        try:
+            grant = IntimacyGrant(
+                grant_id=self.grant_id,
+                tier=self.tier,
+                statement=self.statement,
+            )
+        except PrivateWorldError as exc:
+            raise PrivateWorldCommandError(str(exc)) from exc
+        if grant.tier is IntimacyTier.NONE:
+            raise PrivateWorldCommandError(
+                "intimacy grant tier must grant contact"
+            )
+        object.__setattr__(self, "grant_id", grant.grant_id)
+        object.__setattr__(self, "tier", grant.tier)
+        object.__setattr__(self, "statement", grant.statement)
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "grant_id": self.grant_id,
+            "tier": self.tier.value,
+            "statement": self.statement,
         }
 
 
@@ -394,6 +432,7 @@ PrivateWorldMutation: TypeAlias = (
     | RecordConflict
     | RecordRepair
     | ConfirmRelationshipStage
+    | GrantIntimacy
     | GrantNickname
     | RevokeNickname
     | SetHomeAccess
@@ -407,6 +446,7 @@ PrivateWorldMutation: TypeAlias = (
 __all__ = [
     "ConfirmRelationshipStage",
     "DeleteContinuationFact",
+    "GrantIntimacy",
     "GrantNickname",
     "InitializeHistoricalRelationship",
     "PrivateWorldActor",
