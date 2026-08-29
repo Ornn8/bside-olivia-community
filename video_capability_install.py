@@ -306,7 +306,12 @@ def load_video_manifest(path: Path) -> VideoManifest:
     return VideoManifest(payload["version"], tuple(result))
 
 
-def _sha256_file(path: Path, *, pause: threading.Event | None = None) -> tuple[int, str]:
+def _sha256_file(
+    path: Path,
+    *,
+    pause: threading.Event | None = None,
+    progress: Callable[[int], None] | None = None,
+) -> tuple[int, str]:
     digest = hashlib.sha256()
     total = 0
     with path.open("rb") as stream:
@@ -315,6 +320,8 @@ def _sha256_file(path: Path, *, pause: threading.Event | None = None) -> tuple[i
                 raise InterruptedError
             digest.update(chunk)
             total += len(chunk)
+            if progress is not None:
+                progress(total)
     return total, digest.hexdigest()
 
 
@@ -375,6 +382,7 @@ def _load_runtime_root_manifest(
     manifest_sha256: str,
     *,
     verify_files: bool,
+    progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, str]:
     if not runtime_root.is_absolute() or not runtime_root.is_dir():
         raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
@@ -420,6 +428,7 @@ def _load_runtime_root_manifest(
         environment_paths[key] = relative
     files: dict[str, tuple[int, str]] = {}
     seen_files: set[str] = set()
+    total_bytes = 0
     for raw in payload["files"]:
         if (
             not isinstance(raw, dict)
@@ -428,6 +437,11 @@ def _load_runtime_root_manifest(
             or raw["size_bytes"] < 0
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+        total_bytes += raw["size_bytes"]
+    checked_bytes = 0
+    if verify_files and progress is not None:
+        progress(0, total_bytes)
+    for raw in payload["files"]:
         try:
             relative = _safe_relative(raw.get("path"))
             digest = _safe_sha(raw.get("sha256"))
@@ -441,11 +455,23 @@ def _load_runtime_root_manifest(
         files[relative] = (raw["size_bytes"], digest)
         if verify_files:
             try:
-                actual_size, actual_digest = _sha256_file(candidate)
+                actual_size, actual_digest = _sha256_file(
+                    candidate,
+                    progress=(
+                        None
+                        if progress is None
+                        else lambda current, base=checked_bytes: progress(
+                            min(total_bytes, base + current), total_bytes
+                        )
+                    ),
+                )
             except OSError as exc:
                 raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
             if (actual_size, actual_digest) != files[relative]:
                 raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+            checked_bytes += actual_size
+            if progress is not None:
+                progress(checked_bytes, total_bytes)
     required_files = {
         relative
         for key, relative in environment_paths.items()
@@ -616,6 +642,11 @@ class VideoCapabilityInstaller:
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._status: dict[str, VideoBundleStatus] = {}
+        self._runtime_import: dict[str, object] = {
+            "state": "idle",
+            "checked_bytes": 0,
+            "total_bytes": 0,
+        }
         _restore_interrupted_promotions(self.install_root)
         self._load_status()
 
@@ -732,7 +763,8 @@ class VideoCapabilityInstaller:
 
     def status(self) -> dict[str, object]:
         with self._lock:
-            self._load_status()
+            if self._runtime_import["state"] not in {"checking", "testing"}:
+                self._load_status()
             bundles = [self._status[item.identifier].to_dict() for item in self.manifest.bundles]
             return {
                 "schema_version": "olivia.video-capability-status.v1",
@@ -740,6 +772,19 @@ class VideoCapabilityInstaller:
                 "capability": "video",
                 "install_locations": [{"root": "local_data_root", "relative_path": "capabilities/video"}],
                 "bundles": bundles,
+                "runtime_import": dict(self._runtime_import),
+            }
+
+    def _set_runtime_import_state(self, state: str) -> None:
+        with self._lock:
+            self._runtime_import["state"] = state
+
+    def _update_runtime_import_progress(self, checked_bytes: int, total_bytes: int) -> None:
+        with self._lock:
+            self._runtime_import = {
+                "state": "checking",
+                "checked_bytes": checked_bytes,
+                "total_bytes": total_bytes,
             }
 
     def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None) -> None:
@@ -836,6 +881,31 @@ class VideoCapabilityInstaller:
         runtime_root: Path,
         manifest_sha256: str,
     ) -> str:
+        with self._lock:
+            self._runtime_import = {
+                "state": "checking",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+            }
+        try:
+            result = self._import_runtime_root(
+                runtime_root=runtime_root,
+                manifest_sha256=manifest_sha256,
+            )
+        except Exception:
+            self._set_runtime_import_state("failed")
+            raise
+        with self._lock:
+            self._runtime_import["state"] = "ready"
+            self._runtime_import["checked_bytes"] = self._runtime_import["total_bytes"]
+        return result
+
+    def _import_runtime_root(
+        self,
+        *,
+        runtime_root: Path,
+        manifest_sha256: str,
+    ) -> str:
         try:
             root = runtime_root.resolve(strict=True)
         except OSError as exc:
@@ -845,7 +915,9 @@ class VideoCapabilityInstaller:
             root,
             manifest_sha256,
             verify_files=True,
+            progress=self._update_runtime_import_progress,
         )
+        self._set_runtime_import_state("testing")
         if not _runtime_environment_is_portable(external_environment, root):
             raise VideoCapabilityError("VIDEO_RUNTIME_NOT_PORTABLE")
         try:

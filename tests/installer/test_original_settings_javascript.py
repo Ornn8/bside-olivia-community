@@ -242,6 +242,10 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert "选择解压后的离线包" in source
     assert "开始检查并安装" in source
     assert "文件较多时可能需要几十分钟，请勿关闭 Olivia" in source
+    assert "runtime_import" in source
+    assert "已检查 ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}" in source
+    assert "window.setInterval(updateRuntimeProgress, 1000)" in source
+    assert "window.clearInterval(progressTimer)" in source
     assert "尚未提供可迁移运行时归档" not in source
     assert "runtimeDigest" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source

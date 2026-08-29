@@ -176,8 +176,7 @@ def mount_original_client_video_capability_api(
 
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
-        async with control_lock:
-            payload = await asyncio.to_thread(installer.status)
+        payload = await asyncio.to_thread(installer.status)
         if not isinstance(payload, dict) or payload.get("capability") != "video":
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_STATUS_INVALID", status=503)
         return web.json_response(payload, headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"})

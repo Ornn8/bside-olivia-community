@@ -1354,6 +1354,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         setButtonsBusy([chooseRuntime, importRuntime], true);
         result.textContent = "正在检查并安装，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
+        const updateRuntimeProgress = async () => {
+          try {
+            const statusPayload = await requestJson(VIDEO_CAPABILITY_PATH);
+            const progress = statusPayload && statusPayload.runtime_import;
+            if (!progress || typeof progress !== "object") return;
+            const checkedBytes = Math.max(0, Number(progress.checked_bytes) || 0);
+            const totalBytes = Math.max(0, Number(progress.total_bytes) || 0);
+            if (progress.state === "checking") {
+              const percent = totalBytes > 0
+                ? Math.min(100, Math.floor((checkedBytes / totalBytes) * 100))
+                : 0;
+              result.textContent = totalBytes > 0
+                ? `已检查 ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}（${percent}%），请勿关闭 Olivia。`
+                : "正在读取离线包清单，请勿关闭 Olivia。";
+            } else if (progress.state === "testing") {
+              result.textContent = "文件检查完成，正在测试视频运行环境……";
+            }
+          } catch (_error) {
+            // The active import request remains authoritative; retry on the next tick.
+          }
+        };
+        const progressTimer = window.setInterval(updateRuntimeProgress, 1000);
+        void updateRuntimeProgress();
         try {
           await requestCapability(
             VIDEO_CAPABILITY_ACTION_PATH,
@@ -1368,6 +1391,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         } catch (_error) {
           result.textContent = "离线包检查未通过，请重新下载并完整解压后再试。";
           setButtonsBusy([chooseRuntime, importRuntime], false);
+        } finally {
+          window.clearInterval(progressTimer);
         }
       });
       item.append(
