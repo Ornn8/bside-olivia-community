@@ -302,7 +302,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH ? 600000 : 8000;
+    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH
+      ? 600000
+      : path === VIDEO_REPLY_SETTINGS_PATH
+      ? 300000
+      : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {

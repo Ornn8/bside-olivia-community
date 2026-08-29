@@ -347,6 +347,7 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
             capture_output=True,
             check=False,
             timeout=_RUNTIME_PORTABILITY_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return False

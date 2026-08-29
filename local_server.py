@@ -2104,7 +2104,8 @@ async def route(
                 return ok(setting.to_dict())
             environment = MappingProxyType(dict(_os.environ))
             try:
-                readiness = video_reply_dependency_status(
+                readiness = await asyncio.to_thread(
+                    video_reply_dependency_status,
                     environment,
                     performance_video_path=_current_music_performance(environment),
                 )
@@ -2140,7 +2141,8 @@ async def route(
         if body.get("enabled") is True:
             environment = MappingProxyType(dict(_os.environ))
             try:
-                readiness = video_reply_dependency_status(
+                readiness = await asyncio.to_thread(
+                    video_reply_dependency_status,
                     environment,
                     performance_video_path=_current_music_performance(environment),
                 )

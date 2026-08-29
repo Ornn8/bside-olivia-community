@@ -260,6 +260,21 @@ def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> No
     )
 
 
+def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    mutation = source.split("const requestMutation = async (path, body) => {", 1)[
+        1
+    ].split("const requestSetup = async", 1)[0]
+    setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
+        "const mountOfficialLetterImport", 1
+    )[0]
+
+    assert "path === VIDEO_REPLY_SETTINGS_PATH" in mutation
+    assert "? 300000" in mutation
+    assert ": 8000;" in mutation
+    assert "enabled = payload.enabled;" in setting
+
+
 def test_video_capability_offers_verified_runtime_root_selection() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     runtime_import = source.split(
