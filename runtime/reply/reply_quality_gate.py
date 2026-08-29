@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.reply.reply_context import ReplyContext
-from runtime.reply.reply_policy import scan_reply
+from runtime.reply.reply_policy import IntimacyClaim, scan_reply
 from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 
@@ -53,8 +53,13 @@ def run_reply_quality_gate(
     reviewer: ReviewerPort,
     rewriter: RewriterPort,
     generation_messages: Sequence[Mapping[str, Any]] = (),
+    intimacy_claims: tuple[IntimacyClaim, ...] = (),
 ) -> QualityGateResult:
-    deterministic = scan_reply(candidate, context)
+    deterministic = scan_reply(
+        candidate,
+        context,
+        intimacy_claims=intimacy_claims,
+    )
     review = _review_candidate(
         reviewer,
         candidate,
@@ -132,6 +137,19 @@ def run_reply_quality_gate(
             reviewer_calls=1,
             rewrite_calls=1,
             error_code="REWRITE_FAILED",
+        )
+    if intimacy_claims:
+        # Intimacy spans are bound to the original candidate. PR-4 will
+        # supply reviewer-generated claims for rewritten text; until then,
+        # accepting the rewrite without fresh evidence would fail open.
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            rewritten,
+            deterministic_codes + review_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=1,
+            error_code="FRESH_INTIMACY_CLAIMS_REQUIRED",
         )
     final_deterministic = scan_reply(rewritten, context)
     final_review = _review_candidate(

@@ -490,7 +490,9 @@ def test_local_server_private_world_failure_uses_null_port_without_blocking_lett
         "closeness": "unknown",
         "tension": "unknown",
         "relationship_stage": "unknown",
+        "intimacy_ceiling": "none",
+        "granted_intimacy": "none",
         "nickname_permission": "not_allowed",
-            "home_history_allowed": False,
+        "home_history_allowed": False,
         "known_continuations": [],
     }

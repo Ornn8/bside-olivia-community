@@ -9,6 +9,7 @@ from runtime.reply.reply_context import (
     ReplyContext,
     ReplyContextError,
     BehaviorLevel,
+    IntimacyRequest,
     IntimacyTier,
     PrivateBehaviorView,
     OutputChannel,
@@ -126,6 +127,44 @@ def test_context_exposes_only_identified_facts_and_bounded_behavior_hints() -> N
     assert "raw_score" not in payload["private_behavior"]
 
 
+def test_context_carries_bounded_intimacy_request_and_behavior_tiers() -> None:
+    trusted_time = TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))
+    default_context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=trusted_time,
+    )
+    requested = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=trusted_time,
+        intimacy_request=IntimacyRequest.REQUESTED,
+        private_behavior=PrivateBehaviorView(
+            relationship_stage=RelationshipStage.COMMITTED,
+            intimacy_ceiling=IntimacyTier.CLOSE_CONTACT,
+            granted_intimacy=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+
+    assert default_context.intimacy_request is IntimacyRequest.NONE
+    assert default_context.to_dict()["intimacy_request"] == "none"
+    assert requested.to_dict()["intimacy_request"] == "requested"
+    assert requested.to_dict()["private_behavior"]["intimacy_ceiling"] == (
+        "close_contact"
+    )
+    assert requested.to_dict()["private_behavior"]["granted_intimacy"] == (
+        "light_contact"
+    )
+    with pytest.raises(ReplyContextError):
+        ReplyContext.create(
+            ReplyMode.TEXT_LETTER,
+            trusted_time=trusted_time,
+            intimacy_request="requested",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ReplyContextError):
+        PrivateBehaviorView(
+            intimacy_ceiling="light_contact",  # type: ignore[arg-type]
+        )
+
+
 def test_legacy_video_mapping_is_preserved_and_future_im_requires_opt_in() -> None:
     adapter = ReplyModeAdapter()
     trusted_time = TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))
@@ -157,6 +196,7 @@ def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
     ).to_dict()
 
+    assert schema["$id"] == "p02.reply-context.v2"
     assert list(validator.iter_errors(valid)) == []
 
     invalid_channel = {**valid, "output_constraints": {**valid["output_constraints"]}}
@@ -190,7 +230,8 @@ def test_public_contract_documentation_names_api_errors_and_scope_boundary() -> 
         "ReplyModeAdapter",
         "REPLY_CONTEXT_INVALID",
         "REPLY_MODE_UNSUPPORTED",
-        "p02.reply-context.v1",
+        "p02.reply-context.v2",
+        "v1 payload",
         "future_im",
         "does not call a provider",
     ):

@@ -1,6 +1,12 @@
 from datetime import datetime, timezone
 
-from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
+from runtime.reply.reply_context import (
+    IntimacyTier,
+    ReplyContext,
+    ReplyMode,
+    TrustedTime,
+)
+from runtime.reply.reply_policy import IntimacyClaim
 from runtime.reply.reply_quality_gate import QualityGateStatus, run_reply_quality_gate
 from runtime.reply.reply_reviewer import (
     NullReviewer,
@@ -104,6 +110,35 @@ def test_hard_candidate_is_rewritten_once_then_rechecked_before_acceptance() -> 
     assert result.rewrite_calls == 1
     assert reviewer.calls == 2
     assert rewriter.calls == 1
+
+
+def test_candidate_bound_intimacy_claim_fails_closed_after_rewrite() -> None:
+    candidate = "Synthetic contact."
+    reviewer = _Reviewer(_pass_review(), _pass_review())
+    rewriter = _Rewriter("Safe rewritten candidate.")
+
+    result = run_reply_quality_gate(
+        candidate,
+        _context(),
+        reviewer=reviewer,
+        rewriter=rewriter,
+        intimacy_claims=(
+            IntimacyClaim(
+                "intimacy.synthetic",
+                IntimacyTier.LIGHT_CONTACT,
+                0,
+                len(candidate),
+            ),
+        ),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.accepted is False
+    assert result.text == "Safe rewritten candidate."
+    assert result.error_code == "FRESH_INTIMACY_CLAIMS_REQUIRED"
+    assert result.deterministic_checks == 1
+    assert result.reviewer_calls == 1
+    assert result.rewrite_calls == 1
 
 
 def test_second_hard_result_is_blocked_without_a_hidden_rewrite_loop() -> None:
