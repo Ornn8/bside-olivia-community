@@ -25,6 +25,7 @@ class PromptSection(str, Enum):
     PERSONA_PROFILE = "persona_profile"
     MODE_CONSTRAINTS = "mode_constraints"
     MODE_STYLE = "mode_style"
+    STYLE_EXAMPLE = "style_example"
     USER_INPUT = "user_input"
     PRIVATE_BEHAVIOR = "private_behavior"
     WORLD_FACT = "world_fact"
@@ -42,6 +43,7 @@ _REQUIRED = frozenset(
         PromptSection.PERSONA_PROFILE,
         PromptSection.MODE_CONSTRAINTS,
         PromptSection.MODE_STYLE,
+        PromptSection.STYLE_EXAMPLE,
         PromptSection.USER_INPUT,
     }
 )

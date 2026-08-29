@@ -389,6 +389,45 @@ def test_configured_persona_v2_preparation_excludes_current_memory_source() -> N
     assert "reply:older-letter:1" in rendered
 
 
+def test_configured_provider_fails_closed_before_generation_when_persona_is_not_ready(
+    tmp_path: Path,
+) -> None:
+    memory = NullMemoryPort()
+    provider = RecordingProvider()
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            persona_v2_enabled=True,
+            provider="synthetic",
+        ),
+        persona_v2_path=tmp_path / "missing-persona.json",
+        memory_prompt_builder=MemoryPromptBuilder(memory),
+        memory_port=memory,
+        gateway=provider,
+    )
+    bridge = CompatibilityBridge(adapter)
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(bridge, timeout_seconds=1),  # type: ignore[arg-type]
+        reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(
+                content="Synthetic letter input.",
+                request_id="persona-not-ready",
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.FAILED
+    assert result.error_code == "PERSONA_NOT_READY"
+    assert result.retryable is False
+    assert provider.messages == ()
+    assert bridge.calls == 0
+
+
 def test_letter_pipeline_exposes_only_selected_linli_history_to_reviewer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

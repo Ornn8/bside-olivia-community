@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 import pytest
 
 from persona_assembly import UntrustedFragment, assemble_persona
-from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
+from persona_loader import (
+    PersonaDeclaration,
+    PersonaProfile,
+    PersonaSnapshot,
+    PersonaStyleExemplar,
+)
 from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
     IntimacyTier,
@@ -44,6 +49,31 @@ def _declaration(
         statement=statement,
         mode=mode,
         facet=facet,
+    )
+
+
+def _style_exemplar(
+    exemplar_id: str,
+    *,
+    user_text: str,
+    assistant_text: str,
+    mode: str = "text_letter",
+    situation: str | None = None,
+) -> PersonaStyleExemplar:
+    return PersonaStyleExemplar(
+        exemplar_id=exemplar_id,
+        source_id="source.synthetic",
+        derivation="SYNTHETIC",
+        rights_status="REDISTRIBUTABLE",
+        allowed_public_release=True,
+        mode=mode,
+        situation=situation or exemplar_id.rsplit(".", 1)[-1],
+        user_text=user_text,
+        assistant_text=assistant_text,
+        style_only=True,
+        factual_authority=False,
+        user_text_is_synthetic=True,
+        assistant_text_is_verbatim=False,
     )
 
 
@@ -122,6 +152,76 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     assert messages[0]["content"].index("<mode_style") < messages[0][
         "content"
     ].index("<public_canon")
+
+
+def test_ready_persona_selects_a_small_mode_and_situation_specific_style_set() -> None:
+    snapshot = PersonaSnapshot(
+        schema_version="p02.persona.v2",
+        persona_id="synthetic.persona",
+        declarations=(
+            _declaration(
+                "constitution.boundary",
+                "CONSTITUTION",
+                "MEMORY_CONTINUITY",
+                "Do not invent shared history.",
+            ),
+            _declaration(
+                "mode.synthetic",
+                "MODE_STYLE",
+                "MODE_STYLE",
+                "Use a selective letter voice.",
+                "text_letter",
+            ),
+        ),
+        status="READY",
+        source="persona_v2",
+        profile=_profile(),
+        style_exemplars=(
+            _style_exemplar(
+                "style.synthetic.tired",
+                user_text="今天很累。",
+                assistant_text="先别急着把今天整理成结论。",
+                situation="emotional_acknowledgement",
+            ),
+            _style_exemplar(
+                "style.synthetic.busy",
+                user_text="忙了一天，好累。",
+                assistant_text="那就先把最吵的那件事放下。",
+                situation="emotional_acknowledgement",
+            ),
+            _style_exemplar(
+                "style.synthetic.greeting",
+                user_text="早上好。",
+                assistant_text="早。你来得比太阳准时。",
+                situation="brief_greeting",
+            ),
+            _style_exemplar(
+                "style.synthetic.spoken",
+                user_text="今天很累。",
+                assistant_text="先坐一会儿。",
+                mode="spoken_video",
+            ),
+        ),
+    )
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+    assembly = assemble_persona(
+        snapshot,
+        context,
+        user_input="心里有点难过。",
+        max_units=8_000,
+    )
+
+    assert assembly.system_content.count("<style_example>") == 2
+    assert "style.synthetic.tired" in assembly.system_content
+    assert "style.synthetic.busy" in assembly.system_content
+    assert "style.synthetic.greeting" not in assembly.system_content
+    assert "style.synthetic.spoken" not in assembly.system_content
+    assert '"style_only":true' in assembly.system_content
+    assert '"factual_authority":false' in assembly.system_content
 
 
 def test_policy_only_snapshot_keeps_rules_but_does_not_claim_character_identity() -> None:
@@ -219,6 +319,14 @@ def test_profile_and_current_mode_style_are_never_dropped() -> None:
         status="READY",
         source="persona_v2",
         profile=_profile(),
+        style_exemplars=(
+            _style_exemplar(
+                "style.synthetic.budget",
+                user_text="Synthetic input.",
+                assistant_text="A bounded style example.",
+                situation="ordinary_smalltalk",
+            ),
+        ),
     )
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,
@@ -249,6 +357,8 @@ def test_profile_and_current_mode_style_are_never_dropped() -> None:
     assert "evidence_summary" not in limited.system_content
     assert "林离 Olivia" in limited.system_content
     assert "Use a selective letter voice" in limited.system_content
+    assert "style.synthetic.budget" in limited.system_content
+    assert "style.style.synthetic.budget" in limited.budget_report.included_ids
 
 
 def test_required_user_input_is_never_silently_truncated() -> None:

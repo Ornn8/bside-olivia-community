@@ -21,6 +21,10 @@ _CHARACTER_REPLY_HISTORY_LIMIT = 1200
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 
 
+class PersonaNotReadyError(RuntimeError):
+    code = "PERSONA_NOT_READY"
+
+
 class OrchestratorPort(Protocol):
     async def run(self, request: object) -> ReplyResult: ...
 
@@ -76,11 +80,24 @@ class ReplyPipeline:
     async def run(self, request: object, context: ReplyContext) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
-        prepared = _prepare_generation_request(
-            request,
-            context,
-            self.orchestrator,
-        )
+        try:
+            prepared = _prepare_generation_request(
+                request,
+                context,
+                self.orchestrator,
+            )
+        except PersonaNotReadyError:
+            request_id = (
+                request.request_id
+                if isinstance(request, ReplyRequest)
+                else "persona-not-ready"
+            )
+            return PipelineResult(
+                request_id,
+                ReplyState.FAILED,
+                error_code=PersonaNotReadyError.code,
+                retryable=False,
+            )
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -158,6 +175,8 @@ def _prepare_generation_request(
         raise ValueError("persona generation boundary is unavailable")
 
     loaded = load_persona(persona_path)
+    if not loaded.ready:
+        raise PersonaNotReadyError
     memory_limit = min(
         request.max_input_chars,
         int(getattr(memory_port, "context_max_chars", 2400)),

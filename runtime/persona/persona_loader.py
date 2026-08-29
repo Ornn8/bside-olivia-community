@@ -49,6 +49,23 @@ class PersonaDeclaration:
 
 
 @dataclass(frozen=True)
+class PersonaStyleExemplar:
+    exemplar_id: str
+    source_id: str
+    derivation: str
+    rights_status: str
+    allowed_public_release: bool
+    mode: str
+    situation: str
+    user_text: str
+    assistant_text: str
+    style_only: bool
+    factual_authority: bool
+    user_text_is_synthetic: bool
+    assistant_text_is_verbatim: bool
+
+
+@dataclass(frozen=True)
 class PersonaSnapshot:
     schema_version: str | None
     persona_id: str | None
@@ -56,6 +73,7 @@ class PersonaSnapshot:
     status: Literal["READY", "POLICY_ONLY", "DRAFT"]
     source: Literal["persona_v2", "draft"]
     profile: PersonaProfile | None = None
+    style_exemplars: tuple[PersonaStyleExemplar, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,7 +118,10 @@ def load_persona(
         Draft202012Validator(schema).validate(payload)
     except ValidationError:
         return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
-    if any(not row["allowed_public_release"] for row in payload["declarations"]):
+    if any(
+        not row["allowed_public_release"]
+        for row in (*payload["declarations"], *payload.get("style_exemplars", ()))
+    ):
         return _draft_result(PersonaLoadErrorCode.RIGHTS_BLOCKED)
 
     declarations = tuple(
@@ -129,6 +150,24 @@ def load_persona(
         if isinstance(profile_payload, dict)
         else None
     )
+    style_exemplars = tuple(
+        PersonaStyleExemplar(
+            exemplar_id=row["exemplar_id"],
+            source_id=row["source_id"],
+            derivation=row["derivation"],
+            rights_status=row["rights_status"],
+            allowed_public_release=row["allowed_public_release"],
+            mode=row["mode"],
+            situation=row["situation"],
+            user_text=row["user_text"],
+            assistant_text=row["assistant_text"],
+            style_only=row["style_only"],
+            factual_authority=row["factual_authority"],
+            user_text_is_synthetic=row["user_text_is_synthetic"],
+            assistant_text_is_verbatim=row["assistant_text_is_verbatim"],
+        )
+        for row in payload.get("style_exemplars", ())
+    )
     gaps = _readiness_gaps(profile, declarations)
     if gaps:
         return PersonaLoadResult(
@@ -139,6 +178,7 @@ def load_persona(
                 status="POLICY_ONLY",
                 source="persona_v2",
                 profile=profile,
+                style_exemplars=style_exemplars,
             ),
             error_code=PersonaLoadErrorCode.INCOMPLETE,
             readiness_gaps=gaps,
@@ -151,6 +191,7 @@ def load_persona(
             status="READY",
             source="persona_v2",
             profile=profile,
+            style_exemplars=style_exemplars,
         ),
         error_code=None,
     )
@@ -202,5 +243,6 @@ __all__ = [
     "PersonaLoadResult",
     "PersonaProfile",
     "PersonaSnapshot",
+    "PersonaStyleExemplar",
     "load_persona",
 ]

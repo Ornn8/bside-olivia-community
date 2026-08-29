@@ -71,6 +71,30 @@ def test_release_profile_contains_character_behavior_not_only_safety_rules() -> 
     assert any(row["facet"] == "RELATIONSHIP_STYLE" for row in by_id.values())
 
 
+def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None:
+    loaded = load_persona(RELEASE_PATH)
+
+    exemplars = loaded.snapshot.style_exemplars
+    assert 4 <= len(exemplars) <= 6
+    assert {item.situation for item in exemplars} == {
+        "brief_greeting",
+        "ordinary_smalltalk",
+        "emotional_acknowledgement",
+        "boundary_refusal",
+        "natural_close",
+        "music_request",
+    }
+    assert all(item.mode == "text_letter" for item in exemplars)
+    assert all(item.derivation == "PRIVATE_CORPUS_ABSTRACTION" for item in exemplars)
+    assert all(item.rights_status == "SUMMARY_ONLY" for item in exemplars)
+    assert all(item.allowed_public_release for item in exemplars)
+    assert all(item.style_only for item in exemplars)
+    assert all(not item.factual_authority for item in exemplars)
+    assert all(item.user_text_is_synthetic for item in exemplars)
+    assert all(not item.assistant_text_is_verbatim for item in exemplars)
+    assert all("?" not in item.assistant_text and "？" not in item.assistant_text for item in exemplars)
+
+
 def test_release_profile_splits_relationship_commitment_from_product_promises() -> None:
     payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
     by_id = {row["declaration_id"]: row for row in payload["declarations"]}

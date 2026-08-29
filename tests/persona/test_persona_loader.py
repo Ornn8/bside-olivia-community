@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+
+import pytest
 
 from persona_loader import (
     PersonaDeclaration,
     PersonaLoadErrorCode,
     PersonaProfile,
     PersonaSnapshot,
+    PersonaStyleExemplar,
     load_persona,
 )
 
@@ -142,6 +146,54 @@ def test_valid_registry_returns_a_complete_typed_persona_snapshot(
         mode=None,
         facet="IDENTITY",
     )
+
+
+def test_public_style_exemplar_loads_as_immutable_non_factual_guidance(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_registry()
+    payload["style_exemplars"] = [
+        {
+            "exemplar_id": "style.synthetic.greeting",
+            "source_id": "source.synthetic",
+            "derivation": "SYNTHETIC",
+            "rights_status": "REDISTRIBUTABLE",
+            "allowed_public_release": True,
+            "mode": "text_letter",
+            "situation": "brief_greeting",
+            "user_text": "A synthetic greeting.",
+            "assistant_text": "A short, character-specific reply.",
+            "style_only": True,
+            "factual_authority": False,
+            "user_text_is_synthetic": True,
+            "assistant_text_is_verbatim": False,
+        }
+    ]
+    path = tmp_path / "persona.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.ready is True
+    assert result.snapshot.style_exemplars == (
+        PersonaStyleExemplar(
+            exemplar_id="style.synthetic.greeting",
+            source_id="source.synthetic",
+            derivation="SYNTHETIC",
+            rights_status="REDISTRIBUTABLE",
+            allowed_public_release=True,
+            mode="text_letter",
+            situation="brief_greeting",
+            user_text="A synthetic greeting.",
+            assistant_text="A short, character-specific reply.",
+            style_only=True,
+            factual_authority=False,
+            user_text_is_synthetic=True,
+            assistant_text_is_verbatim=False,
+        ),
+    )
+    with pytest.raises(FrozenInstanceError):
+        result.snapshot.style_exemplars[0].assistant_text = "mutated"  # type: ignore[misc]
 
 
 def test_policy_only_registry_is_not_misreported_as_ready(tmp_path: Path) -> None:

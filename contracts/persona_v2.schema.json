@@ -25,6 +25,13 @@
       "items": {
         "$ref": "#/$defs/declaration"
       }
+    },
+    "style_exemplars": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/style_exemplar"
+      }
     }
   },
   "$defs": {
@@ -91,6 +98,107 @@
           }
         }
       }
+    },
+    "style_exemplar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exemplar_id",
+        "source_id",
+        "derivation",
+        "rights_status",
+        "allowed_public_release",
+        "mode",
+        "situation",
+        "user_text",
+        "assistant_text",
+        "style_only",
+        "factual_authority",
+        "user_text_is_synthetic",
+        "assistant_text_is_verbatim"
+      ],
+      "properties": {
+        "exemplar_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+        },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+        },
+        "derivation": {
+          "enum": [
+            "SYNTHETIC",
+            "PRIVATE_CORPUS_ABSTRACTION"
+          ]
+        },
+        "rights_status": {
+          "enum": [
+            "REDISTRIBUTABLE",
+            "SUMMARY_ONLY",
+            "LOCAL_PRIVATE_ONLY",
+            "UNKNOWN_BLOCK_RELEASE"
+          ]
+        },
+        "allowed_public_release": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "text_letter",
+            "spoken_video",
+            "musical_video",
+            "future_im"
+          ]
+        },
+        "situation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+        },
+        "user_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "assistant_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "style_only": {
+          "const": true
+        },
+        "factual_authority": {
+          "const": false
+        },
+        "user_text_is_synthetic": {
+          "const": true
+        },
+        "assistant_text_is_verbatim": {
+          "const": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "rights_status": {
+                "enum": [
+                  "LOCAL_PRIVATE_ONLY",
+                  "UNKNOWN_BLOCK_RELEASE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "allowed_public_release": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
     },
     "declaration": {
       "type": "object",
