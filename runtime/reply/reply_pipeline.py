@@ -13,7 +13,11 @@ from reply_model_quality import create_model_quality_ports
 from runtime.reply.reply_context import ReplyContext
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from runtime.reply.reply_quality_gate import ReviewerPort, RewriterPort, run_reply_quality_gate
-from runtime.reply.reply_reviewer import NullReviewer
+from runtime.reply.reply_reviewer import (
+    NullReviewer,
+    TrustedCharacterReply,
+    TrustedReviewEvidence,
+)
 from runtime.memory.memory_port import CONVERSATION_MEMORY, MemoryRecord
 
 
@@ -53,6 +57,18 @@ class PipelineResult:
     rewrite_calls: int = 0
 
 
+@dataclass(frozen=True)
+class _PreparedGeneration:
+    request: object
+    trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence()
+
+
+@dataclass(frozen=True)
+class _SelectedHistory:
+    fragments: tuple[UntrustedFragment, ...]
+    trusted_evidence: TrustedReviewEvidence
+
+
 class ReplyPipeline:
     def __init__(
         self,
@@ -82,7 +98,7 @@ class ReplyPipeline:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         try:
-            prepared = _prepare_generation_request(
+            preparation = _prepare_generation_request(
                 request,
                 context,
                 self.orchestrator,
@@ -94,6 +110,7 @@ class ReplyPipeline:
                 error_code=_PERSONA_NOT_READY,
                 retryable=False,
             )
+        prepared = preparation.request
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -109,6 +126,7 @@ class ReplyPipeline:
             reviewer=self.reviewer,
             rewriter=self.rewriter,
             generation_messages=_generation_messages(prepared),
+            trusted_evidence=preparation.trusted_evidence,
         )
         if not gate.accepted:
             repairable_text = (
@@ -142,7 +160,7 @@ def _prepare_generation_request(
     request: object,
     context: ReplyContext,
     orchestrator: OrchestratorPort,
-) -> object:
+) -> _PreparedGeneration:
     """Attach Persona messages before provider generation when the local bridge is used."""
 
     if (
@@ -151,7 +169,7 @@ def _prepare_generation_request(
         or not isinstance(request.content, str)
         or not request.content.strip()
     ):
-        return request
+        return _PreparedGeneration(request)
 
     bridge = getattr(orchestrator, "gateway", None)
     adapter = getattr(bridge, "adapter", None)
@@ -162,7 +180,7 @@ def _prepare_generation_request(
         or not getattr(config, "persona_v2_enabled", False)
         or provider_name in {"", "none", "disabled", "unconfigured"}
     ):
-        return request
+        return _PreparedGeneration(request)
 
     persona_path = getattr(adapter, "persona_v2_path", None)
     memory_builder = getattr(adapter, "memory_prompt_builder", None)
@@ -191,19 +209,23 @@ def _prepare_generation_request(
             request.content,
             max_chars=memory_limit,
         )
-    history = _selected_history(memory_context)
+    selection = _selected_history(memory_context)
     messages = assemble_persona(
         loaded.snapshot,
         context,
         user_input=request.content,
         max_units=request.max_input_chars,
-        history=history,
+        history=selection.fragments,
     ).to_messages()
-    return replace(request, content=None, messages=messages)
+    return _PreparedGeneration(
+        replace(request, content=None, messages=messages),
+        selection.trusted_evidence,
+    )
 
 
-def _selected_history(memory_context: object) -> tuple[UntrustedFragment, ...]:
+def _selected_history(memory_context: object) -> _SelectedHistory:
     character_replies: list[UntrustedFragment] = []
+    trusted_replies: list[TrustedCharacterReply] = []
     remaining = _CHARACTER_REPLY_HISTORY_LIMIT
     references = getattr(memory_context, "references", ())
     if isinstance(references, tuple):
@@ -212,6 +234,12 @@ def _selected_history(memory_context: object) -> tuple[UntrustedFragment, ...]:
             if fragment is None:
                 continue
             character_replies.append(fragment)
+            trusted_replies.append(
+                TrustedCharacterReply(
+                    fragment.fragment_id,
+                    fragment.text[len(_CHARACTER_REPLY_PREFIX) :],
+                )
+            )
             remaining -= len(fragment.text)
             if remaining <= len(_CHARACTER_REPLY_PREFIX):
                 break
@@ -221,7 +249,10 @@ def _selected_history(memory_context: object) -> tuple[UntrustedFragment, ...]:
         if isinstance(memory_text, str) and memory_text
         else ()
     )
-    return (*character_replies, *memory_reference)
+    return _SelectedHistory(
+        (*character_replies, *memory_reference),
+        TrustedReviewEvidence(tuple(trusted_replies)),
+    )
 
 
 def _character_reply_fragment(

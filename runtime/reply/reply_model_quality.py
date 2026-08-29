@@ -24,6 +24,7 @@ from runtime.reply.reply_reviewer import (
     ReviewReference,
     ReviewResult,
     ReviewerConfig,
+    TrustedReviewEvidence,
 )
 
 
@@ -86,7 +87,10 @@ _LAYER_SPECS = {
             "shape sound like Linli in the requested communication mode? "
             "Avoid exhaustive recap, universal reassurance, polished "
             "assistant prose, slogan-like wisdom, and unnecessary closure. "
-            "Do not require optional catchphrases or fatigue markers."
+            "Do not require optional catchphrases or fatigue markers. For "
+            "text_letter, a closing question is STYLE_DRIFT only when it adds "
+            "no necessary information or choice and merely keeps the conversation "
+            "going. A concrete, useful question remains allowed."
         ),
     },
     "focus_response": {
@@ -117,7 +121,13 @@ _LAYER_SPECS = {
             "Use a support-first check. Only an unsupported specific claim "
             "about a past event, recurring pattern, private title, or "
             "relationship history may be memory fabrication. Current-input "
-            "paraphrase, ordinary inference, and conditional language are not."
+            "paraphrase and conditional language are not. Ordinary inference "
+            "is allowed only when it does not claim an unsupported past or "
+            "current fact. An invented current location, current action, or "
+            "recurring habit is memory fabrication. "
+            "An emotional acknowledgment, stylistic reaction, or present-tense "
+            "support that does not assert a past or current event is not memory "
+            "fabrication. This exception never supports an invented fact."
         ),
     },
     "autonomy_life": {
@@ -165,6 +175,33 @@ _REVIEW_FACETS = frozenset(
         "MEMORY_CONTINUITY",
         "UNCERTAINTY",
     }
+)
+_CONTINUITY_DECISION_CASES = (
+    {
+        "kind": "emotional_acknowledgment",
+        "expected": "allow",
+        "candidate": "That sounds like a heavy day.",
+    },
+    {
+        "kind": "useful_current_inference",
+        "expected": "allow",
+        "candidate": "It sounds as if the delay is what hurt most.",
+    },
+    {
+        "kind": "invented_current_location",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I am sitting beside the station window now.",
+    },
+    {
+        "kind": "invented_current_action",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I am making tea for you now.",
+    },
+    {
+        "kind": "invented_recurring_habit",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I always leave the window open when it rains.",
+    },
 )
 
 
@@ -303,14 +340,20 @@ class GatewayPersonaReviewer:
         generation_messages: Sequence[
             Mapping[str, Any]
         ],
+        *,
+        trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence(),
     ) -> ReviewResult:
         user_text = _last_user_text(
             generation_messages
         )
         excerpt = _bounded_user_excerpt(user_text, _CURRENT_USER_EXCERPT_LIMIT)
         memory_evidence = _assembled_memory_evidence(generation_messages)
-        character_reply_history = _assembled_character_reply_evidence(
-            generation_messages
+        character_reply_history = _safe_text(
+            "\n".join(
+                item.text.strip()
+                for item in trusted_evidence.character_replies
+            ),
+            _CHARACTER_REPLY_HISTORY_LIMIT,
         )
         references = (
             *_reference_chunks("current.user_excerpt", excerpt),
@@ -427,6 +470,12 @@ class GatewayPersonaRewriter:
         }
         if delivery_length_contract is not None:
             payload["delivery_length_contract"] = delivery_length_contract
+        text_letter_repair = (
+            " In text_letter, do not add a question just to create a closing; "
+            "keep one only when it obtains necessary information or choice."
+            if context.mode.value == "text_letter"
+            else ""
+        )
         messages = (
             {
                 "role": "system",
@@ -438,6 +487,7 @@ class GatewayPersonaRewriter:
                     "style. Do not invent history or facts. Return only the replacement "
                     "plain-text reply: no analysis, JSON, Markdown heading, stage direction, "
                     "speaker prefix, or control markup."
+                    f"{text_letter_repair}"
                     " When delivery_length_contract is present, it overrides the usual "
                     "concise style: rewrite to its target length and verify the compact "
                     "character count is within the inclusive range before returning. "
@@ -667,6 +717,12 @@ def _layer_messages(
         f"GLOBAL_AUTHORITY:\n{layer.global_authority}\n"
         f"LAYER_AUTHORITY:\n{layer.layer_authority}"
     )
+    if layer.name == "continuity_memory":
+        system += "\nDECISION_CASES_JSON:\n" + json.dumps(
+            _CONTINUITY_DECISION_CASES,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     payload = {
         "layer": layer.name,
         "mode": mode,
@@ -909,13 +965,9 @@ def _aggregate_layer_results(
                 {
                     "code": code,
                     "severity": (
-                        "soft"
-                        if name == "voice_style"
-                        else (
-                            "hard"
-                            if item.hard_violations or item.score == 0
-                            else "soft"
-                        )
+                        "hard"
+                        if item.hard_violations or item.score == 0
+                        else "soft"
                     ),
                     "evidence": {"start": 0, "end": len(candidate)},
                 }
@@ -1084,20 +1136,6 @@ def _assembled_memory_evidence(
     messages: Sequence[Mapping[str, Any]],
 ) -> str:
     return _safe_text("\n".join(_assembled_history_texts(messages)), 2400)
-
-
-def _assembled_character_reply_evidence(
-    messages: Sequence[Mapping[str, Any]],
-) -> str:
-    prefix = "character_reply: "
-    replies = tuple(
-        text[len(prefix) :].strip()
-        for text in _assembled_history_texts(messages)
-        if text.startswith(prefix) and text[len(prefix) :].strip()
-    )
-    return _safe_text("\n".join(replies), _CHARACTER_REPLY_HISTORY_LIMIT)
-
-
 def _reference_chunks(prefix: str, value: str) -> tuple[ReviewReference, ...]:
     if not value:
         return ()

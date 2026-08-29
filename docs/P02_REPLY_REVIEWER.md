@@ -33,6 +33,14 @@ The model reviewer receives only:
   canonical `history:` records in the current memory selection that are
   explicitly attributed to Linli; prior user and unmarked records are excluded.
 
+The production memory selector also creates a frozen `TrustedReviewEvidence`
+value from those same validated records. The reviewer accepts relationship
+history only through that separate typed channel; it never parses Persona
+prompt blocks for authority. A preloaded message may forge `history_actor`, a
+stable-looking fragment id, and a `character_reply:` prefix, but reviewer
+history still remains empty. When the current selection has no reliably
+attributed Linli reply, character reply history is empty.
+
 It does not receive PrivateWorld numeric values, raw home-access records,
 pending/control-only continuation facts, databases, filesystem paths, provider
 configuration, or the complete archive. Review prompts and responses are not
@@ -49,11 +57,22 @@ disagreement, fatigue, or short reply is autonomy rather than a violation
 unless it contradicts confirmed history. Liking the conversation is not
 evidence that Linli likes the user.
 
+The continuity layer distinguishes unsupported factual memory from ordinary
+emotional acknowledgment, style, current-input paraphrase, inference, and
+conditional language. Ordinary inference is allowed only when it does not
+assert an unsupported past or current fact. Invented current locations,
+current actions, and recurring habits are `MEMORY_FABRICATION`. In text-letter
+mode, a closing question is `STYLE_DRIFT` only when it adds no necessary
+information or choice and merely forces continuation; useful concrete
+questions remain allowed.
+
 Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
 classification. Stale spans, conflicting claim sources, changed request
 classification, or malformed metadata fail closed. This adds no sixth review
-layer and no extra provider call.
+layer and no extra provider call. An explicit hard `STYLE_DRIFT` that remains
+after the rewrite is blocked; only a localized voice-style score of 1 with no
+hard code and no drift flag may remain an accepted warning.
 
 ## Runtime controls
 
