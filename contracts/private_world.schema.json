@@ -12,6 +12,68 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9._:-]{1,64}$"
     },
+    "relationship_stage": {
+      "oneOf": [
+        {
+          "enum": [
+            "unknown",
+            "acquaintance",
+            "familiar",
+            "close",
+            "committed"
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/identifier"},
+            {
+              "not": {
+                "enum": [
+                  "unknown",
+                  "acquaintance",
+                  "familiar",
+                  "close",
+                  "committed"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "intimacy_tier": {
+      "enum": ["none", "light_contact", "close_contact"]
+    },
+    "intimacy_grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grant_id", "tier", "statement"],
+      "properties": {
+        "grant_id": {"$ref": "#/$defs/identifier"},
+        "tier": {"$ref": "#/$defs/intimacy_tier"},
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+        }
+      }
+    },
+    "growth_window_start": {
+      "oneOf": [
+        {"const": ""},
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|\\+00:00)$"
+        }
+      ]
+    },
+    "growth_used": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
     "nickname": {
       "type": "string",
       "minLength": 1,
@@ -88,7 +150,10 @@
         "nickname_permissions",
         "home_access",
         "continuation_awareness",
-        "continuation_facts"
+        "continuation_facts",
+        "intimacy_grants",
+        "growth_window_start",
+        "growth_used"
       ],
       "properties": {
         "view": {"const": "control"},
@@ -98,7 +163,7 @@
         "closeness": {"$ref": "#/$defs/score"},
         "tension": {"$ref": "#/$defs/score"},
         "relationship_stage": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/relationship_stage"
         },
         "nickname_permissions": {
           "type": "array",
@@ -114,7 +179,14 @@
           "type": "array",
           "maxItems": 32,
           "items": {"$ref": "#/$defs/continuation_fact"}
-        }
+        },
+        "intimacy_grants": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/intimacy_grant"}
+        },
+        "growth_window_start": {"$ref": "#/$defs/growth_window_start"},
+        "growth_used": {"$ref": "#/$defs/growth_used"}
       }
     },
     "character": {
@@ -123,6 +195,7 @@
       "required": [
         "view",
         "relationship_stage",
+        "granted_intimacy",
         "nickname_permissions",
         "home_history_allowed",
         "continuation_known",
@@ -131,8 +204,9 @@
       "properties": {
         "view": {"const": "character"},
         "relationship_stage": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/relationship_stage"
         },
+        "granted_intimacy": {"$ref": "#/$defs/intimacy_tier"},
         "nickname_permissions": {
           "type": "array",
           "maxItems": 16,
@@ -163,7 +237,10 @@
         "nickname_permissions",
         "home_access",
         "continuation_awareness",
-        "continuation_facts"
+        "continuation_facts",
+        "intimacy_grants",
+        "growth_window_start",
+        "growth_used"
       ],
       "properties": {
         "view": {"const": "snapshot"},
@@ -177,7 +254,7 @@
         "closeness": {"$ref": "#/$defs/score"},
         "tension": {"$ref": "#/$defs/score"},
         "relationship_stage": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/relationship_stage"
         },
         "nickname_permissions": {
           "type": "array",
@@ -193,7 +270,14 @@
           "type": "array",
           "maxItems": 32,
           "items": {"$ref": "#/$defs/continuation_fact"}
-        }
+        },
+        "intimacy_grants": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/intimacy_grant"}
+        },
+        "growth_window_start": {"$ref": "#/$defs/growth_window_start"},
+        "growth_used": {"$ref": "#/$defs/growth_used"}
       }
     }
   }

@@ -46,6 +46,38 @@ class RelationshipStage(str, Enum):
     ACQUAINTANCE = "acquaintance"
     FAMILIAR = "familiar"
     CLOSE = "close"
+    COMMITTED = "committed"
+
+
+_STAGE_ORDER = (
+    RelationshipStage.UNKNOWN,
+    RelationshipStage.ACQUAINTANCE,
+    RelationshipStage.FAMILIAR,
+    RelationshipStage.CLOSE,
+    RelationshipStage.COMMITTED,
+)
+
+
+class IntimacyTier(str, Enum):
+    NONE = "none"
+    LIGHT_CONTACT = "light_contact"
+    CLOSE_CONTACT = "close_contact"
+
+
+def intimacy_ceiling_for_stage(
+    stage: RelationshipStage | str,
+) -> IntimacyTier:
+    try:
+        resolved_stage = RelationshipStage(stage)
+    except (TypeError, ValueError):
+        raise ReplyContextError("relationship stage is invalid") from None
+    if resolved_stage in _STAGE_ORDER[:3]:
+        return IntimacyTier.NONE
+    if resolved_stage is RelationshipStage.CLOSE:
+        return IntimacyTier.LIGHT_CONTACT
+    if resolved_stage is RelationshipStage.COMMITTED:
+        return IntimacyTier.CLOSE_CONTACT
+    raise ReplyContextError("relationship stage is invalid")
 
 
 class NicknamePermission(str, Enum):
