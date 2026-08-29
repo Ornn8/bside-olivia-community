@@ -25,7 +25,8 @@ def test_start_local_configures_private_world_under_install_data(
     observed: dict[str, object] = {}
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
     monkeypatch.setattr(
         start_local,
         "_server_backend_id",
@@ -38,6 +39,21 @@ def test_start_local_configures_private_world_under_install_data(
         "_repair_client_frontend",
         lambda _root, _port: "ALREADY_PATCHED",
     )
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate() -> None:
+            return None
+
+        @staticmethod
+        def wait(*, timeout: float) -> int:
+            return 0
+
+    monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: Process())
 
     def fake_call(command, *, cwd, env):
         observed.update({"command": command, "cwd": cwd, "env": env})
