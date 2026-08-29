@@ -1789,13 +1789,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let ready = false;
     let missingDependencies = [];
     let message = "正在检测视频运行环境，第一次可能需要几分钟…";
+    let pendingEnabled = null;
     let toggle = null;
     let downloads = null;
     const render = () => {
       if (!toggle || !downloads) return;
       const settingAvailable = typeof enabled === "boolean";
-      toggle.disabled = !settingAvailable || (!ready && !enabled);
-      toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
+      toggle.disabled = pendingEnabled !== null || !settingAvailable || (!ready && !enabled);
+      toggle.textContent = pendingEnabled !== null
+        ? (pendingEnabled ? "正在开启…" : "正在关闭…")
+        : settingAvailable
+        ? (enabled ? "已开启" : "已关闭")
+        : "暂不可用";
       toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
       downloads.textContent = ready ? "管理下载" : "下载缺失组件";
       state.textContent = message;
@@ -1830,6 +1835,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const apply = async () => {
       if (!toggle || typeof enabled !== "boolean") return;
       const previous = enabled;
+      pendingEnabled = !previous;
+      message = pendingEnabled ? "正在确认本地组件并开启视频回信…" : "正在关闭视频回信…";
+      render();
       setButtonsBusy([toggle], true);
       try {
         const payload = await requestMutation(VIDEO_REPLY_SETTINGS_PATH, { enabled: !previous, request_id: videoReplyRequestId() });
@@ -1846,6 +1854,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
         }
       } finally {
+        pendingEnabled = null;
         setButtonsBusy([toggle], false);
         render();
       }

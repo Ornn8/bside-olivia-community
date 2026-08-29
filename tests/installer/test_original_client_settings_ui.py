@@ -685,6 +685,8 @@ let currentStatus = "READY";
 const mutationPaths = [];
 const videoMethods = [];
 let videoWrites = 0;
+let resolveFirstVideoWrite;
+const firstVideoWrite = new Promise((resolve) => { resolveFirstVideoWrite = resolve; });
 const statuses = ["READY", "PAUSED", "READY"];
 const statusPayload = (status) => ({
   status,
@@ -740,7 +742,7 @@ const statusPayload = (status) => ({
         if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
         videoWrites += 1;
         return videoWrites === 1
-          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
+          ? firstVideoWrite
           : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
       }
       if (endpoint.pathname === "/toy/capabilities/video") {
@@ -804,7 +806,11 @@ vm.runInNewContext(source, context);
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
       await open.click();
       await flush();
-      await findButton("已开启").click();
+      const firstVideoToggle = findButton("已开启").click();
+      await flush();
+      if (!findButton("正在关闭…")) throw new Error("video mutation progress was hidden");
+      resolveFirstVideoWrite({ ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) });
+      await firstVideoToggle;
       await flush();
       await findButton("已关闭").click();
       await flush();
