@@ -33,10 +33,12 @@ The model reviewer receives only:
   canonical `history:` records in the current memory selection that are
   explicitly attributed to Linli; prior user and unmarked records are excluded.
 
-The assembly preserves that attribution as typed `history_actor=linli`
-metadata next to a stable character-reply fragment id. The reviewer requires
-both fields; a `character_reply:` string inside ordinary or user memory does
-not become relationship evidence. When the current selection has no reliably
+The production memory selector also creates a frozen `TrustedReviewEvidence`
+value from those same validated records. The reviewer accepts relationship
+history only through that separate typed channel; it never parses Persona
+prompt blocks for authority. A preloaded message may forge `history_actor`, a
+stable-looking fragment id, and a `character_reply:` prefix, but reviewer
+history still remains empty. When the current selection has no reliably
 attributed Linli reply, character reply history is empty.
 
 It does not receive PrivateWorld numeric values, raw home-access records,
@@ -57,9 +59,9 @@ evidence that Linli likes the user.
 
 The continuity layer distinguishes unsupported factual memory from ordinary
 emotional acknowledgment, style, current-input paraphrase, inference, and
-conditional language. Those forms are not `MEMORY_FABRICATION` unless they
-also assert an unsupported past or current fact. This does not authorize an
-invented event, habit, possession, title, or relationship fact. In text-letter
+conditional language. Ordinary inference is allowed only when it does not
+assert an unsupported past or current fact. Invented current locations,
+current actions, and recurring habits are `MEMORY_FABRICATION`. In text-letter
 mode, a closing question is `STYLE_DRIFT` only when it adds no necessary
 information or choice and merely forces continuation; useful concrete
 questions remain allowed.
@@ -68,7 +70,9 @@ Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
 classification. Stale spans, conflicting claim sources, changed request
 classification, or malformed metadata fail closed. This adds no sixth review
-layer and no extra provider call.
+layer and no extra provider call. An explicit hard `STYLE_DRIFT` that remains
+after the rewrite is blocked; only a localized voice-style score of 1 with no
+hard code and no drift flag may remain an accepted warning.
 
 ## Runtime controls
 

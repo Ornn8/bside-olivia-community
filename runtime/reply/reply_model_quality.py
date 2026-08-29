@@ -24,6 +24,7 @@ from runtime.reply.reply_reviewer import (
     ReviewReference,
     ReviewResult,
     ReviewerConfig,
+    TrustedReviewEvidence,
 )
 
 
@@ -120,7 +121,10 @@ _LAYER_SPECS = {
             "Use a support-first check. Only an unsupported specific claim "
             "about a past event, recurring pattern, private title, or "
             "relationship history may be memory fabrication. Current-input "
-            "paraphrase, ordinary inference, and conditional language are not. "
+            "paraphrase and conditional language are not. Ordinary inference "
+            "is allowed only when it does not claim an unsupported past or "
+            "current fact. An invented current location, current action, or "
+            "recurring habit is memory fabrication. "
             "An emotional acknowledgment, stylistic reaction, or present-tense "
             "support that does not assert a past or current event is not memory "
             "fabrication. This exception never supports an invented fact."
@@ -160,9 +164,6 @@ _LAYER_RELEASE_FACETS = {
 _MEMORY_SOURCE_CHARACTER_LIMIT = 2400
 _CURRENT_USER_EXCERPT_LIMIT = 600
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
-_CHARACTER_REPLY_FRAGMENT_ID_RE = re.compile(
-    r"^character_reply\.[A-Za-z0-9._:-]{1,80}$"
-)
 _REVIEW_INPUT_CHARACTER_LIMIT = 30000
 _REVIEW_FACETS = frozenset(
     {
@@ -174,6 +175,33 @@ _REVIEW_FACETS = frozenset(
         "MEMORY_CONTINUITY",
         "UNCERTAINTY",
     }
+)
+_CONTINUITY_DECISION_CASES = (
+    {
+        "kind": "emotional_acknowledgment",
+        "expected": "allow",
+        "candidate": "That sounds like a heavy day.",
+    },
+    {
+        "kind": "useful_current_inference",
+        "expected": "allow",
+        "candidate": "It sounds as if the delay is what hurt most.",
+    },
+    {
+        "kind": "invented_current_location",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I am sitting beside the station window now.",
+    },
+    {
+        "kind": "invented_current_action",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I am making tea for you now.",
+    },
+    {
+        "kind": "invented_recurring_habit",
+        "expected": "reject_memory_fabrication",
+        "candidate": "I always leave the window open when it rains.",
+    },
 )
 
 
@@ -202,13 +230,6 @@ class _LayerResult:
             and not self.hard_violations
             and not self.drift_detected
         )
-
-
-@dataclass(frozen=True)
-class _AssembledHistoryFragment:
-    fragment_id: str
-    text: str
-    history_actor: str | None
 
 
 class GatewayReviewTransport:
@@ -319,14 +340,20 @@ class GatewayPersonaReviewer:
         generation_messages: Sequence[
             Mapping[str, Any]
         ],
+        *,
+        trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence(),
     ) -> ReviewResult:
         user_text = _last_user_text(
             generation_messages
         )
         excerpt = _bounded_user_excerpt(user_text, _CURRENT_USER_EXCERPT_LIMIT)
         memory_evidence = _assembled_memory_evidence(generation_messages)
-        character_reply_history = _assembled_character_reply_evidence(
-            generation_messages
+        character_reply_history = _safe_text(
+            "\n".join(
+                item.text.strip()
+                for item in trusted_evidence.character_replies
+            ),
+            _CHARACTER_REPLY_HISTORY_LIMIT,
         )
         references = (
             *_reference_chunks("current.user_excerpt", excerpt),
@@ -690,6 +717,12 @@ def _layer_messages(
         f"GLOBAL_AUTHORITY:\n{layer.global_authority}\n"
         f"LAYER_AUTHORITY:\n{layer.layer_authority}"
     )
+    if layer.name == "continuity_memory":
+        system += "\nDECISION_CASES_JSON:\n" + json.dumps(
+            _CONTINUITY_DECISION_CASES,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     payload = {
         "layer": layer.name,
         "mode": mode,
@@ -932,13 +965,9 @@ def _aggregate_layer_results(
                 {
                     "code": code,
                     "severity": (
-                        "soft"
-                        if name == "voice_style"
-                        else (
-                            "hard"
-                            if item.hard_violations or item.score == 0
-                            else "soft"
-                        )
+                        "hard"
+                        if item.hard_violations or item.score == 0
+                        else "soft"
                     ),
                     "evidence": {"start": 0, "end": len(candidate)},
                 }
@@ -1080,10 +1109,10 @@ def _last_user_text(
     return ""
 
 
-def _assembled_history_fragments(
+def _assembled_history_texts(
     messages: Sequence[Mapping[str, Any]],
-) -> tuple[_AssembledHistoryFragment, ...]:
-    evidence: list[_AssembledHistoryFragment] = []
+) -> tuple[str, ...]:
+    evidence: list[str] = []
     for message in messages:
         content = message.get("content")
         if message.get("role") != "system" or not isinstance(content, str):
@@ -1097,60 +1126,16 @@ def _assembled_history_fragments(
                 payload = json.loads(match.group(1))
             except json.JSONDecodeError:
                 continue
-            if not isinstance(payload, Mapping):
-                continue
-            text = payload.get("text")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            fragment_id = payload.get("fragment_id")
-            history_actor = payload.get("history_actor")
-            evidence.append(
-                _AssembledHistoryFragment(
-                    fragment_id=(
-                        fragment_id
-                        if isinstance(fragment_id, str)
-                        and re.fullmatch(r"[A-Za-z0-9._:-]{1,96}", fragment_id)
-                        else ""
-                    ),
-                    text=text.strip(),
-                    history_actor=(
-                        history_actor
-                        if isinstance(history_actor, str)
-                        and history_actor in ("user", "linli")
-                        else None
-                    ),
-                )
-            )
+            text = payload.get("text") if isinstance(payload, Mapping) else None
+            if isinstance(text, str) and text.strip():
+                evidence.append(text.strip())
     return tuple(evidence)
-
-
-def _assembled_history_texts(
-    messages: Sequence[Mapping[str, Any]],
-) -> tuple[str, ...]:
-    return tuple(item.text for item in _assembled_history_fragments(messages))
 
 
 def _assembled_memory_evidence(
     messages: Sequence[Mapping[str, Any]],
 ) -> str:
     return _safe_text("\n".join(_assembled_history_texts(messages)), 2400)
-
-
-def _assembled_character_reply_evidence(
-    messages: Sequence[Mapping[str, Any]],
-) -> str:
-    prefix = "character_reply: "
-    replies = tuple(
-        item.text[len(prefix) :].strip()
-        for item in _assembled_history_fragments(messages)
-        if item.history_actor == "linli"
-        and _CHARACTER_REPLY_FRAGMENT_ID_RE.fullmatch(item.fragment_id)
-        and item.text.startswith(prefix)
-        and item.text[len(prefix) :].strip()
-    )
-    return _safe_text("\n".join(replies), _CHARACTER_REPLY_HISTORY_LIMIT)
-
-
 def _reference_chunks(prefix: str, value: str) -> tuple[ReviewReference, ...]:
     if not value:
         return ()

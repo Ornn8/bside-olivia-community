@@ -9,6 +9,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from runtime.reply.reply_context import ReplyContext
 from runtime.reply.reply_policy import IntimacyClaim, scan_reply
 from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
+from runtime.reply.reply_reviewer import TrustedReviewEvidence
 
 
 class QualityGateStatus(StrEnum):
@@ -64,6 +65,7 @@ def run_reply_quality_gate(
     reviewer: ReviewerPort,
     rewriter: RewriterPort,
     generation_messages: Sequence[Mapping[str, Any]] = (),
+    trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence(),
     intimacy_claims: tuple[IntimacyClaim, ...] = (),
 ) -> QualityGateResult:
     review = _review_candidate(
@@ -71,6 +73,7 @@ def run_reply_quality_gate(
         candidate,
         context,
         generation_messages,
+        trusted_evidence,
     )
     if intimacy_claims and review.status is ReviewStatus.COMPLETED:
         return QualityGateResult(
@@ -195,6 +198,7 @@ def run_reply_quality_gate(
         rewritten,
         reviewed_context,
         generation_messages,
+        trusted_evidence,
     )
     if (
         final_review.status is ReviewStatus.COMPLETED
@@ -276,9 +280,17 @@ def _review_candidate(
     candidate: str,
     context: ReplyContext,
     generation_messages: Sequence[Mapping[str, Any]],
+    trusted_evidence: TrustedReviewEvidence,
 ) -> ReviewResult:
     extended = getattr(reviewer, "review_with_messages", None)
     if callable(extended):
+        if trusted_evidence.character_replies:
+            return extended(
+                candidate,
+                context,
+                generation_messages,
+                trusted_evidence=trusted_evidence,
+            )
         return extended(candidate, context, generation_messages)
     return reviewer.review(candidate, context)
 

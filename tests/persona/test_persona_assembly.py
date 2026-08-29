@@ -349,40 +349,6 @@ def test_profile_and_current_mode_style_are_never_dropped() -> None:
     assert "Use a selective letter voice" in limited.system_content
 
 
-def test_history_fragment_preserves_typed_linli_actor_provenance() -> None:
-    context = ReplyContext.create(
-        ReplyMode.TEXT_LETTER,
-        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
-    )
-
-    assembly = assemble_persona(
-        _style_snapshot(),
-        context,
-        user_input="Synthetic input.",
-        history=(
-            UntrustedFragment(
-                "character_reply.synthetic",
-                "Synthetic prior Linli reply.",
-                history_actor="linli",
-            ),
-        ),
-        max_units=10_000,
-    )
-
-    match = re.search(
-        r"<untrusted_history>\s*(\{.*?\})\s*</untrusted_history>",
-        assembly.system_content,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    assert json.loads(match.group(1)) == {
-        "untrusted": True,
-        "fragment_id": "character_reply.synthetic",
-        "history_actor": "linli",
-        "text": "Synthetic prior Linli reply.",
-    }
-
-
 def test_small_budget_accepts_persona_with_or_without_whole_style_block() -> None:
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,

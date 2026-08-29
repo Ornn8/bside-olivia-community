@@ -87,6 +87,43 @@ class ReviewReference:
 
 
 @dataclass(frozen=True)
+class TrustedCharacterReply:
+    evidence_id: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,96}",
+            self.evidence_id,
+        ):
+            raise ValueError("evidence_id must be a stable identifier")
+        if (
+            not isinstance(self.text, str)
+            or not self.text.strip()
+            or len(self.text) > 1200
+            or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", self.text)
+        ):
+            raise ValueError("trusted character reply is invalid")
+
+
+@dataclass(frozen=True)
+class TrustedReviewEvidence:
+    character_replies: tuple[TrustedCharacterReply, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.character_replies, tuple) or any(
+            not isinstance(item, TrustedCharacterReply)
+            for item in self.character_replies
+        ):
+            raise TypeError("character_replies must be a typed tuple")
+        ids = tuple(item.evidence_id for item in self.character_replies)
+        if len(set(ids)) != len(ids):
+            raise ValueError("trusted character reply ids must be unique")
+        if sum(len(item.text.strip()) for item in self.character_replies) > 1200:
+            raise ValueError("trusted character reply history is too large")
+
+
+@dataclass(frozen=True)
 class ReviewResult:
     status: ReviewStatus
     verdict: ReviewVerdict
