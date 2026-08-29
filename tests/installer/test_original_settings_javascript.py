@@ -274,6 +274,16 @@ def test_video_capability_progress_is_readable_and_does_not_replace_the_panel_ea
     assert ".toFixed(1)} GiB" in source
 
 
+def test_video_capability_refresh_shows_busy_and_completion_feedback() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
+
+    assert 'refreshButton.textContent = "检测中…"' in video_panel
+    assert "重新检测完成，上方已显示最新结果。" in video_panel
+
+
 def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
@@ -307,25 +317,25 @@ def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value()
     assert "enabled = payload.enabled;" in setting
 
 
-def test_video_capability_offers_verified_runtime_root_selection() -> None:
+def test_video_capability_offers_clear_advanced_runtime_archive_recovery() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     runtime_import = source.split(
-        'const importRuntime = button("开始检查并安装"', 1
+        'const importRuntime = button("校验并启用"', 1
     )[1].split("item.append(", 1)[0]
 
-    assert '{ action: "select_runtime" }' in source
-    assert '{ action: "select_runtime" },\n            310000' in source
-    assert 'action: "import_runtime"' in source
-    assert "manifest_sha256: runtimeManifestSha256" in source
+    assert '{ action: "select_runtime_archive" }' in source
+    assert 'action: "import_runtime_archive"' in source
+    assert "runtime_archive: runtimeArchive" in source
     assert 'source: videoSourceMode' in source
     assert "国内源优先" in source
     assert "仅官方源" in source
-    assert "恢复已有视频运行环境" in source
-    assert "选择视频运行时文件夹" in source
-    assert "开始检查并安装" in source
+    assert "高级恢复" in source
+    assert "不是选择成片保存位置，也不是选择缓存目录" in source
+    assert "选择视频运行环境离线包（ZIP）" in source
+    assert "校验并启用" in source
     assert "文件较多时可能需要几十分钟，请勿关闭 Olivia" in source
     assert "runtime_import" in source
-    assert "已检查 ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}" in source
+    assert 'progress.state === "extracting" ? "已解压" : "已检查"' in source
     assert "window.setInterval(updateRuntimeProgress, 1000)" in source
     assert "window.clearInterval(progressTimer)" in source
     assert "离线包已检查并安装完成。请重启 Olivia 一次" in runtime_import

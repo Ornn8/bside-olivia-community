@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 import json
 import math
@@ -117,12 +117,18 @@ def collect_official_text_replies(
     log_path: str | Path,
     *,
     request_json,
+    on_progress: Callable[[Mapping[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Fetch one official mailbox snapshot without retaining credentials."""
+
+    def report(stage: str, total: int, processed: int) -> None:
+        if on_progress is not None:
+            on_progress({"stage": stage, "total": total, "processed": processed})
 
     headers = _headers_from_log(log_path)
     items: list[object] = []
     cursor: object = 0
+    report("listing", 0, 0)
     for _page in range(100):
         listing = request_json(
             "/letter/list?cursor=" + quote(str(cursor), safe="") + "&page_size=50",
@@ -135,6 +141,7 @@ def collect_official_text_replies(
         if not isinstance(page_items, list):
             raise ValueError("OFFICIAL_LETTER_LIST_INVALID")
         items.extend(page_items)
+        report("listing", len(items), 0)
         has_more = data.get("has_more", data.get("hasMore", False))
         if has_more is not True:
             break
@@ -145,6 +152,7 @@ def collect_official_text_replies(
     else:
         raise ValueError("OFFICIAL_LETTER_LIST_INVALID")
     details: list[Mapping[str, Any]] = []
+    report("reading", len(items), 0)
     for item in items:
         letter_id = _text(item.get("letter_id")) if isinstance(item, Mapping) else ""
         if not letter_id:
@@ -159,6 +167,7 @@ def collect_official_text_replies(
         if not isinstance(value, Mapping):
             raise ValueError("OFFICIAL_LETTER_DETAIL_INVALID")
         details.append({**dict(item), **dict(value), "letter_id": letter_id})
+        report("reading", len(items), len(details))
     return build_legacy_import_payload(details, account_id=headers["x-uid"])
 
 
@@ -181,8 +190,12 @@ def default_official_log_path(
     return Path(appdata) / "miHoYo" / "Olivia-steam" / "logs" / "Olivia.log"
 
 
-def collect_default_official_text_replies() -> dict[str, object]:
+def collect_default_official_text_replies(
+    *,
+    on_progress: Callable[[Mapping[str, object]], None] | None = None,
+) -> dict[str, object]:
     return collect_official_text_replies(
         default_official_log_path(),
         request_json=_request_official_json,
+        on_progress=on_progress,
     )

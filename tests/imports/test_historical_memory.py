@@ -93,6 +93,23 @@ def test_migration_writes_each_exchange_in_strict_chronological_order_then_final
     }
 
 
+def test_migration_reports_progress_after_each_persisted_exchange() -> None:
+    memory = RecordingMemory(
+        [MemoryWriteStatus.WRITTEN, MemoryWriteStatus.DUPLICATE]
+    )
+    progress: list[tuple[int, int]] = []
+
+    result = migrate_historical_exchanges(
+        (_exchange("second", 20), _exchange("first", 10)),
+        memory=memory,
+        user_id="local-user",
+        on_progress=lambda processed, total: progress.append((processed, total)),
+    )
+
+    assert result.status == "completed"
+    assert progress == [(0, 2), (1, 2), (2, 2)]
+
+
 def test_migration_stops_at_first_failed_write_and_does_not_finalize() -> None:
     memory = RecordingMemory(
         [MemoryWriteStatus.WRITTEN, MemoryWriteStatus.UNAVAILABLE, MemoryWriteStatus.WRITTEN]

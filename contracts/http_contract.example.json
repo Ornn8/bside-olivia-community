@@ -20,7 +20,7 @@
       "evidence": "local-extension"
     },
     "/toy/letter/legacy/official-import": {
-      "methods": ["POST"],
+      "methods": ["GET", "POST"],
       "capability": "letters.official_import",
       "state": "available",
       "read_only": false,

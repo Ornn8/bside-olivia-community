@@ -15,6 +15,8 @@ import sqlite3
 import time
 import uuid
 import hashlib
+import inspect
+import threading
 import webbrowser as _webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -131,6 +133,48 @@ from runtime.reply.reply_reviewer import NullReviewer
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
 LETTER_RETRY_DEDUP_SECONDS = 60
+
+_official_import_progress_lock = threading.Lock()
+_official_import_progress: dict[str, object] = {
+    "status": "IDLE",
+    "stage": "idle",
+    "total": 0,
+    "processed": 0,
+    "imported": 0,
+    "skipped": 0,
+    "last_updated_at": datetime.now(timezone.utc).isoformat(),
+    "retryable": False,
+}
+
+
+def _official_import_progress_snapshot() -> dict[str, object]:
+    with _official_import_progress_lock:
+        return dict(_official_import_progress)
+
+
+def _update_official_import_progress(**changes: object) -> None:
+    with _official_import_progress_lock:
+        _official_import_progress.update(changes)
+        _official_import_progress["last_updated_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+
+def _collect_official_import_with_progress() -> dict[str, object]:
+    collector = collect_default_official_text_replies
+
+    def on_progress(value: Mapping[str, object]) -> None:
+        _update_official_import_progress(
+            status="RUNNING",
+            stage=str(value.get("stage") or "listing"),
+            total=int(value.get("total") or 0),
+            processed=int(value.get("processed") or 0),
+            retryable=False,
+        )
+
+    if "on_progress" in inspect.signature(collector).parameters:
+        return collector(on_progress=on_progress)
+    return collector()
 
 
 def _exact_reply_mode(value: object) -> str:
@@ -845,6 +889,13 @@ async def _migrate_official_history(
         memory=conversation_memory_adapter,
         user_id=_memory_config.user_id,
         require_persisted=True,
+        on_progress=lambda processed, total: _update_official_import_progress(
+            status="RUNNING",
+            stage="memory",
+            total=total,
+            processed=processed,
+            retryable=False,
+        ),
     )
     if result.status != "completed" or not exchanges:
         return result
@@ -872,6 +923,13 @@ async def _migrate_official_history(
             error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
         )
     try:
+        _update_official_import_progress(
+            status="RUNNING",
+            stage="relationship",
+            total=len(exchanges),
+            processed=len(exchanges),
+            retryable=False,
+        )
         assessment = await assess_historical_relationship(
             exchanges,
             gateway=letters_adapter.gateway,
@@ -1655,9 +1713,17 @@ def _mark_superseded_failed_retries() -> None:
 
 
 def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
-    if getattr(memory_adapter, "enabled", False) and hasattr(memory_adapter, "list_legacy"):
+    adapter = memory_adapter
+    if not getattr(adapter, "enabled", False):
         try:
-            return list(getattr(memory_adapter, "list_legacy")())
+            adapter = _legacy_import_adapter()
+        except Exception:
+            if strict:
+                raise
+            _safe_log("memory_read_skipped", domain="legacy_letters")
+    if getattr(adapter, "enabled", False) and hasattr(adapter, "list_legacy"):
+        try:
+            return list(getattr(adapter, "list_legacy")())
         except sqlite3.OperationalError as exc:
             if "no such table: legacy_letters" in str(exc):
                 return store.legacy_letters
@@ -1714,7 +1780,14 @@ def _official_history_mailbox_projection() -> list[dict]:
             != OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
         ):
             continue
-        projected.append({**letter, "is_read": 1, "read_only": True})
+        projected.append(
+            {
+                **letter,
+                "letter_status": "COMPLETED",
+                "is_read": 1,
+                "read_only": True,
+            }
+        )
     return projected
 
 
@@ -2001,19 +2074,36 @@ async def route(
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
     if p == "/toy/letter/legacy/official-import":
+        if method == "GET":
+            return ok(_official_import_progress_snapshot())
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
                 "status": "FAILED",
                 "error_code": "COMPANION_CONFIRMATION_REQUIRED",
                 "retryable": False,
             })
+        _update_official_import_progress(
+            status="RUNNING",
+            stage="listing",
+            total=0,
+            processed=0,
+            imported=0,
+            skipped=0,
+            retryable=False,
+        )
         if not _official_history_memory_available():
+            _update_official_import_progress(
+                status="FAILED", stage="failed", retryable=True
+            )
             return err(503, "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
                 "retryable": True,
             })
         if not _official_history_private_world_available():
+            _update_official_import_progress(
+                status="FAILED", stage="failed", retryable=True
+            )
             return err(503, "PRIVATE_WORLD_HISTORY_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
@@ -2021,9 +2111,12 @@ async def route(
             })
         official_import = True
         try:
-            body = await asyncio.to_thread(collect_default_official_text_replies)
+            body = await asyncio.to_thread(_collect_official_import_with_progress)
             exchanges_from_legacy_payload(body)
         except (OSError, UnicodeError, ValueError):
+            _update_official_import_progress(
+                status="FAILED", stage="failed", retryable=True
+            )
             return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
@@ -2032,12 +2125,18 @@ async def route(
         try:
             account_conflict = _official_account_conflicts(body)
         except Exception:
+            _update_official_import_progress(
+                status="FAILED", stage="failed", retryable=True
+            )
             return err(503, "OFFICIAL_LETTER_IMPORT_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "OFFICIAL_LETTER_IMPORT_UNAVAILABLE",
                 "retryable": True,
             })
         if account_conflict:
+            _update_official_import_progress(
+                status="FAILED", stage="failed", retryable=False
+            )
             return err(409, "OFFICIAL_ACCOUNT_CONFLICT", {
                 "status": "FAILED",
                 "error_code": "OFFICIAL_ACCOUNT_CONFLICT",
@@ -2288,8 +2387,18 @@ async def route(
             })
         migration = None
         if official_import:
+            _update_official_import_progress(
+                status="RUNNING",
+                stage="memory",
+                total=len(records),
+                processed=0,
+                retryable=False,
+            )
             existing_source_ids = _existing_legacy_source_record_ids()
             if existing_source_ids is None:
+                _update_official_import_progress(
+                    status="FAILED", stage="failed", retryable=True
+                )
                 return err(503, "MEMORY_UNAVAILABLE", {
                     "status": "UNAVAILABLE",
                     "error_code": "MEMORY_UNAVAILABLE",
@@ -2308,6 +2417,9 @@ async def route(
                     "PRIVATE_WORLD_HISTORY_UNAVAILABLE"
                     if str(migration.error_code or "").startswith("PRIVATE_WORLD_")
                     else "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED"
+                )
+                _update_official_import_progress(
+                    status="FAILED", stage="failed", retryable=True
                 )
                 return err(503, error_code, {
                     "status": "UNAVAILABLE",
@@ -2330,8 +2442,15 @@ async def route(
                 )
                 for record in records
             ]
+            _update_official_import_progress(
+                status="RUNNING", stage="importing", retryable=False
+            )
         adapter = _legacy_import_adapter()
         if not getattr(adapter, "enabled", False):
+            if official_import:
+                _update_official_import_progress(
+                    status="FAILED", stage="failed", retryable=True
+                )
             return err(503, "MEMORY_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "MEMORY_UNAVAILABLE",
@@ -2344,6 +2463,10 @@ async def route(
                 promote_duplicate_metadata=official_import,
             )
         except Exception:
+            if official_import:
+                _update_official_import_progress(
+                    status="FAILED", stage="failed", retryable=True
+                )
             return err(503, "MEMORY_UNAVAILABLE", {
                 "status": "UNAVAILABLE",
                 "error_code": "MEMORY_UNAVAILABLE",
@@ -2354,6 +2477,10 @@ async def route(
         if official_import:
             payload["status"] = "APPLIED"
         if result.rolled_back:
+            if official_import:
+                _update_official_import_progress(
+                    status="FAILED", stage="failed", retryable=True
+                )
             return err(400, "INVALID_CONTENT", {
                 "status": "FAILED",
                 "error_code": "INVALID_CONTENT",
@@ -2361,6 +2488,15 @@ async def route(
             })
         if official_import and migration is not None:
             payload["memory_migration"] = migration.to_dict()
+            _update_official_import_progress(
+                status="COMPLETED",
+                stage="completed",
+                total=len(records),
+                processed=len(records),
+                imported=result.inserted,
+                skipped=result.duplicates,
+                retryable=False,
+            )
         return ok(payload)
     if p == "/toy/letter/send":
         if query.get("scope", "current") == "legacy":

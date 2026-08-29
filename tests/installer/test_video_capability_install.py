@@ -202,6 +202,113 @@ def _wait(installer: VideoCapabilityInstaller, index: int, *states: str) -> str:
     return installer.status()["bundles"][index]["state"]
 
 
+def _runtime_archive(tmp_path: Path) -> Path:
+    runtime_root = tmp_path / "runtime-source"
+    environment = {
+        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
+        "OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime",
+        "OLIVIA_COSYVOICE_MODEL_ROOT": "cosyvoice/model",
+        "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
+        "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
+        "OLIVIA_MINIMAX_WORKER": "minimax/tools/minimax_music3_worker.py",
+        "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
+        "OLIVIA_REPLY_VOICE_REFERENCE": "assets/voice.wav",
+    }
+    for relative in environment.values():
+        target = runtime_root / relative
+        if Path(relative).suffix:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"fixture")
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "fixture.txt").write_bytes(b"fixture")
+    write_runtime_root_manifest(
+        runtime_root.resolve(), version="fixture-runtime", environment=environment
+    )
+    archive = tmp_path / "Olivia-video-runtime-fixture.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        for path in runtime_root.rglob("*"):
+            if path.is_file():
+                payload.write(path, path.relative_to(runtime_root).as_posix())
+    return archive.resolve()
+
+
+def test_runtime_archive_is_extracted_verified_and_activated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "video", "FIXED", False, (), ()),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+
+    status = installer.status()
+    assert status["runtime_import"]["state"] == "ready"
+    profile = json.loads(
+        (installer.install_root / "runtime-environment.json").read_text(encoding="utf-8")
+    )
+    assert Path(profile["runtime_root"]) == (installer.install_root / "runtime").resolve()
+    assert Path(profile["environment"]["OLIVIA_TTS_CONFIG"]).is_file()
+
+
+def test_complete_download_automatically_prepares_adjacent_runtime_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    data_root = (tmp_path / "data").resolve()
+    install_root = data_root / "capabilities" / "video"
+    for bundle_id in ("ordinary_video", "music_video"):
+        root = install_root / bundle_id
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".ready.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.video-bundle.v1",
+                    "bundle": bundle_id,
+                    "version": "1.0",
+                }
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "video", "FIXED", False, (), ()),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+        runtime_archives=(archive,),
+    )
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and installer.status()["runtime_import"]["state"] != "ready":
+        time.sleep(0.01)
+
+    assert installer.status()["runtime_import"]["state"] == "ready"
+    assert [item["state"] for item in installer.status()["bundles"]] == ["ready", "ready"]
+
+
 def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wiring(
     tmp_path: Path,
 ) -> None:
@@ -1249,6 +1356,63 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
     assert status == 200
     assert payload == {"status": "APPLIED"}
     assert observed == [(runtime_root, manifest_sha256)]
+
+
+def test_video_capability_api_selects_and_imports_runtime_archive(tmp_path: Path) -> None:
+    archive = (tmp_path / "Olivia-video-runtime-fixture.zip").resolve()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("runtime-manifest.json", "{}")
+    observed: list[Path] = []
+
+    class FakeInstaller:
+        def status(self):
+            return {"schema_version": "olivia.video-capability-status.v1", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
+
+        def import_runtime_archive(self, *, runtime_archive: Path):
+            observed.append(runtime_archive)
+            return "APPLIED"
+
+    async def call():
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FakeInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+            select_runtime_archive=lambda: archive,
+        )
+        headers = {
+            "Origin": "http://localhost:3000",
+            "X-Olivia-Capability-Action": "confirmed",
+            "X-Olivia-Setup-Session": "session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            selected_response = await client.post(
+                "/toy/capabilities/video/action",
+                json={"action": "select_runtime_archive"},
+                headers=headers,
+            )
+            selected = await selected_response.json()
+            imported_response = await client.post(
+                "/toy/capabilities/video/action",
+                json={
+                    "action": "import_runtime_archive",
+                    "runtime_archive": selected["runtime_archive"],
+                },
+                headers=headers,
+            )
+            return selected, imported_response.status, await imported_response.json()
+
+    selected, status, imported = asyncio.run(call())
+    assert selected == {"status": "SELECTED", "runtime_archive": str(archive)}
+    assert status == 200
+    assert imported == {"status": "APPLIED"}
+    assert observed == [archive]
+    schema = json.loads(Path("contracts/video_capability_action.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate({"action": "select_runtime_archive"})
+    Draft202012Validator(schema).validate(
+        {"action": "import_runtime_archive", "runtime_archive": str(archive)}
+    )
 
 
 def test_video_capability_api_selects_and_imports_one_offline_zip_for_both_bundles(
