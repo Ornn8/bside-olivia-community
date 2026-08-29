@@ -67,6 +67,7 @@ def _run_runtime_probe(command: list[str], *, cwd: Path) -> bool:
             capture_output=True,
             check=False,
             timeout=_RUNTIME_PROBE_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

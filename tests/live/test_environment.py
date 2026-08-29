@@ -4,6 +4,39 @@ from live import LiveService
 from memory_port import NullMemoryPort
 
 
+def _live_system_prompt(monkeypatch, environ_overrides=None) -> str:
+    import asyncio
+    from pathlib import Path
+
+    import live.environment as environment
+    from llm_gateway import GatewayResponse
+
+    class RecordingGateway:
+        stream_enabled = False
+
+        def __init__(self) -> None:
+            self.messages = ()
+
+        async def complete(self, messages, *, request_id=None):
+            self.messages = tuple(messages)
+            return GatewayResponse("synthetic reply", request_id or "request", "mock", "mock")
+
+    gateway = RecordingGateway()
+    monkeypatch.setattr(environment, "create_gateway", lambda _config: gateway)
+    service = LiveService.from_environment(
+        environ={"OLIVIA_LLM_PROVIDER": "mock", **(environ_overrides or {})},
+        project_root=str(Path(__file__).resolve().parents[2]),
+    )
+
+    async def exercise() -> None:
+        session = await service.start_session("user-a")
+        await session.send_text("synthetic live turn")
+        await service.stop()
+
+    asyncio.run(exercise())
+    return gateway.messages[0]["content"]
+
+
 class _Closable:
     def __init__(self) -> None:
         self.close_calls = 0
@@ -87,6 +120,25 @@ def test_environment_mock_llm_runs_through_the_live_public_boundary() -> None:
     assert result.status == "completed"
     assert result.text_source == "llm"
     assert result.text
+
+
+def test_default_live_turn_uses_future_im_persona_v2_without_draft(
+    monkeypatch,
+) -> None:
+    system_prompt = _live_system_prompt(monkeypatch)
+    assert "mode.im.short_is_default" in system_prompt
+    assert "PERSONA STATUS: DRAFT" not in system_prompt
+
+
+def test_live_turn_keeps_legacy_persona_when_v2_is_explicitly_disabled(
+    monkeypatch,
+) -> None:
+    system_prompt = _live_system_prompt(
+        monkeypatch,
+        {"OLIVIA_PERSONA_V2_ENABLED": "false"},
+    )
+    assert system_prompt.startswith("PERSONA STATUS: DRAFT")
+    assert "mode.im.short_is_default" not in system_prompt
 
 
 def test_external_llm_configuration_without_key_is_not_reported_ready() -> None:

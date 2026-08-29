@@ -6,12 +6,16 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
 from llm_gateway import Gateway, create_gateway, load_gateway_config
+from persona_assembly import assemble_persona
+from persona_loader import load_persona
 from runtime.media.music_duration import normalize_music_duration
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 
 
 SONG_SEMANTIC_PLAN_SCHEMA_VERSION = "p03.song-semantic-plan.v1"
@@ -240,11 +244,27 @@ def _enum_values(enum_type: type[StrEnum]) -> str:
 
 
 def _system_prompt(duration_seconds: int) -> str:
-    persona = (
-        Path(__file__).resolve().parents[2]
-        / "linli_character"
-        / "system_prompt.md"
-    ).read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    gateway_config = load_gateway_config()
+    if gateway_config.persona_v2_enabled:
+        persona_path = Path(gateway_config.persona_v2_file)
+        if not persona_path.is_absolute():
+            persona_path = root / persona_path
+        loaded = load_persona(persona_path)
+        persona = assemble_persona(
+            loaded.snapshot,
+            ReplyContext.create(
+                ReplyMode.MUSICAL_VIDEO,
+                trusted_time=TrustedTime(datetime.now(timezone.utc)),
+            ),
+            user_input="song planning",
+            max_units=gateway_config.max_input_chars,
+        ).system_content
+    else:
+        persona_path = Path(gateway_config.persona_file)
+        if not persona_path.is_absolute():
+            persona_path = root / persona_path
+        persona = persona_path.read_text(encoding="utf-8")
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
     return f"""You are the controlled semantic song-planning stage for Lin Li's MiniMax Music 3 reply.

@@ -35,6 +35,14 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
     assert "window.confirm" not in source
 
 
+def test_video_reply_settings_hydration_uses_the_slow_runtime_probe_timeout() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert "const requestJson = async (path, params = {}, timeoutMs = 5000) =>" in source
+    assert "window.setTimeout(() => controller.abort(), timeoutMs)" in source
+    assert "requestJson(VIDEO_REPLY_SETTINGS_PATH, {}, 30000)" in source
+
+
 def test_llm_save_and_delete_copy_says_changes_apply_immediately() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 

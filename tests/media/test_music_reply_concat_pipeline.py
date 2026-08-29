@@ -275,12 +275,14 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
 ) -> None:
     python = _write(tmp_path / "python.exe")
     observed: dict[str, object] = {}
+    no_window = 0x08000000
 
     def fake_run(command, **kwargs):
         observed["command"] = command
         observed.update(kwargs)
         return subprocess.CompletedProcess(command, 0, stdout=b"ready", stderr=b"")
 
+    monkeypatch.setattr(music_reply.subprocess, "CREATE_NO_WINDOW", no_window, raising=False)
     monkeypatch.setattr(music_reply.subprocess, "run", fake_run)
 
     assert music_reply._python_runtime_ready(
@@ -296,6 +298,7 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
     assert "torch.cuda.is_available()" in script
     assert "2.9.1+cu128" in script
     assert observed["timeout"] == music_reply._RUNTIME_PROBE_TIMEOUT_SECONDS
+    assert observed["creationflags"] == no_window
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("python", 1)

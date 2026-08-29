@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,12 +25,16 @@ from llm_gateway import (
 )
 from local_memory import MemoryConfig, create_memory_adapter, load_memory_config
 from memory_port import MemoryPort, NullMemoryPort
+from persona_assembly import assemble_persona
+from persona_loader import load_persona
 from persona_provider import (
     CompositePersonaEvidencePort,
     ConfigPersonaProvider,
     JsonPersonaEvidencePort,
     MemoryReferenceEvidencePort,
+    PersonaSnapshot,
 )
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from tts import TTSConfig, TTSProfileManager, TTSService
 from visual_driver import VisualDriver
 
@@ -97,6 +102,14 @@ class UnavailableTtsService:
 
     def close(self) -> None:
         return None
+
+
+@dataclass(frozen=True)
+class _StaticPersonaProvider:
+    value: PersonaSnapshot
+
+    def snapshot(self) -> PersonaSnapshot:
+        return self.value
 
 
 @dataclass
@@ -313,7 +326,7 @@ def build_live_environment(
     persona_config = _resolve(gateway_config.persona_config, root) or root / "linli_character/persona_config.json"
     persona_evidence = _resolve(gateway_config.persona_evidence_file, root) or root / "linli_character/provenance.json"
     try:
-        persona_provider = ConfigPersonaProvider(
+        legacy_persona_provider = ConfigPersonaProvider(
             persona_config,
             draft_path=persona_file,
             evidence_port=CompositePersonaEvidencePort(
@@ -322,6 +335,31 @@ def build_live_environment(
             ),
             feature_enabled=gateway_config.feature_enabled,
         )
+        persona_provider = legacy_persona_provider
+        if gateway_config.persona_v2_enabled:
+            persona_v2_file = (
+                _resolve(gateway_config.persona_v2_file, root)
+                or root / "linli_character/persona_release_v2.json"
+            )
+            loaded = load_persona(persona_v2_file)
+            assembled = assemble_persona(
+                loaded.snapshot,
+                ReplyContext.create(
+                    ReplyMode.FUTURE_IM,
+                    trusted_time=TrustedTime(datetime.now(timezone.utc)),
+                    future_im_enabled=True,
+                ),
+                user_input="live conversation",
+                max_units=gateway_config.max_input_chars,
+            )
+            persona_provider = _StaticPersonaProvider(
+                PersonaSnapshot(
+                    system_prompt=assembled.system_content,
+                    version=loaded.snapshot.schema_version or "0",
+                    status=loaded.snapshot.status,
+                    source=loaded.snapshot.source,
+                )
+            )
     except Exception:
         persona_provider = None
         errors["persona"] = "PERSONA_UNAVAILABLE"
