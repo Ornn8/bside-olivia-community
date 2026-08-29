@@ -1178,6 +1178,7 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
         "runtime/media/music_reply.py",
         "runtime/media/voice_direction.py",
         "runtime/persona/persona_loader.py",
+        "runtime/private_world/ledger.py",
         "runtime/reply/reply_model_quality.py",
         "runtime/reply/reply_orchestrator.py",
         "runtime/reply/reply_quality_gate.py",
