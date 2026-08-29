@@ -75,6 +75,10 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert music.license_review_required is False
     assert "official_video_assets" not in ordinary.dependencies
     assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
+    ffmpeg = next(item for item in ordinary.files if item.identifier == "ffmpeg")
+    assert ffmpeg.sources == {
+        "official": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"
+    }
     assert ordinary.runtime_environment == {
         "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe",
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",

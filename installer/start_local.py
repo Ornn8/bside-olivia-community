@@ -508,6 +508,48 @@ def _memory_write_timeout(environment: dict[str, str]) -> str:
     return format(min(300.0, max(0.1, value)), "g")
 
 
+def _start_backend_server(
+    *,
+    backend: Path,
+    entrypoint: Path,
+    environment: dict[str, str],
+    port: int,
+    data_root: Path,
+) -> tuple[object, str]:
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    _append_launcher_event(data_root, "backend_start")
+    server = subprocess.Popen(
+        [
+            str(_backend_executable()),
+            "-c",
+            _BACKEND_BOOTSTRAP,
+            str(backend),
+            str(entrypoint),
+        ],
+        cwd=backend,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline and server.poll() is None:
+        if _health(port) == "READY":
+            break
+        time.sleep(0.25)
+    health = _health(port)
+    if health == "READY":
+        _append_launcher_event(data_root, "backend_ready")
+    else:
+        _append_launcher_event(
+            data_root,
+            "backend_unavailable",
+            health=health,
+            exit_code=server.poll(),
+        )
+    return server, health
+
+
 def _configure_memory_environment(
     environment: dict[str, str],
     data_root: Path,
@@ -617,41 +659,19 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     try:
         if health != "READY":
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            _append_launcher_event(data_root, "backend_start")
-            server = subprocess.Popen(
-                [
-                    str(_backend_executable()),
-                    "-c",
-                    _BACKEND_BOOTSTRAP,
-                    str(backend),
-                    str(entrypoint),
-                ],
-                cwd=backend,
-                env=backend_environment,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
+            server, health = _start_backend_server(
+                backend=backend,
+                entrypoint=entrypoint,
+                environment=backend_environment,
+                port=args.port,
+                data_root=data_root,
             )
-            deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
-            while time.monotonic() < deadline and server.poll() is None:
-                if _health(args.port) == "READY":
-                    break
-                time.sleep(0.25)
-            health = _health(args.port)
             if health != "READY":
-                _append_launcher_event(
-                    data_root,
-                    "backend_unavailable",
-                    health=health,
-                    exit_code=server.poll(),
-                )
                 if health == "PORT_CONFLICT":
                     print("PORT_CONFLICT")
                     return 2
                 print("LOCAL_SERVER_UNAVAILABLE")
                 return 2
-            _append_launcher_event(data_root, "backend_ready")
         client = _client_executable(root)
         if not client.is_file():
             print("ISOLATED_CLIENT_NOT_FOUND")
@@ -661,6 +681,22 @@ def main(argv: list[str] | None = None) -> int:
         except (CompanionSettingsPatchError, OSError):
             print("CLIENT_FRONTEND_REPAIR_FAILED")
             return 2
+        if server is None:
+            health = _health(args.port)
+            if health != "READY":
+                if health == "PORT_CONFLICT":
+                    print("PORT_CONFLICT")
+                    return 2
+                server, health = _start_backend_server(
+                    backend=backend,
+                    entrypoint=entrypoint,
+                    environment=backend_environment,
+                    port=args.port,
+                    data_root=data_root,
+                )
+                if health != "READY":
+                    print("LOCAL_SERVER_UNAVAILABLE")
+                    return 2
         profile = root / "profile"
         roaming = profile / "Roaming"
         local = profile / "Local"

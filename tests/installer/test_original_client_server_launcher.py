@@ -488,6 +488,63 @@ def test_component_launcher_does_not_stop_a_reused_ready_backend(
     assert stopped == []
 
 
+def test_launcher_rechecks_reused_backend_after_frontend_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    backend = root / "local_backend"
+    expected_backend_id = start_local._backend_id(backend, root.resolve())
+    health = iter(("READY", "UNAVAILABLE", "READY", "READY"))
+    backend_starts: list[list[str]] = []
+    client_commands: list[list[str]] = []
+    lifecycle: list[str] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate() -> None:
+            lifecycle.append("terminate")
+
+        @staticmethod
+        def wait(*, timeout: float) -> int:
+            lifecycle.append(f"wait:{timeout}")
+            return 0
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: expected_backend_id,
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda command, **_kwargs: backend_starts.append(
+            [str(value) for value in command]
+        )
+        or Process(),
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "call",
+        lambda command, **_kwargs: client_commands.append(
+            [str(value) for value in command]
+        )
+        or 0,
+    )
+    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert len(backend_starts) == 1
+    assert len(client_commands) == 1
+    assert lifecycle == ["terminate", "wait:5"]
+
+
 @pytest.mark.parametrize("failure", ["none", "kill_oserror", "second_wait_timeout"])
 def test_owned_backend_stop_escalation_remains_best_effort(failure: str) -> None:
     lifecycle: list[str] = []
