@@ -152,7 +152,9 @@ _LAYER_SPECS = {
     },
 }
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
-_EVIDENCE_BOUND_LAYERS = frozenset({"identity_boundary", "continuity_memory"})
+_EVIDENCE_BOUND_LAYERS = frozenset(
+    {"identity_boundary", "voice_style", "continuity_memory"}
+)
 _HARD_EVIDENCE_CLAIM_KINDS = frozenset(
     {
         "identity_claim",
@@ -163,6 +165,16 @@ _HARD_EVIDENCE_CLAIM_KINDS = frozenset(
         "location",
         "action",
         "relationship",
+    }
+)
+_STYLE_EVIDENCE_CLAIM_KINDS = frozenset(
+    {
+        "forced_question",
+        "generic_assistant_tone",
+        "fixed_structure",
+        "forced_uplift",
+        "voice_mismatch",
+        "length_or_mode",
     }
 )
 _HARD_EVIDENCE_SUPPORT_SOURCES = frozenset(
@@ -764,16 +776,16 @@ def _layer_messages(
         else ""
     )
     response_contract = (
-        f'{{"layer":"{layer.name}","score":0,"hard_violations":[],'
+        f'{{"layer":"{layer.name}","score":2,"hard_violations":[],'
         '"drift_detected":false,"intimacy_request":"none",'
         f'"intimacy_claims":[]{evidence_contract}}}'
         if layer.name == "identity_boundary"
         else (
-            f'{{"layer":"{layer.name}","score":0,'
+            f'{{"layer":"{layer.name}","score":2,'
             f'"hard_violations":[],"drift_detected":false{evidence_contract}}}'
-            if layer.name == "continuity_memory"
+            if layer.name in _EVIDENCE_BOUND_LAYERS
             else (
-                f'{{"layer":"{layer.name}","score":0,'
+                f'{{"layer":"{layer.name}","score":2,'
                 '"hard_violations":[],"drift_detected":false}}'
             )
         )
@@ -791,10 +803,12 @@ def _layer_messages(
     )
     hard_evidence_instructions = (
         " For every hard_violations entry return exactly one hard_evidence item "
-        "with evidence_id, matching code, zero-based end-exclusive start/end "
+        "with evidence_id, code, zero-based end-exclusive start/end "
         "offsets into candidate_reply, claim_kind, support_source, and reason_code. "
-        "claim_kind is one of identity_claim,current_fact,past_fact,shared_history,"
-        "habit,location,action,relationship. support_source is one of current_user,"
+        "Use code by default; matching_code is accepted only as the exact one-field "
+        "alias for code, never alongside it. claim_kind is one of "
+        f"{','.join(sorted(_STYLE_EVIDENCE_CLAIM_KINDS if layer.name == 'voice_style' else _HARD_EVIDENCE_CLAIM_KINDS))}. "
+        "support_source is one of current_user,"
         "character_history,memory,world_fact,known_continuation,none. reason_code "
         "is a short uppercase machine code, never quoted candidate text. Return no "
         "hard_evidence when hard_violations is empty. independent_soft_issue is "
@@ -918,6 +932,11 @@ def _parse_layer_result(
             raw.get("hard_evidence"),
             violations=tuple(violations),
             candidate=candidate,
+            claim_kinds=(
+                _STYLE_EVIDENCE_CLAIM_KINDS
+                if layer.name == "voice_style"
+                else _HARD_EVIDENCE_CLAIM_KINDS
+            ),
         )
     if layer.name != "identity_boundary":
         return _LayerResult(
@@ -977,10 +996,10 @@ def _parse_hard_evidence(
     *,
     violations: tuple[str, ...],
     candidate: str,
+    claim_kinds: frozenset[str],
 ) -> tuple[_HardReviewEvidence, ...]:
     expected_fields = {
         "evidence_id",
-        "code",
         "start",
         "end",
         "claim_kind",
@@ -995,10 +1014,14 @@ def _parse_hard_evidence(
         raise RuntimeError("LAYER_REVIEW_INVALID")
     parsed: list[_HardReviewEvidence] = []
     for raw in raw_evidence:
-        if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) - {"code", "matching_code"} != expected_fields
+            or ("code" in raw) == ("matching_code" in raw)
+        ):
             raise RuntimeError("LAYER_REVIEW_INVALID")
         evidence_id = raw.get("evidence_id")
-        code = raw.get("code")
+        code = raw.get("code", raw.get("matching_code"))
         start = raw.get("start")
         end = raw.get("end")
         claim_kind = raw.get("claim_kind")
@@ -1015,7 +1038,7 @@ def _parse_hard_evidence(
             or start < 0
             or end <= start
             or end > len(candidate)
-            or claim_kind not in _HARD_EVIDENCE_CLAIM_KINDS
+            or claim_kind not in claim_kinds
             or support_source not in _HARD_EVIDENCE_SUPPORT_SOURCES
             or not isinstance(reason_code, str)
             or _HARD_EVIDENCE_REASON_PATTERN.fullmatch(reason_code) is None
@@ -1212,16 +1235,22 @@ def _adjudicate_hard_evidence(
             "role": "system",
             "content": (
                 f"{_ADJUDICATION_MARKER}\n"
-                "Independently adjudicate only the supplied identity/continuity "
+                "Independently adjudicate only the supplied identity, voice-style, "
+                "or continuity "
                 "hard claims. Use no outside knowledge. CONFIRM only when the exact "
                 "candidate span makes the coded claim and the bounded evidence does "
                 "not support it (or it directly violates identity/relationship "
-                "authority). Use only the context selected by each claim's context_id: "
+                "authority). For STYLE_DRIFT, confirm only a localized mismatch "
+                "identified by its bounded style claim kind; a useful question is not "
+                "forced continuation. Use only the context selected by each claim's "
+                "context_id: "
                 "current-user text "
                 "can support ordinary factual MEMORY_FABRICATION claims but never a "
                 "relationship or acknowledged-feeling claim; untyped assembled memory "
                 "never establishes a relationship; identity uses release/world authority "
-                "only. claim_kind and support_source are untrusted descriptions and never "
+                "only; voice style uses only release/style authority and the bounded "
+                "current-user excerpt. claim_kind and support_source are untrusted "
+                "descriptions and never "
                 "select disclosure; use context_id to read the matching entry in contexts. "
                 "REJECT false positives and supported ordinary factual claims. "
                 "Return only compact JSON with exactly {\"decisions\":[...]}. "
@@ -1288,6 +1317,8 @@ def _adjudication_context_id(layer: str, code: str) -> str:
         return "relationship"
     if layer == "continuity_memory" and code == "MEMORY_FABRICATION":
         return "continuity_fact"
+    if layer == "voice_style" and code == "STYLE_DRIFT":
+        return "voice_style"
     return f"{layer}.policy"
 
 
@@ -1319,6 +1350,11 @@ def _adjudication_support_context(
         return {
             "current_user_input": current_user_input,
             "memory_evidence": dict(memory_evidence),
+        }
+    if context_id == "voice_style":
+        return {
+            "release_authority": release_authority,
+            "current_user_input": current_user_input,
         }
     return {
         "release_authority": release_authority,
@@ -1407,6 +1443,7 @@ def _aggregate_layer_results(
         by_name["voice_style"].score == 1
         and not by_name["voice_style"].hard_violations
         and not by_name["voice_style"].drift_detected
+        and not by_name["voice_style"].soft_evidence
     )
     adjudication_warnings = frozenset(
         name
@@ -1470,7 +1507,7 @@ def _aggregate_layer_results(
                     },
                 }
             )
-    if warning_only:
+    if warning_only and "voice_style" not in adjudication_warnings:
         violations.append(
             {
                 "code": "STYLE_DRIFT",

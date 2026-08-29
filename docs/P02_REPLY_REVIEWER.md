@@ -72,9 +72,9 @@ This protocol is enabled only for `text_letter`. Spoken and musical-video
 reviews retain the pre-protocol response schema and call count: they neither
 require `hard_evidence` nor invoke adjudication.
 
-In `text_letter`, `identity_boundary` and `continuity_memory` cannot create a
-hard finding from a score or drift flag alone. Every hard code must have exactly
-one typed `hard_evidence` item with:
+In `text_letter`, `identity_boundary`, `voice_style`, and `continuity_memory`
+cannot create a hard finding from a score or drift flag alone. Every hard code
+must have exactly one typed `hard_evidence` item with:
 
 - a unique stable `evidence_id` and the matching hard `code`;
 - zero-based, end-exclusive `start` and `end` offsets inside the current
@@ -85,7 +85,14 @@ one typed `hard_evidence` item with:
   `world_fact`, `known_continuation`, or `none`;
 - a short uppercase `reason_code` that contains no reply excerpt.
 
-Those two layer responses also require the boolean
+The canonical evidence field is `code`. For provider compatibility the parser
+also accepts `matching_code` as its sole exact alias; an item with both, neither,
+an extra field, or a value that differs from the hard finding fails closed. The
+`voice_style` layer uses its own bounded claim kinds: `forced_question`,
+`generic_assistant_tone`, `fixed_structure`, `forced_uplift`, `voice_mismatch`,
+and `length_or_mode`.
+
+Those three layer responses also require the boolean
 `independent_soft_issue`. It is `true` only when that layer has a separate,
 localized soft mismatch besides its hard claims. With no hard claim, `true`
 requires score 1 and no drift, while `false` requires score 2 and no drift. A
@@ -114,6 +121,9 @@ disclosure. Trusted `(layer, code)` selects the context class:
 - `continuity_memory/MEMORY_FABRICATION` receives only the bounded factual
   current-user excerpt and bounded assembled memory, even if the model labels
   the claim as relationship or shared history;
+- `voice_style/STYLE_DRIFT` receives only release/style authority and the
+  bounded current-user excerpt, never memory or Linli-authored history, even if
+  model-supplied kind/source metadata asks for them;
 - every other allowed combination receives only its minimal layer release
   authority.
 
@@ -123,9 +133,10 @@ a relationship. The adjudicator returns one candidate-bound `CONFIRM` or
 adjudication call. Malformed adjudication fails closed.
 
 Only confirmed claims remain hard violations, using their exact candidate
-spans. Up to 16 distinct `(code, span)` claims are accepted within the existing
-30,000-character fail-closed input budget; shared contexts are serialized once,
-not copied per claim. If every otherwise-hard claim is rejected and
+spans. Up to 16 distinct `(code, span)` claims across identity, voice style, and
+continuity are accepted within the existing 30,000-character fail-closed input
+budget; shared contexts are serialized once, not copied per claim. If every
+otherwise-hard claim is rejected and
 `independent_soft_issue` is false, the original Letter candidate is immediately
 `accepted_with_warnings` without using a rewriter. If it is true, the existing
 rewrite path remains mandatory. A rewritten candidate always runs all five
@@ -142,10 +153,11 @@ Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
 classification. Stale spans, conflicting claim sources, changed request
 classification, or malformed metadata fail closed. This adds no sixth review
-layer; only evidence-bound identity/continuity hard findings add the single
-conditional adjudication call described above. An explicit hard `STYLE_DRIFT` that remains
-after the rewrite is blocked; only a localized voice-style score of 1 with no
-hard code and no drift flag may remain an accepted warning.
+layer; evidence-bound identity, voice-style, and continuity hard findings share
+the single conditional adjudication call described above. An explicit hard
+`STYLE_DRIFT` that remains after the rewrite is blocked; only a localized
+voice-style score of 1 with no hard code and no drift flag may remain an
+accepted warning.
 
 ## Runtime controls
 
