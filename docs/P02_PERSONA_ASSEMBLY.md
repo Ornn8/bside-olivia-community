@@ -20,11 +20,3 @@ the complete user input are never truncated.
 When the loader returns `DRAFT`, assembly uses a small generic Constitution
 that prohibits invented identity and shared history. It does not promote the
 snapshot to READY or copy blocked declarations into the prompt.
-
-That safe degradation is the contract of this explicit, provider-free
-assembly API and remains useful to local evaluators. It is not release
-authorization: when Persona v2 and a Letter provider are configured, the
-ReplyPipeline preflight requires `READY` and returns the stable public
-`PERSONA_NOT_READY` (`retryable=false`) before any orchestrator/provider call
-for both `DRAFT` and `POLICY_ONLY` snapshots. Disabling Persona v2 explicitly
-continues to select the legacy Letter path.

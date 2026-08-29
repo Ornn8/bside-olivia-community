@@ -6,8 +6,8 @@
   "additionalProperties": false,
   "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "letter_detail_generation", "letter_detail_media", "privacy"],
   "properties": {
-    "schema_version": {"const": 1},
-    "contract_version": {"const": "b02.v1"},
+    "schema_version": {"const": 2},
+    "contract_version": {"const": "b02.v2"},
     "base_path": {"const": "/toy"},
     "routes": {
       "type": "object",

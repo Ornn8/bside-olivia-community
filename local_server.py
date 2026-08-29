@@ -1583,8 +1583,8 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
     )
     return ok(
         {
-            "schema_version": contract.SCHEMA_VERSION,
-            "contract_version": contract.CONTRACT_VERSION,
+            "schema_version": contract.HTTP_ENVELOPE_SCHEMA_VERSION,
+            "contract_version": contract.HTTP_ENVELOPE_CONTRACT_VERSION,
             "backend_id": backend_id,
             "profile": profile,
             "status": profile_status,

@@ -10,8 +10,8 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 
 ## 版本与 envelope
 
-- `contract_version`: `b02.v1`
-- `schema_version`: `1`
+- 运行时 HTTP envelope：`contract_version=b02.v1`、`schema_version=1`，保持原客户端兼容。
+- 机器可读 contract document：`contract_version=b02.v2`、`schema_version=2`；v2 新增必填 `letter_detail_generation`，因此不冒充 v1 schema。
 - core health 的 `backend_id` 是组件版本与安装实例摘要组成的不透明标识；不包含安装路径、用户名或密钥。启动器只复用与当前安装实例和活动组件同时匹配的本机后端。
 - 正常响应：`{"code":0,"message":"ok","data":{...}}`
 - 错误响应：`{"code":<HTTP 状态>,"message":"<error_code>","data":{"status":"FAILED","error_code":"<error_code>"}}`

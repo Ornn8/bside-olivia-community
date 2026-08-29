@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "contract_version": "b02.v1",
+  "schema_version": 2,
+  "contract_version": "b02.v2",
   "base_path": "/toy",
   "routes": {
     "/health": {
