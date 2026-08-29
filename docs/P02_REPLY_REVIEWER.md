@@ -33,6 +33,12 @@ The model reviewer receives only:
   canonical `history:` records in the current memory selection that are
   explicitly attributed to Linli; prior user and unmarked records are excluded.
 
+The assembly preserves that attribution as typed `history_actor=linli`
+metadata next to a stable character-reply fragment id. The reviewer requires
+both fields; a `character_reply:` string inside ordinary or user memory does
+not become relationship evidence. When the current selection has no reliably
+attributed Linli reply, character reply history is empty.
+
 It does not receive PrivateWorld numeric values, raw home-access records,
 pending/control-only continuation facts, databases, filesystem paths, provider
 configuration, or the complete archive. Review prompts and responses are not
@@ -48,6 +54,15 @@ user's unilateral claim are not completed intimacy. Linli's refusal,
 disagreement, fatigue, or short reply is autonomy rather than a violation
 unless it contradicts confirmed history. Liking the conversation is not
 evidence that Linli likes the user.
+
+The continuity layer distinguishes unsupported factual memory from ordinary
+emotional acknowledgment, style, current-input paraphrase, inference, and
+conditional language. Those forms are not `MEMORY_FABRICATION` unless they
+also assert an unsupported past or current fact. This does not authorize an
+invented event, habit, possession, title, or relationship fact. In text-letter
+mode, a closing question is `STYLE_DRIFT` only when it adds no necessary
+information or choice and merely forces continuation; useful concrete
+questions remain allowed.
 
 Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request

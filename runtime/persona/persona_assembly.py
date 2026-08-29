@@ -46,6 +46,7 @@ _STYLE_SITUATIONS = (
 class UntrustedFragment:
     fragment_id: str
     text: str
+    history_actor: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.fragment_id, str) or not _ID_RE.fullmatch(
@@ -58,6 +59,8 @@ class UntrustedFragment:
             or _CONTROL_RE.search(self.text)
         ):
             raise ValueError("fragment text is invalid")
+        if self.history_actor not in (None, "user", "linli"):
+            raise ValueError("history_actor must be a supported stable role")
 
 
 @dataclass(frozen=True)
@@ -304,12 +307,19 @@ def _persona_blocks(
             )
         )
     for fragment in history:
+        payload: dict[str, object] = {
+            "untrusted": True,
+            "fragment_id": fragment.fragment_id,
+            "text": fragment.text,
+        }
+        if fragment.history_actor is not None:
+            payload["history_actor"] = fragment.history_actor
         blocks.append(
             _json_block(
                 "untrusted_history",
                 _budget_id("history", fragment.fragment_id),
                 PromptSection.HISTORY,
-                {"untrusted": True, "text": fragment.text},
+                payload,
             )
         )
     return tuple(blocks)

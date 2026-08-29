@@ -86,7 +86,10 @@ _LAYER_SPECS = {
             "shape sound like Linli in the requested communication mode? "
             "Avoid exhaustive recap, universal reassurance, polished "
             "assistant prose, slogan-like wisdom, and unnecessary closure. "
-            "Do not require optional catchphrases or fatigue markers."
+            "Do not require optional catchphrases or fatigue markers. For "
+            "text_letter, a closing question is STYLE_DRIFT only when it adds "
+            "no necessary information or choice and merely keeps the conversation "
+            "going. A concrete, useful question remains allowed."
         ),
     },
     "focus_response": {
@@ -117,7 +120,10 @@ _LAYER_SPECS = {
             "Use a support-first check. Only an unsupported specific claim "
             "about a past event, recurring pattern, private title, or "
             "relationship history may be memory fabrication. Current-input "
-            "paraphrase, ordinary inference, and conditional language are not."
+            "paraphrase, ordinary inference, and conditional language are not. "
+            "An emotional acknowledgment, stylistic reaction, or present-tense "
+            "support that does not assert a past or current event is not memory "
+            "fabrication. This exception never supports an invented fact."
         ),
     },
     "autonomy_life": {
@@ -154,6 +160,9 @@ _LAYER_RELEASE_FACETS = {
 _MEMORY_SOURCE_CHARACTER_LIMIT = 2400
 _CURRENT_USER_EXCERPT_LIMIT = 600
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
+_CHARACTER_REPLY_FRAGMENT_ID_RE = re.compile(
+    r"^character_reply\.[A-Za-z0-9._:-]{1,80}$"
+)
 _REVIEW_INPUT_CHARACTER_LIMIT = 30000
 _REVIEW_FACETS = frozenset(
     {
@@ -193,6 +202,13 @@ class _LayerResult:
             and not self.hard_violations
             and not self.drift_detected
         )
+
+
+@dataclass(frozen=True)
+class _AssembledHistoryFragment:
+    fragment_id: str
+    text: str
+    history_actor: str | None
 
 
 class GatewayReviewTransport:
@@ -427,6 +443,12 @@ class GatewayPersonaRewriter:
         }
         if delivery_length_contract is not None:
             payload["delivery_length_contract"] = delivery_length_contract
+        text_letter_repair = (
+            " In text_letter, do not add a question just to create a closing; "
+            "keep one only when it obtains necessary information or choice."
+            if context.mode.value == "text_letter"
+            else ""
+        )
         messages = (
             {
                 "role": "system",
@@ -438,6 +460,7 @@ class GatewayPersonaRewriter:
                     "style. Do not invent history or facts. Return only the replacement "
                     "plain-text reply: no analysis, JSON, Markdown heading, stage direction, "
                     "speaker prefix, or control markup."
+                    f"{text_letter_repair}"
                     " When delivery_length_contract is present, it overrides the usual "
                     "concise style: rewrite to its target length and verify the compact "
                     "character count is within the inclusive range before returning. "
@@ -1057,10 +1080,10 @@ def _last_user_text(
     return ""
 
 
-def _assembled_history_texts(
+def _assembled_history_fragments(
     messages: Sequence[Mapping[str, Any]],
-) -> tuple[str, ...]:
-    evidence: list[str] = []
+) -> tuple[_AssembledHistoryFragment, ...]:
+    evidence: list[_AssembledHistoryFragment] = []
     for message in messages:
         content = message.get("content")
         if message.get("role") != "system" or not isinstance(content, str):
@@ -1074,10 +1097,37 @@ def _assembled_history_texts(
                 payload = json.loads(match.group(1))
             except json.JSONDecodeError:
                 continue
-            text = payload.get("text") if isinstance(payload, Mapping) else None
-            if isinstance(text, str) and text.strip():
-                evidence.append(text.strip())
+            if not isinstance(payload, Mapping):
+                continue
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            fragment_id = payload.get("fragment_id")
+            history_actor = payload.get("history_actor")
+            evidence.append(
+                _AssembledHistoryFragment(
+                    fragment_id=(
+                        fragment_id
+                        if isinstance(fragment_id, str)
+                        and re.fullmatch(r"[A-Za-z0-9._:-]{1,96}", fragment_id)
+                        else ""
+                    ),
+                    text=text.strip(),
+                    history_actor=(
+                        history_actor
+                        if isinstance(history_actor, str)
+                        and history_actor in ("user", "linli")
+                        else None
+                    ),
+                )
+            )
     return tuple(evidence)
+
+
+def _assembled_history_texts(
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    return tuple(item.text for item in _assembled_history_fragments(messages))
 
 
 def _assembled_memory_evidence(
@@ -1091,9 +1141,12 @@ def _assembled_character_reply_evidence(
 ) -> str:
     prefix = "character_reply: "
     replies = tuple(
-        text[len(prefix) :].strip()
-        for text in _assembled_history_texts(messages)
-        if text.startswith(prefix) and text[len(prefix) :].strip()
+        item.text[len(prefix) :].strip()
+        for item in _assembled_history_fragments(messages)
+        if item.history_actor == "linli"
+        and _CHARACTER_REPLY_FRAGMENT_ID_RE.fullmatch(item.fragment_id)
+        and item.text.startswith(prefix)
+        and item.text[len(prefix) :].strip()
     )
     return _safe_text("\n".join(replies), _CHARACTER_REPLY_HISTORY_LIMIT)
 

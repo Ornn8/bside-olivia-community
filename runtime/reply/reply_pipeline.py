@@ -254,6 +254,7 @@ def _character_reply_fragment(
     return UntrustedFragment(
         f"character_reply.{digest}",
         f"{_CHARACTER_REPLY_PREFIX}{text[:available]}",
+        history_actor="linli",
     )
 
 
