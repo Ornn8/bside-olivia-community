@@ -35,6 +35,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "MIDI_JOB_NOT_FOUND": {"http_status": 404, "retryable": False},
     "METHOD_NOT_ALLOWED": {"http_status": 405, "retryable": False},
     "IDEMPOTENCY_CONFLICT": {"http_status": 409, "retryable": False},
+    "LETTER_IN_PROGRESS": {"http_status": 409, "retryable": True},
     "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_PAYLOAD_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_REQUEST_CONFLICT": {"http_status": 409, "retryable": False},

@@ -525,6 +525,127 @@ def test_http_send_acknowledges_before_slow_reply_finishes(
     assert detail["data"]["reply_text"] == "synthetic delayed reply"
 
 
+def test_http_rejects_a_new_letter_until_the_current_reply_is_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    reply_started = threading.Event()
+    allow_reply = threading.Event()
+
+    def slow_reply(*_args, **_kwargs) -> str:
+        reply_started.set()
+        allow_reply.wait(timeout=2.0)
+        return "synthetic delayed reply"
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", slow_reply)
+    monkeypatch.setenv("OLIVIA_REPLY_DELAY_ENABLED", "1")
+    monkeypatch.setenv("OLIVIA_REPLY_DELAY_MINUTES_MIN", "5")
+    monkeypatch.setenv("OLIVIA_REPLY_DELAY_MINUTES_MAX", "5")
+
+    async def exercise() -> tuple[dict, int, dict, int, dict, int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            first_response = await client.post(
+                "/toy/letter/send",
+                json={
+                    "content": "synthetic first letter",
+                    "idempotency_key": "single-active:first",
+                },
+            )
+            first = await first_response.json()
+            assert reply_started.wait(timeout=0.2)
+
+            duplicate_response = await client.post(
+                "/toy/letter/send",
+                json={
+                    "content": "synthetic first letter",
+                    "idempotency_key": "single-active:first",
+                },
+            )
+            duplicate = await duplicate_response.json()
+
+            blocked_while_processing_response = await client.post(
+                "/toy/letter/send",
+                json={
+                    "content": "synthetic second letter",
+                    "idempotency_key": "single-active:second",
+                },
+            )
+            blocked_while_processing = await blocked_while_processing_response.json()
+
+            allow_reply.set()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+
+            blocked_before_delivery_response = await client.post(
+                "/toy/letter/send",
+                json={
+                    "content": "synthetic third letter",
+                    "idempotency_key": "single-active:third",
+                },
+            )
+            blocked_before_delivery = await blocked_before_delivery_response.json()
+            local_server.store.letters[0]["reply_not_before"] = 0.0
+            delivered_response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic first letter"},
+            )
+            delivered = await delivered_response.json()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            return (
+                first,
+                blocked_while_processing_response.status,
+                blocked_while_processing,
+                blocked_before_delivery_response.status,
+                blocked_before_delivery,
+                delivered_response.status,
+                delivered,
+            ), duplicate
+
+    (
+        (
+            first,
+            processing_status,
+            blocked_while_processing,
+            delivery_status,
+            blocked_before_delivery,
+            delivered_status,
+            delivered,
+        ),
+        duplicate,
+    ) = asyncio.run(exercise())
+
+    assert first["data"]["status"] == "PENDING"
+    assert duplicate["data"]["letter_id"] == first["data"]["letter_id"]
+    assert processing_status == 409
+    assert blocked_while_processing == {
+        "code": 409,
+        "message": "LETTER_IN_PROGRESS",
+        "data": {
+            "status": "FAILED",
+            "error_code": "LETTER_IN_PROGRESS",
+            "retryable": True,
+            "active_letter_id": first["data"]["letter_id"],
+        },
+    }
+    assert delivery_status == 409
+    assert blocked_before_delivery == blocked_while_processing
+    assert delivered_status == 200
+    assert delivered["data"]["letter_id"] != first["data"]["letter_id"]
+    assert len(local_server.store.letters) == 2
+
+    import http_contract
+
+    assert http_contract.error_metadata("LETTER_IN_PROGRESS") == {
+        "http_status": 409,
+        "retryable": True,
+    }
+
+
 def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -674,6 +795,7 @@ def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None
         "material": {"stamp_id": "stamp-a"},
         "letter_status": "COMPLETED",
         "created_at": 100,
+        "reply_not_before": 200,
     }
     local_server.store.letters.append(original)
 
@@ -698,6 +820,15 @@ def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None
             "synthetic input",
             {"stamp_id": "stamp-a"},
             now=161,
+        )
+        is None
+    )
+    original["reply_not_before"] = 0
+    assert (
+        local_server._recent_active_duplicate(
+            "synthetic input",
+            {"stamp_id": "stamp-a"},
+            now=159,
         )
         is None
     )

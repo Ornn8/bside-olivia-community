@@ -2036,9 +2036,28 @@ def _recent_active_duplicate(
         age = current_time - float(created_at)
         if age < 0 or age > LETTER_RETRY_DEDUP_SECONDS:
             continue
-        if letter.get("letter_status") not in {"PENDING", "PROCESSING", "COMPLETED"}:
+        status = letter.get("letter_status")
+        if status not in {"PENDING", "PROCESSING", "COMPLETED"}:
+            continue
+        if (
+            status == "COMPLETED"
+            and letter.get("reply_not_before", 0.0) <= current_time
+        ):
             continue
         if letter.get("content") == content and letter.get("material", {}) == material:
+            return letter
+    return None
+
+
+def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
+    current_time = time.time() if now is None else now
+    for letter in store.letters:
+        if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
+            return letter
+        if (
+            letter.get("letter_status") == "COMPLETED"
+            and letter.get("reply_not_before", 0.0) > current_time
+        ):
             return letter
     return None
 
@@ -2568,6 +2587,14 @@ async def route(
             previous = _recent_active_duplicate(content, material)
             if previous is not None:
                 return _send_result_for_letter(previous)
+        active_letter = _active_undelivered_letter()
+        if active_letter is not None:
+            return err(409, "LETTER_IN_PROGRESS", {
+                "status": "FAILED",
+                "error_code": "LETTER_IN_PROGRESS",
+                "retryable": True,
+                "active_letter_id": active_letter["letter_id"],
+            })
         lid = str(uuid.uuid4())
         letter = {
             "letter_id": lid,
