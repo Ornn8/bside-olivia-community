@@ -16,7 +16,7 @@
 
 ## 已发布兼容映射
 
-下列 21 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
+下列 23 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
 
 | 根兼容模块 | Canonical 模块 |
 | --- | --- |
