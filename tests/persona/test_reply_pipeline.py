@@ -339,7 +339,11 @@ class RecordingLayerReviewGateway(Gateway):
         if request["layer"] == "identity_boundary":
             response["intimacy_request"] = "none"
             response["intimacy_claims"] = []
-        if request["layer"] in {"identity_boundary", "continuity_memory"}:
+        if request["layer"] in {
+            "identity_boundary",
+            "voice_style",
+            "continuity_memory",
+        }:
             response["hard_evidence"] = []
             response["independent_soft_issue"] = False
         return GatewayResponse(

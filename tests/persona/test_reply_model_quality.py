@@ -52,7 +52,7 @@ def _layer_payload(layer: str) -> str:
     if layer == "identity_boundary":
         payload["intimacy_request"] = "none"
         payload["intimacy_claims"] = []
-    if layer in {"identity_boundary", "continuity_memory"}:
+    if layer in {"identity_boundary", "voice_style", "continuity_memory"}:
         payload["hard_evidence"] = []
         payload["independent_soft_issue"] = False
     return json.dumps(payload)
@@ -77,7 +77,7 @@ def _layer_score_payload(
     if layer == "identity_boundary":
         payload["intimacy_request"] = intimacy_request
         payload["intimacy_claims"] = intimacy_claims or []
-    if layer in {"identity_boundary", "continuity_memory"}:
+    if layer in {"identity_boundary", "voice_style", "continuity_memory"}:
         payload["hard_evidence"] = hard_evidence or []
         payload["independent_soft_issue"] = False
     return json.dumps(payload)
@@ -517,6 +517,19 @@ def test_text_letter_rubrics_separate_support_from_memory_and_forced_questions()
     assert "does not assert a past or current event" in prompts["continuity_memory"]
     assert "closing question" in prompts["voice_style"]
     assert "necessary information or choice" in prompts["voice_style"]
+    assert '"hard_evidence":[]' in prompts["voice_style"]
+    assert all(
+        claim_kind in prompts["voice_style"]
+        for claim_kind in (
+            "forced_question",
+            "generic_assistant_tone",
+            "fixed_structure",
+            "forced_uplift",
+            "voice_mismatch",
+            "length_or_mode",
+        )
+    )
+    assert "matching_code" in prompts["voice_style"]
 
 
 def test_continuity_rubric_has_typed_current_fact_decision_cases() -> None:
@@ -571,6 +584,263 @@ def test_useful_text_letter_question_has_no_automatic_style_violation(
     assert result.quality_status == "accepted"
     assert result.violation_codes == ()
     assert result.rewrite_calls == 0
+
+
+def test_text_letter_hard_style_without_candidate_evidence_fails_closed() -> None:
+    reviews = _passing_layer_payloads()
+    voice = json.loads(reviews[1])
+    voice.update(
+        score=0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+    )
+    reviews[1] = json.dumps(voice)
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review("Synthetic forced continuation?", _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert gateway.adjudication_requests == []
+
+
+def test_hard_evidence_accepts_matching_code_as_the_only_code_alias() -> None:
+    candidate = "Synthetic unsupported memory claim."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    evidence["matching_code"] = evidence.pop("code")
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    normalized = {**evidence, "code": evidence["matching_code"]}
+    normalized.pop("matching_code")
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=reviews,
+        adjudications=[_adjudication_payload(normalized, "CONFIRM")],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.REWRITE
+    assert gateway.adjudication_requests[0]["claims"][0]["code"] == (
+        "MEMORY_FABRICATION"
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("both", "neither", "wrong_type", "mismatch", "extra"),
+)
+def test_hard_evidence_code_alias_remains_fail_closed(case: str) -> None:
+    candidate = "Synthetic unsupported memory claim."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    if case == "both":
+        evidence["matching_code"] = "MEMORY_FABRICATION"
+    elif case == "neither":
+        evidence.pop("code")
+    elif case == "wrong_type":
+        evidence["code"] = 1
+    elif case == "mismatch":
+        evidence["code"] = "BOUNDARY_BREACH"
+    else:
+        evidence["extra"] = "forbidden"
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert gateway.adjudication_requests == []
+
+
+def test_voice_style_evidence_rejects_non_style_claim_kind() -> None:
+    candidate = "Synthetic forced continuation?"
+    evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        claim_kind="past_fact",
+    )
+    reviews = _passing_layer_payloads()
+    reviews[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert gateway.adjudication_requests == []
+
+
+def test_adjudicator_rejects_false_style_drift_as_direct_soft_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic useful choice question?"
+    evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        claim_kind="forced_question",
+    )
+    reviews = _passing_layer_payloads()
+    reviews[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=reviews,
+        adjudications=[_adjudication_payload(evidence, "REJECT")],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Synthetic current input.", request_id="false-style"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.quality_status == "accepted_with_warnings"
+    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert result.rewrite_calls == 0
+    assert gateway.call_kinds == ["generation", *('review',) * 5, "adjudication"]
+
+
+def test_confirmed_forced_question_rewrites_then_persistent_style_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic forced continuation?"
+    rewritten = "Synthetic rewritten forced continuation?"
+    old_evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.old",
+        claim_kind="forced_question",
+    )
+    new_evidence = _hard_evidence_payload(
+        rewritten,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.new",
+        claim_kind="forced_question",
+    )
+    first = _passing_layer_payloads()
+    first[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+        hard_evidence=[old_evidence],
+    )
+    second = _passing_layer_payloads()
+    second[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"],
+        drift_detected=True,
+        hard_evidence=[new_evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *second],
+        rewritten=rewritten,
+        adjudications=[
+            _adjudication_payload(old_evidence, "CONFIRM"),
+            _adjudication_payload(new_evidence, "CONFIRM"),
+        ],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Synthetic current input.", request_id="style-hard"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.FAILED
+    assert result.quality_status == "blocked"
+    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert candidate not in repr(result)
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+    assert [request["candidate_reply"] for request in gateway.adjudication_requests] == [
+        candidate,
+        rewritten,
+    ]
+
+
+def test_rejected_style_claim_preserves_same_layer_independent_soft_issue() -> None:
+    candidate = "Synthetic forced question plus separate generic tone."
+    evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        start=0,
+        end=9,
+        claim_kind="forced_question",
+    )
+    voice = json.loads(
+        _layer_score_payload(
+            "voice_style",
+            0,
+            hard_violations=["STYLE_DRIFT"],
+            drift_detected=True,
+            hard_evidence=[evidence],
+        )
+    )
+    voice["independent_soft_issue"] = True
+    reviews = _passing_layer_payloads()
+    reviews[1] = json.dumps(voice)
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=reviews,
+        adjudications=[_adjudication_payload(evidence, "REJECT")],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.REWRITE
+    assert [(item.code, item.severity, item.start, item.end) for item in result.violations] == [
+        ("STYLE_DRIFT", "soft", 0, 9),
+        ("STYLE_DRIFT", "soft", 0, len(candidate)),
+    ]
 
 
 def test_reassembled_current_user_reference_is_capped_at_600_characters() -> None:
@@ -920,6 +1190,7 @@ def test_adjudicator_rejects_false_memory_fabrication_as_soft_warning() -> None:
     (
         (0, "identity_boundary", "IDENTITY_DRIFT", "relationship", "character_history", "identity_world"),
         (0, "identity_boundary", "STAGE_DRIFT", "current_fact", "current_user", "relationship"),
+        (1, "voice_style", "STYLE_DRIFT", "forced_question", "memory", "voice_style"),
         (3, "continuity_memory", "MEMORY_FABRICATION", "relationship", "character_history", "continuity_fact"),
     ),
 )
@@ -983,18 +1254,21 @@ def test_adjudication_disclosure_ignores_untrusted_claim_routing_metadata(
     expected_keys = {
         "identity_world": {"release_authority", "world_facts"},
         "relationship": {"release_authority", "character_reply_history", "relationship_context"},
+        "voice_style": {"release_authority", "current_user_input"},
         "continuity_fact": {"current_user_input", "memory_evidence"},
     }
     assert set(context) == expected_keys[context_id]
     forbidden = {
         "identity_world": ("Sensitive current user", "Sensitive untyped", "Typed Linli"),
         "relationship": ("Sensitive current user", "Sensitive untyped"),
+        "voice_style": ("Sensitive untyped", "Typed Linli"),
         "continuity_fact": ("Typed Linli",),
     }
     assert all(text not in repr(context) for text in forbidden[context_id])
     required = {
         "identity_world": ("release_authority",),
         "relationship": ("Typed Linli", "unknown"),
+        "voice_style": ("release_authority", "Sensitive current user"),
         "continuity_fact": ("Sensitive current user", "Sensitive untyped"),
     }
     assert all(text in repr(context) for text in required[context_id])
@@ -1219,7 +1493,18 @@ def test_seventeen_cross_layer_claims_fail_before_adjudication() -> None:
             claim_kind="identity_claim",
             support_source="world_fact",
         )
-        for index in range(8)
+        for index in range(6)
+    ]
+    style_evidence = [
+        _hard_evidence_payload(
+            candidate,
+            "STYLE_DRIFT",
+            evidence_id=f"evidence.style.{index}",
+            start=index,
+            end=index + 1,
+            claim_kind="voice_mismatch",
+        )
+        for index in range(6, 11)
     ]
     continuity_evidence = [
         _hard_evidence_payload(
@@ -1231,7 +1516,7 @@ def test_seventeen_cross_layer_claims_fail_before_adjudication() -> None:
             claim_kind="past_fact",
             support_source="memory",
         )
-        for index in range(8, 17)
+        for index in range(11, 17)
     ]
     reviews = _passing_layer_payloads()
     reviews[0] = _layer_score_payload(
@@ -1240,6 +1525,13 @@ def test_seventeen_cross_layer_claims_fail_before_adjudication() -> None:
         hard_violations=["IDENTITY_DRIFT"] * len(identity_evidence),
         drift_detected=True,
         hard_evidence=identity_evidence,
+    )
+    reviews[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"] * len(style_evidence),
+        drift_detected=True,
+        hard_evidence=style_evidence,
     )
     reviews[3] = _layer_score_payload(
         "continuity_memory",
@@ -1274,7 +1566,18 @@ def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> No
             claim_kind="identity_claim" if index == 0 else "relationship",
             support_source="world_fact" if index == 0 else "character_history",
         )
-        for index in range(8)
+        for index in range(6)
+    ]
+    style_evidence = [
+        _hard_evidence_payload(
+            candidate,
+            "STYLE_DRIFT",
+            evidence_id=f"evidence.style.{index}",
+            start=index,
+            end=index + 1,
+            claim_kind="voice_mismatch",
+        )
+        for index in range(6, 11)
     ]
     continuity_evidence = [
         _hard_evidence_payload(
@@ -1286,9 +1589,9 @@ def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> No
             claim_kind="past_fact",
             support_source="memory",
         )
-        for index in range(8, 16)
+        for index in range(11, 16)
     ]
-    evidence_items = [*identity_evidence, *continuity_evidence]
+    evidence_items = [*identity_evidence, *style_evidence, *continuity_evidence]
     decisions = {
         "decisions": [
             {
@@ -1308,6 +1611,13 @@ def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> No
         hard_violations=[item["code"] for item in identity_evidence],
         drift_detected=True,
         hard_evidence=identity_evidence,
+    )
+    reviews[1] = _layer_score_payload(
+        "voice_style",
+        0,
+        hard_violations=["STYLE_DRIFT"] * len(style_evidence),
+        drift_detected=True,
+        hard_evidence=style_evidence,
     )
     reviews[3] = _layer_score_payload(
         "continuity_memory",
@@ -1337,6 +1647,7 @@ def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> No
     assert tuple(request["contexts"]) == (
         "identity_world",
         "relationship",
+        "voice_style",
         "continuity_fact",
     )
     assert len(request["claims"]) == 16
@@ -1822,7 +2133,9 @@ def test_localized_voice_mismatch_is_warning_without_rewrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reviews = _passing_layer_payloads()
-    reviews[1] = _layer_score_payload("voice_style", 1)
+    voice = json.loads(_layer_score_payload("voice_style", 1))
+    voice["independent_soft_issue"] = True
+    reviews[1] = json.dumps(voice)
     gateway = SequencedQualityGateway(
         candidate="先别急着替今天下结论。",
         reviews=reviews,
@@ -1845,12 +2158,27 @@ def test_localized_voice_mismatch_is_warning_without_rewrite(
 def test_hard_voice_style_blocks_after_the_single_rewrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    candidate = "A polished but overly generic reply."
+    rewritten = "A direct, concrete, restrained reply."
+    first_evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.generic.old",
+        claim_kind="generic_assistant_tone",
+    )
+    second_evidence = _hard_evidence_payload(
+        rewritten,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.generic.new",
+        claim_kind="generic_assistant_tone",
+    )
     first_pass = _passing_layer_payloads()
     first_pass[1] = _layer_score_payload(
         "voice_style",
         0,
         hard_violations=["STYLE_DRIFT"],
         drift_detected=True,
+        hard_evidence=[first_evidence],
     )
     second_pass = _passing_layer_payloads()
     second_pass[1] = _layer_score_payload(
@@ -1858,11 +2186,16 @@ def test_hard_voice_style_blocks_after_the_single_rewrite(
         0,
         hard_violations=["STYLE_DRIFT"],
         drift_detected=True,
+        hard_evidence=[second_evidence],
     )
     gateway = SequencedQualityGateway(
-        candidate="A polished but overly generic reply.",
+        candidate=candidate,
         reviews=[*first_pass, *second_pass],
-        rewritten="A direct, concrete, restrained reply.",
+        rewritten=rewritten,
+        adjudications=[
+            _adjudication_payload(first_evidence, "CONFIRM"),
+            _adjudication_payload(second_evidence, "CONFIRM"),
+        ],
     )
 
     result = asyncio.run(
@@ -1915,17 +2248,25 @@ def test_text_letter_forced_question_is_rewritten_then_freshly_reviewed(
 ) -> None:
     candidate = "你好呀，今天也要照顾好自己。最近怎么样？"
     rewritten = "你好。今天倒是安静得有点过分。"
+    evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.forced.old",
+        claim_kind="forced_question",
+    )
     first_pass = _passing_layer_payloads()
     first_pass[1] = _layer_score_payload(
         "voice_style",
         0,
         hard_violations=["STYLE_DRIFT"],
         drift_detected=True,
+        hard_evidence=[evidence],
     )
     gateway = SequencedQualityGateway(
         candidate=candidate,
         reviews=[*first_pass, *_passing_layer_payloads()],
         rewritten=rewritten,
+        adjudications=[_adjudication_payload(evidence, "CONFIRM")],
     )
 
     result = asyncio.run(
@@ -1955,12 +2296,27 @@ def test_text_letter_forced_question_is_rewritten_then_freshly_reviewed(
 def test_persistent_hard_forced_question_is_blocked_after_single_rewrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    candidate = "你好呀，最近怎么样？"
+    rewritten = "我看见你的问候了。你今天过得好吗？"
+    first_evidence = _hard_evidence_payload(
+        candidate,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.forced.old",
+        claim_kind="forced_question",
+    )
+    second_evidence = _hard_evidence_payload(
+        rewritten,
+        "STYLE_DRIFT",
+        evidence_id="evidence.style.forced.new",
+        claim_kind="forced_question",
+    )
     first_pass = _passing_layer_payloads()
     first_pass[1] = _layer_score_payload(
         "voice_style",
         0,
         hard_violations=["STYLE_DRIFT"],
         drift_detected=True,
+        hard_evidence=[first_evidence],
     )
     second_pass = _passing_layer_payloads()
     second_pass[1] = _layer_score_payload(
@@ -1968,11 +2324,16 @@ def test_persistent_hard_forced_question_is_blocked_after_single_rewrite(
         0,
         hard_violations=["STYLE_DRIFT"],
         drift_detected=True,
+        hard_evidence=[second_evidence],
     )
     gateway = SequencedQualityGateway(
-        candidate="你好呀，最近怎么样？",
+        candidate=candidate,
         reviews=[*first_pass, *second_pass],
-        rewritten="我看见你的问候了。你今天过得好吗？",
+        rewritten=rewritten,
+        adjudications=[
+            _adjudication_payload(first_evidence, "CONFIRM"),
+            _adjudication_payload(second_evidence, "CONFIRM"),
+        ],
     )
 
     result = asyncio.run(
