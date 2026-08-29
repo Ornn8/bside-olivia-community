@@ -164,8 +164,11 @@ def musical_reply_configured(
         )
     except ReplyMediaError:
         return False
+    roformer_executable = configured_path("OLIVIA_ROFORMER_PYTHON") or configured_path(
+        "OLIVIA_ROFORMER_EXE"
+    )
     configured_files = (
-        configured_path("OLIVIA_ROFORMER_EXE"),
+        roformer_executable,
         configured_path("OLIVIA_ROFORMER_MODEL_PATH"),
         configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
         configured_path("OLIVIA_MINIMAX_COMFY_PYTHON"),
