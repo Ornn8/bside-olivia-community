@@ -352,6 +352,50 @@ def test_model_download_discards_partial_when_falling_back_to_another_source(
     assert (tmp_path / "stage" / "weights.bin").read_bytes() == trusted
 
 
+def test_model_download_resumes_the_source_recorded_by_a_previous_worker(
+    tmp_path: Path,
+) -> None:
+    content = b"trusted model bytes"
+    artifact = ModelArtifact(len(content), hashlib.sha256(content).hexdigest())
+    partial = tmp_path / "downloads" / "weights.bin.part"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(content[:8])
+    partial.with_name(partial.name + ".source").write_text(
+        "https://official.example", encoding="utf-8"
+    )
+    observed: list[tuple[str, str | None]] = []
+
+    def opener(request, *, timeout: float):
+        assert timeout == 30
+        observed.append((request.full_url, request.headers.get("Range")))
+        return _Response(content[8:], status=206)
+
+    downloader = ResumableModelDownloader(
+        repo_id="owner/model",
+        revision="a" * 40,
+        files={"weights.bin": artifact},
+        sources=("https://mirror.example", "https://official.example"),
+        download_root=tmp_path / "downloads",
+        source_mode="auto",
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+        opener=opener,
+    )
+
+    downloader.download(
+        revision="a" * 40,
+        relative_path="weights.bin",
+        destination=tmp_path / "stage" / "weights.bin",
+    )
+
+    assert observed == [
+        (
+            "https://official.example/owner/model/resolve/" + "a" * 40 + "/weights.bin",
+            "bytes=8-",
+        )
+    ]
+
+
 class _Layer:
     def __init__(self, *, ready: bool = False) -> None:
         self.is_ready = ready
@@ -520,6 +564,44 @@ def test_queued_pause_survives_worker_start_and_resume(monkeypatch) -> None:
     assert runtime.installs == ["auto"]
     assert model.installs == ["auto"]
     assert installer.status().state is CapabilityState.READY
+
+
+def test_resume_keeps_paused_source_and_progress_floor(monkeypatch) -> None:
+    class DeferredThread:
+        def __init__(self, *, target, kwargs, **_options) -> None:
+            self.target = target
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr("mem0_capability_install.threading.Thread", DeferredThread)
+    runtime = _Layer()
+    model = _Layer()
+    installer = Mem0CapabilityInstaller(
+        runtime=runtime,
+        model=model,
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+    installer._status = installer._new_status(
+        CapabilityState.PAUSED,
+        "model",
+        15,
+        source="official",
+    )
+
+    assert installer.resume(source_mode="auto") == "APPLIED"
+    status = installer.status()
+    assert status.state is CapabilityState.QUEUED
+    assert status.downloaded_bytes == 15
+    assert status.source == "official"
+    assert installer._thread.kwargs["source_mode"] == "official"
 
 
 def test_capability_pause_resume_and_uninstall_keep_model_unless_confirmed() -> None:

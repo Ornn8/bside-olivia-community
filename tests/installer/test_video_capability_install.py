@@ -1238,6 +1238,110 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
     assert observed == [(runtime_root, manifest_sha256)]
 
 
+def test_video_capability_api_selects_and_imports_one_offline_zip_for_both_bundles(
+    tmp_path: Path,
+) -> None:
+    archive = (tmp_path / "Olivia-video-offline.zip").resolve()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("fixture.txt", "fixture")
+    observed: list[tuple[str, Path, bool]] = []
+
+    class FakeInstaller:
+        def status(self):
+            return {
+                "schema_version": "olivia.video-capability-status.v1",
+                "status": "UNAVAILABLE",
+                "capability": "video",
+                "install_locations": [],
+                "bundles": [],
+            }
+
+        def import_offline(
+            self,
+            *,
+            bundle_id: str,
+            offline_root: Path,
+            source_mode: str = "official",
+            accept_licenses: bool = False,
+        ):
+            observed.append((bundle_id, offline_root, accept_licenses))
+            return "APPLIED"
+
+    async def call():
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FakeInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+            select_offline_archive=lambda: archive,
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/toy/capabilities/video/action",
+                json={"action": "import_offline"},
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": "session",
+                },
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(call())
+    schema = json.loads(
+        Path("contracts/video_capability_action.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate({"action": "import_offline"})
+    assert status == 200
+    assert payload == {"status": "APPLIED"}
+    assert observed == [
+        ("ordinary_video", archive, False),
+        ("music_video", archive, True),
+    ]
+
+
+def test_video_capability_offline_import_failure_uses_the_stable_api_error(
+    tmp_path: Path,
+) -> None:
+    archive = (tmp_path / "Olivia-video-offline.zip").resolve()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("fixture.txt", "fixture")
+
+    class FailingInstaller:
+        def import_offline(self, **_kwargs):
+            raise RuntimeError("private failure detail")
+
+    async def call():
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FailingInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+            select_offline_archive=lambda: archive,
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/toy/capabilities/video/action",
+                json={"action": "import_offline"},
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": "session",
+                },
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(call())
+    assert status == 503
+    assert payload == {
+        "status": "FAILED",
+        "error_code": "VIDEO_CAPABILITY_ACTION_UNAVAILABLE",
+    }
+
+
 def test_video_capability_status_remains_available_during_runtime_import(
     tmp_path: Path,
 ) -> None:
