@@ -3,12 +3,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
+import pytest
 
 from runtime.reply.reply_context import (
+    IntimacyRequest,
+    IntimacyTier,
     KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
+    RelationshipStage,
     TrustedTime,
     TrustedWorldFact,
 )
@@ -16,6 +20,8 @@ from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     NullReviewer,
     ReviewReference,
+    ReviewResult,
+    ReviewerScores,
     ReviewerConfig,
     ReviewStatus,
     ReviewVerdict,
@@ -48,10 +54,12 @@ class _FailingTransport:
 
 def _valid_response() -> dict[str, object]:
     return {
-        "schema_version": "p02.reply-review.v1",
+        "schema_version": "p02.reply-review.v2",
         "status": "completed",
         "verdict": "pass",
         "violations": [],
+        "intimacy_request": "none",
+        "intimacy_claims": [],
         "scores": {
             "persona_consistency": 92,
             "factual_consistency": 94,
@@ -74,6 +82,9 @@ def test_valid_reviewer_json_becomes_a_typed_result_from_limited_context() -> No
             ),
         ),
         private_behavior=PrivateBehaviorView(
+            relationship_stage=RelationshipStage.CLOSE,
+            intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+            granted_intimacy=IntimacyTier.LIGHT_CONTACT,
             known_continuations=(
                 KnownContinuationFact(
                     "class.known",
@@ -91,6 +102,8 @@ def test_valid_reviewer_json_becomes_a_typed_result_from_limited_context() -> No
 
     assert result.status is ReviewStatus.COMPLETED
     assert result.verdict is ReviewVerdict.PASS
+    assert result.intimacy_request is IntimacyRequest.NONE
+    assert result.intimacy_claims == ()
     assert result.scores.mode_compliance == 98
     request = transport.requests[0]
     assert request["world_facts"][0]["fact_id"] == "fact.synthetic"
@@ -101,6 +114,11 @@ def test_valid_reviewer_json_becomes_a_typed_result_from_limited_context() -> No
         }
     ]
     assert "private_behavior" not in request
+    assert request["relationship_context"] == {
+        "relationship_stage": "close",
+        "intimacy_ceiling": "light_contact",
+        "granted_intimacy": "light_contact",
+    }
     assert "trust" not in repr(request)
 
 
@@ -110,7 +128,7 @@ def test_public_schema_rejects_unknown_fields_and_out_of_range_scores() -> None:
     )
     validator = Draft202012Validator(schema)
     valid = {
-        "schema_version": "p02.reply-review.v1",
+        "schema_version": "p02.reply-review.v2",
         "status": "completed",
         "verdict": "rewrite",
         "violations": [
@@ -118,6 +136,15 @@ def test_public_schema_rejects_unknown_fields_and_out_of_range_scores() -> None:
                 "code": "UNAUTHORIZED_SHARED_HISTORY",
                 "severity": "hard",
                 "evidence": {"start": 2, "end": 8},
+            }
+        ],
+        "intimacy_request": "requested",
+        "intimacy_claims": [
+            {
+                "claim_id": "intimacy.synthetic",
+                "tier": "light_contact",
+                "start": 2,
+                "end": 8,
             }
         ],
         "scores": {
@@ -159,6 +186,7 @@ def test_invalid_provider_json_returns_a_sanitized_typed_failure() -> None:
     assert result.verdict is ReviewVerdict.UNAVAILABLE
     assert result.error_code == "REVIEWER_RESPONSE_INVALID"
     assert result.violations == ()
+    assert result.intimacy_claims is None
 
 
 def test_disabled_and_failed_reviewers_return_sanitized_unavailable_results() -> None:
@@ -219,5 +247,92 @@ def test_reviewer_request_accepts_only_short_identified_reference_summaries() ->
         "output_constraints",
         "world_facts",
         "known_continuations",
+        "relationship_context",
         "references",
     }
+
+
+def test_reviewer_parses_candidate_bound_intimacy_evidence() -> None:
+    response = _valid_response()
+    response["intimacy_request"] = "requested"
+    response["intimacy_claims"] = [
+        {
+            "claim_id": "intimacy.synthetic",
+            "tier": "light_contact",
+            "start": 0,
+            "end": 9,
+        }
+    ]
+    result = JsonReviewerAdapter(
+        _Transport(response),
+        ReviewerConfig("reviewer-small"),
+    ).review("Synthetic candidate.", ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    ))
+
+    assert result.intimacy_request is IntimacyRequest.REQUESTED
+    assert len(result.intimacy_claims) == 1
+    assert result.intimacy_claims[0].claim_id == "intimacy.synthetic"
+    assert result.intimacy_claims[0].tier is IntimacyTier.LIGHT_CONTACT
+
+
+def test_reviewer_rejects_missing_duplicate_or_out_of_range_intimacy_claims() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+    missing = _valid_response()
+    missing.pop("intimacy_claims")
+    missing_request = _valid_response()
+    missing_request.pop("intimacy_request")
+    duplicate = _valid_response()
+    duplicate["intimacy_claims"] = [
+        {"claim_id": "same", "tier": "none", "start": 0, "end": 1},
+        {"claim_id": "same", "tier": "none", "start": 1, "end": 2},
+    ]
+    outside = _valid_response()
+    outside["intimacy_claims"] = [
+        {"claim_id": "outside", "tier": "light_contact", "start": 0, "end": 99}
+    ]
+    invalid_tier = _valid_response()
+    invalid_tier["intimacy_claims"] = [
+        {"claim_id": "invalid", "tier": "sexual", "start": 0, "end": 1}
+    ]
+
+    for response in (
+        missing,
+        missing_request,
+        duplicate,
+        outside,
+        invalid_tier,
+    ):
+        result = JsonReviewerAdapter(
+            _Transport(response),
+            ReviewerConfig("reviewer-small"),
+        ).review("Synthetic candidate.", context)
+        assert result.status is ReviewStatus.INVALID_RESPONSE
+        assert result.verdict is ReviewVerdict.UNAVAILABLE
+        assert result.intimacy_claims is None
+
+
+def test_review_result_distinguishes_completed_empty_from_missing_assessment() -> None:
+    with pytest.raises(ValueError):
+        ReviewResult(
+            ReviewStatus.COMPLETED,
+            ReviewVerdict.PASS,
+            (),
+            ReviewerScores(100, 100, 100, 100),
+            None,
+            None,
+        )
+    with pytest.raises(ValueError):
+        ReviewResult(
+            ReviewStatus.UNAVAILABLE,
+            ReviewVerdict.UNAVAILABLE,
+            (),
+            ReviewerScores(0, 0, 0, 0),
+            IntimacyRequest.NONE,
+            (),
+            error_code="REVIEWER_UNAVAILABLE",
+        )

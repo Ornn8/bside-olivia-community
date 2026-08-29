@@ -17,12 +17,12 @@ belongs to P02-08 rather than an over-broad regular expression.
 
 Intimacy enforcement is likewise structured: `IntimacyClaim` spans carry a
 bounded tier, and the deterministic scanner rejects unsolicited claims or a
-tier above the projected ceiling. PR-3 keeps production callers on the empty
-claims default; the semantic reviewer becomes the production claim source in
-PR-4. A non-empty claim tuple is candidate-bound. If that candidate is
-rewritten before PR-4 can provide fresh claims for the new text, the quality
-gate blocks with `FRESH_INTIMACY_CLAIMS_REQUIRED` instead of accepting an
-unchecked rewrite.
+tier above the projected ceiling. The configured semantic reviewer is the
+production source for both the current-turn request classification and claims.
+A claim tuple is candidate-bound; after rewriting, the new candidate is
+reviewed again and scanned only with its fresh spans. Disabled review can use
+the explicit compatibility input, but it fails closed with
+`FRESH_INTIMACY_CLAIMS_REQUIRED` if a rewrite makes those spans stale.
 
 Violations contain only code, severity, and offsets. They do not duplicate the
 candidate text, private state, prompt, or evidence content.

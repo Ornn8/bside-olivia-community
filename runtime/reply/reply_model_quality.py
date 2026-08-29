@@ -13,7 +13,12 @@ from typing import Any, Mapping, Sequence
 
 from llm_gateway import Gateway, GatewayConfig, create_gateway
 from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
-from runtime.reply.reply_context import ReplyContext
+from runtime.reply.reply_context import (
+    IntimacyRequest,
+    IntimacyTier,
+    ReplyContext,
+)
+from runtime.reply.reply_policy import IntimacyClaim
 from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     ReviewReference,
@@ -41,12 +46,28 @@ _LAYER_SPECS = {
             "九、关系原则",
             "十六、关于原 BSide 的记忆断裂",
         ),
-        "codes": ("IDENTITY_DRIFT", "BOUNDARY_BREACH"),
+        "codes": (
+            "IDENTITY_DRIFT",
+            "BOUNDARY_BREACH",
+            "STAGE_DRIFT",
+            "ACKNOWLEDGED_FEELING_REWRITE",
+            "INTIMACY_VIOLATION",
+            "UNSOLICITED_INTIMACY",
+            "RELATIONSHIP_RETRACTION",
+        ),
         "question": (
             "Does the reply preserve Linli's identity, source hierarchy, "
-            "and relationship boundaries? Penalize only a concrete "
-            "contradiction or boundary crossing present in the candidate, "
-            "not the absence of optional biography or mannerisms."
+            "and relationship boundaries? Classify intimacy_request only "
+            "from the current user input. A user request is not relationship "
+            "evidence: wishes, self-labels, unilateral nicknames, repeated "
+            "messages, or lack of refusal never advance a relationship. "
+            "Claims describe only completed present-candidate contact; future debt, "
+            "imagined contact, metaphor, and unilateral user statements are not "
+            "completed intimacy. Linli's refusal, disagreement, fatigue, or short "
+            "reply is autonomy, not a violation, unless it contradicts confirmed "
+            "history. Penalize only a concrete contradiction or boundary crossing "
+            "present in the candidate, not the absence of optional biography or "
+            "mannerisms."
         ),
     },
     "voice_style": {
@@ -159,6 +180,8 @@ class _LayerResult:
     score: int
     hard_violations: tuple[str, ...]
     drift_detected: bool
+    intimacy_request: IntimacyRequest | None = None
+    intimacy_claims: tuple[IntimacyClaim, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -222,6 +245,11 @@ class GatewayReviewTransport:
             candidate=str(request.get("candidate", "")),
             current_user_input=current_user_input,
             memory_evidence=memory_evidence,
+            relationship_context=(
+                request.get("relationship_context", {})
+                if isinstance(request.get("relationship_context"), Mapping)
+                else {}
+            ),
             mode=mode,
             timeout_seconds=timeout_seconds,
         )
@@ -361,6 +389,18 @@ class GatewayPersonaRewriter:
                     context.private_behavior.known_continuations
                 )
             ],
+            "relationship_context": {
+                "relationship_stage": (
+                    context.private_behavior.relationship_stage.value
+                ),
+                "intimacy_ceiling": (
+                    context.private_behavior.intimacy_ceiling.value
+                ),
+                "granted_intimacy": (
+                    context.private_behavior.granted_intimacy.value
+                ),
+                "intimacy_request": context.intimacy_request.value,
+            },
             "user_message": _safe_text(
                 user_text,
                 1200,
@@ -569,9 +609,31 @@ def _layer_messages(
     candidate: str,
     current_user_input: str,
     memory_evidence: Mapping[str, str],
+    relationship_context: Mapping[str, object],
     mode: str,
 ) -> tuple[dict[str, str], dict[str, str]]:
     allowed = ", ".join(layer.allowed_codes)
+    response_contract = (
+        f'{{"layer":"{layer.name}","score":0,"hard_violations":[],'
+        '"drift_detected":false,"intimacy_request":"none",'
+        '"intimacy_claims":[]}}'
+        if layer.name == "identity_boundary"
+        else (
+            f'{{"layer":"{layer.name}","score":0,'
+            '"hard_violations":[],"drift_detected":false}}'
+        )
+    )
+    intimacy_instructions = (
+        " intimacy_request classifies only whether the current user explicitly "
+        "requested physical contact in this turn. intimacy_claims contains every "
+        "completed physical-contact claim in candidate_reply, each exactly as "
+        '{"claim_id":"stable-id","tier":"light_contact","start":0,"end":1}; '
+        "tier is none, light_contact, or close_contact and spans are zero-based, "
+        "end-exclusive Python character offsets into candidate_reply. Return an "
+        "empty list when there is no completed contact."
+        if layer.name == "identity_boundary"
+        else ""
+    )
     system = (
         f"{_REVIEW_MARKER}\n"
         "The GLOBAL_AUTHORITY contains approved public release policy and remains "
@@ -584,7 +646,7 @@ def _layer_messages(
         "mismatch. Never lower the score for uncertainty, preference, or the "
         "absence of an optional trait. Set drift_detected=true only for "
         "substantive persona drift. Return ONLY compact JSON with exactly: "
-        f'{{"layer":"{layer.name}","score":0,"hard_violations":[],"drift_detected":false}}. '
+        f"{response_contract}.{intimacy_instructions} "
         f"hard_violations may contain only: {allowed}. Do not explain.\n"
         f"GLOBAL_AUTHORITY:\n{layer.global_authority}\n"
         f"LAYER_AUTHORITY:\n{layer.layer_authority}"
@@ -597,6 +659,8 @@ def _layer_messages(
     }
     if layer.name in _MEMORY_EVIDENCE_LAYERS:
         payload["memory_evidence"] = memory_evidence
+    if layer.name == "identity_boundary":
+        payload["relationship_context"] = dict(relationship_context)
     user = json.dumps(
         payload,
         ensure_ascii=False,
@@ -614,12 +678,19 @@ def _layer_messages(
     return messages
 
 
-def _parse_layer_result(layer: _LayerAuthority, text: str) -> _LayerResult:
+def _parse_layer_result(
+    layer: _LayerAuthority,
+    text: str,
+    *,
+    candidate: str,
+) -> _LayerResult:
     try:
         raw = json.loads(text.strip())
     except (AttributeError, json.JSONDecodeError) as exc:
         raise RuntimeError("LAYER_REVIEW_INVALID") from exc
     expected = {"layer", "score", "hard_violations", "drift_detected"}
+    if layer.name == "identity_boundary":
+        expected.update({"intimacy_request", "intimacy_claims"})
     violations = raw.get("hard_violations") if isinstance(raw, Mapping) else None
     score = raw.get("score") if isinstance(raw, Mapping) else None
     drift = raw.get("drift_detected") if isinstance(raw, Mapping) else None
@@ -631,12 +702,53 @@ def _parse_layer_result(layer: _LayerAuthority, text: str) -> _LayerResult:
         or not isinstance(score, int)
         or score not in {0, 1, 2}
         or not isinstance(violations, list)
-        or len(violations) > 2
+        or len(violations) > len(layer.allowed_codes)
         or any(code not in layer.allowed_codes for code in violations)
         or type(drift) is not bool
     ):
         raise RuntimeError("LAYER_REVIEW_INVALID")
-    return _LayerResult(layer.name, score, tuple(violations), drift)
+    if layer.name != "identity_boundary":
+        return _LayerResult(layer.name, score, tuple(violations), drift)
+    raw_claims = raw.get("intimacy_claims")
+    try:
+        intimacy_request = IntimacyRequest(str(raw.get("intimacy_request")))
+        if not isinstance(raw_claims, list) or len(raw_claims) > 32:
+            raise ValueError("invalid intimacy claims")
+        if any(
+            not isinstance(item, Mapping)
+            or set(item) != {"claim_id", "tier", "start", "end"}
+            or not isinstance(item.get("claim_id"), str)
+            or not isinstance(item.get("tier"), str)
+            or type(item.get("start")) is not int
+            or type(item.get("end")) is not int
+            for item in raw_claims
+        ):
+            raise ValueError("invalid intimacy claim")
+        intimacy_claims = tuple(
+            IntimacyClaim(
+                claim_id=item["claim_id"],
+                tier=IntimacyTier(item["tier"]),
+                start=item["start"],
+                end=item["end"],
+            )
+            for item in raw_claims
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("LAYER_REVIEW_INVALID") from exc
+    if (
+        len({claim.claim_id for claim in intimacy_claims})
+        != len(intimacy_claims)
+        or any(claim.end > len(candidate) for claim in intimacy_claims)
+    ):
+        raise RuntimeError("LAYER_REVIEW_INVALID")
+    return _LayerResult(
+        layer.name,
+        score,
+        tuple(violations),
+        drift,
+        intimacy_request,
+        intimacy_claims,
+    )
 
 
 async def _complete_layer_text(
@@ -668,6 +780,7 @@ def _complete_layer_reviews(
     candidate: str,
     current_user_input: str,
     memory_evidence: Mapping[str, str],
+    relationship_context: Mapping[str, object],
     mode: str,
     timeout_seconds: float,
 ) -> tuple[_LayerResult, ...]:
@@ -686,7 +799,11 @@ def _complete_layer_reviews(
                 timeout_seconds,
                 f"quality-{uuid.uuid4().hex}:{layer.name}",
             )
-            return _parse_layer_result(layer, text)
+            return _parse_layer_result(
+                layer,
+                text,
+                candidate=candidate,
+            )
 
         return tuple(
             await asyncio.gather(
@@ -703,6 +820,7 @@ def _complete_layer_reviews(
                     candidate=candidate,
                     current_user_input=current_user_input,
                     memory_evidence=memory_evidence,
+                    relationship_context=relationship_context,
                     mode=mode,
                 ),
             )
@@ -743,6 +861,9 @@ def _aggregate_layer_results(
     by_name = {item.layer: item for item in results}
     expected = tuple(_LAYER_SPECS)
     if len(results) != len(expected) or set(by_name) != set(expected):
+        raise RuntimeError("LAYER_REVIEW_INCOMPLETE")
+    identity = by_name["identity_boundary"]
+    if identity.intimacy_request is None:
         raise RuntimeError("LAYER_REVIEW_INCOMPLETE")
 
     warning_only = (
@@ -793,10 +914,20 @@ def _aggregate_layer_results(
         return {0: 30, 1: 65, 2: 95}[by_name[name].score]
 
     return {
-        "schema_version": "p02.reply-review.v1",
+        "schema_version": "p02.reply-review.v2",
         "status": "completed",
         "verdict": "rewrite" if failed else "pass",
         "violations": violations,
+        "intimacy_request": identity.intimacy_request.value,
+        "intimacy_claims": [
+            {
+                "claim_id": claim.claim_id,
+                "tier": claim.tier.value,
+                "start": claim.start,
+                "end": claim.end,
+            }
+            for claim in identity.intimacy_claims
+        ],
         "scores": {
             "persona_consistency": min(
                 score("identity_boundary"),

@@ -13,10 +13,12 @@ from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from runtime.reply.reply_context import (
+    IntimacyTier,
     KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
+    RelationshipStage,
     TrustedTime,
     TrustedWorldFact,
 )
@@ -34,14 +36,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _layer_payload(layer: str) -> str:
-    return json.dumps(
-        {
-            "layer": layer,
-            "score": 2,
-            "hard_violations": [],
-            "drift_detected": False,
-        }
-    )
+    payload: dict[str, object] = {
+        "layer": layer,
+        "score": 2,
+        "hard_violations": [],
+        "drift_detected": False,
+    }
+    if layer == "identity_boundary":
+        payload["intimacy_request"] = "none"
+        payload["intimacy_claims"] = []
+    return json.dumps(payload)
 
 
 def _layer_score_payload(
@@ -50,15 +54,19 @@ def _layer_score_payload(
     *,
     hard_violations: list[str] | None = None,
     drift_detected: bool = False,
+    intimacy_request: str = "none",
+    intimacy_claims: list[dict[str, object]] | None = None,
 ) -> str:
-    return json.dumps(
-        {
-            "layer": layer,
-            "score": score,
-            "hard_violations": hard_violations or [],
-            "drift_detected": drift_detected,
-        }
-    )
+    payload: dict[str, object] = {
+        "layer": layer,
+        "score": score,
+        "hard_violations": hard_violations or [],
+        "drift_detected": drift_detected,
+    }
+    if layer == "identity_boundary":
+        payload["intimacy_request"] = intimacy_request
+        payload["intimacy_claims"] = intimacy_claims or []
+    return json.dumps(payload)
 
 
 def _passing_layer_payloads() -> list[str]:
@@ -235,6 +243,259 @@ def test_configured_provider_runs_structured_persona_review(
         and request["mode"] == "text_letter"
         for request in gateway.review_requests
     )
+
+
+def test_identity_review_receives_only_bounded_relationship_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = SequencedQualityGateway(
+        candidate="Synthetic bounded candidate.",
+        reviews=_passing_layer_payloads(),
+    )
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            relationship_stage=RelationshipStage.CLOSE,
+            intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+            granted_intimacy=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(
+                content="Synthetic unilateral relationship claim.",
+                request_id="bounded-relationship-review",
+            ),
+            context,
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    identity = gateway.review_requests[0]
+    assert identity["relationship_context"] == {
+        "relationship_stage": "close",
+        "intimacy_ceiling": "light_contact",
+        "granted_intimacy": "light_contact",
+    }
+    assert "trust" not in repr(identity)
+    prompt = gateway.review_system_prompts[0]
+    for marker in (
+        "user request is not relationship evidence",
+        "future debt",
+        "metaphor",
+        "refusal",
+        "fatigue",
+        "UNSOLICITED_INTIMACY",
+        "RELATIONSHIP_RETRACTION",
+        '"claim_id":"stable-id"',
+        "end-exclusive Python character offsets",
+    ):
+        assert marker in prompt
+
+
+def test_production_reviewer_rechecks_fresh_claims_after_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic unsolicited contact."
+    first = _passing_layer_payloads()
+    first[0] = _layer_score_payload(
+        "identity_boundary",
+        2,
+        intimacy_claims=[
+            {
+                "claim_id": "intimacy.initial",
+                "tier": "light_contact",
+                "start": 0,
+                "end": len(candidate),
+            }
+        ],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *_passing_layer_payloads()],
+        rewritten="Synthetic safe rewrite.",
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Please answer.", request_id="fresh-claims"),
+            ReplyContext.create(
+                ReplyMode.TEXT_LETTER,
+                trusted_time=TrustedTime(
+                    datetime(2026, 8, 22, tzinfo=timezone.utc)
+                ),
+                private_behavior=PrivateBehaviorView(
+                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+                ),
+            ),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.text == "Synthetic safe rewrite."
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+    assert gateway.call_kinds == [
+        "generation",
+        *("review",) * 5,
+        "rewrite",
+        *("review",) * 5,
+    ]
+
+
+def test_production_reviewer_blocks_persistent_fresh_intimacy_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic unsolicited contact."
+    rewritten = "Synthetic rewritten contact."
+    first = _passing_layer_payloads()
+    first[0] = _layer_score_payload(
+        "identity_boundary",
+        2,
+        intimacy_claims=[
+            {
+                "claim_id": "intimacy.initial",
+                "tier": "light_contact",
+                "start": 0,
+                "end": len(candidate),
+            }
+        ],
+    )
+    second = _passing_layer_payloads()
+    second[0] = _layer_score_payload(
+        "identity_boundary",
+        2,
+        intimacy_claims=[
+            {
+                "claim_id": "intimacy.rewritten",
+                "tier": "light_contact",
+                "start": 0,
+                "end": len(rewritten),
+            }
+        ],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *second],
+        rewritten=rewritten,
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Please answer.", request_id="persistent-claim"),
+            ReplyContext.create(
+                ReplyMode.TEXT_LETTER,
+                trusted_time=TrustedTime(
+                    datetime(2026, 8, 22, tzinfo=timezone.utc)
+                ),
+                private_behavior=PrivateBehaviorView(
+                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+                ),
+            ),
+        )
+    )
+
+    assert result.state is ReplyState.FAILED
+    assert result.violation_codes == ("UNSOLICITED_INTIMACY",)
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+
+
+def test_production_reviewer_request_allows_only_tier_within_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic requested contact."
+    reviews = _passing_layer_payloads()
+    reviews[0] = _layer_score_payload(
+        "identity_boundary",
+        2,
+        intimacy_request="requested",
+        intimacy_claims=[
+            {
+                "claim_id": "intimacy.requested",
+                "tier": "light_contact",
+                "start": 0,
+                "end": len(candidate),
+            }
+        ],
+    )
+    gateway = SequencedQualityGateway(candidate=candidate, reviews=reviews)
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(
+                content="Please give that contact.",
+                request_id="requested-contact",
+            ),
+            ReplyContext.create(
+                ReplyMode.TEXT_LETTER,
+                trusted_time=TrustedTime(
+                    datetime(2026, 8, 22, tzinfo=timezone.utc)
+                ),
+                private_behavior=PrivateBehaviorView(
+                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+                ),
+            ),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.rewrite_calls == 0
+    assert gateway.call_kinds == ["generation", *("review",) * 5]
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "STAGE_DRIFT",
+        "ACKNOWLEDGED_FEELING_REWRITE",
+        "INTIMACY_VIOLATION",
+        "UNSOLICITED_INTIMACY",
+        "RELATIONSHIP_RETRACTION",
+    ),
+)
+def test_identity_layer_accepts_each_intimacy_rubric_code(code: str) -> None:
+    reviews = _passing_layer_payloads()
+    reviews[0] = _layer_score_payload(
+        "identity_boundary",
+        0,
+        hard_violations=[code],
+        drift_detected=True,
+    )
+    result = GatewayPersonaReviewer(
+        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review("Synthetic candidate.", _context())
+
+    assert result.verdict is ReviewVerdict.REWRITE
+    assert tuple(item.code for item in result.violations) == (code,)
+
+
+def test_identity_layer_missing_intimacy_metadata_fails_closed() -> None:
+    invalid_identity = json.dumps(
+        {
+            "layer": "identity_boundary",
+            "score": 2,
+            "hard_violations": [],
+            "drift_detected": False,
+        }
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=[invalid_identity, *_passing_layer_payloads()[1:]],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review("Synthetic candidate.", _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
 
 
 def test_reviewer_uses_release_declarations_without_source_document(

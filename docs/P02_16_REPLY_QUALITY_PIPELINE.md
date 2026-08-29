@@ -20,9 +20,10 @@ A deterministic hard violation requires the one available rewrite and fails
 closed if the rewrite is unavailable or remains invalid. The first candidate,
 review, optional rewrite, and final review all use the same `ReplyContext`.
 
-PR-3 accepts optional, structured `IntimacyClaim` spans at the quality-gate
-boundary but leaves the production pipeline on the empty default, as required
-by its staged rollout. Those spans cannot be reused after rewriting. Until the
-PR-4 reviewer returns fresh claims bound to the rewritten candidate, a rewrite
-that started with non-empty intimacy claims fails closed rather than bypassing
-the intimacy hard checks.
+The configured reviewer returns the current user's request classification and
+candidate-bound `IntimacyClaim` spans through its existing five-layer pass.
+The quality gate pins the first request classification, applies the first
+claims only to the first candidate, and obtains fresh claims after the single
+rewrite. A changed request classification, malformed assessment, stale
+explicit claims, or a second claim source fails closed. Offline `NullReviewer`
+use with no claims keeps the existing deterministic degraded behavior.

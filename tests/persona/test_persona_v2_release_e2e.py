@@ -17,7 +17,12 @@ from runtime.memory.private_world_delivery import (
 from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_port import ContinuationAwareness, PrivateWorldSnapshot
 from private_world_reducer import ReducerEventKind
-from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
+from runtime.reply.reply_context import (
+    IntimacyRequest,
+    ReplyContext,
+    ReplyMode,
+    TrustedTime,
+)
 from reply_orchestrator import ReplyResult, ReplyState
 from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
 from runtime.reply.reply_reviewer import (
@@ -47,6 +52,8 @@ class PassingReviewer:
             ReviewVerdict.PASS,
             (),
             ReviewerScores(100, 100, 100, 100),
+            IntimacyRequest.NONE,
+            (),
         )
 
 
