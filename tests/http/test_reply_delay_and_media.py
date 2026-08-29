@@ -455,11 +455,11 @@ def test_video_routes_use_separate_ordinary_and_musical_renderers(
     )
     music_plan = VoicePerformancePlan(
         reply_text=reply_text,
-        overall_emotion="restrained empathy becoming steady reassurance",
-        global_speed=1.06,
-        energy=0.62,
+        overall_emotion="自然、温柔、真诚地说完这封回信",
+        global_speed=1.03,
+        energy=0.45,
         breath_before_sentences=(),
-        emphasize_sentences=(1,),
+        emphasize_sentences=(),
         short_instruction="",
         profile="legacy_music_global_direction_v1",
     )
@@ -498,12 +498,6 @@ def test_video_routes_use_separate_ordinary_and_musical_renderers(
         directed_requests.append(request_id)
         return plan
 
-    async def direct_music_reply(text, gateway, *, request_id=None):
-        assert text == reply_text
-        assert gateway is local_server.letters_adapter.gateway
-        directed_requests.append(request_id)
-        return music_plan
-
     received = {}
 
     def render_spoken(_text, output, **kwargs):
@@ -525,11 +519,6 @@ def test_video_routes_use_separate_ordinary_and_musical_renderers(
         }
 
     monkeypatch.setattr(local_server, "direct_voice_performance", direct_frozen_reply)
-    monkeypatch.setattr(
-        local_server,
-        "direct_music_voice_performance",
-        direct_music_reply,
-    )
     monkeypatch.setattr(local_server, "render_reply_video", render_spoken)
     monkeypatch.setattr(local_server, "render_musical_reply", render_musical)
 
@@ -550,7 +539,6 @@ def test_video_routes_use_separate_ordinary_and_musical_renderers(
     assert all(letter["media_status"] == "COMPLETED" for letter in letters)
     assert directed_requests == [
         "letter-reply:spoken-entry:voice-direction",
-        "letter-reply:musical-entry:voice-direction",
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
     assert letters[1]["voice_performance_plan"] == music_plan.to_dict()
@@ -575,32 +563,16 @@ def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypat
     assert provider_calls == []
 
 
-def test_music_voice_direction_retries_one_invalid_tool_result(monkeypatch):
+def test_music_voice_plan_is_local_and_does_not_wait_for_provider(monkeypatch):
     reply_text = "The frozen reply has two sentences. This is the second one."
-    letter = {"letter_id": "music-direction-repair"}
-    request_id = "letter-reply:music-direction-repair:voice-direction"
-    provider_calls = []
-    plan = VoicePerformancePlan(
-        reply_text=reply_text,
-        overall_emotion="gentle reassurance",
-        global_speed=1.03,
-        energy=0.42,
-        breath_before_sentences=(),
-        emphasize_sentences=(),
-        short_instruction="",
-        profile="legacy_music_global_direction_v1",
-    )
+    letter = {"letter_id": "music-local-direction"}
 
-    async def direct(_text, _gateway, *, request_id=None):
-        provider_calls.append(request_id)
-        if len(provider_calls) == 1:
-            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-        return plan
+    plan = asyncio.run(local_server._music_voice_plan_for_letter(letter, reply_text))
 
-    monkeypatch.setattr(local_server, "direct_music_voice_performance", direct)
-
-    assert asyncio.run(local_server._music_voice_plan_for_letter(letter, reply_text)) == plan
-    assert provider_calls == [request_id, f"{request_id}:repair"]
+    assert plan.reply_text == reply_text
+    assert plan.global_speed == 1.03
+    assert plan.energy == 0.45
+    assert plan.profile == "legacy_music_global_direction_v1"
     assert letter["voice_performance_plan"] == plan.to_dict()
 
 

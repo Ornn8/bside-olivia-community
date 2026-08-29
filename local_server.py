@@ -75,7 +75,6 @@ from runtime.reply.reply_delivery import (
 from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
-    direct_music_voice_performance,
     direct_voice_performance,
 )
 from runtime.video_reply_settings import (
@@ -1045,35 +1044,16 @@ async def _music_voice_plan_for_letter(
     letter_id = str(letter.get("letter_id", "")).strip()
     if not letter_id:
         raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    request_id = f"letter-reply:{letter_id}:voice-direction"
-    persisted_request_id = letter.get("voice_direction_request_id")
-    if persisted_request_id is not None and persisted_request_id != request_id:
-        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    if persisted_request_id is None:
-        letter["voice_direction_request_id"] = request_id
-        _persist_media_state()
-    try:
-        plan = await asyncio.wait_for(
-            direct_music_voice_performance(
-                reply_text,
-                letters_adapter.gateway,
-                request_id=request_id,
-            ),
-            timeout=LLM_TIMEOUT_SECONDS,
-        )
-    except VoiceDirectionError as exc:
-        if str(exc) != "VOICE_DIRECTION_INVALID":
-            raise
-        plan = await asyncio.wait_for(
-            direct_music_voice_performance(
-                reply_text,
-                letters_adapter.gateway,
-                request_id=f"{request_id}:repair",
-            ),
-            timeout=LLM_TIMEOUT_SECONDS,
-        )
-    if plan.reply_text != reply_text:
-        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
+    plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        overall_emotion="自然、温柔、真诚地说完这封回信",
+        global_speed=1.03,
+        energy=0.45,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+        short_instruction="",
+        profile="legacy_music_global_direction_v1",
+    )
     letter["voice_performance_plan"] = plan.to_dict()
     _persist_media_state()
     return plan
