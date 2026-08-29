@@ -248,9 +248,14 @@ def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> N
         (Path(start_local.__file__).resolve().parents[1] / "tools" / "minimax_music3_worker.py")
     )
     explicit = start_local._load_video_environment(
-        {"OLIVIA_LATENTSYNC_ROOT": "D:/managed/latentsync"}, data_root
+        {
+            "OLIVIA_LATENTSYNC_ROOT": "D:/managed/latentsync",
+            "OLIVIA_MINIMAX_WORKER": "D:/managed/minimax-worker.py",
+        },
+        data_root,
     )
     assert explicit["OLIVIA_LATENTSYNC_ROOT"] == "D:/managed/latentsync"
+    assert explicit["OLIVIA_MINIMAX_WORKER"] == "D:/managed/minimax-worker.py"
 
 
 def test_launcher_uses_fixed_scene_assets_from_the_installed_client(tmp_path: Path) -> None:

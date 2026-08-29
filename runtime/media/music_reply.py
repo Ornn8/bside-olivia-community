@@ -1234,7 +1234,13 @@ def _normal_stage_inputs_match(
         ("inputs", ("canonical_reply_sha256", "voice_performance_sha256")),
         (
             "assets",
-            ("official_reply_reference", "spoken_action_base", "tts_config"),
+            (
+                "official_reply_reference",
+                "spoken_action_base",
+                "tts_config",
+                "visual_config",
+                "visual_worker",
+            ),
         ),
         ("providers", ("face_sync",)),
     ):
