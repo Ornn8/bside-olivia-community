@@ -699,6 +699,8 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     )
 
     official_reference = _write(tmp_path / "official-complete-reply.mp4")
+    visual_config = _write(tmp_path / "visual.json", b"visual-v1")
+    visual_worker = _write(tmp_path / "visual-worker.py", b"worker-v1")
     monkeypatch.setattr(
         music_reply,
         "prepare_official_spoken_base",
@@ -709,8 +711,8 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
         "official_reply_reference_path": official_reference,
         "song_video_path": song_video,
         "tts_config_path": tmp_path / "tts.json",
-        "visual_config_path": tmp_path / "visual.json",
-        "worker_path": tmp_path / "visual-worker.py",
+        "visual_config_path": visual_config,
+        "worker_path": visual_worker,
         "performance_video_path": tmp_path / "base-performance.mp4",
         "duration_seconds": 40,
     }
@@ -729,14 +731,38 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     assert result["music_stage"] == "reused"
     assert (stage_root / "manifest.json").is_file()
 
+    monkeypatch.setattr(
+        music_reply,
+        "plan_song_content",
+        lambda *_args: SongContentPlan(
+            emotion="warm_gratitude",
+            lyrics="[Verse]\nA different valid plan",
+            caption="different gentle piano ballad",
+            duration_seconds=40,
+        ),
+    )
+    music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+
+    assert calls == {"spoken": 1, "minimax": 2, "separate": 3}
+
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 2, "minimax": 2, "separate": 3}
+    assert calls == {"spoken": 2, "minimax": 3, "separate": 4}
 
     minimax_worker.write_bytes(b"provider-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 3, "minimax": 3, "separate": 4}
+    assert calls == {"spoken": 2, "minimax": 4, "separate": 5}
+
+    visual_config.write_bytes(b"visual-v2")
+    music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
+
+    assert calls == {"spoken": 3, "minimax": 5, "separate": 6}
+
+    visual_worker.write_bytes(b"worker-v2")
+    music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
+
+    assert calls == {"spoken": 4, "minimax": 6, "separate": 7}
 
 
 def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebuilt(

@@ -20,6 +20,7 @@ from runtime.media.music_duration import normalize_music_duration
 
 
 SONG_SEMANTIC_PLAN_SCHEMA_VERSION = "p03.song-semantic-plan.v1"
+_PLANNER_REPAIR_RESERVE_CHARS = 512
 
 
 class SongEmotionArc(StrEnum):
@@ -319,7 +320,9 @@ def _planning_messages(
             trusted_time=TrustedTime(datetime.now(timezone.utc)),
         ),
         user_input=user_input,
-        max_units=config.max_input_chars - len(prefix),
+        max_units=(
+            config.max_input_chars - len(prefix) - _PLANNER_REPAIR_RESERVE_CHARS
+        ),
     )
     return (
         {"role": "system", "content": prefix + assembly.system_content},
@@ -355,7 +358,27 @@ def plan_song_content(
     )
     messages = _planning_messages(user_input, duration, gateway_config)
     response = asyncio.run(active_gateway.complete(messages))
-    semantic_plan = parse_song_semantic_plan(response.text, duration)
+    try:
+        semantic_plan = parse_song_semantic_plan(response.text, duration)
+    except ValueError as exc:
+        error_code = str(exc)
+        if not error_code.startswith("SONG_SEMANTIC_PLAN_"):
+            raise
+        verse_count, chorus_count = _SECTION_LINE_COUNTS[duration]
+        repair_messages = (
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    f"Your previous JSON failed local validation with {error_code}. "
+                    "Return the corrected seven-key JSON object only. "
+                    f"Use exactly {verse_count} Verse lines and {chorus_count} "
+                    "Chorus lines; keep Intro and Outro empty."
+                ),
+            },
+        )
+        repaired = asyncio.run(active_gateway.complete(repair_messages))
+        semantic_plan = parse_song_semantic_plan(repaired.text, duration)
 
     # Imported lazily because music_caption imports the typed plan definitions
     # from this module. The production output remains compatible with the

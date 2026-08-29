@@ -123,6 +123,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/video-capability-manifest.json",
     "installer/cosyvoice-windows-audio.patch.json",
     "installer/latentsync-windows-memmap.patch.json",
+    "installer/latentsync-windows-mp4-writer.patch.json",
     "installer/seed-vc-overlap-frames.patch",
 }
 RELEASE_TOOL_FILES = {

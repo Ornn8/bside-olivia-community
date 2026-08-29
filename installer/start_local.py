@@ -71,6 +71,15 @@ def _load_video_environment(
         return values
     for key, value in persisted.items():
         values.setdefault(key, value)
+    backend_tools = Path(__file__).resolve().parents[1] / "tools"
+    minimax_worker = backend_tools / "minimax_music3_worker.py"
+    minimax_profile = backend_tools / "minimax_profile.py"
+    if (
+        "OLIVIA_MINIMAX_WORKER" not in environment
+        and minimax_worker.is_file()
+        and minimax_profile.is_file()
+    ):
+        values["OLIVIA_MINIMAX_WORKER"] = str(minimax_worker)
     return values
 
 

@@ -1207,9 +1207,50 @@ def _read_compatible_manifest(
         loaded.get(key) != expected.get(key)
         for key in ("schema_version", "inputs", "assets", "providers")
     ):
-        return {**expected, "artifacts": {}}
+        artifacts: dict[str, object] = {}
+        if isinstance(loaded, dict) and _normal_stage_inputs_match(loaded, expected):
+            loaded_artifacts = loaded.get("artifacts")
+            normal = (
+                loaded_artifacts.get("normal_video")
+                if isinstance(loaded_artifacts, dict)
+                else None
+            )
+            if isinstance(normal, dict):
+                artifacts["normal_video"] = normal
+        return {**expected, "artifacts": artifacts}
     artifacts = loaded.get("artifacts")
     return {**expected, "artifacts": artifacts if isinstance(artifacts, dict) else {}}
+
+
+def _normal_stage_inputs_match(
+    loaded: dict[str, object],
+    expected: dict[str, object],
+) -> bool:
+    """Keep completed speech when only song planning or music providers change."""
+
+    if loaded.get("schema_version") != expected.get("schema_version"):
+        return False
+    for section, keys in (
+        ("inputs", ("canonical_reply_sha256", "voice_performance_sha256")),
+        (
+            "assets",
+            (
+                "official_reply_reference",
+                "spoken_action_base",
+                "tts_config",
+                "visual_config",
+                "visual_worker",
+            ),
+        ),
+        ("providers", ("face_sync",)),
+    ):
+        old_values = loaded.get(section)
+        new_values = expected.get(section)
+        if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+            return False
+        if any(old_values.get(key) != new_values.get(key) for key in keys):
+            return False
+    return True
 
 
 def _write_stage_manifest(manifest_path: Path, manifest: dict[str, object]) -> None:

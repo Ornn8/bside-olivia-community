@@ -78,6 +78,16 @@ class RecordingGateway:
         return Response(self.payload)
 
 
+class SequencedGateway(RecordingGateway):
+    def __init__(self, payloads: list[str]) -> None:
+        super().__init__(payloads[0])
+        self.payloads = list(payloads)
+
+    async def complete(self, messages, request_id=None):
+        self.calls.append((tuple(messages), request_id))
+        return Response(self.payloads.pop(0))
+
+
 def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_caption() -> None:
     gateway = RecordingGateway(json.dumps(_payload(), ensure_ascii=False))
 
@@ -146,6 +156,26 @@ def test_invalid_planner_output_never_falls_back_to_a_free_caption() -> None:
 
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_FIELDS_INVALID"):
         plan_song_content("synthetic", "synthetic", 40, gateway=gateway)
+
+
+def test_invalid_lyric_count_is_repaired_once_by_the_planner() -> None:
+    invalid = _payload()
+    invalid["lyrics"] = invalid["lyrics"].replace("副歌第6句慢慢收好\n", "")
+    gateway = SequencedGateway(
+        [
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(_payload(), ensure_ascii=False),
+        ]
+    )
+
+    result = plan_song_content("synthetic", "synthetic", 40, gateway=gateway)
+
+    assert result.lyrics == _short_lyrics(40)
+    assert len(gateway.calls) == 2
+    repair_messages = gateway.calls[1][0]
+    assert repair_messages[-1]["role"] == "user"
+    assert "SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID" in repair_messages[-1]["content"]
+    assert sum(len(message["content"]) for message in repair_messages) <= 10_000
 
 
 def test_song_planner_legacy_persona_requires_explicit_opt_in() -> None:

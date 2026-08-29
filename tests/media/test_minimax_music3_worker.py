@@ -205,6 +205,23 @@ def test_worker_source_contains_no_music_fallback() -> None:
     assert "sparse percussion" not in source
 
 
+def test_comfy_command_bootstraps_embedded_python_import_path(tmp_path: Path) -> None:
+    comfy_root = tmp_path / "comfy"
+    command = worker._comfy_command(
+        comfy_root=comfy_root,
+        port=8899,
+        cache_lru=12,
+        reserve_vram=0.5,
+        generated_root=tmp_path / "output",
+        temp_root=tmp_path / "temp",
+        vram_mode="dynamic",
+    )
+
+    assert command[1:3] == ["-c", worker._COMFY_BOOTSTRAP]
+    assert command[3:5] == [str(comfy_root), str(comfy_root / "main.py")]
+    assert "sys.path.insert(0, root)" in worker._COMFY_BOOTSTRAP
+
+
 def test_118_second_generation_timeouts_cover_both_model_phases() -> None:
     adapter = MiniMaxMusic3Worker(
         python_path=Path("python.exe"),
