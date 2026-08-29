@@ -85,6 +85,13 @@ one typed `hard_evidence` item with:
   `world_fact`, `known_continuation`, or `none`;
 - a short uppercase `reason_code` that contains no reply excerpt.
 
+Those two layer responses also require the boolean
+`independent_soft_issue`. It is `true` only when that layer has a separate,
+localized soft mismatch besides its hard claims. With no hard claim, `true`
+requires score 1 and no drift, while `false` requires score 2 and no drift. A
+hard claim cannot be used to infer this field. Missing, non-boolean, or
+score/drift-inconsistent values make the review unavailable.
+
 Missing, duplicate, mismatched, out-of-range, or schema-invalid evidence makes
 the whole enabled Letter review unavailable and therefore fails closed. A
 semantic duplicate is keyed by at least `(code, start, end)` across layers;
@@ -94,14 +101,21 @@ layers keep their existing response schema.
 Well-formed hard evidence conditionally spends at most one additional model
 call per candidate. The call uses the same configured quality Gateway and
 `deepseek-v4-flash`; it does not create a provider or retry path. The narrow
-adjudicator receives the candidate and a claim-specific support context:
+adjudicator receives the candidate, one shared context per trusted context
+class, and claims that refer to it by `context_id`. `claim_kind` and
+`support_source` remain descriptive output only; neither can select or expand
+disclosure. Trusted `(layer, code)` selects the context class:
 
-- identity claims receive only release and canonical world authority;
-- relationship, stage, acknowledged-feeling, and intimacy claims receive only
-  release authority, canonical relationship/private context, and typed
-  Linli-authored history;
-- ordinary `MEMORY_FABRICATION` factual claims may additionally use the bounded
-  current-user excerpt and bounded assembled memory.
+- `identity_boundary/IDENTITY_DRIFT` receives only release and canonical world
+  authority;
+- relationship, stage, acknowledged-feeling, intimacy, and relationship
+  retraction codes from `identity_boundary` receive only release authority,
+  canonical relationship/private context, and typed Linli-authored history;
+- `continuity_memory/MEMORY_FABRICATION` receives only the bounded factual
+  current-user excerpt and bounded assembled memory, even if the model labels
+  the claim as relationship or shared history;
+- every other allowed combination receives only its minimal layer release
+  authority.
 
 Current-user wishes, self-labels, and untyped assembled memory never establish
 a relationship. The adjudicator returns one candidate-bound `CONFIRM` or
@@ -109,12 +123,16 @@ a relationship. The adjudicator returns one candidate-bound `CONFIRM` or
 adjudication call. Malformed adjudication fails closed.
 
 Only confirmed claims remain hard violations, using their exact candidate
-spans. If every otherwise-hard claim is rejected and no independent issue
-remains, the original candidate is immediately `accepted_with_warnings` without
-using a rewriter. Independent soft or hard issues keep their existing flow. A
-rewritten candidate always runs all five layers again and, when needed,
-receives a fresh independent adjudication. No old claim, span, or decision is
-reused; a confirmed hard claim that persists after the rewrite blocks.
+spans. Up to 16 distinct `(code, span)` claims are accepted within the existing
+30,000-character fail-closed input budget; shared contexts are serialized once,
+not copied per claim. If every otherwise-hard claim is rejected and
+`independent_soft_issue` is false, the original Letter candidate is immediately
+`accepted_with_warnings` without using a rewriter. If it is true, the existing
+rewrite path remains mandatory. A rewritten candidate always runs all five
+layers again and, when needed, receives a fresh independent adjudication. No old
+claim, span, or decision is reused; a confirmed hard claim that persists after
+the rewrite blocks. `accepted_with_warnings` is a Letter-only quality status;
+non-Letter modes retain their prior `accepted` status for soft findings.
 
 Adjudication prompts and responses are transient. Candidate text is not added
 to quality status, audit records, evidence objects, or logs, and the typed

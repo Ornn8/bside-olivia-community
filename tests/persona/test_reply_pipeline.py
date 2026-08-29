@@ -341,6 +341,7 @@ class RecordingLayerReviewGateway(Gateway):
             response["intimacy_claims"] = []
         if request["layer"] in {"identity_boundary", "continuity_memory"}:
             response["hard_evidence"] = []
+            response["independent_soft_issue"] = False
         return GatewayResponse(
             text=json.dumps(response),
             request_id=request_id or "review",

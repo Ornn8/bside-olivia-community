@@ -370,3 +370,39 @@ def test_final_soft_review_issue_is_accepted_with_warnings_after_one_rewrite() -
     assert result.accepted is True
     assert result.violation_codes == ("STYLE_DRIFT",)
     assert result.rewrite_calls == 1
+
+
+def test_non_letter_soft_issues_keep_legacy_accepted_status() -> None:
+    soft = ReviewResult(
+        ReviewStatus.COMPLETED,
+        ReviewVerdict.PASS,
+        (ReviewerViolation("STYLE_DRIFT", "soft", 0, 5),),
+        ReviewerScores(90, 90, 90, 90),
+        IntimacyRequest.NONE,
+        (),
+    )
+    initial = run_reply_quality_gate(
+        "x" * 190,
+        _video_context(),
+        reviewer=_Reviewer(soft),
+        rewriter=_Rewriter("unused"),
+    )
+    rewrite = ReviewResult(
+        ReviewStatus.COMPLETED,
+        ReviewVerdict.REWRITE,
+        (),
+        ReviewerScores(80, 80, 80, 80),
+        IntimacyRequest.NONE,
+        (),
+    )
+    final = run_reply_quality_gate(
+        "short",
+        _video_context(),
+        reviewer=_Reviewer(rewrite, soft),
+        rewriter=_Rewriter("x" * 190),
+    )
+
+    assert [(item.status, item.violation_codes, item.rewrite_calls) for item in (initial, final)] == [
+        (QualityGateStatus.ACCEPTED, ("STYLE_DRIFT",), 0),
+        (QualityGateStatus.ACCEPTED, ("STYLE_DRIFT",), 1),
+    ]
