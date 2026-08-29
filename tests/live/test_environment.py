@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from live import LiveService
+from pathlib import Path
+
+from live import LiveConfig, LiveService
+from llm_gateway import GatewayResponse
 from memory_port import NullMemoryPort
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class _Closable:
@@ -10,6 +16,146 @@ class _Closable:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class _RecordingGateway:
+    stream_enabled = False
+
+    def __init__(self, config) -> None:
+        self.config = config
+        self.calls = []
+
+    async def complete(self, messages, *, request_id=None):
+        self.calls.append(tuple(messages))
+        return GatewayResponse(
+            "synthetic live reply",
+            request_id or "request",
+            "mock",
+            "mock",
+        )
+
+
+def _capture_live_gateways(monkeypatch):
+    import live.environment as environment
+
+    gateways = []
+
+    def create_recording_gateway(config):
+        gateway = _RecordingGateway(config)
+        gateways.append(gateway)
+        return gateway
+
+    monkeypatch.setattr(environment, "create_gateway", create_recording_gateway)
+    return gateways
+
+
+def test_live_default_loads_ready_persona_v2_for_future_im(monkeypatch) -> None:
+    import asyncio
+
+    gateways = _capture_live_gateways(monkeypatch)
+
+    async def exercise():
+        service = LiveService.from_environment(
+            environ={"OLIVIA_LLM_PROVIDER": "mock"},
+            project_root=str(ROOT),
+        )
+        session = await service.start_session("persona-v2-user")
+        first = await session.send_text("synthetic first message")
+        second = await session.send_text("synthetic current message")
+        await service.stop()
+        return first, second
+
+    results = asyncio.run(exercise())
+
+    assert [result.status for result in results] == ["completed", "completed"]
+    assert len(gateways) == 1
+    assert len(gateways[0].calls) == 2
+    for messages in gateways[0].calls:
+        assert [message["role"] for message in messages] == ["system", "user"]
+        assert '"mode":"future_im"' in messages[0]["content"]
+        assert "Persona status is DRAFT" not in messages[0]["content"]
+    assert gateways[0].calls[0][0]["content"] != gateways[0].calls[1][0]["content"]
+    assert gateways[0].calls[1][1]["content"] == "synthetic current message"
+
+
+def test_live_persona_load_and_budget_failures_stop_before_provider_call(
+    tmp_path, monkeypatch
+) -> None:
+    import asyncio
+
+    gateways = _capture_live_gateways(monkeypatch)
+
+    async def exercise():
+        missing_service = LiveService.from_environment(
+            environ={
+                "OLIVIA_LLM_PROVIDER": "mock",
+                "OLIVIA_PERSONA_V2_FILE": "missing-persona.json",
+            },
+            project_root=str(tmp_path),
+        )
+        missing_session = await missing_service.start_session("missing-persona-user")
+        try:
+            missing_result = await asyncio.wait_for(
+                missing_session.send_text("synthetic current message"),
+                timeout=0.5,
+            )
+        finally:
+            await missing_service.stop()
+
+        budget_service = LiveService.from_environment(
+            environ={
+                "OLIVIA_LLM_PROVIDER": "mock",
+                "OLIVIA_LLM_MAX_INPUT_CHARS": "100",
+            },
+            project_root=str(ROOT),
+        )
+        budget_session = await budget_service.start_session("budget-user")
+        try:
+            budget_result = await asyncio.wait_for(
+                budget_session.send_text("synthetic current message"),
+                timeout=0.5,
+            )
+        finally:
+            await budget_service.stop()
+        return missing_result, budget_result
+
+    results = asyncio.run(exercise())
+
+    assert [result.status for result in results] == ["failed", "failed"]
+    assert [result.error_code for result in results] == [
+        "LIVE_LLM_ERROR",
+        "LIVE_LLM_ERROR",
+    ]
+    assert len(gateways) == 2
+    assert all(gateway.calls == [] for gateway in gateways)
+
+
+def test_live_environment_uses_the_stricter_gateway_input_limit() -> None:
+    service = LiveService.from_environment(
+        environ={
+            "OLIVIA_LLM_PROVIDER": "mock",
+            "OLIVIA_LLM_MAX_INPUT_CHARS": "3200",
+        },
+        project_root=str(ROOT),
+        config=LiveConfig(max_input_chars=4800),
+    )
+
+    assert service.config.max_input_chars == 3200
+
+
+def test_live_legacy_persona_requires_explicit_v2_opt_out() -> None:
+    service = LiveService.from_environment(
+        environ={
+            "OLIVIA_LLM_PROVIDER": "mock",
+            "OLIVIA_PERSONA_V2_ENABLED": "false",
+        },
+        project_root=str(ROOT),
+    )
+
+    snapshot = service.persona_provider.snapshot()
+
+    assert snapshot.status == "DRAFT"
+    assert snapshot.system_prompt.startswith("PERSONA STATUS: DRAFT")
 
 
 def test_explicit_memory_port_bypasses_project_memory_configuration(
@@ -380,6 +526,7 @@ def test_composition_factory_errors_fail_closed_per_component(monkeypatch) -> No
     monkeypatch.setattr(environment, "_load_tts_config", fail)
     monkeypatch.setattr(environment, "TTSService", fail)
     monkeypatch.setattr(environment, "ConfigPersonaProvider", fail)
+    monkeypatch.setattr(environment, "load_persona", fail)
 
     service = LiveService.from_environment(
         environ={

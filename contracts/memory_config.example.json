@@ -5,6 +5,6 @@
   "ttl_seconds": 2592000,
   "context_max_chars": 2400,
   "persona_evidence": [
-    {"reference": "linli_character/system_prompt.md", "version": "draft-file-v1"}
+    {"reference": "linli_character/persona_release_v2.json", "version": "release-v2"}
   ]
 }

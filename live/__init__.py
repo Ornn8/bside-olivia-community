@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from asr.fallback import TextFallbackProvider
@@ -79,6 +80,14 @@ class LiveService:
             visual_driver=visual_driver,
             visual_request=visual_request,
         )
+        requested_config = config or LiveConfig()
+        effective_config = replace(
+            requested_config,
+            max_input_chars=min(
+                requested_config.max_input_chars,
+                environment.gateway_config.max_input_chars,
+            ),
+        )
         service = cls(
             gateway=environment.gateway,
             memory_port=environment.memory_port,
@@ -87,7 +96,7 @@ class LiveService:
             tts_service=environment.tts_service,
             visual_driver=environment.visual_driver,
             visual_request=environment.visual_request,
-            config=config,
+            config=effective_config,
         )
         service.environment = environment
         return service

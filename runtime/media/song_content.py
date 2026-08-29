@@ -6,11 +6,16 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
-from llm_gateway import Gateway, create_gateway, load_gateway_config
+from llm_gateway import Gateway, GatewayConfig, create_gateway, load_gateway_config
+from persona_assembly import assemble_persona
+from persona_loader import load_persona
+from persona_provider import FilePersonaProvider
+from reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.media.music_duration import normalize_music_duration
 
 
@@ -239,12 +244,7 @@ def _enum_values(enum_type: type[StrEnum]) -> str:
     return " | ".join(member.value for member in enum_type)
 
 
-def _system_prompt(duration_seconds: int) -> str:
-    persona = (
-        Path(__file__).resolve().parents[2]
-        / "linli_character"
-        / "system_prompt.md"
-    ).read_text(encoding="utf-8")
+def _planner_contract(duration_seconds: int) -> str:
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
     return f"""You are the controlled semantic song-planning stage for Lin Li's MiniMax Music 3 reply.
@@ -279,8 +279,52 @@ Lyrics contract:
 - Preserve facts from the current exchange without copying it line by line.
 - Do not diagnose, lecture, demand trust, force optimism, invent past events, or copy known songs.
 
-Trusted persona profile follows. Its ordinary letter output format is replaced only by this JSON contract:
-{persona}"""
+Trusted persona profile follows. Its ordinary letter output format is replaced only by this JSON contract:"""
+
+
+def _runtime_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else Path(__file__).resolve().parents[2] / path
+
+
+def _planning_messages(
+    user_input: str,
+    duration_seconds: int,
+    config: GatewayConfig,
+) -> tuple[dict[str, str], ...]:
+    contract = _planner_contract(duration_seconds)
+    if not config.persona_v2_enabled:
+        legacy_path = (
+            _runtime_path(config.persona_file)
+            if config.persona_file
+            else Path(__file__).resolve().parents[2] / "__legacy_persona_unconfigured__.md"
+        )
+        persona = FilePersonaProvider(
+            legacy_path,
+            feature_enabled=config.feature_enabled,
+        ).snapshot().system_prompt
+        return (
+            {"role": "system", "content": f"{contract}\n{persona}"},
+            {"role": "user", "content": user_input},
+        )
+
+    loaded = load_persona(_runtime_path(config.persona_v2_file))
+    if not loaded.ready:
+        raise RuntimeError("PERSONA_UNAVAILABLE")
+    prefix = f"{contract}\n"
+    assembly = assemble_persona(
+        loaded.snapshot,
+        ReplyContext.create(
+            ReplyMode.MUSICAL_VIDEO,
+            trusted_time=TrustedTime(datetime.now(timezone.utc)),
+        ),
+        user_input=user_input,
+        max_units=config.max_input_chars - len(prefix),
+    )
+    return (
+        {"role": "system", "content": prefix + assembly.system_content},
+        {"role": "user", "content": assembly.user_content},
+    )
 
 
 def plan_song_content(
@@ -293,22 +337,23 @@ def plan_song_content(
     """Plan constrained lyrics and render the production MiniMax caption."""
 
     duration = normalize_music_duration(duration_seconds)
-    active_gateway = gateway or create_gateway(load_gateway_config())
-    messages = (
-        {"role": "system", "content": _system_prompt(duration)},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "duration_seconds": duration,
-                    "current_letter": str(content),
-                    "ordinary_reply": str(reply_text),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        },
+    configured_gateway = getattr(gateway, "config", None)
+    gateway_config = (
+        configured_gateway
+        if isinstance(configured_gateway, GatewayConfig)
+        else load_gateway_config()
     )
+    active_gateway = gateway or create_gateway(gateway_config)
+    user_input = json.dumps(
+        {
+            "duration_seconds": duration,
+            "current_letter": str(content),
+            "ordinary_reply": str(reply_text),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    messages = _planning_messages(user_input, duration, gateway_config)
     response = asyncio.run(active_gateway.complete(messages))
     semantic_plan = parse_song_semantic_plan(response.text, duration)
 

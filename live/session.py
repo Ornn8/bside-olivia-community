@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import struct
 import time
 from typing import Any
@@ -13,6 +14,9 @@ from memory_port import MemoryPort
 from memory_prompt import MemoryPromptBuilder
 from asr.errors import AsrError
 from reply_orchestrator import ReplyEventType, ReplyOrchestrator, ReplyRequest, ReplyState
+from persona_assembly import UntrustedFragment, assemble_persona
+from persona_loader import PersonaSnapshot as PersonaV2Snapshot
+from reply_context import ReplyContext, ReplyMode, TrustedTime
 
 from .contracts import (
     LiveConfig,
@@ -233,7 +237,28 @@ class LiveSession:
         started = time.monotonic()
         self.state = LiveSessionState.THINKING
         self._emit("turn_started", self.state, turn_id=handle.turn_id, component="session")
-        messages, memory_status = self._build_messages(text, handle.turn_id)
+        try:
+            messages, memory_status = self._build_messages(text, handle.turn_id)
+        except Exception:
+            self._emit(
+                "llm_error",
+                LiveSessionState.FAILED,
+                turn_id=handle.turn_id,
+                component="llm",
+                error_code="LIVE_LLM_ERROR",
+                status="unavailable",
+            )
+            self._finish(
+                handle,
+                LiveTurnResult(
+                    handle.turn_id,
+                    "failed",
+                    error_code="LIVE_LLM_ERROR",
+                    latency_ms=monotonic_ms(started),
+                ),
+                LiveSessionState.LISTENING,
+            )
+            return
         self._emit("llm_started", self.state, turn_id=handle.turn_id, component="llm")
         accumulated = ""
         reply_run = None
@@ -814,6 +839,7 @@ class LiveSession:
     def _build_messages(self, text: str, turn_id: str) -> tuple[list[dict[str, str]], str]:
         memory_status = "session-only"
         content = text
+        memory_text = ""
         try:
             prompt = self._memory_prompt.build(
                 text,
@@ -831,7 +857,7 @@ class LiveSession:
                     error_code="MEMORY_UNAVAILABLE",
                 )
             if prompt.text:
-                content = f"{text}\n\n{prompt.text}"
+                memory_text = prompt.text
         except Exception:
             self._emit(
                 "memory_fallback",
@@ -843,13 +869,48 @@ class LiveSession:
             )
         messages: list[dict[str, str]] = []
         if self._persona_provider is not None:
+            snapshot = self._persona_provider.snapshot()
+            if isinstance(snapshot, PersonaV2Snapshot):
+                history = tuple(
+                    UntrustedFragment(
+                        f"turn-{index}",
+                        f"user: {previous_user}\nassistant: {previous_reply}",
+                    )
+                    for index, (previous_user, previous_reply) in enumerate(
+                        self._history[-self.config.max_history_turns :]
+                    )
+                )
+                evidence = (
+                    (UntrustedFragment("memory", memory_text),)
+                    if memory_text
+                    else ()
+                )
+                context = ReplyContext.create(
+                    ReplyMode.FUTURE_IM,
+                    trusted_time=TrustedTime(datetime.now(timezone.utc)),
+                    future_im_enabled=True,
+                )
+                return (
+                    list(
+                        assemble_persona(
+                            snapshot,
+                            context,
+                            user_input=text,
+                            max_units=self.config.max_input_chars,
+                            history=history,
+                            evidence_summaries=evidence,
+                        ).to_messages()
+                    ),
+                    memory_status,
+                )
             try:
-                snapshot = self._persona_provider.snapshot()
                 system_prompt = str(getattr(snapshot, "system_prompt", ""))
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
             except Exception:
                 pass
+        if memory_text:
+            content = f"{text}\n\n{memory_text}"
         for previous_user, previous_reply in self._history[-self.config.max_history_turns :]:
             messages.append({"role": "user", "content": previous_user})
             messages.append({"role": "assistant", "content": previous_reply})

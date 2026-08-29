@@ -30,6 +30,7 @@ from persona_provider import (
     JsonPersonaEvidencePort,
     MemoryReferenceEvidencePort,
 )
+from persona_loader import load_persona
 from tts import TTSConfig, TTSProfileManager, TTSService
 from visual_driver import VisualDriver
 
@@ -57,6 +58,26 @@ _TTS_ENV_FIELDS = {
 _TTS_PROVIDER_OPTION_ENV = {
     "OLIVIA_TTS_EXTERNAL_PYTHON": "external_python",
 }
+
+
+@dataclass(frozen=True)
+class _PersonaV2Provider:
+    path: Path
+    _snapshot: Any = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        loaded = load_persona(self.path)
+        if not loaded.ready:
+            raise RuntimeError("PERSONA_UNAVAILABLE")
+        object.__setattr__(self, "_snapshot", loaded.snapshot)
+
+    def snapshot(self) -> Any:
+        return self._snapshot
+
+
+class _UnavailablePersonaProvider:
+    def snapshot(self) -> Any:
+        raise RuntimeError("PERSONA_UNAVAILABLE")
 
 
 @dataclass(frozen=True)
@@ -309,21 +330,36 @@ def build_live_environment(
             memory_port = NullMemoryPort()
             errors["memory"] = "MEMORY_UNAVAILABLE"
 
-    persona_file = _resolve(gateway_config.persona_file, root) or root / "linli_character/system_prompt.md"
-    persona_config = _resolve(gateway_config.persona_config, root) or root / "linli_character/persona_config.json"
-    persona_evidence = _resolve(gateway_config.persona_evidence_file, root) or root / "linli_character/provenance.json"
     try:
-        persona_provider = ConfigPersonaProvider(
-            persona_config,
-            draft_path=persona_file,
-            evidence_port=CompositePersonaEvidencePort(
-                JsonPersonaEvidencePort(persona_evidence),
-                MemoryReferenceEvidencePort(memory_port),
-            ),
-            feature_enabled=gateway_config.feature_enabled,
-        )
+        if gateway_config.persona_v2_enabled:
+            persona_v2_file = _resolve(gateway_config.persona_v2_file, root)
+            if persona_v2_file is None:
+                raise RuntimeError("PERSONA_UNAVAILABLE")
+            persona_provider = _PersonaV2Provider(persona_v2_file)
+        else:
+            persona_file = (
+                _resolve(gateway_config.persona_file, root)
+                or root / "linli_character/system_prompt.md"
+            )
+            persona_config = (
+                _resolve(gateway_config.persona_config, root)
+                or root / "linli_character/persona_config.json"
+            )
+            persona_evidence = (
+                _resolve(gateway_config.persona_evidence_file, root)
+                or root / "linli_character/provenance.json"
+            )
+            persona_provider = ConfigPersonaProvider(
+                persona_config,
+                draft_path=persona_file,
+                evidence_port=CompositePersonaEvidencePort(
+                    JsonPersonaEvidencePort(persona_evidence),
+                    MemoryReferenceEvidencePort(memory_port),
+                ),
+                feature_enabled=gateway_config.feature_enabled,
+            )
     except Exception:
-        persona_provider = None
+        persona_provider = _UnavailablePersonaProvider()
         errors["persona"] = "PERSONA_UNAVAILABLE"
 
     asr_config: AsrConfig | None = None
