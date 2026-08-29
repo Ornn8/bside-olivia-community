@@ -43,7 +43,6 @@ _REQUIRED = frozenset(
         PromptSection.PERSONA_PROFILE,
         PromptSection.MODE_CONSTRAINTS,
         PromptSection.MODE_STYLE,
-        PromptSection.STYLE_EXAMPLE,
         PromptSection.USER_INPUT,
     }
 )
@@ -52,6 +51,7 @@ _DROP_ORDER = (
     PromptSection.INFERRED_TRAIT,
     PromptSection.SOFT_CANON,
     PromptSection.HISTORY,
+    PromptSection.STYLE_EXAMPLE,
     PromptSection.PRIVATE_BEHAVIOR,
     PromptSection.WORLD_FACT,
     PromptSection.PUBLIC_CANON,

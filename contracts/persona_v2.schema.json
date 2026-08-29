@@ -26,14 +26,15 @@
         "$ref": "#/$defs/declaration"
       }
     },
-    "style_exemplars": {
-      "type": "array",
-      "maxItems": 16,
-      "items": {
-        "$ref": "#/$defs/style_exemplar"
-      }
-    }
+    "style_exemplars": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/style_exemplar"}},
+    "style_exemplar_provenance": {"$ref": "#/$defs/style_exemplar_provenance"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"style_exemplars": {"minItems": 1}}, "required": ["style_exemplars"]},
+      "then": {"required": ["style_exemplar_provenance"]}
+    }
+  ],
   "$defs": {
     "profile": {
       "type": "object",
@@ -99,104 +100,62 @@
         }
       }
     },
+    "style_exemplar_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id", "user_folder_count", "fold_count", "fold_user_counts",
+        "holdout_fold", "training_folds", "training_text_count",
+        "videos_excluded", "user_folders_indivisible", "assignment_method",
+        "holdout_body_read", "user_text_policy", "assistant_text_policy",
+        "contiguous_7_char_overlap_count", "user_authorization_date"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+        "user_folder_count": {"type": "integer", "minimum": 1},
+        "fold_count": {"type": "integer", "minimum": 2},
+        "fold_user_counts": {"type": "array", "minItems": 2, "items": {"type": "integer", "minimum": 1}},
+        "holdout_fold": {"type": "integer", "minimum": 0},
+        "training_folds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "training_text_count": {"type": "integer", "minimum": 1},
+        "videos_excluded": {"const": true},
+        "user_folders_indivisible": {"const": true},
+        "assignment_method": {"const": "NFC_SHA256_SORT_ROUND_ROBIN"},
+        "holdout_body_read": {"const": false},
+        "user_text_policy": {"const": "SYNTHETIC"},
+        "assistant_text_policy": {"const": "NON_VERBATIM_ABSTRACTION"},
+        "contiguous_7_char_overlap_count": {"const": 0},
+        "user_authorization_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    },
     "style_exemplar": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "exemplar_id",
-        "source_id",
-        "derivation",
-        "rights_status",
-        "allowed_public_release",
-        "mode",
-        "situation",
-        "user_text",
-        "assistant_text",
-        "style_only",
-        "factual_authority",
-        "user_text_is_synthetic",
-        "assistant_text_is_verbatim"
+        "exemplar_id", "source_id", "derivation", "rights_status",
+        "allowed_public_release", "mode", "situation", "user_text",
+        "assistant_text", "style_only", "factual_authority",
+        "user_text_is_synthetic", "assistant_text_is_verbatim"
       ],
       "properties": {
-        "exemplar_id": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
-        },
-        "source_id": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
-        },
-        "derivation": {
-          "enum": [
-            "SYNTHETIC",
-            "PRIVATE_CORPUS_ABSTRACTION"
-          ]
-        },
-        "rights_status": {
-          "enum": [
-            "REDISTRIBUTABLE",
-            "SUMMARY_ONLY",
-            "LOCAL_PRIVATE_ONLY",
-            "UNKNOWN_BLOCK_RELEASE"
-          ]
-        },
-        "allowed_public_release": {
-          "type": "boolean"
-        },
-        "mode": {
-          "enum": [
-            "text_letter",
-            "spoken_video",
-            "musical_video",
-            "future_im"
-          ]
-        },
-        "situation": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
-        },
-        "user_text": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 240
-        },
-        "assistant_text": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 400
-        },
-        "style_only": {
-          "const": true
-        },
-        "factual_authority": {
-          "const": false
-        },
-        "user_text_is_synthetic": {
-          "const": true
-        },
-        "assistant_text_is_verbatim": {
-          "const": false
-        }
+        "exemplar_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+        "source_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+        "derivation": {"enum": ["SYNTHETIC", "PRIVATE_CORPUS_ABSTRACTION"]},
+        "rights_status": {"enum": ["REDISTRIBUTABLE", "SUMMARY_ONLY", "LOCAL_PRIVATE_ONLY", "UNKNOWN_BLOCK_RELEASE"]},
+        "allowed_public_release": {"type": "boolean"},
+        "mode": {"enum": ["text_letter", "spoken_video", "musical_video", "future_im"]},
+        "situation": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+        "user_text": {"type": "string", "minLength": 1, "maxLength": 240},
+        "assistant_text": {"type": "string", "minLength": 1, "maxLength": 400},
+        "style_only": {"const": true},
+        "factual_authority": {"const": false},
+        "user_text_is_synthetic": {"const": true},
+        "assistant_text_is_verbatim": {"const": false}
       },
       "allOf": [
         {
-          "if": {
-            "properties": {
-              "rights_status": {
-                "enum": [
-                  "LOCAL_PRIVATE_ONLY",
-                  "UNKNOWN_BLOCK_RELEASE"
-                ]
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "allowed_public_release": {
-                "const": false
-              }
-            }
-          }
+          "if": {"properties": {"rights_status": {"enum": ["LOCAL_PRIVATE_ONLY", "UNKNOWN_BLOCK_RELEASE"]}}},
+          "then": {"properties": {"allowed_public_release": {"const": false}}}
         }
       ]
     },

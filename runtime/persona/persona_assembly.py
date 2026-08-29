@@ -34,11 +34,11 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
 _STYLE_SITUATIONS = (
-    ("music_request", re.compile(r"唱|歌|音乐|钢琴|弹奏|演奏")),
-    ("boundary_refusal", re.compile(r"不许拒绝|必须|一定要|陪我|答应我")),
     ("emotional_acknowledgement", re.compile(r"累|烦|难过|委屈|害怕|焦虑|没劲")),
+    ("boundary_refusal", re.compile(r"不许拒绝|不能拒绝|不准拒绝|必须|一定要")),
+    ("music_request", re.compile(r"(?:能|可以|请|想听|给我|为我).{0,10}(?:唱|弹|演奏)|(?:唱|弹|演奏)(?:一|几|个|首|段|曲)")),
     ("natural_close", re.compile(r"晚点再说|回头再说|先去忙|先走了|去睡了|晚安")),
-    ("brief_greeting", re.compile(r"^(?:在吗|你好|早|嗨|hi\b|hello\b)", re.I)),
+    ("brief_greeting", re.compile(r"^(?:在吗|你好|早(?:上好)?|嗨|hi|hello)[！!。.？?\s]*$", re.I)),
 )
 
 
@@ -228,25 +228,31 @@ def _persona_blocks(
             )
         )
 
-    for exemplar in _select_style_exemplars(snapshot, context, user_input):
+    selected_exemplars = _select_style_exemplars(snapshot, context, user_input)
+    if selected_exemplars:
         blocks.append(
             _json_block(
-                "style_example",
-                _budget_id("style", exemplar.exemplar_id),
+                "style_examples",
+                "style.examples",
                 PromptSection.STYLE_EXAMPLE,
                 {
-                    "exemplar_id": exemplar.exemplar_id,
-                    "source_id": exemplar.source_id,
-                    "derivation": exemplar.derivation,
-                    "situation": exemplar.situation,
                     "style_only": True,
                     "factual_authority": False,
                     "instruction": (
                         "Follow only the voice and response rhythm; never copy facts, "
                         "events, names, or relationship claims from this example."
                     ),
-                    "user": exemplar.user_text,
-                    "assistant": exemplar.assistant_text,
+                    "examples": [
+                        {
+                            "exemplar_id": exemplar.exemplar_id,
+                            "source_id": exemplar.source_id,
+                            "derivation": exemplar.derivation,
+                            "situation": exemplar.situation,
+                            "user": exemplar.user_text,
+                            "assistant": exemplar.assistant_text,
+                        }
+                        for exemplar in selected_exemplars
+                    ],
                 },
             )
         )
@@ -323,19 +329,13 @@ def _select_style_exemplars(
         and item.style_only
         and not item.factual_authority
     )
-    situation = next(
-        (
-            name
-            for name, pattern in _STYLE_SITUATIONS
-            if pattern.search(user_input.strip())
-        ),
-        "ordinary_smalltalk",
+    situations = tuple(
+        name
+        for name, pattern in _STYLE_SITUATIONS
+        if pattern.search(user_input.strip())
     )
-    matching = tuple(item for item in candidates if item.situation == situation)
-    if not matching and situation != "ordinary_smalltalk":
-        matching = tuple(
-            item for item in candidates if item.situation == "ordinary_smalltalk"
-        )
+    if not situations:
+        situations = ("ordinary_smalltalk",)
     user_tokens = set(_STYLE_TOKEN_RE.findall(user_input.casefold()))
 
     def rank(item: PersonaStyleExemplar) -> tuple[int, str]:
@@ -346,7 +346,17 @@ def _select_style_exemplars(
         )
         return (-len(user_tokens & example_tokens), item.exemplar_id)
 
-    return tuple(sorted(matching, key=rank)[:_STYLE_EXAMPLE_LIMIT])
+    if len(situations) == 1:
+        matching = (item for item in candidates if item.situation == situations[0])
+        return tuple(sorted(matching, key=rank)[:_STYLE_EXAMPLE_LIMIT])
+    selected = tuple(
+        sorted(
+            (item for item in candidates if item.situation == situation), key=rank
+        )[0]
+        for situation in situations[:_STYLE_EXAMPLE_LIMIT]
+        if any(item.situation == situation for item in candidates)
+    )
+    return selected
 
 
 def _declaration_blocks(

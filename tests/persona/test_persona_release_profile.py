@@ -73,8 +73,10 @@ def test_release_profile_contains_character_behavior_not_only_safety_rules() -> 
 
 def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None:
     loaded = load_persona(RELEASE_PATH)
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
 
     exemplars = loaded.snapshot.style_exemplars
+    provenance = payload["style_exemplar_provenance"]
     assert 4 <= len(exemplars) <= 6
     assert {item.situation for item in exemplars} == {
         "brief_greeting",
@@ -93,6 +95,26 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
     assert all(item.user_text_is_synthetic for item in exemplars)
     assert all(not item.assistant_text_is_verbatim for item in exemplars)
     assert all("?" not in item.assistant_text and "？" not in item.assistant_text for item in exemplars)
+    assert {item.source_id for item in exemplars} == {provenance["source_id"]}
+    assert provenance == {
+        "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
+        "user_folder_count": 30, "fold_count": 5,
+        "fold_user_counts": [6, 6, 6, 6, 6], "holdout_fold": 0,
+        "training_folds": [1, 2, 3, 4], "training_text_count": 120,
+        "videos_excluded": True, "user_folders_indivisible": True,
+        "assignment_method": "NFC_SHA256_SORT_ROUND_ROBIN",
+        "holdout_body_read": False, "user_text_policy": "SYNTHETIC",
+        "assistant_text_policy": "NON_VERBATIM_ABSTRACTION",
+        "contiguous_7_char_overlap_count": 0,
+        "user_authorization_date": "2026-08-30",
+    }
+    replies = [item.assistant_text for item in exemplars]
+    assert {text.count("。") for text in replies} >= {1, 2, 3}
+    assert not any(
+        phrase in text
+        for text in replies
+        for phrase in ("刚把桌", "手边这点事", "我今天想唱")
+    )
 
 
 def test_release_profile_splits_relationship_commitment_from_product_promises() -> None:

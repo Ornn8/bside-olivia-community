@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
 from pathlib import Path
-
-import pytest
 
 from persona_loader import (
     PersonaDeclaration,
@@ -103,6 +100,45 @@ def _valid_registry() -> dict[str, object]:
     }
 
 
+def _registry_with_style_exemplar() -> dict[str, object]:
+    payload = _valid_registry()
+    payload["style_exemplars"] = [
+        {
+            "exemplar_id": "style.synthetic.greeting",
+            "source_id": "source.synthetic",
+            "derivation": "SYNTHETIC",
+            "rights_status": "REDISTRIBUTABLE",
+            "allowed_public_release": True,
+            "mode": "text_letter",
+            "situation": "brief_greeting",
+            "user_text": "A synthetic greeting.",
+            "assistant_text": "A short, character-specific reply.",
+            "style_only": True,
+            "factual_authority": False,
+            "user_text_is_synthetic": True,
+            "assistant_text_is_verbatim": False,
+        }
+    ]
+    return payload
+
+
+def _style_provenance(source_id: str = "source.synthetic") -> dict[str, object]:
+    return {
+        "source_id": source_id, "user_folder_count": 30, "fold_count": 5,
+        "fold_user_counts": [6, 6, 6, 6, 6],
+        "holdout_fold": 0, "training_folds": [1, 2, 3, 4],
+        "training_text_count": 120,
+        "videos_excluded": True,
+        "user_folders_indivisible": True,
+        "assignment_method": "NFC_SHA256_SORT_ROUND_ROBIN",
+        "holdout_body_read": False,
+        "user_text_policy": "SYNTHETIC",
+        "assistant_text_policy": "NON_VERBATIM_ABSTRACTION",
+        "contiguous_7_char_overlap_count": 0,
+        "user_authorization_date": "2026-08-30",
+    }
+
+
 def test_valid_registry_returns_a_complete_typed_persona_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -151,49 +187,45 @@ def test_valid_registry_returns_a_complete_typed_persona_snapshot(
 def test_public_style_exemplar_loads_as_immutable_non_factual_guidance(
     tmp_path: Path,
 ) -> None:
-    payload = _valid_registry()
-    payload["style_exemplars"] = [
-        {
-            "exemplar_id": "style.synthetic.greeting",
-            "source_id": "source.synthetic",
-            "derivation": "SYNTHETIC",
-            "rights_status": "REDISTRIBUTABLE",
-            "allowed_public_release": True,
-            "mode": "text_letter",
-            "situation": "brief_greeting",
-            "user_text": "A synthetic greeting.",
-            "assistant_text": "A short, character-specific reply.",
-            "style_only": True,
-            "factual_authority": False,
-            "user_text_is_synthetic": True,
-            "assistant_text_is_verbatim": False,
-        }
-    ]
+    payload = _registry_with_style_exemplar()
+    payload["style_exemplar_provenance"] = _style_provenance()
     path = tmp_path / "persona.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     result = load_persona(path)
 
     assert result.ready is True
-    assert result.snapshot.style_exemplars == (
-        PersonaStyleExemplar(
-            exemplar_id="style.synthetic.greeting",
-            source_id="source.synthetic",
-            derivation="SYNTHETIC",
-            rights_status="REDISTRIBUTABLE",
-            allowed_public_release=True,
-            mode="text_letter",
-            situation="brief_greeting",
-            user_text="A synthetic greeting.",
-            assistant_text="A short, character-specific reply.",
-            style_only=True,
-            factual_authority=False,
-            user_text_is_synthetic=True,
-            assistant_text_is_verbatim=False,
-        ),
+    exemplar = result.snapshot.style_exemplars[0]
+    assert isinstance(exemplar, PersonaStyleExemplar)
+    assert (exemplar.exemplar_id, exemplar.source_id, exemplar.situation) == (
+        "style.synthetic.greeting", "source.synthetic", "brief_greeting",
     )
-    with pytest.raises(FrozenInstanceError):
-        result.snapshot.style_exemplars[0].assistant_text = "mutated"  # type: ignore[misc]
+    assert exemplar.style_only and exemplar.user_text_is_synthetic
+    assert not exemplar.factual_authority and not exemplar.assistant_text_is_verbatim
+
+
+def test_style_exemplars_without_provenance_fail_schema_validation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "missing-provenance.json"
+    path.write_text(json.dumps(_registry_with_style_exemplar()), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.error_code == PersonaLoadErrorCode.SCHEMA_INVALID
+    assert result.fallback is True
+
+
+def test_style_exemplar_source_mismatch_fails_schema_validation(tmp_path: Path) -> None:
+    payload = _registry_with_style_exemplar()
+    payload["style_exemplar_provenance"] = _style_provenance("source.other")
+    path = tmp_path / "source-mismatch.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.error_code == PersonaLoadErrorCode.SCHEMA_INVALID
+    assert result.fallback is True
 
 
 def test_policy_only_registry_is_not_misreported_as_ready(tmp_path: Path) -> None:

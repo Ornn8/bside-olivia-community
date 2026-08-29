@@ -118,6 +118,12 @@ def load_persona(
         Draft202012Validator(schema).validate(payload)
     except ValidationError:
         return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
+    exemplars = payload.get("style_exemplars", ())
+    provenance = payload.get("style_exemplar_provenance")
+    if exemplars and any(
+        row["source_id"] != provenance["source_id"] for row in exemplars
+    ):
+        return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
     if any(
         not row["allowed_public_release"]
         for row in (*payload["declarations"], *payload.get("style_exemplars", ()))
