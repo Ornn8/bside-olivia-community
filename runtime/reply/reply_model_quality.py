@@ -17,6 +17,7 @@ from runtime.reply.reply_context import (
     IntimacyRequest,
     IntimacyTier,
     ReplyContext,
+    ReplyMode,
 )
 from runtime.reply.reply_policy import IntimacyClaim
 from runtime.reply.reply_reviewer import (
@@ -29,6 +30,7 @@ from runtime.reply.reply_reviewer import (
 
 
 _REVIEW_MARKER = "P02_REPLY_REVIEW_JSON"
+_ADJUDICATION_MARKER = "P02_REPLY_EVIDENCE_ADJUDICATION_JSON"
 _REWRITE_MARKER = "P02_REPLY_REWRITE_TEXT"
 _REVIEW_MODEL = "deepseek-v4-flash"
 _GLOBAL_HEADINGS = (
@@ -150,6 +152,40 @@ _LAYER_SPECS = {
     },
 }
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
+_EVIDENCE_BOUND_LAYERS = frozenset({"identity_boundary", "continuity_memory"})
+_HARD_EVIDENCE_CLAIM_KINDS = frozenset(
+    {
+        "identity_claim",
+        "current_fact",
+        "past_fact",
+        "shared_history",
+        "habit",
+        "location",
+        "action",
+        "relationship",
+    }
+)
+_HARD_EVIDENCE_SUPPORT_SOURCES = frozenset(
+    {
+        "current_user",
+        "character_history",
+        "memory",
+        "world_fact",
+        "known_continuation",
+        "none",
+    }
+)
+_HARD_EVIDENCE_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,96}")
+_HARD_EVIDENCE_REASON_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+_RELATIONSHIP_EVIDENCE_CODES = frozenset(
+    {
+        "STAGE_DRIFT",
+        "ACKNOWLEDGED_FEELING_REWRITE",
+        "INTIMACY_VIOLATION",
+        "UNSOLICITED_INTIMACY",
+        "RELATIONSHIP_RETRACTION",
+    }
+)
 _LAYER_RELEASE_FACETS = {
     "identity_boundary": frozenset(
         {"IDENTITY", "KNOWLEDGE_BOUNDARY", "RELATIONSHIP_STYLE", "SAFETY"}
@@ -215,6 +251,26 @@ class _LayerAuthority:
 
 
 @dataclass(frozen=True)
+class _HardReviewEvidence:
+    evidence_id: str
+    code: str
+    start: int
+    end: int
+    claim_kind: str
+    support_source: str
+    reason_code: str
+
+
+@dataclass(frozen=True)
+class _AdjudicationDecision:
+    evidence_id: str
+    code: str
+    start: int
+    end: int
+    confirmed: bool
+
+
+@dataclass(frozen=True)
 class _LayerResult:
     layer: str
     score: int
@@ -222,6 +278,9 @@ class _LayerResult:
     drift_detected: bool
     intimacy_request: IntimacyRequest | None = None
     intimacy_claims: tuple[IntimacyClaim, ...] = ()
+    hard_evidence: tuple[_HardReviewEvidence, ...] = ()
+    soft_evidence: tuple[_HardReviewEvidence, ...] = ()
+    independent_soft_issue: bool = False
 
     @property
     def passed(self) -> bool:
@@ -249,6 +308,7 @@ class GatewayReviewTransport:
         timeout_seconds: float,
     ) -> object:
         mode = str(request.get("mode", ""))
+        evidence_bound = mode == ReplyMode.TEXT_LETTER.value
         authorities = _build_release_layer_authorities(
             load_persona(self.persona_path).snapshot,
             mode=mode,
@@ -296,11 +356,29 @@ class GatewayReviewTransport:
                 else {}
             ),
             mode=mode,
+            evidence_bound=evidence_bound,
             timeout_seconds=timeout_seconds,
         )
+        if evidence_bound:
+            results = _adjudicate_hard_evidence(
+                self.gateway,
+                results,
+                authorities=authorities,
+                candidate=str(request.get("candidate", "")),
+                current_user_input=current_user_input,
+                character_reply_history=character_reply_history,
+                memory_evidence=memory_evidence,
+                relationship_context=(
+                    request.get("relationship_context", {})
+                    if isinstance(request.get("relationship_context"), Mapping)
+                    else {}
+                ),
+                timeout_seconds=timeout_seconds,
+            )
         return _aggregate_layer_results(
             results,
             candidate=str(request.get("candidate", "")),
+            evidence_bound=evidence_bound,
         )
 
 
@@ -677,16 +755,27 @@ def _layer_messages(
     memory_evidence: Mapping[str, str],
     relationship_context: Mapping[str, object],
     mode: str,
+    evidence_bound: bool,
 ) -> tuple[dict[str, str], dict[str, str]]:
     allowed = ", ".join(layer.allowed_codes)
+    evidence_contract = (
+        ',"hard_evidence":[],"independent_soft_issue":false'
+        if evidence_bound
+        else ""
+    )
     response_contract = (
         f'{{"layer":"{layer.name}","score":0,"hard_violations":[],'
         '"drift_detected":false,"intimacy_request":"none",'
-        '"intimacy_claims":[]}}'
+        f'"intimacy_claims":[]{evidence_contract}}}'
         if layer.name == "identity_boundary"
         else (
             f'{{"layer":"{layer.name}","score":0,'
-            '"hard_violations":[],"drift_detected":false}}'
+            f'"hard_violations":[],"drift_detected":false{evidence_contract}}}'
+            if layer.name == "continuity_memory"
+            else (
+                f'{{"layer":"{layer.name}","score":0,'
+                '"hard_violations":[],"drift_detected":false}}'
+            )
         )
     )
     intimacy_instructions = (
@@ -698,6 +787,22 @@ def _layer_messages(
         "end-exclusive Python character offsets into candidate_reply. Return an "
         "empty list when there is no completed contact."
         if layer.name == "identity_boundary"
+        else ""
+    )
+    hard_evidence_instructions = (
+        " For every hard_violations entry return exactly one hard_evidence item "
+        "with evidence_id, matching code, zero-based end-exclusive start/end "
+        "offsets into candidate_reply, claim_kind, support_source, and reason_code. "
+        "claim_kind is one of identity_claim,current_fact,past_fact,shared_history,"
+        "habit,location,action,relationship. support_source is one of current_user,"
+        "character_history,memory,world_fact,known_continuation,none. reason_code "
+        "is a short uppercase machine code, never quoted candidate text. Return no "
+        "hard_evidence when hard_violations is empty. independent_soft_issue is "
+        "true only when this same layer has a separate localized soft mismatch "
+        "besides the listed hard claims; it is never inferred from a hard claim. "
+        "With no hard claims, true requires score 1 and drift_detected false; false "
+        "requires score 2 and drift_detected false."
+        if evidence_bound and layer.name in _EVIDENCE_BOUND_LAYERS
         else ""
     )
     system = (
@@ -712,7 +817,7 @@ def _layer_messages(
         "mismatch. Never lower the score for uncertainty, preference, or the "
         "absence of an optional trait. Set drift_detected=true only for "
         "substantive persona drift. Return ONLY compact JSON with exactly: "
-        f"{response_contract}.{intimacy_instructions} "
+        f"{response_contract}.{intimacy_instructions}{hard_evidence_instructions} "
         f"hard_violations may contain only: {allowed}. Do not explain.\n"
         f"GLOBAL_AUTHORITY:\n{layer.global_authority}\n"
         f"LAYER_AUTHORITY:\n{layer.layer_authority}"
@@ -756,6 +861,7 @@ def _parse_layer_result(
     text: str,
     *,
     candidate: str,
+    evidence_bound: bool,
 ) -> _LayerResult:
     try:
         raw = json.loads(text.strip())
@@ -764,9 +870,15 @@ def _parse_layer_result(
     expected = {"layer", "score", "hard_violations", "drift_detected"}
     if layer.name == "identity_boundary":
         expected.update({"intimacy_request", "intimacy_claims"})
+    if evidence_bound and layer.name in _EVIDENCE_BOUND_LAYERS:
+        expected.update({"hard_evidence", "independent_soft_issue"})
     violations = raw.get("hard_violations") if isinstance(raw, Mapping) else None
     score = raw.get("score") if isinstance(raw, Mapping) else None
     drift = raw.get("drift_detected") if isinstance(raw, Mapping) else None
+    independent_soft = (
+        raw.get("independent_soft_issue") if isinstance(raw, Mapping) else None
+    )
+    evidence_layer = evidence_bound and layer.name in _EVIDENCE_BOUND_LAYERS
     if (
         not isinstance(raw, Mapping)
         or set(raw) != expected
@@ -775,13 +887,47 @@ def _parse_layer_result(
         or not isinstance(score, int)
         or score not in {0, 1, 2}
         or not isinstance(violations, list)
-        or len(violations) > len(layer.allowed_codes)
+        or len(violations) > (16 if evidence_layer else len(layer.allowed_codes))
         or any(code not in layer.allowed_codes for code in violations)
+        or (
+            evidence_layer
+            and (
+                type(independent_soft) is not bool
+                or (violations and score == 2)
+                or (
+                    not violations
+                    and (
+                        (
+                            independent_soft is True
+                            and (score != 1 or drift is not False)
+                        )
+                        or (
+                            independent_soft is False
+                            and (score != 2 or drift is not False)
+                        )
+                    )
+                )
+            )
+        )
         or type(drift) is not bool
     ):
         raise RuntimeError("LAYER_REVIEW_INVALID")
+    hard_evidence: tuple[_HardReviewEvidence, ...] = ()
+    if evidence_bound and layer.name in _EVIDENCE_BOUND_LAYERS:
+        hard_evidence = _parse_hard_evidence(
+            raw.get("hard_evidence"),
+            violations=tuple(violations),
+            candidate=candidate,
+        )
     if layer.name != "identity_boundary":
-        return _LayerResult(layer.name, score, tuple(violations), drift)
+        return _LayerResult(
+            layer.name,
+            score,
+            tuple(violations),
+            drift,
+            hard_evidence=hard_evidence,
+            independent_soft_issue=bool(independent_soft),
+        )
     raw_claims = raw.get("intimacy_claims")
     try:
         intimacy_request = IntimacyRequest(str(raw.get("intimacy_request")))
@@ -821,7 +967,77 @@ def _parse_layer_result(
         drift,
         intimacy_request,
         intimacy_claims,
+        hard_evidence,
+        independent_soft_issue=bool(independent_soft),
     )
+
+
+def _parse_hard_evidence(
+    raw_evidence: object,
+    *,
+    violations: tuple[str, ...],
+    candidate: str,
+) -> tuple[_HardReviewEvidence, ...]:
+    expected_fields = {
+        "evidence_id",
+        "code",
+        "start",
+        "end",
+        "claim_kind",
+        "support_source",
+        "reason_code",
+    }
+    if (
+        not isinstance(raw_evidence, list)
+        or len(raw_evidence) > 16
+        or len(raw_evidence) != len(violations)
+    ):
+        raise RuntimeError("LAYER_REVIEW_INVALID")
+    parsed: list[_HardReviewEvidence] = []
+    for raw in raw_evidence:
+        if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+            raise RuntimeError("LAYER_REVIEW_INVALID")
+        evidence_id = raw.get("evidence_id")
+        code = raw.get("code")
+        start = raw.get("start")
+        end = raw.get("end")
+        claim_kind = raw.get("claim_kind")
+        support_source = raw.get("support_source")
+        reason_code = raw.get("reason_code")
+        if (
+            not isinstance(evidence_id, str)
+            or _HARD_EVIDENCE_ID_PATTERN.fullmatch(evidence_id) is None
+            or not isinstance(code, str)
+            or not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end <= start
+            or end > len(candidate)
+            or claim_kind not in _HARD_EVIDENCE_CLAIM_KINDS
+            or support_source not in _HARD_EVIDENCE_SUPPORT_SOURCES
+            or not isinstance(reason_code, str)
+            or _HARD_EVIDENCE_REASON_PATTERN.fullmatch(reason_code) is None
+        ):
+            raise RuntimeError("LAYER_REVIEW_INVALID")
+        parsed.append(
+            _HardReviewEvidence(
+                evidence_id,
+                code,
+                start,
+                end,
+                str(claim_kind),
+                str(support_source),
+                reason_code,
+            )
+        )
+    if (
+        len({item.evidence_id for item in parsed}) != len(parsed)
+        or tuple(item.code for item in parsed) != violations
+    ):
+        raise RuntimeError("LAYER_REVIEW_INVALID")
+    return tuple(parsed)
 
 
 async def _complete_layer_text(
@@ -856,6 +1072,7 @@ def _complete_layer_reviews(
     memory_evidence: Mapping[str, str],
     relationship_context: Mapping[str, object],
     mode: str,
+    evidence_bound: bool,
     timeout_seconds: float,
 ) -> tuple[_LayerResult, ...]:
     async def invoke(
@@ -877,6 +1094,7 @@ def _complete_layer_reviews(
                 layer,
                 text,
                 candidate=candidate,
+                evidence_bound=evidence_bound,
             )
 
         return tuple(
@@ -897,6 +1115,7 @@ def _complete_layer_reviews(
                     memory_evidence=memory_evidence,
                     relationship_context=relationship_context,
                     mode=mode,
+                    evidence_bound=evidence_bound,
                 ),
             )
             for layer in authorities
@@ -904,6 +1123,248 @@ def _complete_layer_reviews(
         return asyncio.run(invoke(requests))
     except Exception:
         raise RuntimeError("quality model unavailable") from None
+
+
+def _adjudicate_hard_evidence(
+    gateway: Gateway,
+    results: Sequence[_LayerResult],
+    *,
+    authorities: Sequence[_LayerAuthority],
+    candidate: str,
+    current_user_input: str,
+    character_reply_history: str,
+    memory_evidence: Mapping[str, str],
+    relationship_context: Mapping[str, object],
+    timeout_seconds: float,
+) -> tuple[_LayerResult, ...]:
+    claims = tuple(
+        (item.layer, evidence)
+        for item in results
+        if item.layer in _EVIDENCE_BOUND_LAYERS
+        for evidence in item.hard_evidence
+    )
+    if not claims:
+        return tuple(results)
+    if len(claims) > 16:
+        raise RuntimeError("ADJUDICATION_EVIDENCE_LIMIT")
+    evidence_ids = tuple(evidence.evidence_id for _, evidence in claims)
+    evidence_signatures = tuple(
+        (
+            evidence.code,
+            evidence.start,
+            evidence.end,
+        )
+        for _, evidence in claims
+    )
+    if (
+        len(set(evidence_ids)) != len(evidence_ids)
+        or len(set(evidence_signatures)) != len(evidence_signatures)
+    ):
+        raise RuntimeError("ADJUDICATION_EVIDENCE_DUPLICATE")
+    target_authorities = tuple(
+        item for item in authorities if item.name in _EVIDENCE_BOUND_LAYERS
+    )
+    if len(target_authorities) != len(_EVIDENCE_BOUND_LAYERS):
+        raise RuntimeError("ADJUDICATION_AUTHORITY_UNAVAILABLE")
+    authority_by_layer = {item.name: item for item in target_authorities}
+    context_ids = tuple(
+        _adjudication_context_id(layer, evidence.code)
+        for layer, evidence in claims
+    )
+    contexts: dict[str, dict[str, object]] = {}
+    for (layer, evidence), context_id in zip(
+        claims,
+        context_ids,
+        strict=True,
+    ):
+        if context_id in contexts:
+            continue
+        contexts[context_id] = _adjudication_support_context(
+            context_id,
+            authority=authority_by_layer[
+                _adjudication_authority_layer(layer, evidence.code)
+            ],
+            current_user_input=current_user_input,
+            character_reply_history=character_reply_history,
+            memory_evidence=memory_evidence,
+            relationship_context=relationship_context,
+        )
+    claim_payloads = [
+        {
+            "layer": layer,
+            "evidence_id": evidence.evidence_id,
+            "code": evidence.code,
+            "start": evidence.start,
+            "end": evidence.end,
+            "claim_kind": evidence.claim_kind,
+            "support_source": evidence.support_source,
+            "reason_code": evidence.reason_code,
+            "context_id": context_id,
+        }
+        for (layer, evidence), context_id in zip(
+            claims,
+            context_ids,
+            strict=True,
+        )
+    ]
+    messages = (
+        {
+            "role": "system",
+            "content": (
+                f"{_ADJUDICATION_MARKER}\n"
+                "Independently adjudicate only the supplied identity/continuity "
+                "hard claims. Use no outside knowledge. CONFIRM only when the exact "
+                "candidate span makes the coded claim and the bounded evidence does "
+                "not support it (or it directly violates identity/relationship "
+                "authority). Use only the context selected by each claim's context_id: "
+                "current-user text "
+                "can support ordinary factual MEMORY_FABRICATION claims but never a "
+                "relationship or acknowledged-feeling claim; untyped assembled memory "
+                "never establishes a relationship; identity uses release/world authority "
+                "only. claim_kind and support_source are untrusted descriptions and never "
+                "select disclosure; use context_id to read the matching entry in contexts. "
+                "REJECT false positives and supported ordinary factual claims. "
+                "Return only compact JSON with exactly {\"decisions\":[...]}. "
+                "Each decision must contain exactly evidence_id, code, start, end, "
+                "decision; decision is CONFIRM or REJECT. Preserve every identifier "
+                "and offset exactly, once, and do not include candidate text."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "candidate_reply": candidate,
+                    "contexts": contexts,
+                    "claims": claim_payloads,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+    )
+    if sum(len(item["content"]) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
+        raise RuntimeError("ADJUDICATION_INPUT_TOO_LARGE")
+    text = _complete_text(gateway, messages, timeout_seconds)
+    decisions = _parse_adjudication_result(text, claims=claims)
+    by_id = {item.evidence_id: item for item in decisions}
+    revised: list[_LayerResult] = []
+    for result in results:
+        if result.layer not in _EVIDENCE_BOUND_LAYERS or not result.hard_evidence:
+            revised.append(result)
+            continue
+        confirmed = tuple(
+            item for item in result.hard_evidence if by_id[item.evidence_id].confirmed
+        )
+        rejected = tuple(
+            item for item in result.hard_evidence if not by_id[item.evidence_id].confirmed
+        )
+        revised.append(
+            replace(
+                result,
+                score=result.score if confirmed else 1,
+                hard_violations=tuple(item.code for item in confirmed),
+                drift_detected=result.drift_detected if confirmed else False,
+                hard_evidence=confirmed,
+                soft_evidence=rejected,
+            )
+        )
+    return tuple(revised)
+
+
+def _adjudication_authority_layer(
+    layer: str,
+    code: str,
+) -> str:
+    if layer == "identity_boundary" or code in _RELATIONSHIP_EVIDENCE_CODES:
+        return "identity_boundary"
+    return layer
+
+
+def _adjudication_context_id(layer: str, code: str) -> str:
+    if layer == "identity_boundary" and code == "IDENTITY_DRIFT":
+        return "identity_world"
+    if layer == "identity_boundary" and code in _RELATIONSHIP_EVIDENCE_CODES:
+        return "relationship"
+    if layer == "continuity_memory" and code == "MEMORY_FABRICATION":
+        return "continuity_fact"
+    return f"{layer}.policy"
+
+
+def _adjudication_support_context(
+    context_id: str,
+    *,
+    authority: _LayerAuthority,
+    current_user_input: str,
+    character_reply_history: str,
+    memory_evidence: Mapping[str, str],
+    relationship_context: Mapping[str, object],
+) -> dict[str, object]:
+    release_authority = {
+        "global": _safe_text(authority.global_authority, 3000),
+        "layer": _safe_text(authority.layer_authority, 3000),
+    }
+    if context_id == "relationship":
+        return {
+            "release_authority": release_authority,
+            "character_reply_history": character_reply_history,
+            "relationship_context": dict(relationship_context),
+        }
+    if context_id == "identity_world":
+        return {
+            "release_authority": release_authority,
+            "world_facts": memory_evidence.get("world_facts", ""),
+        }
+    if context_id == "continuity_fact":
+        return {
+            "current_user_input": current_user_input,
+            "memory_evidence": dict(memory_evidence),
+        }
+    return {
+        "release_authority": release_authority,
+    }
+
+
+def _parse_adjudication_result(
+    text: str,
+    *,
+    claims: Sequence[tuple[str, _HardReviewEvidence]],
+) -> tuple[_AdjudicationDecision, ...]:
+    try:
+        raw = json.loads(text.strip())
+    except (AttributeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("ADJUDICATION_INVALID") from exc
+    raw_decisions = raw.get("decisions") if isinstance(raw, Mapping) else None
+    if set(raw) != {"decisions"} or not isinstance(raw_decisions, list):
+        raise RuntimeError("ADJUDICATION_INVALID")
+    expected = tuple(evidence for _, evidence in claims)
+    if len(raw_decisions) != len(expected):
+        raise RuntimeError("ADJUDICATION_INVALID")
+    parsed: list[_AdjudicationDecision] = []
+    fields = {"evidence_id", "code", "start", "end", "decision"}
+    for raw_item, evidence in zip(raw_decisions, expected, strict=True):
+        if (
+            not isinstance(raw_item, Mapping)
+            or set(raw_item) != fields
+            or raw_item.get("evidence_id") != evidence.evidence_id
+            or raw_item.get("code") != evidence.code
+            or type(raw_item.get("start")) is not int
+            or type(raw_item.get("end")) is not int
+            or raw_item.get("start") != evidence.start
+            or raw_item.get("end") != evidence.end
+            or raw_item.get("decision") not in {"CONFIRM", "REJECT"}
+        ):
+            raise RuntimeError("ADJUDICATION_INVALID")
+        parsed.append(
+            _AdjudicationDecision(
+                evidence.evidence_id,
+                evidence.code,
+                evidence.start,
+                evidence.end,
+                raw_item["decision"] == "CONFIRM",
+            )
+        )
+    return tuple(parsed)
 
 
 def _reference_text(request: Mapping[str, object], reference_id: str) -> str:
@@ -932,6 +1393,7 @@ def _aggregate_layer_results(
     results: Sequence[_LayerResult],
     *,
     candidate: str,
+    evidence_bound: bool,
 ) -> dict[str, object]:
     by_name = {item.layer: item for item in results}
     expected = tuple(_LAYER_SPECS)
@@ -946,30 +1408,66 @@ def _aggregate_layer_results(
         and not by_name["voice_style"].hard_violations
         and not by_name["voice_style"].drift_detected
     )
+    adjudication_warnings = frozenset(
+        name
+        for name in expected
+        if evidence_bound
+        and by_name[name].soft_evidence
+        and not by_name[name].hard_violations
+        and not by_name[name].drift_detected
+        and not by_name[name].independent_soft_issue
+    )
     failed = tuple(
         name
         for name in expected
         if not by_name[name].passed
         and not (name == "voice_style" and warning_only)
+        and name not in adjudication_warnings
     )
     violations: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for name in failed:
+    seen: set[object] = set()
+    for name in (
+        *failed,
+        *(name for name in expected if name in adjudication_warnings),
+    ):
         item = by_name[name]
-        codes = item.hard_violations or (str(_LAYER_SPECS[name]["codes"][0]),)
-        for code in codes:
-            if code in seen:
+        entries: list[tuple[str, str, _HardReviewEvidence | None]] = []
+        if evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
+            entries.extend(
+                (evidence.code, "hard", evidence)
+                for evidence in item.hard_evidence
+            )
+            entries.extend(
+                (evidence.code, "soft", evidence)
+                for evidence in item.soft_evidence
+            )
+            if item.independent_soft_issue:
+                entries.append(
+                    (str(_LAYER_SPECS[name]["codes"][0]), "soft", None)
+                )
+        else:
+            codes = item.hard_violations or (
+                str(_LAYER_SPECS[name]["codes"][0]),
+            )
+            severity = "hard" if item.hard_violations or item.score == 0 else "soft"
+            entries.extend((code, severity, None) for code in codes)
+        for code, severity, evidence in entries:
+            start = evidence.start if evidence is not None else 0
+            end = evidence.end if evidence is not None else len(candidate)
+            key: tuple[str, str, int, int] | str = (
+                (code, severity, start, end) if evidence_bound else code
+            )
+            if key in seen:
                 continue
-            seen.add(code)
+            seen.add(key)
             violations.append(
                 {
                     "code": code,
-                    "severity": (
-                        "hard"
-                        if item.hard_violations or item.score == 0
-                        else "soft"
-                    ),
-                    "evidence": {"start": 0, "end": len(candidate)},
+                    "severity": severity,
+                    "evidence": {
+                        "start": start,
+                        "end": end,
+                    },
                 }
             )
     if warning_only:

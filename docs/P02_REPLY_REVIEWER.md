@@ -46,8 +46,8 @@ pending/control-only continuation facts, databases, filesystem paths, provider
 configuration, or the complete archive. Review prompts and responses are not
 persisted.
 
-The existing `identity_boundary` layer owns the intimacy assessment in the
-same provider call. It may emit `STAGE_DRIFT`,
+The existing `identity_boundary` layer owns the intimacy assessment in its
+normal layer call. It may emit `STAGE_DRIFT`,
 `ACKNOWLEDGED_FEELING_REWRITE`, `INTIMACY_VIOLATION`,
 `UNSOLICITED_INTIMACY`, or `RELATIONSHIP_RETRACTION`. A user's wishes,
 self-labels, unilateral nicknames, repeated messages, or lack of refusal do
@@ -66,11 +66,84 @@ mode, a closing question is `STYLE_DRIFT` only when it adds no necessary
 information or choice and merely forces continuation; useful concrete
 questions remain allowed.
 
+## Evidence-bound hard findings and adjudication
+
+This protocol is enabled only for `text_letter`. Spoken and musical-video
+reviews retain the pre-protocol response schema and call count: they neither
+require `hard_evidence` nor invoke adjudication.
+
+In `text_letter`, `identity_boundary` and `continuity_memory` cannot create a
+hard finding from a score or drift flag alone. Every hard code must have exactly
+one typed `hard_evidence` item with:
+
+- a unique stable `evidence_id` and the matching hard `code`;
+- zero-based, end-exclusive `start` and `end` offsets inside the current
+  candidate;
+- one bounded `claim_kind`: `identity_claim`, `current_fact`, `past_fact`,
+  `shared_history`, `habit`, `location`, `action`, or `relationship`;
+- one bounded `support_source`: `current_user`, `character_history`, `memory`,
+  `world_fact`, `known_continuation`, or `none`;
+- a short uppercase `reason_code` that contains no reply excerpt.
+
+Those two layer responses also require the boolean
+`independent_soft_issue`. It is `true` only when that layer has a separate,
+localized soft mismatch besides its hard claims. With no hard claim, `true`
+requires score 1 and no drift, while `false` requires score 2 and no drift. A
+hard claim cannot be used to infer this field. Missing, non-boolean, or
+score/drift-inconsistent values make the review unavailable.
+
+Missing, duplicate, mismatched, out-of-range, or schema-invalid evidence makes
+the whole enabled Letter review unavailable and therefore fails closed. A
+semantic duplicate is keyed by at least `(code, start, end)` across layers;
+changing ids, kinds, sources, or reasons cannot make it distinct. Other review
+layers keep their existing response schema.
+
+Well-formed hard evidence conditionally spends at most one additional model
+call per candidate. The call uses the same configured quality Gateway and
+`deepseek-v4-flash`; it does not create a provider or retry path. The narrow
+adjudicator receives the candidate, one shared context per trusted context
+class, and claims that refer to it by `context_id`. `claim_kind` and
+`support_source` remain descriptive output only; neither can select or expand
+disclosure. Trusted `(layer, code)` selects the context class:
+
+- `identity_boundary/IDENTITY_DRIFT` receives only release and canonical world
+  authority;
+- relationship, stage, acknowledged-feeling, intimacy, and relationship
+  retraction codes from `identity_boundary` receive only release authority,
+  canonical relationship/private context, and typed Linli-authored history;
+- `continuity_memory/MEMORY_FABRICATION` receives only the bounded factual
+  current-user excerpt and bounded assembled memory, even if the model labels
+  the claim as relationship or shared history;
+- every other allowed combination receives only its minimal layer release
+  authority.
+
+Current-user wishes, self-labels, and untyped assembled memory never establish
+a relationship. The adjudicator returns one candidate-bound `CONFIRM` or
+`REJECT` decision per evidence id. A normal PASS candidate makes no
+adjudication call. Malformed adjudication fails closed.
+
+Only confirmed claims remain hard violations, using their exact candidate
+spans. Up to 16 distinct `(code, span)` claims are accepted within the existing
+30,000-character fail-closed input budget; shared contexts are serialized once,
+not copied per claim. If every otherwise-hard claim is rejected and
+`independent_soft_issue` is false, the original Letter candidate is immediately
+`accepted_with_warnings` without using a rewriter. If it is true, the existing
+rewrite path remains mandatory. A rewritten candidate always runs all five
+layers again and, when needed, receives a fresh independent adjudication. No old
+claim, span, or decision is reused; a confirmed hard claim that persists after
+the rewrite blocks. `accepted_with_warnings` is a Letter-only quality status;
+non-Letter modes retain their prior `accepted` status for soft findings.
+
+Adjudication prompts and responses are transient. Candidate text is not added
+to quality status, audit records, evidence objects, or logs, and the typed
+evidence contains offsets and machine reason codes rather than quoted text.
+
 Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
 classification. Stale spans, conflicting claim sources, changed request
 classification, or malformed metadata fail closed. This adds no sixth review
-layer and no extra provider call. An explicit hard `STYLE_DRIFT` that remains
+layer; only evidence-bound identity/continuity hard findings add the single
+conditional adjudication call described above. An explicit hard `STYLE_DRIFT` that remains
 after the rewrite is blocked; only a localized voice-style score of 1 with no
 hard code and no drift flag may remain an accepted warning.
 
