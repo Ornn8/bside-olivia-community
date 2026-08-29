@@ -2052,9 +2052,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryText = migration && migration.status === "completed"
           ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
           : "长期记忆写入未完成，历史信件未发布。";
-        const relationText = migration && ["initialized", "already_initialized"].includes(migration.private_world_status)
-          ? "林离的历史关系状态已同步。"
-          : "关系状态未更新。";
+        const relationText = migration && migration.private_world_status === "initialized"
+          ? "已根据历史信件恢复初始关系状态。"
+          : migration && migration.private_world_status === "already_initialized"
+            ? "已有关系状态已保留，历史信件已加入长期记忆。"
+            : "关系状态未更新。";
         importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}${relationText}`;
         importButton.textContent = "再次导入";
       } catch (error) {

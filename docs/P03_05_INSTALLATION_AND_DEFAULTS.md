@@ -473,6 +473,10 @@ PrivateWorld
 - 媒体检测错误不影响 core；
 - 安装器失败时恢复 patch 前客户端副本。
 
+### 视频回信运行环境包
+
+设置页的“一键下载并安装”负责下载公开可分发的语音、音乐、口型和媒体工具，并优先选择国内源。完整便携运行环境不从未知公网地址下载：发布方把 `Olivia-video-runtime-*.zip` 与安装包放在同一下载目录时，客户端会自动发现、解压、逐文件校验并启用；高级入口仅用于手动选择同一 ZIP，不是选择成片或缓存目录。解压与校验进度通过 `video_capability_status.schema.json` 的 `runtime_import` 字段返回。
+
 ## 17. 完成条件
 
 - clean Windows 用户可以完成 Core 安装；

@@ -1713,10 +1713,9 @@ def _mark_superseded_failed_retries() -> None:
 
 
 def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
+    loaded = list(store.legacy_letters)
     adapter = memory_adapter
     if not getattr(adapter, "enabled", False):
-        if store.legacy_letters:
-            return store.legacy_letters
         try:
             adapter = _legacy_import_adapter()
         except Exception:
@@ -1725,10 +1724,21 @@ def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
             _safe_log("memory_read_skipped", domain="legacy_letters")
     if getattr(adapter, "enabled", False) and hasattr(adapter, "list_legacy"):
         try:
-            return list(getattr(adapter, "list_legacy")())
+            archived = list(getattr(adapter, "list_legacy")())
+            seen = {
+                (item.get("source_record_id") or item.get("letter_id"))
+                for item in archived
+                if isinstance(item, Mapping)
+            }
+            return archived + [
+                item
+                for item in loaded
+                if not isinstance(item, Mapping)
+                or (item.get("source_record_id") or item.get("letter_id")) not in seen
+            ]
         except sqlite3.OperationalError as exc:
             if "no such table: legacy_letters" in str(exc):
-                return store.legacy_letters
+                return loaded
             if strict:
                 raise
             _safe_log("memory_read_skipped", domain="legacy_letters")
@@ -1736,7 +1746,7 @@ def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
             if strict:
                 raise
             _safe_log("memory_read_skipped", domain="legacy_letters")
-    return store.legacy_letters
+    return loaded
 
 
 def _official_account_conflicts(payload: Mapping[str, object]) -> bool:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
 from conversation_memory_port import (
     ConversationMemoryStatus,
@@ -26,6 +29,21 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
     monkeypatch.setattr(
         local_server, "_official_history_private_world_available", lambda: True
     )
+
+
+def test_official_import_progress_response_matches_public_schema() -> None:
+    import local_server
+
+    response = asyncio.run(
+        local_server.route("GET", "/toy/letter/legacy/official-import", {}, {})
+    )
+    schema = json.loads(
+        (Path("contracts") / "official_history_import_progress.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response)
 
 
 def test_history_skip_requires_current_first_person_semantics(monkeypatch) -> None:
@@ -97,6 +115,36 @@ def test_legacy_archive_is_reopened_after_process_restart(monkeypatch) -> None:
 
     assert local_server._legacy_letter_collection(strict=True) == [imported]
     assert local_server._existing_legacy_source_record_ids() == frozenset()
+
+
+def test_reopened_legacy_archive_is_merged_with_loaded_bootstrap_records(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    archived = {
+        "letter_id": "official-history",
+        "source_record_id": "official:history",
+        "reply_text": "historical reply",
+    }
+    loaded = {
+        "letter_id": "bootstrap-history",
+        "source_record_id": "bootstrap:history",
+        "reply_text": "bootstrap reply",
+    }
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            return [archived]
+
+    monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
+    monkeypatch.setattr(local_server.store, "legacy_letters", [loaded])
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: Archive())
+
+    assert local_server._legacy_letter_collection(strict=True) == [archived, loaded]
 
 
 def test_other_legacy_sqlite_errors_fail_closed(monkeypatch) -> None:
