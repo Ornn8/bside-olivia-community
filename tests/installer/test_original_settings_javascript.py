@@ -251,6 +251,14 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert "window.clearInterval(progressTimer)" in source
     assert "离线包已检查并安装完成。请重启 Olivia 一次" in runtime_import
     assert "await renderVideoCapabilityPanel(panel)" not in runtime_import
+    assert "let runtimeImportFinished = false;" in runtime_import
+    assert "if (runtimeImportFinished) return;" in runtime_import
+    assert runtime_import.index("await requestJson(VIDEO_CAPABILITY_PATH)") < runtime_import.index(
+        "if (runtimeImportFinished) return;"
+    )
+    assert runtime_import.index("runtimeImportFinished = true;") < runtime_import.index(
+        "离线包已检查并安装完成"
+    )
     assert "尚未提供可迁移运行时归档" not in source
     assert "runtimeDigest" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source

@@ -1354,9 +1354,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         setButtonsBusy([chooseRuntime, importRuntime], true);
         result.textContent = "正在检查并安装，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
+        let runtimeImportFinished = false;
         const updateRuntimeProgress = async () => {
           try {
             const statusPayload = await requestJson(VIDEO_CAPABILITY_PATH);
+            if (runtimeImportFinished) return;
             const progress = statusPayload && statusPayload.runtime_import;
             if (!progress || typeof progress !== "object") return;
             const checkedBytes = Math.max(0, Number(progress.checked_bytes) || 0);
@@ -1387,12 +1389,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             },
             30 * 60 * 1000
           );
+          runtimeImportFinished = true;
           result.textContent = "离线包已检查并安装完成。请重启 Olivia 一次以启用视频回信。";
           setButtonsBusy([chooseRuntime, importRuntime], false);
         } catch (_error) {
+          runtimeImportFinished = true;
           result.textContent = "离线包检查未通过，请重新下载并完整解压后再试。";
           setButtonsBusy([chooseRuntime, importRuntime], false);
         } finally {
+          runtimeImportFinished = true;
           window.clearInterval(progressTimer);
         }
       });
