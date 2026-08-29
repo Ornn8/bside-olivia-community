@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/official_history_import_progress.schema.json",
+  "title": "Official history import progress response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "data"],
+  "properties": {
+    "code": {"const": 0},
+    "message": {"const": "ok"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "stage",
+        "total",
+        "processed",
+        "imported",
+        "skipped",
+        "last_updated_at",
+        "retryable"
+      ],
+      "properties": {
+        "status": {"enum": ["IDLE", "RUNNING", "COMPLETED", "FAILED"]},
+        "stage": {
+          "enum": [
+            "idle",
+            "listing",
+            "reading",
+            "memory",
+            "relationship",
+            "importing",
+            "completed",
+            "failed"
+          ]
+        },
+        "total": {"type": "integer", "minimum": 0},
+        "processed": {"type": "integer", "minimum": 0},
+        "imported": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "last_updated_at": {"type": "string", "format": "date-time"},
+        "retryable": {"type": "boolean"}
+      }
+    }
+  }
+}

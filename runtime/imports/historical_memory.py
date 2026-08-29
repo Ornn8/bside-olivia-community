@@ -312,6 +312,7 @@ def migrate_historical_exchanges(
     user_id: str,
     finalize_private_world: Callable[[tuple[HistoricalExchange, ...]], str] | None = None,
     require_persisted: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> HistoricalMigrationResult:
     """Write one exchange at a time; never advance after a failed write."""
 
@@ -331,6 +332,8 @@ def migrate_historical_exchanges(
 
     written = duplicates = skipped = processed = 0
     created_memory_ids: list[str] = []
+    if on_progress is not None:
+        on_progress(0, len(ordered))
     for exchange in ordered:
         try:
             result = memory.remember_exchange(
@@ -417,6 +420,8 @@ def migrate_historical_exchanges(
             duplicates += 1
         else:
             skipped += 1
+        if on_progress is not None:
+            on_progress(processed, len(ordered))
 
     private_world_status = None
     if finalize_private_world is not None:

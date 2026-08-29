@@ -283,10 +283,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         signal: controller.signal,
       });
       const responseBody = await response.json();
-      const payload = path === VIDEO_REPLY_SETTINGS_PATH && responseBody && responseBody.data
+      const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
+        && responseBody && responseBody.data
         ? responseBody.data
         : responseBody;
-      const valid = path === VIDEO_REPLY_SETTINGS_PATH
+      const valid = path === OFFICIAL_LETTER_IMPORT_PATH
+        ? payload && ["IDLE", "RUNNING", "COMPLETED", "FAILED"].includes(payload.status)
+          && typeof payload.stage === "string"
+          && Number.isInteger(payload.total)
+          && Number.isInteger(payload.processed)
+          && Number.isInteger(payload.imported)
+          && Number.isInteger(payload.skipped)
+          && typeof payload.last_updated_at === "string"
+        : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
           || payload.state === "unavailable" && typeof payload.reason_code === "string")
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
@@ -1250,8 +1259,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const { state, downloadable, runtimeRequired } = videoCapabilityViewState(bundles);
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
+    const runtimeProgress = payload && payload.runtime_import && typeof payload.runtime_import === "object"
+      ? payload.runtime_import
+      : { state: "idle", checked_bytes: 0, total_bytes: 0 };
+    const runtimePreparing = ["queued", "extracting", "checking", "testing"].includes(runtimeProgress.state);
     let videoSourceMode = "auto";
-    let runtimeRoot = "";
+    let runtimeArchive = "";
     const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
@@ -1268,7 +1281,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : state === "downloading"
       ? "正在下载并安装"
       : ["license_review_required", "prerequisites_required"].includes(state)
-      ? "安装包组件不完整，请更新到完整发布包"
+      ? runtimePreparing
+        ? "组件已下载，正在准备运行环境"
+        : "组件已下载，还需准备视频运行环境"
       : "未安装";
     const result = text("div", "", "text-text-secondary text-caption-m font-regular");
     const sourceControls = actions();
@@ -1364,46 +1379,44 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (runtimeRequired) {
       const runtimeNote = text(
         "p",
-        "恢复已有视频运行环境：选择完整的视频运行时文件夹，Olivia 会自动检查并启用。",
+        runtimePreparing
+          ? "Olivia 正在自动准备视频运行环境。这个过程会解压并逐个检查文件，请保持 Olivia 开启。"
+          : "高级恢复：仅当你已经拿到 Olivia 提供的“视频运行环境离线包”时使用。这里不是选择成片保存位置，也不是选择缓存目录。",
         "text-text-secondary text-caption-m font-regular"
       );
       const selectedRuntime = text(
         "p",
-        "尚未选择视频运行时文件夹。",
+        runtimePreparing ? "正在准备，无需操作。" : "尚未选择视频运行环境离线包。",
         "text-text-secondary text-caption-m font-regular"
       );
-      let runtimeManifestSha256 = "";
-      const chooseRuntime = button("选择视频运行时文件夹", async () => {
+      const chooseRuntime = button("选择视频运行环境离线包（ZIP）", async () => {
         setButtonsBusy([chooseRuntime], true);
         try {
           const selected = await requestCapability(
             VIDEO_CAPABILITY_ACTION_PATH,
-            { action: "select_runtime" },
+            { action: "select_runtime_archive" },
             310000
           );
           if (
             selected.status === "SELECTED"
-            && typeof selected.runtime_root === "string"
-            && typeof selected.manifest_sha256 === "string"
-            && /^[0-9a-f]{64}$/.test(selected.manifest_sha256)
+            && typeof selected.runtime_archive === "string"
           ) {
-            runtimeRoot = selected.runtime_root;
-            runtimeManifestSha256 = selected.manifest_sha256;
-            selectedRuntime.textContent = `已选择：${runtimeRoot.split(/[\\/]/).pop()}`;
+            runtimeArchive = selected.runtime_archive;
+            selectedRuntime.textContent = `已选择：${runtimeArchive.split(/[\\/]/).pop()}`;
           }
         } catch (_error) {
-          result.textContent = "无法读取视频运行时文件夹，请确认文件完整后重试。";
+          result.textContent = "无法读取视频运行环境离线包，请确认选择的是 Olivia 提供的 ZIP。";
         } finally {
           setButtonsBusy([chooseRuntime], false);
         }
       });
-      const importRuntime = button("开始检查并安装", async () => {
-        if (!runtimeRoot || !/^[0-9a-f]{64}$/.test(runtimeManifestSha256)) {
-          result.textContent = "请先选择视频运行时文件夹。";
+      const importRuntime = button("校验并启用", async () => {
+        if (!runtimeArchive) {
+          result.textContent = "请先选择 Olivia 视频运行环境离线包（ZIP）。";
           return;
         }
         setButtonsBusy([chooseRuntime, importRuntime], true);
-        result.textContent = "正在检查并安装，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
+        result.textContent = "正在解压并检查视频运行环境，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
         let runtimeImportFinished = false;
         const updateRuntimeProgress = async () => {
           try {
@@ -1413,13 +1426,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             if (!progress || typeof progress !== "object") return;
             const checkedBytes = Math.max(0, Number(progress.checked_bytes) || 0);
             const totalBytes = Math.max(0, Number(progress.total_bytes) || 0);
-            if (progress.state === "checking") {
+            if (["extracting", "checking"].includes(progress.state)) {
               const percent = totalBytes > 0
                 ? Math.min(100, Math.floor((checkedBytes / totalBytes) * 100))
                 : 0;
               result.textContent = totalBytes > 0
-                ? `已检查 ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}（${percent}%），请勿关闭 Olivia。`
-                : "正在读取离线包清单，请勿关闭 Olivia。";
+                ? `${progress.state === "extracting" ? "已解压" : "已检查"} ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}（${percent}%），请勿关闭 Olivia。`
+                : "正在读取视频运行环境离线包，请勿关闭 Olivia。";
             } else if (progress.state === "testing") {
               result.textContent = "文件检查完成，正在测试视频运行环境……";
             }
@@ -1433,9 +1446,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           await requestCapability(
             VIDEO_CAPABILITY_ACTION_PATH,
             {
-              action: "import_runtime",
-              runtime_root: runtimeRoot,
-              manifest_sha256: runtimeManifestSha256,
+              action: "import_runtime_archive",
+              runtime_archive: runtimeArchive,
             },
             30 * 60 * 1000
           );
@@ -1457,14 +1469,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         chooseRuntime,
         importRuntime
       );
+      chooseRuntime.disabled = runtimePreparing;
+      importRuntime.disabled = runtimePreparing;
     }
     item.append(result);
     const list = stack();
     list.append(item);
     const refresh = actions();
-    refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
+    const refreshButton = button("重新检测", async () => {
+      refreshButton.textContent = "检测中…";
+      setButtonsBusy([refreshButton], true);
+      await renderVideoCapabilityPanel(panel);
+      panel.append(text(
+        "p",
+        "重新检测完成，上方已显示最新结果。",
+        "text-text-secondary text-caption-m font-regular"
+      ));
+    });
+    refresh.append(refreshButton);
     panel.replaceChildren(heading, summary, list, refresh);
-    if (state === "downloading") {
+    if (state === "downloading" || runtimePreparing) {
       const updateProgress = async () => {
         let nextPayload = null;
         try {
@@ -1481,7 +1505,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? nextPayload.bundles
           : [];
         const nextState = videoCapabilityViewState(nextBundles).state;
-        if (nextState !== "downloading") {
+        const nextRuntime = nextPayload && nextPayload.runtime_import;
+        const nextRuntimePreparing = nextRuntime && ["queued", "extracting", "checking", "testing"].includes(nextRuntime.state);
+        if (nextState !== "downloading" && !nextRuntimePreparing) {
           await renderVideoCapabilityPanel(panel);
           return;
         }
@@ -1496,6 +1522,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         progressText.textContent = nextTotalBytes
           ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}`
           : "大小将在安装时按固定清单校验";
+        if (nextRuntimePreparing) {
+          const checkedBytes = Math.max(0, Number(nextRuntime.checked_bytes) || 0);
+          const runtimeTotalBytes = Math.max(0, Number(nextRuntime.total_bytes) || 0);
+          progressText.textContent = runtimeTotalBytes > 0
+            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}`
+            : "正在准备视频运行环境……";
+        }
         panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
       };
       panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
@@ -1941,7 +1974,53 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       text("div", "原信和林离的文字回信会按原时间进入信箱；双方内容会形成长期语义记忆，历史往来会初始化关系状态。不导入视频，重复信件自动跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
+    let importPending = false;
+    let progressTimer = null;
+    let lastProgressSignature = "";
+    let lastProgressAt = Date.now();
+    const officialProgressText = (payload) => {
+      const total = Math.max(0, payload.total || 0);
+      const processed = Math.max(0, payload.processed || 0);
+      if (payload.stage === "listing") return `正在获取信件列表：已发现 ${total} 封。`;
+      if (payload.stage === "reading") return `正在读取信件内容：${processed} / ${total} 封。`;
+      if (payload.stage === "memory") return `正在整理长期记忆：${processed} / ${total} 封。`;
+      if (payload.stage === "relationship") return "信件记忆已整理，正在恢复你和林离的关系状态……";
+      if (payload.stage === "importing") return `正在写入信箱：${processed} / ${total} 封。`;
+      if (payload.stage === "completed") return `已导入 ${payload.imported || 0} 封，跳过 ${payload.skipped || 0} 封重复信件。`;
+      if (payload.stage === "failed") return "导入中断，可点击重试导入。";
+      return "正在准备导入……";
+    };
+    const refreshOfficialImportProgress = async () => {
+      try {
+        const progress = await requestJson(OFFICIAL_LETTER_IMPORT_PATH);
+        const signature = `${progress.stage}:${progress.total}:${progress.processed}:${progress.imported}:${progress.skipped}:${progress.last_updated_at}`;
+        if (signature !== lastProgressSignature) {
+          lastProgressSignature = signature;
+          lastProgressAt = Date.now();
+        }
+        if (Date.now() - lastProgressAt >= 20000 && progress.status === "RUNNING") {
+          importState.textContent = "20 秒没有新进度，可能卡住了。可点击“重新检查进度”；如果导入失败，可直接重试导入。";
+          importButton.textContent = "重新检查进度";
+          setButtonsBusy([importButton], false);
+        } else {
+          importState.textContent = officialProgressText(progress);
+        }
+      } catch (_error) {
+        importState.textContent = "暂时读取不到导入进度，正在等待导入结果……";
+      }
+    };
+    const pollOfficialImport = async () => {
+      if (!importPending) return;
+      await refreshOfficialImportProgress();
+      if (importPending) {
+        progressTimer = window.setTimeout(pollOfficialImport, 1000);
+      }
+    };
     const importButton = button("导入", async () => {
+      if (importPending) {
+        await refreshOfficialImportProgress();
+        return;
+      }
       try {
         const companion = await requestJson(STATUS_PATH);
         const capabilities = companion && companion.capabilities;
@@ -1959,7 +2038,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         return;
       }
       setButtonsBusy([importButton], true);
+      importButton.textContent = "正在导入";
+      importPending = true;
+      lastProgressSignature = "";
+      lastProgressAt = Date.now();
       importState.textContent = "正在读取官方文字信件……";
+      void pollOfficialImport();
       try {
         const payload = await requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
@@ -1968,10 +2052,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryText = migration && migration.status === "completed"
           ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
           : "长期记忆写入未完成，历史信件未发布。";
-        const relationText = migration && ["initialized", "already_initialized"].includes(migration.private_world_status)
-          ? "林离的历史关系状态已同步。"
-          : "关系状态未更新。";
+        const relationText = migration && migration.private_world_status === "initialized"
+          ? "已根据历史信件恢复初始关系状态。"
+          : migration && migration.private_world_status === "already_initialized"
+            ? "已有关系状态已保留，历史信件已加入长期记忆。"
+            : "关系状态未更新。";
         importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}${relationText}`;
+        importButton.textContent = "再次导入";
       } catch (error) {
         importState.textContent = error && [
           "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
@@ -1980,7 +2067,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ].includes(error.code)
           ? "长期记忆未就绪或写入失败，未发布任何历史信件。请检查记忆组件后重试。"
           : "导入失败。请先启动官方客户端并登录，再重试。";
+        importButton.textContent = "重试导入";
       } finally {
+        importPending = false;
+        if (progressTimer !== null) window.clearTimeout(progressTimer);
         setButtonsBusy([importButton], false);
       }
     });

@@ -31,6 +31,8 @@ metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储�
 
 `official_history_memory_semantics` 也是服务端保留 metadata。只有值为 `actor_split_first_person_v2` 的官方历史才可跳过记忆重建；旧记录会先删除，再按 actor 分别提取来信用户事实与林离事实，只有林离事实必须使用第一人称“我”。首次导入时 SQLite 尚未创建 `legacy_letters` 表属于空库引导状态，可安全回退到进程内空归档；其他 SQLite 错误继续失败关闭。
 
+官方历史导入期间可通过同一路径的 `GET` 请求读取进度；字段与状态见 `contracts/official_history_import_progress.schema.json`。进程启动后若同时存在内存引导记录和 SQLite 只读归档，信箱会按 `source_record_id`（缺失时按 `letter_id`）合并去重，不会让一侧遮蔽另一侧。已有 PrivateWorld 状态不会被旧的基线初始化覆盖；此时历史信件仍进入长期记忆，客户端明确显示“保留已有关系状态”。
+
 ## 健康检查与验证
 
 `/health?profile=memory` 只返回状态、域计数、FTS5/vector 配置边界和 `network_called=false`，不返回数据根、正文或密钥；memory 不可用不会让 core health 变成假成功或假失败。

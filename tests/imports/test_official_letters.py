@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
 from conversation_memory_port import (
     ConversationMemoryStatus,
@@ -26,6 +29,35 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
     monkeypatch.setattr(
         local_server, "_official_history_private_world_available", lambda: True
     )
+
+
+def test_official_import_progress_response_matches_public_schema(monkeypatch) -> None:
+    import local_server
+
+    monkeypatch.setattr(
+        local_server,
+        "_official_import_progress",
+        {
+            "status": "RUNNING",
+            "stage": "reading",
+            "total": 6,
+            "processed": 2,
+            "imported": 0,
+            "skipped": 0,
+            "last_updated_at": "2026-08-29T13:30:00+00:00",
+            "retryable": False,
+        },
+    )
+    response = asyncio.run(
+        local_server.route("GET", "/toy/letter/legacy/official-import", {}, {})
+    )
+    schema = json.loads(
+        (Path("contracts") / "official_history_import_progress.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(response)
 
 
 def test_history_skip_requires_current_first_person_semantics(monkeypatch) -> None:
@@ -78,7 +110,55 @@ def test_missing_legacy_table_uses_empty_bootstrap_store(monkeypatch) -> None:
     monkeypatch.setattr(local_server.store, "legacy_letters", [])
 
     assert local_server._legacy_letter_collection(strict=True) == []
+
+
+def test_legacy_archive_is_reopened_after_process_restart(monkeypatch) -> None:
+    import local_server
+
+    imported = {"letter_id": "official-history", "reply_text": "historical reply"}
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            return [imported]
+
+    monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: Archive())
+
+    assert local_server._legacy_letter_collection(strict=True) == [imported]
     assert local_server._existing_legacy_source_record_ids() == frozenset()
+
+
+def test_reopened_legacy_archive_is_merged_with_loaded_bootstrap_records(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    archived = {
+        "letter_id": "official-history",
+        "source_record_id": "official:history",
+        "reply_text": "historical reply",
+    }
+    loaded = {
+        "letter_id": "bootstrap-history",
+        "source_record_id": "bootstrap:history",
+        "reply_text": "bootstrap reply",
+    }
+
+    class Archive:
+        enabled = True
+
+        @staticmethod
+        def list_legacy():
+            return [archived]
+
+    monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
+    monkeypatch.setattr(local_server.store, "legacy_letters", [loaded])
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: Archive())
+
+    assert local_server._legacy_letter_collection(strict=True) == [archived, loaded]
 
 
 def test_other_legacy_sqlite_errors_fail_closed(monkeypatch) -> None:
@@ -263,6 +343,48 @@ def test_official_import_follows_mailbox_cursor_pages(tmp_path) -> None:
     assert len(payload["letters"]) == 2
 
 
+def test_official_import_reports_listing_and_detail_progress(tmp_path) -> None:
+    log_path = tmp_path / "Olivia.log"
+    log_path.write_text(
+        'network_request {"x-token":"secret-token","x-uid":"200717"}',
+        encoding="utf-8",
+    )
+    progress: list[dict[str, object]] = []
+
+    def request_json(path: str, _headers: dict[str, str]) -> dict:
+        if path.startswith("/letter/list"):
+            return {
+                "code": 0,
+                "data": {
+                    "list": [{"letter_id": "letter-1"}, {"letter_id": "letter-2"}],
+                    "has_more": False,
+                },
+            }
+        return {
+            "code": 0,
+            "data": {
+                "letter_id": path.rsplit("=", 1)[-1],
+                "created_at": 1710000000,
+                "content": "old letter",
+                "reply_content": "old reply",
+            },
+        }
+
+    collect_official_text_replies(
+        log_path,
+        request_json=request_json,
+        on_progress=lambda value: progress.append(dict(value)),
+    )
+
+    assert progress == [
+        {"stage": "listing", "total": 0, "processed": 0},
+        {"stage": "listing", "total": 2, "processed": 0},
+        {"stage": "reading", "total": 2, "processed": 0},
+        {"stage": "reading", "total": 2, "processed": 1},
+        {"stage": "reading", "total": 2, "processed": 2},
+    ]
+
+
 def test_official_import_rejects_text_reply_without_a_valid_timestamp(tmp_path) -> None:
     log_path = tmp_path / "Olivia.log"
     log_path.write_text(
@@ -356,6 +478,89 @@ def test_official_import_requires_available_mem0_before_collecting_history(
         },
     }
     assert calls == []
+
+
+def test_official_import_get_exposes_observable_progress() -> None:
+    import local_server
+
+    response = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+        )
+    )
+
+    assert response["code"] == 0
+    assert set(response["data"]) == {
+        "status",
+        "stage",
+        "total",
+        "processed",
+        "imported",
+        "skipped",
+        "last_updated_at",
+        "retryable",
+    }
+    assert response["data"]["stage"] in {
+        "idle",
+        "listing",
+        "reading",
+        "memory",
+        "importing",
+        "completed",
+        "failed",
+    }
+    assert response["data"]["last_updated_at"].endswith("+00:00")
+
+
+def test_official_import_failure_keeps_last_progress_and_allows_retry(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+
+    def fail_after_first_letter(*, on_progress) -> dict[str, object]:
+        on_progress({"stage": "reading", "total": 3, "processed": 1})
+        raise ValueError("synthetic official endpoint failure")
+
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        fail_after_first_letter,
+    )
+
+    failed = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+    progress = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+        )
+    )
+
+    assert failed["code"] == 503
+    assert progress["data"] | {"last_updated_at": "ignored"} == {
+        "status": "FAILED",
+        "stage": "failed",
+        "total": 3,
+        "processed": 1,
+        "imported": 0,
+        "skipped": 0,
+        "last_updated_at": "ignored",
+        "retryable": True,
+    }
 
 
 def test_official_import_does_not_publish_mailbox_when_mem0_write_fails(
@@ -530,6 +735,7 @@ def test_official_history_is_visible_in_current_mailbox_without_unread_pollution
 
     assert listed["data"]["total"] == 1
     assert listed["data"]["list"][0]["summary"] == "historical user letter"
+    assert local_server._letter_collection("current")[0]["letter_status"] == "COMPLETED"
     assert unread["data"]["unread_count"] == 0
     assert detail["data"]["content"] == "historical user letter"
     assert detail["data"]["reply_text"] == "historical reply"
@@ -657,6 +863,14 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
             companion_confirmed=True,
         )
     )
+    progress = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+        )
+    )
     duplicate = asyncio.run(
         local_server.route(
             "POST",
@@ -692,6 +906,13 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     assert imported["data"]["duplicates"] == 1
     assert duplicate["data"]["inserted"] == 0
     assert duplicate["data"]["duplicates"] == 1
+    assert progress["data"]["status"] == "COMPLETED"
+    assert progress["data"]["stage"] == "completed"
+    assert progress["data"]["total"] == 1
+    assert progress["data"]["processed"] == 1
+    assert progress["data"]["imported"] == 0
+    assert progress["data"]["skipped"] == 1
+    assert progress["data"]["retryable"] is False
     archived = local_server._legacy_letter_collection()
     assert archived[0]["metadata"]["official_history_publish_status"] == "completed_v1"
     assert archived[0]["metadata"]["official_history_memory_semantics"] == (

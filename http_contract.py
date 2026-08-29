@@ -166,7 +166,7 @@ ROUTES: dict[str, dict[str, Any]] = {
         evidence="local-extension",
     ),
     "/toy/letter/legacy/official-import": _route(
-        ["POST"],
+        ["GET", "POST"],
         "letters.official_import",
         evidence="local-extension",
     ),

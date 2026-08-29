@@ -499,12 +499,38 @@ def _configured_video_capability_installer(
             if (path := Path(raw.strip()).expanduser()).is_absolute()
             and path.is_dir()
         )
+        runtime_search_roots = list(artifact_roots)
+        install_root_raw = str(environ.get("OLIVIA_INSTALL_ROOT", "")).strip()
+        if install_root_raw:
+            install_root = Path(install_root_raw).expanduser()
+            if install_root.is_absolute():
+                for candidate in (
+                    install_root / "downloads",
+                    install_root.parent / "downloads",
+                ):
+                    if candidate.is_dir():
+                        runtime_search_roots.append(candidate.resolve())
+        explicit_runtime = str(
+            environ.get("OLIVIA_VIDEO_RUNTIME_ARCHIVE", "")
+        ).strip()
+        runtime_archives: list[Path] = []
+        if explicit_runtime:
+            candidate = Path(explicit_runtime).expanduser()
+            if candidate.is_absolute() and candidate.is_file():
+                runtime_archives.append(candidate.resolve())
+        for root in runtime_search_roots:
+            runtime_archives.extend(
+                candidate.resolve()
+                for candidate in root.glob("Olivia-video-runtime-*.zip")
+                if candidate.is_file() and not candidate.is_symlink()
+            )
 
         return VideoCapabilityInstaller(
             data_root=data_root,
             manifest=manifest,
             readiness_probe=readiness,
             artifact_roots=artifact_roots,
+            runtime_archives=tuple(dict.fromkeys(runtime_archives)),
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         return None

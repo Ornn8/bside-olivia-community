@@ -55,6 +55,7 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_PROVIDER_CACHE_ROOT",
 }
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
 _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
 _PROMOTION_LOCK = threading.RLock()
@@ -601,7 +602,7 @@ def _checked_install_root(data_root: Path, *, create: bool) -> Path:
 
 def _restore_interrupted_promotions(install_root: Path) -> None:
     with _PROMOTION_LOCK:
-        for bundle_id in _PUBLIC_BUNDLES:
+        for bundle_id in (*_PUBLIC_BUNDLES, "runtime"):
             final = install_root / bundle_id
             backup = install_root / f".{bundle_id}.backup"
             if not backup.exists():
@@ -627,6 +628,7 @@ class VideoCapabilityInstaller:
         opener: Callable[..., Any] = urlopen,
         readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
         artifact_roots: tuple[Path, ...] = (),
+        runtime_archives: tuple[Path, ...] = (),
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -638,10 +640,20 @@ class VideoCapabilityInstaller:
         if any(not root.is_absolute() or not root.is_dir() for root in artifact_roots):
             raise VideoCapabilityError("VIDEO_ARTIFACT_ROOT_INVALID")
         self._artifact_roots = tuple(root.resolve() for root in artifact_roots)
+        if any(
+            not archive.is_absolute()
+            or not archive.is_file()
+            or archive.is_symlink()
+            or archive.suffix.casefold() != ".zip"
+            for archive in runtime_archives
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+        self._runtime_archives = tuple(archive.resolve() for archive in runtime_archives)
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
+        self._runtime_thread: threading.Thread | None = None
         self._status: dict[str, VideoBundleStatus] = {}
         self._runtime_import: dict[str, object] = {
             "state": "idle",
@@ -650,6 +662,7 @@ class VideoCapabilityInstaller:
         }
         _restore_interrupted_promotions(self.install_root)
         self._load_status()
+        self._maybe_start_runtime_prepare()
 
     def _bundle(self, bundle_id: str) -> VideoBundle:
         for bundle in self.manifest.bundles:
@@ -798,8 +811,14 @@ class VideoCapabilityInstaller:
 
     def status(self) -> dict[str, object]:
         with self._lock:
-            if self._runtime_import["state"] not in {"checking", "testing"}:
+            if self._runtime_import["state"] not in {
+                "queued",
+                "extracting",
+                "checking",
+                "testing",
+            }:
                 self._load_status()
+            self._maybe_start_runtime_prepare()
             bundles = [self._status[item.identifier].to_dict() for item in self.manifest.bundles]
             return {
                 "schema_version": "olivia.video-capability-status.v1",
@@ -934,6 +953,89 @@ class VideoCapabilityInstaller:
             self._runtime_import["state"] = "ready"
             self._runtime_import["checked_bytes"] = self._runtime_import["total_bytes"]
         return result
+
+    def import_runtime_archive(self, *, runtime_archive: Path) -> str:
+        try:
+            archive = runtime_archive.resolve(strict=True)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
+        if (
+            not archive.is_file()
+            or archive.is_symlink()
+            or archive.suffix.casefold() != ".zip"
+            or not zipfile.is_zipfile(archive)
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+        with self._lock:
+            self._runtime_import = {
+                "state": "extracting",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+            }
+        staging = self.install_root / f".runtime-staging-{uuid.uuid4().hex}"
+        final = self.install_root / "runtime"
+        try:
+            _extract_runtime_zip_safely(
+                archive,
+                staging,
+                progress=self._update_runtime_extract_progress,
+            )
+            manifest_path = staging / "runtime-manifest.json"
+            if not manifest_path.is_file() or manifest_path.is_symlink():
+                raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+            manifest_sha256 = _sha256_file(manifest_path)[1]
+            self._promote_directory(staging, final)
+            return self.import_runtime_root(
+                runtime_root=final.resolve(),
+                manifest_sha256=manifest_sha256,
+            )
+        except Exception:
+            self._set_runtime_import_state("failed")
+            raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def _update_runtime_extract_progress(
+        self, checked_bytes: int, total_bytes: int
+    ) -> None:
+        with self._lock:
+            self._runtime_import = {
+                "state": "extracting",
+                "checked_bytes": checked_bytes,
+                "total_bytes": total_bytes,
+            }
+
+    def _maybe_start_runtime_prepare(self) -> None:
+        if self._runtime_import["state"] != "idle" or not self._runtime_archives:
+            return
+        if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            return
+        if any(
+            self._status.get(bundle.identifier) is None
+            or self._status[bundle.identifier].state
+            not in {VideoCapabilityState.READY, VideoCapabilityState.PREREQUISITES_REQUIRED}
+            for bundle in self.manifest.bundles
+        ):
+            return
+        archive = next((path for path in self._runtime_archives if path.is_file()), None)
+        if archive is None:
+            return
+        self._runtime_import["state"] = "queued"
+        thread = threading.Thread(
+            target=self._run_runtime_archive,
+            args=(archive,),
+            name="olivia-video-runtime",
+            daemon=True,
+        )
+        self._runtime_thread = thread
+        thread.start()
+
+    def _run_runtime_archive(self, archive: Path) -> None:
+        try:
+            self.import_runtime_archive(runtime_archive=archive)
+        except Exception:
+            self._set_runtime_import_state("failed")
 
     def _import_runtime_root(
         self,
@@ -1118,6 +1220,7 @@ class VideoCapabilityInstaller:
                     source=source_used,
                     reason=reason,
                 )
+                self._maybe_start_runtime_prepare()
         except InterruptedError:
             with self._lock:
                 self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_mode)
@@ -1382,6 +1485,62 @@ def _extract_zip_safely(
         return expected
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
+
+
+def _extract_runtime_zip_safely(
+    archive_path: Path,
+    destination: Path,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> None:
+    """Extract a published portable runtime; its signed manifest verifies files next."""
+
+    destination.mkdir(parents=True, exist_ok=False)
+    written: set[str] = set()
+    extracted_bytes = 0
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            members = archive.infolist()
+            total_bytes = sum(member.file_size for member in members)
+            if total_bytes > _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES:
+                raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_TOO_LARGE")
+            if progress is not None:
+                progress(0, total_bytes)
+            for member in members:
+                mode = (member.external_attr >> 16) & 0o170000
+                raw = (
+                    member.filename[:-1]
+                    if member.is_dir() and member.filename.endswith("/")
+                    else member.filename
+                )
+                try:
+                    relative = _validate_relative_path(raw)
+                except ComponentUpdateError as exc:
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
+                path = PurePosixPath(relative)
+                if any(part in {"", ".", ".."} for part in path.parts) or mode == 0o120000:
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+                folded = relative.casefold()
+                if folded in written:
+                    raise VideoCapabilityError("VIDEO_ARCHIVE_DUPLICATE_PATH")
+                written.add(folded)
+                target = _inside(destination, destination / relative)
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, target.open("xb") as output:
+                    while chunk := source.read(1024 * 1024):
+                        output.write(chunk)
+                        extracted_bytes += len(chunk)
+                        if progress is not None:
+                            progress(extracted_bytes, total_bytes)
+            if "runtime-manifest.json" not in {
+                value.casefold() for value in written
+            }:
+                raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+    except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
 
 
 def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:

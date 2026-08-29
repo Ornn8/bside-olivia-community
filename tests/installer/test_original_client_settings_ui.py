@@ -212,6 +212,14 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
     assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
+    assert "requestJson(OFFICIAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
+    assert "正在获取信件列表" in BOOTSTRAP_JAVASCRIPT
+    assert "正在读取信件内容" in BOOTSTRAP_JAVASCRIPT
+    assert "正在整理长期记忆" in BOOTSTRAP_JAVASCRIPT
+    assert "正在写入信箱" in BOOTSTRAP_JAVASCRIPT
+    assert "20 秒没有新进度，可能卡住了" in BOOTSTRAP_JAVASCRIPT
+    assert 'importButton.textContent = "重新检查进度"' in BOOTSTRAP_JAVASCRIPT
+    assert 'importButton.textContent = "重试导入"' in BOOTSTRAP_JAVASCRIPT
     assert "已导入历史信件（只读）" not in BOOTSTRAP_JAVASCRIPT
 
 
@@ -323,6 +331,13 @@ const fetch = async (endpoint, options) => {
     } }) };
   }
   if (endpoint.pathname === "/toy/letter/legacy/official-import") {
+    if (options.method === "GET") {
+      return { ok: true, json: async () => ({ code: 0, data: {
+        status: "RUNNING", stage: "reading", total: 2, processed: 1,
+        imported: 0, skipped: 0, last_updated_at: "2026-08-29T00:00:00+00:00",
+        retryable: false,
+      } }) };
+    }
     return { ok: true, json: async () => ({ code: 0, data: {
       status: "APPLIED", inserted: 1, duplicates: 0,
       memory_migration: { status: "completed", processed: 1 },
@@ -370,10 +385,11 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   await confirmButton.click();
   await importPending;
   await flush();
-  const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import");
+  const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
   const statusIndex = calls.findIndex((item) => item.path === "/toy/companion/status");
-  const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import");
+  const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
   if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("official import confirmation header missing");
+  if (!calls.some((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "GET")) throw new Error("official import progress was not polled");
   if (statusIndex < 0 || statusIndex >= importIndex) throw new Error("memory preflight did not run before official import");
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");
   process.stdout.write(JSON.stringify({

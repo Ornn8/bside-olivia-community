@@ -43,6 +43,7 @@ class VideoCapabilityAPIInstaller(Protocol):
     def retry(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str: ...
     def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str) -> str: ...
+    def import_runtime_archive(self, *, runtime_archive: Path) -> str: ...
 
 
 def _runtime_root_path(value: object) -> Path:
@@ -210,6 +211,7 @@ def mount_original_client_video_capability_api(
     authorize_session,
     select_runtime_root=None,
     select_offline_archive=None,
+    select_runtime_archive=None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("VIDEO_CAPABILITY_API_ALREADY_MOUNTED")
@@ -218,6 +220,7 @@ def mount_original_client_video_capability_api(
     control_lock = asyncio.Lock()
     runtime_picker = select_runtime_root or _select_windows_runtime_root
     offline_picker = select_offline_archive or _select_windows_offline_archive
+    runtime_archive_picker = select_runtime_archive or _select_windows_offline_archive
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -300,6 +303,28 @@ def mount_original_client_video_capability_api(
             kwargs = {
                 "runtime_root": _runtime_root_path(payload.get("runtime_root")),
                 "manifest_sha256": str(payload["manifest_sha256"]).lower(),
+            }
+        elif action_name == "select_runtime_archive":
+            if set(payload) != {"action"}:
+                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
+            selected = await asyncio.to_thread(runtime_archive_picker)
+            result = {"status": "CANCELLED"}
+            if selected is not None:
+                archive = _offline_archive_path(selected)
+                result = {
+                    "status": "SELECTED",
+                    "runtime_archive": str(archive),
+                }
+            return web.json_response(
+                result,
+                headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
+            )
+        elif action_name == "import_runtime_archive":
+            if set(payload) != {"action", "runtime_archive"}:
+                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
+            call = installer.import_runtime_archive
+            kwargs = {
+                "runtime_archive": _offline_archive_path(payload.get("runtime_archive")),
             }
         elif action_name == "import_offline":
             if set(payload) != {"action"}:
