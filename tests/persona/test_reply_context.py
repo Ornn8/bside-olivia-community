@@ -9,18 +9,63 @@ from runtime.reply.reply_context import (
     ReplyContext,
     ReplyContextError,
     BehaviorLevel,
+    IntimacyTier,
     PrivateBehaviorView,
     OutputChannel,
     OutputConstraints,
     ReplyMode,
     ReplyModeAdapter,
+    RelationshipStage,
     TrustedTime,
     TrustedWorldFact,
     UnsupportedReplyMode,
+    intimacy_ceiling_for_stage,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        (RelationshipStage.UNKNOWN, IntimacyTier.NONE),
+        (RelationshipStage.ACQUAINTANCE, IntimacyTier.NONE),
+        (RelationshipStage.FAMILIAR, IntimacyTier.NONE),
+        (RelationshipStage.CLOSE, IntimacyTier.LIGHT_CONTACT),
+        (RelationshipStage.COMMITTED, IntimacyTier.CLOSE_CONTACT),
+    ],
+)
+def test_relationship_stage_sets_a_bounded_intimacy_ceiling(
+    stage: RelationshipStage,
+    expected: IntimacyTier,
+) -> None:
+    assert intimacy_ceiling_for_stage(stage) is expected
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        ("unknown", IntimacyTier.NONE),
+        ("acquaintance", IntimacyTier.NONE),
+        ("familiar", IntimacyTier.NONE),
+        ("close", IntimacyTier.LIGHT_CONTACT),
+        ("committed", IntimacyTier.CLOSE_CONTACT),
+    ],
+)
+def test_persisted_relationship_stage_sets_the_same_intimacy_ceiling(
+    stage: str,
+    expected: IntimacyTier,
+) -> None:
+    assert intimacy_ceiling_for_stage(stage) is expected
+
+
+def test_intimacy_tier_has_no_value_above_close_contact() -> None:
+    assert tuple(IntimacyTier) == (
+        IntimacyTier.NONE,
+        IntimacyTier.LIGHT_CONTACT,
+        IntimacyTier.CLOSE_CONTACT,
+    )
 
 
 def test_text_wire_mode_builds_an_immutable_letter_context() -> None:

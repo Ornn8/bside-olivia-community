@@ -15,14 +15,16 @@ from typing import Iterator
 from private_world_port import (
     ContinuationAwareness,
     HomeAccess,
+    IntimacyGrant,
     LocalContinuationFact,
     PrivateWorldCharacterView,
     PrivateWorldControlView,
     PrivateWorldSnapshot,
 )
+from runtime.reply.reply_context import IntimacyTier
 
 
-PRIVATE_WORLD_LEDGER_SCHEMA_VERSION = 2
+PRIVATE_WORLD_LEDGER_SCHEMA_VERSION = 3
 _METADATA_KEY = "schema_version"
 _LEGACY_TABLES = frozenset(
     {"private_world_events", "private_world_snapshots"}
@@ -43,6 +45,11 @@ _V1_PAYLOAD_FIELDS = frozenset(
     }
 )
 _V2_PAYLOAD_FIELDS = _V1_PAYLOAD_FIELDS | {"continuation_facts"}
+_V3_PAYLOAD_FIELDS = _V2_PAYLOAD_FIELDS | {
+    "intimacy_grants",
+    "growth_window_start",
+    "growth_used",
+}
 
 
 class LedgerWriteError(RuntimeError):
@@ -178,7 +185,7 @@ class SQLitePrivateWorldLedger:
             "%Y%m%dT%H%M%S%fZ"
         )
         backup = self._database_path.with_name(
-            f"{self._database_path.name}.pre-v2-{stamp}.bak"
+            f"{self._database_path.name}.pre-v3-{stamp}.bak"
         )
         created = False
         try:
@@ -210,7 +217,19 @@ class SQLitePrivateWorldLedger:
                         )
                     migrated_rows: tuple[tuple[int, str], ...] = ()
                     if previous == 1:
-                        migrated_rows = self._validated_v1_rows(connection)
+                        v2_rows = self._validated_v1_rows(connection)
+                        self._backup_legacy_database(connection)
+                        connection.executemany(
+                            """UPDATE private_world_snapshots
+                               SET payload_json = ? WHERE version = ?""",
+                            (
+                                (payload_json, version)
+                                for version, payload_json in v2_rows
+                            ),
+                        )
+                        migrated_rows = self._validated_v2_rows(connection)
+                    elif previous == 2:
+                        migrated_rows = self._validated_v2_rows(connection)
                         self._backup_legacy_database(connection)
                     connection.execute(
                         """CREATE TABLE IF NOT EXISTS private_world_events (
@@ -261,12 +280,12 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError(
                 "private world schema initialization failed"
             ) from exc
-        if previous == 1:
-            self._migration_status = "migrated_v1_to_v2"
+        if previous in {1, 2}:
+            self._migration_status = "migrated_v2_to_v3"
         elif previous == 0:
-            self._migration_status = "created_v2"
+            self._migration_status = "created_v3"
         else:
-            self._migration_status = "current_v2"
+            self._migration_status = "current_v3"
 
     def apply_once(
         self,
@@ -374,8 +393,21 @@ class SQLitePrivateWorldLedger:
 
     @staticmethod
     def _v1_snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
-        payload = snapshot.to_dict()
+        payload = json.loads(SQLitePrivateWorldLedger._v2_snapshot_json(snapshot))
         payload.pop("continuation_facts")
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _v2_snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
+        payload = snapshot.to_dict()
+        payload.pop("intimacy_grants")
+        payload.pop("growth_window_start")
+        payload.pop("growth_used")
         return json.dumps(
             payload,
             ensure_ascii=False,
@@ -399,6 +431,7 @@ class SQLitePrivateWorldLedger:
     def _snapshot_from_payload(
         payload: dict[str, object],
         facts: tuple[LocalContinuationFact, ...],
+        grants: tuple[IntimacyGrant, ...] = (),
     ) -> PrivateWorldSnapshot:
         return PrivateWorldSnapshot(
             version=payload["version"],
@@ -414,6 +447,9 @@ class SQLitePrivateWorldLedger:
                 payload["continuation_awareness"]
             ),
             continuation_facts=facts,
+            intimacy_grants=grants,
+            growth_window_start=payload.get("growth_window_start", ""),
+            growth_used=payload.get("growth_used", 0),
         )
 
     def _strict_v1_stored_snapshot(
@@ -449,7 +485,7 @@ class SQLitePrivateWorldLedger:
         if snapshot.version != stored_version:
             raise LedgerWriteError("stored v1 version does not match row")
         expected_payload = (
-            self._snapshot_json(snapshot)
+            self._v2_snapshot_json(snapshot)
             if fields == _V2_PAYLOAD_FIELDS
             else self._v1_snapshot_json(snapshot)
         )
@@ -468,6 +504,47 @@ class SQLitePrivateWorldLedger:
         migrated: list[tuple[int, str]] = []
         for stored_version, payload_json in rows:
             snapshot = self._strict_v1_stored_snapshot(stored_version, payload_json)
+            migrated.append((stored_version, self._v2_snapshot_json(snapshot)))
+        return tuple(migrated)
+
+    def _validated_v2_rows(
+        self,
+        connection: sqlite3.Connection,
+    ) -> tuple[tuple[int, str], ...]:
+        rows = connection.execute(
+            """SELECT version, payload_json FROM private_world_snapshots
+               ORDER BY version"""
+        ).fetchall()
+        migrated: list[tuple[int, str]] = []
+        for stored_version, payload_json in rows:
+            if type(stored_version) is not int or stored_version < 1:
+                raise LedgerWriteError("stored v2 row version is invalid")
+            try:
+                payload = self._payload_object(payload_json)
+                if set(payload) != _V2_PAYLOAD_FIELDS:
+                    raise ValueError("stored v2 fields are invalid")
+                if payload["view"] != "snapshot":
+                    raise ValueError("stored v2 view is invalid")
+                facts = payload["continuation_facts"]
+                if not isinstance(facts, list):
+                    raise ValueError("stored v2 continuation facts must be a list")
+                snapshot = self._snapshot_from_payload(
+                    payload,
+                    tuple(
+                        LocalContinuationFact(
+                            fact_id=item["fact_id"],
+                            statement=item["statement"],
+                            awareness=ContinuationAwareness(item["awareness"]),
+                        )
+                        for item in facts
+                    ),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LedgerWriteError("stored v2 state is invalid") from exc
+            if snapshot.version != stored_version:
+                raise LedgerWriteError("stored v2 version does not match row")
+            if self._v2_snapshot_json(snapshot) != payload_json:
+                raise LedgerWriteError("stored v2 state is not canonical")
             migrated.append((stored_version, self._snapshot_json(snapshot)))
         return tuple(migrated)
 
@@ -482,13 +559,16 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError("stored snapshot row version is invalid")
         try:
             payload = self._payload_object(payload_json)
-            if set(payload) != _V2_PAYLOAD_FIELDS:
+            if set(payload) != _V3_PAYLOAD_FIELDS:
                 raise ValueError("stored state fields are invalid")
             if payload["view"] != "snapshot":
                 raise ValueError("stored state view is invalid")
             facts = payload["continuation_facts"]
             if not isinstance(facts, list):
                 raise ValueError("stored continuation facts must be a list")
+            grants = payload["intimacy_grants"]
+            if not isinstance(grants, list):
+                raise ValueError("stored intimacy grants must be a list")
             snapshot = self._snapshot_from_payload(
                 payload,
                 tuple(
@@ -498,6 +578,14 @@ class SQLitePrivateWorldLedger:
                         awareness=ContinuationAwareness(item["awareness"]),
                     )
                     for item in facts
+                ),
+                tuple(
+                    IntimacyGrant(
+                        grant_id=item["grant_id"],
+                        tier=IntimacyTier(item["tier"]),
+                        statement=item["statement"],
+                    )
+                    for item in grants
                 ),
             )
         except (KeyError, TypeError, ValueError) as exc:

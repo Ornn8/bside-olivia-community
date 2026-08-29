@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Protocol, runtime_checkable
 import re
+
+from runtime.reply.reply_context import IntimacyTier
 
 
 class PrivateWorldError(ValueError):
@@ -26,7 +29,17 @@ class ContinuationAwareness(str, Enum):
 
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
+    r"T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]+)?(?:Z|\+00:00)$"
+)
 _HIDDEN_NAMES = ("familiarity", "trust", "comfort", "closeness", "tension")
+_INTIMACY_TIER_ORDER = (
+    IntimacyTier.NONE,
+    IntimacyTier.LIGHT_CONTACT,
+    IntimacyTier.CLOSE_CONTACT,
+)
 
 
 def _validate_score(name: str, value: int) -> None:
@@ -91,6 +104,37 @@ class LocalContinuationFact:
         }
 
 
+@dataclass(frozen=True)
+class IntimacyGrant:
+    grant_id: str
+    tier: IntimacyTier
+    statement: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.grant_id, str) or not _TOKEN_RE.fullmatch(
+            self.grant_id
+        ):
+            raise PrivateWorldError("intimacy grant id is invalid")
+        if not isinstance(self.tier, IntimacyTier):
+            raise PrivateWorldError("intimacy grant tier is invalid")
+        object.__setattr__(
+            self,
+            "statement",
+            _plain_text(
+                self.statement,
+                field_name="intimacy grant statement",
+                max_length=200,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "grant_id": self.grant_id,
+            "tier": self.tier.value,
+            "statement": self.statement,
+        }
+
+
 def _validate_facts(
     values: tuple[LocalContinuationFact, ...],
 ) -> tuple[LocalContinuationFact, ...]:
@@ -106,6 +150,41 @@ def _validate_facts(
     if len(set(identifiers)) != len(identifiers):
         raise PrivateWorldError("continuation fact ids must be unique")
     return values
+
+
+def _validate_grants(
+    values: tuple[IntimacyGrant, ...],
+) -> tuple[IntimacyGrant, ...]:
+    if isinstance(values, (str, bytes)):
+        raise PrivateWorldError("intimacy grants must be a sequence")
+    if not isinstance(values, tuple):
+        values = tuple(values)
+    if len(values) > 16 or any(
+        not isinstance(value, IntimacyGrant) for value in values
+    ):
+        raise PrivateWorldError("intimacy grants must be typed and bounded")
+    identifiers = tuple(value.grant_id for value in values)
+    if len(set(identifiers)) != len(identifiers):
+        raise PrivateWorldError("intimacy grant ids must be unique")
+    return values
+
+
+def _validate_growth_window_start(value: str) -> str:
+    if value == "":
+        return value
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not _UTC_TIMESTAMP_RE.fullmatch(value)
+    ):
+        raise PrivateWorldError("growth window start is invalid")
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PrivateWorldError("growth window start is invalid") from exc
+    if instant.tzinfo is None or instant.utcoffset() != timedelta(0):
+        raise PrivateWorldError("growth window start must be UTC")
+    return value
 
 
 def _validate_shared(
@@ -140,6 +219,9 @@ class PrivateWorldControlView:
     home_access: HomeAccess
     continuation_awareness: ContinuationAwareness
     continuation_facts: tuple[LocalContinuationFact, ...] = ()
+    intimacy_grants: tuple[IntimacyGrant, ...] = ()
+    growth_window_start: str = ""
+    growth_used: int = 0
 
     def __post_init__(self) -> None:
         for name in _HIDDEN_NAMES:
@@ -153,6 +235,18 @@ class PrivateWorldControlView:
         )
         object.__setattr__(self, "nickname_permissions", nicknames)
         object.__setattr__(self, "continuation_facts", facts)
+        object.__setattr__(
+            self,
+            "intimacy_grants",
+            _validate_grants(self.intimacy_grants),
+        )
+        object.__setattr__(
+            self,
+            "growth_window_start",
+            _validate_growth_window_start(self.growth_window_start),
+        )
+        if type(self.growth_used) is not int or not 0 <= self.growth_used <= 255:
+            raise PrivateWorldError("growth used must be an integer from 0 to 255")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -165,6 +259,11 @@ class PrivateWorldControlView:
             "continuation_facts": [
                 fact.to_dict() for fact in self.continuation_facts
             ],
+            "intimacy_grants": [
+                grant.to_dict() for grant in self.intimacy_grants
+            ],
+            "growth_window_start": self.growth_window_start,
+            "growth_used": self.growth_used,
         }
 
 
@@ -175,6 +274,7 @@ class PrivateWorldCharacterView:
     home_history_allowed: bool
     continuation_known: bool
     continuation_facts: tuple[LocalContinuationFact, ...] = ()
+    granted_intimacy: IntimacyTier = IntimacyTier.NONE
 
     def __post_init__(self) -> None:
         if not isinstance(self.relationship_stage, str) or not _TOKEN_RE.fullmatch(
@@ -199,11 +299,14 @@ class PrivateWorldCharacterView:
                 "character view may contain only character-known continuation facts"
             )
         object.__setattr__(self, "continuation_facts", facts)
+        if not isinstance(self.granted_intimacy, IntimacyTier):
+            raise PrivateWorldError("granted intimacy is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "view": "character",
             "relationship_stage": self.relationship_stage,
+            "granted_intimacy": self.granted_intimacy.value,
             "nickname_permissions": list(self.nickname_permissions),
             "home_history_allowed": self.home_history_allowed,
             "continuation_known": self.continuation_known,
@@ -226,6 +329,9 @@ class PrivateWorldSnapshot:
     home_access: HomeAccess = HomeAccess.NO_ACCESS
     continuation_awareness: ContinuationAwareness = ContinuationAwareness.CONTROL_ONLY
     continuation_facts: tuple[LocalContinuationFact, ...] = ()
+    intimacy_grants: tuple[IntimacyGrant, ...] = ()
+    growth_window_start: str = ""
+    growth_used: int = 0
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version < 1:
@@ -241,15 +347,34 @@ class PrivateWorldSnapshot:
         )
         object.__setattr__(self, "nickname_permissions", nicknames)
         object.__setattr__(self, "continuation_facts", facts)
+        object.__setattr__(
+            self,
+            "intimacy_grants",
+            _validate_grants(self.intimacy_grants),
+        )
+        object.__setattr__(
+            self,
+            "growth_window_start",
+            _validate_growth_window_start(self.growth_window_start),
+        )
+        if type(self.growth_used) is not int or not 0 <= self.growth_used <= 255:
+            raise PrivateWorldError("growth used must be an integer from 0 to 255")
 
     def control_view(self) -> PrivateWorldControlView:
         return PrivateWorldControlView(
-            *(getattr(self, name) for name in _HIDDEN_NAMES),
-            self.relationship_stage,
-            self.nickname_permissions,
-            self.home_access,
-            self.continuation_awareness,
-            self.continuation_facts,
+            familiarity=self.familiarity,
+            trust=self.trust,
+            comfort=self.comfort,
+            closeness=self.closeness,
+            tension=self.tension,
+            relationship_stage=self.relationship_stage,
+            nickname_permissions=self.nickname_permissions,
+            home_access=self.home_access,
+            continuation_awareness=self.continuation_awareness,
+            continuation_facts=self.continuation_facts,
+            intimacy_grants=self.intimacy_grants,
+            growth_window_start=self.growth_window_start,
+            growth_used=self.growth_used,
         )
 
     def character_view(self) -> PrivateWorldCharacterView:
@@ -263,12 +388,18 @@ class PrivateWorldSnapshot:
             is ContinuationAwareness.CHARACTER_KNOWN
             or bool(known_facts)
         )
+        granted_intimacy = max(
+            (grant.tier for grant in self.intimacy_grants),
+            key=_INTIMACY_TIER_ORDER.index,
+            default=IntimacyTier.NONE,
+        )
         return PrivateWorldCharacterView(
-            self.relationship_stage,
-            self.nickname_permissions,
-            self.home_access is not HomeAccess.NO_ACCESS,
-            continuation_known,
-            known_facts,
+            relationship_stage=self.relationship_stage,
+            nickname_permissions=self.nickname_permissions,
+            home_history_allowed=self.home_access is not HomeAccess.NO_ACCESS,
+            continuation_known=continuation_known,
+            continuation_facts=known_facts,
+            granted_intimacy=granted_intimacy,
         )
 
     def to_dict(self) -> dict[str, object]:

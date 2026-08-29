@@ -113,24 +113,24 @@ def test_legacy_ledger_is_backed_up_and_migrated_once(tmp_path: Path) -> None:
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 2
-    assert ledger.migration_status == "migrated_v1_to_v2"
+    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 3
+    assert ledger.migration_status == "migrated_v2_to_v3"
     assert ledger.snapshot() == PrivateWorldSnapshot(
         version=1,
         trust=3,
         relationship_stage="acquaintance",
     )
-    backups = tuple(tmp_path.glob("private_world.sqlite3.pre-v2-*.bak"))
+    backups = tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
     assert len(backups) == 1
     assert backups[0].is_file() and backups[0].stat().st_size > 0
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("2",)
+        ).fetchone() == ("3",)
 
     reopened = SQLitePrivateWorldLedger(database)
-    assert reopened.migration_status == "current_v2"
-    assert tuple(tmp_path.glob("private_world.sqlite3.pre-v2-*.bak")) == backups
+    assert reopened.migration_status == "current_v3"
+    assert tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak")) == backups
 
 
 def test_later_metadata_less_v1_payload_with_continuation_facts_migrates(
@@ -141,7 +141,7 @@ def test_later_metadata_less_v1_payload_with_continuation_facts_migrates(
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.migration_status == "migrated_v1_to_v2"
+    assert ledger.migration_status == "migrated_v2_to_v3"
     assert ledger.snapshot() == PrivateWorldSnapshot(
         version=1,
         trust=3,
@@ -193,7 +193,7 @@ def test_v1_migration_locks_the_validated_source_epoch_before_backup(
 
     assert competing_write == {"result": "locked"}
     assert ledger.snapshot().trust == 3
-    backup = next(tmp_path.glob("private_world.sqlite3.pre-v2-*.bak"))
+    backup = next(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
     with sqlite3.connect(backup) as connection:
         backup_payload = connection.execute(
             "SELECT payload_json FROM private_world_snapshots WHERE version = 1"
@@ -222,23 +222,23 @@ def test_invalid_v1_payload_does_not_modify_database_or_create_backup(
         SQLitePrivateWorldLedger(database)
 
     assert hashlib.sha256(database.read_bytes()).hexdigest() == original_hash
-    assert not tuple(tmp_path.glob("private_world.sqlite3.pre-v2-*.bak"))
+    assert not tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'private_world_metadata'"
         ).fetchone() is None
 
 
-def test_new_ledger_records_v2_metadata_without_backup(tmp_path: Path) -> None:
+def test_new_ledger_records_v3_metadata_without_backup(tmp_path: Path) -> None:
     database = tmp_path / "private_world.sqlite3"
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.migration_status == "created_v2"
-    assert not tuple(tmp_path.glob("*.pre-v2-*.bak"))
+    assert ledger.migration_status == "created_v3"
+    assert not tuple(tmp_path.glob("*.pre-v3-*.bak"))
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("2",)
+        ).fetchone() == ("3",)
 
 
 def test_newer_schema_is_rejected_without_modification(tmp_path: Path) -> None:
@@ -275,8 +275,8 @@ def test_default_runtime_uses_local_data_root_and_reports_sanitized_health(
         "provider": "sqlite",
         "reason_code": None,
         "enabled": True,
-        "schema_version": 2,
-        "migration_status": "created_v2",
+        "schema_version": 3,
+        "migration_status": "created_v3",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "in-process",
@@ -319,6 +319,10 @@ def test_public_private_world_health_matches_the_sanitized_schema(
     assert str(tmp_path) not in serialized
     assert "trust" not in serialized
     assert "reply" not in serialized
+    assert "intimacy_grants" not in serialized
+    assert "statement" not in serialized
+    assert "growth_window_start" not in serialized
+    assert "growth_used" not in serialized
 
 
 @pytest.mark.parametrize(
@@ -329,8 +333,8 @@ def test_public_private_world_health_matches_the_sanitized_schema(
             "provider": "none",
             "reason_code": None,
             "enabled": True,
-            "schema_version": 2,
-            "migration_status": "current_v2",
+            "schema_version": 3,
+            "migration_status": "current_v3",
             "event_count": 0,
             "snapshot_count": 0,
             "probe": "in-process",
@@ -365,8 +369,8 @@ def test_public_private_world_health_matches_the_sanitized_schema(
             "provider": "sqlite",
             "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
             "enabled": True,
-            "schema_version": 2,
-            "migration_status": "current_v2",
+            "schema_version": 3,
+            "migration_status": "current_v3",
             "event_count": 0,
             "snapshot_count": 0,
             "probe": "in-process",
@@ -457,8 +461,8 @@ def test_runtime_health_fails_closed_when_sqlite_becomes_unavailable(
         "provider": "none",
         "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
         "enabled": True,
-        "schema_version": 2,
-        "migration_status": "created_v2",
+        "schema_version": 3,
+        "migration_status": "created_v3",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "not-run",
@@ -495,8 +499,8 @@ def test_runtime_health_fails_closed_when_current_snapshot_is_semantically_corru
         "provider": "none",
         "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
         "enabled": True,
-        "schema_version": 2,
-        "migration_status": "created_v2",
+        "schema_version": 3,
+        "migration_status": "created_v3",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "not-run",
