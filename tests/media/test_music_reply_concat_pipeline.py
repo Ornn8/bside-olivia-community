@@ -176,6 +176,52 @@ def test_video_reply_readiness_does_not_require_livetalking(
     assert status["ready"] is True
 
 
+def test_musical_reply_accepts_portable_roformer_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    minimax_root = tmp_path / "minimax"
+    for relative in (
+        "main.py",
+        "comfy_extras/nodes_minimax_music.py",
+        "models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+        "models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        "models/vae/minimax_music3_dav.safetensors",
+    ):
+        _write(minimax_root / relative)
+    latentsync_root = tmp_path / "latentsync"
+    for relative in (
+        "scripts/inference.py",
+        "configs/unet/stage2_efficient.yaml",
+        "checkpoints/latentsync_unet.pt",
+    ):
+        _write(latentsync_root / relative)
+    performance = _write(tmp_path / "private" / "performance.mp4")
+    environment = {
+        "OLIVIA_TTS_CONFIG": str(_write(tmp_path / "config" / "tts.json")),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": str(_write(tmp_path / "minimax-python.exe")),
+        "OLIVIA_MINIMAX_WORKER": str(_write(tmp_path / "minimax-worker.py")),
+        "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_LATENTSYNC_PYTHON": str(_write(tmp_path / "latentsync-python.exe")),
+        "OLIVIA_ROFORMER_PYTHON": str(_write(tmp_path / "roformer-python.exe")),
+        "OLIVIA_ROFORMER_MODEL_PATH": str(_write(tmp_path / "roformer.ckpt")),
+        "OLIVIA_ROFORMER_CONFIG_PATH": str(_write(tmp_path / "roformer.yaml")),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(_write(tmp_path / "private" / "reply.mp4")),
+    }
+    monkeypatch.setattr(
+        music_reply,
+        "assemble_latentsync_video_delivery",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    assert music_reply.musical_reply_configured(
+        environment, performance_video_path=performance
+    )
+
+
 def test_video_reply_readiness_requires_speech_and_music_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
