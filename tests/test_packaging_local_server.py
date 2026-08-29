@@ -81,6 +81,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/persona/persona_assembly.py" in packaged_paths
     assert "runtime/persona/persona_provider.py" in packaged_paths
     assert "runtime/private_world/ledger.py" in packaged_paths
+    assert "runtime/private_world/reducer.py" in packaged_paths
+    assert "runtime/private_world/service.py" in packaged_paths
     assert "reply_pipeline.py" in packaged_paths
     assert "reply_reviewer.py" in packaged_paths
     assert "reply_context.py" in packaged_paths
@@ -189,11 +191,13 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "assert persona_loader is persona_loader_impl; "
             "assert persona_assembly is persona_assembly_impl; "
             "assert persona_provider is persona_provider_impl; "
-            "import private_world_port, private_world_commands, private_world_ledger; "
-            "import runtime.private_world.port, runtime.private_world.commands, runtime.private_world.ledger; "
+            "import private_world_port, private_world_commands, private_world_ledger, private_world_reducer, private_world_service; "
+            "import runtime.private_world.port, runtime.private_world.commands, runtime.private_world.ledger, runtime.private_world.reducer, runtime.private_world.service; "
             "assert private_world_port is runtime.private_world.port; "
             "assert private_world_commands is runtime.private_world.commands; "
             "assert private_world_ledger is runtime.private_world.ledger; "
+            "assert private_world_reducer is runtime.private_world.reducer; "
+            "assert private_world_service is runtime.private_world.service; "
             "import music_reply, original_client_server, runtime.media.music_caption, song_content, voice_direction; "
             "import latentsync_reply; "
             "from runtime.media import latentsync_reply as canonical_latentsync_reply; "
