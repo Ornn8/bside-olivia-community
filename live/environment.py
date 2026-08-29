@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,16 +24,13 @@ from llm_gateway import (
 )
 from local_memory import MemoryConfig, create_memory_adapter, load_memory_config
 from memory_port import MemoryPort, NullMemoryPort
-from persona_assembly import assemble_persona
-from persona_loader import load_persona
+from persona_loader import PersonaSnapshot as PersonaV2Snapshot, load_persona
 from persona_provider import (
     CompositePersonaEvidencePort,
     ConfigPersonaProvider,
     JsonPersonaEvidencePort,
     MemoryReferenceEvidencePort,
-    PersonaSnapshot,
 )
-from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from tts import TTSConfig, TTSProfileManager, TTSService
 from visual_driver import VisualDriver
 
@@ -105,10 +101,10 @@ class UnavailableTtsService:
 
 
 @dataclass(frozen=True)
-class _StaticPersonaProvider:
-    value: PersonaSnapshot
+class _PersonaV2Provider:
+    value: PersonaV2Snapshot
 
-    def snapshot(self) -> PersonaSnapshot:
+    def persona_v2_snapshot(self) -> PersonaV2Snapshot:
         return self.value
 
 
@@ -341,24 +337,8 @@ def build_live_environment(
                 _resolve(gateway_config.persona_v2_file, root)
                 or root / "linli_character/persona_release_v2.json"
             )
-            loaded = load_persona(persona_v2_file)
-            assembled = assemble_persona(
-                loaded.snapshot,
-                ReplyContext.create(
-                    ReplyMode.FUTURE_IM,
-                    trusted_time=TrustedTime(datetime.now(timezone.utc)),
-                    future_im_enabled=True,
-                ),
-                user_input="live conversation",
-                max_units=gateway_config.max_input_chars,
-            )
-            persona_provider = _StaticPersonaProvider(
-                PersonaSnapshot(
-                    system_prompt=assembled.system_content,
-                    version=loaded.snapshot.schema_version or "0",
-                    status=loaded.snapshot.status,
-                    source=loaded.snapshot.source,
-                )
+            persona_provider = _PersonaV2Provider(
+                load_persona(persona_v2_file).snapshot
             )
     except Exception:
         persona_provider = None

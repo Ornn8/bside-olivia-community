@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import struct
 import time
 from typing import Any
@@ -11,6 +12,8 @@ from typing import Any
 from llm_gateway import Gateway
 from memory_port import MemoryPort
 from memory_prompt import MemoryPromptBuilder
+from persona_assembly import UntrustedFragment, assemble_persona
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from asr.errors import AsrError
 from reply_orchestrator import ReplyEventType, ReplyOrchestrator, ReplyRequest, ReplyState
 
@@ -814,6 +817,7 @@ class LiveSession:
     def _build_messages(self, text: str, turn_id: str) -> tuple[list[dict[str, str]], str]:
         memory_status = "session-only"
         content = text
+        memory_text = ""
         try:
             prompt = self._memory_prompt.build(
                 text,
@@ -831,6 +835,7 @@ class LiveSession:
                     error_code="MEMORY_UNAVAILABLE",
                 )
             if prompt.text:
+                memory_text = prompt.text
                 content = f"{text}\n\n{prompt.text}"
         except Exception:
             self._emit(
@@ -844,6 +849,46 @@ class LiveSession:
         messages: list[dict[str, str]] = []
         if self._persona_provider is not None:
             try:
+                persona_v2_snapshot = getattr(
+                    self._persona_provider,
+                    "persona_v2_snapshot",
+                    None,
+                )
+                if callable(persona_v2_snapshot):
+                    history: list[UntrustedFragment] = []
+                    if memory_text:
+                        history.append(
+                            UntrustedFragment("memory.references", memory_text)
+                        )
+                    for index, (previous_user, previous_reply) in enumerate(
+                        self._history[-self.config.max_history_turns :]
+                    ):
+                        history.extend(
+                            (
+                                UntrustedFragment(
+                                    f"live.turn.{index}.user",
+                                    previous_user,
+                                ),
+                                UntrustedFragment(
+                                    f"live.turn.{index}.assistant",
+                                    previous_reply,
+                                ),
+                            )
+                        )
+                    assembled = assemble_persona(
+                        persona_v2_snapshot(),
+                        ReplyContext.create(
+                            ReplyMode.FUTURE_IM,
+                            trusted_time=TrustedTime(
+                                datetime.now(timezone.utc)
+                            ),
+                            future_im_enabled=True,
+                        ),
+                        user_input=text,
+                        max_units=self.config.max_input_chars,
+                        history=tuple(history),
+                    )
+                    return list(assembled.to_messages()), memory_status
                 snapshot = self._persona_provider.snapshot()
                 system_prompt = str(getattr(snapshot, "system_prompt", ""))
                 if system_prompt:

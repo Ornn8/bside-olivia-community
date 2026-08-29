@@ -262,7 +262,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const videoReplyRequestId = () => requestId("video_reply_setting").replace("video_reply_setting.", "video_reply_setting:");
 
-  const requestJson = async (path, params = {}, timeoutMs = 5000) => {
+  const requestJson = async (path, params = {}) => {
     const endpoint = new URL(path, apiBase);
     for (const [key, value] of Object.entries(params)) {
       if (value !== null && value !== undefined && value !== "") {
@@ -270,7 +270,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     }
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
     try {
       const response = await fetch(endpoint, {
         method: "GET",
@@ -1787,7 +1787,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const hydrate = async () => {
       try {
-        const payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH, {}, 30000);
+        const payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
         if (payload.state !== "available") throw new Error("setting-unavailable");
         enabled = payload.enabled;
         ready = payload.ready === true;

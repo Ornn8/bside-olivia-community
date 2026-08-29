@@ -118,6 +118,33 @@ def test_song_planner_uses_musical_video_persona_v2_without_draft() -> None:
     assert "PERSONA STATUS: DRAFT" not in system_prompt
 
 
+def test_song_planner_budgets_persona_against_the_exact_long_user_payload(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OLIVIA_LLM_MAX_INPUT_CHARS", "10000")
+    gateway = RecordingGateway(json.dumps(_payload(), ensure_ascii=False))
+    current_letter = "长" * 1000
+    ordinary_reply = "我听见了。"
+
+    plan_song_content(
+        current_letter,
+        ordinary_reply,
+        40,
+        gateway=gateway,
+    )
+
+    messages = gateway.calls[0][0]
+    user_payload = messages[1]["content"]
+    assert json.loads(user_payload) == {
+        "duration_seconds": 40,
+        "current_letter": current_letter,
+        "ordinary_reply": ordinary_reply,
+    }
+    assert sum(len(message["content"]) for message in messages) <= 10_000
+    assert "mode.musical.only_when_motivated" in messages[0]["content"]
+    assert "PERSONA STATUS: DRAFT" not in messages[0]["content"]
+
+
 def test_song_planner_keeps_legacy_persona_when_v2_is_explicitly_disabled(
     monkeypatch,
 ) -> None:

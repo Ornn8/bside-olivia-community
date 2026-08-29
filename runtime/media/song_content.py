@@ -243,31 +243,12 @@ def _enum_values(enum_type: type[StrEnum]) -> str:
     return " | ".join(member.value for member in enum_type)
 
 
-def _system_prompt(duration_seconds: int) -> str:
+def _system_prompt(duration_seconds: int, user_input: str) -> str:
     root = Path(__file__).resolve().parents[2]
     gateway_config = load_gateway_config()
-    if gateway_config.persona_v2_enabled:
-        persona_path = Path(gateway_config.persona_v2_file)
-        if not persona_path.is_absolute():
-            persona_path = root / persona_path
-        loaded = load_persona(persona_path)
-        persona = assemble_persona(
-            loaded.snapshot,
-            ReplyContext.create(
-                ReplyMode.MUSICAL_VIDEO,
-                trusted_time=TrustedTime(datetime.now(timezone.utc)),
-            ),
-            user_input="song planning",
-            max_units=gateway_config.max_input_chars,
-        ).system_content
-    else:
-        persona_path = Path(gateway_config.persona_file)
-        if not persona_path.is_absolute():
-            persona_path = root / persona_path
-        persona = persona_path.read_text(encoding="utf-8")
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
-    return f"""You are the controlled semantic song-planning stage for Lin Li's MiniMax Music 3 reply.
+    planner_contract = f"""You are the controlled semantic song-planning stage for Lin Li's MiniMax Music 3 reply.
 Return one JSON object only. The JSON object must contain exactly these seven string keys:
 - schema_version
 - emotion_arc
@@ -300,7 +281,27 @@ Lyrics contract:
 - Do not diagnose, lecture, demand trust, force optimism, invent past events, or copy known songs.
 
 Trusted persona profile follows. Its ordinary letter output format is replaced only by this JSON contract:
-{persona}"""
+"""
+    if gateway_config.persona_v2_enabled:
+        persona_path = Path(gateway_config.persona_v2_file)
+        if not persona_path.is_absolute():
+            persona_path = root / persona_path
+        loaded = load_persona(persona_path)
+        persona = assemble_persona(
+            loaded.snapshot,
+            ReplyContext.create(
+                ReplyMode.MUSICAL_VIDEO,
+                trusted_time=TrustedTime(datetime.now(timezone.utc)),
+            ),
+            user_input=user_input,
+            max_units=gateway_config.max_input_chars - len(planner_contract),
+        ).system_content
+    else:
+        persona_path = Path(gateway_config.persona_file)
+        if not persona_path.is_absolute():
+            persona_path = root / persona_path
+        persona = persona_path.read_text(encoding="utf-8")
+    return planner_contract + persona
 
 
 def plan_song_content(
@@ -314,20 +315,18 @@ def plan_song_content(
 
     duration = normalize_music_duration(duration_seconds)
     active_gateway = gateway or create_gateway(load_gateway_config())
-    messages = (
-        {"role": "system", "content": _system_prompt(duration)},
+    user_input = json.dumps(
         {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "duration_seconds": duration,
-                    "current_letter": str(content),
-                    "ordinary_reply": str(reply_text),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+            "duration_seconds": duration,
+            "current_letter": str(content),
+            "ordinary_reply": str(reply_text),
         },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    messages = (
+        {"role": "system", "content": _system_prompt(duration, user_input)},
+        {"role": "user", "content": user_input},
     )
     response = asyncio.run(active_gateway.complete(messages))
     semantic_plan = parse_song_semantic_plan(response.text, duration)

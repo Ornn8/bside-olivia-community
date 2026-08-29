@@ -130,6 +130,95 @@ def test_default_live_turn_uses_future_im_persona_v2_without_draft(
     assert "PERSONA STATUS: DRAFT" not in system_prompt
 
 
+def test_default_live_persona_v2_is_assembled_for_each_real_turn(
+    monkeypatch,
+) -> None:
+    import asyncio
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    import live.environment as environment
+    import live.session as live_session
+    import memory_prompt
+    from llm_gateway import GatewayResponse
+    from memory_port import CONVERSATION_MEMORY, MemoryRecord
+
+    instants = iter(
+        (
+            datetime(2026, 8, 29, 1, 2, 3, tzinfo=timezone.utc),
+            datetime(2026, 8, 29, 1, 2, 4, tzinfo=timezone.utc),
+        )
+    )
+
+    class TurnClock:
+        @classmethod
+        def now(cls, tz=None):
+            value = next(instants)
+            return value.astimezone(tz) if tz is not None else value
+
+    class RecordingGateway:
+        stream_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def complete(self, messages, *, request_id=None):
+            self.calls.append(tuple(messages))
+            return GatewayResponse(
+                "synthetic reply",
+                request_id or "request",
+                "mock",
+                "mock",
+            )
+
+    class Memory:
+        enabled = True
+
+        def status(self):
+            return {"status": "available", "conversation_enabled": False}
+
+        def search(self, _query, *, domains=None, limit=8):
+            return [
+                MemoryRecord(
+                    memory_id="memory-1",
+                    domain=CONVERSATION_MEMORY,
+                    text="remembered detail",
+                    source="synthetic",
+                    created_at=1,
+                )
+            ]
+
+        def close(self):
+            return None
+
+    gateway = RecordingGateway()
+    monkeypatch.setattr(environment, "create_gateway", lambda _config: gateway)
+    monkeypatch.setattr(live_session, "datetime", TurnClock, raising=False)
+    monkeypatch.setattr(memory_prompt, "_default_conversation_memory", lambda: None)
+    service = LiveService.from_environment(
+        environ={"OLIVIA_LLM_PROVIDER": "mock"},
+        project_root=str(Path(__file__).resolve().parents[2]),
+        memory_port=Memory(),
+    )
+
+    async def exercise() -> None:
+        session = await service.start_session("user-a")
+        await session.send_text("first real input")
+        await session.send_text("second real input")
+        await service.stop()
+
+    asyncio.run(exercise())
+
+    first, second = gateway.calls
+    assert '"instant":"2026-08-29T01:02:03+00:00"' in first[0]["content"]
+    assert '"instant":"2026-08-29T01:02:04+00:00"' in second[0]["content"]
+    assert second[1] == {"role": "user", "content": "second real input"}
+    assert len(second) == 2
+    assert "remembered detail" in second[0]["content"]
+    assert "first real input" in second[0]["content"]
+    assert "synthetic reply" in second[0]["content"]
+
+
 def test_live_turn_keeps_legacy_persona_when_v2_is_explicitly_disabled(
     monkeypatch,
 ) -> None:
