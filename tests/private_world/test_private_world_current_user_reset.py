@@ -4,6 +4,12 @@ from pathlib import Path
 import pytest
 
 from private_world_admin import AdminOperationError, PrivateWorldAdmin
+from private_world_commands import (
+    PrivateWorldActor,
+    PrivateWorldCommandSource,
+    RecordBoundaryRespected,
+)
+from private_world_service import PrivateWorldCommandService
 from runtime.memory.private_world_delivery import DeliveryEvent, DeliveryStatus
 from private_world_reducer import ReducerEventKind
 from runtime.memory.private_world_runtime import create_private_world_runtime
@@ -32,7 +38,17 @@ def test_current_user_reset_is_isolated_idempotent_and_persists(
     user_b = create_private_world_runtime(environment, user_id="user-b")
 
     _commit(user_a, kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED)
-    _commit(user_b, kind=ReducerEventKind.BOUNDARY_RESPECTED)
+    PrivateWorldCommandService(user_b.port).execute(
+        RecordBoundaryRespected(
+            command_id="command.synthetic-boundary",
+            idempotency_key="idempotency.synthetic-boundary",
+            actor=PrivateWorldActor.LOCAL_USER,
+            source=PrivateWorldCommandSource.CONTROL_CENTER,
+            occurred_at=NOW,
+            reason="synthetic confirmed boundary",
+            evidence_refs=("letter:synthetic-boundary",),
+        )
+    )
     assert user_b.port.snapshot().trust == 1
     events_before_reset = user_b.port.events()
 

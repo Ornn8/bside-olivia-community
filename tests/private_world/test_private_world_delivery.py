@@ -22,58 +22,71 @@ from runtime.reply.reply_context import IntimacyTier
 NOW = datetime(2026, 8, 22, tzinfo=timezone.utc)
 
 
-def test_delivery_event_validates_intimacy_payload_without_stage_fields(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "kind",
+    [
+        ReducerEventKind.BOUNDARY_RESPECTED,
+        ReducerEventKind.CONFLICT,
+        ReducerEventKind.REPAIR,
+        ReducerEventKind.STAGE_CONFIRMED,
+        ReducerEventKind.INTIMACY_GRANTED,
+    ],
+)
+def test_delivery_rejects_every_noncanonical_mutation_kind(
+    kind: ReducerEventKind,
 ) -> None:
+    with pytest.raises(ValueError, match="canonical reply delivery"):
+        DeliveryEvent(
+            delivery_id=f"delivery.rejected-{kind.value}",
+            kind=kind,
+            occurred_at=NOW,
+            semantic_key=f"rejected.{kind.value}",
+        )
+
+
+def test_delivery_event_has_no_mutation_payload_surface() -> None:
     grant = IntimacyGrant(
         grant_id="intimacy.synthetic-delivery",
         tier=IntimacyTier.LIGHT_CONTACT,
         statement="A synthetic consent statement.",
     )
-    delivery = DeliveryEvent(
-        delivery_id="letter-intimacy:1",
-        kind=ReducerEventKind.INTIMACY_GRANTED,
-        occurred_at=NOW,
-        semantic_key="intimacy.synthetic-delivery",
-        intimacy_grant=grant,
-    )
-
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError, match="intimacy_grant"):
         DeliveryEvent(
-            delivery_id="letter-intimacy-missing:1",
-            kind=ReducerEventKind.INTIMACY_GRANTED,
+            delivery_id="letter-intimacy:1",
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
-            semantic_key="intimacy.synthetic-missing",
-        )
-    with pytest.raises(ValueError):
-        DeliveryEvent(
-            delivery_id="letter-intimacy-stage:1",
-            kind=ReducerEventKind.INTIMACY_GRANTED,
-            occurred_at=NOW,
-            semantic_key="intimacy.synthetic-stage",
-            target_stage="close",
-            basis_event_ids=("basis.synthetic",),
+            semantic_key="canonical.intimacy",
             intimacy_grant=grant,
         )
+    with pytest.raises(TypeError, match="target_stage"):
+        DeliveryEvent(
+            delivery_id="letter-stage:1",
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+            occurred_at=NOW,
+            semantic_key="canonical.stage",
+            target_stage="close",
+            basis_event_ids=("basis.synthetic",),
+        )
 
+
+def test_committer_revalidates_canonical_kind_before_ledger_mutation(
+    tmp_path: Path,
+) -> None:
     ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
-    ledger.apply_once(
-        LedgerEvent(
-            event_id="seed.intimacy-stage",
-            delivery_id="seed.intimacy-stage",
-            event_type="stage_confirmed",
-            payload={"synthetic": True},
-            occurred_at=NOW.isoformat(),
-        ),
-        PrivateWorldSnapshot(relationship_stage="close"),
-    )
     committer = PrivateWorldDeliveryCommitter(ledger)
-    assert committer.commit(delivery) is DeliveryStatus.COMMITTED
-    assert committer.commit(delivery) is DeliveryStatus.DUPLICATE
-    reopened = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
-    assert reopened.snapshot().intimacy_grants == (grant,)
-    assert reopened.snapshot().closeness == 2
-    assert reopened.snapshot().growth_used == 2
+    delivery = DeliveryEvent(
+        delivery_id="letter-forged:1",
+        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
+        occurred_at=NOW,
+        semantic_key="canonical.forged",
+    )
+    object.__setattr__(delivery, "kind", ReducerEventKind.BOUNDARY_RESPECTED)
+    object.__setattr__(delivery, "__post_init__", lambda: None)
+
+    with pytest.raises(ValueError, match="canonical reply delivery"):
+        committer.commit(delivery)
+    assert ledger.events() == ()
+    assert ledger.snapshot() == PrivateWorldSnapshot()
 
 
 def test_delivery_commits_once_with_stable_delivery_id(tmp_path: Path) -> None:
@@ -95,7 +108,7 @@ def test_delivery_commits_once_with_stable_delivery_id(tmp_path: Path) -> None:
     }
 
 
-def test_explicit_relationship_event_reduces_then_persists_atomically(
+def test_canonical_delivery_persists_without_relationship_mutation(
     tmp_path: Path,
 ) -> None:
     ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
@@ -104,16 +117,14 @@ def test_explicit_relationship_event_reduces_then_persists_atomically(
     status = committer.commit(
         DeliveryEvent(
             delivery_id="letter-2:1",
-            kind=ReducerEventKind.BOUNDARY_RESPECTED,
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
-            semantic_key="boundary.synthetic",
+            semantic_key="canonical.synthetic",
         )
     )
 
     assert status is DeliveryStatus.COMMITTED
-    assert ledger.snapshot().trust == 1
-    assert ledger.snapshot().comfort == 1
-    assert ledger.snapshot().version == 2
+    assert ledger.snapshot() == PrivateWorldSnapshot()
 
 
 def test_delivery_degrades_when_sqlite_snapshot_fails(

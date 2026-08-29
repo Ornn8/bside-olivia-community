@@ -12,6 +12,7 @@ from private_world_commands import (
     GrantNickname,
     PrivateWorldActor,
     PrivateWorldCommandSource,
+    RecordBoundaryRespected,
     RecordConflict,
     RecordRepair,
     SetHomeAccess,
@@ -238,6 +239,26 @@ def test_intimacy_grant_uses_authorized_atomic_audit_without_values() -> None:
     assert command.grant_id not in serialized
     assert command.statement not in serialized
     assert command.tier.value not in serialized
+
+
+def test_relationship_growth_audit_lists_every_persisted_state_change() -> None:
+    ledger = FakeLedger()
+    service = PrivateWorldCommandService(ledger)
+
+    result = service.execute(RecordBoundaryRespected(**_common()))
+
+    assert result.change_fields == (
+        "trust",
+        "comfort",
+        "familiarity",
+        "growth_window_start",
+        "growth_used",
+    )
+    assert ledger.items[0].payload["change_fields"] == list(
+        result.change_fields
+    )
+    assert ledger.current.familiarity == 1
+    assert ledger.current.growth_used == 1
 
 
 @pytest.mark.parametrize(

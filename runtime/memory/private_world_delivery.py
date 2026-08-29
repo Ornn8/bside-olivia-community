@@ -10,7 +10,6 @@ import re
 import sqlite3
 
 from private_world_ledger import LedgerEvent, LedgerWriteError, SQLitePrivateWorldLedger
-from private_world_port import IntimacyGrant
 from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private_world
 
 
@@ -30,23 +29,19 @@ class DeliveryEvent:
     occurred_at: datetime
     semantic_key: str
     last_equivalent_at: datetime | None = None
-    target_stage: str | None = None
-    basis_event_ids: tuple[str, ...] = ()
-    intimacy_grant: IntimacyGrant | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.delivery_id, str) or not _ID_RE.fullmatch(
             self.delivery_id
         ):
             raise ValueError("delivery_id is invalid")
+        if self.kind is not ReducerEventKind.CANONICAL_REPLY_DELIVERED:
+            raise ValueError("canonical reply delivery kind is required")
         ReducerEvent(
             kind=self.kind,
             occurred_at=self.occurred_at,
             semantic_key=self.semantic_key,
             last_equivalent_at=self.last_equivalent_at,
-            target_stage=self.target_stage,
-            basis_event_ids=self.basis_event_ids,
-            intimacy_grant=self.intimacy_grant,
         )
 
 
@@ -55,16 +50,16 @@ class PrivateWorldDeliveryCommitter:
         self.ledger = ledger
 
     def commit(self, delivery: DeliveryEvent) -> DeliveryStatus:
-        if not isinstance(delivery, DeliveryEvent):
+        if type(delivery) is not DeliveryEvent:
             raise TypeError("typed delivery is required")
+        if delivery.kind is not ReducerEventKind.CANONICAL_REPLY_DELIVERED:
+            raise ValueError("canonical reply delivery kind is required")
+        DeliveryEvent.__post_init__(delivery)
         event = ReducerEvent(
             kind=delivery.kind,
             occurred_at=delivery.occurred_at,
             semantic_key=delivery.semantic_key,
             last_equivalent_at=delivery.last_equivalent_at,
-            target_stage=delivery.target_stage,
-            basis_event_ids=delivery.basis_event_ids,
-            intimacy_grant=delivery.intimacy_grant,
         )
         try:
             snapshot = self.ledger.snapshot()

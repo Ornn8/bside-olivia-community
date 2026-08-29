@@ -146,6 +146,7 @@ RecordBoundaryRespected
 RecordConflict
 RecordRepair
 ConfirmRelationshipStage
+GrantIntimacy
 GrantNickname
 RevokeNickname
 SetHomeAccess
@@ -183,14 +184,20 @@ DeleteContinuationFact
 
 ### 6.1 关系事件
 
-第一版保留当前保守变化：
+2026-08-29 的 intimacy model 工单在保留显式授权边界的前提下，取代本节早期
+“不增加 familiarity / closeness”的第一版限制。当前受控变化为：
 
-- boundary respected：trust +1、comfort +1；
+- boundary respected：trust +1、comfort +1、familiarity +1；
 - conflict：trust -2、comfort -2、tension +3；
 - repair：trust +1、comfort +1、tension -2；
-- stage confirmed：只在明确证据下修改阶段。
+- stage confirmed：只在明确证据下修改阶段，并增加 closeness +5、familiarity +3；
+- intimacy granted：只允许 `LOCAL_USER + CONTROL_CENTER` 的 `GrantIntimacy`
+  命令，追加 grant 并增加 closeness +2。
 
-第一版不增加自动 familiarity 或 closeness 规则，避免普通互动机械累积亲密度。
+boundary 与 intimacy grant 的生长受七天窗口和 6 点配额约束；stage confirmation
+不消耗该配额。`CANONICAL_REPLY_DELIVERED`、普通聊天、高频通信、礼物、告白与
+不活跃事件仍不产生关系效果。所有 mutation 继续必须经过 Command Service；
+canonical delivery 不得携带上述命令或直接写入关系状态。
 
 ### 6.2 非数值状态
 
