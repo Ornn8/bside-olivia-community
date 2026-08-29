@@ -1,6 +1,6 @@
 # P02-06 PersonaAssembly
 
-`persona_assembly.py` is the single pure assembly entrypoint for Persona 2.0.
+`runtime.persona.persona_assembly` is the single pure assembly entrypoint for Persona 2.0. The root `persona_assembly.py` remains a compatibility alias for existing callers.
 It accepts a typed `PersonaSnapshot`, `ReplyContext`, exact user input, and
 optional typed untrusted fragments. It returns two chat messages and the
 P02-05 budget report. It does not call a provider, persist state, review a

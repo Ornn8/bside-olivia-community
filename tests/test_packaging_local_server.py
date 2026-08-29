@@ -64,9 +64,15 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/reply/reply_pipeline.py" in packaged_paths
     assert "runtime/reply/reply_reviewer.py" in packaged_paths
     assert "runtime/reply/reply_context.py" in packaged_paths
+    assert "runtime/persona/persona_loader.py" in packaged_paths
+    assert "runtime/persona/persona_assembly.py" in packaged_paths
+    assert "runtime/persona/persona_provider.py" in packaged_paths
     assert "reply_pipeline.py" in packaged_paths
     assert "reply_reviewer.py" in packaged_paths
     assert "reply_context.py" in packaged_paths
+    assert "persona_loader.py" in packaged_paths
+    assert "persona_assembly.py" in packaged_paths
+    assert "persona_provider.py" in packaged_paths
     assert "music_caption.py" not in packaged_paths
     assert "runtime/reply/reply_delivery.py" in packaged_paths
     assert "runtime/reply/reply_media.py" in packaged_paths
@@ -78,7 +84,12 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
         "private_world_projection.py",
         "private_world_runtime.py",
     } & packaged_paths
+    assert "mem0_capability_install.py" in packaged_paths
     assert "mem0_embedding_install.py" in packaged_paths
+    assert "original_client_capability_api.py" in packaged_paths
+    assert "original_client_setup_api.py" in packaged_paths
+    assert "original_client_update_api.py" in packaged_paths
+    assert "patch_webplayer.py" in packaged_paths
     assert {
         "linli_character/persona_release_v2.json",
         "linli_character/persona_release_provenance_v2.json",
@@ -135,6 +146,13 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "assert reply_context is runtime.reply.reply_context; "
             "assert reply_pipeline is runtime.reply.reply_pipeline; "
             "assert reply_reviewer is runtime.reply.reply_reviewer; "
+            "import persona_loader, persona_assembly, persona_provider; "
+            "import runtime.persona.persona_loader as persona_loader_impl; "
+            "import runtime.persona.persona_assembly as persona_assembly_impl; "
+            "import runtime.persona.persona_provider as persona_provider_impl; "
+            "assert persona_loader is persona_loader_impl; "
+            "assert persona_assembly is persona_assembly_impl; "
+            "assert persona_provider is persona_provider_impl; "
             "import original_client_server, runtime.media.music_caption, song_content; "
             "import latentsync_reply; "
             "from runtime.media import latentsync_reply as canonical_latentsync_reply; "
@@ -159,7 +177,7 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "from persona_assembly import assemble_persona; "
             "from persona_loader import load_persona; "
             "from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime; "
-            "root = Path(__import__('persona_loader').__file__).resolve().parent; "
+            "root = Path(__import__('persona_loader').__file__).resolve().parents[2]; "
             "loaded = load_persona(root / 'linli_character' / 'persona_release_v2.json'); "
             "assert loaded.ready and loaded.snapshot.status == 'READY'; "
             "assembly = assemble_persona(loaded.snapshot, ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 8, 25, tzinfo=timezone.utc))), user_input='synthetic normal letter', max_units=10000); "
