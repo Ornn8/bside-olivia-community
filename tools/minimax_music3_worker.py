@@ -276,6 +276,45 @@ def _stop(process: subprocess.Popen) -> None:
         process.wait(timeout=10)
 
 
+_COMFY_BOOTSTRAP = (
+    "import runpy,sys; "
+    "root,entry,*args=sys.argv[1:]; "
+    "sys.path.insert(0, root); "
+    "sys.argv=[entry,*args]; "
+    "runpy.run_path(entry,run_name='__main__')"
+)
+
+
+def _comfy_command(
+    *,
+    comfy_root: Path,
+    port: int,
+    cache_lru: int,
+    reserve_vram: float,
+    generated_root: Path,
+    temp_root: Path,
+    vram_mode: str,
+) -> list[str]:
+    command = [
+        str(Path(sys.executable)),
+        "-c",
+        _COMFY_BOOTSTRAP,
+        str(comfy_root),
+        str(comfy_root / "main.py"),
+        "--listen", "127.0.0.1",
+        "--port", str(port),
+        "--cache-lru", str(max(3, cache_lru)),
+        "--reserve-vram", str(max(0.25, reserve_vram)),
+        "--disable-auto-launch",
+        "--disable-all-custom-nodes",
+        "--output-directory", str(generated_root),
+        "--temp-directory", str(temp_root),
+    ]
+    if vram_mode == "low":
+        command.append("--lowvram")
+    return command
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     comfy_root = Path(args.comfy_root).resolve()
@@ -297,20 +336,15 @@ def main(argv: list[str] | None = None) -> int:
     generated_root.mkdir(parents=True, exist_ok=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     port = _free_port()
-    command = [
-        str(Path(sys.executable)),
-        str(comfy_root / "main.py"),
-        "--listen", "127.0.0.1",
-        "--port", str(port),
-        "--cache-lru", str(max(3, args.cache_lru)),
-        "--reserve-vram", str(max(0.25, args.reserve_vram)),
-        "--disable-auto-launch",
-        "--disable-all-custom-nodes",
-        "--output-directory", str(generated_root),
-        "--temp-directory", str(temp_root),
-    ]
-    if args.vram_mode == "low":
-        command.append("--lowvram")
+    command = _comfy_command(
+        comfy_root=comfy_root,
+        port=port,
+        cache_lru=args.cache_lru,
+        reserve_vram=args.reserve_vram,
+        generated_root=generated_root,
+        temp_root=temp_root,
+        vram_mode=args.vram_mode,
+    )
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     started_at = time.monotonic()
     metrics: dict[str, object] = {

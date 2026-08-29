@@ -1,0 +1,10 @@
+{
+  "schema_version": "olivia.runtime-text-patch.v1",
+  "target": "latentsync/runtime/latentsync/utils/util.py",
+  "replacements": [
+    {
+      "before": "def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):\n    with imageio.get_writer(\n        video_output_path,\n        fps=fps,\n        codec=\"libx264\",\n        macro_block_size=None,\n        ffmpeg_params=[\"-crf\", \"13\"],\n        ffmpeg_log_level=\"error\",\n    ) as writer:\n        for video_frame in video_frames:\n            writer.append_data(video_frame)",
+      "after": "def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):\n    # The portable Windows runtime intentionally avoids imageio-ffmpeg.\n    # OpenCV writes the silent intermediate; the next stage muxes audio with FFmpeg.\n    write_video_cv2(video_output_path, video_frames, fps)"
+    }
+  ]
+}

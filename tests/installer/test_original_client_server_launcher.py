@@ -244,6 +244,9 @@ def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> N
     environment = start_local._load_video_environment({}, data_root)
 
     assert environment["OLIVIA_LATENTSYNC_ROOT"] == str(runtime_root)
+    assert environment["OLIVIA_MINIMAX_WORKER"] == str(
+        (Path(start_local.__file__).resolve().parents[1] / "tools" / "minimax_music3_worker.py")
+    )
     explicit = start_local._load_video_environment(
         {"OLIVIA_LATENTSYNC_ROOT": "D:/managed/latentsync"}, data_root
     )

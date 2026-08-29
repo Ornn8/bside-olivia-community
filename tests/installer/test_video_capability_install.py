@@ -107,6 +107,10 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
             "latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py",
             "a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1",
         ),
+        "latentsync-windows-mp4-writer": (
+            "latentsync/runtime/latentsync/utils/util.py",
+            "bbeea2d143e756c0ba419b5299cd4b62731e619b155d3e308aa66920868ca516",
+        ),
     }
     music_file_ids = {item.identifier for item in music.files}
     assert "seed-vc-code" not in music_file_ids
@@ -180,6 +184,26 @@ def test_runtime_text_patch_is_hash_checked_and_fails_on_source_drift(
             expected_sha256=sha256,
             patch_id="fixture",
         )
+
+
+def test_latentsync_windows_mp4_writer_patch_uses_opencv(tmp_path: Path) -> None:
+    patch = Path("installer/latentsync-windows-mp4-writer.patch.json")
+    payload = json.loads(patch.read_text(encoding="utf-8"))
+    target = tmp_path / payload["target"]
+    target.parent.mkdir(parents=True)
+    target.write_text(payload["replacements"][0]["before"] + "\n", encoding="utf-8")
+
+    apply_runtime_text_patch(
+        bundle_root=tmp_path,
+        patch_path=patch,
+        target_path=payload["target"],
+        expected_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
+        patch_id="latentsync-windows-mp4-writer",
+    )
+
+    patched = target.read_text(encoding="utf-8")
+    assert "write_video_cv2(video_output_path, video_frames, fps)" in patched
+    assert "imageio.get_writer" not in patched
 
 
 @pytest.mark.parametrize("unsafe", ["CON/file.bin", "asset:stream", "name./file.bin"])

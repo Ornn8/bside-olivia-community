@@ -22,7 +22,8 @@
       "runtime_environment": {"OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe", "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime", "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json"},
       "runtime_patches": [
         {"id":"cosyvoice-windows-audio","path":"installer/cosyvoice-windows-audio.patch.json","target":"cosyvoice/runtime/cosyvoice/utils/file_utils.py","sha256":"019a0f163e397186c0a6d26c5eeaed1c56ba88462200662950c276ceb50c2d27"},
-        {"id":"latentsync-windows-memmap","path":"installer/latentsync-windows-memmap.patch.json","target":"latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py","sha256":"a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1"}
+        {"id":"latentsync-windows-memmap","path":"installer/latentsync-windows-memmap.patch.json","target":"latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py","sha256":"a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1"},
+        {"id":"latentsync-windows-mp4-writer","path":"installer/latentsync-windows-mp4-writer.patch.json","target":"latentsync/runtime/latentsync/utils/util.py","sha256":"bbeea2d143e756c0ba419b5299cd4b62731e619b155d3e308aa66920868ca516"}
       ],
       "files": [
         {"id":"cosyvoice-code","path":"sources/CosyVoice-074ca6dc.zip","size_bytes":1633232,"sha256":"4e7b1ce909f97abcc8afa0a890f92ccf2839ff435c698d4f04a1ba7aa71a022f","license":"Apache-2.0","sources":{"domestic":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc","official":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"},"install":{"kind":"zip","destination":"cosyvoice/runtime","strip_components":1}},
