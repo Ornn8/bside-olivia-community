@@ -1175,6 +1175,8 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
         "runtime/memory/bounded_daemon_call.py",
         "runtime/memory/memory_port.py",
         "runtime/media/music_duration.py",
+        "runtime/media/music_reply.py",
+        "runtime/media/voice_direction.py",
         "runtime/persona/persona_loader.py",
         "runtime/reply/reply_model_quality.py",
         "runtime/reply/reply_orchestrator.py",

@@ -70,6 +70,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/media/music_caption.py" in packaged_paths
     assert "runtime/media/latentsync_reply.py" in packaged_paths
     assert "runtime/media/song_content.py" in packaged_paths
+    assert "runtime/media/music_reply.py" in packaged_paths
+    assert "runtime/media/voice_direction.py" in packaged_paths
     assert "runtime/reply/reply_pipeline.py" in packaged_paths
     assert "runtime/reply/reply_reviewer.py" in packaged_paths
     assert "runtime/reply/reply_context.py" in packaged_paths
@@ -186,12 +188,16 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "assert persona_loader is persona_loader_impl; "
             "assert persona_assembly is persona_assembly_impl; "
             "assert persona_provider is persona_provider_impl; "
-            "import original_client_server, runtime.media.music_caption, song_content; "
+            "import music_reply, original_client_server, runtime.media.music_caption, song_content, voice_direction; "
             "import latentsync_reply; "
             "from runtime.media import latentsync_reply as canonical_latentsync_reply; "
+            "from runtime.media import music_reply as canonical_music_reply; "
             "from runtime.media import song_content as canonical_song_content; "
+            "from runtime.media import voice_direction as canonical_voice_direction; "
             "assert latentsync_reply is canonical_latentsync_reply; "
+            "assert music_reply is canonical_music_reply; "
             "assert song_content is canonical_song_content; "
+            "assert voice_direction is canonical_voice_direction; "
             "import reply_delivery, reply_media; "
             "from runtime.reply import reply_delivery as canonical_delivery; "
             "from runtime.reply import reply_media as canonical_media; "
