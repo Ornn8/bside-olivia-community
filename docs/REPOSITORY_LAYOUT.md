@@ -13,8 +13,8 @@
 | `llm_gateway.py` | 可配置模型调用 |
 | `runtime/memory/`（根目录 `companion_memory_context.py`、`conversation_memory_{admin,delivery,outbox,port,runtime}.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` 保留兼容别名） | 长期记忆、outbox、管理和运行时适配 |
 | `runtime/persona/`（根目录 `persona_*.py` 保留兼容别名） | Persona 装配、加载与可配置 provider |
-| `runtime/private_world/`（根目录 `private_world_{commands,ledger,port}.py` 保留兼容别名） | PrivateWorld 端口、命令与账本 |
-| `private_world_candidate.py`、`private_world_candidates.py`、`private_world_reducer.py`、`private_world_service.py`、`private_world_admin.py` | PrivateWorld 候选、reducer、服务和本地管理 |
+| `runtime/private_world/`（根目录 `private_world_{commands,ledger,port,reducer,service}.py` 保留兼容别名） | PrivateWorld 端口、命令、账本、reducer 与服务 |
+| `private_world_candidate.py`、`private_world_candidates.py`、`private_world_admin.py` | PrivateWorld 候选和本地管理 |
 | `original_client_*.py`、`patch_*.py` | 原版客户端兼容接口、设置页和本机补丁 |
 | `runtime/media/`、`runtime/reply/reply_media.py`（根目录兼容别名保留） | 视频、音乐和媒体编排 |
 
