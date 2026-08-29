@@ -732,6 +732,22 @@ class VideoCapabilityInstaller:
                 VideoCapabilityState.PREREQUISITES_REQUIRED,
                 "VIDEO_RUNTIME_PREREQUISITES_MISSING",
             )
+        try:
+            profile = json.loads(
+                (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(
+                    encoding="utf-8"
+                )
+            )
+            if isinstance(profile, dict) and set(profile) == {
+                "schema_version",
+                "environment",
+                "external_environment",
+                "runtime_root",
+                "manifest_sha256",
+            }:
+                return VideoCapabilityState.READY, None
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
         return self._runtime_dependency_state(bundle)
 
     def _load_status(self) -> None:
@@ -1387,12 +1403,23 @@ def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
         try:
-            external_environment = _load_runtime_root_manifest(
-                Path(raw_root),
-                str(payload.get("manifest_sha256", "")),
-                verify_files=False,
-            )
-        except VideoCapabilityError as exc:
+            runtime_root = Path(raw_root).resolve(strict=True)
+            if _is_reparse_point(runtime_root):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+            manifest = _inside(runtime_root, runtime_root / "runtime-manifest.json")
+            if _sha256_file(manifest)[1] != _safe_sha(
+                payload.get("manifest_sha256", "")
+            ):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+            external_environment = {}
+            for key, raw in declared_external.items():
+                if not isinstance(raw, str) or not Path(raw).is_absolute():
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+                candidate = _inside(runtime_root, Path(raw).resolve(strict=True))
+                if _is_reparse_point(candidate):
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+                external_environment[key] = str(candidate)
+        except (OSError, VideoCapabilityError) as exc:
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID") from exc
         if external_environment != declared_external:
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")

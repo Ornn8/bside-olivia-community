@@ -421,6 +421,15 @@ def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
     )
     Draft202012Validator(status_schema).validate(installer.status())
 
+    restarted = VideoCapabilityInstaller(
+        data_root=installer.data_root,
+        manifest=installer.manifest,
+        readiness_probe=lambda _environment: pytest.fail(
+            "a verified external runtime must not rerun heavyweight probes on restart"
+        ),
+    )
+    assert restarted.status()["bundles"][0]["state"] == "ready"
+
     (runtime_root / "unlisted-provider.py").write_text(
         "raise RuntimeError('must never execute')", encoding="utf-8"
     )
