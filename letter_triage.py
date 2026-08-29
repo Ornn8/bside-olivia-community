@@ -17,7 +17,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from llm_gateway import GatewayError, GatewayToolCall
 from runtime.media.media_paths import configured_media_path
-from music_reply import musical_reply_configured, video_reply_dependency_status
+from music_reply import musical_reply_configured
 
 
 ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表达方式。
@@ -458,36 +458,15 @@ def routing_context_from_environment(
 ) -> RoutingContext:
     env = environ if environ is not None else os.environ
     try:
-        readiness = video_reply_dependency_status(
-            env,
-            performance_video_path=_current_music_performance(env),
-        )
+        # Video replies are one complete speech-plus-music capability.  Do not
+        # advertise a partial route when only the speech half is configured.
+        video_ready = _musical_video_configured(env)
     except Exception:
-        readiness = {"ready": False, "music_ready": False}
+        video_ready = False
     return RoutingContext(
-        spoken_video_available=readiness.get("ready") is True,
-        musical_video_available=readiness.get("music_ready") is True,
+        spoken_video_available=video_ready,
+        musical_video_available=video_ready,
         current_music_work=_context_items(env.get("OLIVIA_CURRENT_MUSIC_WORK", "")),
-    )
-
-
-def _spoken_video_configured(env: Mapping[str, str]) -> bool:
-    data_root = configured_media_path(env, "OLIVIA_LOCAL_DATA_ROOT")
-    tts_config = configured_media_path(env, "OLIVIA_TTS_CONFIG")
-    scene = configured_media_path(env, "OLIVIA_ORDINARY_ACTION_BASE")
-    latentsync_python = configured_media_path(env, "OLIVIA_LATENTSYNC_PYTHON")
-    latentsync_root = configured_media_path(env, "OLIVIA_LATENTSYNC_ROOT")
-    return bool(
-        data_root is not None
-        and data_root.is_absolute()
-        and tts_config is not None
-        and tts_config.is_file()
-        and scene is not None
-        and scene.is_file()
-        and latentsync_python is not None
-        and latentsync_python.is_file()
-        and latentsync_root is not None
-        and latentsync_root.is_dir()
     )
 
 

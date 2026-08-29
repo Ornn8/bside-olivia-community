@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
@@ -305,6 +306,57 @@ def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatc
     try:
         assert asyncio.run(local_server.generate_reply(letter["letter_id"], letter["content"]))
         assert letter["video_reply_enabled"] is False and "media_status" not in letter
+    finally:
+        local_server.store.letters.remove(letter)
+
+
+def test_letter_send_does_not_wait_for_the_full_video_runtime_probe(
+    tmp_path, monkeypatch
+):
+    import local_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    settings.mutate("video_reply_setting:enabled", True)
+    monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
+    monkeypatch.setattr(
+        local_server,
+        "_musical_video_configured",
+        lambda _environment: True,
+        raising=False,
+    )
+
+    def slow_full_probe(_environment, *, performance_video_path):
+        time.sleep(0.3)
+        return {"ready": False, "dependencies": []}
+
+    monkeypatch.setattr(local_server, "video_reply_dependency_status", slow_full_probe)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_a, **_k: None)
+
+    async def send() -> tuple[float, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            started = time.perf_counter()
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic fast receive"},
+            )
+            elapsed = time.perf_counter() - started
+            payload = await response.json()
+            assert response.status == 200
+            return elapsed, payload
+
+    elapsed, payload = asyncio.run(send())
+    letter = next(
+        item
+        for item in local_server.store.letters
+        if item["letter_id"] == payload["data"]["letter_id"]
+    )
+    try:
+        assert elapsed < 0.2
+        assert letter["video_reply_enabled"] is True
     finally:
         local_server.store.letters.remove(letter)
 
