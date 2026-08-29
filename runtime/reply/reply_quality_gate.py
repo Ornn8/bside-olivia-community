@@ -263,7 +263,11 @@ def run_reply_quality_gate(
             else QualityGateStatus.ACCEPTED_WITH_WARNINGS
         )
     else:
-        status = QualityGateStatus.ACCEPTED
+        status = (
+            QualityGateStatus.ACCEPTED_WITH_WARNINGS
+            if final_review.violations
+            else QualityGateStatus.ACCEPTED
+        )
     return QualityGateResult(
         status,
         rewritten,
