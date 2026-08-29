@@ -1,6 +1,6 @@
 # Root Python inventory
 
-本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 55 个，净减少 11 个。另有 12 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
+本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 55 个，净减少 11 个。另有 21 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
 
 ## 必须保留的根入口
 
@@ -15,7 +15,7 @@
 
 ## 已发布兼容映射
 
-下列 12 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
+下列 21 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
 
 | 根兼容模块 | Canonical 模块 |
 | --- | --- |
@@ -31,12 +31,21 @@
 | `persona_loader` | `runtime.persona.persona_loader` |
 | `persona_assembly` | `runtime.persona.persona_assembly` |
 | `persona_provider` | `runtime.persona.persona_provider` |
+| `companion_memory_context` | `runtime.memory.companion_memory_context` |
+| `conversation_memory_admin` | `runtime.memory.conversation_memory_admin` |
+| `conversation_memory_port` | `runtime.memory.conversation_memory_port` |
+| `conversation_memory_runtime` | `runtime.memory.conversation_memory_runtime` |
+| `local_memory` | `runtime.memory.local_memory` |
+| `mem0_memory` | `runtime.memory.mem0_memory` |
+| `memory` | `runtime.memory.memory` |
+| `memory_port` | `runtime.memory.memory_port` |
+| `memory_prompt` | `runtime.memory.memory_prompt` |
 
 ## 当前 55 个根文件
 
 每个根 `.py` 在以下六类中恰好出现一次。`KEEP` 表示有现行入口或兼容证据；`RETAIN/DEFER` 表示仍是 canonical 根实现，本轮受迁移批次上限约束而明确延期，不代表已经完成收拢。
 
-### 正式入口 / 兼容壳（18）
+### 正式入口 / 兼容壳（27）
 
 | 文件 | 处置 |
 | --- | --- |
@@ -45,17 +54,15 @@
 | `latentsync_reply.py`、`song_content.py` | `KEEP`：已发布 wheel 兼容别名 |
 | `reply_context.py`、`reply_delivery.py`、`reply_media.py`、`reply_pipeline.py`、`reply_reviewer.py` | `KEEP`：已发布 wheel 兼容别名 |
 | `persona_assembly.py`、`persona_loader.py`、`persona_provider.py` | `KEEP`：分别映射到 `runtime.persona.*` 的发布兼容别名 |
+| `companion_memory_context.py`、`conversation_memory_admin.py`、`conversation_memory_port.py`、`conversation_memory_runtime.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` | `KEEP`：分别映射到 `runtime.memory.*` 的发布兼容别名 |
 | `letter_status.py`、`original_client_media_http.py`、`video_reply_settings.py` | `KEEP`：安装器要求的 canonical 包兼容入口 |
 | `memory_isolation_case01.py` | `KEEP`：现有 synthetic isolation 调用兼容入口 |
 
-### 后端模块（26）
+### 后端模块（17）
 
 | 文件 | 主要职责 / 处置 |
 | --- | --- |
-| `companion_memory_context.py` | Memory prompt 投影；`RETAIN/DEFER` |
-| `conversation_memory_admin.py`、`conversation_memory_port.py`、`conversation_memory_runtime.py` | Conversation Memory 管理、端口和运行时；`RETAIN/DEFER` |
 | `http_contract.py`、`letter_triage.py`、`llm_gateway.py` | HTTP 契约、回信分流和模型网关；`RETAIN/DEFER` |
-| `local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` | Memory 存储、provider、端口和 prompt；`RETAIN/DEFER` |
 | `original_client_companion_api.py`、`original_client_companion_backend.py` | 原版设置页只读适配；`RETAIN/DEFER` |
 | `original_client_companion_mutation_api.py`、`original_client_companion_mutation_backend.py` | 原版设置页变更适配；`RETAIN/DEFER` |
 | `original_client_letter_contract.py` | 原版 mailbox wire contract；`RETAIN/DEFER` |

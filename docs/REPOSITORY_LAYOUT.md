@@ -10,7 +10,7 @@
 | `reply_context.py`、`reply_pipeline.py`、`reply_reviewer.py`、`reply_delivery.py`、`reply_media.py` | 原有导入兼容别名，映射到 `runtime/reply/` 中的同一模块对象 |
 | `reply_model_quality.py`、`reply_orchestrator.py`、`runtime/reply/*.py` | canonical reply 装配、审校、持久化和媒体投影 |
 | `llm_gateway.py`、`voice_direction.py` | 可配置模型调用与语音导演计划 |
-| `runtime/memory/conversation_memory_{delivery,outbox}.py`（根目录保留兼容别名）、其余 `conversation_memory_*.py`、`mem0_memory.py` | 长期记忆、outbox、管理和运行时适配 |
+| `runtime/memory/`（根目录 `companion_memory_context.py`、`conversation_memory_{admin,delivery,outbox,port,runtime}.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` 保留兼容别名） | 长期记忆、outbox、管理和运行时适配 |
 | `runtime/persona/`（根目录 `persona_*.py` 保留兼容别名） | Persona 装配、加载与可配置 provider |
 | `private_world_*.py` | 私有关系事件、ledger、reducer、投影和管理 |
 | `original_client_*.py`、`patch_*.py` | 原版客户端兼容接口、设置页和本机补丁 |

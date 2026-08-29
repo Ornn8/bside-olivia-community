@@ -55,6 +55,15 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/memory/conversation_memory_identity.py" in packaged_paths
     assert "runtime/memory/conversation_memory_delivery.py" in packaged_paths
     assert "runtime/memory/conversation_memory_outbox.py" in packaged_paths
+    assert "runtime/memory/companion_memory_context.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_admin.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_port.py" in packaged_paths
+    assert "runtime/memory/conversation_memory_runtime.py" in packaged_paths
+    assert "runtime/memory/local_memory.py" in packaged_paths
+    assert "runtime/memory/mem0_memory.py" in packaged_paths
+    assert "runtime/memory/memory.py" in packaged_paths
+    assert "runtime/memory/memory_port.py" in packaged_paths
+    assert "runtime/memory/memory_prompt.py" in packaged_paths
     assert "conversation_memory_delivery.py" in packaged_paths
     assert "conversation_memory_outbox.py" in packaged_paths
     assert "conversation_memory_runtime.py" in packaged_paths
@@ -130,6 +139,26 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import runtime.memory.conversation_memory_outbox as outbox_impl; "
             "assert conversation_memory_delivery is delivery_impl; "
             "assert conversation_memory_outbox is outbox_impl; "
+            "import companion_memory_context, conversation_memory_admin, conversation_memory_port, conversation_memory_runtime; "
+            "import local_memory, mem0_memory, memory, memory_port, memory_prompt; "
+            "import runtime.memory.companion_memory_context as companion_memory_context_impl; "
+            "import runtime.memory.conversation_memory_admin as conversation_memory_admin_impl; "
+            "import runtime.memory.conversation_memory_port as conversation_memory_port_impl; "
+            "import runtime.memory.conversation_memory_runtime as conversation_memory_runtime_impl; "
+            "import runtime.memory.local_memory as local_memory_impl; "
+            "import runtime.memory.mem0_memory as mem0_memory_impl; "
+            "import runtime.memory.memory as memory_impl; "
+            "import runtime.memory.memory_port as memory_port_impl; "
+            "import runtime.memory.memory_prompt as memory_prompt_impl; "
+            "assert companion_memory_context is companion_memory_context_impl; "
+            "assert conversation_memory_admin is conversation_memory_admin_impl; "
+            "assert conversation_memory_port is conversation_memory_port_impl; "
+            "assert conversation_memory_runtime is conversation_memory_runtime_impl; "
+            "assert local_memory is local_memory_impl; "
+            "assert mem0_memory is mem0_memory_impl; "
+            "assert memory is memory_impl; "
+            "assert memory_port is memory_port_impl; "
+            "assert memory_prompt is memory_prompt_impl; "
             "import importlib.util; "
             "assert importlib.util.find_spec('conversation_memory_identity') is None; "
             "assert importlib.util.find_spec('private_world_delivery') is None; "
@@ -165,6 +194,20 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "assert reply_delivery is canonical_delivery; "
             "assert reply_media is canonical_media; "
             "import local_server",
+        ],
+        cwd=tmp_path,
+        env=installed_environment,
+    )
+    _run(
+        [
+            str(interpreter),
+            "-c",
+            "from pathlib import Path; from local_memory import load_memory_config; "
+            "from mem0_memory import load_mem0_config; from memory import Memory; "
+            "root = Path(__import__('memory').__file__).resolve().parents[2]; "
+            "assert Path(Memory().path) == root / 'memory_store.json'; "
+            "assert load_memory_config(environ={}).data_root == root / '.olivia_data' / 'memory'; "
+            "assert load_mem0_config(environ={}).data_root == root / '.olivia_data' / 'memory' / 'mem0'",
         ],
         cwd=tmp_path,
         env=installed_environment,
