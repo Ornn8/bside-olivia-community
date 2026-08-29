@@ -1715,6 +1715,8 @@ def _mark_superseded_failed_retries() -> None:
 def _legacy_letter_collection(*, strict: bool = False) -> list[dict]:
     adapter = memory_adapter
     if not getattr(adapter, "enabled", False):
+        if store.legacy_letters:
+            return store.legacy_letters
         try:
             adapter = _legacy_import_adapter()
         except Exception:
