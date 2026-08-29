@@ -8,7 +8,11 @@ import json
 import re
 from typing import Callable
 
-from .persona_loader import PersonaDeclaration, PersonaSnapshot
+from .persona_loader import (
+    PersonaDeclaration,
+    PersonaSnapshot,
+    PersonaStyleExemplar,
+)
 from runtime.reply.prompt_budget import (
     PromptBudgetItem,
     PromptBudgetReport,
@@ -27,6 +31,15 @@ _FORBIDDEN_RULES = (
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_STYLE_EXAMPLE_LIMIT = 2
+_STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
+_STYLE_SITUATIONS = (
+    ("emotional_acknowledgement", re.compile(r"累|烦|难过|委屈|害怕|焦虑|没劲")),
+    ("boundary_refusal", re.compile(r"不许拒绝|不能拒绝|不准拒绝|必须|一定要")),
+    ("music_request", re.compile(r"(?:能|可以|请|想听|给我|为我).{0,10}(?:唱|弹|演奏)|(?:唱|弹|演奏)(?:一|几|个|首|段|曲)")),
+    ("natural_close", re.compile(r"晚点再说|回头再说|先去忙|先走了|去睡了|晚安")),
+    ("brief_greeting", re.compile(r"^(?:在吗|你好|早(?:上好)?|嗨|hi|hello)[！!。.？?\s]*$", re.I)),
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +98,9 @@ def assemble_persona(
     if not isinstance(user_input, str) or not user_input.strip():
         raise ValueError("user_input is required")
 
-    blocks = _persona_blocks(snapshot, context, history, evidence_summaries)
+    blocks = _persona_blocks(
+        snapshot, context, user_input, history, evidence_summaries
+    )
     items = tuple(
         PromptBudgetItem(block.item_id, block.section, cost_counter(block.content))
         for block in blocks
@@ -110,6 +125,7 @@ def assemble_persona(
 def _persona_blocks(
     snapshot: PersonaSnapshot,
     context: ReplyContext,
+    user_input: str,
     history: tuple[UntrustedFragment, ...],
     evidence_summaries: tuple[UntrustedFragment, ...],
 ) -> tuple[_Block, ...]:
@@ -212,6 +228,35 @@ def _persona_blocks(
             )
         )
 
+    selected_exemplars = _select_style_exemplars(snapshot, context, user_input)
+    if selected_exemplars:
+        blocks.append(
+            _json_block(
+                "style_examples",
+                "style.examples",
+                PromptSection.STYLE_EXAMPLE,
+                {
+                    "style_only": True,
+                    "factual_authority": False,
+                    "instruction": (
+                        "Follow only the voice and response rhythm; never copy facts, "
+                        "events, names, or relationship claims from this example."
+                    ),
+                    "examples": [
+                        {
+                            "exemplar_id": exemplar.exemplar_id,
+                            "source_id": exemplar.source_id,
+                            "derivation": exemplar.derivation,
+                            "situation": exemplar.situation,
+                            "user": exemplar.user_text,
+                            "assistant": exemplar.assistant_text,
+                        }
+                        for exemplar in selected_exemplars
+                    ],
+                },
+            )
+        )
+
     blocks.append(
         _json_block(
             "private_behavior",
@@ -268,6 +313,50 @@ def _persona_blocks(
             )
         )
     return tuple(blocks)
+
+
+def _select_style_exemplars(
+    snapshot: PersonaSnapshot,
+    context: ReplyContext,
+    user_input: str,
+) -> tuple[PersonaStyleExemplar, ...]:
+    if snapshot.status != "READY":
+        return ()
+    candidates = tuple(
+        item
+        for item in snapshot.style_exemplars
+        if item.mode == context.mode.value
+        and item.style_only
+        and not item.factual_authority
+    )
+    situations = tuple(
+        name
+        for name, pattern in _STYLE_SITUATIONS
+        if pattern.search(user_input.strip())
+    )
+    if not situations:
+        situations = ("ordinary_smalltalk",)
+    user_tokens = set(_STYLE_TOKEN_RE.findall(user_input.casefold()))
+
+    def rank(item: PersonaStyleExemplar) -> tuple[int, str]:
+        example_tokens = set(
+            _STYLE_TOKEN_RE.findall(
+                f"{item.situation} {item.user_text}".casefold()
+            )
+        )
+        return (-len(user_tokens & example_tokens), item.exemplar_id)
+
+    if len(situations) == 1:
+        matching = (item for item in candidates if item.situation == situations[0])
+        return tuple(sorted(matching, key=rank)[:_STYLE_EXAMPLE_LIMIT])
+    selected = tuple(
+        sorted(
+            (item for item in candidates if item.situation == situation), key=rank
+        )[0]
+        for situation in situations[:_STYLE_EXAMPLE_LIMIT]
+        if any(item.situation == situation for item in candidates)
+    )
+    return selected
 
 
 def _declaration_blocks(

@@ -25,6 +25,7 @@ class PromptSection(str, Enum):
     PERSONA_PROFILE = "persona_profile"
     MODE_CONSTRAINTS = "mode_constraints"
     MODE_STYLE = "mode_style"
+    STYLE_EXAMPLE = "style_example"
     USER_INPUT = "user_input"
     PRIVATE_BEHAVIOR = "private_behavior"
     WORLD_FACT = "world_fact"
@@ -50,6 +51,7 @@ _DROP_ORDER = (
     PromptSection.INFERRED_TRAIT,
     PromptSection.SOFT_CANON,
     PromptSection.HISTORY,
+    PromptSection.STYLE_EXAMPLE,
     PromptSection.PRIVATE_BEHAVIOR,
     PromptSection.WORLD_FACT,
     PromptSection.PUBLIC_CANON,

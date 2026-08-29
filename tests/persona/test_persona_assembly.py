@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 import pytest
 
 from persona_assembly import UntrustedFragment, assemble_persona
-from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
+from persona_loader import (
+    PersonaDeclaration,
+    PersonaProfile,
+    PersonaSnapshot,
+    PersonaStyleExemplar,
+)
 from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
     IntimacyTier,
@@ -45,6 +50,66 @@ def _declaration(
         mode=mode,
         facet=facet,
     )
+
+
+def _style_exemplar(
+    exemplar_id: str,
+    *,
+    user_text: str,
+    assistant_text: str,
+    mode: str = "text_letter",
+    situation: str | None = None,
+) -> PersonaStyleExemplar:
+    return PersonaStyleExemplar(
+        exemplar_id=exemplar_id,
+        source_id="source.synthetic",
+        derivation="SYNTHETIC",
+        rights_status="REDISTRIBUTABLE",
+        allowed_public_release=True,
+        mode=mode,
+        situation=situation or exemplar_id.rsplit(".", 1)[-1],
+        user_text=user_text,
+        assistant_text=assistant_text,
+        style_only=True,
+        factual_authority=False,
+        user_text_is_synthetic=True,
+        assistant_text_is_verbatim=False,
+    )
+
+
+def _style_snapshot(*exemplars: PersonaStyleExemplar) -> PersonaSnapshot:
+    return PersonaSnapshot(
+        schema_version="p02.persona.v2",
+        persona_id="synthetic.persona",
+        declarations=(
+            _declaration(
+                "constitution.boundary", "CONSTITUTION", "MEMORY_CONTINUITY",
+                "Do not invent shared history.",
+            ),
+            _declaration(
+                "mode.synthetic", "MODE_STYLE", "MODE_STYLE",
+                "Use a selective letter voice.", "text_letter",
+            ),
+        ),
+        status="READY",
+        source="persona_v2",
+        profile=_profile(),
+        style_exemplars=exemplars,
+    )
+
+
+def _scenario_snapshot() -> PersonaSnapshot:
+    situations = (
+        "brief_greeting", "ordinary_smalltalk", "emotional_acknowledgement",
+        "boundary_refusal", "natural_close", "music_request",
+    )
+    return _style_snapshot(*(
+        _style_exemplar(
+            f"style.synthetic.{name}", user_text=f"Synthetic {name} input.",
+            assistant_text=f"Synthetic {name} response.", situation=name,
+        )
+        for name in situations
+    ))
 
 
 def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> None:
@@ -122,6 +187,39 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     assert messages[0]["content"].index("<mode_style") < messages[0][
         "content"
     ].index("<public_canon")
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected"),
+    (
+        ("你好！", {"brief_greeting"}),
+        ("你好，我最近在听音乐。", {"ordinary_smalltalk"}),
+        ("这首音乐让我有点难过，陪我一会儿。", {"emotional_acknowledgement"}),
+        ("我最近常听钢琴曲。", {"ordinary_smalltalk"}),
+        ("你必须给我唱一段，我今天很难过。", {"emotional_acknowledgement", "boundary_refusal"}),
+        ("能给我弹一段，我先去忙了。", {"music_request", "natural_close"}),
+    ),
+)
+def test_style_selection_uses_precise_distinct_situations(
+    user_input: str, expected: set[str]
+) -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+    assembly = assemble_persona(
+        _scenario_snapshot(), context, user_input=user_input, max_units=8_000
+    )
+    selected = set(re.findall(
+        r'"exemplar_id":"style\.synthetic\.([^"]+)"', assembly.system_content
+    ))
+
+    assert selected == expected
+    assert len(selected) <= 2
+    assert assembly.system_content.count("<style_examples>") == 1
+    assert '"style_only":true' in assembly.system_content
+    assert '"factual_authority":false' in assembly.system_content
 
 
 def test_policy_only_snapshot_keeps_rules_but_does_not_claim_character_identity() -> None:
@@ -249,6 +347,59 @@ def test_profile_and_current_mode_style_are_never_dropped() -> None:
     assert "evidence_summary" not in limited.system_content
     assert "林离 Olivia" in limited.system_content
     assert "Use a selective letter voice" in limited.system_content
+
+
+def test_small_budget_accepts_persona_with_or_without_whole_style_block() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+    without = assemble_persona(
+        _style_snapshot(), context, user_input="Synthetic input.", max_units=10_000
+    )
+    exemplars = tuple(
+        _style_exemplar(
+            f"style.synthetic.budget.{index}", user_text="Synthetic input.",
+            assistant_text=f"Bounded style response {index}.",
+            situation="ordinary_smalltalk",
+        )
+        for index in range(2)
+    )
+
+    limited = assemble_persona(
+        _style_snapshot(*exemplars), context, user_input="Synthetic input.",
+        max_units=without.budget_report.input_units,
+    )
+
+    assert limited.budget_report.dropped_ids == ("style.examples",)
+    assert "<style_examples>" not in limited.system_content
+    assert limited.budget_report.used_units == without.budget_report.used_units
+
+
+def test_style_block_drops_after_evidence_and_history() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+    bare = _style_snapshot()
+    styled = _style_snapshot(_style_exemplar(
+        "style.synthetic.budget", user_text="Synthetic input.",
+        assistant_text="A bounded style response.", situation="ordinary_smalltalk",
+    ))
+    minimum = assemble_persona(
+        bare, context, user_input="Synthetic input.", max_units=10_000
+    ).budget_report.input_units
+
+    limited = assemble_persona(
+        styled, context, user_input="Synthetic input.",
+        history=(UntrustedFragment("old", "Synthetic history."),),
+        evidence_summaries=(UntrustedFragment("summary", "Synthetic evidence."),),
+        max_units=minimum,
+    )
+
+    assert limited.budget_report.dropped_ids == (
+        "evidence.summary", "history.old", "style.examples",
+    )
 
 
 def test_required_user_input_is_never_silently_truncated() -> None:
