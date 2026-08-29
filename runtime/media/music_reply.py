@@ -148,6 +148,7 @@ def musical_reply_configured(
 
     minimax_root = configured_path("OLIVIA_MINIMAX_COMFY_ROOT")
     latentsync_root = configured_path("OLIVIA_LATENTSYNC_ROOT")
+    ordinary_scene = configured_path("OLIVIA_ORDINARY_ACTION_BASE")
     transition_reference = configured_path("OLIVIA_OFFICIAL_REPLY_REFERENCE")
     delivery_paths = (
         configured_path("OLIVIA_TTS_CONFIG"),
@@ -158,7 +159,7 @@ def musical_reply_configured(
     ):
         return False
     try:
-        assemble_latentsync_video_delivery(
+        delivery = assemble_latentsync_video_delivery(
             delivery_paths[0],
             delivery_paths[1],
             env,
@@ -176,7 +177,11 @@ def musical_reply_configured(
         configured_path("OLIVIA_MINIMAX_WORKER"),
         configured_path("OLIVIA_LATENTSYNC_PYTHON"),
     )
-    if transition_reference is None or any(path is None for path in configured_files):
+    if (
+        ordinary_scene is None
+        or transition_reference is None
+        or any(path is None for path in configured_files)
+    ):
         return False
     required = (
         transition_reference,
@@ -193,6 +198,8 @@ def musical_reply_configured(
     return bool(
         performance_video_path is not None
         and performance_video_path.is_file()
+        and ordinary_scene.is_file()
+        and (Path(delivery.tts.model_dir) / "llm.pt").is_file()
         and minimax_root.is_dir()
         and latentsync_root.is_dir()
         and all(path.is_file() for path in required)

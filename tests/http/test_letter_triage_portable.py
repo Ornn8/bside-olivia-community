@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -452,6 +453,23 @@ def test_environment_overrides_do_not_claim_video_availability_and_current_work_
     assert context.current_music_work == ("作品甲", "作品乙")
 
 
+def test_routing_context_does_not_wait_for_the_full_runtime_probe(monkeypatch):
+    import letter_triage
+
+    monkeypatch.setattr(
+        letter_triage,
+        "_musical_video_configured",
+        lambda _environment: True,
+    )
+
+    started = time.perf_counter()
+    context = routing_context_from_environment({})
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.2
+    assert context == RoutingContext(True, True)
+
+
 def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
     context = routing_context_from_environment(
         {
@@ -513,8 +531,7 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     env["OLIVIA_FFMPEG_EXE"] = str(ffmpeg)
     required = [
         tmp_path / "config/tts.json",
-        tmp_path / "config/visual.json",
-        tmp_path / "workers/visual.py",
+        tmp_path / "scenes/spoken.mp4",
         tmp_path / "official/reply.mp4",
         tmp_path / "roformer/roformer.exe",
         tmp_path / "roformer/model.ckpt",
@@ -584,6 +601,13 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
 
     assert routing_context_from_environment(env) == RoutingContext(True, True)
 
+    # LiveTalking is optional and is not part of the LatentSync video-reply path.
+    Path(env["OLIVIA_VISUAL_CONFIG"]).unlink()
+    Path(env["OLIVIA_LIVETALKING_WORKER"]).unlink()
+    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    Path(env["OLIVIA_VISUAL_CONFIG"]).write_bytes(b"synthetic")
+    Path(env["OLIVIA_LIVETALKING_WORKER"]).write_bytes(b"synthetic")
+
     env["OLIVIA_PROJECT_ROOT"] = str(tmp_path)
     for name, value in tuple(env.items()):
         if not name.startswith("OLIVIA_") or name in {
@@ -602,9 +626,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     quality_checkpoint.write_bytes(b"synthetic")
 
     for missing in required:
+        original = missing.read_bytes()
         missing.unlink()
-        assert routing_context_from_environment(env) == RoutingContext(False, False)
-        missing.write_bytes(b"synthetic")
+        assert routing_context_from_environment(env) == RoutingContext(False, False), missing
+        missing.write_bytes(original)
 
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
     for resolved_ffmpeg in (None, write("runtime/ffmpeg.exe")):

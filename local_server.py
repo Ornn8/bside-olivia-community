@@ -52,7 +52,12 @@ from persona_provider import (
     persona_status,
 )
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
-from letter_triage import LetterEmotionTriage, TriageResult, _current_music_performance
+from letter_triage import (
+    LetterEmotionTriage,
+    TriageResult,
+    _current_music_performance,
+    _musical_video_configured,
+)
 from runtime.media.media_paths import configured_media_path
 from music_reply import (
     MusicReplyError,
@@ -803,13 +808,9 @@ def _open_video_capability_source(capability: object, source: object) -> bool:
 def _video_reply_dependencies_ready() -> bool:
     environment = MappingProxyType(dict(_os.environ))
     try:
-        readiness = video_reply_dependency_status(
-            environment,
-            performance_video_path=_current_music_performance(environment),
-        )
+        return _musical_video_configured(environment)
     except Exception:
         return False
-    return readiness.get("ready") is True
 
 
 private_world_runtime: PrivateWorldRuntime = create_private_world_runtime(
