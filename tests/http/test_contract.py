@@ -1269,6 +1269,21 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             },
         },
     }
+    generation_contract = {
+        "fields": ["letter_status", "error_code", "retryable"],
+        "error_codes": {
+            "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": True},
+            "LLM_TIMEOUT": {"status": "FAILED", "retryable": True},
+            "LLM_INTERRUPTED": {"status": "FAILED", "retryable": True},
+            "LLM_PROVIDER_REJECTED": {"status": "FAILED", "retryable": False},
+            "LLM_PROTOCOL_ERROR": {"status": "FAILED", "retryable": False},
+            "LLM_REPLY_LENGTH_INVALID": {"status": "FAILED", "retryable": False},
+            "REPLY_QUALITY_BLOCKED": {"status": "FAILED", "retryable": False},
+            "PERSONA_NOT_READY": {"status": "FAILED", "retryable": False},
+        },
+    }
+    assert document["letter_detail_generation"] == generation_contract
+    assert example["letter_detail_generation"] == generation_contract
     assert "LEGACY_IMPORT_NOT_IMPLEMENTED" not in http_contract.ERROR_CODES
     expected_import_mode = "read-only-atomic-import"
     assert schema["properties"]["privacy"]["properties"]["legacy_import_mode"]["const"] == expected_import_mode

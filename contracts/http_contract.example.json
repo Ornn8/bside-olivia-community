@@ -80,6 +80,19 @@
       "optional_capabilities": ["llm.gateway", "llm.streaming"]
     }
   },
+  "letter_detail_generation": {
+    "fields": ["letter_status", "error_code", "retryable"],
+    "error_codes": {
+      "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": true},
+      "LLM_TIMEOUT": {"status": "FAILED", "retryable": true},
+      "LLM_INTERRUPTED": {"status": "FAILED", "retryable": true},
+      "LLM_PROVIDER_REJECTED": {"status": "FAILED", "retryable": false},
+      "LLM_PROTOCOL_ERROR": {"status": "FAILED", "retryable": false},
+      "LLM_REPLY_LENGTH_INVALID": {"status": "FAILED", "retryable": false},
+      "REPLY_QUALITY_BLOCKED": {"status": "FAILED", "retryable": false},
+      "PERSONA_NOT_READY": {"status": "FAILED", "retryable": false}
+    }
+  },
   "letter_detail_media": {
     "fields": ["media_status", "media_error_code", "media_retryable"],
     "statuses": [

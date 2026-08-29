@@ -1941,6 +1941,8 @@ def _letter_list_payload(scope: str) -> dict:
 
 
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
+    if code == "PERSONA_NOT_READY":
+        return "PERSONA_NOT_READY", False
     if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
         return "REPLY_QUALITY_BLOCKED", False
     if code == "LLM_REPLY_LENGTH_INVALID":

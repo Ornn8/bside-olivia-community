@@ -40,6 +40,7 @@
 | 410 | `LETTER_SUPERSEDED` | SUPERSEDED | 否 | 失败副本已由成功重试替代；仅返回替代信件 ID |
 | 200 detail | `LLM_PROVIDER_REJECTED` / `LLM_PROTOCOL_ERROR` | FAILED | 否 | 上游非重试 4xx、坏 JSON 或空响应；不回显 provider body |
 | 200 detail | `LLM_REPLY_LENGTH_INVALID` | FAILED | 否 | 普通说话视频正文经一次独立修复后仍不在 180–200 个紧凑字符内；不得伪装成 provider 不可用 |
+| 200 detail | `PERSONA_NOT_READY` | FAILED | 否 | 已配置 provider 且启用 Persona v2 时，发布快照不是 `READY`；在修复本地发布包前不得自动重试，且不回显文件路径、解析详情或 readiness gaps |
 | 200 detail media | `TTS_CONTENT_GATE_REJECTED` | FAILED | 否 | 三条时长有效的普通说话候选均未通过内容门；不自动重试 |
 | 200 detail media | `TTS_CONTENT_GATE_UNAVAILABLE` | UNAVAILABLE | 是 | 显式配置的离线 ASR 运行时、checkpoint 或临时质量门不可用；可在修复依赖后恢复 |
 | 200 detail media | `MEDIA_PROVIDER_UNAVAILABLE` | UNAVAILABLE | 是 | 未登记的媒体异常或本地媒体依赖不可用；公开 detail 不回显内部异常、provider 文本或本机路径 |
