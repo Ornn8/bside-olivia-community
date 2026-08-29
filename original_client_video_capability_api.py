@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,6 +53,20 @@ def _runtime_root_path(value: object) -> Path:
         return path.resolve(strict=True)
     except OSError as exc:
         raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400) from exc
+
+
+def _runtime_manifest_sha256(runtime_root: Path) -> str:
+    manifest = runtime_root / "runtime-manifest.json"
+    if manifest.is_symlink() or not manifest.is_file():
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400)
+    digest = hashlib.sha256()
+    try:
+        with manifest.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as exc:
+        raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400) from exc
+    return digest.hexdigest()
 
 
 def _select_windows_runtime_root() -> Path | None:
@@ -161,8 +176,7 @@ def mount_original_client_video_capability_api(
 
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
-        async with control_lock:
-            payload = await asyncio.to_thread(installer.status)
+        payload = await asyncio.to_thread(installer.status)
         if not isinstance(payload, dict) or payload.get("capability") != "video":
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_STATUS_INVALID", status=503)
         return web.json_response(payload, headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"})
@@ -202,9 +216,11 @@ def mount_original_client_video_capability_api(
             selected = await asyncio.to_thread(runtime_picker)
             result = {"status": "CANCELLED"}
             if selected is not None:
+                runtime_root = _runtime_root_path(str(selected))
                 result = {
                     "status": "SELECTED",
-                    "runtime_root": str(_runtime_root_path(str(selected))),
+                    "runtime_root": str(runtime_root),
+                    "manifest_sha256": _runtime_manifest_sha256(runtime_root),
                 }
             return web.json_response(
                 result,

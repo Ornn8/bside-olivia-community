@@ -411,6 +411,24 @@ def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
         "OLIVIA_TTS_CONFIG": str(tts_config.resolve()),
     }
     assert installer.status()["bundles"][0]["state"] == "ready"
+    assert installer.status()["runtime_import"] == {
+        "state": "ready",
+        "checked_bytes": python.stat().st_size + tts_config.stat().st_size,
+        "total_bytes": python.stat().st_size + tts_config.stat().st_size,
+    }
+    status_schema = json.loads(
+        Path("contracts/video_capability_status.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator(status_schema).validate(installer.status())
+
+    restarted = VideoCapabilityInstaller(
+        data_root=installer.data_root,
+        manifest=installer.manifest,
+        readiness_probe=lambda _environment: pytest.fail(
+            "a verified external runtime must not rerun heavyweight probes on restart"
+        ),
+    )
+    assert restarted.status()["bundles"][0]["state"] == "ready"
 
     (runtime_root / "unlisted-provider.py").write_text(
         "raise RuntimeError('must never execute')", encoding="utf-8"
@@ -420,6 +438,7 @@ def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
             runtime_root=runtime_root,
             manifest_sha256=manifest_sha,
         )
+    assert installer.status()["runtime_import"]["state"] == "failed"
     (runtime_root / "unlisted-provider.py").unlink()
 
     runtime_manifest["environment"]["OLIVIA_LATENTSYNC_PYTHON"] = "../outside.exe"
@@ -430,6 +449,50 @@ def test_import_runtime_root_verifies_manifest_and_persists_external_profile(
             runtime_root=runtime_root,
             manifest_sha256=bad_sha,
         )
+
+
+def test_runtime_manifest_verification_reports_real_byte_progress(tmp_path: Path) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python-runtime")
+    config = runtime_root / "config/tts.json"
+    config.parent.mkdir(parents=True)
+    config.write_bytes(b"tts-config")
+    files = [python, config]
+    manifest = {
+        "schema_version": "olivia.video-runtime-root.v1",
+        "version": "test",
+        "environment": {
+            "OLIVIA_LATENTSYNC_PYTHON": "python/python.exe",
+            "OLIVIA_TTS_CONFIG": "config/tts.json",
+        },
+        "files": [
+            {
+                "path": path.relative_to(runtime_root).as_posix(),
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in files
+        ],
+    }
+    manifest_path = runtime_root / "runtime-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    progress: list[tuple[int, int]] = []
+
+    video_capability_install._load_runtime_root_manifest(
+        runtime_root,
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        verify_files=True,
+        progress=lambda checked, total: progress.append((checked, total)),
+    )
+
+    expected_total = sum(path.stat().st_size for path in files)
+    assert progress[0] == (0, expected_total)
+    assert progress[-1] == (expected_total, expected_total)
+    assert [checked for checked, _total in progress] == sorted(
+        checked for checked, _total in progress
+    )
 
 
 def test_runtime_manifest_generator_hashes_the_exact_sorted_tree(tmp_path: Path) -> None:
@@ -1052,9 +1115,22 @@ def test_windows_runtime_picker_fails_closed_without_a_system_directory(
     assert captured.value.code == "VIDEO_RUNTIME_PICKER_UNAVAILABLE"
 
 
+def test_runtime_selection_rejects_a_folder_without_a_manifest(tmp_path: Path) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir()
+
+    with pytest.raises(video_capability_api.VideoCapabilityAPIError) as captured:
+        video_capability_api._runtime_manifest_sha256(runtime_root)
+
+    assert captured.value.code == "VIDEO_RUNTIME_ROOT_INVALID"
+
+
 def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -> None:
     runtime_root = (tmp_path / "runtime").resolve()
     runtime_root.mkdir()
+    manifest = runtime_root / "runtime-manifest.json"
+    manifest.write_text('{"synthetic": true}', encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
     observed: list[tuple[Path, str]] = []
 
     class FakeInstaller:
@@ -1093,7 +1169,7 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
                 json={
                     "action": "import_runtime",
                     "runtime_root": selected["runtime_root"],
-                    "manifest_sha256": "a" * 64,
+                    "manifest_sha256": selected["manifest_sha256"],
                 },
                 headers={
                     "Origin": "http://localhost:3000",
@@ -1127,10 +1203,90 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
     assert selected_status == 200
-    assert selected == {"status": "SELECTED", "runtime_root": str(runtime_root)}
+    assert selected == {
+        "status": "SELECTED",
+        "runtime_root": str(runtime_root),
+        "manifest_sha256": manifest_sha256,
+    }
     assert status == 200
     assert payload == {"status": "APPLIED"}
-    assert observed == [(runtime_root, "a" * 64)]
+    assert observed == [(runtime_root, manifest_sha256)]
+
+
+def test_video_capability_status_remains_available_during_runtime_import(
+    tmp_path: Path,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir()
+    manifest = runtime_root / "runtime-manifest.json"
+    manifest.write_text('{"synthetic": true}', encoding="utf-8")
+    started = threading.Event()
+    release = threading.Event()
+
+    class FakeInstaller:
+        def status(self):
+            return {
+                "schema_version": "olivia.video-capability-status.v1",
+                "status": "UNAVAILABLE",
+                "capability": "video",
+                "install_locations": [],
+                "bundles": [],
+                "runtime_import": {
+                    "state": "checking",
+                    "checked_bytes": 1,
+                    "total_bytes": 2,
+                },
+            }
+
+        def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str):
+            started.set()
+            assert release.wait(2)
+            return "APPLIED"
+
+    async def call() -> dict[str, object]:
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FakeInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+        )
+        async with TestClient(TestServer(app)) as client:
+            action = asyncio.create_task(
+                client.post(
+                    "/toy/capabilities/video/action",
+                    json={
+                        "action": "import_runtime",
+                        "runtime_root": str(runtime_root),
+                        "manifest_sha256": "a" * 64,
+                    },
+                    headers={
+                        "Origin": "http://localhost:3000",
+                        "X-Olivia-Capability-Action": "confirmed",
+                        "X-Olivia-Setup-Session": "session",
+                    },
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            try:
+                response = await asyncio.wait_for(
+                    client.get(
+                        "/toy/capabilities/video",
+                        headers={"Origin": "http://localhost:3000"},
+                    ),
+                    timeout=0.5,
+                )
+                return await response.json()
+            finally:
+                release.set()
+                await action
+
+    payload = asyncio.run(call())
+    assert payload["runtime_import"] == {
+        "state": "checking",
+        "checked_bytes": 1,
+        "total_bytes": 2,
+    }
 
 
 def test_download_progress_updates_before_a_large_file_finishes(tmp_path: Path) -> None:
