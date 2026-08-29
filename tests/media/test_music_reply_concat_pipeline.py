@@ -198,6 +198,9 @@ def test_musical_reply_accepts_portable_roformer_python(
     ):
         _write(latentsync_root / relative)
     performance = _write(tmp_path / "private" / "performance.mp4")
+    ordinary_scene = _write(tmp_path / "private" / "spoken.mp4")
+    tts_model = tmp_path / "tts-model"
+    _write(tts_model / "llm.pt")
     environment = {
         "OLIVIA_TTS_CONFIG": str(_write(tmp_path / "config" / "tts.json")),
         "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
@@ -210,11 +213,14 @@ def test_musical_reply_accepts_portable_roformer_python(
         "OLIVIA_ROFORMER_MODEL_PATH": str(_write(tmp_path / "roformer.ckpt")),
         "OLIVIA_ROFORMER_CONFIG_PATH": str(_write(tmp_path / "roformer.yaml")),
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(_write(tmp_path / "private" / "reply.mp4")),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(ordinary_scene),
     }
     monkeypatch.setattr(
         music_reply,
         "assemble_latentsync_video_delivery",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tts=SimpleNamespace(model_dir=str(tts_model))
+        ),
     )
 
     assert music_reply.musical_reply_configured(
