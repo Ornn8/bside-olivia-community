@@ -31,6 +31,13 @@ Stable error codes include:
 - `PERSONA_RIGHTS_BLOCKED`
 - `PERSONA_INCOMPLETE`
 
+These loader codes remain available to explicit local evaluators and assembly
+callers. On the configured-provider Letter release path, any `DRAFT` or
+`POLICY_ONLY` snapshot fails before the orchestrator or provider is called and
+is projected as the path-free public error `PERSONA_NOT_READY` with
+`retryable=false`. Retrying the same letter cannot repair an incomplete local
+release package.
+
 ## Linli release profile
 
 The default release package contains short, independently rewritten
@@ -76,7 +83,8 @@ truncated.
 
 ## Runtime sequence
 
-1. `LetterAdapter` loads and validates the release payload.
+1. `LetterAdapter` loads and validates the release payload; the configured
+   provider path continues only for a `READY` snapshot.
 2. `PersonaAssembly` creates the system policy and a separate user message.
 3. `ReplyPipeline` generates a private candidate and applies the deterministic
    and optional reviewer quality gate, with a global maximum of one rewrite.
@@ -111,5 +119,7 @@ levels remain PrivateWorld control state.
 Set `OLIVIA_PERSONA_V2_ENABLED=false` or set `persona_v2_enabled` to `false`
 in the local LLM configuration. This restores the legacy Persona path without
 deleting replies, memory, or PrivateWorld data. A corrupt or rights-blocked
-v2 payload falls back to DRAFT. An incomplete but otherwise valid payload is
-restricted to `POLICY_ONLY`.
+v2 payload still loads as `DRAFT`, and an incomplete but otherwise valid
+payload still loads as `POLICY_ONLY` for explicit evaluator/assembly use; the
+configured-provider Letter path publishes neither state and returns
+`PERSONA_NOT_READY` instead.

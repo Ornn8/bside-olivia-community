@@ -1583,8 +1583,8 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
     )
     return ok(
         {
-            "schema_version": contract.SCHEMA_VERSION,
-            "contract_version": contract.CONTRACT_VERSION,
+            "schema_version": contract.HTTP_ENVELOPE_SCHEMA_VERSION,
+            "contract_version": contract.HTTP_ENVELOPE_CONTRACT_VERSION,
             "backend_id": backend_id,
             "profile": profile,
             "status": profile_status,
@@ -1941,6 +1941,8 @@ def _letter_list_payload(scope: str) -> dict:
 
 
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
+    if code == "PERSONA_NOT_READY":
+        return "PERSONA_NOT_READY", False
     if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
         return "REPLY_QUALITY_BLOCKED", False
     if code == "LLM_REPLY_LENGTH_INVALID":

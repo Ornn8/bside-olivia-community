@@ -160,6 +160,7 @@ class RecordingProvider:
 
     def __init__(self) -> None:
         self.messages: tuple[dict[str, str], ...] = ()
+        self.calls = 0
 
     async def complete(
         self,
@@ -167,6 +168,7 @@ class RecordingProvider:
         *,
         request_id: str | None = None,
     ) -> GatewayResponse:
+        self.calls += 1
         self.messages = tuple(dict(message) for message in messages)  # type: ignore[arg-type]
         return GatewayResponse(
             text="我听见了。" + "林" * 185,
@@ -193,6 +195,41 @@ class CompatibilityBridge:
         raise AssertionError(
             "prepared Persona messages must not be rebuilt by the bridge"
         )
+
+
+class CountingReplyOrchestrator(ReplyOrchestrator):
+    def __init__(self, gateway: Gateway) -> None:
+        super().__init__(gateway, timeout_seconds=1)
+        self.calls = 0
+
+    async def run(self, request: ReplyRequest) -> ReplyResult:
+        self.calls += 1
+        return await super().run(request)
+
+
+def _configured_v2_pipeline(persona_path: Path):
+    import local_server
+
+    provider = RecordingProvider()
+    adapter = local_server.LetterAdapter(
+        GatewayConfig(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            model="synthetic",
+            persona_v2_enabled=True,
+            persona_v2_file=str(persona_path),
+        ),
+        memory_port=NullMemoryPort(),
+    )
+    adapter.gateway = provider
+    bridge = CompatibilityBridge(adapter)
+    orchestrator = CountingReplyOrchestrator(bridge)  # type: ignore[arg-type]
+    pipeline = ReplyPipeline(
+        orchestrator,
+        reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+    return pipeline, orchestrator, bridge, provider
 
 
 class SourceAwareConversationMemory:
@@ -333,6 +370,7 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
 
     assert result.state is ReplyState.COMPLETED
     assert bridge.calls == 0
+    assert provider.calls == 1
     assert tuple(message["role"] for message in provider.messages) == (
         "system",
         "user",
@@ -384,9 +422,118 @@ def test_configured_persona_v2_preparation_excludes_current_memory_source() -> N
         local_server._CURRENT_LETTER_MEMORY_SOURCE.reset(token)
 
     assert result.state is ReplyState.COMPLETED
+    assert provider.calls == 1
     rendered = "\n".join(message["content"] for message in provider.messages)
     assert "reply:current-letter:1" not in rendered
     assert "reply:older-letter:1" in rendered
+
+
+@pytest.mark.parametrize("persona_body", [None, "{broken"], ids=["missing", "malformed"])
+def test_configured_provider_blocks_draft_persona_before_orchestrator(
+    tmp_path: Path,
+    persona_body: str | None,
+) -> None:
+    persona_path = tmp_path / "private-user" / "persona.json"
+    if persona_body is not None:
+        persona_path.parent.mkdir()
+        persona_path.write_text(persona_body, encoding="utf-8")
+    pipeline, orchestrator, bridge, provider = _configured_v2_pipeline(persona_path)
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(content="synthetic letter", request_id="draft-persona"),
+            _context(),
+        )
+    )
+
+    assert result == PipelineResult(
+        "draft-persona",
+        ReplyState.FAILED,
+        error_code="PERSONA_NOT_READY",
+        retryable=False,
+    )
+    assert orchestrator.calls == 0
+    assert bridge.calls == 0
+    assert provider.calls == 0
+    assert str(persona_path) not in repr(result)
+    assert "broken" not in repr(result)
+
+
+def test_configured_provider_blocks_policy_only_persona_before_orchestrator(
+    tmp_path: Path,
+) -> None:
+    persona_path = tmp_path / "policy-only.json"
+    persona_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p02.persona.v2",
+                "persona_id": "synthetic.policy",
+                "declarations": [
+                    {
+                        "declaration_id": "constitution.synthetic",
+                        "source_id": "source.synthetic",
+                        "tier": "CONSTITUTION",
+                        "facet": "POLICY",
+                        "confidence": "HIGH",
+                        "rights_status": "SUMMARY_ONLY",
+                        "allowed_public_release": True,
+                        "statement": "Synthetic public policy rule.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pipeline, orchestrator, bridge, provider = _configured_v2_pipeline(persona_path)
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(content="synthetic letter", request_id="policy-persona"),
+            _context(),
+        )
+    )
+
+    assert result == PipelineResult(
+        "policy-persona",
+        ReplyState.FAILED,
+        error_code="PERSONA_NOT_READY",
+        retryable=False,
+    )
+    assert orchestrator.calls == 0
+    assert bridge.calls == 0
+    assert provider.calls == 0
+
+
+def test_explicitly_disabled_persona_v2_preserves_legacy_provider_path() -> None:
+    import local_server
+
+    provider = RecordingProvider()
+    adapter = local_server.LetterAdapter(
+        GatewayConfig(
+            provider="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            model="synthetic",
+            persona_v2_enabled=False,
+        ),
+        memory_port=NullMemoryPort(),
+    )
+    adapter.gateway = provider
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(local_server._LetterGateway(adapter), timeout_seconds=1),
+        reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(
+        pipeline.run(
+            ReplyRequest(content="synthetic legacy letter", request_id="legacy-persona"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert provider.calls == 1
+    assert provider.messages[-1]["content"] == "synthetic legacy letter"
 
 
 def test_letter_pipeline_exposes_only_selected_linli_history_to_reviewer(
@@ -465,6 +612,20 @@ def test_reply_length_error_is_terminal_and_not_provider_unavailable() -> None:
         False,
     )
     assert http_contract.ERROR_CODES["LLM_REPLY_LENGTH_INVALID"] == {
+        "http_status": 503,
+        "retryable": False,
+    }
+
+
+def test_persona_not_ready_error_is_terminal_and_public() -> None:
+    import http_contract
+    import local_server
+
+    assert local_server._public_llm_error("PERSONA_NOT_READY") == (
+        "PERSONA_NOT_READY",
+        False,
+    )
+    assert http_contract.error_metadata("PERSONA_NOT_READY") == {
         "http_status": 503,
         "retryable": False,
     }

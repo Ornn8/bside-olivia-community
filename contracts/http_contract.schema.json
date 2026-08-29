@@ -4,10 +4,10 @@
   "title": "B02 local HTTP contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "letter_detail_media", "privacy"],
+  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "letter_detail_generation", "letter_detail_media", "privacy"],
   "properties": {
-    "schema_version": {"const": 1},
-    "contract_version": {"const": "b02.v1"},
+    "schema_version": {"const": 2},
+    "contract_version": {"const": "b02.v2"},
     "base_path": {"const": "/toy"},
     "routes": {
       "type": "object",
@@ -42,6 +42,31 @@
           "optional_capabilities": {"type": "array", "items": {"type": "string"}}
         },
         "additionalProperties": false
+      }
+    },
+    "letter_detail_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "error_codes"],
+      "properties": {
+        "fields": {
+          "const": ["letter_status", "error_code", "retryable"]
+        },
+        "error_codes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["LLM_UNAVAILABLE", "LLM_TIMEOUT", "LLM_INTERRUPTED", "LLM_PROVIDER_REJECTED", "LLM_PROTOCOL_ERROR", "LLM_REPLY_LENGTH_INVALID", "REPLY_QUALITY_BLOCKED", "PERSONA_NOT_READY"],
+          "properties": {
+            "LLM_UNAVAILABLE": {"$ref": "#/$defs/generation_error"},
+            "LLM_TIMEOUT": {"$ref": "#/$defs/generation_error"},
+            "LLM_INTERRUPTED": {"$ref": "#/$defs/generation_error"},
+            "LLM_PROVIDER_REJECTED": {"$ref": "#/$defs/generation_error"},
+            "LLM_PROTOCOL_ERROR": {"$ref": "#/$defs/generation_error"},
+            "LLM_REPLY_LENGTH_INVALID": {"$ref": "#/$defs/generation_error"},
+            "REPLY_QUALITY_BLOCKED": {"$ref": "#/$defs/generation_error"},
+            "PERSONA_NOT_READY": {"$ref": "#/$defs/generation_error"}
+          }
+        }
       }
     },
     "letter_detail_media": {
@@ -88,6 +113,15 @@
     }
   },
   "$defs": {
+    "generation_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "retryable"],
+      "properties": {
+        "status": {"const": "FAILED"},
+        "retryable": {"type": "boolean"}
+      }
+    },
     "media_error": {
       "type": "object",
       "additionalProperties": false,

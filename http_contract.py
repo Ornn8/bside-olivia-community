@@ -11,8 +11,10 @@ from copy import deepcopy
 from typing import Any, Iterable
 
 
-CONTRACT_VERSION = "b02.v1"
-SCHEMA_VERSION = 1
+CONTRACT_VERSION = "b02.v2"
+SCHEMA_VERSION = 2
+HTTP_ENVELOPE_CONTRACT_VERSION = "b02.v1"
+HTTP_ENVELOPE_SCHEMA_VERSION = 1
 HEALTH_PROFILE_CORE = "core"
 HEALTH_PROFILE_LLM = "llm"
 HEALTH_PROFILE_MEMORY = "memory"
@@ -49,6 +51,8 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "LLM_PROVIDER_REJECTED": {"http_status": 503, "retryable": False},
     "LLM_PROTOCOL_ERROR": {"http_status": 503, "retryable": False},
     "LLM_REPLY_LENGTH_INVALID": {"http_status": 503, "retryable": False},
+    "REPLY_QUALITY_BLOCKED": {"http_status": 503, "retryable": False},
+    "PERSONA_NOT_READY": {"http_status": 503, "retryable": False},
     "LETTER_RESEND_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "LETTER_SHARE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "PREFERENCE_SURVEY_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
@@ -104,6 +108,28 @@ LETTER_DETAIL_MEDIA_CONTRACT: dict[str, Any] = {
         "UNAVAILABLE",
     ],
     "error_codes": LETTER_DETAIL_MEDIA_ERROR_CODES,
+}
+
+LETTER_DETAIL_GENERATION_ERROR_CODES: dict[str, dict[str, Any]] = {
+    code: {
+        "status": "FAILED",
+        "retryable": ERROR_CODES[code]["retryable"],
+    }
+    for code in (
+        "LLM_UNAVAILABLE",
+        "LLM_TIMEOUT",
+        "LLM_INTERRUPTED",
+        "LLM_PROVIDER_REJECTED",
+        "LLM_PROTOCOL_ERROR",
+        "LLM_REPLY_LENGTH_INVALID",
+        "REPLY_QUALITY_BLOCKED",
+        "PERSONA_NOT_READY",
+    )
+}
+
+LETTER_DETAIL_GENERATION_CONTRACT: dict[str, Any] = {
+    "fields": ["letter_status", "error_code", "retryable"],
+    "error_codes": LETTER_DETAIL_GENERATION_ERROR_CODES,
 }
 
 
@@ -445,6 +471,7 @@ def contract_document() -> dict[str, Any]:
         "routes": deepcopy(ROUTES),
         "capabilities": deepcopy(CAPABILITIES),
         "profiles": deepcopy(PROFILES),
+        "letter_detail_generation": deepcopy(LETTER_DETAIL_GENERATION_CONTRACT),
         "letter_detail_media": deepcopy(LETTER_DETAIL_MEDIA_CONTRACT),
         "privacy": {
             "logs_include_request_body": False,

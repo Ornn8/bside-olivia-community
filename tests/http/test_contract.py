@@ -799,6 +799,65 @@ def test_unexpected_background_failure_cannot_leave_processing_letter(
     assert detail["data"]["error_code"] == "LLM_UNAVAILABLE"
 
 
+def test_persona_not_ready_failure_persists_and_round_trips_through_http_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+    from reply_orchestrator import ReplyState
+    from reply_pipeline import PipelineResult
+
+    private_body = "PRIVATE_PERSONA_BODY"
+    private_path = str(tmp_path / "private-persona.json")
+    parse_detail = "JSONDecodeError:line7"
+
+    class PersonaNotReadyPipeline:
+        async def run(self, *_args, **_kwargs) -> PipelineResult:
+            return PipelineResult(
+                "persona-not-ready", ReplyState.FAILED,
+                text=private_body, error_code="PERSONA_NOT_READY", retryable=False,
+                quality_status=f"{private_path}:{parse_detail}",
+            )
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "reply_pipeline", PersonaNotReadyPipeline())
+
+    async def exercise() -> tuple[int, dict, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            sent = await (await client.post(
+                "/toy/letter/send", json={"content": "synthetic route input"},
+            )).json()
+            await asyncio.gather(*tuple(local_server.reply_tasks))
+            persisted = json.loads((tmp_path / "state.json").read_text("utf-8"))
+            local_server.store.letters.clear()
+            local_server._load_store_state()
+            response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": sent["data"]["letter_id"]},
+            )
+            return response.status, await response.json(), persisted
+
+    status, detail, persisted = asyncio.run(exercise())
+    public = json.dumps(detail, ensure_ascii=False)
+
+    assert status == 200
+    assert detail["code"] == 0
+    assert detail["data"]["letter_status"] == "FAILED"
+    assert detail["data"]["error_code"] == "PERSONA_NOT_READY"
+    assert detail["data"]["retryable"] is False
+    assert detail["data"]["reply_text"] == ""
+    assert all(value not in public for value in (private_body, private_path, parse_detail))
+    persisted_json = json.dumps(persisted)
+    assert private_body not in persisted_json
+    quality_status = persisted["letters"][0]["quality_status"]
+    assert private_path in quality_status and parse_detail in quality_status
+
+
 def test_retry_dedup_does_not_block_distinct_expired_or_failed_letters() -> None:
     import local_server
 
@@ -1230,10 +1289,15 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     missing_media_contract = dict(document)
     missing_media_contract.pop("letter_detail_media")
     assert list(Draft202012Validator(schema).iter_errors(missing_media_contract))
+    missing_generation_contract = dict(document)
+    missing_generation_contract.pop("letter_detail_generation")
+    assert list(Draft202012Validator(schema).iter_errors(missing_generation_contract))
 
-    assert schema["properties"]["contract_version"]["const"] == "b02.v1"
+    assert schema["properties"]["schema_version"]["const"] == 2
+    assert schema["properties"]["contract_version"]["const"] == "b02.v2"
     assert legacy_schema["properties"]["mode"]["const"] == "read_only"
-    assert document["contract_version"] == "b02.v1"
+    assert document["schema_version"] == example["schema_version"] == 2
+    assert document["contract_version"] == example["contract_version"] == "b02.v2"
     assert "/toy/letter/list" in document["routes"]
     assert http_contract.error_metadata("MEMORY_UNAVAILABLE") == {
         "http_status": 503,
@@ -1269,6 +1333,21 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             },
         },
     }
+    generation_contract = {
+        "fields": ["letter_status", "error_code", "retryable"],
+        "error_codes": {
+            "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": True},
+            "LLM_TIMEOUT": {"status": "FAILED", "retryable": True},
+            "LLM_INTERRUPTED": {"status": "FAILED", "retryable": True},
+            "LLM_PROVIDER_REJECTED": {"status": "FAILED", "retryable": False},
+            "LLM_PROTOCOL_ERROR": {"status": "FAILED", "retryable": False},
+            "LLM_REPLY_LENGTH_INVALID": {"status": "FAILED", "retryable": False},
+            "REPLY_QUALITY_BLOCKED": {"status": "FAILED", "retryable": False},
+            "PERSONA_NOT_READY": {"status": "FAILED", "retryable": False},
+        },
+    }
+    assert document["letter_detail_generation"] == generation_contract
+    assert example["letter_detail_generation"] == generation_contract
     assert "LEGACY_IMPORT_NOT_IMPLEMENTED" not in http_contract.ERROR_CODES
     expected_import_mode = "read-only-atomic-import"
     assert schema["properties"]["privacy"]["properties"]["legacy_import_mode"]["const"] == expected_import_mode
@@ -1285,6 +1364,15 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     assert legacy_fixture["mode"] == "read_only"
     assert "original" not in json.dumps(legacy_fixture).lower()
     assert "private" not in json.dumps(legacy_fixture).lower()
+
+
+def test_quality_blocked_generation_error_is_documented_as_sanitized_terminal_detail() -> None:
+    table = (ROOT / "docs" / "B02_ERROR_CODES.md").read_text(encoding="utf-8")
+    row = next(line for line in table.splitlines() if "`REPLY_QUALITY_BLOCKED`" in line)
+
+    assert "| 200 detail |" in row
+    assert "| FAILED | 否 |" in row
+    assert "不回显" in row
 
 
 def test_b02_current_release_paths_are_exactly_owned(monkeypatch) -> None:
