@@ -52,6 +52,8 @@ def _layer_payload(layer: str) -> str:
     if layer == "identity_boundary":
         payload["intimacy_request"] = "none"
         payload["intimacy_claims"] = []
+    if layer in {"identity_boundary", "continuity_memory"}:
+        payload["hard_evidence"] = []
     return json.dumps(payload)
 
 
@@ -63,6 +65,7 @@ def _layer_score_payload(
     drift_detected: bool = False,
     intimacy_request: str = "none",
     intimacy_claims: list[dict[str, object]] | None = None,
+    hard_evidence: list[dict[str, object]] | None = None,
 ) -> str:
     payload: dict[str, object] = {
         "layer": layer,
@@ -73,6 +76,8 @@ def _layer_score_payload(
     if layer == "identity_boundary":
         payload["intimacy_request"] = intimacy_request
         payload["intimacy_claims"] = intimacy_claims or []
+    if layer in {"identity_boundary", "continuity_memory"}:
+        payload["hard_evidence"] = hard_evidence or []
     return json.dumps(payload)
 
 
@@ -98,6 +103,47 @@ def _claim_payload(candidate: str, claim_id: str) -> dict[str, object]:
     }
 
 
+def _hard_evidence_payload(
+    candidate: str,
+    code: str,
+    *,
+    evidence_id: str = "evidence.synthetic.1",
+    start: int = 0,
+    end: int | None = None,
+    claim_kind: str = "past_fact",
+    support_source: str = "none",
+    reason_code: str = "UNSUPPORTED_CLAIM",
+) -> dict[str, object]:
+    return {
+        "evidence_id": evidence_id,
+        "code": code,
+        "start": start,
+        "end": len(candidate) if end is None else end,
+        "claim_kind": claim_kind,
+        "support_source": support_source,
+        "reason_code": reason_code,
+    }
+
+
+def _adjudication_payload(
+    evidence: Mapping[str, object],
+    decision: str,
+) -> str:
+    return json.dumps(
+        {
+            "decisions": [
+                {
+                    "evidence_id": evidence["evidence_id"],
+                    "code": evidence["code"],
+                    "start": evidence["start"],
+                    "end": evidence["end"],
+                    "decision": decision,
+                }
+            ]
+        }
+    )
+
+
 def _intimacy_context() -> ReplyContext:
     return ReplyContext.create(
         ReplyMode.TEXT_LETTER,
@@ -117,16 +163,19 @@ class SequencedQualityGateway(Gateway):
         candidate: str,
         reviews: list[str],
         rewritten: str = "我听见了。先不用急着给自己一个结论。",
+        adjudications: list[str] | None = None,
     ) -> None:
         self.candidate = candidate
         self.reviews = list(reviews)
         self.rewritten = rewritten
+        self.adjudications = list(adjudications or [])
         self.call_kinds: list[str] = []
         self.review_system_prompts: list[str] = []
         self.review_requests: list[dict[str, object]] = []
         self.rewrite_system_prompts: list[str] = []
         self.rewrite_requests: list[dict[str, object]] = []
         self.review_input_sizes: list[int] = []
+        self.adjudication_requests: list[dict[str, object]] = []
 
     async def complete(
         self,
@@ -136,7 +185,11 @@ class SequencedQualityGateway(Gateway):
     ) -> GatewayResponse:
         system = str(messages[0].get("content", ""))
         user = str(messages[-1].get("content", ""))
-        if "P02_REPLY_REVIEW_JSON" in system:
+        if "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system:
+            self.call_kinds.append("adjudication")
+            self.adjudication_requests.append(json.loads(user))
+            text = self.adjudications.pop(0)
+        elif "P02_REPLY_REVIEW_JSON" in system:
             self.call_kinds.append("review")
             self.review_system_prompts.append(system)
             self.review_requests.append(json.loads(user))
@@ -258,6 +311,7 @@ def test_configured_provider_runs_structured_persona_review(
     assert result.reviewer_calls == 1
     assert result.rewrite_calls == 0
     assert gateway.call_kinds == ["generation", *("review",) * 5]
+    assert gateway.adjudication_requests == []
     assert [request["layer"] for request in gateway.review_requests] == [
         "identity_boundary",
         "voice_style",
@@ -554,18 +608,29 @@ def test_production_reviewer_request_allows_only_tier_within_ceiling(
     ),
 )
 def test_identity_layer_accepts_each_intimacy_rubric_code(code: str) -> None:
+    candidate = "Synthetic candidate."
+    evidence = _hard_evidence_payload(
+        candidate,
+        code,
+        claim_kind="relationship",
+    )
     reviews = _passing_layer_payloads()
     reviews[0] = _layer_score_payload(
         "identity_boundary",
         0,
         hard_violations=[code],
         drift_detected=True,
+        hard_evidence=[evidence],
     )
     result = GatewayPersonaReviewer(
-        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        SequencedQualityGateway(
+            candidate="unused",
+            reviews=reviews,
+            adjudications=[_adjudication_payload(evidence, "CONFIRM")],
+        ),
         ROOT / "linli_character" / "persona_release_v2.json",
         1,
-    ).review("Synthetic candidate.", _context())
+    ).review(candidate, _context())
 
     assert result.verdict is ReviewVerdict.REWRITE
     assert tuple(item.code for item in result.violations) == (code,)
@@ -593,6 +658,344 @@ def test_identity_layer_missing_intimacy_metadata_fails_closed() -> None:
 
     assert result.verdict is ReviewVerdict.UNAVAILABLE
     assert result.error_code == "REVIEWER_UNAVAILABLE"
+
+
+def test_continuity_hard_violation_without_evidence_fails_closed() -> None:
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+    )
+
+    result = GatewayPersonaReviewer(
+        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review("Synthetic unsupported memory claim.", _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    ("layer_index", "layer"),
+    ((0, "identity_boundary"), (3, "continuity_memory")),
+)
+def test_evidence_bound_layer_cannot_imply_hard_failure_without_a_code(
+    layer_index: int,
+    layer: str,
+) -> None:
+    reviews = _passing_layer_payloads()
+    reviews[layer_index] = _layer_score_payload(
+        layer,
+        0,
+        drift_detected=True,
+    )
+
+    result = GatewayPersonaReviewer(
+        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review("Synthetic candidate.", _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+
+
+@pytest.mark.parametrize("invalid_kind", ("range", "code"))
+def test_hard_evidence_must_match_code_and_candidate_offsets(
+    invalid_kind: str,
+) -> None:
+    candidate = "Synthetic unsupported memory claim."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    if invalid_kind == "range":
+        evidence["end"] = len(candidate) + 1
+    else:
+        evidence["code"] = "BOUNDARY_BREACH"
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+
+    result = GatewayPersonaReviewer(
+        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+
+
+def test_adjudicator_rejects_false_memory_fabrication_as_soft_warning() -> None:
+    candidate = "Synthetic emotional acknowledgment."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=reviews,
+        adjudications=[_adjudication_payload(evidence, "REJECT")],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.REWRITE
+    assert [(item.code, item.severity, item.start, item.end) for item in result.violations] == [
+        ("MEMORY_FABRICATION", "soft", 0, len(candidate))
+    ]
+    assert gateway.call_kinds == [*("review",) * 5, "adjudication"]
+
+
+@pytest.mark.parametrize(
+    ("layer_index", "layer", "code", "claim_kind", "fragment"),
+    (
+        (3, "continuity_memory", "MEMORY_FABRICATION", "location", "at the station"),
+        (0, "identity_boundary", "IDENTITY_DRIFT", "identity_claim", "I am Olivia"),
+    ),
+)
+def test_confirmed_identity_or_location_claim_stays_hard_with_exact_span(
+    layer_index: int,
+    layer: str,
+    code: str,
+    claim_kind: str,
+    fragment: str,
+) -> None:
+    candidate = f"Synthetic prefix; {fragment}; synthetic suffix."
+    start = candidate.index(fragment)
+    evidence = _hard_evidence_payload(
+        candidate,
+        code,
+        start=start,
+        end=start + len(fragment),
+        claim_kind=claim_kind,
+    )
+    reviews = _passing_layer_payloads()
+    reviews[layer_index] = _layer_score_payload(
+        layer,
+        0,
+        hard_violations=[code],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=reviews,
+        adjudications=[_adjudication_payload(evidence, "CONFIRM")],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.REWRITE
+    assert [(item.code, item.severity, item.start, item.end) for item in result.violations] == [
+        (code, "hard", start, start + len(fragment))
+    ]
+    assert gateway.adjudication_requests[0]["claims"] == [
+        {
+            "layer": layer,
+            **evidence,
+        }
+    ]
+    assert fragment not in repr(result)
+
+
+def test_malformed_adjudication_fails_closed() -> None:
+    candidate = "Synthetic unsupported memory claim."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    reviews = _passing_layer_payloads()
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate="unused",
+        reviews=reviews,
+        adjudications=[json.dumps({"decisions": []})],
+    )
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+
+
+def test_duplicate_evidence_ids_across_layers_fail_before_adjudication() -> None:
+    candidate = "Synthetic boundary claim."
+    identity_evidence = _hard_evidence_payload(
+        candidate,
+        "BOUNDARY_BREACH",
+        evidence_id="evidence.duplicate",
+        claim_kind="relationship",
+    )
+    continuity_evidence = _hard_evidence_payload(
+        candidate,
+        "BOUNDARY_BREACH",
+        evidence_id="evidence.duplicate",
+        claim_kind="shared_history",
+    )
+    reviews = _passing_layer_payloads()
+    reviews[0] = _layer_score_payload(
+        "identity_boundary",
+        0,
+        hard_violations=["BOUNDARY_BREACH"],
+        drift_detected=True,
+        hard_evidence=[identity_evidence],
+    )
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["BOUNDARY_BREACH"],
+        drift_detected=True,
+        hard_evidence=[continuity_evidence],
+    )
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert gateway.adjudication_requests == []
+
+
+def test_rejected_false_memory_claim_does_not_block_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic emotional acknowledgment."
+    rewritten = "Synthetic restrained acknowledgment."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    first = _passing_layer_payloads()
+    first[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *_passing_layer_payloads()],
+        rewritten=rewritten,
+        adjudications=[_adjudication_payload(evidence, "REJECT")],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Synthetic current input.", request_id="false-memory"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.text == rewritten
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+    assert gateway.call_kinds == [
+        "generation",
+        *("review",) * 5,
+        "adjudication",
+        "rewrite",
+        *("review",) * 5,
+    ]
+
+
+def test_rewrite_uses_fresh_candidate_evidence_and_adjudication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic claim at old location."
+    rewritten = "Synthetic claim at new location."
+    old_fragment = "old location"
+    new_fragment = "new location"
+    old_start = candidate.index(old_fragment)
+    new_start = rewritten.index(new_fragment)
+    old_evidence = _hard_evidence_payload(
+        candidate,
+        "MEMORY_FABRICATION",
+        evidence_id="evidence.old",
+        start=old_start,
+        end=old_start + len(old_fragment),
+        claim_kind="location",
+    )
+    new_evidence = _hard_evidence_payload(
+        rewritten,
+        "MEMORY_FABRICATION",
+        evidence_id="evidence.new",
+        start=new_start,
+        end=new_start + len(new_fragment),
+        claim_kind="location",
+    )
+    first = _passing_layer_payloads()
+    first[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[old_evidence],
+    )
+    second = _passing_layer_payloads()
+    second[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[new_evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *second],
+        rewritten=rewritten,
+        adjudications=[
+            _adjudication_payload(old_evidence, "CONFIRM"),
+            _adjudication_payload(new_evidence, "REJECT"),
+        ],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(content="Synthetic current input.", request_id="fresh-evidence"),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.quality_status == "accepted_with_warnings"
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+    assert [request["candidate_reply"] for request in gateway.adjudication_requests] == [
+        candidate,
+        rewritten,
+    ]
+    assert [request["claims"][0]["evidence_id"] for request in gateway.adjudication_requests] == [
+        "evidence.old",
+        "evidence.new",
+    ]
 
 
 def test_reviewer_uses_release_declarations_without_source_document(

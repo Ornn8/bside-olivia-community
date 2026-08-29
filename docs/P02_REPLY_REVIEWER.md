@@ -46,8 +46,8 @@ pending/control-only continuation facts, databases, filesystem paths, provider
 configuration, or the complete archive. Review prompts and responses are not
 persisted.
 
-The existing `identity_boundary` layer owns the intimacy assessment in the
-same provider call. It may emit `STAGE_DRIFT`,
+The existing `identity_boundary` layer owns the intimacy assessment in its
+normal layer call. It may emit `STAGE_DRIFT`,
 `ACKNOWLEDGED_FEELING_REWRITE`, `INTIMACY_VIOLATION`,
 `UNSOLICITED_INTIMACY`, or `RELATIONSHIP_RETRACTION`. A user's wishes,
 self-labels, unilateral nicknames, repeated messages, or lack of refusal do
@@ -66,11 +66,51 @@ mode, a closing question is `STYLE_DRIFT` only when it adds no necessary
 information or choice and merely forces continuation; useful concrete
 questions remain allowed.
 
+## Evidence-bound hard findings and adjudication
+
+`identity_boundary` and `continuity_memory` cannot create a hard finding from
+a score or drift flag alone. Every hard code must have exactly one typed
+`hard_evidence` item with:
+
+- a unique stable `evidence_id` and the matching hard `code`;
+- zero-based, end-exclusive `start` and `end` offsets inside the current
+  candidate;
+- one bounded `claim_kind`: `identity_claim`, `current_fact`, `past_fact`,
+  `shared_history`, `habit`, `location`, `action`, or `relationship`;
+- one bounded `support_source`: `current_user`, `character_history`, `memory`,
+  `world_fact`, `known_continuation`, or `none`;
+- a short uppercase `reason_code` that contains no reply excerpt.
+
+Missing, duplicate, mismatched, out-of-range, or schema-invalid evidence makes
+the whole enabled review unavailable and therefore fails closed. Other review
+layers keep their existing response schema.
+
+Well-formed hard evidence conditionally spends at most one additional model
+call per candidate. The call uses the same configured quality Gateway and
+`deepseek-v4-flash`; it does not create a provider or retry path. The narrow
+adjudicator receives the candidate, bounded approved release authority and
+relationship context, the bounded current-user excerpt, bounded assembled
+memory, typed Linli-only history, and claim metadata, and returns one
+candidate-bound `CONFIRM` or `REJECT` decision per evidence id. A normal PASS
+candidate makes no adjudication call. Malformed adjudication fails closed.
+
+Only confirmed claims remain hard violations, using their exact candidate
+spans. Rejected claims become score-1, no-drift localized soft warnings; they
+may consume the existing single rewrite budget but cannot hard-block by the old
+score-0/whole-candidate fallback. A rewritten candidate always runs all five
+layers again and, when needed, receives a fresh independent adjudication. No
+old claim, span, or decision is reused.
+
+Adjudication prompts and responses are transient. Candidate text is not added
+to quality status, audit records, evidence objects, or logs, and the typed
+evidence contains offsets and machine reason codes rather than quoted text.
+
 Each candidate is reviewed independently. After the single permitted rewrite,
 the second identity review must return fresh spans and the same request
 classification. Stale spans, conflicting claim sources, changed request
 classification, or malformed metadata fail closed. This adds no sixth review
-layer and no extra provider call. An explicit hard `STYLE_DRIFT` that remains
+layer; only evidence-bound identity/continuity hard findings add the single
+conditional adjudication call described above. An explicit hard `STYLE_DRIFT` that remains
 after the rewrite is blocked; only a localized voice-style score of 1 with no
 hard code and no drift flag may remain an accepted warning.
 
