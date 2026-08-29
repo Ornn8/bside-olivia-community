@@ -12,6 +12,7 @@ import re
 import subprocess
 from typing import Protocol, Any
 from urllib.parse import urlsplit
+import zipfile
 
 from aiohttp import web
 
@@ -40,6 +41,7 @@ class VideoCapabilityAPIInstaller(Protocol):
     def pause(self) -> str: ...
     def resume(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
     def retry(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str: ...
+    def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str: ...
     def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str) -> str: ...
 
 
@@ -67,6 +69,24 @@ def _runtime_manifest_sha256(runtime_root: Path) -> str:
     except OSError as exc:
         raise VideoCapabilityAPIError("VIDEO_RUNTIME_ROOT_INVALID", status=400) from exc
     return digest.hexdigest()
+
+
+def _offline_archive_path(value: object) -> Path:
+    if not isinstance(value, (str, os.PathLike)):
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_ARCHIVE_INVALID", status=400)
+    path = Path(value).expanduser()
+    try:
+        if (
+            not path.is_absolute()
+            or path.is_symlink()
+            or path.suffix.lower() != ".zip"
+            or not path.is_file()
+            or not zipfile.is_zipfile(path)
+        ):
+            raise VideoCapabilityAPIError("VIDEO_OFFLINE_ARCHIVE_INVALID", status=400)
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_ARCHIVE_INVALID", status=400) from exc
 
 
 def _select_windows_runtime_root() -> Path | None:
@@ -109,6 +129,47 @@ def _select_windows_runtime_root() -> Path | None:
     return None if not selected else _runtime_root_path(selected)
 
 
+def _select_windows_offline_archive() -> Path | None:
+    if os.name != "nt":
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not system_root:
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
+    powershell = (
+        Path(system_root)
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    if not powershell.is_file():
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "$dialog.Title = '选择 Olivia 视频离线包';"
+        "$dialog.Filter = 'Olivia 视频离线包 (*.zip)|*.zip';"
+        "$dialog.Multiselect = $false;"
+        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "{ [Console]::Out.Write($dialog.FileName) }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503) from exc
+    if completed.returncode != 0:
+        raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
+    selected = completed.stdout.strip()
+    return None if not selected else _offline_archive_path(selected)
+
+
 def _authorize(request: web.Request, *, confirmation: bool) -> str:
     try:
         hostname = urlsplit(f"//{request.host}").hostname
@@ -148,6 +209,7 @@ def mount_original_client_video_capability_api(
     trusted_origins: Sequence[str],
     authorize_session,
     select_runtime_root=None,
+    select_offline_archive=None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("VIDEO_CAPABILITY_API_ALREADY_MOUNTED")
@@ -155,6 +217,7 @@ def mount_original_client_video_capability_api(
     app[_MOUNTED_KEY] = True
     control_lock = asyncio.Lock()
     runtime_picker = select_runtime_root or _select_windows_runtime_root
+    offline_picker = select_offline_archive or _select_windows_offline_archive
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -238,15 +301,45 @@ def mount_original_client_video_capability_api(
                 "runtime_root": _runtime_root_path(payload.get("runtime_root")),
                 "manifest_sha256": str(payload["manifest_sha256"]).lower(),
             }
-        elif action_name in {"import_official", "import_offline"}:
-            expected = {"action"} if action_name == "import_official" else {"action", "bundle_id"}
-            if set(payload) != expected or (
-                action_name == "import_offline" and not isinstance(bundle_id, str)
-            ):
+        elif action_name == "import_offline":
+            if set(payload) != {"action"}:
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            raise VideoCapabilityAPIError(
-                "VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE", status=503
+            selected = await asyncio.to_thread(offline_picker)
+            if selected is None:
+                return web.json_response(
+                    {"status": "CANCELLED"},
+                    headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
+                )
+            archive = _offline_archive_path(selected)
+            try:
+                async with control_lock:
+                    results = [
+                        await asyncio.to_thread(
+                            installer.import_offline,
+                            bundle_id=bundle,
+                            offline_root=archive,
+                            source_mode="official",
+                            accept_licenses=bundle == "music_video",
+                        )
+                        for bundle in ("ordinary_video", "music_video")
+                    ]
+            except Exception as exc:
+                raise VideoCapabilityAPIError(
+                    "VIDEO_CAPABILITY_ACTION_UNAVAILABLE", status=503
+                ) from exc
+            if any(value not in {"APPLIED", "NOOP", "REJECTED"} for value in results):
+                raise VideoCapabilityAPIError(
+                    "VIDEO_CAPABILITY_RESULT_INVALID", status=503
+                )
+            result = "APPLIED" if "APPLIED" in results else "NOOP"
+            return web.json_response(
+                {"status": result},
+                headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
             )
+        elif action_name == "import_official":
+            if set(payload) != {"action"}:
+                raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
+            raise VideoCapabilityAPIError("VIDEO_NATIVE_PATH_SELECTION_UNAVAILABLE", status=503)
         else:
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
         try:

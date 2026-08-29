@@ -174,8 +174,8 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "DeepSeek 官方" in source
     assert "自动选择（国内源优先）" in source
     assert "仅官方源" in source
-    assert "导入离线包（暂不可用）" in source
-    assert "等待可信签名与受限导入校验完成" in source
+    assert "导入离线包（暂不可用）" not in source
+    assert "等待可信签名与受限导入校验完成" not in source
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
     assert "暂停下载" in source
     assert "继续下载" in source
@@ -187,11 +187,23 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "剩余" in source
     assert "安装后占用" in source
     assert "实际来源" in source
-    assert "精确位置" in source
-    assert 'installation_root: "程序目录"' in source
-    assert 'local_data_root: "本地数据目录"' in source
+    assert 'field("许可证"' not in source
+    assert "精确位置" not in source
+    assert 'installation_root: "程序目录"' not in source
+    assert 'local_data_root: "本地数据目录"' not in source
     assert "|| isSettingsRoute()" not in source
     assert "innerHTML" not in source
+
+
+def test_paused_memory_download_keeps_its_original_source_selection() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    memory_panel = source.split(
+        "const renderMem0CapabilityPanel = async (panel) => {", 1
+    )[1].split("const videoCapabilityViewState", 1)[0]
+
+    assert 'stateValue === "paused"' in memory_panel
+    assert '["auto", "official"].includes(payload.source)' in memory_panel
+    assert "source.value = payload.source" in memory_panel
 
 
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
@@ -240,6 +252,26 @@ def test_video_capability_first_probe_has_truthful_progress_and_timeout() -> Non
     assert video_panel.index("正在检测本机视频运行环境") < video_panel.index(
         "await requestJson(VIDEO_CAPABILITY_PATH)"
     )
+    initial_request = video_panel.index("await requestJson(VIDEO_CAPABILITY_PATH)")
+    initial_guard = video_panel.index(
+        "if (panel.videoCapabilityGeneration !== renderGeneration) return;"
+    )
+    assert initial_request < initial_guard < video_panel.index("const known = new Map")
+
+
+def test_video_capability_progress_is_readable_and_does_not_replace_the_panel_each_tick() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
+
+    assert "formatBytes(downloadedBytes)" in video_panel
+    assert "formatBytes(totalBytes)" in video_panel
+    assert "${downloadedBytes} / ${totalBytes} 字节" not in video_panel
+    assert "window.setTimeout(() => renderVideoCapabilityPanel(panel), 1000)" not in video_panel
+    assert "progressText.textContent" in video_panel
+    assert "value >= 1024 * 1024 * 1024" in source
+    assert ".toFixed(1)} GiB" in source
 
 
 def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> None:
@@ -288,8 +320,8 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert 'source: videoSourceMode' in source
     assert "国内源优先" in source
     assert "仅官方源" in source
-    assert "如果你已经拿到离线包" in source
-    assert "选择解压后的离线包" in source
+    assert "恢复已有视频运行环境" in source
+    assert "选择视频运行时文件夹" in source
     assert "开始检查并安装" in source
     assert "文件较多时可能需要几十分钟，请勿关闭 Olivia" in source
     assert "runtime_import" in source
@@ -309,6 +341,18 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert "尚未提供可迁移运行时归档" not in source
     assert "runtimeDigest" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source
+
+
+def test_video_capability_offers_direct_offline_zip_import() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
+
+    assert 'button("导入组件离线包"' in video_panel
+    assert '{ action: "import_offline" }' in video_panel
+    assert "无需解压" in video_panel
+    assert "选择解压后的离线包" not in video_panel
 
 
 def test_partial_video_install_still_offers_missing_bundle_download() -> None:

@@ -394,7 +394,15 @@ class ResumableModelDownloader:
                 partial_source.unlink(missing_ok=True)
             last_error: Exception | None = None
             attempted = False
-            for source in self.sources:
+            sources = list(self.sources)
+            try:
+                recorded_partial_source = partial_source.read_text(encoding="utf-8")
+            except OSError:
+                recorded_partial_source = ""
+            if partial.is_file() and recorded_partial_source in sources:
+                sources.remove(recorded_partial_source)
+                sources.insert(0, recorded_partial_source)
+            for source in sources:
                 if source in self._failed_sources:
                     continue
                 attempted = True
@@ -1220,6 +1228,7 @@ class Mem0CapabilityInstaller:
         self._lock = threading.Lock()
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
+        self._progress_floor = 0
         self._installed_bytes = 0
         self._installed_measurement_complete = False
         self._install_locations = (
@@ -1331,7 +1340,7 @@ class Mem0CapabilityInstaller:
                 self._status = self._new_status(
                     CapabilityState.DOWNLOADING,
                     phase,
-                    min(self.total, base + int(span * ratio)),
+                    min(self.total, max(self._progress_floor, base + int(span * ratio))),
                     current=Path(current).name[:160],
                     source=getattr(layer, "last_source", None) or source,
                 )
@@ -1364,11 +1373,17 @@ class Mem0CapabilityInstaller:
         with self._lock:
             if self._pause.is_set():
                 self._status = self._new_status(
-                    CapabilityState.PAUSED, "queued", 0, source=source_mode
+                    CapabilityState.PAUSED,
+                    "queued",
+                    self._progress_floor,
+                    source=source_mode,
                 )
                 return "PAUSED"
             self._status = self._new_status(
-                CapabilityState.DOWNLOADING, "runtime", 0, source=source_mode
+                CapabilityState.DOWNLOADING,
+                "runtime",
+                self._progress_floor,
+                source=source_mode,
             )
         try:
             self.runtime.install(
@@ -1428,6 +1443,7 @@ class Mem0CapabilityInstaller:
         *,
         source_mode: str,
         offline_root: Path | None = None,
+        _progress_floor: int = 0,
     ) -> str:
         if source_mode not in {"auto", "official"} or offline_root is not None:
             raise ValueError("capability source mode is invalid")
@@ -1447,8 +1463,12 @@ class Mem0CapabilityInstaller:
                 )
                 return "REJECTED"
             self._pause.clear()
+            self._progress_floor = max(0, min(self.total, int(_progress_floor)))
             self._status = self._new_status(
-                CapabilityState.QUEUED, "queued", 0, source=source_mode
+                CapabilityState.QUEUED,
+                "queued",
+                self._progress_floor,
+                source=source_mode,
             )
             self._thread = threading.Thread(
                 target=self._install_background,
@@ -1482,9 +1502,16 @@ class Mem0CapabilityInstaller:
         return "APPLIED"
 
     def resume(self, *, source_mode: str) -> str:
-        if self.status().state is CapabilityState.READY:
+        status = self.status()
+        if status.state is CapabilityState.READY:
             return "NOOP"
-        return self.start(source_mode=source_mode)
+        resume_source = (
+            status.source if status.source in {"auto", "official"} else source_mode
+        )
+        return self.start(
+            source_mode=resume_source,
+            _progress_floor=status.downloaded_bytes,
+        )
 
     def uninstall(self, *, remove_model: bool) -> str:
         with self._lock:

@@ -1048,6 +1048,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const formatBytes = (value) => {
     if (!Number.isInteger(value) || value < 0) return "未知";
     if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KiB`;
+    if (value >= 1024 * 1024 * 1024) {
+      return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+    }
     return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
   };
 
@@ -1092,28 +1095,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "text-text-secondary text-body-m font-regular"
     );
     const metadata = stack();
-    const rootLabels = {
-      installation_root: "程序目录",
-      local_data_root: "本地数据目录",
-    };
-    const locations = Array.isArray(payload.install_locations)
-      ? payload.install_locations.flatMap((value) => {
-          if (!value || typeof value !== "object") return [];
-          const root = rootLabels[value.root];
-          const relative = typeof value.relative_path === "string" ? value.relative_path : "";
-          return root && relative ? [`${root}/${relative}`] : [];
-        })
-      : [];
     metadata.append(
       field("状态", labels[stateValue]),
-      field("版本", typeof payload.version === "string" ? payload.version : "未知"),
       field("下载量", formatBytes(payload.total_bytes)),
       field("剩余", formatBytes(payload.remaining_bytes)),
       field("安装后占用", formatBytes(payload.installed_bytes)),
       field("实际来源", typeof payload.source === "string" ? payload.source : "尚未选择"),
-      field("许可证", typeof payload.license_summary === "string" ? payload.license_summary : "请查看第三方许可证"),
-      field("运行设备", payload.requires_gpu === false ? "CPU（无需 GPU）" : "请查看兼容说明"),
-      field("精确位置", locations.length ? locations.join("；") : "Olivia 本地受管目录")
+      field("运行设备", payload.requires_gpu === false ? "CPU（无需 GPU）" : "请查看兼容说明")
     );
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
@@ -1136,13 +1124,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       for (const [value, label, disabled] of [
         ["auto", "自动选择（国内源优先）", false],
         ["official", "仅官方源", false],
-        ["offline", "导入离线包（暂不可用）", true],
       ]) {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = label;
         option.disabled = disabled;
         source.append(option);
+      }
+      if (
+        stateValue === "paused"
+        && ["auto", "official"].includes(payload.source)
+      ) {
+        source.value = payload.source;
       }
       const install = button(stateValue === "paused" ? "继续下载" : "下载并启用", async () => {
         if (!await confirmAction("确认下载长期记忆能力包？下载将在后台继续。")) return;
@@ -1191,12 +1184,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       controls.append(uninstall, removeAll);
     }
-    const offlineNote = text(
-      "p",
-      "离线包等待可信签名与受限导入校验完成后开放。",
-      "text-text-secondary text-caption-m font-regular"
-    );
-    panel.replaceChildren(heading, summary, metadata, controls, offlineNote, result);
+    panel.replaceChildren(heading, summary, metadata, controls, result);
   };
 
   const videoCapabilityViewState = (bundles) => {
@@ -1223,20 +1211,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderVideoCapabilityPanel = async (panel) => {
-    panel.replaceChildren(
-      text("div", "正在检测本机视频运行环境……", "text-text-body text-label-l"),
-      text(
-        "div",
-        "第一次检测可能需要几分钟，设置页面仍可继续使用。",
-        "text-text-secondary text-body-m font-regular"
-      )
-    );
+    const renderGeneration = (Number(panel.videoCapabilityGeneration) || 0) + 1;
+    panel.videoCapabilityGeneration = renderGeneration;
+    if (panel.videoCapabilityProgressTimer) {
+      window.clearTimeout(panel.videoCapabilityProgressTimer);
+      panel.videoCapabilityProgressTimer = null;
+    }
+    if (!panel.childElementCount) {
+      panel.replaceChildren(
+        text("div", "正在检测本机视频运行环境……", "text-text-body text-label-l"),
+        text(
+          "div",
+          "第一次检测可能需要几分钟，设置页面仍可继续使用。",
+          "text-text-secondary text-body-m font-regular"
+        )
+      );
+    }
     let payload = null;
     try {
       payload = await requestJson(VIDEO_CAPABILITY_PATH);
     } catch (_error) {
       payload = null;
     }
+    if (panel.videoCapabilityGeneration !== renderGeneration) return;
     const known = new Map(
       payload && Array.isArray(payload.bundles)
         ? payload.bundles
@@ -1284,13 +1281,51 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       result.textContent = "下载时仅使用官方源。";
     });
     sourceControls.append(domesticSource, officialSource);
+    const progressText = text(
+      "div",
+      totalBytes
+        ? `已处理 ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`
+        : "大小将在安装时按固定清单校验",
+      "text-text-secondary text-caption-m font-regular"
+    );
     item.append(
       text("div", "视频回信（说话 + 音乐）", "text-text-body text-label-l"),
       text("div", stateLabel, "text-text-secondary text-body-m font-regular"),
       text("div", "语音、音乐、口型和媒体工具会自动准备，无需逐项选择。", "text-text-secondary text-caption-m font-regular"),
-      text("div", totalBytes ? `已处理 ${downloadedBytes} / ${totalBytes} 字节` : "大小将在安装时按固定清单校验", "text-text-secondary text-caption-m font-regular")
+      progressText
     );
     item.append(sourceControls);
+    const importOffline = button("导入组件离线包", async () => {
+      setButtonsBusy([importOffline], true);
+      result.textContent = "请选择已经下载好的视频组件 ZIP，无需解压。";
+      try {
+        const response = await requestCapability(
+          VIDEO_CAPABILITY_ACTION_PATH,
+          { action: "import_offline" },
+          310000
+        );
+        if (response.status === "CANCELLED") {
+          result.textContent = "已取消导入。";
+          return;
+        }
+        await renderVideoCapabilityPanel(panel);
+      } catch (_error) {
+        result.textContent = "组件包无法导入，请确认选择的是 Olivia 视频组件 ZIP。";
+      } finally {
+        setButtonsBusy([importOffline], false);
+      }
+    });
+    importOffline.disabled = state === "downloading" || state === "ready";
+    item.append(
+      text(
+        "div",
+        state === "downloading"
+          ? "也可导入组件 ZIP；请先暂停当前下载。"
+          : "已有组件 ZIP 可直接导入，无需解压。",
+        "text-text-secondary text-caption-m font-regular"
+      ),
+      importOffline
+    );
     if (state === "downloading") {
       const pause = button("暂停下载", async () => {
         try {
@@ -1329,16 +1364,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (runtimeRequired) {
       const runtimeNote = text(
         "p",
-        "离线安装：如果你已经拿到离线包，解压后选择文件夹。Olivia 会自动检查并安装。",
+        "恢复已有视频运行环境：选择完整的视频运行时文件夹，Olivia 会自动检查并启用。",
         "text-text-secondary text-caption-m font-regular"
       );
       const selectedRuntime = text(
         "p",
-        "尚未选择离线包。",
+        "尚未选择视频运行时文件夹。",
         "text-text-secondary text-caption-m font-regular"
       );
       let runtimeManifestSha256 = "";
-      const chooseRuntime = button("选择解压后的离线包", async () => {
+      const chooseRuntime = button("选择视频运行时文件夹", async () => {
         setButtonsBusy([chooseRuntime], true);
         try {
           const selected = await requestCapability(
@@ -1357,14 +1392,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             selectedRuntime.textContent = `已选择：${runtimeRoot.split(/[\\/]/).pop()}`;
           }
         } catch (_error) {
-          result.textContent = "无法读取离线包，请确认已完整解压后重试。";
+          result.textContent = "无法读取视频运行时文件夹，请确认文件完整后重试。";
         } finally {
           setButtonsBusy([chooseRuntime], false);
         }
       });
       const importRuntime = button("开始检查并安装", async () => {
         if (!runtimeRoot || !/^[0-9a-f]{64}$/.test(runtimeManifestSha256)) {
-          result.textContent = "请先选择解压后的离线包。";
+          result.textContent = "请先选择视频运行时文件夹。";
           return;
         }
         setButtonsBusy([chooseRuntime, importRuntime], true);
@@ -1430,7 +1465,40 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refresh.append(button("重新检测", () => renderVideoCapabilityPanel(panel)));
     panel.replaceChildren(heading, summary, list, refresh);
     if (state === "downloading") {
-      window.setTimeout(() => renderVideoCapabilityPanel(panel), 1000);
+      const updateProgress = async () => {
+        let nextPayload = null;
+        try {
+          nextPayload = await requestJson(VIDEO_CAPABILITY_PATH);
+        } catch (_error) {
+          nextPayload = null;
+        }
+        if (panel.videoCapabilityGeneration !== renderGeneration) return;
+        if (!nextPayload) {
+          panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
+          return;
+        }
+        const nextBundles = nextPayload && Array.isArray(nextPayload.bundles)
+          ? nextPayload.bundles
+          : [];
+        const nextState = videoCapabilityViewState(nextBundles).state;
+        if (nextState !== "downloading") {
+          await renderVideoCapabilityPanel(panel);
+          return;
+        }
+        const nextDownloadedBytes = nextBundles.reduce(
+          (total, entry) => total + (Number(entry.downloaded_bytes) || 0),
+          0
+        );
+        const nextTotalBytes = nextBundles.reduce(
+          (total, entry) => total + (Number(entry.total_bytes) || 0),
+          0
+        );
+        progressText.textContent = nextTotalBytes
+          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}`
+          : "大小将在安装时按固定清单校验";
+        panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
+      };
+      panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
     }
   };
 
