@@ -644,6 +644,7 @@ def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> Non
         "prerequisites_required",
     ]
     assert status["bundles"][1]["reason_code"] == "VIDEO_RUNTIME_DEPENDENCIES_MISSING"
+    assert len(observed) == 1
     assert observed[-1]["OLIVIA_LOCAL_DATA_ROOT"] == str(data_root)
     assert observed[-1]["OLIVIA_FFMPEG_EXE"] == str(ffmpeg)
 

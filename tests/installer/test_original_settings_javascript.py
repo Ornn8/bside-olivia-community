@@ -228,6 +228,38 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert source.index('states.some((value) => ["queued", "downloading", "verifying"].includes(value))') < source.index('states.some((value) => value === "failed")')
 
 
+def test_video_capability_first_probe_has_truthful_progress_and_timeout() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
+
+    assert "path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH" in source
+    assert "正在检测本机视频运行环境" in video_panel
+    assert "第一次检测可能需要几分钟，设置页面仍可继续使用" in video_panel
+    assert video_panel.index("正在检测本机视频运行环境") < video_panel.index(
+        "await requestJson(VIDEO_CAPABILITY_PATH)"
+    )
+
+
+def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
+        "const mountOfficialLetterImport", 1
+    )[0]
+
+    assert (
+        "path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH"
+        in source
+    )
+    assert "? 300000" in source
+    assert ": 5000;" in source
+    assert "正在检测视频运行环境，第一次可能需要几分钟" in setting
+    assert setting.index("正在检测视频运行环境") < setting.index(
+        "await requestJson(VIDEO_REPLY_SETTINGS_PATH)"
+    )
+
+
 def test_video_capability_offers_verified_runtime_root_selection() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     runtime_import = source.split(
