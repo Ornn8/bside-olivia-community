@@ -1,4 +1,4 @@
-"""Configurable, read-only persona inputs for the local reply pipeline implementation."""
+"""Configurable, read-only persona inputs for the local reply pipeline."""
 
 from __future__ import annotations
 
