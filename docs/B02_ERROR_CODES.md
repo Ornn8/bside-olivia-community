@@ -31,6 +31,7 @@
 | 503 | `PRIVATE_WORLD_HISTORY_UNAVAILABLE` | UNAVAILABLE | 是 | PrivateWorld 在采集前不可用，或历史基线初始化失败；本批历史信件不会发布到信箱 |
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |
 | 409 | `IDEMPOTENCY_CONFLICT` | FAILED | 否 | 同一幂等键重复提交了不同正文 |
+| 409 | `LETTER_IN_PROGRESS` | FAILED | 是 | 上一封信仍在处理或尚未送达；客户端等待当前回信可见后再寄新信 |
 | 400 | `VIDEO_REPLY_SETTING_REQUEST_ID_INVALID` / `VIDEO_REPLY_SETTING_PAYLOAD_INVALID` | FAILED | 否 | 视频回信设置 request_id 必须为 `video_reply_setting:<opaque>`；enabled 必须为布尔值 |
 | 400 | `MEMORY_CLEAR_CONFIRMATION_REQUIRED` | FAILED | 否 | 原版客户端清空当前用户 Mem0 长期记忆时缺少 body 二次确认；不执行删除 |
 | 409 | `VIDEO_REPLY_SETTING_REQUEST_CONFLICT` | FAILED | 否 | 同一视频设置 request_id 重放了不同 enabled |
