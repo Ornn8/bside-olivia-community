@@ -89,6 +89,25 @@ def _passing_layer_payloads() -> list[str]:
     ]
 
 
+def _claim_payload(candidate: str, claim_id: str) -> dict[str, object]:
+    return {
+        "claim_id": claim_id,
+        "tier": "light_contact",
+        "start": 0,
+        "end": len(candidate),
+    }
+
+
+def _intimacy_context() -> ReplyContext:
+    return ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+
+
 class SequencedQualityGateway(Gateway):
     stream_enabled = False
 
@@ -303,6 +322,46 @@ def test_identity_review_receives_only_bounded_relationship_evidence() -> None:
         assert marker in prompt
 
 
+def test_letter_pipeline_supplies_only_published_character_replies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    prior_reply = "我喜欢和你聊天，但没有说我们在交往。"
+    monkeypatch.setattr(local_server.store, "letters", [
+        {"letter_status": "COMPLETED", "reply_text": "旧" * 2000,
+         "content": "用户说我们早就在一起了。", "created_at": 1, "reply_not_before": 0},
+        {"letter_status": "COMPLETED", "reply_text": prior_reply,
+         "content": "用户说你肯定喜欢我。", "created_at": 2, "reply_not_before": 0},
+        {"letter_status": "COMPLETED", "reply_text": "尚未发布的回复。",
+         "content": "future", "created_at": 3, "reply_not_before": 10**20},
+    ])
+    gateway = SequencedQualityGateway(
+        candidate="我会按我们真实说过的话回答。", reviews=_passing_layer_payloads()
+    )
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("OLIVIA_REPLY_REWRITE_ENABLED", "true")
+    monkeypatch.setattr("runtime.reply.reply_model_quality.create_gateway", lambda _: gateway)
+    adapter = local_server.LetterAdapter(GatewayConfig(
+        provider="openai_compatible", base_url="http://127.0.0.1:9/v1",
+        model="synthetic", persona_v2_enabled=True,
+    ), memory_port=NullMemoryPort())
+    adapter.gateway = gateway
+    pipeline = ReplyPipeline(
+        ReplyOrchestrator(CompatibilityBridge(adapter), timeout_seconds=2),
+        reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
+    )
+
+    result = asyncio.run(pipeline.run(
+        ReplyRequest(content="你以前是不是承认喜欢我？", request_id="letter-history"),
+        _context(),
+    ))
+    history = str(gateway.review_requests[0]["character_reply_history"])
+    assert result.state is ReplyState.COMPLETED
+    assert prior_reply in history and len(history) <= 1200
+    assert "用户说" not in history and "尚未发布" not in history
+
+
 def test_reassembled_current_user_reference_is_capped_at_600_characters() -> None:
     gateway = SequencedQualityGateway(
         candidate="边界内回复。", reviews=_passing_layer_payloads()
@@ -326,58 +385,15 @@ def test_reassembled_current_user_reference_is_capped_at_600_characters() -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("fresh_claim", "expected_state", "expected_codes"),
+    ((False, ReplyState.COMPLETED, ()),
+     (True, ReplyState.FAILED, ("UNSOLICITED_INTIMACY",))),
+    ids=("safe-rewrite", "persistent-claim"),
+)
 def test_production_reviewer_rechecks_fresh_claims_after_rewrite(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    candidate = "Synthetic unsolicited contact."
-    first = _passing_layer_payloads()
-    first[0] = _layer_score_payload(
-        "identity_boundary",
-        2,
-        intimacy_claims=[
-            {
-                "claim_id": "intimacy.initial",
-                "tier": "light_contact",
-                "start": 0,
-                "end": len(candidate),
-            }
-        ],
-    )
-    gateway = SequencedQualityGateway(
-        candidate=candidate,
-        reviews=[*first, *_passing_layer_payloads()],
-        rewritten="Synthetic safe rewrite.",
-    )
-
-    result = asyncio.run(
-        _pipeline(gateway, monkeypatch).run(
-            ReplyRequest(content="Please answer.", request_id="fresh-claims"),
-            ReplyContext.create(
-                ReplyMode.TEXT_LETTER,
-                trusted_time=TrustedTime(
-                    datetime(2026, 8, 22, tzinfo=timezone.utc)
-                ),
-                private_behavior=PrivateBehaviorView(
-                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
-                ),
-            ),
-        )
-    )
-
-    assert result.state is ReplyState.COMPLETED
-    assert result.text == "Synthetic safe rewrite."
-    assert result.reviewer_calls == 2
-    assert result.rewrite_calls == 1
-    assert gateway.call_kinds == [
-        "generation",
-        *("review",) * 5,
-        "rewrite",
-        *("review",) * 5,
-    ]
-
-
-def test_production_reviewer_blocks_persistent_fresh_intimacy_claim(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, fresh_claim: bool,
+    expected_state: ReplyState, expected_codes: tuple[str, ...],
 ) -> None:
     candidate = "Synthetic unsolicited contact."
     rewritten = "Synthetic rewritten contact."
@@ -385,53 +401,29 @@ def test_production_reviewer_blocks_persistent_fresh_intimacy_claim(
     first[0] = _layer_score_payload(
         "identity_boundary",
         2,
-        intimacy_claims=[
-            {
-                "claim_id": "intimacy.initial",
-                "tier": "light_contact",
-                "start": 0,
-                "end": len(candidate),
-            }
-        ],
+        intimacy_claims=[_claim_payload(candidate, "intimacy.initial")],
     )
     second = _passing_layer_payloads()
-    second[0] = _layer_score_payload(
-        "identity_boundary",
-        2,
-        intimacy_claims=[
-            {
-                "claim_id": "intimacy.rewritten",
-                "tier": "light_contact",
-                "start": 0,
-                "end": len(rewritten),
-            }
-        ],
-    )
+    if fresh_claim:
+        second[0] = _layer_score_payload(
+            "identity_boundary", 2,
+            intimacy_claims=[_claim_payload(rewritten, "intimacy.rewritten")],
+        )
     gateway = SequencedQualityGateway(
-        candidate=candidate,
-        reviews=[*first, *second],
-        rewritten=rewritten,
+        candidate=candidate, reviews=[*first, *second], rewritten=rewritten,
     )
-
     result = asyncio.run(
         _pipeline(gateway, monkeypatch).run(
-            ReplyRequest(content="Please answer.", request_id="persistent-claim"),
-            ReplyContext.create(
-                ReplyMode.TEXT_LETTER,
-                trusted_time=TrustedTime(
-                    datetime(2026, 8, 22, tzinfo=timezone.utc)
-                ),
-                private_behavior=PrivateBehaviorView(
-                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
-                ),
-            ),
+            ReplyRequest(content="Please answer.", request_id="fresh-claims"),
+            _intimacy_context(),
         )
     )
-
-    assert result.state is ReplyState.FAILED
-    assert result.violation_codes == ("UNSOLICITED_INTIMACY",)
+    assert result.state is expected_state
+    assert result.violation_codes == expected_codes
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == 1
+    assert gateway.call_kinds == ["generation", *("review",) * 5,
+                                  "rewrite", *("review",) * 5]
 
 
 def test_production_reviewer_request_allows_only_tier_within_ceiling(
@@ -443,32 +435,14 @@ def test_production_reviewer_request_allows_only_tier_within_ceiling(
         "identity_boundary",
         2,
         intimacy_request="requested",
-        intimacy_claims=[
-            {
-                "claim_id": "intimacy.requested",
-                "tier": "light_contact",
-                "start": 0,
-                "end": len(candidate),
-            }
-        ],
+        intimacy_claims=[_claim_payload(candidate, "intimacy.requested")],
     )
     gateway = SequencedQualityGateway(candidate=candidate, reviews=reviews)
 
     result = asyncio.run(
         _pipeline(gateway, monkeypatch).run(
-            ReplyRequest(
-                content="Please give that contact.",
-                request_id="requested-contact",
-            ),
-            ReplyContext.create(
-                ReplyMode.TEXT_LETTER,
-                trusted_time=TrustedTime(
-                    datetime(2026, 8, 22, tzinfo=timezone.utc)
-                ),
-                private_behavior=PrivateBehaviorView(
-                    intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
-                ),
-            ),
+            ReplyRequest(content="Please give that contact.", request_id="requested-contact"),
+            _intimacy_context(),
         )
     )
 

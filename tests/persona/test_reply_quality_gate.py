@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from runtime.reply.reply_context import (
     IntimacyRequest,
     IntimacyTier,
@@ -61,6 +63,10 @@ def _pass_review(
         intimacy_request,
         intimacy_claims,
     )
+
+
+def _claim(candidate: str, claim_id: str) -> IntimacyClaim:
+    return IntimacyClaim(claim_id, IntimacyTier.LIGHT_CONTACT, 0, len(candidate))
 
 
 def _unavailable_review() -> ReviewResult:
@@ -159,87 +165,54 @@ def test_candidate_bound_intimacy_claim_fails_closed_after_rewrite() -> None:
     assert result.rewrite_calls == 1
 
 
-def test_rewrite_uses_fresh_reviewer_claims_for_the_new_candidate() -> None:
-    candidate = "Synthetic contact."
-    initial_claim = IntimacyClaim(
-        "intimacy.initial",
-        IntimacyTier.LIGHT_CONTACT,
-        0,
-        len(candidate),
-    )
-    reviewer = _Reviewer(
-        _pass_review(intimacy_claims=(initial_claim,)),
-        _pass_review(),
-    )
-
-    result = run_reply_quality_gate(
-        candidate,
-        _context(intimacy_ceiling=IntimacyTier.LIGHT_CONTACT),
-        reviewer=reviewer,
-        rewriter=_Rewriter("Safe rewritten candidate."),
-    )
-
-    assert result.status is QualityGateStatus.ACCEPTED
-    assert result.text == "Safe rewritten candidate."
-    assert result.deterministic_checks == 2
-    assert result.reviewer_calls == 2
-    assert result.rewrite_calls == 1
-
-
-def test_rewrite_blocks_when_fresh_claim_still_exceeds_request() -> None:
+@pytest.mark.parametrize(
+    ("fresh_claim", "expected_status", "expected_codes"),
+    (
+        (False, QualityGateStatus.ACCEPTED, ()),
+        (True, QualityGateStatus.BLOCKED, ("UNSOLICITED_INTIMACY",)),
+    ),
+    ids=("safe-rewrite", "persistent-claim"),
+)
+def test_rewrite_uses_fresh_reviewer_claims_for_the_new_candidate(
+    fresh_claim: bool,
+    expected_status: QualityGateStatus,
+    expected_codes: tuple[str, ...],
+) -> None:
     candidate = "Synthetic contact."
     rewritten = "Rewritten contact remains."
-    initial_claim = IntimacyClaim(
-        "intimacy.initial",
-        IntimacyTier.LIGHT_CONTACT,
-        0,
-        len(candidate),
-    )
-    final_claim = IntimacyClaim(
-        "intimacy.rewritten",
-        IntimacyTier.LIGHT_CONTACT,
-        0,
-        len(rewritten),
-    )
     reviewer = _Reviewer(
-        _pass_review(intimacy_claims=(initial_claim,)),
-        _pass_review(intimacy_claims=(final_claim,)),
+        _pass_review(intimacy_claims=(_claim(candidate, "intimacy.initial"),)),
+        _pass_review(
+            intimacy_claims=((_claim(rewritten, "intimacy.rewritten"),)
+                             if fresh_claim else ())
+        ),
     )
-
     result = run_reply_quality_gate(
         candidate,
         _context(intimacy_ceiling=IntimacyTier.LIGHT_CONTACT),
         reviewer=reviewer,
         rewriter=_Rewriter(rewritten),
     )
-
-    assert result.status is QualityGateStatus.BLOCKED
-    assert result.violation_codes == ("UNSOLICITED_INTIMACY",)
+    assert result.status is expected_status
+    assert result.violation_codes == expected_codes
+    assert result.deterministic_checks == 2
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == 1
 
 
 def test_reviewer_classified_request_allows_claim_within_ceiling() -> None:
     candidate = "Synthetic requested contact."
-    claim = IntimacyClaim(
-        "intimacy.requested",
-        IntimacyTier.LIGHT_CONTACT,
-        0,
-        len(candidate),
-    )
-
     result = run_reply_quality_gate(
         candidate,
         _context(intimacy_ceiling=IntimacyTier.LIGHT_CONTACT),
         reviewer=_Reviewer(
             _pass_review(
                 intimacy_request=IntimacyRequest.REQUESTED,
-                intimacy_claims=(claim,),
+                intimacy_claims=(_claim(candidate, "intimacy.requested"),),
             )
         ),
         rewriter=_NeverRewrite(),
     )
-
     assert result.status is QualityGateStatus.ACCEPTED
     assert result.rewrite_calls == 0
 
@@ -268,16 +241,8 @@ def test_completed_reviewer_rejects_a_second_external_claim_source() -> None:
         _context(intimacy_ceiling=IntimacyTier.LIGHT_CONTACT),
         reviewer=_Reviewer(_pass_review()),
         rewriter=_NeverRewrite(),
-        intimacy_claims=(
-            IntimacyClaim(
-                "intimacy.external",
-                IntimacyTier.LIGHT_CONTACT,
-                0,
-                len(candidate),
-            ),
-        ),
+        intimacy_claims=(_claim(candidate, "intimacy.external"),),
     )
-
     assert result.status is QualityGateStatus.BLOCKED
     assert result.error_code == "INTIMACY_CLAIM_SOURCE_CONFLICT"
     assert result.rewrite_calls == 0
@@ -285,26 +250,15 @@ def test_completed_reviewer_rejects_a_second_external_claim_source() -> None:
 
 def test_reviewer_and_policy_codes_are_stably_deduplicated() -> None:
     candidate = "Synthetic contact."
-    claim = IntimacyClaim(
-        "intimacy.deduplicated",
-        IntimacyTier.LIGHT_CONTACT,
-        0,
-        len(candidate),
-    )
     first = ReviewResult(
         ReviewStatus.COMPLETED,
         ReviewVerdict.REWRITE,
         (
-            ReviewerViolation(
-                "UNSOLICITED_INTIMACY",
-                "hard",
-                0,
-                len(candidate),
-            ),
+            ReviewerViolation("UNSOLICITED_INTIMACY", "hard", 0, len(candidate)),
         ),
         ReviewerScores(80, 80, 80, 80),
         IntimacyRequest.NONE,
-        (claim,),
+        (_claim(candidate, "intimacy.deduplicated"),),
     )
     rewriter = _Rewriter("Safe rewritten candidate.")
 
@@ -314,7 +268,6 @@ def test_reviewer_and_policy_codes_are_stably_deduplicated() -> None:
         reviewer=_Reviewer(first, _pass_review()),
         rewriter=rewriter,
     )
-
     assert result.status is QualityGateStatus.ACCEPTED
     assert rewriter.violation_codes == [("UNSOLICITED_INTIMACY",)]
 

@@ -29,8 +29,9 @@ The model reviewer receives only:
 - the public Persona profile and a bounded set of current-mode/personality
   rules;
 - at most 600 characters of the current user message as an identified excerpt.
-- for the identity/relationship layer only, at most 1,200 characters from Linli's
-  prior replies in assembled turn history; prior user messages are excluded.
+- for the identity/relationship layer only, at most 1,200 characters from
+  Linli's published canonical replies and official reply metadata selected by
+  the existing Letter history boundary; prior user messages are excluded.
 
 It does not receive PrivateWorld numeric values, raw home-access records,
 pending/control-only continuation facts, databases, filesystem paths, provider

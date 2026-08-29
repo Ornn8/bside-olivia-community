@@ -171,16 +171,26 @@ def _prepare_generation_request(
             max_chars=memory_limit,
         )
     history = (
-        (UntrustedFragment("memory.references", memory_context.text),)
+        [UntrustedFragment("memory.references", memory_context.text)]
         if memory_context.text
-        else ()
+        else []
     )
+    reply_history = getattr(adapter, "character_reply_history", None)
+    if callable(reply_history):
+        history.extend(
+            UntrustedFragment(
+                f"character.reply.{index}", f"character_reply: {reply}",
+            )
+            for index, reply in enumerate(
+                reply_history(memory_context, max_chars=1200)
+            )
+        )
     messages = assemble_persona(
         loaded.snapshot,
         context,
         user_input=request.content,
         max_units=request.max_input_chars,
-        history=history,
+        history=tuple(history),
     ).to_messages()
     return replace(request, content=None, messages=messages)
 
