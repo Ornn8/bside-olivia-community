@@ -36,6 +36,7 @@ from video_capability_install import (
 )
 import original_client_video_capability_api as video_capability_api
 from original_client_video_capability_api import mount_original_client_video_capability_api
+from runtime.media.music_reply import video_reply_source_url
 
 
 def test_repository_bom_freezes_accepted_latentsync_15_256_profile() -> None:
@@ -76,9 +77,14 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert "official_video_assets" not in ordinary.dependencies
     assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
     ffmpeg = next(item for item in ordinary.files if item.identifier == "ffmpeg")
+    assert ffmpeg.size_bytes == 111_253_802
+    assert ffmpeg.sha256 == (
+        "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9"
+    )
     assert ffmpeg.sources == {
         "official": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"
     }
+    assert video_reply_source_url("ffmpeg", "official") == ffmpeg.sources["official"]
     assert payload["provenance"]["ffmpeg"]["source"] == (
         "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"
     )
