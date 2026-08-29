@@ -1176,6 +1176,8 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
         "runtime/memory/memory_port.py",
         "runtime/media/music_duration.py",
         "runtime/persona/persona_loader.py",
+        "runtime/reply/reply_model_quality.py",
+        "runtime/reply/reply_orchestrator.py",
         "runtime/reply/reply_quality_gate.py",
         "runtime/validation/memory_isolation_case01.py",
     ):

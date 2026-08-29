@@ -1,6 +1,6 @@
 # Root Python inventory
 
-本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 61 个，净减少 5 个。另有 21 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
+本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 61 个，净减少 5 个。另有 23 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
 
 ## 必须保留的根入口
 
@@ -16,7 +16,7 @@
 
 ## 已发布兼容映射
 
-下列 21 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
+下列 23 个根模块已作为 `pyproject.toml` 的 wheel 顶层模块发布，打包 smoke 也验证旧导入与 canonical 模块为同一对象。本轮严格审计将它们判定为 **KEEP**，不能在文档收口 PR 中删除。
 
 | 根兼容模块 | Canonical 模块 |
 | --- | --- |
@@ -25,6 +25,8 @@
 | `reply_reviewer` | `runtime.reply.reply_reviewer` |
 | `reply_delivery` | `runtime.reply.reply_delivery` |
 | `reply_media` | `runtime.reply.reply_media` |
+| `reply_model_quality` | `runtime.reply.reply_model_quality` |
+| `reply_orchestrator` | `runtime.reply.reply_orchestrator` |
 | `latentsync_reply` | `runtime.media.latentsync_reply` |
 | `song_content` | `runtime.media.song_content` |
 | `conversation_memory_delivery` | `runtime.memory.conversation_memory_delivery` |
@@ -46,21 +48,21 @@
 
 每个根 `.py` 在以下六类中恰好出现一次。`KEEP` 表示有现行入口或兼容证据；`RETAIN/DEFER` 表示仍是 canonical 根实现，本轮受迁移批次上限约束而明确延期，不代表已经完成收拢。
 
-### 正式入口 / 兼容壳（33）
+### 正式入口 / 兼容壳（35）
 
 | 文件 | 处置 |
 | --- | --- |
 | `local_server.py`、`original_client_server.py` | `KEEP`：公开或安装启动入口 |
 | `conversation_memory_delivery.py`、`conversation_memory_outbox.py` | `KEEP`：已发布 wheel 兼容别名 |
 | `latentsync_reply.py`、`song_content.py` | `KEEP`：已发布 wheel 兼容别名 |
-| `reply_context.py`、`reply_delivery.py`、`reply_media.py`、`reply_pipeline.py`、`reply_reviewer.py` | `KEEP`：已发布 wheel 兼容别名 |
+| `reply_context.py`、`reply_delivery.py`、`reply_media.py`、`reply_model_quality.py`、`reply_orchestrator.py`、`reply_pipeline.py`、`reply_reviewer.py` | `KEEP`：已发布 wheel 兼容别名 |
 | `persona_assembly.py`、`persona_loader.py`、`persona_provider.py` | `KEEP`：分别映射到 `runtime.persona.*` 的发布兼容别名 |
 | `companion_memory_context.py`、`conversation_memory_admin.py`、`conversation_memory_port.py`、`conversation_memory_runtime.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` | `KEEP`：分别映射到 `runtime.memory.*` 的发布兼容别名 |
 | `letter_status.py`、`original_client_media_http.py`、`video_reply_settings.py` | `KEEP`：安装器要求的 canonical 包兼容入口 |
 | `mem0_capability_install.py`、`original_client_capability_api.py`、`original_client_setup_api.py`、`original_client_update_api.py`、`original_client_video_capability_api.py`、`video_capability_install.py` | `KEEP`：full-patch 必需根入口 |
 | `memory_isolation_case01.py` | `KEEP`：现有 synthetic isolation 调用兼容入口 |
 
-### 后端模块（17）
+### 后端模块（15）
 
 | 文件 | 主要职责 / 处置 |
 | --- | --- |
@@ -70,7 +72,6 @@
 | `original_client_letter_contract.py` | 原版 mailbox wire contract；`RETAIN/DEFER` |
 | `private_world_candidate.py`、`private_world_candidates.py` | PrivateWorld 候选分析与存储；`RETAIN/DEFER` |
 | `private_world_commands.py`、`private_world_ledger.py`、`private_world_port.py`、`private_world_reducer.py`、`private_world_service.py` | PrivateWorld 命令、账本、端口、reducer 和服务；`RETAIN/DEFER` |
-| `reply_model_quality.py`、`reply_orchestrator.py` | 回信模型审校和状态编排；`RETAIN/DEFER` |
 
 ### 媒体模块（2）
 

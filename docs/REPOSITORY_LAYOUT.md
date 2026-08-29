@@ -8,7 +8,7 @@
 | --- | --- |
 | `local_server.py` | 本机 HTTP 服务、信件主流程和后台媒体任务入口 |
 | `reply_context.py`、`reply_pipeline.py`、`reply_reviewer.py`、`reply_delivery.py`、`reply_media.py` | 原有导入兼容别名，映射到 `runtime/reply/` 中的同一模块对象 |
-| `reply_model_quality.py`、`reply_orchestrator.py`、`runtime/reply/*.py` | canonical reply 装配、审校、持久化和媒体投影 |
+| `runtime/reply/`（根目录 `reply_context.py`、`reply_delivery.py`、`reply_media.py`、`reply_model_quality.py`、`reply_orchestrator.py`、`reply_pipeline.py`、`reply_reviewer.py` 保留兼容别名） | canonical reply 装配、审校、持久化和媒体投影 |
 | `llm_gateway.py`、`voice_direction.py` | 可配置模型调用与语音导演计划 |
 | `runtime/memory/`（根目录 `companion_memory_context.py`、`conversation_memory_{admin,delivery,outbox,port,runtime}.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` 保留兼容别名） | 长期记忆、outbox、管理和运行时适配 |
 | `runtime/persona/`（根目录 `persona_*.py` 保留兼容别名） | Persona 装配、加载与可配置 provider |
