@@ -1,6 +1,6 @@
 # Root Python inventory
 
-本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 55 个，净减少 11 个。另有 21 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
+本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 61 个，净减少 5 个。另有 21 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
 
 ## 必须保留的根入口
 
@@ -9,6 +9,7 @@
 | `local_server.py` | README 的公开命令 `python local_server.py` |
 | `original_client_server.py` | `installer/start_local.py` 的启动目标，并属于 full-patch 必需根文件 |
 | `letter_status.py`、`original_client_media_http.py`、`original_client_settings_ui.py`、`video_reply_settings.py` | `installer/full_patch.py` 的必需根文件 |
+| `mem0_capability_install.py`、`original_client_capability_api.py`、`original_client_setup_api.py`、`original_client_update_api.py`、`original_client_video_capability_api.py`、`video_capability_install.py` | `installer/full_patch.py` 的必需根文件 |
 | `patch_companion_settings.py`、`patch_feapp.py`、`patch_webplayer.py` | `installer/full_patch.py` 的必需补丁入口 |
 | `mem0_embedding_install.py` | `installer/provision_mem0_embedding.py` 的直接导入依赖 |
 | `baseline_hardening_scan.py`、`extract_player.py`、`private_world_admin.py` | 独立 `__main__` CLI；其中 hardening scan 另有 README 命令 |
@@ -41,11 +42,11 @@
 | `memory_port` | `runtime.memory.memory_port` |
 | `memory_prompt` | `runtime.memory.memory_prompt` |
 
-## 当前 55 个根文件
+## 当前 61 个根文件
 
 每个根 `.py` 在以下六类中恰好出现一次。`KEEP` 表示有现行入口或兼容证据；`RETAIN/DEFER` 表示仍是 canonical 根实现，本轮受迁移批次上限约束而明确延期，不代表已经完成收拢。
 
-### 正式入口 / 兼容壳（27）
+### 正式入口 / 兼容壳（33）
 
 | 文件 | 处置 |
 | --- | --- |
@@ -56,6 +57,7 @@
 | `persona_assembly.py`、`persona_loader.py`、`persona_provider.py` | `KEEP`：分别映射到 `runtime.persona.*` 的发布兼容别名 |
 | `companion_memory_context.py`、`conversation_memory_admin.py`、`conversation_memory_port.py`、`conversation_memory_runtime.py`、`local_memory.py`、`mem0_memory.py`、`memory.py`、`memory_port.py`、`memory_prompt.py` | `KEEP`：分别映射到 `runtime.memory.*` 的发布兼容别名 |
 | `letter_status.py`、`original_client_media_http.py`、`video_reply_settings.py` | `KEEP`：安装器要求的 canonical 包兼容入口 |
+| `mem0_capability_install.py`、`original_client_capability_api.py`、`original_client_setup_api.py`、`original_client_update_api.py`、`original_client_video_capability_api.py`、`video_capability_install.py` | `KEEP`：full-patch 必需根入口 |
 | `memory_isolation_case01.py` | `KEEP`：现有 synthetic isolation 调用兼容入口 |
 
 ### 后端模块（17）
