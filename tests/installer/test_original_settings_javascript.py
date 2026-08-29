@@ -234,12 +234,16 @@ def test_video_capability_offers_verified_runtime_root_selection() -> None:
     assert '{ action: "select_runtime" }' in source
     assert '{ action: "select_runtime" },\n            310000' in source
     assert 'action: "import_runtime"' in source
-    assert "manifest_sha256: runtimeDigest.input.value.trim().toLowerCase()" in source
+    assert "manifest_sha256: runtimeManifestSha256" in source
     assert 'source: videoSourceMode' in source
     assert "国内源优先" in source
     assert "仅官方源" in source
-    assert "尚未提供可迁移运行时归档" in source
-    assert "选择离线运行时目录" not in source
+    assert "如果你已经拿到离线包" in source
+    assert "选择解压后的离线包" in source
+    assert "开始检查并安装" in source
+    assert "文件较多时可能需要几十分钟，请勿关闭 Olivia" in source
+    assert "尚未提供可迁移运行时归档" not in source
+    assert "runtimeDigest" not in source
     assert 'accept_licenses: dependency.id === "music_video"' in source
 
 

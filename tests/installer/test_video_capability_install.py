@@ -1052,9 +1052,22 @@ def test_windows_runtime_picker_fails_closed_without_a_system_directory(
     assert captured.value.code == "VIDEO_RUNTIME_PICKER_UNAVAILABLE"
 
 
+def test_runtime_selection_rejects_a_folder_without_a_manifest(tmp_path: Path) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir()
+
+    with pytest.raises(video_capability_api.VideoCapabilityAPIError) as captured:
+        video_capability_api._runtime_manifest_sha256(runtime_root)
+
+    assert captured.value.code == "VIDEO_RUNTIME_ROOT_INVALID"
+
+
 def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -> None:
     runtime_root = (tmp_path / "runtime").resolve()
     runtime_root.mkdir()
+    manifest = runtime_root / "runtime-manifest.json"
+    manifest.write_text('{"synthetic": true}', encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
     observed: list[tuple[Path, str]] = []
 
     class FakeInstaller:
@@ -1093,7 +1106,7 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
                 json={
                     "action": "import_runtime",
                     "runtime_root": selected["runtime_root"],
-                    "manifest_sha256": "a" * 64,
+                    "manifest_sha256": selected["manifest_sha256"],
                 },
                 headers={
                     "Origin": "http://localhost:3000",
@@ -1127,10 +1140,14 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
     assert selected_status == 200
-    assert selected == {"status": "SELECTED", "runtime_root": str(runtime_root)}
+    assert selected == {
+        "status": "SELECTED",
+        "runtime_root": str(runtime_root),
+        "manifest_sha256": manifest_sha256,
+    }
     assert status == 200
     assert payload == {"status": "APPLIED"}
-    assert observed == [(runtime_root, "a" * 64)]
+    assert observed == [(runtime_root, manifest_sha256)]
 
 
 def test_download_progress_updates_before_a_large_file_finishes(tmp_path: Path) -> None:

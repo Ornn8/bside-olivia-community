@@ -1314,18 +1314,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (runtimeRequired) {
       const runtimeNote = text(
         "p",
-        "公开源当前只安装模型与受管组件，尚未提供可迁移运行时归档；可选择本机已准备且清单匹配的运行时目录。",
+        "离线安装：如果你已经拿到离线包，解压后选择文件夹。Olivia 会自动检查并安装。",
         "text-text-secondary text-caption-m font-regular"
       );
-      const runtimeDigest = setupInput("发布页提供的 runtime-manifest.json SHA-256");
-      runtimeDigest.input.maxLength = 64;
-      runtimeDigest.input.autocomplete = "off";
       const selectedRuntime = text(
         "p",
-        "尚未选择本机已准备的运行时根目录。",
+        "尚未选择离线包。",
         "text-text-secondary text-caption-m font-regular"
       );
-      const chooseRuntime = button("选择本机运行时目录", async () => {
+      let runtimeManifestSha256 = "";
+      const chooseRuntime = button("选择解压后的离线包", async () => {
         setButtonsBusy([chooseRuntime], true);
         try {
           const selected = await requestCapability(
@@ -1333,43 +1331,47 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             { action: "select_runtime" },
             310000
           );
-          if (selected.status === "SELECTED" && typeof selected.runtime_root === "string") {
+          if (
+            selected.status === "SELECTED"
+            && typeof selected.runtime_root === "string"
+            && typeof selected.manifest_sha256 === "string"
+            && /^[0-9a-f]{64}$/.test(selected.manifest_sha256)
+          ) {
             runtimeRoot = selected.runtime_root;
+            runtimeManifestSha256 = selected.manifest_sha256;
             selectedRuntime.textContent = `已选择：${runtimeRoot.split(/[\\/]/).pop()}`;
           }
         } catch (_error) {
-          result.textContent = "无法打开运行时目录选择器。";
+          result.textContent = "无法读取离线包，请确认已完整解压后重试。";
         } finally {
           setButtonsBusy([chooseRuntime], false);
         }
       });
-      const importRuntime = button("校验并接入离线运行时", async () => {
-        const digest = runtimeDigest.input.value.trim().toLowerCase();
-        if (!runtimeRoot || !/^[0-9a-f]{64}$/.test(digest)) {
-          result.textContent = "请选择运行时目录，并填写发布页提供的 64 位 SHA-256。";
+      const importRuntime = button("开始检查并安装", async () => {
+        if (!runtimeRoot || !/^[0-9a-f]{64}$/.test(runtimeManifestSha256)) {
+          result.textContent = "请先选择解压后的离线包。";
           return;
         }
         setButtonsBusy([chooseRuntime, importRuntime], true);
-        result.textContent = "正在校验全部文件并检测 GPU 运行环境……";
+        result.textContent = "正在检查并安装，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
         try {
           await requestCapability(
             VIDEO_CAPABILITY_ACTION_PATH,
             {
               action: "import_runtime",
               runtime_root: runtimeRoot,
-              manifest_sha256: runtimeDigest.input.value.trim().toLowerCase(),
+              manifest_sha256: runtimeManifestSha256,
             },
             30 * 60 * 1000
           );
           await renderVideoCapabilityPanel(panel);
         } catch (_error) {
-          result.textContent = "运行时校验未通过；请确认目录完整、SHA-256 正确且 GPU 环境可用。";
+          result.textContent = "离线包检查未通过，请重新下载并完整解压后再试。";
           setButtonsBusy([chooseRuntime, importRuntime], false);
         }
       });
       item.append(
         runtimeNote,
-        runtimeDigest.wrapper,
         selectedRuntime,
         chooseRuntime,
         importRuntime
