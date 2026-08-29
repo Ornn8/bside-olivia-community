@@ -1145,6 +1145,8 @@ def _adjudicate_hard_evidence(
     )
     if not claims:
         return tuple(results)
+    if len(claims) > 16:
+        raise RuntimeError("ADJUDICATION_EVIDENCE_LIMIT")
     evidence_ids = tuple(evidence.evidence_id for _, evidence in claims)
     evidence_signatures = tuple(
         (

@@ -227,6 +227,9 @@ class SequencedQualityGateway(Gateway):
         self.rewrite_requests: list[dict[str, object]] = []
         self.review_input_sizes: list[int] = []
         self.adjudication_requests: list[dict[str, object]] = []
+        self.adjudication_message_roles: list[tuple[str, ...]] = []
+        self.adjudication_system_prompts: list[str] = []
+        self.adjudication_input_sizes: list[int] = []
 
     async def complete(
         self,
@@ -239,6 +242,13 @@ class SequencedQualityGateway(Gateway):
         if "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system:
             self.call_kinds.append("adjudication")
             self.adjudication_requests.append(json.loads(user))
+            self.adjudication_message_roles.append(
+                tuple(str(message.get("role", "")) for message in messages)
+            )
+            self.adjudication_system_prompts.append(system)
+            self.adjudication_input_sizes.append(
+                sum(len(str(message.get("content", ""))) for message in messages)
+            )
             text = self.adjudications.pop(0)
         elif "P02_REPLY_REVIEW_JSON" in system:
             self.call_kinds.append("review")
@@ -1197,20 +1207,88 @@ def test_semantically_duplicate_cross_layer_evidence_fails_before_adjudication()
     assert gateway.adjudication_requests == []
 
 
-def test_sixteen_claims_share_one_context_within_the_input_budget() -> None:
-    candidate = "abcdefghijklmnop"
-    evidence_items = [
+def test_seventeen_cross_layer_claims_fail_before_adjudication() -> None:
+    candidate = "abcdefghijklmnopq"
+    identity_evidence = [
+        _hard_evidence_payload(
+            candidate,
+            "IDENTITY_DRIFT",
+            evidence_id=f"evidence.identity.{index}",
+            start=index,
+            end=index + 1,
+            claim_kind="identity_claim",
+            support_source="world_fact",
+        )
+        for index in range(8)
+    ]
+    continuity_evidence = [
         _hard_evidence_payload(
             candidate,
             "MEMORY_FABRICATION",
-            evidence_id=f"evidence.synthetic.{index}",
+            evidence_id=f"evidence.continuity.{index}",
             start=index,
             end=index + 1,
             claim_kind="past_fact",
             support_source="memory",
         )
-        for index in range(16)
+        for index in range(8, 17)
     ]
+    reviews = _passing_layer_payloads()
+    reviews[0] = _layer_score_payload(
+        "identity_boundary",
+        0,
+        hard_violations=["IDENTITY_DRIFT"] * len(identity_evidence),
+        drift_detected=True,
+        hard_evidence=identity_evidence,
+    )
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"] * len(continuity_evidence),
+        drift_detected=True,
+        hard_evidence=continuity_evidence,
+    )
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
+
+    result = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    ).review(candidate, _context())
+
+    assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert gateway.call_kinds == ["review"] * 5
+    assert gateway.adjudication_requests == []
+
+
+def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> None:
+    candidate = "abcdefghijklmnop"
+    identity_evidence = [
+        _hard_evidence_payload(
+            candidate,
+            "IDENTITY_DRIFT" if index == 0 else "STAGE_DRIFT",
+            evidence_id=f"evidence.identity.{index}",
+            start=index,
+            end=index + 1,
+            claim_kind="identity_claim" if index == 0 else "relationship",
+            support_source="world_fact" if index == 0 else "character_history",
+        )
+        for index in range(8)
+    ]
+    continuity_evidence = [
+        _hard_evidence_payload(
+            candidate,
+            "MEMORY_FABRICATION",
+            evidence_id=f"evidence.continuity.{index}",
+            start=index,
+            end=index + 1,
+            claim_kind="past_fact",
+            support_source="memory",
+        )
+        for index in range(8, 16)
+    ]
+    evidence_items = [*identity_evidence, *continuity_evidence]
     decisions = {
         "decisions": [
             {
@@ -1224,12 +1302,19 @@ def test_sixteen_claims_share_one_context_within_the_input_budget() -> None:
         ]
     }
     reviews = _passing_layer_payloads()
+    reviews[0] = _layer_score_payload(
+        "identity_boundary",
+        0,
+        hard_violations=[item["code"] for item in identity_evidence],
+        drift_detected=True,
+        hard_evidence=identity_evidence,
+    )
     reviews[3] = _layer_score_payload(
         "continuity_memory",
         0,
-        hard_violations=["MEMORY_FABRICATION"] * 16,
+        hard_violations=["MEMORY_FABRICATION"] * len(continuity_evidence),
         drift_detected=True,
-        hard_evidence=evidence_items,
+        hard_evidence=continuity_evidence,
     )
     gateway = SequencedQualityGateway(
         candidate="unused",
@@ -1249,10 +1334,20 @@ def test_sixteen_claims_share_one_context_within_the_input_budget() -> None:
         (index, index + 1) for index in range(16)
     }
     request = gateway.adjudication_requests[0]
-    assert set(request["contexts"]) == {"continuity_fact"}
+    assert tuple(request["contexts"]) == (
+        "identity_world",
+        "relationship",
+        "continuity_fact",
+    )
     assert len(request["claims"]) == 16
-    assert all(item["context_id"] == "continuity_fact" for item in request["claims"])
-    assert len(json.dumps(request, separators=(",", ":"))) < 30_000
+    assert {item["context_id"] for item in request["claims"]} == set(request["contexts"])
+    assert len(decisions["decisions"]) == len(request["claims"]) == 16
+    assert gateway.adjudication_message_roles == [("system", "user")]
+    assert (
+        "P02_REPLY_EVIDENCE_ADJUDICATION_JSON"
+        in gateway.adjudication_system_prompts[0]
+    )
+    assert gateway.adjudication_input_sizes[0] < 30_000
 
 
 def test_rejected_false_memory_claim_does_not_block_pipeline(
@@ -1507,7 +1602,7 @@ def test_rewrite_uses_fresh_candidate_evidence_and_adjudication(
     )
 
     assert result.state is ReplyState.COMPLETED
-    assert result.quality_status == "accepted_with_warnings"
+    assert result.quality_status == "accepted"
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == 1
     assert [request["candidate_reply"] for request in gateway.adjudication_requests] == [

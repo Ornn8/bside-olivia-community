@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
-from runtime.reply.reply_context import ReplyContext, ReplyMode
+from runtime.reply.reply_context import ReplyContext
 from runtime.reply.reply_policy import IntimacyClaim, scan_reply
 from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 from runtime.reply.reply_reviewer import TrustedReviewEvidence
@@ -56,16 +56,6 @@ def _stable_codes(*groups: Sequence[str]) -> tuple[str, ...]:
                 seen.add(code)
                 ordered.append(code)
     return tuple(ordered)
-
-
-def _accepted_status(
-    context: ReplyContext,
-    *,
-    has_warnings: bool,
-) -> QualityGateStatus:
-    if has_warnings and context.mode is ReplyMode.TEXT_LETTER:
-        return QualityGateStatus.ACCEPTED_WITH_WARNINGS
-    return QualityGateStatus.ACCEPTED
 
 
 def run_reply_quality_gate(
@@ -148,7 +138,11 @@ def run_reply_quality_gate(
     }
     if not rewrite_required:
         return QualityGateResult(
-            _accepted_status(context, has_warnings=bool(review.violations)),
+            (
+                QualityGateStatus.ACCEPTED_WITH_WARNINGS
+                if review.violations
+                else QualityGateStatus.ACCEPTED
+            ),
             candidate,
             initial_codes,
             deterministic_checks=1,
@@ -266,13 +260,10 @@ def run_reply_quality_gate(
         status = (
             QualityGateStatus.BLOCKED
             if has_hard_review
-            else _accepted_status(context, has_warnings=True)
+            else QualityGateStatus.ACCEPTED_WITH_WARNINGS
         )
     else:
-        status = _accepted_status(
-            context,
-            has_warnings=bool(final_review.violations),
-        )
+        status = QualityGateStatus.ACCEPTED
     return QualityGateResult(
         status,
         rewritten,

@@ -372,37 +372,51 @@ def test_final_soft_review_issue_is_accepted_with_warnings_after_one_rewrite() -
     assert result.rewrite_calls == 1
 
 
-def test_non_letter_soft_issues_keep_legacy_accepted_status() -> None:
-    soft = ReviewResult(
-        ReviewStatus.COMPLETED,
-        ReviewVerdict.PASS,
-        (ReviewerViolation("STYLE_DRIFT", "soft", 0, 5),),
-        ReviewerScores(90, 90, 90, 90),
-        IntimacyRequest.NONE,
-        (),
+@pytest.mark.parametrize("mode", tuple(ReplyMode))
+@pytest.mark.parametrize(
+    ("initial_verdict", "final_verdict", "expected_status"),
+    (
+        (ReviewVerdict.PASS, None, QualityGateStatus.ACCEPTED_WITH_WARNINGS),
+        (ReviewVerdict.REWRITE, ReviewVerdict.PASS, QualityGateStatus.ACCEPTED),
+        (
+            ReviewVerdict.REWRITE,
+            ReviewVerdict.REWRITE,
+            QualityGateStatus.ACCEPTED_WITH_WARNINGS,
+        ),
+    ),
+    ids=("initial-pass-soft", "post-rewrite-pass", "post-rewrite-soft"),
+)
+def test_quality_status_matrix_matches_frozen_base_across_modes(
+    mode: ReplyMode,
+    initial_verdict: ReviewVerdict,
+    final_verdict: ReviewVerdict | None,
+    expected_status: QualityGateStatus,
+) -> None:
+    def review(verdict: ReviewVerdict) -> ReviewResult:
+        return ReviewResult(
+            ReviewStatus.COMPLETED,
+            verdict,
+            (ReviewerViolation("STYLE_DRIFT", "soft", 0, 5),),
+            ReviewerScores(90, 90, 90, 90),
+            IntimacyRequest.NONE,
+            (),
+        )
+
+    reviewer = _Reviewer(
+        review(initial_verdict),
+        *(() if final_verdict is None else (review(final_verdict),)),
     )
-    initial = run_reply_quality_gate(
+    result = run_reply_quality_gate(
         "x" * 190,
-        _video_context(),
-        reviewer=_Reviewer(soft),
-        rewriter=_Rewriter("unused"),
-    )
-    rewrite = ReviewResult(
-        ReviewStatus.COMPLETED,
-        ReviewVerdict.REWRITE,
-        (),
-        ReviewerScores(80, 80, 80, 80),
-        IntimacyRequest.NONE,
-        (),
-    )
-    final = run_reply_quality_gate(
-        "short",
-        _video_context(),
-        reviewer=_Reviewer(rewrite, soft),
-        rewriter=_Rewriter("x" * 190),
+        ReplyContext.create(
+            mode,
+            trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+            future_im_enabled=mode is ReplyMode.FUTURE_IM,
+        ),
+        reviewer=reviewer,
+        rewriter=_Rewriter("y" * 190),
     )
 
-    assert [(item.status, item.violation_codes, item.rewrite_calls) for item in (initial, final)] == [
-        (QualityGateStatus.ACCEPTED, ("STYLE_DRIFT",), 0),
-        (QualityGateStatus.ACCEPTED, ("STYLE_DRIFT",), 1),
-    ]
+    assert result.status is expected_status
+    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert result.rewrite_calls == (0 if final_verdict is None else 1)
