@@ -73,6 +73,8 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
     assert "runtime/reply/reply_pipeline.py" in packaged_paths
     assert "runtime/reply/reply_reviewer.py" in packaged_paths
     assert "runtime/reply/reply_context.py" in packaged_paths
+    assert "runtime/reply/reply_model_quality.py" in packaged_paths
+    assert "runtime/reply/reply_orchestrator.py" in packaged_paths
     assert "runtime/persona/persona_loader.py" in packaged_paths
     assert "runtime/persona/persona_assembly.py" in packaged_paths
     assert "runtime/persona/persona_provider.py" in packaged_paths
@@ -169,10 +171,12 @@ def test_wheel_installs_every_module_needed_to_import_local_server(
             "import runtime.memory.private_world_delivery; "
             "import runtime.memory.private_world_projection; "
             "import runtime.memory.private_world_runtime; "
-            "import reply_context, reply_pipeline, reply_reviewer; "
+            "import reply_context, reply_model_quality, reply_orchestrator, reply_pipeline, reply_reviewer; "
             "import runtime.reply.reply_context; "
-            "import runtime.reply.reply_pipeline, runtime.reply.reply_reviewer; "
+            "import runtime.reply.reply_model_quality, runtime.reply.reply_orchestrator, runtime.reply.reply_pipeline, runtime.reply.reply_reviewer; "
             "assert reply_context is runtime.reply.reply_context; "
+            "assert reply_model_quality is runtime.reply.reply_model_quality; "
+            "assert reply_orchestrator is runtime.reply.reply_orchestrator; "
             "assert reply_pipeline is runtime.reply.reply_pipeline; "
             "assert reply_reviewer is runtime.reply.reply_reviewer; "
             "import persona_loader, persona_assembly, persona_provider; "
