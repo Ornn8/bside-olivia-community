@@ -270,7 +270,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     }
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
+      ? 300000
+      : 5000;
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
         method: "GET",
@@ -299,7 +302,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH ? 600000 : 8000;
+    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH
+      ? 600000
+      : path === VIDEO_REPLY_SETTINGS_PATH
+      ? 300000
+      : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
@@ -1216,6 +1223,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderVideoCapabilityPanel = async (panel) => {
+    panel.replaceChildren(
+      text("div", "正在检测本机视频运行环境……", "text-text-body text-label-l"),
+      text(
+        "div",
+        "第一次检测可能需要几分钟，设置页面仍可继续使用。",
+        "text-text-secondary text-body-m font-regular"
+      )
+    );
     let payload = null;
     try {
       payload = await requestJson(VIDEO_CAPABILITY_PATH);
@@ -1767,13 +1782,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     row.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const copy = document.createElement("div");
     copy.className = "flex flex-col gap-0 flex-1 min-w-0";
-    const state = text("div", "正在读取设置…", "text-text-secondary text-caption-m font-regular");
+    const state = text("div", "正在检测视频运行环境，第一次可能需要几分钟…", "text-text-secondary text-caption-m font-regular");
     state.setAttribute("aria-live", "polite");
     copy.append(text("div", "允许视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
     let enabled = null;
     let ready = false;
     let missingDependencies = [];
-    let message = "正在读取设置…";
+    let message = "正在检测视频运行环境，第一次可能需要几分钟…";
     let toggle = null;
     let downloads = null;
     const render = () => {

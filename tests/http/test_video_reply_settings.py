@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
@@ -163,6 +164,110 @@ def test_handler_errors_match_video_reply_schema(monkeypatch, tmp_path):
     assert [response["data"]["error_code"] for _, response in responses] == ["METHOD_NOT_ALLOWED", "INVALID_JSON", "INVALID_BODY", "MISSING_FIELD", "MISSING_FIELD", "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID"]
     for status, response in responses:
         assert not list(validator.iter_errors(response)), response
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_video_reply_settings_requests_keep_http_responsive_during_probe(
+    monkeypatch, tmp_path, method
+):
+    import local_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
+    monkeypatch.setattr(local_server, "_current_music_performance", lambda _environment: None)
+    started = threading.Event()
+    release = threading.Event()
+    preflight_complete = threading.Event()
+
+    def slow_probe(_environment, *, performance_video_path):
+        assert performance_video_path is None
+        started.set()
+        assert release.wait(2)
+        return {"ready": True, "dependencies": []}
+
+    monkeypatch.setattr(local_server, "video_reply_dependency_status", slow_probe)
+
+    def release_probe() -> None:
+        assert started.wait(1)
+        preflight_complete.wait(0.5)
+        release.set()
+
+    releaser = threading.Thread(target=release_probe, daemon=True)
+    releaser.start()
+
+    async def calls():
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app)) as client:
+            if method == "POST":
+                probe_request = asyncio.create_task(
+                    client.post(
+                        "/toy/settings/video-reply",
+                        json={
+                            "enabled": True,
+                            "request_id": "video_reply_setting:slow-probe",
+                        },
+                    )
+                )
+            else:
+                probe_request = asyncio.create_task(
+                    client.get("/toy/settings/video-reply")
+                )
+            assert await asyncio.to_thread(started.wait, 1)
+            preflight = await client.options(
+                "/toy/settings/video-reply",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            responsive_while_probe_blocked = not release.is_set()
+            preflight_complete.set()
+            response = await probe_request
+            payload = await response.json()
+            refreshed = None
+            if method == "POST":
+                refreshed_response = await client.get("/toy/settings/video-reply")
+                refreshed = await refreshed_response.json()
+            return (
+                responsive_while_probe_blocked,
+                preflight.status,
+                response.status,
+                payload,
+                refreshed,
+            )
+
+    try:
+        responsive_while_probe_blocked, preflight_status, status, payload, refreshed = (
+            asyncio.run(calls())
+        )
+    finally:
+        release.set()
+        releaser.join(timeout=1)
+
+    assert responsive_while_probe_blocked
+    assert preflight_status == 204
+    assert status == 200
+    if method == "POST":
+        assert payload["data"] == {
+            "request_id": "video_reply_setting:slow-probe",
+            "status": "APPLIED",
+            "enabled": True,
+        }
+        assert refreshed["data"]["enabled"] is True
+        assert refreshed["data"]["effective_enabled"] is True
+    else:
+        assert payload["data"] == {
+            "state": "available",
+            "enabled": False,
+            "effective_enabled": False,
+            "ready": True,
+            "dependencies": [],
+        }
+
+
 def test_factory_init_failure_returns_stable_unavailable(monkeypatch):
     import local_server
     def fail(_root):

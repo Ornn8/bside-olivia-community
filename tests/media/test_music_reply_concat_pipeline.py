@@ -296,6 +296,7 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
     assert "torch.cuda.is_available()" in script
     assert "2.9.1+cu128" in script
     assert observed["timeout"] == music_reply._RUNTIME_PROBE_TIMEOUT_SECONDS
+    assert observed["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("python", 1)

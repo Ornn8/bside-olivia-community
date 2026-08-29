@@ -577,6 +577,30 @@ def test_portable_python_probe_rejects_a_runtime_outside_its_base_prefix(
     assert not _portable_python_runtime(Path(sys.executable).resolve(), tmp_path.resolve())
 
 
+def test_portable_python_probe_hides_its_windows_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python.exe"
+    runtime_root.mkdir()
+    python.write_bytes(b"fixture")
+    observed: dict[str, object] = {}
+
+    def run(*_args, **kwargs):
+        observed.update(kwargs)
+        return video_capability_install.subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(video_capability_install.subprocess, "run", run)
+
+    assert _portable_python_runtime(python, runtime_root)
+    assert observed["creationflags"] == getattr(
+        video_capability_install.subprocess,
+        "CREATE_NO_WINDOW",
+        0,
+    )
+
+
 def test_runtime_profile_restores_interrupted_bundle_backup(tmp_path: Path) -> None:
     install_root = tmp_path / "data" / "capabilities" / "video"
     backup = install_root / ".ordinary_video.backup"
@@ -644,6 +668,7 @@ def test_ready_state_uses_complete_video_dependency_probe(tmp_path: Path) -> Non
         "prerequisites_required",
     ]
     assert status["bundles"][1]["reason_code"] == "VIDEO_RUNTIME_DEPENDENCIES_MISSING"
+    assert len(observed) == 1
     assert observed[-1]["OLIVIA_LOCAL_DATA_ROOT"] == str(data_root)
     assert observed[-1]["OLIVIA_FFMPEG_EXE"] == str(ffmpeg)
 

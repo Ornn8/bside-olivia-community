@@ -347,6 +347,7 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
             capture_output=True,
             check=False,
             timeout=_RUNTIME_PORTABILITY_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -701,22 +702,31 @@ class VideoCapabilityInstaller:
         return VideoCapabilityState.READY, None
 
     def _runtime_dependency_state(
-        self, bundle: VideoBundle
+        self,
+        bundle: VideoBundle,
+        *,
+        probe_cache: dict[str, Mapping[str, object]] | None = None,
     ) -> tuple[VideoCapabilityState, str | None]:
         if self._readiness_probe is None:
             return self._assembled_state(bundle)
-        try:
-            environment = dict(os.environ)
-            environment.update(load_video_runtime_environment(self.data_root))
-            environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
-            result = self._readiness_probe(environment)
-            if bundle.identifier == "ordinary_video":
-                missing = result.get("ordinary_missing_dependencies")
-                ready = isinstance(missing, (list, tuple)) and not missing
-            else:
-                ready = result.get("music_ready") is True
-        except Exception:
-            ready = False
+        result = probe_cache.get("result") if probe_cache is not None else None
+        if result is None:
+            try:
+                environment = dict(os.environ)
+                environment.update(load_video_runtime_environment(self.data_root))
+                environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+                result = self._readiness_probe(environment)
+            except Exception:
+                result = {}
+            if not isinstance(result, Mapping):
+                result = {}
+            if probe_cache is not None:
+                probe_cache["result"] = result
+        if bundle.identifier == "ordinary_video":
+            missing = result.get("ordinary_missing_dependencies")
+            ready = isinstance(missing, (list, tuple)) and not missing
+        else:
+            ready = result.get("music_ready") is True
         if ready:
             return VideoCapabilityState.READY, None
         return (
@@ -725,7 +735,11 @@ class VideoCapabilityInstaller:
         )
 
     def _installed_state(
-        self, root: Path, bundle: VideoBundle
+        self,
+        root: Path,
+        bundle: VideoBundle,
+        *,
+        probe_cache: dict[str, Mapping[str, object]] | None = None,
     ) -> tuple[VideoCapabilityState, str | None]:
         if not self._runtime_wiring_ready(root, bundle):
             return (
@@ -748,9 +762,10 @@ class VideoCapabilityInstaller:
                 return VideoCapabilityState.READY, None
         except (OSError, UnicodeError, json.JSONDecodeError):
             pass
-        return self._runtime_dependency_state(bundle)
+        return self._runtime_dependency_state(bundle, probe_cache=probe_cache)
 
     def _load_status(self) -> None:
+        probe_cache: dict[str, Mapping[str, object]] = {}
         for bundle in self.manifest.bundles:
             current = self._status.get(bundle.identifier)
             thread = self._threads.get(bundle.identifier)
@@ -772,7 +787,11 @@ class VideoCapabilityInstaller:
             except (OSError, ComponentUpdateError, VideoCapabilityError):
                 content_ready = False
             if content_ready:
-                state, reason = self._installed_state(root, bundle)
+                state, reason = self._installed_state(
+                    root,
+                    bundle,
+                    probe_cache=probe_cache,
+                )
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
