@@ -180,19 +180,6 @@ def build_live_service_from_b10b(
         )
 
     values = dict(environ or {})
-    project_path = Path(project_root).absolute()
-    if (
-        "OLIVIA_PERSONA_V2_FILE" not in values
-        and not (project_path / "llm_config.json").is_file()
-        and not (project_path / "linli_character" / "persona_release_v2.json").is_file()
-    ):
-        packaged_persona = (
-            Path(__file__).resolve().parents[3]
-            / "linli_character"
-            / "persona_release_v2.json"
-        )
-        if packaged_persona.is_file():
-            values["OLIVIA_PERSONA_V2_FILE"] = str(packaged_persona)
     # ASR/TTS process references may enter only through the verified B10B
     # profile.  LLM configuration remains intentionally ephemeral.
     for env_name in tuple(values):
@@ -266,7 +253,7 @@ def build_live_service_from_b10b(
 
     service = LiveService.from_environment(
         environ=values,
-        project_root=str(project_path),
+        project_root=str(Path(project_root).absolute()),
         memory_port=memory_port,
         visual_driver=visual_driver,
         visual_request=visual_request,

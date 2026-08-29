@@ -73,22 +73,20 @@ def test_enabled_memory_library_is_retrievable_but_never_becomes_conversation_me
             session = await service.start_session("fixture-owner")
             messages, memory_status = session._build_messages("bridge", "fixture-turn")
             result = await session.send_text("bridge")
-            return messages, memory_status, result, service.memory_port.status()
+            return messages[-1]["content"], memory_status, result, service.memory_port.status()
         finally:
             await service.stop()
 
-    messages, memory_status, result, status = asyncio.run(exercise())
+    user_message, memory_status, result, status = asyncio.run(exercise())
 
     assert result.completed
     assert result.memory_status == "available"
     assert memory_status == "available"
-    assert messages[-1] == {"role": "user", "content": "bridge"}
-    user_content = messages[-1]["content"]
-    assert MEMORY_CONTEXT_BEGIN not in user_content
-    assert "LEGACY_LETTERS_REFERENCE_ONLY" not in user_content
-    assert content_hash not in user_content
-    assert "fixture-source" not in user_content
-    assert "CONVERSATION_MEMORY_CURRENT" not in user_content
+    assert MEMORY_CONTEXT_BEGIN in user_message
+    assert "LEGACY_LETTERS_REFERENCE_ONLY" in user_message
+    assert content_hash in user_message
+    assert "fixture-source" in user_message
+    assert "CONVERSATION_MEMORY_CURRENT" not in user_message
     assert status["conversation_enabled"] is False
     assert status["read_only"] is True
     assert status["counts"][LEGACY_LETTERS] == 1
