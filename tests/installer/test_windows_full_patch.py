@@ -1174,6 +1174,7 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
     for relative in (
         "runtime/memory/bounded_daemon_call.py",
         "runtime/media/music_duration.py",
+        "runtime/persona/persona_loader.py",
         "runtime/reply/reply_quality_gate.py",
         "runtime/validation/memory_isolation_case01.py",
     ):

@@ -1,6 +1,6 @@
 # Root Python inventory
 
-本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 55 个，净减少 11 个。另有 9 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
+本账本冻结于 `main@f99a3054d214bccf4170a001fec6d8745c5930ac`。整理开始时根目录有 66 个 `.py` 文件；当前有 55 个，净减少 11 个。另有 12 个原根实现已迁入职责包，根文件缩成发布中的薄兼容别名。本文只记录布局与兼容边界，不改变代码、打包或运行协议。
 
 ## 必须保留的根入口
 
@@ -28,6 +28,9 @@
 | `song_content` | `runtime.media.song_content` |
 | `conversation_memory_delivery` | `runtime.memory.conversation_memory_delivery` |
 | `conversation_memory_outbox` | `runtime.memory.conversation_memory_outbox` |
+| `persona_loader` | `runtime.persona.persona_loader` |
+| `persona_assembly` | `runtime.persona.persona_assembly` |
+| `persona_provider` | `runtime.persona.persona_provider` |
 
 ## 当前 55 个根文件
 
@@ -55,7 +58,7 @@
 | `original_client_companion_api.py`、`original_client_companion_backend.py` | 原版设置页只读适配；`RETAIN/DEFER` |
 | `original_client_companion_mutation_api.py`、`original_client_companion_mutation_backend.py` | 原版设置页变更适配；`RETAIN/DEFER` |
 | `original_client_letter_contract.py` | 原版 mailbox wire contract；`RETAIN/DEFER` |
-| `persona_assembly.py`、`persona_loader.py`、`persona_provider.py` | Persona 装配、加载和 provider；`RETAIN/DEFER` |
+| `persona_assembly.py`、`persona_loader.py`、`persona_provider.py` | Persona 装配、加载和 provider；`KEEP`：分别映射到 `runtime.persona.*` 的发布兼容别名 |
 | `private_world_candidate.py`、`private_world_candidates.py` | PrivateWorld 候选分析与存储；`RETAIN/DEFER` |
 | `private_world_commands.py`、`private_world_ledger.py`、`private_world_port.py`、`private_world_reducer.py`、`private_world_service.py` | PrivateWorld 命令、账本、端口、reducer 和服务；`RETAIN/DEFER` |
 | `reply_model_quality.py`、`reply_orchestrator.py` | 回信模型审校和状态编排；`RETAIN/DEFER` |

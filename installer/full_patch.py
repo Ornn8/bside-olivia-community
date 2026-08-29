@@ -39,6 +39,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/imports",
     "runtime/media",
     "runtime/memory",
+    "runtime/persona",
     "runtime/reply",
     "runtime/validation",
     "runtime/visual",
