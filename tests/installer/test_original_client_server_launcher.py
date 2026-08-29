@@ -308,7 +308,7 @@ def test_launcher_starts_combined_server_before_original_client(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     commands: list[list[str]] = []
     client_commands: list[list[str]] = []
     frontend_repairs: list[tuple[Path, int]] = []
@@ -328,6 +328,11 @@ def test_launcher_starts_combined_server_before_original_client(
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(root / "local_backend", root.resolve()),
+    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -374,7 +379,7 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
     (active_backend / "local_server.py").write_text("# active", encoding="utf-8")
     active_entrypoint = active_backend / "original_client_server.py"
     active_entrypoint.write_text("# active", encoding="utf-8")
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     commands: list[list[str]] = []
 
     class Process:
@@ -384,6 +389,11 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(active_backend, root.resolve()),
+    )
     monkeypatch.setattr(start_local, "_backend_executable", lambda: Path("pythonw.exe"))
     monkeypatch.setattr(
         start_local.subprocess,
@@ -416,7 +426,7 @@ def test_component_launcher_stops_its_owned_backend_after_client_exit(
         "# active",
         encoding="utf-8",
     )
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
     lifecycle: list[str] = []
 
@@ -440,6 +450,11 @@ def test_component_launcher_stops_its_owned_backend_after_client_exit(
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(active_backend, root.resolve()),
+    )
     monkeypatch.setattr(start_local.subprocess, "Popen", popen)
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
@@ -455,49 +470,16 @@ def test_component_launcher_stops_its_owned_backend_after_client_exit(
     assert lifecycle == ["terminate", "wait:5"]
 
 
-def test_component_launcher_does_not_stop_a_reused_ready_backend(
+def test_component_launcher_takes_ownership_from_a_reused_ready_backend(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
     backend = root / "local_backend"
     expected_backend_id = start_local._backend_id(backend, root.resolve())
-    stopped: list[object] = []
-
-    monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: expected_backend_id,
-    )
-    monkeypatch.setattr(
-        start_local.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: pytest.fail("must not start a second backend"),
-    )
-    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
-    monkeypatch.setattr(
-        start_local,
-        "_stop_backend_server",
-        lambda process: stopped.append(process),
-    )
-
-    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
-    assert stopped == []
-
-
-def test_launcher_rechecks_reused_backend_after_frontend_repair(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = _installation(tmp_path)
-    backend = root / "local_backend"
-    expected_backend_id = start_local._backend_id(backend, root.resolve())
-    health = iter(("READY", "UNAVAILABLE", "READY", "READY"))
+    health = iter(("READY", "READY", "UNAVAILABLE", "READY", "READY"))
+    stale_stops: list[tuple[int, Path]] = []
     backend_starts: list[list[str]] = []
-    client_commands: list[list[str]] = []
     lifecycle: list[str] = []
 
     class Process:
@@ -529,6 +511,70 @@ def test_launcher_rechecks_reused_backend_after_frontend_repair(
         )
         or Process(),
     )
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
+    monkeypatch.setattr(
+        start_local,
+        "_stop_stale_backend",
+        lambda port, installation: stale_stops.append((port, installation)) or True,
+    )
+
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
+    assert stale_stops == [(8899, root.resolve())]
+    assert len(backend_starts) == 1
+    assert lifecycle == ["terminate", "wait:5"]
+
+
+def test_launcher_restarts_owned_backend_that_dies_during_frontend_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = _installation(tmp_path)
+    backend = root / "local_backend"
+    expected_backend_id = start_local._backend_id(backend, root.resolve())
+    health = iter(("UNAVAILABLE", "READY", "READY", "UNAVAILABLE", "READY", "READY"))
+    backend_starts: list[list[str]] = []
+    client_commands: list[list[str]] = []
+    lifecycle: list[str] = []
+    after_repair = False
+
+    class Process:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def poll(self):
+            if self.index == 0 and after_repair:
+                return 1
+            return None
+
+        def terminate(self) -> None:
+            lifecycle.append(f"terminate:{self.index}")
+
+        def wait(self, *, timeout: float) -> int:
+            lifecycle.append(f"wait:{self.index}:{timeout}")
+            return 0
+
+    def popen(command, **_kwargs):
+        backend_starts.append([str(value) for value in command])
+        return Process(len(backend_starts) - 1)
+
+    def repair(*_args) -> str:
+        nonlocal after_repair
+        after_repair = True
+        return "PATCHED"
+
+    monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: expected_backend_id,
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        popen,
+    )
     monkeypatch.setattr(
         start_local.subprocess,
         "call",
@@ -537,12 +583,47 @@ def test_launcher_rechecks_reused_backend_after_frontend_repair(
         )
         or 0,
     )
-    monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
+    monkeypatch.setattr(start_local, "_repair_client_frontend", repair)
 
     assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
-    assert len(backend_starts) == 1
+    assert len(backend_starts) == 2
     assert len(client_commands) == 1
-    assert lifecycle == ["terminate", "wait:5"]
+    assert lifecycle == [
+        "terminate:0",
+        "wait:0:5",
+        "terminate:1",
+        "wait:1:5",
+    ]
+
+
+def test_backend_start_does_not_adopt_another_ready_listener(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    entrypoint = backend / "original_client_server.py"
+    entrypoint.write_text("# fixture", encoding="utf-8")
+
+    class ExitedProcess:
+        @staticmethod
+        def poll():
+            return 1
+
+    monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: ExitedProcess())
+    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
+    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: "expected")
+
+    _server, health = start_local._start_backend_server(
+        backend=backend,
+        entrypoint=entrypoint,
+        environment={},
+        port=8899,
+        data_root=tmp_path / "data",
+        expected_backend_id="expected",
+    )
+
+    assert health == "UNAVAILABLE"
 
 
 @pytest.mark.parametrize("failure", ["none", "kill_oserror", "second_wait_timeout"])
@@ -590,7 +671,15 @@ def test_launcher_replaces_a_verified_stale_backend_before_starting_active_versi
         "# active",
         encoding="utf-8",
     )
-    health = iter(("READY", "UNAVAILABLE", "READY", "READY"))
+    health = iter(("READY", "UNAVAILABLE", "READY", "READY", "READY"))
+    backend_ids = iter(
+        (
+            "legacy",
+            start_local._backend_id(active_backend, root.resolve()),
+            start_local._backend_id(active_backend, root.resolve()),
+            start_local._backend_id(active_backend, root.resolve()),
+        )
+    )
     stale_stops: list[tuple[int, Path]] = []
     backend_starts: list[list[str]] = []
 
@@ -601,7 +690,7 @@ def test_launcher_replaces_a_verified_stale_backend_before_starting_active_versi
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: "legacy")
+    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: next(backend_ids))
     monkeypatch.setattr(
         start_local,
         "_stop_stale_backend",
@@ -711,6 +800,15 @@ def test_launcher_allows_mem0_cold_start_before_opening_client(
         return 0
 
     monkeypatch.setattr(start_local, "_health", health)
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(
+            root / "local_backend",
+            root.resolve(),
+        ),
+    )
     monkeypatch.setattr(start_local.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(start_local.time, "sleep", sleep)
     monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: Process())
@@ -750,7 +848,7 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     assert protected_path.is_file()
     assert protected_path.read_text(encoding="utf-8").strip() != expected
 
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
     client_environments: list[dict[str, str]] = []
 
@@ -772,6 +870,15 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
         return 0
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(
+            root / "local_backend",
+            root.resolve(),
+        ),
+    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -794,7 +901,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -807,6 +914,15 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
         return Process()
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(
+            root / "local_backend",
+            root.resolve(),
+        ),
+    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -839,7 +955,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     monkeypatch,
 ) -> None:
     root = _installation(tmp_path)
-    health = iter(("UNAVAILABLE", "READY", "READY"))
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
 
     class Process:
@@ -852,6 +968,15 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
         return Process()
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(
+            root / "local_backend",
+            root.resolve(),
+        ),
+    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",

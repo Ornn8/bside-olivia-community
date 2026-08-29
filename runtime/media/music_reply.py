@@ -209,7 +209,7 @@ _VIDEO_REPLY_SOURCE_URLS = {
     ("minimax_music3", "official"): "https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
     ("roformer", "domestic"): "https://hf-mirror.com/KimberleyJSN/melbandroformer",
     ("roformer", "official"): "https://huggingface.co/KimberleyJSN/melbandroformer",
-    ("ffmpeg", "official"): "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+    ("ffmpeg", "official"): "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
 }
 
 
