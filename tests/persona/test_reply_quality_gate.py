@@ -112,7 +112,7 @@ def test_hard_candidate_is_rewritten_once_then_rechecked_before_acceptance() -> 
     assert rewriter.calls == 1
 
 
-def test_candidate_bound_intimacy_claim_is_not_reused_after_rewrite() -> None:
+def test_candidate_bound_intimacy_claim_fails_closed_after_rewrite() -> None:
     candidate = "Synthetic contact."
     reviewer = _Reviewer(_pass_review(), _pass_review())
     rewriter = _Rewriter("Safe rewritten candidate.")
@@ -132,11 +132,12 @@ def test_candidate_bound_intimacy_claim_is_not_reused_after_rewrite() -> None:
         ),
     )
 
-    assert result.status is QualityGateStatus.ACCEPTED
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.accepted is False
     assert result.text == "Safe rewritten candidate."
-    assert result.violation_codes == ()
-    assert result.deterministic_checks == 2
-    assert result.reviewer_calls == 2
+    assert result.error_code == "FRESH_INTIMACY_CLAIMS_REQUIRED"
+    assert result.deterministic_checks == 1
+    assert result.reviewer_calls == 1
     assert result.rewrite_calls == 1
 
 

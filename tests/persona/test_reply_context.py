@@ -196,6 +196,7 @@ def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
     ).to_dict()
 
+    assert schema["$id"] == "p02.reply-context.v2"
     assert list(validator.iter_errors(valid)) == []
 
     invalid_channel = {**valid, "output_constraints": {**valid["output_constraints"]}}
@@ -229,7 +230,8 @@ def test_public_contract_documentation_names_api_errors_and_scope_boundary() -> 
         "ReplyModeAdapter",
         "REPLY_CONTEXT_INVALID",
         "REPLY_MODE_UNSUPPORTED",
-        "p02.reply-context.v1",
+        "p02.reply-context.v2",
+        "v1 payload",
         "future_im",
         "does not call a provider",
     ):

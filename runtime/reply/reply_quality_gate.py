@@ -138,6 +138,19 @@ def run_reply_quality_gate(
             rewrite_calls=1,
             error_code="REWRITE_FAILED",
         )
+    if intimacy_claims:
+        # Intimacy spans are bound to the original candidate. PR-4 will
+        # supply reviewer-generated claims for rewritten text; until then,
+        # accepting the rewrite without fresh evidence would fail open.
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            rewritten,
+            deterministic_codes + review_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=1,
+            error_code="FRESH_INTIMACY_CLAIMS_REQUIRED",
+        )
     final_deterministic = scan_reply(rewritten, context)
     final_review = _review_candidate(
         reviewer,

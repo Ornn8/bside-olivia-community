@@ -3,18 +3,26 @@
 `runtime/reply/reply_context.py` defines the immutable, provider-free input shared by reply
 pipeline stages. It does not call a provider, render media, load a persona,
 review a reply, or commit private state. The matching JSON Schema is
-`contracts/reply_context.schema.json` with id `p02.reply-context.v1`.
+`contracts/reply_context.schema.json` with id `p02.reply-context.v2`.
+
+Version 2 makes `intimacy_request`, `intimacy_ceiling`, and
+`granted_intimacy` required, bounded enum fields. Runtime producers always
+emit them with fail-closed `none` defaults. A stored or external v1 payload is
+not valid against the v2 schema until those defaults are added; there is no
+implicit inference from prose or hidden scores.
 
 ## Public API
 
 - `ReplyContext.create(...)` accepts a `ReplyMode`, timezone-aware
   `TrustedTime`, identified `TrustedWorldFact` values, a bounded
-  `PrivateBehaviorView`, and explicit `OutputConstraints`.
+  `PrivateBehaviorView`, an explicit `IntimacyRequest`, and
+  `OutputConstraints`.
 - `PrivateBehaviorView` contains only finite relationship projections, the
   boolean `home_history_allowed`, and typed `KnownContinuationFact` values
   already marked character-known. It rejects raw home-access levels, scores,
   control awareness, arbitrary dictionaries, duplicates, and unbounded
-  statements.
+  statements. Its intimacy ceiling and granted tier are bounded to
+  `none`, `light_contact`, or `close_contact`.
 - `ReplyModeAdapter` preserves the legacy wire values: `text` maps to
   `text_letter`, while `video` maps to `spoken_video`. Both spoken and musical
   video serialize back to `video`.

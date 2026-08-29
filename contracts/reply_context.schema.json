@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "p02.reply-context.v1",
+  "$id": "p02.reply-context.v2",
   "title": "P02 ReplyContext contract",
   "type": "object",
   "additionalProperties": false,
