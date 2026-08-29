@@ -575,6 +575,36 @@ def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypat
     assert provider_calls == []
 
 
+def test_music_voice_direction_retries_one_invalid_tool_result(monkeypatch):
+    reply_text = "The frozen reply has two sentences. This is the second one."
+    letter = {"letter_id": "music-direction-repair"}
+    request_id = "letter-reply:music-direction-repair:voice-direction"
+    provider_calls = []
+    plan = VoicePerformancePlan(
+        reply_text=reply_text,
+        overall_emotion="gentle reassurance",
+        global_speed=1.03,
+        energy=0.42,
+        breath_before_sentences=(),
+        emphasize_sentences=(),
+        short_instruction="",
+        profile="legacy_music_global_direction_v1",
+    )
+
+    async def direct(_text, _gateway, *, request_id=None):
+        provider_calls.append(request_id)
+        if len(provider_calls) == 1:
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+        return plan
+
+    monkeypatch.setattr(local_server, "direct_music_voice_performance", direct)
+
+    assert asyncio.run(local_server._music_voice_plan_for_letter(letter, reply_text)) == plan
+    assert provider_calls == [request_id, f"{request_id}:repair"]
+    assert letter["voice_performance_plan"] == plan.to_dict()
+
+
+
 def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monkeypatch):
     reply_text = "This reply is frozen before voice direction."
     request_id = "letter-reply:durable-direction:voice-direction"
