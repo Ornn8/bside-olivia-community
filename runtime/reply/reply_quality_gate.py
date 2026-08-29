@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.reply.reply_context import ReplyContext
-from runtime.reply.reply_policy import scan_reply
+from runtime.reply.reply_policy import IntimacyClaim, scan_reply
 from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
 
 
@@ -53,8 +53,13 @@ def run_reply_quality_gate(
     reviewer: ReviewerPort,
     rewriter: RewriterPort,
     generation_messages: Sequence[Mapping[str, Any]] = (),
+    intimacy_claims: tuple[IntimacyClaim, ...] = (),
 ) -> QualityGateResult:
-    deterministic = scan_reply(candidate, context)
+    deterministic = scan_reply(
+        candidate,
+        context,
+        intimacy_claims=intimacy_claims,
+    )
     review = _review_candidate(
         reviewer,
         candidate,

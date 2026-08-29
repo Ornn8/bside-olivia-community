@@ -1,3 +1,5 @@
+import json
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -5,7 +7,14 @@ import pytest
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
 from runtime.reply.prompt_budget import PromptBudgetExceeded
-from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime, TrustedWorldFact
+from runtime.reply.reply_context import (
+    IntimacyTier,
+    PrivateBehaviorView,
+    ReplyContext,
+    ReplyMode,
+    TrustedTime,
+    TrustedWorldFact,
+)
 
 
 def _profile() -> PersonaProfile:
@@ -259,6 +268,38 @@ def test_required_user_input_is_never_silently_truncated() -> None:
 
     assert captured.value.report.dropped_ids == ()
     assert captured.value.report.overflow_units > 0
+
+
+def test_private_behavior_assembly_exposes_only_bounded_intimacy_tiers() -> None:
+    snapshot = PersonaSnapshot(None, None, (), "DRAFT", "draft")
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            intimacy_ceiling=IntimacyTier.CLOSE_CONTACT,
+            granted_intimacy=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+
+    assembly = assemble_persona(
+        snapshot,
+        context,
+        user_input="Synthetic input.",
+        max_units=2_000,
+    )
+    matched = re.search(
+        r"<private_behavior>\n(.+?)\n</private_behavior>",
+        assembly.system_content,
+    )
+    assert matched is not None
+    payload = json.loads(matched.group(1))
+
+    assert payload["intimacy_ceiling"] == "close_contact"
+    assert payload["granted_intimacy"] == "light_contact"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "statement" not in serialized
+    assert "growth_" not in serialized
+    assert "raw_score" not in serialized
 
 
 def test_maximum_length_public_identifiers_remain_valid_budget_items() -> None:

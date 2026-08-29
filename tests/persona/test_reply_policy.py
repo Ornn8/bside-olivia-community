@@ -1,13 +1,23 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from runtime.reply.reply_context import (
+    IntimacyRequest,
+    IntimacyTier,
     OutputChannel,
     OutputConstraints,
+    PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
     TrustedTime,
 )
-from runtime.reply.reply_policy import SharedHistoryClaim, ViolationCode, scan_reply
+from runtime.reply.reply_policy import (
+    IntimacyClaim,
+    SharedHistoryClaim,
+    ViolationCode,
+    scan_reply,
+)
 
 
 def test_internal_markup_and_serialized_private_state_are_hard_violations() -> None:
@@ -136,4 +146,106 @@ def test_shared_history_is_blocked_only_from_explicit_structured_evidence() -> N
     blocked = scan_reply(candidate, context, shared_history_claims=(unauthorized,))
     assert tuple(violation.code for violation in blocked.violations) == (
         ViolationCode.UNAUTHORIZED_SHARED_HISTORY,
+    )
+
+
+def test_unrequested_intimacy_is_blocked_only_from_structured_evidence() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+    candidate = "我轻轻抱了抱你。"
+    claim = IntimacyClaim(
+        "intimacy.synthetic",
+        IntimacyTier.LIGHT_CONTACT,
+        0,
+        len(candidate),
+    )
+
+    assert scan_reply(candidate, context).passed is True
+    blocked = scan_reply(candidate, context, intimacy_claims=(claim,))
+    assert tuple(item.code for item in blocked.violations) == (
+        ViolationCode.UNSOLICITED_INTIMACY,
+    )
+    assert context.intimacy_request is IntimacyRequest.NONE
+
+
+def test_requested_intimacy_must_stay_within_the_stage_ceiling() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        intimacy_request=IntimacyRequest.REQUESTED,
+        private_behavior=PrivateBehaviorView(
+            intimacy_ceiling=IntimacyTier.LIGHT_CONTACT,
+        ),
+    )
+    candidate = "我轻轻抱了抱你。"
+    within_ceiling = IntimacyClaim(
+        "intimacy.synthetic-light",
+        IntimacyTier.LIGHT_CONTACT,
+        0,
+        len(candidate),
+    )
+    above_ceiling = IntimacyClaim(
+        "intimacy.synthetic-close",
+        IntimacyTier.CLOSE_CONTACT,
+        0,
+        len(candidate),
+    )
+
+    assert scan_reply(
+        candidate,
+        context,
+        intimacy_claims=(within_ceiling,),
+    ).passed is True
+    blocked = scan_reply(
+        candidate,
+        context,
+        intimacy_claims=(above_ceiling,),
+    )
+    assert tuple(item.code for item in blocked.violations) == (
+        ViolationCode.INTIMACY_EXCEEDS_GRANT,
+    )
+
+
+def test_intimacy_claims_are_typed_and_candidate_bound() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+    with pytest.raises(ValueError):
+        IntimacyClaim("bad claim", IntimacyTier.NONE, 0, 1)
+    with pytest.raises(ValueError):
+        IntimacyClaim("claim.synthetic", "light_contact", 0, 1)
+    with pytest.raises(ValueError):
+        IntimacyClaim("claim.synthetic", IntimacyTier.NONE, 1, 1)
+
+    with pytest.raises(ValueError):
+        scan_reply(
+            "short",
+            context,
+            intimacy_claims=(
+                IntimacyClaim(
+                    "claim.synthetic",
+                    IntimacyTier.NONE,
+                    0,
+                    6,
+                ),
+            ),
+        )
+
+
+def test_serialized_intimacy_metadata_remains_private_state() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+    result = scan_reply("intimacy_ceiling=light_contact", context)
+
+    assert tuple(item.code for item in result.violations) == (
+        ViolationCode.PRIVATE_STATE_EXPOSED,
     )

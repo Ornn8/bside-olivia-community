@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 from private_world_port import (
     ContinuationAwareness,
     HomeAccess,
+    IntimacyGrant,
     LocalContinuationFact,
     NullPrivateWorldPort,
     PrivateWorldSnapshot,
@@ -36,6 +37,7 @@ from runtime.memory.private_world_runtime import (
     resolve_private_world_database,
 )
 from private_world_reducer import ReducerEventKind
+from runtime.reply.reply_context import IntimacyTier
 
 
 def _legacy_v1_database(
@@ -727,6 +729,15 @@ def test_available_sqlite_projects_only_character_view_into_reply_context(
             closeness=74,
             tension=12,
             relationship_stage="close",
+            intimacy_grants=(
+                IntimacyGrant(
+                    "intimacy.synthetic-runtime",
+                    IntimacyTier.LIGHT_CONTACT,
+                    "Private synthetic grant statement.",
+                ),
+            ),
+            growth_window_start="2026-08-22T00:00:00+00:00",
+            growth_used=6,
             nickname_permissions=("合成称呼",),
             home_access=HomeAccess.DOMESTIC_ACCESS,
             continuation_facts=(
@@ -768,6 +779,8 @@ def test_available_sqlite_projects_only_character_view_into_reply_context(
         "closeness": "high",
         "tension": "low",
         "relationship_stage": "close",
+        "intimacy_ceiling": "light_contact",
+        "granted_intimacy": "light_contact",
         "nickname_permission": "allowed",
         "home_history_allowed": True,
         "known_continuations": [
@@ -785,6 +798,9 @@ def test_available_sqlite_projects_only_character_view_into_reply_context(
         "77",
         "74",
         "12",
+        "Private synthetic grant statement.",
+        "growth_window_start",
+        "growth_used",
         "pending.trip",
         "control.plan",
         "角色未知的合成旅行安排。",

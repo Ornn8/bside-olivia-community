@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 import re
 
-from runtime.reply.reply_context import OutputConstraints, ReplyContext, ReplyMode
+from runtime.reply.reply_context import (
+    IntimacyRequest,
+    IntimacyTier,
+    OutputConstraints,
+    ReplyContext,
+    ReplyMode,
+)
 
 
 class ViolationSeverity(StrEnum):
@@ -23,6 +29,8 @@ class ViolationCode(StrEnum):
     PERMANENT_AVAILABILITY_PROMISE = "PERMANENT_AVAILABILITY_PROMISE"
     EXCLUSIVE_RELATIONSHIP_PROMISE = "EXCLUSIVE_RELATIONSHIP_PROMISE"
     UNAUTHORIZED_SHARED_HISTORY = "UNAUTHORIZED_SHARED_HISTORY"
+    UNSOLICITED_INTIMACY = "UNSOLICITED_INTIMACY"
+    INTIMACY_EXCEEDS_GRANT = "INTIMACY_EXCEEDS_GRANT"
 
 
 @dataclass(frozen=True)
@@ -62,12 +70,32 @@ class SharedHistoryClaim:
             raise ValueError("claim authorization must be boolean")
 
 
+@dataclass(frozen=True)
+class IntimacyClaim:
+    claim_id: str
+    tier: IntimacyTier
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.claim_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9._:-]{1,96}", self.claim_id
+        ):
+            raise ValueError("claim_id must be a stable identifier")
+        if not isinstance(self.tier, IntimacyTier):
+            raise ValueError("claim tier must be an intimacy tier")
+        if type(self.start) is not int or type(self.end) is not int:
+            raise ValueError("claim span must use integers")
+        if self.start < 0 or self.end <= self.start:
+            raise ValueError("claim span is invalid")
+
+
 _CONTROL_MARKUP_RE = re.compile(
     r"</?(?:PERSONA_POLICY|PRIVATE_WORLD|CONTROL|SYSTEM|CONSTITUTION)(?:\s[^>]*)?>|\[\[CONTROL:",
     re.IGNORECASE,
 )
 _PRIVATE_STATE_RE = re.compile(
-    r"(?i)(?:[\"']?)(?:familiarity|trust|comfort|closeness|tension|relationship_stage|nickname_permission|home_access|home_history_allowed)(?:[\"']?)\s*[:=]"
+    r"(?i)(?:[\"']?)(?:familiarity|trust|comfort|closeness|tension|relationship_stage|intimacy_ceiling|granted_intimacy|intimacy_request|nickname_permission|home_access|home_history_allowed)(?:[\"']?)\s*[:=]"
 )
 _STAGE_DIRECTION_RE = re.compile(
     r"(?m)^\s*(?:[\(（\[【][^\n]{1,120}[\)）\]】]|\*[^\n*]{1,120}\*)\s*$"
@@ -97,6 +125,11 @@ _EXCLUSIVE_PROMISE_RE = re.compile(
     ),
     re.IGNORECASE,
 )
+_INTIMACY_TIER_ORDER = (
+    IntimacyTier.NONE,
+    IntimacyTier.LIGHT_CONTACT,
+    IntimacyTier.CLOSE_CONTACT,
+)
 
 
 def scan_reply(
@@ -104,6 +137,7 @@ def scan_reply(
     context: ReplyContext,
     *,
     shared_history_claims: tuple[SharedHistoryClaim, ...] = (),
+    intimacy_claims: tuple[IntimacyClaim, ...] = (),
 ) -> ReplyPolicyResult:
     if not isinstance(candidate, str):
         raise TypeError("candidate must be text")
@@ -165,6 +199,34 @@ def scan_reply(
             violations.append(
                 Violation(
                     ViolationCode.UNAUTHORIZED_SHARED_HISTORY,
+                    ViolationSeverity.HARD,
+                    claim.start,
+                    claim.end,
+                )
+            )
+    for claim in intimacy_claims:
+        if not isinstance(claim, IntimacyClaim) or claim.end > len(candidate):
+            raise ValueError("intimacy claim is invalid for candidate")
+        if (
+            context.intimacy_request is IntimacyRequest.NONE
+            and claim.tier is not IntimacyTier.NONE
+        ):
+            violations.append(
+                Violation(
+                    ViolationCode.UNSOLICITED_INTIMACY,
+                    ViolationSeverity.HARD,
+                    claim.start,
+                    claim.end,
+                )
+            )
+        if _INTIMACY_TIER_ORDER.index(
+            claim.tier
+        ) > _INTIMACY_TIER_ORDER.index(
+            context.private_behavior.intimacy_ceiling
+        ):
+            violations.append(
+                Violation(
+                    ViolationCode.INTIMACY_EXCEEDS_GRANT,
                     ViolationSeverity.HARD,
                     claim.start,
                     claim.end,

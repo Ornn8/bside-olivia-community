@@ -1,11 +1,16 @@
 from private_world_port import (
     ContinuationAwareness,
     HomeAccess,
+    IntimacyGrant,
     LocalContinuationFact,
     PrivateWorldSnapshot,
 )
 from runtime.memory.private_world_projection import project_private_world
-from runtime.reply.reply_context import BehaviorLevel, RelationshipStage
+from runtime.reply.reply_context import (
+    BehaviorLevel,
+    IntimacyTier,
+    RelationshipStage,
+)
 
 
 def test_projection_converts_hidden_scores_to_finite_behavior_levels() -> None:
@@ -116,3 +121,37 @@ def test_unknown_relationship_stage_fails_closed_to_unknown() -> None:
     )
 
     assert projected.behavior.relationship_stage is RelationshipStage.UNKNOWN
+
+
+def test_projection_exposes_only_bounded_intimacy_tiers() -> None:
+    projected = project_private_world(
+        PrivateWorldSnapshot(
+            familiarity=91,
+            relationship_stage="committed",
+            intimacy_grants=(
+                IntimacyGrant(
+                    "intimacy.synthetic-light",
+                    IntimacyTier.LIGHT_CONTACT,
+                    "Synthetic light-contact evidence.",
+                ),
+                IntimacyGrant(
+                    "intimacy.synthetic-close",
+                    IntimacyTier.CLOSE_CONTACT,
+                    "Synthetic close-contact evidence.",
+                ),
+            ),
+            growth_window_start="2026-08-29T00:00:00+00:00",
+            growth_used=6,
+        )
+    )
+
+    assert projected.intimacy_ceiling is IntimacyTier.CLOSE_CONTACT
+    assert projected.granted_intimacy is IntimacyTier.CLOSE_CONTACT
+    assert projected.behavior.intimacy_ceiling is IntimacyTier.CLOSE_CONTACT
+    assert projected.behavior.granted_intimacy is IntimacyTier.CLOSE_CONTACT
+    assert projected.to_dict()["intimacy_ceiling"] == "close_contact"
+    assert projected.to_dict()["granted_intimacy"] == "close_contact"
+    serialized = repr(projected.to_dict())
+    assert "Synthetic" not in serialized
+    assert "growth_" not in serialized
+    assert "91" not in serialized

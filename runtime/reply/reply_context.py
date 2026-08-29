@@ -64,6 +64,11 @@ class IntimacyTier(str, Enum):
     CLOSE_CONTACT = "close_contact"
 
 
+class IntimacyRequest(str, Enum):
+    NONE = "none"
+    REQUESTED = "requested"
+
+
 def intimacy_ceiling_for_stage(
     stage: RelationshipStage | str,
 ) -> IntimacyTier:
@@ -181,6 +186,8 @@ class PrivateBehaviorView:
     closeness: BehaviorLevel = BehaviorLevel.UNKNOWN
     tension: BehaviorLevel = BehaviorLevel.UNKNOWN
     relationship_stage: RelationshipStage = RelationshipStage.UNKNOWN
+    intimacy_ceiling: IntimacyTier = IntimacyTier.NONE
+    granted_intimacy: IntimacyTier = IntimacyTier.NONE
     nickname_permission: NicknamePermission = NicknamePermission.NOT_ALLOWED
     home_history_allowed: bool = False
     known_continuations: tuple[KnownContinuationFact, ...] = ()
@@ -193,6 +200,8 @@ class PrivateBehaviorView:
             (self.closeness, BehaviorLevel),
             (self.tension, BehaviorLevel),
             (self.relationship_stage, RelationshipStage),
+            (self.intimacy_ceiling, IntimacyTier),
+            (self.granted_intimacy, IntimacyTier),
             (self.nickname_permission, NicknamePermission),
         )
         if any(
@@ -232,6 +241,8 @@ class PrivateBehaviorView:
             "closeness": self.closeness.value,
             "tension": self.tension.value,
             "relationship_stage": self.relationship_stage.value,
+            "intimacy_ceiling": self.intimacy_ceiling.value,
+            "granted_intimacy": self.granted_intimacy.value,
             "nickname_permission": self.nickname_permission.value,
             "home_history_allowed": self.home_history_allowed,
             "known_continuations": [
@@ -325,6 +336,7 @@ class ReplyContext:
         )
     )
     future_im_enabled: bool = False
+    intimacy_request: IntimacyRequest = IntimacyRequest.NONE
 
     @classmethod
     def create(
@@ -336,6 +348,7 @@ class ReplyContext:
         private_behavior: PrivateBehaviorView | None = None,
         output_constraints: OutputConstraints | None = None,
         future_im_enabled: bool = False,
+        intimacy_request: IntimacyRequest = IntimacyRequest.NONE,
     ) -> "ReplyContext":
         if mode is ReplyMode.FUTURE_IM and not future_im_enabled:
             raise UnsupportedReplyMode()
@@ -359,12 +372,13 @@ class ReplyContext:
                 "world fact identifiers must be unique"
             )
         return cls(
-            mode,
-            trusted_time,
-            facts,
-            private_behavior or PrivateBehaviorView(),
-            constraints,
-            future_im_enabled,
+            mode=mode,
+            trusted_time=trusted_time,
+            world_facts=facts,
+            private_behavior=private_behavior or PrivateBehaviorView(),
+            output_constraints=constraints,
+            future_im_enabled=future_im_enabled,
+            intimacy_request=intimacy_request,
         )
 
     def __post_init__(self) -> None:
@@ -376,6 +390,8 @@ class ReplyContext:
             raise ReplyContextError(
                 "future_im_enabled must be boolean"
             )
+        if not isinstance(self.intimacy_request, IntimacyRequest):
+            raise ReplyContextError("intimacy request is invalid")
         if (
             self.mode is ReplyMode.FUTURE_IM
             and not self.future_im_enabled
@@ -441,6 +457,7 @@ class ReplyContext:
                 fact.to_dict() for fact in self.world_facts
             ],
             "private_behavior": self.private_behavior.to_dict(),
+            "intimacy_request": self.intimacy_request.value,
             "output_constraints": (
                 self.output_constraints.to_dict()
             ),
