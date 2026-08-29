@@ -244,11 +244,15 @@ def _adapt_mailbox_payload(
         letter = _find_letter(tuple(letter_collection(scope)), letter_id)
         if letter is None:
             return payload
-        payload["data"] = serialize_letter_detail(
+        serialized = serialize_letter_detail(
             letter,
             scope=scope,
             include_legacy_aliases=True,
         )
+        for field in ("error_code", "retryable"):
+            if field in data:
+                serialized[field] = data[field]
+        payload["data"] = serialized
         return payload
 
     if path == "/toy/letter/send":

@@ -18,7 +18,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 真正未实现能力：HTTP `501`，`data.status=NOT_IMPLEMENTED`。
 - 已知但不可用的可选能力：HTTP `501`，`data.status=UNAVAILABLE`，并带 `capability`；不会返回 200 假成功。
 - HTTP 发信先返回 `200`/`PENDING`；LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。重启只恢复尚未派发的 `PENDING`；不确定是否已到达 provider 的 `PROCESSING` 会 fail closed 为 `LLM_INTERRUPTED`，不自动重复生成。
-- 普通说话视频的 detail 额外公开 `media_status`、`media_error_code` 与布尔值 `media_retryable`。`TTS_CONTENT_GATE_UNAVAILABLE` 为可重试的 `UNAVAILABLE`；三条有效候选均被内容门拒绝时，`TTS_CONTENT_GATE_REJECTED` 为不可重试的 `FAILED`。
+- 视频回信的 detail 额外公开 `media_status`、`media_error_code` 与布尔值 `media_retryable`。路由选中视频后、正文仍在生成时为 `PENDING`；若正文生成、质量检查或重启恢复在媒体启动前失败，则为 `NOT_REQUESTED` 且没有媒体错误；只有正文成功后才进入实际媒体任务。`TTS_CONTENT_GATE_UNAVAILABLE` 为可重试的 `UNAVAILABLE`；三条有效候选均被内容门拒绝时，`TTS_CONTENT_GATE_REJECTED` 为不可重试的 `FAILED`。
 
 机器可读定义：
 
