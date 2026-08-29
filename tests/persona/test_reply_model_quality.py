@@ -274,6 +274,51 @@ class SequencedQualityGateway(Gateway):
         )
 
 
+class PromptContractQualityGateway(Gateway):
+    stream_enabled = False
+
+    def __init__(self, candidate: str) -> None:
+        self.candidate = candidate
+        self.call_kinds: list[str] = []
+        self.contract_layers: list[str] = []
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        system = str(messages[0].get("content", ""))
+        if "P02_REPLY_REVIEW_JSON" in system:
+            request = json.loads(str(messages[-1].get("content", "")))
+            layer = str(request["layer"])
+            self.call_kinds.append("review")
+            if layer in {
+                "identity_boundary",
+                "voice_style",
+                "continuity_memory",
+            }:
+                marker = "Return ONLY compact JSON with exactly: "
+                text = system.split(marker, 1)[1].split(".", 1)[0]
+                self.contract_layers.append(layer)
+            else:
+                text = _layer_payload(layer)
+        elif (
+            "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system
+            or "P02_REPLY_REWRITE_TEXT" in system
+        ):
+            raise AssertionError("a clean exact response contract must pass directly")
+        else:
+            self.call_kinds.append("generation")
+            text = self.candidate
+        return GatewayResponse(
+            text=text,
+            request_id=request_id or "synthetic",
+            provider="synthetic",
+            model="synthetic",
+        )
+
+
 class CompatibilityBridge(Gateway):
     stream_enabled = False
 
@@ -390,6 +435,33 @@ def test_configured_provider_runs_structured_persona_review(
         and request["mode"] == "text_letter"
         for request in gateway.review_requests
     )
+
+
+def test_provider_exact_clean_response_contract_is_accepted_by_the_same_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = PromptContractQualityGateway("Synthetic clean candidate.")
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(
+                content="Synthetic current input.",
+                request_id="exact-clean-contract",
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.quality_status == "accepted"
+    assert result.reviewer_calls == 1
+    assert result.rewrite_calls == 0
+    assert gateway.call_kinds == ["generation", *("review",) * 5]
+    assert gateway.contract_layers == [
+        "identity_boundary",
+        "voice_style",
+        "continuity_memory",
+    ]
 
 
 def test_identity_review_receives_only_bounded_relationship_evidence() -> None:

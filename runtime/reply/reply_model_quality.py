@@ -776,16 +776,16 @@ def _layer_messages(
         else ""
     )
     response_contract = (
-        f'{{"layer":"{layer.name}","score":0,"hard_violations":[],'
+        f'{{"layer":"{layer.name}","score":2,"hard_violations":[],'
         '"drift_detected":false,"intimacy_request":"none",'
         f'"intimacy_claims":[]{evidence_contract}}}'
         if layer.name == "identity_boundary"
         else (
-            f'{{"layer":"{layer.name}","score":0,'
+            f'{{"layer":"{layer.name}","score":2,'
             f'"hard_violations":[],"drift_detected":false{evidence_contract}}}'
             if layer.name in _EVIDENCE_BOUND_LAYERS
             else (
-                f'{{"layer":"{layer.name}","score":0,'
+                f'{{"layer":"{layer.name}","score":2,'
                 '"hard_violations":[],"drift_detected":false}}'
             )
         )
