@@ -403,8 +403,15 @@ def _load_runtime_root_manifest(
         raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"schema_version", "version", "environment", "files"}
-        or payload.get("schema_version") != "olivia.video-runtime-root.v1"
+        or set(payload) != {"schema_version", "version", "environment", "files"} | ({"build_inputs"} if payload.get("schema_version") == "olivia.video-runtime-root.v2" else set())
+        or payload.get("schema_version") not in {"olivia.video-runtime-root.v1", "olivia.video-runtime-root.v2"}
+        or (payload.get("schema_version") == "olivia.video-runtime-root.v2" and (
+            not isinstance(payload.get("build_inputs"), dict)
+            or set(payload["build_inputs"]) != {"schema_version", "components"}
+            or payload["build_inputs"].get("schema_version") != "olivia.video-runtime-build-inputs.v1"
+            or not isinstance(payload["build_inputs"].get("components"), dict)
+            or set(payload["build_inputs"]["components"]) != {"cosyvoice", "latentsync", "minimax", "roformer"}
+        ))
         or not isinstance(payload.get("version"), str)
         or not 1 <= len(payload["version"]) <= 64
         or not isinstance(payload.get("environment"), dict)
@@ -511,6 +518,7 @@ def write_runtime_root_manifest(
     *,
     version: str,
     environment: Mapping[str, str],
+    build_inputs: Mapping[str, object] | None = None,
 ) -> str:
     """Hash an exact portable runtime tree and return its manifest SHA-256."""
 
@@ -521,6 +529,7 @@ def write_runtime_root_manifest(
         or not 1 <= len(version) <= 64
         or not environment
         or set(environment) - _RUNTIME_ENVIRONMENT_KEYS
+        or (build_inputs is not None and (not isinstance(build_inputs, Mapping) or set(build_inputs) != {"schema_version", "components"} or build_inputs.get("schema_version") != "olivia.video-runtime-build-inputs.v1" or not isinstance(build_inputs.get("components"), dict) or set(build_inputs["components"]) != {"cosyvoice", "latentsync", "minimax", "roformer"}))
     ):
         raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
     root = runtime_root.resolve(strict=True)
@@ -550,11 +559,13 @@ def write_runtime_root_manifest(
     if not files:
         raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
     payload = {
-        "schema_version": "olivia.video-runtime-root.v1",
+        "schema_version": "olivia.video-runtime-root.v2" if build_inputs is not None else "olivia.video-runtime-root.v1",
         "version": version,
         "environment": dict(sorted(normalized_environment.items())),
         "files": files,
     }
+    if build_inputs is not None:
+        payload["build_inputs"] = dict(build_inputs)
     target = root / "runtime-manifest.json"
     temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
     try:
