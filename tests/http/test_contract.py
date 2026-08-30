@@ -55,7 +55,9 @@ def _post_current_letter(local_server, content: str) -> tuple[int, dict]:
     return asyncio.run(exercise())
 
 
-def _get_mailbox_responses(local_server) -> list[tuple[int, dict]]:
+def _get_mailbox_responses(
+    local_server, detail_id: str = "synthetic-missing"
+) -> list[tuple[int, dict]]:
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -67,7 +69,7 @@ def _get_mailbox_responses(local_server) -> list[tuple[int, dict]]:
             for path, params in (
                 ("/toy/letter/list", {}),
                 ("/toy/letter/unread_count", {}),
-                ("/toy/letter/detail", {"letter_id": "synthetic-missing"}),
+                ("/toy/letter/detail", {"letter_id": detail_id}),
                 ("/toy/letter/list", {"scope": "legacy"}),
             ):
                 response = await client.get(path, params=params)
@@ -957,59 +959,53 @@ def test_corrupt_state_blocks_public_letter_mutation_without_overwrite(
         "retryable": False,
     }
     error_table = (ROOT / "docs" / "B02_ERROR_CODES.md").read_text(encoding="utf-8")
-    assert any(
-        "| 503 | `STORE_STATE_UNAVAILABLE` | FAILED | 否 |" in row
-        for row in error_table.splitlines()
-    )
+    assert "| 503 | `STORE_STATE_UNAVAILABLE` | FAILED | 否 |" in error_table
 
 
+@pytest.mark.parametrize("rewrite_fails", [False, True])
 def test_corrupt_primary_state_recovers_from_durable_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    rewrite_fails: bool,
 ) -> None:
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
     letter = {
         "letter_id": "synthetic-backup-letter",
-        "content": "synthetic backup input",
-        "material": {},
         "letter_status": "COMPLETED",
-        "audit_status": 2,
-        "is_read": 1,
-        "created_at": 100,
         "reply_text": "synthetic backup reply",
-        "reply_mode": "text_letter",
-        "triage": {"status": "completed"},
-        "music_duration_seconds": 60,
     }
     local_server.store.letters.append(letter)
     local_server._persist_store_state()
-    (tmp_path / "state.json").write_bytes(b'{"letters":[')
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b'{"letters":[')
     local_server.store.letters.clear()
+    if rewrite_fails:
+        real_replace = local_server._os.replace
+
+        def reject_primary_rewrite(source, destination) -> None:
+            if Path(destination) == state_path:
+                raise OSError("synthetic primary rewrite failure")
+            real_replace(source, destination)
+
+        monkeypatch.setattr(local_server._os, "replace", reject_primary_rewrite)
     local_server._load_store_state()
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.get(
-                "/toy/letter/detail",
-                params={"letter_id": letter["letter_id"]},
-            )
-            return response.status, await response.json()
+    *current_reads, legacy_read = _get_mailbox_responses(local_server, letter["letter_id"])
+    status, payload = current_reads[2]
 
-    status, payload = asyncio.run(exercise())
-
-    assert status == 200
-    assert payload["data"]["reply_text"] == "synthetic backup reply"
-    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))[
-        "letters"
-    ][0]["letter_id"] == letter["letter_id"]
+    if rewrite_fails:
+        assert all(item[0] == 503 for item in current_reads)
+        assert legacy_read[0] == 200
+        assert state_path.read_bytes() == b'{"letters":['
+    else:
+        assert status == 200
+        assert payload["data"]["reply_text"] == "synthetic backup reply"
+        assert json.loads(state_path.read_text(encoding="utf-8"))["letters"][0][
+            "letter_id"
+        ] == letter["letter_id"]
 
 
 @pytest.mark.parametrize("existing_snapshot", [True, False])

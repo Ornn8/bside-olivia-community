@@ -926,7 +926,10 @@ def _load_store_state() -> None:
     if isinstance(loaded.get("request_keys"), dict):
         store.request_keys = loaded["request_keys"]
     if needs_persist or recovered_from_backup:
-        _persist_store_state()
+        try:
+            _persist_store_state()
+        except StoreStateUnavailable:
+            _safe_log("store_primary_repair_failed", error_code=StoreStateUnavailable.code)
 
 
 def _persist_store_state() -> None:
