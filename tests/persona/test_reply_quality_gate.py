@@ -38,6 +38,19 @@ class _Reviewer:
         return result
 
 
+class _ConfirmedEvidenceReviewer(_Reviewer):
+    def __init__(
+        self,
+        evidence: tuple[ReviewerViolation, ...],
+        *results: ReviewResult,
+    ) -> None:
+        super().__init__(*results)
+        self.evidence = evidence
+
+    def confirmed_rewrite_evidence(self, candidate, context, review):
+        return self.evidence
+
+
 class _Rewriter:
     def __init__(self, rewritten: str) -> None:
         self.rewritten = rewritten
@@ -47,6 +60,25 @@ class _Rewriter:
     def rewrite(self, candidate, context, violation_codes):
         self.calls += 1
         self.violation_codes.append(violation_codes)
+        return self.rewritten
+
+
+class _EvidenceAwareRewriter(_Rewriter):
+    def __init__(self, rewritten: str) -> None:
+        super().__init__(rewritten)
+        self.confirmed_violations: list[tuple[ReviewerViolation, ...]] = []
+
+    def rewrite_with_evidence(
+        self,
+        candidate,
+        context,
+        violation_codes,
+        generation_messages,
+        confirmed_violations,
+    ):
+        self.calls += 1
+        self.violation_codes.append(violation_codes)
+        self.confirmed_violations.append(confirmed_violations)
         return self.rewritten
 
 
@@ -134,6 +166,116 @@ def test_hard_candidate_is_rewritten_once_then_rechecked_before_acceptance() -> 
     assert result.rewrite_calls == 1
     assert reviewer.calls == 2
     assert rewriter.calls == 1
+    assert rewriter.violation_codes == [("INTERNAL_CONTROL_MARKUP",)]
+
+
+def test_unadjudicated_custom_reviewer_hard_finding_is_not_repair_evidence() -> None:
+    candidate = "Synthetic unsupported current fact."
+    reviewer = _Reviewer(
+        ReviewResult(
+            ReviewStatus.COMPLETED,
+            ReviewVerdict.REWRITE,
+            (
+                ReviewerViolation(
+                    "MEMORY_FABRICATION",
+                    "hard",
+                    10,
+                    len(candidate),
+                ),
+            ),
+            ReviewerScores(95, 30, 95, 95),
+            IntimacyRequest.NONE,
+            (),
+        ),
+        _pass_review(),
+    )
+    rewriter = _EvidenceAwareRewriter("Synthetic clean reply.")
+
+    result = run_reply_quality_gate(
+        candidate,
+        _context(),
+        reviewer=reviewer,
+        rewriter=rewriter,
+    )
+
+    assert result.status is QualityGateStatus.ACCEPTED
+    assert rewriter.confirmed_violations == [()]
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    ("range", "code", "non_hard", "limit"),
+)
+def test_invalid_confirmed_repair_evidence_fails_before_rewriter(
+    invalid_kind: str,
+) -> None:
+    candidate = "Synthetic unsupported current fact."
+    valid = ReviewerViolation(
+        "MEMORY_FABRICATION",
+        "hard",
+        10,
+        len(candidate),
+    )
+    invalid = {
+        "range": (
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                "hard",
+                10,
+                len(candidate) + 1,
+            ),
+        ),
+        "code": (
+            ReviewerViolation(
+                "BOUNDARY_BREACH",
+                "hard",
+                10,
+                len(candidate),
+            ),
+        ),
+        "non_hard": (
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                "soft",
+                10,
+                len(candidate),
+            ),
+        ),
+        "limit": tuple(
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                "hard",
+                index,
+                index + 1,
+            )
+            for index in range(17)
+        ),
+    }[invalid_kind]
+    reviewer = _ConfirmedEvidenceReviewer(
+        invalid,
+        ReviewResult(
+            ReviewStatus.COMPLETED,
+            ReviewVerdict.REWRITE,
+            (valid,),
+            ReviewerScores(95, 30, 95, 95),
+            IntimacyRequest.NONE,
+            (),
+        ),
+        _pass_review(),
+    )
+    rewriter = _EvidenceAwareRewriter("Synthetic clean reply.")
+
+    result = run_reply_quality_gate(
+        candidate,
+        _context(),
+        reviewer=reviewer,
+        rewriter=rewriter,
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.error_code == "REWRITE_FAILED"
+    assert result.rewrite_calls == 0
+    assert rewriter.calls == 0
 
 
 def test_candidate_bound_intimacy_claim_fails_closed_after_rewrite() -> None:

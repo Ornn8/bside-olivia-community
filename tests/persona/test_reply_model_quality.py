@@ -274,6 +274,9 @@ def test_reviewer_classifies_aggregation_failure_without_details(
     assert "private aggregation detail" not in repr(
         reviewer.last_failure_diagnostics
     )
+    assert reviewer.confirmed_rewrite_evidence(
+        "Synthetic candidate.", _intimacy_context(), result
+    ) == ()
 
 
 def test_unexpected_layer_parser_error_is_internal(
@@ -1569,6 +1572,7 @@ def test_non_letter_hard_findings_keep_legacy_schema_without_adjudication(
         *("review",) * 5,
     ]
     assert gateway.adjudication_requests == []
+    assert gateway.rewrite_requests[0]["confirmed_violation_evidence"] == []
     assert pipeline.reviewer.last_failure_diagnostics == ()
     assert all(
         "hard_evidence" not in prompt
@@ -1662,13 +1666,16 @@ def test_hard_evidence_must_match_code_and_candidate_offsets(
         hard_evidence=[evidence],
     )
 
+    gateway = SequencedQualityGateway(candidate="unused", reviews=reviews)
     result = GatewayPersonaReviewer(
-        SequencedQualityGateway(candidate="unused", reviews=reviews),
+        gateway,
         ROOT / "linli_character" / "persona_release_v2.json",
         1,
     ).review(candidate, _context())
 
     assert result.verdict is ReviewVerdict.UNAVAILABLE
+    assert gateway.adjudication_requests == []
+    assert gateway.rewrite_requests == []
 
 
 @pytest.mark.parametrize(
@@ -1743,6 +1750,7 @@ def test_adjudicator_rejects_false_memory_fabrication_as_soft_warning() -> None:
         ("MEMORY_FABRICATION", "soft", 0, len(candidate))
     ]
     assert gateway.call_kinds == [*("review",) * 5, "adjudication"]
+    assert gateway.rewrite_requests == []
 
 
 @pytest.mark.parametrize(
@@ -2412,6 +2420,114 @@ def test_rejected_and_confirmed_claims_in_one_layer_are_both_reported() -> None:
         ("STAGE_DRIFT", "hard"),
         ("RELATIONSHIP_RETRACTION", "soft"),
     }
+
+
+def test_only_adjudicated_first_letter_evidence_reaches_configured_rewriter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = (
+        "The queue delay sounds like the part that hurt. "
+        "I am waiting beside the station window now."
+    )
+    unsupported = "I am waiting beside the station window now."
+    rewritten = "The queue delay sounds like the part that hurt."
+    start = candidate.index(unsupported)
+    evidence = _hard_evidence_payload(
+        candidate,
+        "MEMORY_FABRICATION",
+        evidence_id="evidence.first-letter.current-location",
+        start=start,
+        end=start + len(unsupported),
+        claim_kind="location",
+    )
+    first = _passing_layer_payloads()
+    first[2] = _layer_score_payload(
+        "focus_response",
+        0,
+        hard_violations=["GENERIC_COUNSELOR"],
+        drift_detected=True,
+    )
+    first[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[*first, *_passing_layer_payloads()],
+        rewritten=rewritten,
+        adjudications=[_adjudication_payload(evidence, "CONFIRM")],
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch, max_reasoning=True).run(
+            ReplyRequest(
+                content="The queue stalled, and that was the upsetting part.",
+                request_id="first-letter-memory-repair",
+                gateway_scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.quality_status == "accepted"
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == 1
+    assert gateway.rewrite_requests[0]["confirmed_violation_evidence"] == [
+        {
+            "code": "MEMORY_FABRICATION",
+            "start": start,
+            "end": start + len(unsupported),
+        }
+    ]
+    serialized_rewrite = json.dumps(
+        gateway.rewrite_requests[0],
+        ensure_ascii=False,
+    )
+    assert evidence["evidence_id"] not in serialized_rewrite
+    assert evidence["reason_code"] not in serialized_rewrite
+    assert "CONFIRM" not in serialized_rewrite
+    assert (
+        "Do not replace one unsupported current or past fact, location, "
+        "action, or habit with another unsupported claim."
+        in gateway.rewrite_system_prompts[0]
+    )
+    assert gateway.call_kinds == [
+        "generation",
+        *("review",) * 5,
+        "adjudication",
+        "rewrite",
+        *("review",) * 5,
+    ]
+    continuity = gateway.review_requests[3]
+    assert continuity["memory_evidence"] == {
+        "assembled_memory": "",
+        "world_facts": "[]",
+        "known_continuations": "[]",
+    }
+
+
+def test_confirmed_rewrite_evidence_is_candidate_bound_and_single_use() -> None:
+    candidate = "Synthetic unsupported current location."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    reviewer = GatewayPersonaReviewer(
+        SequencedQualityGateway(
+            candidate=candidate,
+            reviews=_reviews_requiring_adjudication(candidate),
+            adjudications=[_adjudication_payload(evidence, "CONFIRM")],
+        ),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    )
+    review = reviewer.review(candidate, _context())
+
+    with pytest.raises(ValueError, match="candidate mismatch"):
+        reviewer.confirmed_rewrite_evidence(candidate + "x", _context(), review)
+    with pytest.raises(ValueError, match="unavailable"):
+        reviewer.confirmed_rewrite_evidence(candidate, _context(), review)
 
 
 def test_rewrite_uses_fresh_candidate_evidence_and_adjudication(

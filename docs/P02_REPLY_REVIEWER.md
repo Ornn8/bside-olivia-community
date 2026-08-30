@@ -145,6 +145,13 @@ claim, span, or decision is reused; a confirmed hard claim that persists after
 the rewrite blocks. `accepted_with_warnings` is a Letter-only quality status;
 non-Letter modes retain their prior `accepted` status for soft findings.
 
+For the one permitted Letter rewrite, the configured rewriter receives only actual
+`CONFIRM` results as candidate-bound, single-use `code`/`start`/`end` evidence
+(limit 16), never evidence ids, reasons, decisions, excerpts, or reasoning.
+It must repair those spans without substituting unsupported facts or actions.
+Invalid or inconsistent evidence fails before the rewriter; legacy code-only
+calls remain, while non-Letter findings are not treated as adjudicated evidence.
+
 Adjudication prompts and responses are transient. Candidate text is not added
 to quality status, audit records, evidence objects, or logs, and the typed
 evidence contains offsets and machine reason codes rather than quoted text.

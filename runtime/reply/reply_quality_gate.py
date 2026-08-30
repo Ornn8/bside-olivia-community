@@ -8,7 +8,12 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from runtime.reply.reply_context import ReplyContext
 from runtime.reply.reply_policy import IntimacyClaim, scan_reply
-from runtime.reply.reply_reviewer import ReviewResult, ReviewStatus, ReviewVerdict
+from runtime.reply.reply_reviewer import (
+    ReviewerViolation,
+    ReviewResult,
+    ReviewStatus,
+    ReviewVerdict,
+)
 from runtime.reply.reply_reviewer import TrustedReviewEvidence
 
 
@@ -150,12 +155,31 @@ def run_reply_quality_gate(
             rewrite_calls=0,
         )
     try:
+        confirmed_evidence = _confirmed_rewrite_evidence(
+            reviewer,
+            candidate,
+            reviewed_context,
+            review,
+            initial_codes,
+        )
+    except Exception:
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            candidate,
+            initial_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=0,
+            error_code="REWRITE_FAILED",
+        )
+    try:
         rewritten = _rewrite_candidate(
             rewriter,
             candidate,
             reviewed_context,
             initial_codes,
             generation_messages,
+            confirmed_evidence,
         )
     except Exception:
         return QualityGateResult(
@@ -301,7 +325,17 @@ def _rewrite_candidate(
     context: ReplyContext,
     violation_codes: tuple[str, ...],
     generation_messages: Sequence[Mapping[str, Any]],
+    confirmed_violations: tuple[ReviewerViolation, ...],
 ) -> str:
+    evidence_aware = getattr(rewriter, "rewrite_with_evidence", None)
+    if callable(evidence_aware):
+        return evidence_aware(
+            candidate,
+            context,
+            violation_codes,
+            generation_messages,
+            confirmed_violations,
+        )
     extended = getattr(rewriter, "rewrite_with_messages", None)
     if callable(extended):
         return extended(
@@ -311,3 +345,42 @@ def _rewrite_candidate(
             generation_messages,
         )
     return rewriter.rewrite(candidate, context, violation_codes)
+
+
+def _confirmed_rewrite_evidence(
+    reviewer: ReviewerPort,
+    candidate: str,
+    context: ReplyContext,
+    review: ReviewResult,
+    violation_codes: tuple[str, ...],
+) -> tuple[ReviewerViolation, ...]:
+    source = getattr(reviewer, "confirmed_rewrite_evidence", None)
+    if not callable(source):
+        return ()
+    evidence = source(candidate, context, review)
+    if not isinstance(evidence, tuple) or any(
+        not isinstance(item, ReviewerViolation)
+        for item in evidence
+    ):
+        raise TypeError("confirmed rewrite evidence must be a typed tuple")
+    if len(evidence) > 16:
+        raise ValueError("confirmed rewrite evidence exceeds limit")
+    signatures: set[tuple[str, int, int]] = set()
+    for item in evidence:
+        signature = (item.code, item.start, item.end)
+        if (
+            item.severity != "hard"
+            or item not in review.violations
+            or item.code not in violation_codes
+            or isinstance(item.start, bool)
+            or not isinstance(item.start, int)
+            or isinstance(item.end, bool)
+            or not isinstance(item.end, int)
+            or item.start < 0
+            or item.end <= item.start
+            or item.end > len(candidate)
+            or signature in signatures
+        ):
+            raise ValueError("confirmed rewrite evidence is invalid")
+        signatures.add(signature)
+    return evidence
