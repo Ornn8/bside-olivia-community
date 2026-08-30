@@ -764,8 +764,7 @@ def _configured_video_capability_installer(
                     install_root / "downloads",
                     install_root.parent / "downloads",
                 ):
-                    if candidate.is_dir():
-                        runtime_search_roots.append(candidate.resolve())
+                    runtime_search_roots.append(candidate.resolve())
         explicit_runtime = str(
             environ.get("OLIVIA_VIDEO_RUNTIME_ARCHIVE", "")
         ).strip()
@@ -787,6 +786,7 @@ def _configured_video_capability_installer(
             readiness_probe=readiness,
             artifact_roots=artifact_roots,
             runtime_archives=tuple(dict.fromkeys(runtime_archives)),
+            runtime_archive_roots=tuple(dict.fromkeys(runtime_search_roots)),
             runtime_environment_applier=os.environ.update,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
