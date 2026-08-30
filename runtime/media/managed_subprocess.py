@@ -35,18 +35,15 @@ def _create_windows_job():
     class IoCounters(ctypes.Structure):
         _fields_ = [
             (name, ctypes.c_ulonglong)
-            for name in (
-                "read_operations", "write_operations", "other_operations",
-                "read_bytes", "write_bytes", "other_bytes",
-            )
+            for name in ("read_operations", "write_operations", "other_operations",
+                         "read_bytes", "write_bytes", "other_bytes")
         ]
 
     class ExtendedLimits(ctypes.Structure):
         _fields_ = [
             ("basic", BasicLimits), ("io", IoCounters),
             ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
-            ("peak_process_memory", ctypes.c_size_t),
-            ("peak_job_memory", ctypes.c_size_t),
+            ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t),
         ]
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -58,10 +55,8 @@ def _create_windows_job():
     kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     for function in (
-        kernel32.SetInformationJobObject,
-        kernel32.AssignProcessToJobObject,
-        kernel32.TerminateJobObject,
-        kernel32.CloseHandle,
+        kernel32.SetInformationJobObject, kernel32.AssignProcessToJobObject,
+        kernel32.TerminateJobObject, kernel32.CloseHandle,
     ):
         function.restype = wintypes.BOOL
     ntdll = ctypes.WinDLL("ntdll")
@@ -144,6 +139,7 @@ def run_managed_process(
         kwargs["start_new_session"] = True
     process: subprocess.Popen[bytes] | None = None
     assigned = False
+    failures: list[tuple[str, BaseException]] = []
     try:
         process = subprocess.Popen(arguments, **kwargs)
         if job is not None:
@@ -153,8 +149,14 @@ def run_managed_process(
                 job.resume(process)
             except OSError:
                 if not assigned:
-                    process.kill()
-                    process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                    try:
+                        process.kill()
+                    except OSError as exc:
+                        failures.append(("kill", exc))
+                    try:
+                        process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        failures.append(("reap", exc))
                 raise
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
@@ -166,7 +168,6 @@ def run_managed_process(
     finally:
         active_error = sys.exc_info()[1]
         if job is not None:
-            failures: list[tuple[str, BaseException]] = []
             if assigned and process is not None:
                 try:
                     job.terminate()

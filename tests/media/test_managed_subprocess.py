@@ -91,24 +91,32 @@ def test_windows_job_creation_failure_does_not_launch(monkeypatch) -> None:
     assert not launched
 
 
-def test_windows_assign_failure_kills_suspended_parent_before_resume(monkeypatch) -> None:
+def test_windows_assign_failure_survives_cleanup_failures(monkeypatch) -> None:
     observed: list[str] = []
+    timeout_error = subprocess.TimeoutExpired(["worker"], 15.0)
     process = SimpleNamespace(
-        kill=lambda: observed.append("kill"),
-        communicate=lambda timeout: (observed.append(f"wait:{timeout}") or (b"", b"")),
+        kill=lambda: (observed.append("kill") or (_ for _ in ()).throw(OSError("kill"))),
+        communicate=lambda timeout: (
+            observed.append(f"wait:{timeout}") or (_ for _ in ()).throw(timeout_error)
+        ),
     )
     job = SimpleNamespace(
         assign=lambda _process: (_ for _ in ()).throw(OSError("assign")),
         resume=lambda _process: observed.append("resume"),
         terminate=lambda: observed.append("terminate"),
-        close=lambda: observed.append("close"),
+        close=lambda: (
+            observed.append("close") or (_ for _ in ()).throw(OSError("close"))
+        ),
     )
     monkeypatch.setattr(managed_subprocess.os, "name", "nt")
     monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: job)
     monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: process)
-    with pytest.raises(OSError, match="assign"):
+    with pytest.raises(OSError, match="assign") as caught:
         managed_subprocess.run_managed_process(["worker"], timeout_seconds=1)
     assert observed == ["kill", "wait:15.0", "close"]
+    assert caught.value.__notes__ == [
+        "PROCESS_TREE_CLEANUP_FAILED: kill, reap, close",
+    ]
 
 
 def test_windows_resume_failure_terminates_assigned_job_once(monkeypatch) -> None:
