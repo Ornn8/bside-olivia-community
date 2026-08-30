@@ -741,6 +741,10 @@ class ManagedMem0Runtime:
             "install",
             "--disable-pip-version-check",
             "--require-hashes",
+            "--timeout",
+            "15",
+            "--retries",
+            "1",
             "--only-binary=:all:",
             "--no-compile",
             "--ignore-installed",
@@ -1289,12 +1293,34 @@ class Mem0CapabilityInstaller:
         except Exception:
             ready = False
         with self._lock:
-            if ready and self._status.state in {
-                CapabilityState.MISSING,
-                CapabilityState.READY,
-            }:
+            active = self._status.state in {
+                CapabilityState.QUEUED,
+                CapabilityState.DOWNLOADING,
+                CapabilityState.VERIFYING,
+            }
+            worker_finished = (
+                self._thread is not None
+                and getattr(self._thread, "ident", None) is not None
+                and not self._thread.is_alive()
+            )
+            if ready and (
+                self._status.state in {
+                    CapabilityState.MISSING,
+                    CapabilityState.READY,
+                }
+                or active and worker_finished
+            ):
                 self._set_ready(None)
                 return self._status
+            if not ready and active and worker_finished:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    self._status.phase,
+                    self._status.downloaded_bytes,
+                    current=self._status.current_file,
+                    source=self._status.source,
+                    reason="MEM0_CAPABILITY_INSTALL_FAILED",
+                )
             if not ready and self._status.state is CapabilityState.READY:
                 self._status = self._new_status(
                     CapabilityState.REPAIR,
@@ -1488,7 +1514,18 @@ class Mem0CapabilityInstaller:
         source_mode: str,
         offline_root: Path | None,
     ) -> None:
-        self.install(source_mode=source_mode, offline_root=offline_root)
+        try:
+            self.install(source_mode=source_mode, offline_root=offline_root)
+        except Exception:
+            with self._lock:
+                self._status = self._new_status(
+                    CapabilityState.REPAIR,
+                    self._status.phase,
+                    self._status.downloaded_bytes,
+                    current=self._status.current_file,
+                    source=self._status.source or source_mode,
+                    reason="MEM0_CAPABILITY_INSTALL_FAILED",
+                )
 
     def pause(self) -> str:
         with self._lock:

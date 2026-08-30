@@ -1687,7 +1687,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
         main = archive.read("assets/main-917d29fc.js").decode("utf-8")
     assert "assets/olivia-companion-settings.js" in names
     assert "data-olivia-companion-settings" in index
-    assert "data-ui-version=\"p03.original-settings-manage.v10\"" in index
+    assert "data-ui-version=\"p03.original-settings-manage.v11\"" in index
     assert (installed / "local_backend" / "original_client_setup_api.py").is_file()
     assert (installed / "local_backend" / "original_client_capability_api.py").is_file()
     assert (installed / "local_backend" / "original_client_update_api.py").is_file()
