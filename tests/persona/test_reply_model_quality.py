@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, fields
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import pytest
+
+import runtime.reply.reply_model_quality as quality_module
 
 from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
@@ -28,6 +33,9 @@ from reply_model_quality import (
     GatewayPersonaReviewer,
     GatewayPersonaRewriter,
     GatewayReviewTransport,
+    ReviewFailureDiagnostic,
+    ReviewFailureReason,
+    ReviewFailureStage,
     create_model_quality_ports,
 )
 from runtime.reply.reply_reviewer import (
@@ -40,6 +48,13 @@ from runtime.reply.reply_reviewer import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_REVIEW_LAYERS = (
+    "identity_boundary",
+    "voice_style",
+    "focus_response",
+    "continuity_memory",
+    "autonomy_life",
+)
 
 
 def _layer_payload(layer: str) -> str:
@@ -84,16 +99,376 @@ def _layer_score_payload(
 
 
 def _passing_layer_payloads() -> list[str]:
-    return [
-        _layer_payload(layer)
-        for layer in (
-            "identity_boundary",
-            "voice_style",
-            "focus_response",
-            "continuity_memory",
-            "autonomy_life",
+    return [_layer_payload(layer) for layer in _REVIEW_LAYERS]
+
+
+def _run_diagnostic_review(
+    gateway: Gateway,
+    candidate: str = "Synthetic candidate.",
+    context: ReplyContext | None = None,
+) -> tuple[object, GatewayPersonaReviewer]:
+    reviewer = GatewayPersonaReviewer(
+        gateway, ROOT / "linli_character" / "persona_release_v2.json", 2.0
+    )
+    return reviewer.review(candidate, context or _intimacy_context()), reviewer
+
+
+@pytest.mark.parametrize(
+    ("case", "reason", "layer"),
+    (
+        ("transport", ReviewFailureReason.TRANSPORT, "continuity_memory"),
+        ("json", ReviewFailureReason.JSON, "identity_boundary"),
+        ("empty", ReviewFailureReason.EMPTY_TEXT, "voice_style"),
+        ("envelope", ReviewFailureReason.TOP_LEVEL_SCHEMA, "focus_response"),
+        ("layer_mismatch", ReviewFailureReason.TOP_LEVEL_SCHEMA, "continuity_memory"),
+        ("score", ReviewFailureReason.LAYER_CONTRACT, "autonomy_life"),
+        ("identity", ReviewFailureReason.LAYER_CONTRACT, "identity_boundary"),
+        ("evidence", ReviewFailureReason.EVIDENCE_CONTRACT, "identity_boundary"),
+    ),
+)
+def test_reviewer_classifies_layer_failure(
+    case: str,
+    reason: ReviewFailureReason,
+    layer: str,
+) -> None:
+    candidate = "Synthetic candidate."
+    reviews = _passing_layer_payloads()
+    index = _REVIEW_LAYERS.index(layer)
+    if case == "transport":
+        pass
+    elif case == "json":
+        reviews[index] = "{"
+    elif case == "empty":
+        reviews[index] = ""
+    elif case in {"envelope", "layer_mismatch", "score", "identity"}:
+        payload = json.loads(reviews[index])
+        if case == "envelope":
+            payload["unexpected"] = True
+        elif case == "layer_mismatch":
+            payload["layer"] = "autonomy_life"
+        elif case == "score":
+            payload["score"] = True
+        else:
+            payload["intimacy_request"] = "invented"
+        reviews[index] = json.dumps(payload)
+    else:
+        evidence = _hard_evidence_payload(
+            candidate, "IDENTITY_DRIFT", claim_kind="identity_claim"
         )
-    ]
+        evidence["start"] = True
+        reviews[index] = _layer_score_payload(
+            layer,
+            0,
+            hard_violations=["IDENTITY_DRIFT"],
+            drift_detected=True,
+            hard_evidence=[evidence],
+        )
+    gateway = (
+        FailingQualityGateway(failure="layer", failing_layer=layer)
+        if case == "transport"
+        else SequencedQualityGateway(candidate=candidate, reviews=reviews)
+    )
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(ReviewFailureStage.LAYER, reason, layer),
+    )
+
+
+def test_reviewer_orders_multiple_layer_failures_by_authority() -> None:
+    reviews = _passing_layer_payloads()
+    reviews[0] = "{"
+    reviews[1] = ""
+    result, reviewer = _run_diagnostic_review(
+        SequencedQualityGateway(candidate="Synthetic candidate.", reviews=reviews)
+    )
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(ReviewFailureStage.LAYER, ReviewFailureReason.JSON, "identity_boundary"),
+        ReviewFailureDiagnostic(ReviewFailureStage.LAYER, ReviewFailureReason.EMPTY_TEXT, "voice_style"),
+    )
+
+
+def _reviews_requiring_adjudication(candidate: str) -> list[str]:
+    reviews = _passing_layer_payloads()
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    reviews[3] = _layer_score_payload(
+        "continuity_memory",
+        0,
+        hard_violations=["MEMORY_FABRICATION"],
+        drift_detected=True,
+        hard_evidence=[evidence],
+    )
+    return reviews
+
+
+@pytest.mark.parametrize(
+    ("case", "response", "reason"),
+    (
+        ("transport", None, ReviewFailureReason.TRANSPORT),
+        ("empty", "", ReviewFailureReason.EMPTY_TEXT),
+        ("json", "{", ReviewFailureReason.JSON),
+        ("contract", json.dumps({"decisions": []}), ReviewFailureReason.ADJUDICATION_CONTRACT),
+    ),
+)
+def test_reviewer_classifies_adjudication_failure(
+    case: str,
+    response: str | None,
+    reason: ReviewFailureReason,
+) -> None:
+    candidate = "Synthetic unsupported past claim."
+    reviews = _reviews_requiring_adjudication(candidate)
+    gateway = (
+        FailingQualityGateway(failure="adjudication", candidate=candidate, reviews=reviews)
+        if case == "transport"
+        else SequencedQualityGateway(
+            candidate=candidate,
+            reviews=reviews,
+            adjudications=[str(response)],
+        )
+    )
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(ReviewFailureStage.ADJUDICATION, reason),
+    )
+    assert "private adjudication detail" not in repr(
+        reviewer.last_failure_diagnostics
+    )
+
+
+def test_reviewer_classifies_aggregation_failure_without_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_aggregation(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("private aggregation detail")
+
+    monkeypatch.setattr(
+        quality_module,
+        "_aggregate_layer_results",
+        fail_aggregation,
+    )
+    result, reviewer = _run_diagnostic_review(
+        SequencedQualityGateway(
+            candidate="Synthetic candidate.",
+            reviews=_passing_layer_payloads(),
+        )
+    )
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    diagnostic = reviewer.last_failure_diagnostics[0]
+    assert diagnostic == ReviewFailureDiagnostic(
+        ReviewFailureStage.AGGREGATION, ReviewFailureReason.AGGREGATION_CONTRACT
+    )
+    assert {item.name for item in fields(diagnostic)} == {"stage", "reason", "layer"}
+    assert set(asdict(diagnostic)) == {"stage", "reason", "layer"}
+    assert "private aggregation detail" not in repr(
+        reviewer.last_failure_diagnostics
+    )
+
+
+def test_unexpected_layer_parser_error_is_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = quality_module._parse_layer_result
+
+    def fail_identity_parser(layer: object, *args: object, **kwargs: object) -> object:
+        if getattr(layer, "name", None) == "identity_boundary":
+            raise RuntimeError("private parser detail")
+        return original(layer, *args, **kwargs)
+
+    monkeypatch.setattr(quality_module, "_parse_layer_result", fail_identity_parser)
+    result, reviewer = _run_diagnostic_review(
+        SequencedQualityGateway(
+            candidate="Synthetic candidate.",
+            reviews=_passing_layer_payloads(),
+        )
+    )
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.LAYER,
+            ReviewFailureReason.INTERNAL,
+            "identity_boundary",
+        ),
+    )
+    assert "private parser detail" not in repr(reviewer.last_failure_diagnostics)
+
+
+def test_layer_cancellation_is_not_converted_to_reviewer_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = quality_module._parse_layer_result
+
+    def cancel_identity_parser(
+        layer: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if getattr(layer, "name", None) == "identity_boundary":
+            raise asyncio.CancelledError
+        return original(layer, *args, **kwargs)
+
+    monkeypatch.setattr(quality_module, "_parse_layer_result", cancel_identity_parser)
+    reviewer = GatewayPersonaReviewer(
+        SequencedQualityGateway(
+            candidate="Synthetic candidate.",
+            reviews=_passing_layer_payloads(),
+        ),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        reviewer.review("Synthetic candidate.", _intimacy_context())
+    assert reviewer.last_failure_diagnostics == ()
+
+
+@pytest.mark.parametrize("control_flow", (KeyboardInterrupt, SystemExit))
+def test_transport_does_not_swallow_process_control_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: type[BaseException],
+) -> None:
+    transport = GatewayReviewTransport(
+        SequencedQualityGateway(candidate="unused", reviews=[]),
+        ROOT / "linli_character" / "persona_release_v2.json",
+    )
+
+    def stop_review(*args: object, **kwargs: object) -> object:
+        raise control_flow
+
+    monkeypatch.setattr(transport, "_review_json", stop_review)
+    with pytest.raises(control_flow):
+        transport.review_json({}, model="synthetic", timeout_seconds=2.0)
+    assert transport.last_failure_diagnostics == ()
+
+
+def test_layer_input_construction_error_is_internal_before_gateway_call() -> None:
+    gateway = SequencedQualityGateway(candidate="unused", reviews=[])
+    result, reviewer = _run_diagnostic_review(gateway, "x" * 30_000)
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.LAYER,
+            ReviewFailureReason.INTERNAL,
+            "identity_boundary",
+        ),
+    )
+    assert gateway.call_kinds == []
+
+
+def test_unexpected_adjudication_parser_error_is_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "Synthetic unsupported past claim."
+
+    def fail_parser(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("private adjudication parser detail")
+
+    monkeypatch.setattr(quality_module, "_parse_adjudication_result", fail_parser)
+    result, reviewer = _run_diagnostic_review(
+        SequencedQualityGateway(
+            candidate=candidate,
+            reviews=_reviews_requiring_adjudication(candidate),
+            adjudications=[json.dumps({"decisions": []})],
+        ),
+        candidate,
+    )
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.ADJUDICATION,
+            ReviewFailureReason.INTERNAL,
+        ),
+    )
+    assert "private adjudication parser detail" not in repr(
+        reviewer.last_failure_diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason"),
+    (
+        (ReviewFailureStage.LAYER.value, ReviewFailureReason.JSON),
+        (ReviewFailureStage.LAYER, ReviewFailureReason.JSON.value),
+        (object(), ReviewFailureReason.JSON),
+        (ReviewFailureStage.LAYER, object()),
+    ),
+)
+def test_failure_diagnostic_rejects_non_enum_stage_and_reason(
+    stage: object,
+    reason: object,
+) -> None:
+    with pytest.raises(TypeError):
+        ReviewFailureDiagnostic(stage, reason)  # type: ignore[arg-type]
+
+
+def test_passing_review_clears_diagnostics_and_keeps_five_calls() -> None:
+    reviews = _passing_layer_payloads()
+    first = list(reviews)
+    first[0] = "{"
+    gateway = SequencedQualityGateway(
+        candidate="Synthetic candidate.",
+        reviews=[*first, *reviews],
+    )
+    reviewer = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+    )
+
+    failed = reviewer.review("Synthetic candidate.", _intimacy_context())
+    completed = reviewer.review("Synthetic candidate.", _intimacy_context())
+
+    assert failed.error_code == "REVIEWER_UNAVAILABLE"
+    assert completed.verdict is ReviewVerdict.PASS
+    assert reviewer.last_failure_diagnostics == ()
+    assert gateway.call_kinds == [*("review",) * 10]
+
+
+@pytest.mark.parametrize("delayed_fails", (False, True))
+def test_most_recently_completed_review_publishes_diagnostics(
+    delayed_fails: bool,
+) -> None:
+    delayed_candidate = "slow failure" if delayed_fails else "slow success"
+    immediate_candidate = "fast success" if delayed_fails else "fast failure"
+    gateway = InterleavedDiagnosticGateway(
+        delayed_candidate=delayed_candidate,
+        failing_candidate="slow failure" if delayed_fails else "fast failure",
+    )
+    reviewer = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delayed = pool.submit(reviewer.review, delayed_candidate, _intimacy_context())
+        assert gateway.delayed_started.wait(2.0)
+        immediate = reviewer.review(immediate_candidate, _intimacy_context())
+        gateway.release_delayed.set()
+        completed = delayed.result(timeout=2.0)
+
+    if delayed_fails:
+        assert immediate.verdict is ReviewVerdict.PASS
+        assert completed.error_code == "REVIEWER_UNAVAILABLE"
+        assert reviewer.last_failure_diagnostics == (
+            ReviewFailureDiagnostic(
+                ReviewFailureStage.LAYER,
+                ReviewFailureReason.JSON,
+                "identity_boundary",
+            ),
+        )
+    else:
+        assert immediate.error_code == "REVIEWER_UNAVAILABLE"
+        assert completed.verdict is ReviewVerdict.PASS
+        assert reviewer.last_failure_diagnostics == ()
 
 
 def _legacy_layer_payload(
@@ -266,6 +641,80 @@ class SequencedQualityGateway(Gateway):
         else:
             self.call_kinds.append("generation")
             text = self.candidate
+        return GatewayResponse(
+            text=text,
+            request_id=request_id or "synthetic",
+            provider="synthetic",
+            model="synthetic",
+        )
+
+
+class FailingQualityGateway(SequencedQualityGateway):
+    def __init__(
+        self,
+        *,
+        failure: str,
+        candidate: str = "Synthetic candidate.",
+        failing_layer: str | None = None,
+        reviews: list[str] | None = None,
+    ) -> None:
+        super().__init__(candidate=candidate, reviews=[])
+        self.failure = failure
+        self.failing_layer = failing_layer
+        self.review_by_layer = dict(zip(_REVIEW_LAYERS, reviews or _passing_layer_payloads(), strict=True))
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        system = str(messages[0].get("content", ""))
+        if (
+            self.failure == "adjudication"
+            and "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system
+        ):
+            raise TimeoutError("private adjudication detail")
+        if "P02_REPLY_REVIEW_JSON" in system:
+            layer = str(json.loads(str(messages[-1]["content"]))["layer"])
+            if self.failure == "layer" and layer == self.failing_layer:
+                raise TimeoutError("private upstream detail")
+            return GatewayResponse(
+                text=self.review_by_layer[layer],
+                request_id=request_id or "synthetic",
+                provider="synthetic",
+                model="synthetic",
+            )
+        return await super().complete(messages, request_id=request_id)
+
+
+class InterleavedDiagnosticGateway(Gateway):
+    stream_enabled = False
+
+    def __init__(self, *, delayed_candidate: str, failing_candidate: str) -> None:
+        self.delayed_candidate = delayed_candidate
+        self.failing_candidate = failing_candidate
+        self.delayed_started = Event()
+        self.release_delayed = Event()
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        request = json.loads(str(messages[-1]["content"]))
+        candidate = str(request["candidate_reply"])
+        layer = str(request["layer"])
+        if candidate == self.delayed_candidate:
+            self.delayed_started.set()
+            released = await asyncio.to_thread(self.release_delayed.wait, 2.0)
+            assert released
+        text = (
+            "{"
+            if candidate == self.failing_candidate and layer == "identity_boundary"
+            else _layer_payload(layer)
+        )
         return GatewayResponse(
             text=text,
             request_id=request_id or "synthetic",
@@ -1063,9 +1512,10 @@ def test_non_letter_hard_findings_keep_legacy_schema_without_adjudication(
         reviews=[*first, *_legacy_passing_layer_payloads()],
         rewritten="y" * 190,
     )
+    pipeline = _pipeline(gateway, monkeypatch)
 
     result = asyncio.run(
-        _pipeline(gateway, monkeypatch).run(
+        pipeline.run(
             ReplyRequest(content="Synthetic request.", request_id=f"legacy-{mode.value}"),
             _context(mode),
         )
@@ -1082,6 +1532,7 @@ def test_non_letter_hard_findings_keep_legacy_schema_without_adjudication(
         *("review",) * 5,
     ]
     assert gateway.adjudication_requests == []
+    assert pipeline.reviewer.last_failure_diagnostics == ()
     assert all(
         "hard_evidence" not in prompt
         for prompt in gateway.review_system_prompts
