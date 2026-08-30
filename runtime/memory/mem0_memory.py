@@ -1299,7 +1299,9 @@ class Mem0ConversationMemoryAdapter:
                 error_code="MEM0_WRITE_UNCERTAIN",
             )
         try:
-            state, value = self._write_call.settle()
+            state, value = self._write_call.settle(
+                timeout_seconds=self.config.write_timeout_seconds,
+            )
             if (
                 state == "completed"
                 and isinstance(value, MemoryWriteResult)

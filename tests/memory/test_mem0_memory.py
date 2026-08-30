@@ -1546,6 +1546,51 @@ def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
     assert settled.memory_ids == ("memory.fixture.1",)
 
 
+def test_timed_out_exchange_settlement_is_bounded_when_provider_stays_blocked(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingExactQueryMem0(FakeMem0):
+        def get_all(self, **kwargs):
+            entered.set()
+            release.wait()
+            return super().get_all(**kwargs)
+
+    adapter = Mem0ConversationMemoryAdapter(
+        BlockingExactQueryMem0(),
+        replace(_config(tmp_path), write_timeout_seconds=0.1),
+    )
+    timed_out = adapter.remember_exchange(
+        user_message="synthetic user",
+        assistant_message="synthetic reply",
+        occurred_at=NOW,
+        source_id="reply:write-timeout:bounded-settle",
+        user_id="local-user",
+    )
+    assert entered.is_set()
+    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+
+    delayed_release = threading.Timer(0.4, release.set)
+    delayed_release.start()
+    try:
+        started = time.monotonic()
+        settled = adapter.settle_exchange_write(
+            source_id="reply:write-timeout:bounded-settle",
+            user_id="local-user",
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        delayed_release.cancel()
+        delayed_release.join(timeout=1.0)
+
+    assert elapsed < 0.3
+    assert settled.status is MemoryWriteStatus.UNAVAILABLE
+    assert settled.error_code == "MEM0_WRITE_UNCERTAIN"
+
+
 def test_timed_out_duplicate_settles_as_duplicate_without_created_ids(
     tmp_path: Path,
 ) -> None:
