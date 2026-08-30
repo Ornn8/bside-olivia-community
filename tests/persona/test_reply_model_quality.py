@@ -1019,16 +1019,9 @@ class PromptContractQualityGateway(Gateway):
             request = json.loads(str(messages[-1].get("content", "")))
             layer = str(request["layer"])
             self.call_kinds.append("review")
-            if layer in {
-                "identity_boundary",
-                "voice_style",
-                "continuity_memory",
-            }:
-                marker = "Return ONLY compact JSON with exactly: "
-                text = system.split(marker, 1)[1].split(".", 1)[0]
-                self.contract_layers.append(layer)
-            else:
-                text = _layer_payload(layer)
+            marker = "Return ONLY compact JSON with exactly: "
+            text = system.split(marker, 1)[1].split(".", 1)[0]
+            self.contract_layers.append(layer)
         elif (
             "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system
             or "P02_REPLY_REWRITE_TEXT" in system
@@ -1198,11 +1191,33 @@ def test_provider_exact_clean_response_contract_is_accepted_by_the_same_pipeline
     assert result.reviewer_calls == 1
     assert result.rewrite_calls == 0
     assert gateway.call_kinds == ["generation", *("review",) * 5]
-    assert gateway.contract_layers == [
-        "identity_boundary",
-        "voice_style",
-        "continuity_memory",
-    ]
+    assert gateway.contract_layers == list(_REVIEW_LAYERS)
+
+
+def test_reply_pipeline_sanitizes_del_from_current_input_before_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = SequencedQualityGateway(
+        candidate="Synthetic clean candidate.",
+        reviews=_passing_layer_payloads(),
+    )
+
+    result = asyncio.run(
+        _pipeline(gateway, monkeypatch).run(
+            ReplyRequest(
+                content="Synthetic\x7f current input.",
+                request_id="del-character-input",
+            ),
+            _context(),
+        )
+    )
+
+    assert result.state is ReplyState.COMPLETED
+    assert result.quality_status == "accepted"
+    assert all(
+        request["current_user_input"] == "Synthetic current input."
+        for request in gateway.review_requests
+    )
 
 
 def test_identity_review_receives_only_bounded_relationship_evidence() -> None:
