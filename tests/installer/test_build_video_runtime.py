@@ -18,9 +18,12 @@ def _roots(tmp_path: Path) -> dict[str, Path]:
         (root / "python").mkdir(parents=True)
         (root / "site-packages").mkdir()
         (root / "python/python.exe").write_bytes(f"{component}-python".encode())
+        (root / "python/LICENSE.txt").write_text("python license must not identify the component\n", encoding="utf-8")
         (root / f"site-packages/{component}.py").write_text(f"COMPONENT={component!r}\n", encoding="utf-8")
         (root / "component-source.py").write_text("must stay in the 26 GiB bundle\n", encoding="utf-8")
-        (root / "LICENSE").write_text(f"{component} license\n", encoding="utf-8")
+        license_path = root / f"site-packages/olivia_upstream/{component}/LICENSE"
+        license_path.parent.mkdir(parents=True)
+        license_path.write_text(f"{component} license\n", encoding="utf-8")
         (root / "NOTICE").write_text(f"{component} notice\n", encoding="utf-8")
         for relative, content in (("site-packages/distutils-precedence.pth", b"import _distutils_hack\n"), ("site-packages/sentencepiece/package_data/runtime.bin", b"runtime data"), ("site-packages/chardet/models/runtime.bin", b"runtime data"), ("site-packages/chardet/models/__init__.py", b""), ("site-packages/chardet/models/training_metadata.yaml", b"safe: true\n"), ("site-packages/transformers/models/runtime.pyc", b"compiled"), ("site-packages/modelscope/source/runtime.pyx", b"pass\n"), ("site-packages/lightning/useLightningState.ts", b"export const ready = true;\n")):
             target = root / relative
@@ -30,14 +33,15 @@ def _roots(tmp_path: Path) -> dict[str, Path]:
 def _bom(tmp_path: Path, roots: dict[str, Path]) -> Path:
     components = {}
     for component, root in roots.items():
-        paths = [root / "LICENSE", root / "NOTICE"] + [path for folder in (root / "python", root / "site-packages") for path in folder.rglob("*") if path.is_file()]
+        paths = [root / "NOTICE"] + [path for folder in (root / "python", root / "site-packages") for path in folder.rglob("*") if path.is_file()]
         files = [{"path": path.relative_to(root).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(paths)]
+        indexed = {item["path"]: item for item in files}
         components[component] = {
             "upstream": f"{'http' if component == 'cosyvoice' else 'https'}://example.invalid/{component}", "revision": "1" * 40,
             "tree_sha256": hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "dependencies": [f"{component}==1.0"], "files": files,
-            "license": {key: files[0][key] for key in ("path", "sha256")},
-            "notice": {key: files[1][key] for key in ("path", "sha256")},
+            "license": {key: next(item for path, item in indexed.items() if path.startswith("site-packages/olivia_upstream/") and path.endswith("/LICENSE"))[key] for key in ("path", "sha256")},
+            "notice": {key: indexed["NOTICE"][key] for key in ("path", "sha256")},
         }
     path = (tmp_path / "build-input-bom.json").resolve()
     path.write_text(json.dumps({"schema_version": "olivia.video-runtime-build-inputs.v1", "components": components}), encoding="utf-8")
@@ -75,7 +79,7 @@ def test_rejects_bare_python_without_locked_bom(tmp_path: Path) -> None:
     with pytest.raises(builder.VideoRuntimeBuildError, match="VIDEO_RUNTIME_BUILD_BOM_REQUIRED"):
         _build(tmp_path, _roots(tmp_path), None)  # type: ignore[arg-type]
 
-@pytest.mark.parametrize("fault", ("source-drift", "missing-license-hash", "main", "latest", "userinfo", "query", "fragment", "ftp", "empty-host"))
+@pytest.mark.parametrize("fault", ("source-drift", "missing-license-hash", "foreign-license", "main", "latest", "userinfo", "query", "fragment", "ftp", "empty-host"))
 def test_bom_provenance_and_inventory_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     roots = _roots(tmp_path); bom = _bom(tmp_path, roots)
     expected = "VIDEO_RUNTIME_BUILD_BOM_MISMATCH"
@@ -84,6 +88,7 @@ def test_bom_provenance_and_inventory_fail_closed(tmp_path: Path, monkeypatch: p
     else:
         payload = json.loads(bom.read_text(encoding="utf-8"))
         if fault == "missing-license-hash": payload["components"]["cosyvoice"]["license"].pop("sha256")
+        elif fault == "foreign-license": payload["components"]["cosyvoice"]["license"] = next({key: item[key] for key in ("path", "sha256")} for item in payload["components"]["cosyvoice"]["files"] if item["path"] == "python/LICENSE.txt")
         elif fault in {"main", "latest"}: payload["components"]["cosyvoice"]["revision"] = fault
         else: payload["components"]["cosyvoice"]["upstream"] = {"userinfo": "https://secret-token@example.invalid/cosyvoice", "query": "https://example.invalid/cosyvoice?token=private", "fragment": "https://example.invalid/cosyvoice#private", "ftp": "ftp://example.invalid/cosyvoice", "empty-host": "https:///cosyvoice"}[fault]
         bom.write_text(json.dumps(payload), encoding="utf-8")
@@ -149,6 +154,13 @@ def test_cross_process_lock_and_no_overwrite_preserve_existing_owner(tmp_path: P
         _build(tmp_path, roots, _bom(tmp_path, roots), "owned")
     assert path.read_bytes() == b"owner"
 
+@pytest.mark.skipif(sys.platform != "win32", reason="private runtime builder targets Windows")
+def test_build_lock_is_deleted_if_owner_process_exits(tmp_path: Path) -> None:
+    lock = (tmp_path / "crash-safe.lock").resolve()
+    script = "import os,sys; from pathlib import Path; from installer.build_video_runtime import _open_build_lock; _open_build_lock(Path(sys.argv[1])); os._exit(0)"
+    result = builder.subprocess.run([sys.executable, "-c", script, str(lock)], cwd=Path(builder.__file__).resolve().parents[1])
+    assert result.returncode == 0 and not lock.exists()
+
 def test_output_inside_input_and_oversize_fail_before_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     roots = _roots(tmp_path); bom = _bom(tmp_path, roots)
     with pytest.raises(builder.VideoRuntimeBuildError, match="VIDEO_RUNTIME_BUILD_OUTPUT_INVALID"):
@@ -157,7 +169,8 @@ def test_output_inside_input_and_oversize_fail_before_copy(tmp_path: Path, monke
     with pytest.raises(builder.VideoRuntimeBuildError, match="VIDEO_RUNTIME_BUILD_TOO_LARGE"):
         _build(tmp_path, roots, bom, "large")
 
-def test_public_cli_returns_sanitized_stable_json_error() -> None:
-    result = builder.subprocess.run([sys.executable, "-m", "installer.build_video_runtime"], capture_output=True, text=True)
+@pytest.mark.parametrize("entry", (("-m", "installer.build_video_runtime"), (str(Path(builder.__file__).resolve()),)))
+def test_public_cli_returns_sanitized_stable_json_error(entry: tuple[str, ...]) -> None:
+    result = builder.subprocess.run([sys.executable, *entry], cwd=Path(builder.__file__).resolve().parents[1], capture_output=True, text=True)
     assert result.returncode == 2
     assert json.loads(result.stderr) == {"status": "ERROR", "code": "VIDEO_RUNTIME_BUILD_ARGUMENTS_INVALID"}

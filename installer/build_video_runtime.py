@@ -17,6 +17,10 @@ from urllib.parse import urlsplit
 import uuid
 import zipfile
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
 from video_capability_install import (
     VideoCapabilityError,
     _load_runtime_root_manifest,
@@ -63,7 +67,7 @@ def _load_bom(path: Path | None) -> dict[str, object]:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
     return payload
 
-def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]]]:
+def _checked_item(root: Path, item: object, component: str) -> tuple[int, list[dict[str, object]]]:
     required = {"upstream", "revision", "tree_sha256", "dependencies", "license", "notice", "files"}
     try:
         if not isinstance(item, dict) or set(item) != required:
@@ -81,6 +85,12 @@ def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
             relative, digest = _safe_relative(meta["path"]), _safe_sha(meta["sha256"])
             if not Path(relative).name.casefold().startswith(names):
+                raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
+            parts = tuple(part.casefold() for part in Path(relative).parts)
+            dedicated = parts[:3] == ("site-packages", "olivia_upstream", component)
+            distribution = next((part for part in parts if part.endswith(".dist-info")), "")
+            packaged = parts[:1] == ("site-packages",) and parts[-2:-1] == ("licenses",) and component.replace("-", "_") in distribution.replace("-", "_")
+            if key == "license" and not (dedicated or packaged):
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
             legal.append((relative, digest))
     except (KeyError, TypeError, ValueError, VideoCapabilityError) as exc:
@@ -152,7 +162,7 @@ def _checked_inputs(version: str, output: Path, roots: Mapping[str, Path], bom: 
         if root in checked.values():
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_COMPONENT_DUPLICATE")
         checked[component] = root
-    total = sum(_checked_item(root, components[component])[0] for component, root in checked.items())
+    total = sum(_checked_item(root, components[component], component)[0] for component, root in checked.items())
     if total > _MAX_EXPANDED_BYTES:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_TOO_LARGE")
     environment = {_COMPONENT_ENVIRONMENT[component]: str(root / ("python.exe" if (root / "python.exe").is_file() else "python/python.exe")) for component, root in checked.items()}
@@ -217,6 +227,12 @@ def _verify_zip(target: Path, manifest_sha256: str) -> None:
     except (KeyError, TypeError, ValueError, OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile, VideoCapabilityError) as exc:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_ARCHIVE_INVALID") from exc
 
+def _open_build_lock(path: Path) -> int:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if sys.platform == "win32":
+        flags |= os.O_TEMPORARY
+    return os.open(path, flags)
+
 def build_video_runtime_archive(*, version: str, output_directory: Path, component_roots: Mapping[str, Path], build_input_bom: Path | None = None) -> Path:
     """Build, verify, then atomically publish one locked runtime ZIP."""
 
@@ -226,7 +242,7 @@ def build_video_runtime_archive(*, version: str, output_directory: Path, compone
     target = output_root / f"Olivia-video-runtime-{version}.zip"
     lock = output_root / f".{target.name}.lock"
     try:
-        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        lock_fd = _open_build_lock(lock)
     except FileExistsError as exc:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_LOCKED") from exc
     except OSError as exc:
@@ -252,7 +268,7 @@ def build_video_runtime_archive(*, version: str, output_directory: Path, compone
                         target_path = destination / legal_path
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(source / legal_path, target_path)
-                _checked_item(destination, bom["components"][component])
+                _checked_item(destination, bom["components"][component], component)
                 executable = "python.exe" if (source / "python.exe").is_file() else "python/python.exe"
                 environment[key] = f"{relative}/{executable}"
             manifest_sha = write_runtime_root_manifest(runtime_root, version=version, environment=environment, build_inputs=bom)
