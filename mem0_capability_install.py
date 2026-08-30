@@ -25,6 +25,8 @@ from installer.uninstall_safety import safe_managed_target
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 Progress = Callable[[int, int, str], None]
+_RUNTIME_BYTECODE_POLICY = "pip-compile-v1"
+_RUNTIME_PREPARATION_PROGRESS = "python-runtime-preparation"
 
 
 class CapabilityState(StrEnum):
@@ -656,6 +658,7 @@ class ManagedMem0Runtime:
                 marker.get("requirements_sha256")
                 != hashlib.sha256(self.requirements.read_bytes()).hexdigest()
                 or marker.get("source") not in self.sources
+                or marker.get("bytecode_policy") != _RUNTIME_BYTECODE_POLICY
             ):
                 return False
             self.last_source = marker["source"]
@@ -746,7 +749,7 @@ class ManagedMem0Runtime:
             "--retries",
             "1",
             "--only-binary=:all:",
-            "--no-compile",
+            "--compile",
             "--ignore-installed",
             "--target",
             str(target),
@@ -798,13 +801,14 @@ class ManagedMem0Runtime:
             progress(
                 reported_progress,
                 self.download_bytes,
-                "python-dependencies",
+                _RUNTIME_PREPARATION_PROGRESS,
             )
 
         for source, wheelhouse in attempts:
             shutil.rmtree(self.staging, ignore_errors=True)
             self.staging.mkdir(parents=True, exist_ok=True)
             marker = {
+                "bytecode_policy": _RUNTIME_BYTECODE_POLICY,
                 "requirements_sha256": hashlib.sha256(
                     self.requirements.read_bytes()
                 ).hexdigest(),
@@ -814,7 +818,11 @@ class ManagedMem0Runtime:
                 json.dumps(marker, sort_keys=True), encoding="utf-8"
             )
             self.last_source = source
-            progress(reported_progress, self.download_bytes, "python-dependencies")
+            progress(
+                reported_progress,
+                self.download_bytes,
+                _RUNTIME_PREPARATION_PROGRESS,
+            )
             result = self.runner(
                 self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
                 environment=environment,
@@ -850,7 +858,11 @@ class ManagedMem0Runtime:
         shutil.rmtree(backup, ignore_errors=True)
         self._ready_fingerprint = self._fingerprint()
         self._ready_result = True
-        progress(self.download_bytes, self.download_bytes, "python-dependencies")
+        progress(
+            self.download_bytes,
+            self.download_bytes,
+            _RUNTIME_PREPARATION_PROGRESS,
+        )
 
     def uninstall(self) -> None:
         marker_name = ".olivia-mem0-runtime-manifest.json"

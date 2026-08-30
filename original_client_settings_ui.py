@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v11"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v12"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1124,8 +1124,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
-      const currentFile = payload.current_file === "python-dependencies"
-        ? "正在连接或解析 Python 依赖，下载进度可能暂时不变"
+      const currentFile = ["python-runtime-preparation", "python-dependencies"].includes(payload.current_file)
+        ? "正在准备运行环境（首次安装或更新时只需进行一次）"
         : payload.current_file;
       const current = typeof currentFile === "string" ? `，当前：${currentFile}` : "";
       result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;

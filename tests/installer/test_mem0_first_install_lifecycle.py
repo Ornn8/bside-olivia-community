@@ -233,6 +233,7 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
             {
+                "bytecode_policy": "pip-compile-v1",
                 "requirements_sha256": hashlib.sha256(
                     requirements.read_bytes()
                 ).hexdigest(),
@@ -253,6 +254,17 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
 
     marker = runtime / ".olivia-mem0-runtime-manifest.json"
     payload = json.loads(marker.read_text(encoding="utf-8"))
+    legacy_payload = dict(payload)
+    legacy_payload.pop("bytecode_policy")
+    marker.write_text(json.dumps(legacy_payload), encoding="utf-8")
+    legacy_rejected = subprocess.run(
+        [sys.executable, str(verifier), str(runtime), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert legacy_rejected.returncode == 2
+
     payload["source"] = "https://unapproved.example/simple"
     marker.write_text(json.dumps(payload), encoding="utf-8")
     rejected = subprocess.run(
@@ -292,6 +304,7 @@ def test_windows_installer_runtime_probe_survives_native_argument_quoting(
     (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps(
             {
+                "bytecode_policy": "pip-compile-v1",
                 "requirements_sha256": hashlib.sha256(
                     requirements.read_bytes()
                 ).hexdigest(),
