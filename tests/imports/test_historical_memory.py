@@ -464,7 +464,7 @@ class RecordingCommandService:
             "event.fixture",
             "APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
             2,
-            ("relationship_stage",),
+            ("familiarity", "closeness"),
         )
 
 

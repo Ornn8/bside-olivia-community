@@ -825,6 +825,120 @@ def test_official_import_requires_llm_before_collecting_or_writing_history(
     assert calls == []
 
 
+def test_existing_private_world_without_corpus_audit_requires_llm_before_any_io(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class RecordingMemory:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.write_calls = 0
+
+        def status(self) -> ConversationMemoryStatus:
+            return ConversationMemoryStatus(
+                "available", True, "mem0", "qdrant-local"
+            )
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.write_calls += 1
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN,
+                str(kwargs["source_id"]),
+                ("memory.synthetic",),
+            )
+
+    class NoAuditService:
+        @staticmethod
+        def lookup_command(_command_id: str) -> None:
+            return None
+
+    class RecordingGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, _messages, *, request_id=None) -> GatewayResponse:
+            del request_id
+            self.calls += 1
+            raise AssertionError("provider must not run")
+
+    memory = RecordingMemory()
+    gateway = RecordingGateway()
+    collect_calls: list[str] = []
+    archive_opens: list[str] = []
+    official_payload = build_legacy_import_payload(
+        (
+            {
+                "letter_id": "letter-no-audit",
+                "content": "synthetic user letter",
+                "reply_text": "synthetic official reply",
+                "created_at": 1710000000,
+                "replied_at": 1710000100,
+            },
+        ),
+        account_id="synthetic-account",
+    )
+
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
+    monkeypatch.setattr(local_server, "private_world_port", _ExistingPrivateWorld())
+    monkeypatch.setattr(
+        local_server, "private_world_command_service", NoAuditService()
+    )
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="none", feature_enabled=False),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: collect_calls.append("collect") or official_payload,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_import_adapter",
+        lambda: archive_opens.append("open") or NullMemoryPort(),
+    )
+    monkeypatch.setattr(local_server.store, "legacy_letters", [])
+
+    preflight = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {"preflight": "1"},
+        )
+    )
+    confirmed = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+
+    expected = {
+        "code": 503,
+        "message": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+        "data": {
+            "status": "UNAVAILABLE",
+            "error_code": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+            "retryable": True,
+        },
+    }
+    assert preflight == expected
+    assert confirmed == expected
+    assert collect_calls == []
+    assert memory.write_calls == 0
+    assert gateway.calls == 0
+    assert archive_opens == []
+
+
 def test_official_import_preflight_reports_llm_before_user_confirmation(
     monkeypatch,
 ) -> None:
@@ -970,6 +1084,12 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     monkeypatch,
 ) -> None:
     import local_server
+
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="mock", feature_enabled=True),
+    )
 
     class PersistingMemory:
         enabled = True
@@ -1133,6 +1253,12 @@ def test_official_duplicate_does_not_retry_a_previously_skipped_memory(
     monkeypatch,
 ) -> None:
     import local_server
+
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="mock", feature_enabled=True),
+    )
 
     class SkipThenWriteMemory:
         enabled = True

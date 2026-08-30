@@ -26,7 +26,7 @@
 | 503 | `MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | legacy import 的 SQLite 存储不可用；不回显正文、路径或密钥 |
 | 503 | `OFFICIAL_LETTER_IMPORT_UNAVAILABLE` | UNAVAILABLE | 是 | 官方登录日志或文字信件接口暂不可用；不回显凭证、正文或本机路径 |
 | 503 | `OFFICIAL_HISTORY_MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | Mem0 未安装、未启用或状态不可用；在采集官方历史前拒绝导入 |
-| 503 | `OFFICIAL_HISTORY_LLM_UNAVAILABLE` | UNAVAILABLE | 是 | 首次恢复关系状态需要已配置的大模型；在采集和写入官方历史前拒绝导入 |
+| 503 | `OFFICIAL_HISTORY_LLM_UNAVAILABLE` | UNAVAILABLE | 是 | 预检无法在采集前识别 corpus；大模型未配置时保守拒绝读取或写入官方历史 |
 | 503 | `OFFICIAL_HISTORY_MEMORY_WRITE_FAILED` | UNAVAILABLE | 是 | 官方历史无法严格写入 Mem0；本批历史信件不会发布到信箱，重试使用稳定 source id 判重 |
 | 409 | `OFFICIAL_ACCOUNT_CONFLICT` | FAILED | 否 | 当前本地档案已绑定另一个官方账户；拒绝把两个账户写入同一记忆空间 |
 | 503 | `PRIVATE_WORLD_HISTORY_UNAVAILABLE` | UNAVAILABLE | 是 | PrivateWorld 在采集前不可用，或历史基线初始化失败；本批历史信件不会发布到信箱 |

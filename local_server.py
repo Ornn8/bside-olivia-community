@@ -971,10 +971,9 @@ def _llm_runtime_ready(config: GatewayConfig | None = None) -> bool:
 
 
 def _official_history_llm_required() -> bool:
-    try:
-        return private_world_port.snapshot() == PrivateWorldSnapshot()
-    except Exception:
-        return True
+    # Preflight cannot identify the incoming corpus before collection, so
+    # unrelated relationship state cannot prove a matching audit.
+    return True
 
 
 def _official_history_preflight_error() -> str | None:
