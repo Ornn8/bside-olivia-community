@@ -7,6 +7,7 @@ import pytest
 from private_world_ledger import (
     PRIVATE_WORLD_LEDGER_SCHEMA_VERSION,
     LedgerEvent,
+    LedgerVersionConflictError,
     LedgerWriteError,
     SQLitePrivateWorldLedger,
 )
@@ -249,11 +250,46 @@ def test_event_insert_rolls_back_when_snapshot_version_skips_ahead(tmp_path: Pat
     ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
     ledger.apply_once(_event(1), PrivateWorldSnapshot(version=1))
 
-    with pytest.raises(LedgerWriteError):
+    with pytest.raises(LedgerWriteError) as raised:
         ledger.apply_once(_event(2), PrivateWorldSnapshot(version=3))
 
+    assert not isinstance(raised.value, LedgerVersionConflictError)
     assert ledger.events() == (_event(1),)
     assert ledger.health()["event_count"] == 1
+
+
+def test_stale_divergent_snapshot_raises_typed_version_conflict(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    ledger.apply_once(
+        _event(1),
+        PrivateWorldSnapshot(version=2, trust=1),
+    )
+
+    with pytest.raises(LedgerVersionConflictError) as raised:
+        ledger.apply_once(
+            _event(2),
+            PrivateWorldSnapshot(version=2, trust=2),
+        )
+
+    assert raised.value.code == "PRIVATE_WORLD_VERSION_CONFLICT"
+    assert ledger.events() == (_event(1),)
+    assert ledger.snapshot() == PrivateWorldSnapshot(version=2, trust=1)
+
+
+def test_older_snapshot_raises_typed_version_conflict(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    ledger.apply_once(_event(1), PrivateWorldSnapshot(version=2))
+    ledger.apply_once(_event(2), PrivateWorldSnapshot(version=3))
+
+    with pytest.raises(LedgerVersionConflictError):
+        ledger.apply_once(_event(3), PrivateWorldSnapshot(version=2))
+
+    assert ledger.events() == (_event(1), _event(2))
+    assert ledger.snapshot() == PrivateWorldSnapshot(version=3)
 
 
 def test_no_effect_event_can_share_latest_snapshot_version(tmp_path: Path) -> None:

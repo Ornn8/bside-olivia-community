@@ -4,12 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
 from private_world_commands import (
     ApplyHistoricalRelationshipEvidence,
     ConfirmRelationshipStage,
+    GrantIntimacy,
     GrantNickname,
     InitializeHistoricalRelationship,
     PrivateWorldActor,
@@ -25,13 +27,56 @@ from private_world_port import (
     PrivateWorldSnapshot,
 )
 from private_world_reducer import reduce_private_world_command
-from private_world_ledger import SQLitePrivateWorldLedger
+from private_world_ledger import (
+    LedgerEvent,
+    LedgerVersionConflictError,
+    LedgerWriteError,
+    SQLitePrivateWorldLedger,
+)
 from private_world_service import (
     CommandExecutionStatus,
     PrivateWorldCommandService,
     PrivateWorldCommandServiceError,
 )
-from runtime.reply.reply_context import RelationshipStage
+from runtime.reply.reply_context import IntimacyTier, RelationshipStage
+
+
+class _InitialSnapshotBarrierLedger(SQLitePrivateWorldLedger):
+    def __init__(self, database: Path, barrier: Barrier) -> None:
+        super().__init__(database)
+        self._initial_snapshot_barrier = barrier
+        self.snapshot_calls = 0
+
+    def snapshot(self) -> PrivateWorldSnapshot:
+        snapshot = super().snapshot()
+        self.snapshot_calls += 1
+        if self.snapshot_calls == 1:
+            self._initial_snapshot_barrier.wait(timeout=5)
+        return snapshot
+
+
+class _GenericWriteFailureLedger(SQLitePrivateWorldLedger):
+    def __init__(self, database: Path) -> None:
+        super().__init__(database)
+        self.apply_calls = 0
+
+    def apply_once(
+        self,
+        event: LedgerEvent,
+        snapshot: PrivateWorldSnapshot,
+    ) -> bool:
+        self.apply_calls += 1
+        raise LedgerWriteError("synthetic generic storage failure")
+
+
+class _VersionConflictFailureLedger(_GenericWriteFailureLedger):
+    def apply_once(
+        self,
+        event: LedgerEvent,
+        snapshot: PrivateWorldSnapshot,
+    ) -> bool:
+        self.apply_calls += 1
+        raise LedgerVersionConflictError("synthetic stale snapshot")
 
 
 def _command() -> InitializeHistoricalRelationship:
@@ -158,6 +203,14 @@ def test_new_corpus_max_merges_only_existing_intimacy_axes(
         )
     )
     service.execute(
+        GrantIntimacy(
+            **_control_common(7),
+            grant_id="intimacy.history-fixture",
+            tier=IntimacyTier.LIGHT_CONTACT,
+            statement="A synthetic granted interaction.",
+        )
+    )
+    service.execute(
         _incremental_command(1, familiarity=60, closeness=10)
     )
     before = ledger.snapshot()
@@ -249,6 +302,10 @@ def test_command_lookup_is_read_only_and_returns_no_audit_body(
             PrivateWorldCommandSource.CONTROL_CENTER,
         ),
         (
+            PrivateWorldActor.LOCAL_USER,
+            PrivateWorldCommandSource.IMPORT,
+        ),
+        (
             PrivateWorldActor.MIGRATION,
             PrivateWorldCommandSource.MIGRATION,
         ),
@@ -322,6 +379,126 @@ def test_concurrent_corpora_choose_current_state_inside_command_service(
         "event_count": 2,
         "snapshot_count": 2,
     }
+
+
+def test_independent_services_retry_stale_historical_join(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private-world.sqlite3"
+    barrier = Barrier(2)
+    ledgers = (
+        _InitialSnapshotBarrierLedger(database, barrier),
+        _InitialSnapshotBarrierLedger(database, barrier),
+    )
+    services = tuple(
+        PrivateWorldCommandService(ledger) for ledger in ledgers
+    )
+    commands = (
+        _incremental_command(1, familiarity=60, closeness=10),
+        _incremental_command(2, familiarity=48, closeness=36),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = tuple(
+            executor.submit(service.execute, command)
+            for service, command in zip(services, commands, strict=True)
+        )
+        results = tuple(future.result(timeout=10) for future in futures)
+
+    assert all(
+        result.status is CommandExecutionStatus.APPLIED
+        for result in results
+    )
+    assert {result.snapshot_version for result in results} == {2, 3}
+    assert sorted(ledger.snapshot_calls for ledger in ledgers) == [1, 2]
+    stored = SQLitePrivateWorldLedger(database)
+    assert stored.snapshot() == replace(
+        PrivateWorldSnapshot(),
+        version=3,
+        familiarity=60,
+        closeness=36,
+    )
+    audits = {
+        event.payload["snapshot_version"]: event.payload
+        for event in stored.events()
+    }
+    assert audits[2]["change_fields"] == ["familiarity", "closeness"]
+    assert audits[3]["change_fields"] in (["familiarity"], ["closeness"])
+    assert {
+        event.payload["command_id"] for event in stored.events()
+    } == {command.command_id for command in commands}
+    assert stored.health() == {
+        "status": "READY",
+        "event_count": 2,
+        "snapshot_count": 2,
+    }
+
+
+def test_independent_services_resolve_concurrent_identical_corpus_duplicate(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private-world.sqlite3"
+    barrier = Barrier(2)
+    services = tuple(
+        PrivateWorldCommandService(
+            _InitialSnapshotBarrierLedger(database, barrier)
+        )
+        for _ in range(2)
+    )
+    command = _incremental_command()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = tuple(
+            executor.submit(service.execute, command)
+            for service in services
+        )
+        results = tuple(future.result(timeout=10) for future in futures)
+
+    assert {result.status for result in results} == {
+        CommandExecutionStatus.APPLIED,
+        CommandExecutionStatus.DUPLICATE,
+    }
+    stored = SQLitePrivateWorldLedger(database)
+    assert len(stored.events()) == 1
+    assert stored.snapshot().version == 2
+
+
+def test_historical_command_does_not_retry_generic_storage_failure(
+    tmp_path: Path,
+) -> None:
+    ledger = _GenericWriteFailureLedger(
+        tmp_path / "private-world.sqlite3"
+    )
+
+    with pytest.raises(
+        PrivateWorldCommandServiceError,
+        match="PRIVATE_WORLD_COMMAND_STORAGE_UNAVAILABLE",
+    ):
+        PrivateWorldCommandService(ledger).execute(_incremental_command())
+
+    assert ledger.apply_calls == 1
+    assert ledger.health()["event_count"] == 0
+
+
+def test_nonhistorical_command_does_not_retry_version_conflict(
+    tmp_path: Path,
+) -> None:
+    ledger = _VersionConflictFailureLedger(
+        tmp_path / "private-world.sqlite3"
+    )
+    command = GrantNickname(
+        **_control_common(1),
+        nickname="合成称呼",
+    )
+
+    with pytest.raises(
+        PrivateWorldCommandServiceError,
+        match="PRIVATE_WORLD_COMMAND_STORAGE_UNAVAILABLE",
+    ):
+        PrivateWorldCommandService(ledger).execute(command)
+
+    assert ledger.apply_calls == 1
+    assert ledger.health()["event_count"] == 0
 
 
 def test_historical_relationship_initializes_one_pristine_snapshot() -> None:

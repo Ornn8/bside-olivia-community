@@ -56,6 +56,10 @@ class LedgerWriteError(RuntimeError):
     code = "PRIVATE_WORLD_WRITE_FAILED"
 
 
+class LedgerVersionConflictError(LedgerWriteError):
+    code = "PRIVATE_WORLD_VERSION_CONFLICT"
+
+
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 
 
@@ -301,6 +305,7 @@ class SQLitePrivateWorldLedger:
             )
         try:
             with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 duplicate = connection.execute(
                     """SELECT 1 FROM private_world_events
                        WHERE event_id = ? OR delivery_id = ? LIMIT 1""",
@@ -319,21 +324,24 @@ class SQLitePrivateWorldLedger:
                     self._strict_stored_snapshot(latest[0], latest[1])
                 snapshot_json = self._snapshot_json(snapshot)
                 if latest is None:
-                    write_snapshot = snapshot.version in {1, 2}
+                    if snapshot.version not in {1, 2}:
+                        raise LedgerWriteError(
+                            "snapshot version is not contiguous"
+                        )
+                    write_snapshot = True
                 elif snapshot.version == latest[0]:
                     if snapshot_json != latest[1]:
-                        raise LedgerWriteError(
+                        raise LedgerVersionConflictError(
                             "unchanged snapshot version must preserve state"
                         )
                     write_snapshot = False
-                else:
-                    write_snapshot = (
-                        snapshot.version == latest[0] + 1
+                elif snapshot.version == latest[0] + 1:
+                    write_snapshot = True
+                elif snapshot.version < latest[0]:
+                    raise LedgerVersionConflictError(
+                        "snapshot version is stale"
                     )
-                if not write_snapshot and (
-                    latest is None
-                    or snapshot.version != latest[0]
-                ):
+                else:
                     raise LedgerWriteError(
                         "snapshot version is not contiguous"
                     )
