@@ -37,6 +37,10 @@ def _wave_metadata(**changes: object) -> dict[str, object]:
     return value
 
 
+def _managed_video_runtime(product: Path) -> Path:
+    return product / "install/downloads/Olivia-video-runtime-private.zip"
+
+
 def test_first_install_consumes_only_bundled_core_assets() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
@@ -54,6 +58,7 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
     assert "provision_mem0_embedding.py" not in script
     assert "BAAI/bge-small-zh-v1.5" not in script
     assert "VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED" in script
+    assert "Install-ManagedVideoRuntime -VideoRuntime $coreAssets.VideoRuntime" in script
 
 
 def test_installer_accepts_only_complete_private_video_runtime_manifest() -> None:
@@ -102,6 +107,12 @@ def test_public_schema_accepts_only_complete_hash_locked_private_assets() -> Non
     missing_marker = deepcopy(example)
     del missing_marker["distribution"]
     assert list(validator.iter_errors(missing_marker))
+    wrong_path = deepcopy(example)
+    wrong_path["voice_reference"]["path"] = "voice/arbitrary.wav"
+    assert list(validator.iter_errors(wrong_path))
+    extra_field = deepcopy(example)
+    extra_field["voice_reference"]["license"] = "caller-asserted"
+    assert list(validator.iter_errors(extra_field))
 
 
 def test_public_schema_rejects_nonfixed_runtime_and_incomplete_wheel_closure() -> None:
@@ -216,6 +227,8 @@ def _run_runtime_publish_fixture(
     bootstrap_exit_code: int, bootstrap_replaces_managed_app: bool = False,
     voice_reference: bytes | None = None, voice_reference_sha256: str | None = None,
     voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
+    video_runtime: bytes | None = None, video_runtime_sha256: str | None = None,
+    video_runtime_missing: bool = False,
     block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
     product_root: Path | None = None, existing_voice_pair: bool = False,
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
@@ -279,9 +292,10 @@ def _run_runtime_publish_fixture(
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
     original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements"
     replacement = (
-        "$voiceManifest = if ($env:BSIDE_TEST_VOICE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_VOICE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
+        "$voiceManifest = if ($env:BSIDE_TEST_PRIVATE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_PRIVATE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
         "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference } else { $null }\n"
-        "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference }"
+        "$videoRuntime = if ($voiceManifest) { $voiceManifest.video_runtime.path = $env:BSIDE_TEST_VIDEO_RUNTIME; $voiceManifest.video_runtime } else { $null }\n"
+        "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime }"
     )
     assert script.count(original) == 1
     script = script.replace(original, replacement)
@@ -316,6 +330,9 @@ def _run_runtime_publish_fixture(
         old_backend = product / "install" / "local_backend"
         old_backend.mkdir(parents=True)
         (old_backend / "old-backend.txt").write_text("preserve", encoding="utf-8")
+        old_video_runtime = _managed_video_runtime(product)
+        old_video_runtime.parent.mkdir(parents=True)
+        old_video_runtime.write_bytes(b"old-video-runtime")
     if block_voice_sidecar:
         installed = _managed_reference(product)
         installed.parent.mkdir(parents=True)
@@ -329,16 +346,25 @@ def _run_runtime_publish_fixture(
     environment = os.environ.copy()
     environment["BSIDE_TEST_RUNTIME_ZIP"] = str(runtime_zip)
     if voice_reference is not None:
+        if video_runtime is None:
+            video_runtime = b"video-runtime-fixture"
         reference = tmp_path / "distributor-reference.wav"
         if not voice_reference_missing:
             reference.write_bytes(voice_reference)
+        runtime_archive = tmp_path / "Olivia-video-runtime-private.zip"
+        if not video_runtime_missing:
+            runtime_archive.write_bytes(video_runtime)
         manifest = {"voice_reference": {"path": "voice/olivia-reference.wav", "size_bytes": len(voice_reference),
-            "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
-            "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()}}
+                    "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
+                    "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()},
+                    "video_runtime": {"path": "video-runtime/Olivia-video-runtime-private.zip",
+                                       "size_bytes": len(video_runtime),
+                                       "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest()}}
         manifest_path = tmp_path / "offline-core-assets.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
-        environment["BSIDE_TEST_VOICE_MANIFEST"] = str(manifest_path)
+        environment["BSIDE_TEST_VIDEO_RUNTIME"] = str(runtime_archive)
+        environment["BSIDE_TEST_PRIVATE_MANIFEST"] = str(manifest_path)
     result = subprocess.run(
         [
             "powershell",
@@ -378,6 +404,7 @@ def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path
     installed = _managed_reference(product)
     assert result.returncode == 0, result.stderr or result.stdout
     assert installed.read_bytes() == _voice_reference_bytes()
+    assert _managed_video_runtime(product).read_bytes() == b"video-runtime-fixture"
     integrity = json.loads(installed.with_suffix(".json").read_text(encoding="utf-8"))
     assert integrity == {"schema_version": "olivia.managed-voice-reference.v1", "path": "linli-reference.wav",
         "size_bytes": installed.stat().st_size, "sha256": hashlib.sha256(installed.read_bytes()).hexdigest(),
@@ -396,6 +423,7 @@ def test_voice_publish_failure_restores_managed_app_runtime_and_voice(tmp_path: 
     assert (backend / "old-backend.txt").read_text() == "preserve" and not (backend / "new-backend.txt").exists()
     assert (runtime / "old-runtime.txt").read_text() == "preserve" and not (runtime / "python.exe").exists()
     assert installed.read_bytes() == b"old-reference" and installed.with_suffix(".json").is_dir()
+    assert _managed_video_runtime(product).read_bytes() == b"old-video-runtime"
     assert not list(product.glob(".install.rollback.*")) and not list((product / "runtime").glob("*.backup.*"))
 
 
@@ -465,6 +493,19 @@ def test_interrupted_voice_staging_has_marker_and_is_recovered(tmp_path: Path) -
     assert rejected.returncode != 0 and "VOICE_REFERENCE_INVALID" in rejected.stdout + rejected.stderr
     assert installed.read_bytes() == b"old-reference" and installed.with_suffix(".json").read_bytes() == b"old-sidecar"
     assert not list(installed.parent.glob(".linli-reference.*"))
+
+
+def test_first_install_rejects_bad_video_runtime_before_publish(tmp_path: Path) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime_sha256="0" * 64,
+    )
+
+    assert result.returncode != 0
+    assert "VIDEO_RUNTIME_HASH_MISMATCH" in result.stdout + result.stderr
+    assert not _managed_video_runtime(product).exists()
 
 
 def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(

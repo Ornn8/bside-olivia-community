@@ -642,6 +642,124 @@ function Install-ManagedVoiceReference {
     }
 }
 
+function Install-ManagedVideoRuntime {
+    param([AllowNull()][object]$VideoRuntime, [Parameter(Mandatory)][string]$InstallRoot)
+
+    if ($null -eq $VideoRuntime) { return $null }
+    $source = [string]$VideoRuntime.path
+    $expectedHash = [string]$VideoRuntime.sha256
+    $expectedSize = [int64]$VideoRuntime.size_bytes
+    if (-not [IO.File]::Exists($source)) { throw 'VIDEO_RUNTIME_MISSING' }
+    if (
+        $expectedSize -lt 1 -or
+        [IO.FileInfo]::new($source).Length -ne $expectedSize -or
+        (Get-Sha256 -LiteralPath $source) -cne $expectedHash
+    ) {
+        throw 'VIDEO_RUNTIME_HASH_MISMATCH'
+    }
+
+    $downloadRoot = Join-Path $InstallRoot 'downloads'
+    $downloadRootExisted = [IO.Directory]::Exists($downloadRoot)
+    Assert-NoReparsePointsInPath -LiteralPath $downloadRoot -ErrorCode 'VIDEO_RUNTIME_INSTALL_PATH_INVALID'
+    New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+    $target = Join-Path $downloadRoot 'Olivia-video-runtime-private.zip'
+    if ((Test-Path -LiteralPath $target) -and (
+        -not [IO.File]::Exists($target) -or
+        (([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    )) {
+        throw 'VIDEO_RUNTIME_INSTALL_PATH_INVALID'
+    }
+    if (
+        [IO.File]::Exists($target) -and
+        [IO.FileInfo]::new($target).Length -eq $expectedSize -and
+        (Get-Sha256 -LiteralPath $target) -ceq $expectedHash
+    ) {
+        return [pscustomobject]@{
+            Target = $target; Backup = ''; Existed = $true
+            Changed = $false; DownloadRootExisted = $true
+        }
+    }
+    $transactionId = [guid]::NewGuid().ToString('N')
+    $staged = Join-Path $downloadRoot ('.Olivia-video-runtime.' + $transactionId + '.tmp')
+    $backup = Join-Path $downloadRoot ('.Olivia-video-runtime.' + $transactionId + '.bak')
+    $existed = [IO.File]::Exists($target)
+    $published = $false
+    try {
+        [IO.File]::Copy($source, $staged, $false)
+        if (
+            [IO.FileInfo]::new($staged).Length -ne $expectedSize -or
+            (Get-Sha256 -LiteralPath $staged) -cne $expectedHash
+        ) {
+            throw 'VIDEO_RUNTIME_HASH_MISMATCH'
+        }
+        if ($existed) {
+            [IO.File]::Replace($staged, $target, $backup)
+        } else {
+            [IO.File]::Move($staged, $target)
+        }
+        $published = $true
+        return [pscustomobject]@{
+            Target = $target; Backup = $backup; Existed = $existed
+            Changed = $true; DownloadRootExisted = $downloadRootExisted
+        }
+    } catch {
+        $failure = [string]$_.Exception.Message
+        if ($published) {
+            try {
+                if ($existed) {
+                    [IO.File]::Delete($target)
+                    [IO.File]::Move($backup, $target)
+                } else {
+                    [IO.File]::Delete($target)
+                }
+            } catch {
+                throw 'VIDEO_RUNTIME_INSTALL_ROLLBACK_FAILED'
+            }
+        }
+        if ($failure -in @('VIDEO_RUNTIME_HASH_MISMATCH', 'VIDEO_RUNTIME_INSTALL_PATH_INVALID')) {
+            throw $failure
+        }
+        throw 'VIDEO_RUNTIME_INSTALL_FAILED'
+    } finally {
+        try { [IO.File]::Delete($staged) } catch {}
+    }
+}
+
+function Restore-ManagedVideoRuntimeTransaction {
+    param([AllowNull()][object]$Transaction)
+
+    if ($null -eq $Transaction -or -not [bool]$Transaction.Changed) { return }
+    try {
+        if ([bool]$Transaction.Existed) {
+            if (-not [IO.File]::Exists([string]$Transaction.Backup)) {
+                throw 'VIDEO_RUNTIME_INSTALL_ROLLBACK_FAILED'
+            }
+            [IO.File]::Delete([string]$Transaction.Target)
+            [IO.File]::Move([string]$Transaction.Backup, [string]$Transaction.Target)
+        } else {
+            [IO.File]::Delete([string]$Transaction.Target)
+        }
+        $downloadRoot = Split-Path -Parent ([string]$Transaction.Target)
+        if (
+            -not [bool]$Transaction.DownloadRootExisted -and
+            [IO.Directory]::Exists($downloadRoot) -and
+            [IO.Directory]::GetFileSystemEntries($downloadRoot).Length -eq 0
+        ) {
+            [IO.Directory]::Delete($downloadRoot)
+        }
+    } catch {
+        throw 'VIDEO_RUNTIME_INSTALL_ROLLBACK_FAILED'
+    }
+}
+
+function Complete-ManagedVideoRuntimeTransaction {
+    param([AllowNull()][object]$Transaction)
+
+    if ($null -ne $Transaction -and [bool]$Transaction.Changed -and [string]$Transaction.Backup) {
+        try { [IO.File]::Delete([string]$Transaction.Backup) } catch {}
+    }
+}
+
 function Get-ManagedInstallTransactionNames {
     return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json')
 }
@@ -814,7 +932,19 @@ function Get-OfflineCoreAssets {
         if ($manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip') {
             throw 'OFFLINE_CORE_MANIFEST_INVALID'
         }
-        $videoRuntime = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime
+        try {
+            $videoRuntimePath = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime
+        } catch {
+            if ($_.Exception.Message -eq 'OFFLINE_CORE_ASSET_MISSING') {
+                throw 'VIDEO_RUNTIME_MISSING'
+            }
+            if ($_.Exception.Message -in @('OFFLINE_CORE_ASSET_SIZE_MISMATCH', 'OFFLINE_CORE_ASSET_HASH_MISMATCH')) {
+                throw 'VIDEO_RUNTIME_HASH_MISMATCH'
+            }
+            throw 'VIDEO_RUNTIME_INVALID'
+        }
+        $videoRuntime = $manifest.video_runtime
+        $videoRuntime.path = $videoRuntimePath
     }
     $expectedWheelAssets = Get-ExpectedOfflineWheels
     $wheelPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -1080,17 +1210,30 @@ if ($installExitCode -ne 0) {
     exit $installExitCode
 }
 try {
+    $videoRuntimeTransaction = Install-ManagedVideoRuntime -VideoRuntime $coreAssets.VideoRuntime -InstallRoot $Destination
     Install-ManagedVoiceReference -VoiceReference $coreAssets.VoiceReference -InstallRoot $Destination
 } catch {
-    $voiceFailure = [string]$_.Exception.Message
+    $assetFailure = [string]$_.Exception.Message
+    $rollbackFailed = $false
+    try {
+        Restore-ManagedVideoRuntimeTransaction -Transaction $videoRuntimeTransaction
+    } catch {
+        $rollbackFailed = $true
+    }
     try {
         Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
-    } catch { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
-    throw $voiceFailure
+    } catch {
+        $rollbackFailed = $true
+    }
+    if ($rollbackFailed) {
+        throw 'PRIVATE_ASSET_INSTALL_ROLLBACK_FAILED'
+    }
+    throw $assetFailure
 }
 
 try { [IO.File]::Move("$installTransaction.active", "$installTransaction.cleanup"); Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot }
 catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
+Complete-ManagedVideoRuntimeTransaction -Transaction $videoRuntimeTransaction
 if (-not $SetupResultPath) { $installOutput | Write-Output }
 
 $LASTEXITCODE = 0
