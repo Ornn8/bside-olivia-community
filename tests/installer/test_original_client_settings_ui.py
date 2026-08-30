@@ -123,7 +123,7 @@ def test_ready_mem0_preserves_restart_fallback_when_companion_is_offline() -> No
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v9"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v10"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -213,6 +213,11 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
     assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
     assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
     assert "requestJson(OFFICIAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
+    assert (
+        'requestJson(OFFICIAL_LETTER_IMPORT_PATH, { preflight: "1" })'
+        in BOOTSTRAP_JAVASCRIPT
+    )
+    assert "请先在“大模型”中完成连接测试并保存，再导入。" in BOOTSTRAP_JAVASCRIPT
     assert "正在获取信件列表" in BOOTSTRAP_JAVASCRIPT
     assert "正在读取信件内容" in BOOTSTRAP_JAVASCRIPT
     assert "正在整理长期记忆" in BOOTSTRAP_JAVASCRIPT
@@ -332,15 +337,27 @@ const fetch = async (endpoint, options) => {
   }
   if (endpoint.pathname === "/toy/letter/legacy/official-import") {
     if (options.method === "GET") {
+      if (endpoint.searchParams.get("preflight") === "1") {
+        return memoryAvailable
+          ? { ok: true, json: async () => ({ code: 0, data: {
+              status: "READY", llm_required: true,
+            } }) }
+          : { ok: false, json: async () => ({ code: 503, data: {
+              status: "UNAVAILABLE",
+              error_code: "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+              retryable: true,
+            } }) };
+      }
       return { ok: true, json: async () => ({ code: 0, data: {
         status: "RUNNING", stage: "reading", total: 2, processed: 1,
         imported: 0, skipped: 0, last_updated_at: "2026-08-29T00:00:00+00:00",
         retryable: false,
       } }) };
     }
-    return { ok: true, json: async () => ({ code: 0, data: {
-      status: "APPLIED", inserted: 1, duplicates: 0,
-      memory_migration: { status: "completed", processed: 1 },
+    return { ok: false, json: async () => ({ code: 503, data: {
+      status: "UNAVAILABLE",
+      error_code: "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+      retryable: true,
     } }) };
   }
   throw new Error(`unexpected request: ${endpoint.pathname}`);
@@ -372,8 +389,8 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   if (body.querySelector("[data-olivia-companion-official-import-confirm]")) {
     throw new Error("confirmation opened while memory was unavailable");
   }
-  if (calls.some((item) => item.path === "/toy/letter/legacy/official-import")) {
-    throw new Error("official import ran while memory was unavailable");
+  if (calls.some((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST")) {
+    throw new Error("official import wrote while LLM was unavailable");
   }
   memoryAvailable = true;
   const importPending = importButton.click();
@@ -386,16 +403,20 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   await importPending;
   await flush();
   const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
-  const statusIndex = calls.findIndex((item) => item.path === "/toy/companion/status");
+  const preflightIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "GET");
   const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
   if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("official import confirmation header missing");
   if (!calls.some((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "GET")) throw new Error("official import progress was not polled");
-  if (statusIndex < 0 || statusIndex >= importIndex) throw new Error("memory preflight did not run before official import");
+  if (preflightIndex < 0 || preflightIndex >= importIndex) throw new Error("import preflight did not run before official import");
+  if (!body.querySelectorAll("div").some((item) => item.textContent === "请先在“大模型”中完成连接测试并保存，再导入。")) {
+    throw new Error("LLM mutation failure did not show the actionable model setup message");
+  }
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");
   process.stdout.write(JSON.stringify({
     legacyListRequests: calls.filter((item) => item.path === "/toy/letter/list").length,
-    memoryBlocked: true,
-    memoryPreflight: true,
+    llmBlocked: true,
+    importPreflight: true,
+    llmMutationMapped: true,
   }));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 '''
@@ -410,8 +431,9 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
     assert result.returncode == 0, output
     assert json.loads(result.stdout.decode("utf-8")) == {
         "legacyListRequests": 0,
-        "memoryBlocked": True,
-        "memoryPreflight": True,
+        "llmBlocked": True,
+        "importPreflight": True,
+        "llmMutationMapped": True,
     }
 
 

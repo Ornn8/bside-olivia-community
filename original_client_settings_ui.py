@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v9"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v10"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -283,11 +283,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         signal: controller.signal,
       });
       const responseBody = await response.json();
+      const officialPreflight = path === OFFICIAL_LETTER_IMPORT_PATH
+        && params.preflight === "1";
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data
         ? responseBody.data
         : responseBody;
-      const valid = path === OFFICIAL_LETTER_IMPORT_PATH
+      const valid = officialPreflight
+        ? payload && payload.status === "READY"
+          && typeof payload.llm_required === "boolean"
+        : path === OFFICIAL_LETTER_IMPORT_PATH
         ? payload && ["IDLE", "RUNNING", "COMPLETED", "FAILED"].includes(payload.status)
           && typeof payload.stage === "string"
           && Number.isInteger(payload.total)
@@ -300,7 +305,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           || payload.state === "unavailable" && typeof payload.reason_code === "string")
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
-        throw new Error("unavailable");
+        const error = new Error("unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          ? payload.error_code
+          : "COMPANION_READ_UNAVAILABLE";
+        throw error;
       }
       return payload;
     } finally {
@@ -2022,16 +2031,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         return;
       }
       try {
-        const companion = await requestJson(STATUS_PATH);
-        const capabilities = companion && companion.capabilities;
-        const memory = capabilities && capabilities.memory;
-        const privateWorld = capabilities && capabilities.private_world;
-        if (!memory || memory.state !== "available" || !privateWorld || privateWorld.state !== "available") {
-          importState.textContent = "请先安装并启用长期记忆组件，确认私人世界可用并重启客户端后再导入。";
-          return;
-        }
-      } catch (_error) {
-        importState.textContent = "无法确认长期记忆组件状态，请重启客户端后再试。";
+        await requestJson(OFFICIAL_LETTER_IMPORT_PATH, { preflight: "1" });
+      } catch (error) {
+        importState.textContent = error && error.code === "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
+          ? "请先在“大模型”中完成连接测试并保存，再导入。"
+          : error && [
+            "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+            "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+          ].includes(error.code)
+            ? "请先安装并启用长期记忆组件，确认私人世界可用并重启客户端后再导入。"
+            : "无法确认导入条件，请重启客户端后再试。";
         return;
       }
       if (!await confirmAction("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
@@ -2060,13 +2069,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}${relationText}`;
         importButton.textContent = "再次导入";
       } catch (error) {
-        importState.textContent = error && [
-          "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
-          "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
-          "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
-        ].includes(error.code)
-          ? "长期记忆未就绪或写入失败，未发布任何历史信件。请检查记忆组件后重试。"
-          : "导入失败。请先启动官方客户端并登录，再重试。";
+        importState.textContent = error && error.code === "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
+          ? "请先在“大模型”中完成连接测试并保存，再导入。"
+          : error && [
+            "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
+            "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
+            "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+          ].includes(error.code)
+            ? "长期记忆未就绪或写入失败，未发布任何历史信件。请检查记忆组件后重试。"
+            : "导入失败。请先启动官方客户端并登录，再重试。";
         importButton.textContent = "重试导入";
       } finally {
         importPending = false;
