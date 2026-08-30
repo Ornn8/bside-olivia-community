@@ -9,8 +9,9 @@ separate concern.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 from urllib.parse import quote
 
 from aiohttp import web
@@ -108,6 +109,7 @@ def create_control_center_runtime(
     database_path: Path,
     *,
     session_manager: ControlSessionManager | None = None,
+    candidate_clock: Callable[[], datetime] | None = None,
 ) -> ControlCenterRuntime:
     """Build one complete in-process runtime over an explicit SQLite file."""
 
@@ -124,6 +126,7 @@ def create_control_center_runtime(
         candidate_backend = SQLiteCandidateReviewBackend(
             candidate_store,
             service,
+            clock=candidate_clock,
         )
         app = create_control_app(
             ledger,

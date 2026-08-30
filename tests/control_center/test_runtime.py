@@ -56,7 +56,8 @@ def test_runtime_assembles_shared_ledger_candidates_api_and_ui(
 ) -> None:
     async def scenario() -> None:
         runtime = create_control_center_runtime(
-            (tmp_path / "private_world.sqlite3").resolve()
+            (tmp_path / "private_world.sqlite3").resolve(),
+            candidate_clock=lambda: NOW,
         )
         candidate = _candidate()
         runtime.candidate_store.add(candidate)
