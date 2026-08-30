@@ -1443,6 +1443,8 @@ def _complete_layer_reviews(
                         gateway_scope,
                     )
                 except _GatewayInvocationFailure:
+                    if attempt == 0:
+                        continue
                     raise _diagnostic_error(
                         ReviewFailureStage.LAYER,
                         ReviewFailureReason.TRANSPORT,

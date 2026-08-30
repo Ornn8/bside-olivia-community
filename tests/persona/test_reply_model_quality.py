@@ -308,7 +308,10 @@ def test_reviewer_classifies_layer_failure(
     )
     layer_calls = [request["layer"] for request in gateway.review_requests]
     expected_attempts = (
-        2 if reason is ReviewFailureReason.LAYER_CONTRACT else 1
+        2
+        if reason
+        in {ReviewFailureReason.TRANSPORT, ReviewFailureReason.LAYER_CONTRACT}
+        else 1
     )
     assert layer_calls.count(layer) == expected_attempts
     assert all(
@@ -317,6 +320,22 @@ def test_reviewer_classifies_layer_failure(
         if name != layer
     )
     assert len(gateway.request_ids) == len(set(gateway.request_ids))
+
+
+def test_reviewer_retries_only_the_transiently_failed_layer_once() -> None:
+    gateway = TransientLayerFailureGateway(failing_layer="continuity_memory")
+
+    result, reviewer = _run_diagnostic_review(gateway, "Synthetic candidate.")
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert reviewer.last_failure_diagnostics == ()
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 2
+    assert all(
+        layer_calls.count(layer) == 1
+        for layer in _REVIEW_LAYERS
+        if layer != "continuity_memory"
+    )
 
 
 def test_reviewer_orders_multiple_layer_failures_by_authority() -> None:
@@ -862,6 +881,29 @@ class FailingQualityGateway(SequencedQualityGateway):
                 provider="synthetic",
                 model="synthetic",
             )
+        return await super().complete(messages, request_id=request_id)
+
+
+class TransientLayerFailureGateway(FailingQualityGateway):
+    def __init__(self, *, failing_layer: str) -> None:
+        super().__init__(failure="none", failing_layer=failing_layer)
+        self.failed_once = False
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        system = str(messages[0].get("content", ""))
+        if "P02_REPLY_REVIEW_JSON" in system:
+            request = json.loads(str(messages[-1]["content"]))
+            if request["layer"] == self.failing_layer and not self.failed_once:
+                self.failed_once = True
+                self.request_ids.append(request_id)
+                self.call_kinds.append("review")
+                self.review_requests.append(request)
+                raise TimeoutError("private transient upstream detail")
         return await super().complete(messages, request_id=request_id)
 
 
@@ -3378,7 +3420,7 @@ def test_invalid_enabled_reviewer_json_fails_closed(
 ) -> None:
     gateway = SequencedQualityGateway(
         candidate="我收到了。先去喝口水。",
-        reviews=["not-json"],
+        reviews=["not-json"] * 5,
     )
     pipeline = _pipeline(gateway, monkeypatch)
 
@@ -3405,7 +3447,7 @@ def test_invalid_enabled_reviewer_blocks_before_deterministic_rewrite(
 ) -> None:
     gateway = SequencedQualityGateway(
         candidate="<CONTROL>invalid candidate",
-        reviews=["not-json"],
+        reviews=["not-json"] * 5,
     )
 
     result = asyncio.run(
