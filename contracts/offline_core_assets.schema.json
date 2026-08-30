@@ -5,6 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
+  "dependentRequired": {"voice_reference": ["distribution"], "distribution": ["voice_reference"]},
   "$defs": {
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "local_asset": {
@@ -44,6 +45,29 @@
       }
     },
     "requirements_sha256": {"$ref": "#/$defs/digest"},
+    "distribution": {"const": "private"},
+    "voice_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "wave"],
+      "properties": {
+        "path": {"const": "voice/olivia-reference.wav"},
+        "size_bytes": {"type": "integer", "minimum": 45},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "wave": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["channels", "sample_width_bytes", "sample_rate_hz", "frame_count", "compression_type"],
+          "properties": {
+            "channels": {"type": "integer", "minimum": 1, "maximum": 8},
+            "sample_width_bytes": {"type": "integer", "minimum": 1, "maximum": 4},
+            "sample_rate_hz": {"type": "integer", "minimum": 8000, "maximum": 192000},
+            "frame_count": {"type": "integer", "minimum": 1},
+            "compression_type": {"const": "NONE"}
+          }
+        }
+      }
+    },
     "wheels": {
       "type": "array",
       "minItems": 14,
