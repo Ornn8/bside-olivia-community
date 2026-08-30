@@ -8,6 +8,7 @@ from enum import Enum
 import re
 
 from .commands import (
+    ApplyHistoricalRelationshipEvidence,
     ConfirmRelationshipStage,
     DeleteContinuationFact,
     GrantIntimacy,
@@ -411,6 +412,23 @@ def reduce_private_world_command(
     relationship_event = _relationship_command_event(command)
     if relationship_event is not None:
         return reduce_private_world(snapshot, relationship_event)
+
+    if isinstance(command, ApplyHistoricalRelationshipEvidence):
+        return _apply_updates(
+            snapshot,
+            {
+                "familiarity": max(
+                    snapshot.familiarity,
+                    command.familiarity,
+                ),
+                "closeness": max(
+                    snapshot.closeness,
+                    command.closeness,
+                ),
+            },
+            reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
+            unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE",
+        )
 
     if isinstance(command, InitializeHistoricalRelationship):
         if snapshot != PrivateWorldSnapshot():

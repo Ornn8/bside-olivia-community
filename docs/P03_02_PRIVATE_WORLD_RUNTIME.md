@@ -153,6 +153,7 @@ SetHomeAccess
 UpsertContinuationFact
 SetContinuationAwareness
 DeleteContinuationFact
+ApplyHistoricalRelationshipEvidence
 ```
 
 每条命令至少包含：
@@ -179,6 +180,11 @@ DeleteContinuationFact
 - 同一 idempotency key 只能执行一次；
 - 命令 payload 不能携带隐藏字段任意绝对值；
 - 所有 mutation 必须经过 Command Service，UI 不得直接写 SQLite。
+- `ApplyHistoricalRelationshipEvidence` 只允许 `migration + import`，payload
+  只携带有证据的 familiarity/closeness 评估下限；Service/Reducer 在当前
+  canonical snapshot 上做逐轴 `max`，不得由调用方选择 pristine/existing 分支；
+- Command Service 的 command lookup 只返回有界执行元数据，不返回命令 payload、
+  reason、evidence refs 或 fingerprint，也不产生 event 或 snapshot。
 
 ## 6. Reducer 扩展
 

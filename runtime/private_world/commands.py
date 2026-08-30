@@ -49,6 +49,9 @@ class PrivateWorldCommandKind(StrEnum):
     SET_CONTINUATION_AWARENESS = "set_continuation_awareness"
     DELETE_CONTINUATION_FACT = "delete_continuation_fact"
     INITIALIZE_HISTORICAL_RELATIONSHIP = "initialize_historical_relationship"
+    APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE = (
+        "apply_historical_relationship_evidence"
+    )
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -293,6 +296,35 @@ class InitializeHistoricalRelationship(PrivateWorldCommand):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
+    """Apply one assessed corpus to the two bounded intimacy axes."""
+
+    familiarity: int
+    closeness: int
+
+    kind: ClassVar[PrivateWorldCommandKind] = (
+        PrivateWorldCommandKind.APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        for field_name in ("familiarity", "closeness"):
+            value = getattr(self, field_name)
+            if type(value) is not int or not 0 <= value <= 100:
+                raise PrivateWorldCommandError(f"{field_name} is invalid")
+        if not self.evidence_refs:
+            raise PrivateWorldCommandError(
+                "historical relationship evidence is required"
+            )
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "familiarity": self.familiarity,
+            "closeness": self.closeness,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class GrantNickname(PrivateWorldCommand):
     nickname: str
 
@@ -440,10 +472,12 @@ PrivateWorldMutation: TypeAlias = (
     | SetContinuationAwareness
     | DeleteContinuationFact
     | InitializeHistoricalRelationship
+    | ApplyHistoricalRelationshipEvidence
 )
 
 
 __all__ = [
+    "ApplyHistoricalRelationshipEvidence",
     "ConfirmRelationshipStage",
     "DeleteContinuationFact",
     "GrantIntimacy",

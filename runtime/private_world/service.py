@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Protocol, runtime_checkable
 
 from .commands import (
+    ApplyHistoricalRelationshipEvidence,
     ConfirmRelationshipStage,
     GrantIntimacy,
     PrivateWorldActor,
@@ -165,6 +166,15 @@ class PrivateWorldCommandService:
 
     @staticmethod
     def _authorize(command: PrivateWorldCommand) -> None:
+        if isinstance(command, ApplyHistoricalRelationshipEvidence):
+            if (
+                command.actor is not PrivateWorldActor.MIGRATION
+                or command.source is not PrivateWorldCommandSource.IMPORT
+            ):
+                raise PrivateWorldCommandServiceError(
+                    "PRIVATE_WORLD_COMMAND_SOURCE_FORBIDDEN"
+                )
+            return
         if isinstance(command, GrantIntimacy):
             if (
                 command.actor is not PrivateWorldActor.LOCAL_USER
@@ -323,6 +333,34 @@ class PrivateWorldCommandService:
             raise PrivateWorldCommandServiceError(
                 "PRIVATE_WORLD_COMMAND_EVIDENCE_INVALID"
             )
+
+    def lookup_command(
+        self,
+        command_id: str,
+    ) -> CommandExecutionResult | None:
+        """Return bounded persisted command metadata without its audit body."""
+
+        if not isinstance(command_id, str):
+            raise TypeError("a PrivateWorld command id is required")
+        event_id = _digest("command", command_id)
+        with self._lock:
+            matches = tuple(
+                event
+                for event in self._ledger_events()
+                if event.event_id == event_id
+            )
+        if not matches:
+            return None
+        if (
+            len(matches) != 1
+            or matches[0].payload.get("schema_version")
+            != PRIVATE_WORLD_COMMAND_AUDIT_SCHEMA
+            or matches[0].payload.get("command_id") != command_id
+        ):
+            raise PrivateWorldCommandServiceError(
+                "PRIVATE_WORLD_COMMAND_AUDIT_INVALID"
+            )
+        return _result_from_audit(matches[0], duplicate=False)
 
     @staticmethod
     def _audit_payload(
