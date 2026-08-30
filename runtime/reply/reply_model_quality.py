@@ -1100,7 +1100,7 @@ def _layer_messages(
             if layer.name in _EVIDENCE_BOUND_LAYERS
             else (
                 f'{{"layer":"{layer.name}","score":2,'
-                '"hard_violations":[],"drift_detected":false}}'
+                '"hard_violations":[],"drift_detected":false}'
             )
         )
     )
@@ -2117,7 +2117,7 @@ def _safe_text(
             "\r",
             "\t",
         }
-        or ord(character) >= 32
+        or (ord(character) >= 32 and character != "\x7f")
     ).strip()
     return cleaned[:limit]
 

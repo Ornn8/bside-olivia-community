@@ -96,7 +96,7 @@ calls = await gateway.complete_with_tools(
 
 ## 回信事件与并发语义
 
-`reply_orchestrator.py` 提供 `ReplyRequest`、`ReplyOrchestrator.start()`、`ReplyRun.events()` 和 `ReplyRun.cancel()`。每个 request 具有 request ID；给出相同 `idempotency_key` 且输入一致时复用同一个结果，输入不一致返回 `IDEMPOTENCY_CONFLICT`。
+`reply_orchestrator.py` 提供 `ReplyRequest`、`ReplyOrchestrator.start()`、`ReplyRun.events()` 和 `ReplyRun.cancel()`。每个 request 具有 request ID；给出相同 `idempotency_key` 且输入一致时复用同一个在途或终态结果，输入不一致返回 `IDEMPOTENCY_CONFLICT`。唯一例外是已终止且标记 `retryable=true` 的失败：下一次相同输入会在锁内原子替换旧 run 并重新调用 provider，同时到达的重试仍共享这个 replacement run；replacement 沿用旧 run 的 request ID，以保留 provider 幂等边界。
 
 事件顺序和终态：
 

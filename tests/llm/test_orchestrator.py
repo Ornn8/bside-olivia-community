@@ -41,9 +41,24 @@ class BurstGateway(Gateway):
 class ErrorGateway(Gateway):
     def __init__(self, error: GatewayError):
         self.error = error
+        self.calls = 0
 
     async def complete(self, messages, *, request_id=None):
+        self.calls += 1
         raise self.error
+
+
+class RetryOnceGateway(Gateway):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.request_ids: list[str | None] = []
+
+    async def complete(self, messages, *, request_id=None):
+        self.calls += 1
+        self.request_ids.append(request_id)
+        if self.calls == 1:
+            raise GatewayError("PROVIDER_RETRYABLE", retryable=True)
+        return GatewayResponse("recovered", request_id or "request", "mock", "model")
 
 
 def test_stream_success_emits_ordered_events_and_completed_result() -> None:
@@ -146,6 +161,109 @@ def test_idempotency_reuses_result_and_conflict_is_terminal() -> None:
     assert second == first
     assert conflict.error_code == "IDEMPOTENCY_CONFLICT"
     assert conflict.state is ReplyState.FAILED
+
+
+def test_retryable_idempotent_failure_starts_one_new_run() -> None:
+    async def exercise():
+        gateway = RetryOnceGateway()
+        orchestrator = ReplyOrchestrator(gateway)
+        request = ReplyRequest(
+            content="same",
+            request_id="retryable-request",
+            idempotency_key="retryable-key",
+        )
+
+        first = await orchestrator.run(request)
+        conflict = await orchestrator.run(
+            ReplyRequest(
+                content="different",
+                request_id="conflicting-request",
+                idempotency_key="retryable-key",
+            )
+        )
+        retry, duplicate = await asyncio.gather(
+            orchestrator.start(
+                ReplyRequest(
+                    content="same",
+                    request_id="retryable-request-2",
+                    idempotency_key="retryable-key",
+                )
+            ),
+            orchestrator.start(
+                ReplyRequest(
+                    content="same",
+                    request_id="retryable-request-3",
+                    idempotency_key="retryable-key",
+                )
+            ),
+        )
+        second = await retry.wait()
+        return (
+            gateway.calls,
+            gateway.request_ids,
+            first,
+            conflict,
+            second,
+            retry is duplicate,
+        )
+
+    calls, request_ids, first, conflict, second, shared_retry = run(exercise())
+    assert first.state is ReplyState.FAILED
+    assert first.retryable is True
+    assert conflict.state is ReplyState.FAILED
+    assert conflict.error_code == "IDEMPOTENCY_CONFLICT"
+    assert second.state is ReplyState.COMPLETED
+    assert second.text == "recovered"
+    assert calls == 2
+    assert request_ids == ["retryable-request", "retryable-request"]
+    assert shared_retry is True
+
+
+def test_non_retryable_idempotent_failure_remains_cached() -> None:
+    async def exercise():
+        gateway = ErrorGateway(GatewayError("PROVIDER_PROTOCOL", retryable=False))
+        orchestrator = ReplyOrchestrator(gateway)
+        request = ReplyRequest(
+            content="same",
+            request_id="terminal-request",
+            idempotency_key="terminal-key",
+        )
+
+        first = await orchestrator.run(request)
+        second = await orchestrator.run(request)
+        return gateway.calls, first, second
+
+    calls, first, second = run(exercise())
+    assert first.state is ReplyState.FAILED
+    assert first.retryable is False
+    assert second == first
+    assert calls == 1
+
+
+def test_cancelled_waiter_keeps_existing_run_without_result_lookup() -> None:
+    async def exercise():
+        orchestrator = ReplyOrchestrator(SlowGateway(), timeout_seconds=2)
+        request = ReplyRequest(
+            content="same",
+            request_id="cancelled-waiter-request",
+            idempotency_key="cancelled-waiter-key",
+        )
+        run_handle = await orchestrator.start(request)
+        waiter = asyncio.create_task(run_handle.wait())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+
+        reused = await orchestrator.start(request)
+        run_handle.cancel()
+        if run_handle.task is not None:
+            await run_handle.task
+        return reused is run_handle
+
+    assert run(exercise()) is True
 
 
 def test_invalid_role_is_rejected_without_provider_call() -> None:
