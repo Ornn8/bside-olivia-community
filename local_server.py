@@ -17,6 +17,7 @@ import uuid
 import hashlib
 import inspect
 import threading
+import tempfile as _tempfile
 import webbrowser as _webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -746,6 +747,16 @@ class Store:
         self.request_keys = {}
 
 store = Store()
+_store_state_error_code: str | None = None
+
+
+class StoreStateUnavailable(RuntimeError):
+    code = "STORE_STATE_UNAVAILABLE"
+
+
+def _require_store_state_available() -> None:
+    if _store_state_error_code is not None:
+        raise StoreStateUnavailable(_store_state_error_code)
 
 
 def _local_data_root(environment: Mapping[str, str] | None = None) -> Path | None:
@@ -797,16 +808,80 @@ def _mark_media_not_requested(letter: dict) -> None:
     letter["media_retryable"] = False
 
 
+def _read_store_state(path: Path) -> dict:
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict) or "letters" not in loaded:
+        raise ValueError("store state must be an object")
+    normalized: dict[str, object] = {}
+    for name in ("letters", "legacy_letters", "midi_jobs"):
+        value = loaded.get(name, [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise ValueError("store state contains an invalid collection")
+        normalized[name] = value
+    for name in ("settings", "request_keys"):
+        value = loaded.get(name, {})
+        if not isinstance(value, dict):
+            raise ValueError("store state contains invalid metadata")
+        normalized[name] = value
+    return normalized
+
+
+def _fsync_store_directory(root: Path) -> None:
+    if _os.name == "nt":
+        return
+    descriptor = _os.open(root, _os.O_RDONLY)
+    try:
+        _os.fsync(descriptor)
+    finally:
+        _os.close(descriptor)
+
+
+def _atomic_write_store_file(path: Path, serialized: str) -> None:
+    descriptor, temporary_name = _tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with _os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(serialized)
+            handle.flush()
+            _os.fsync(handle.fileno())
+        _os.replace(temporary, path)
+        _fsync_store_directory(path.parent)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
+
+
 def _load_store_state() -> None:
+    global _store_state_error_code
     root = _state_root()
     if root is None:
         return
+    recovered_from_backup = False
     try:
-        loaded = json.loads((root / "state.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return
-    if not isinstance(loaded, dict):
-        return
+        loaded = _read_store_state(root / "state.json")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as primary_error:
+        try:
+            loaded = _read_store_state(root / "state.json.bak")
+            recovered_from_backup = True
+        except FileNotFoundError:
+            if isinstance(primary_error, FileNotFoundError):
+                _store_state_error_code = None
+                return
+            _store_state_error_code = StoreStateUnavailable.code
+            return
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            _store_state_error_code = StoreStateUnavailable.code
+            return
+    _store_state_error_code = None
     needs_persist = False
     for name in ("letters", "legacy_letters", "midi_jobs"):
         value = loaded.get(name)
@@ -829,11 +904,13 @@ def _load_store_state() -> None:
         store.settings = loaded["settings"]
     if isinstance(loaded.get("request_keys"), dict):
         store.request_keys = loaded["request_keys"]
-    if needs_persist:
+    if needs_persist or recovered_from_backup:
         _persist_store_state()
 
 
 def _persist_store_state() -> None:
+    global _store_state_error_code
+    _require_store_state_available()
     root = _state_root()
     if root is None:
         return
@@ -845,9 +922,17 @@ def _persist_store_state() -> None:
         "settings": store.settings,
         "request_keys": store.request_keys,
     }
-    temporary = root / ".state.json.tmp"
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    temporary.replace(root / "state.json")
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    try:
+        _atomic_write_store_file(root / "state.json", serialized)
+    except StoreStateUnavailable:
+        _store_state_error_code = StoreStateUnavailable.code
+        raise
+    _store_state_error_code = None
+    try:
+        _atomic_write_store_file(root / "state.json.bak", serialized)
+    except StoreStateUnavailable:
+        _safe_log("store_backup_failed", error_code=StoreStateUnavailable.code)
 
 
 _memory_config = load_memory_config()
@@ -1403,6 +1488,23 @@ async def handler(request: web.Request):
                 companion_confirmed=(
                     request.headers.get("X-Olivia-Companion-Action") == "confirmed"
                 ),
+            )
+        except StoreStateUnavailable:
+            _load_store_state()
+            _safe_log(
+                "route_failure",
+                method=method,
+                path=path,
+                error_code=StoreStateUnavailable.code,
+            )
+            result = err(
+                503,
+                StoreStateUnavailable.code,
+                {
+                    "status": "FAILED",
+                    "error_code": StoreStateUnavailable.code,
+                    "retryable": False,
+                },
             )
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
@@ -2738,6 +2840,7 @@ async def route(
                 "error_code": "READ_ONLY_SCOPE",
                 "scope": "legacy",
             })
+        _require_store_state_available()
         if "content" not in body:
             return _missing_field("content")
         content = body.get("content")

@@ -877,6 +877,179 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     assert persisted["request_keys"]["restart-key"] == pending["letter_id"]
 
 
+@pytest.mark.parametrize(
+    "corrupt_state",
+    [b'{"letters":[', b'{"letters":"not-a-list"}'],
+)
+def test_corrupt_state_blocks_public_letter_mutation_without_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_state: bytes,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(corrupt_state)
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
+    local_server._load_store_state()
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic state recovery letter"},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 503
+    assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+    assert state_path.read_bytes() == corrupt_state
+    assert local_server.store.letters == []
+    assert local_server.store.request_keys == {}
+
+
+def test_corrupt_primary_state_recovers_from_durable_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    letter = {
+        "letter_id": "synthetic-backup-letter",
+        "content": "synthetic backup input",
+        "material": {},
+        "letter_status": "COMPLETED",
+        "audit_status": 2,
+        "is_read": 1,
+        "created_at": 100,
+        "reply_text": "synthetic backup reply",
+        "reply_mode": "text_letter",
+        "triage": {"status": "completed"},
+        "music_duration_seconds": 60,
+    }
+    local_server.store.letters.append(letter)
+    local_server._persist_store_state()
+    (tmp_path / "state.json").write_bytes(b'{"letters":[')
+    local_server.store.letters.clear()
+    local_server._load_store_state()
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.get(
+                "/toy/letter/detail",
+                params={"letter_id": letter["letter_id"]},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 200
+    assert payload["data"]["reply_text"] == "synthetic backup reply"
+    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))[
+        "letters"
+    ][0]["letter_id"] == letter["letter_id"]
+
+
+def test_public_letter_mutation_rolls_back_when_state_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
+    local_server._persist_store_state()
+    state_path = tmp_path / "state.json"
+    previous_state = state_path.read_bytes()
+    real_replace = os.replace
+
+    def reject_primary_replace(source, destination) -> None:
+        if Path(destination) == state_path:
+            raise OSError("synthetic replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", reject_primary_replace)
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic failed persistence letter"},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 503
+    assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+    assert state_path.read_bytes() == previous_state
+    assert local_server.store.letters == []
+    assert not tuple(tmp_path.glob("*.tmp"))
+
+
+def test_state_persist_fsyncs_unique_snapshots_before_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    events: list[tuple[str, str]] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def record_fsync(descriptor: int) -> None:
+        events.append(("fsync", ""))
+        real_fsync(descriptor)
+
+    def record_replace(source, destination) -> None:
+        events.append(("replace", Path(source).name))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(os, "replace", record_replace)
+
+    local_server._persist_store_state()
+
+    assert [event[0] for event in events] == [
+        "fsync",
+        "replace",
+        "fsync",
+        "replace",
+    ]
+    temporary_names = [value for event, value in events if event == "replace"]
+    assert len(set(temporary_names)) == 2
+    assert ".state.json.tmp" not in temporary_names
+    assert ".state.json.bak.tmp" not in temporary_names
+
+
 def test_failed_idempotent_request_can_retry_with_same_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
