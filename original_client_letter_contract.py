@@ -82,17 +82,26 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
 
 
 def _letter_status(value: object, *, published: bool) -> int:
+    if isinstance(value, OriginalClientLetterStatus):
+        resolved = int(value)
+    elif type(value) is int:
+        try:
+            resolved = int(OriginalClientLetterStatus(value))
+        except ValueError:
+            resolved = int(OriginalClientLetterStatus.FAILED)
+    else:
+        normalized = str(value or "").strip().upper()
+        resolved = int(
+            _INTERNAL_LETTER_STATUS.get(
+                normalized,
+                OriginalClientLetterStatus.FAILED,
+            )
+        )
+    if resolved == int(OriginalClientLetterStatus.FAILED):
+        return resolved
     if not published:
         return int(OriginalClientLetterStatus.PENDING)
-    if isinstance(value, OriginalClientLetterStatus):
-        return int(value)
-    if type(value) is int:
-        try:
-            return int(OriginalClientLetterStatus(value))
-        except ValueError:
-            return int(OriginalClientLetterStatus.FAILED)
-    normalized = str(value or "").strip().upper()
-    return int(_INTERNAL_LETTER_STATUS.get(normalized, OriginalClientLetterStatus.FAILED))
+    return resolved
 
 
 def _audit_status(value: object) -> int:

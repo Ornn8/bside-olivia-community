@@ -799,6 +799,62 @@ def test_unexpected_background_failure_cannot_leave_processing_letter(
     assert detail["data"]["error_code"] == "LLM_UNAVAILABLE"
 
 
+def test_failed_letter_deadline_does_not_hide_terminal_send_list_or_detail() -> None:
+    import local_server
+
+    letter = {
+        "letter_id": "failed-before-delivery",
+        "content": "synthetic failed input",
+        "material": {},
+        "letter_status": "FAILED",
+        "audit_status": 2,
+        "is_read": 1,
+        "created_at": 1_700_000_000,
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "reply_not_before": 4_000_000_000.0,
+        "error_code": "REPLY_QUALITY_BLOCKED",
+        "media_status": "NOT_REQUESTED",
+    }
+    local_server.store.letters.append(letter)
+
+    sent = local_server._send_result_for_letter(letter)
+    listed = asyncio.run(local_server.route("GET", "/toy/letter/list", {}, {}))
+    detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"letter_id": letter["letter_id"]},
+        )
+    )
+
+    assert sent["code"] == 503
+    assert sent["data"]["status"] == "FAILED"
+    assert listed["data"]["list"][0]["letter_status"] == "FAILED"
+    assert detail["data"]["letter_status"] == "FAILED"
+    assert detail["data"]["error_code"] == "REPLY_QUALITY_BLOCKED"
+
+
+@pytest.mark.parametrize("status", ["CANCELED", "CANCELLED"])
+def test_canceled_letter_deadline_preserves_terminal_send_status(
+    status: str,
+) -> None:
+    import local_server
+
+    letter = {
+        "letter_id": f"{status.casefold()}-before-delivery",
+        "letter_status": status,
+        "reply_not_before": 4_000_000_000.0,
+    }
+
+    sent = local_server._send_result_for_letter(letter)
+
+    assert sent["code"] == 0
+    assert sent["data"]["status"] == status
+    assert sent["data"]["letter_id"] == letter["letter_id"]
+
+
 def test_persona_not_ready_failure_persists_and_round_trips_through_http_detail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
