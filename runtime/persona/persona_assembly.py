@@ -34,8 +34,18 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
 _STYLE_SITUATIONS = (
-    ("emotional_acknowledgement", re.compile(r"累|烦|难过|委屈|害怕|焦虑|没劲")),
-    ("boundary_refusal", re.compile(r"不许拒绝|不能拒绝|不准拒绝|必须|一定要")),
+    (
+        "emotional_acknowledgement",
+        re.compile(
+            r"累|烦|难过|委屈|害怕|焦虑|没劲|难受|伤心|崩溃|想哭|压力|孤独|失眠|不开心|撑不住|提不起劲|没意思|心情不好"
+        ),
+    ),
+    (
+        "boundary_refusal",
+        re.compile(
+            r"不许拒绝|不能拒绝|不准拒绝|(?:必须|一定要|非得)(?:陪|来|去|答应|同意|给我|跟我)"
+        ),
+    ),
     ("music_request", re.compile(r"(?:能|可以|请|想听|给我|为我).{0,10}(?:唱|弹|演奏)|(?:唱|弹|演奏)(?:一|几|个|首|段|曲)")),
     ("natural_close", re.compile(r"晚点再说|回头再说|先去忙|先走了|去睡了|晚安")),
     ("brief_greeting", re.compile(r"^(?:在吗|你好|早(?:上好)?|嗨|hi|hello)[！!。.？?\s]*$", re.I)),
