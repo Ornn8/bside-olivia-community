@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import os
@@ -67,6 +68,32 @@ def _process_diagnostic(
         f"stderr_bytes={len(payload)};"
         f"stderr_sha256={hashlib.sha256(payload).hexdigest()}"
     )[:240]
+
+
+def _reported_process_failure(
+    environment: Mapping[str, str], *, returncode: int | None,
+    stderr: bytes | str | None, timed_out: bool = False, start_failed: bool = False,
+) -> LatentSyncReplyError:
+    diagnostic = _process_diagnostic(
+        returncode=returncode, stderr=stderr,
+        timed_out=timed_out, start_failed=start_failed,
+    )
+    _LOGGER.warning("LatentSync process failed: %s", diagnostic)
+    data_root = resolve_media_path(environment.get("OLIVIA_LOCAL_DATA_ROOT", ""), environment)
+    if data_root is not None:
+        try:
+            log_root = data_root / "logs"
+            log_root.mkdir(parents=True, exist_ok=True)
+            record = {
+                "provider": "latentsync",
+                "error_code": "LATENTSYNC_FAILED",
+                "diagnostic": diagnostic,
+            }
+            with (log_root / "media-provider.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return LatentSyncReplyError("LATENTSYNC_FAILED", diagnostic=diagnostic)
 
 
 def _latentsync_timeout_seconds(
@@ -318,36 +345,24 @@ def render_latentsync_video(
                 env=runtime_environment,
             )
         except subprocess.TimeoutExpired as exc:
-            diagnostic = _process_diagnostic(
+            failure = _reported_process_failure(
+                source_environment,
                 returncode=None,
                 stderr=exc.stderr,
                 timed_out=True,
             )
-            _LOGGER.warning("LatentSync process failed: %s", diagnostic)
-            raise LatentSyncReplyError(
-                "LATENTSYNC_FAILED",
-                diagnostic=diagnostic,
-            ) from exc
+            raise failure from exc
         except OSError as exc:
-            diagnostic = _process_diagnostic(
+            failure = _reported_process_failure(
+                source_environment,
                 returncode=None,
                 stderr=None,
                 start_failed=True,
             )
-            _LOGGER.warning("LatentSync process failed: %s", diagnostic)
-            raise LatentSyncReplyError(
-                "LATENTSYNC_FAILED",
-                diagnostic=diagnostic,
-            ) from exc
+            raise failure from exc
         if result.returncode != 0:
-            diagnostic = _process_diagnostic(
-                returncode=result.returncode,
-                stderr=result.stderr,
-            )
-            _LOGGER.warning("LatentSync process failed: %s", diagnostic)
-            raise LatentSyncReplyError(
-                "LATENTSYNC_FAILED",
-                diagnostic=diagnostic,
+            raise _reported_process_failure(
+                source_environment, returncode=result.returncode, stderr=result.stderr,
             )
         if not working_output.is_file() or working_output.stat().st_size == 0:
             raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")

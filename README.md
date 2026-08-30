@@ -95,6 +95,8 @@ flowchart LR
 
 当前目标是一首约 40–60 秒的完整短歌，而不是几句演示音频。MiniMax、分离、口型与合成均为后台串行任务，RTX 3080 10GB 主要面向离线生成，不承诺实时速度。
 
+LatentSync 单次渲染默认最多等待 1800 秒，可用 `OLIVIA_LATENTSYNC_TIMEOUT_SECONDS` 调整，最高 3600 秒；超时会终止整棵工作进程并在本机媒体日志记录脱敏原因。
+
 ## Persona、记忆与 PrivateWorld
 
 Persona 不是一段无限增长的 system prompt。公开人格文件带有来源与版本信息，并通过预算器、上下文合同和质量门装配到单次回信中。
