@@ -164,6 +164,12 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/settings/video-reply": _route(
         ["GET", "POST"], "settings.video_reply", evidence="local-extension"
     ),
+    "/toy/diagnostics/export": _route(
+        ["GET"],
+        "support.diagnostics",
+        read_only=True,
+        evidence="local-extension",
+    ),
     "/toy/capabilities/video/source": _route(
         ["POST"], "settings.video_reply", evidence="local-extension"
     ),
@@ -378,6 +384,11 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "status": "available",
         "provider": "local-atomic-state",
         "probe": "startup",
+    },
+    "support.diagnostics": {
+        "status": "available",
+        "provider": "local-allowlisted-zip",
+        "probe": "user-triggered",
     },
     "profile.preference.write": {
         "status": "unavailable",

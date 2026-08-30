@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 from pathlib import Path
+import zipfile
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from jsonschema import Draft202012Validator
 
 from original_client_diagnostics_api import mount_original_client_diagnostics_api
 from original_client_server import (
     _diagnostic_source,
+    _launcher_tail,
     create_original_client_server_runtime,
 )
 from original_client_companion_api import CompanionCapability, CompanionReadStatus
@@ -46,22 +51,91 @@ def test_diagnostics_export_is_loopback_safe_and_downloadable() -> None:
             assert response.headers["Cache-Control"] == "no-store"
             assert response.headers["X-Content-Type-Options"] == "nosniff"
             assert response.headers["Content-Disposition"] == 'attachment; filename="olivia-diagnostic-bundle.zip"'
-            assert await response.read()
+            bundle = await response.read()
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+            manifest_schema = json.loads(
+                Path("contracts/diagnostic_bundle_manifest.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            Draft202012Validator(manifest_schema).validate(manifest)
 
             forbidden = await client.get(
                 "/toy/diagnostics/export",
                 headers={"Host": "evil.example", "Origin": "https://evil.example"},
             )
             assert forbidden.status == 403
-            assert await forbidden.json() == {
+            forbidden_payload = await forbidden.json()
+            assert forbidden_payload == {
                 "schema_version": "olivia.diagnostic-export.v1",
                 "status": "FAILED",
                 "error_code": "DIAGNOSTIC_HOST_FORBIDDEN",
             }
+            error_schema = json.loads(
+                Path("contracts/diagnostic_export_error.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            Draft202012Validator(error_schema).validate(forbidden_payload)
         finally:
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_launcher_tail_reads_recent_events_from_large_append_only_log(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    path = log_dir / "launcher.jsonl"
+    lines = [
+        json.dumps(
+            {
+                "event": "backend_ready",
+                "attempt": 1,
+                "padding": "x" * 160,
+            },
+            separators=(",", ":"),
+        )
+        for _ in range(6_000)
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert path.stat().st_size > 1 << 20
+
+    records = _launcher_tail(tmp_path)
+
+    assert len(records) == 200
+    assert all(record["event"] == "backend_ready" for record in records)
+
+
+def test_diagnostic_export_is_registered_in_the_machine_contract_and_docs() -> None:
+    from http_contract import contract_document, route_spec
+
+    assert route_spec("/toy/diagnostics/export") == {
+        "methods": ["GET"],
+        "capability": "support.diagnostics",
+        "state": "available",
+        "read_only": True,
+        "error_code": None,
+        "evidence": "local-extension",
+    }
+    assert contract_document()["capabilities"]["support.diagnostics"] == {
+        "status": "available",
+        "provider": "local-allowlisted-zip",
+        "probe": "user-triggered",
+    }
+    assert "/toy/diagnostics/export" in Path("docs/B02_HTTP_CONTRACT.md").read_text(
+        encoding="utf-8"
+    )
+    error_docs = Path("docs/B02_ERROR_CODES.md").read_text(encoding="utf-8")
+    for code in (
+        "DIAGNOSTIC_HOST_FORBIDDEN",
+        "DIAGNOSTIC_ORIGIN_FORBIDDEN",
+        "DIAGNOSTIC_EXPORT_UNAVAILABLE",
+    ):
+        assert code in error_docs
 
 
 def test_original_server_mounts_diagnostics_before_legacy_catch_all() -> None:

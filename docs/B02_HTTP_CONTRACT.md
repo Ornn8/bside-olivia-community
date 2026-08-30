@@ -41,6 +41,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | legacy import | `/toy/letter/legacy/import` | available | SQLite 本地扩展；仅接受 `mode=read_only`，以单事务原子导入旧信并按内容哈希去重；导入后旧信域只读且不与新聊天合并 |
 | 官方文字信件导入 | `/toy/letter/legacy/official-import` | available/degraded | 用户在设置页明确确认后，先要求 Mem0 与 PrivateWorld 可用；首次初始化关系状态时还要求大模型已配置。随后临时读取官方客户端登录日志并从官方接口导入原信与文字回信；严格按时间写入 Mem0、初始化 PrivateWorld，最后才原子发布到信箱；忽略视频，不保存或回显凭证 |
 | 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
+| 诊断包导出 | `/toy/diagnostics/export` | available | 设置页显式触发，只在本机生成并下载严格白名单 ZIP；不上传，不包含密钥、正文、记忆、真实 ID、绝对路径、完整 URL 或原始日志 |
 
 原生 WebSocket、ASR、TTS、Live 没有假 route；`/health` 的 capability registry 明确为 `unavailable`，错误码分别为 `WEBSOCKET_UNAVAILABLE`、`ASR_UNAVAILABLE`、`TTS_UNAVAILABLE`、`LIVE_UNAVAILABLE`。
 

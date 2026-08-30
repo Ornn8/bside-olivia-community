@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "olivia.diagnostic-export-error.v1",
+  "title": "Diagnostic export error envelope",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "status", "error_code"],
+      "properties": {
+        "schema_version": {"const": "olivia.diagnostic-export.v1"},
+        "status": {"const": "FAILED"},
+        "error_code": {
+          "enum": ["DIAGNOSTIC_HOST_FORBIDDEN", "DIAGNOSTIC_ORIGIN_FORBIDDEN"]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "status", "error_code"],
+      "properties": {
+        "schema_version": {"const": "olivia.diagnostic-export.v1"},
+        "status": {"const": "UNAVAILABLE"},
+        "error_code": {"const": "DIAGNOSTIC_EXPORT_UNAVAILABLE"}
+      }
+    }
+  ]
+}

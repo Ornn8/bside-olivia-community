@@ -72,6 +72,9 @@
 | 503 | `MEMORY_ADMIN_CLEAR_FAILED` | UNAVAILABLE | 是 | 精确删除或复读失败 |
 | 503 | `MEMORY_ADMIN_AUDIT_UNAVAILABLE` | UNAVAILABLE | 是 | 审计不可用 |
 | 503 | `MEMORY_MUTATION_RESULT_INVALID` | UNAVAILABLE | 是 | backend mutation 返回无效 |
+| 403 | `DIAGNOSTIC_HOST_FORBIDDEN` | FAILED | 否 | 诊断导出请求不是 loopback Host |
+| 403 | `DIAGNOSTIC_ORIGIN_FORBIDDEN` | FAILED | 否 | 诊断导出 Origin 未授权 |
+| 503 | `DIAGNOSTIC_EXPORT_UNAVAILABLE` | UNAVAILABLE | 是 | 诊断采集、投影或归档不可用 |
 
 源实现和机器可读映射在 `http_contract.py`；原版客户端 companion mutation 的映射在
 `original_client_companion_mutation_api.py` 并由

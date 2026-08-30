@@ -352,10 +352,20 @@ def _launcher_tail(data_root: Path | None) -> tuple[Mapping[str, object], ...]:
     path = data_root / "logs" / "launcher.jsonl"
     if not path.exists():
         return ()
-    if not path.is_file() or path.stat().st_size > _DIAGNOSTIC_LOG_MAX_BYTES:
+    if not path.is_file():
         raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()[-_DIAGNOSTIC_TAIL_LIMIT:]
+        size = path.stat().st_size
+        start = max(0, size - _DIAGNOSTIC_LOG_MAX_BYTES)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            raw = stream.read(_DIAGNOSTIC_LOG_MAX_BYTES)
+        if start:
+            newline = raw.find(b"\n")
+            if newline < 0:
+                raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE")
+            raw = raw[newline + 1 :]
+        lines = raw.decode("utf-8").splitlines()[-_DIAGNOSTIC_TAIL_LIMIT:]
         records = tuple(json.loads(line) for line in lines)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE") from exc

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "olivia.diagnostic-bundle-manifest.v1",
+  "title": "Privacy-safe diagnostic bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "members"],
+  "properties": {
+    "schema_version": {"const": "olivia.diagnostic-bundle.v1"},
+    "members": {
+      "const": [
+        "manifest.json",
+        "summary.json",
+        "health.json",
+        "install.json",
+        "tasks.json",
+        "launcher-tail.jsonl",
+        "runtime-tail.jsonl"
+      ]
+    }
+  }
+}

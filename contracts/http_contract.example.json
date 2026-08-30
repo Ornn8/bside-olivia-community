@@ -34,6 +34,14 @@
       "read_only": false,
       "error_code": null,
       "evidence": "local-extension"
+    },
+    "/toy/diagnostics/export": {
+      "methods": ["GET"],
+      "capability": "support.diagnostics",
+      "state": "available",
+      "read_only": true,
+      "error_code": null,
+      "evidence": "local-extension"
     }
   },
   "capabilities": {
@@ -68,6 +76,11 @@
       "status": "available",
       "provider": "local-atomic-state",
       "probe": "startup"
+    },
+    "support.diagnostics": {
+      "status": "available",
+      "provider": "local-allowlisted-zip",
+      "probe": "user-triggered"
     }
   },
   "profiles": {
