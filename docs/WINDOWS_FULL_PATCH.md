@@ -44,6 +44,8 @@ GitHub Actions 会在 PR 和 `main` 更新时生成同样的可下载 artifact�
 
 `installer/start_local.py --health-only` 输出一行符合 [`contracts/launcher_health.schema.json`](../contracts/launcher_health.schema.json) 的 JSON。`READY` 的退出码为 0；`UNAVAILABLE` 与 `PORT_CONFLICT` 的退出码为 2。`PORT_CONFLICT` 表示端口已有非本契约监听器或返回了无效健康契约，启动器不会尝试启动第二个后端。正常启动还会核对 health 中不含路径的 `backend_id`，它同时绑定活动组件与当前安装实例；版本或安装实例不匹配时不会复用该服务。首个组件补丁遇到旧版遗留服务时，只有在 Windows 确认监听进程是当前产品目录自带 runtime 的 Python 后才会终止并启动新版本；无法证明归属时以 `STALE_BACKEND_RUNNING` 停止，不会结束其他程序。启动器自己创建的后端随 Olivia 客户端退出而结束。
 
+客户端启动协议以整个隔离 profile 目录为边界：启动器在创建 `profile/` 前记录该目录是否已存在，只有此前不存在才视为全新 profile。客户端始终以安装目录下的 `app/` 为工作目录。若且仅若全新 profile 的第一次退出码为 `0x0E000003`，启动器会在同一后端生命周期内重启客户端一次，因此客户端最多启动两次；已有 profile 或任何其他退出码均不重试，第二次退出码原样透传。每次启动和退出分别记录不含路径的 `client_start` 与 `client_exit`，并以 `attempt` 标记第 1 或第 2 次，退出记录只附整数退出码；触发重试时另记 `client_retry`，其固定原因为 `known_fresh_profile_exit`。这些诊断不记录安装路径、profile 路径、环境变量或凭据。
+
 ## 原版客户端补丁
 
 安装前同时校验：
