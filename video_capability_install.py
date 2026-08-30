@@ -1099,6 +1099,7 @@ class VideoCapabilityInstaller:
     def _installed_bundle_environment(self) -> dict[str, str]:
         ordinary = self._final_root(self._bundle("ordinary_video"))
         candidates = {
+            "OLIVIA_COSYVOICE_ROOT": ordinary / "cosyvoice" / "runtime",
             "OLIVIA_COSYVOICE_MODEL_ROOT": ordinary / "cosyvoice" / "model",
             "OLIVIA_REPLY_VOICE_REFERENCE": self.install_root
             / "shared"
@@ -1168,7 +1169,10 @@ class VideoCapabilityInstaller:
             environment.setdefault(key, value)
         environment.update(external_environment)
         if "OLIVIA_TTS_CONFIG" not in environment:
-            cosy_root = Path(environment.get("OLIVIA_COSYVOICE_ROOT", ""))
+            cosy_root = (
+                Path(environment["OLIVIA_COSYVOICE_ROOT"])
+                if environment.get("OLIVIA_COSYVOICE_ROOT") else None
+            )
             model_root = Path(
                 environment.get(
                     "OLIVIA_COSYVOICE_MODEL_ROOT",
@@ -1180,7 +1184,7 @@ class VideoCapabilityInstaller:
                 )
             )
             reference = Path(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", ""))
-            if not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
+            if cosy_root is None or not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
                 raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
             generated_root = self.install_root / "generated"
             generated_root.mkdir(parents=True, exist_ok=True)
@@ -1253,6 +1257,9 @@ class VideoCapabilityInstaller:
             "manifest_sha256": _safe_sha(manifest_sha256),
         }
         backup = target.with_name(f"{target.name}.{uuid.uuid4().hex}.backup")
+        previous_environment = {key: os.environ.get(key) for key in environment}
+        applier_started = False
+        published = False
         try:
             temporary.write_text(
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
@@ -1261,6 +1268,7 @@ class VideoCapabilityInstaller:
             if target.exists():
                 os.replace(target, backup)
             if self._runtime_environment_applier is not None:
+                applier_started = True
                 try:
                     self._runtime_environment_applier(environment)
                 except Exception as exc:
@@ -1268,14 +1276,26 @@ class VideoCapabilityInstaller:
                         "VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
                     ) from exc
             os.replace(temporary, target)
-        except OSError as exc:
-            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
+            published = True
+        except Exception as exc:
+            if applier_started:
+                for key, value in previous_environment.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            if backup.exists():
+                os.replace(backup, target)
+            if isinstance(exc, OSError):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
+            raise
         finally:
             temporary.unlink(missing_ok=True)
-            try:
-                backup.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if published:
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    pass
         with self._lock:
             self._load_status()
         return "APPLIED"
