@@ -1,4 +1,4 @@
-# P02-17 Intimacy model
+# P02-20 Intimacy model
 
 The intimacy model separates relationship stage, bounded contact permission, and hidden evidence. It does not infer a relationship from prose, message frequency, gifts, confessions, or inactivity.
 

@@ -27,7 +27,7 @@ levels, grant statements, growth-window fields, and every pending/control-only
 continuation. It exposes only a boolean home-history permission,
 character-known facts, and the highest bounded `granted_intimacy` tier. The
 full stage, growth, and append-only rules are recorded in
-[`P02_17_INTIMACY_MODEL.md`](P02_17_INTIMACY_MODEL.md).
+[`P02_20_INTIMACY_MODEL.md`](P02_20_INTIMACY_MODEL.md).
 
 This module does not persist and does not call a provider. It also does not
 infer events, render prompts, or update relationship values. P02-11 owns
