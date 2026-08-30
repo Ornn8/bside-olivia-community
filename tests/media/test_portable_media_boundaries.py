@@ -316,6 +316,7 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda *_args, **_kwargs: 60.0)
     observed: dict[str, object] = {}
     output = tmp_path / "output.mp4"
 
@@ -437,7 +438,11 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
         observed.append((command, error_code, env))
         if "--store_dir" in command:
             output_root = Path(command[command.index("--store_dir") + 1])
-            (output_root / "synthetic_vocals.wav").write_bytes(b"vocals")
+            with wave.open(str(output_root / "synthetic_vocals.wav"), "wb") as stream:
+                stream.setnchannels(1)
+                stream.setsampwidth(2)
+                stream.setframerate(16000)
+                stream.writeframes(b"\0\0" * 1600)
 
     monkeypatch.setattr(music_reply, "_run", fake_run)
 
@@ -465,7 +470,41 @@ def test_roformer_uses_explicit_f_drive_assets_and_utf8(tmp_path, monkeypatch):
     ]
     assert observed[1][2]["PYTHONUTF8"] == "1"
     assert observed[1][2]["PYTHONIOENCODING"] == "utf-8"
-    assert vocals.read_bytes() == b"vocals"
+    with wave.open(str(vocals), "rb") as stream:
+        assert stream.getnframes() == 1600
+
+
+def test_roformer_zero_duration_wav_is_rejected_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "python.exe"
+    model, config = tmp_path / "model.ckpt", tmp_path / "config.yaml"
+    song = tmp_path / "song.flac"
+    for path in (executable, model, config, song):
+        path.write_bytes(b"synthetic")
+    vocals = tmp_path / "vocals.wav"
+    monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
+    def fake_run(command, _error_code, **_kwargs):
+        if "--store_dir" not in command:
+            return
+        candidate = Path(command[command.index("--store_dir") + 1]) / "synthetic_vocals.wav"
+        with wave.open(str(candidate), "wb") as stream:
+            stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+
+    monkeypatch.setattr(music_reply, "_run", fake_run)
+
+    with pytest.raises(music_reply.MusicReplyError, match="ROFORMER_OUTPUT_INVALID"):
+        music_reply.separate_vocals(
+            song,
+            vocals,
+            executable=executable,
+            model_path=model,
+            config_path=config,
+            environment={"OLIVIA_ROFORMER_PYTHON": str(executable)},
+        )
+
+    assert not vocals.exists()
 
 
 def test_official_voice_reference_is_bounded_for_cosyvoice(tmp_path, monkeypatch):
@@ -919,7 +958,11 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
         observed.setdefault("commands", []).append((command, error_code))
         if error_code == "ROFORMER_FAILED":
             output_root = Path(command[command.index("--store_dir") + 1])
-            (output_root / "synthetic_vocals.wav").write_bytes(b"vocals")
+            with wave.open(str(output_root / "synthetic_vocals.wav"), "wb") as stream:
+                stream.setnchannels(1)
+                stream.setsampwidth(2)
+                stream.setframerate(16000)
+                stream.writeframes(b"\0\0" * 1600)
         elif error_code == "ROFORMER_INPUT_CONVERSION_FAILED":
             Path(command[-1]).write_bytes(b"wav")
         elif error_code == "MUSIC_REPLY_AUDIO_MUX_FAILED":
@@ -942,6 +985,7 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
     monkeypatch.setattr(music_reply, "MiniMaxMusic3Worker", FakeMiniMaxWorker)
     monkeypatch.setattr(music_reply, "_run", fake_run)
     monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: str(ffmpeg))
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda *_args, **_kwargs: 60.0)
     monkeypatch.setattr(music_reply, "render_reply_video", fake_render_reply)
     monkeypatch.setattr(music_reply, "render_latentsync_video", fake_latentsync)
     monkeypatch.setattr(music_reply, "prepare_official_spoken_base", fake_prepare)

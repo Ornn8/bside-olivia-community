@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -316,6 +317,68 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
     )
 
 
+def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    python, worker, comfy = _write(tmp_path / "python.exe"), _write(tmp_path / "worker.py"), tmp_path / "comfy"; song = tmp_path / "song.flac"
+    _write(comfy / "main.py"); private = "private-letter-200717"; data_root = tmp_path / "data"
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(data_root)); sensitive = (str(tmp_path), private, "secret-token", "unlisted-private-fragment")
+    def failed(command, **_kwargs):
+        stderr = f"CUDA out of memory {tmp_path / 'voice.wav'}; {private}; secret-token; unlisted-private-fragment".encode()
+        _write(Path(command[-1]), b"partial"); return subprocess.CompletedProcess(command, 23, stdout=b"", stderr=stderr)
+    adapter = music_reply.MiniMaxMusic3Worker(python_path=python, worker_path=worker, comfy_root=comfy)
+    monkeypatch.setattr(music_reply.subprocess, "run", failed)
+    with pytest.raises(music_reply.MusicReplyError) as captured: adapter.generate(private, private, song, duration_seconds=40, lyrics=private, caption=private)
+    diagnostic = captured.value.diagnostic
+    assert str(captured.value) == "MINIMAX_MUSIC3_FAILED" and "returncode=23" in diagnostic and "CUDA out of memory" in diagnostic and not song.exists()
+    persisted = (data_root / "logs" / "media-provider.jsonl").read_text(encoding="utf-8")
+    assert "MINIMAX_MUSIC3_FAILED" in persisted and "returncode=23" in persisted and len(diagnostic) <= 512
+    assert all(value not in diagnostic and value not in persisted for value in sensitive)
+    def stable(error, code, detail="returncode=unavailable; stderr=process timeout"): assert (str(error), error.diagnostic, error.__cause__, error.__context__) == (code, detail, None, None)
+    monkeypatch.setattr(music_reply.subprocess, "run", lambda command, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 1, stderr=private.encode())))
+    with pytest.raises(music_reply.MusicReplyError) as caught: adapter.generate(private, private, tmp_path / "song.flac", duration_seconds=40)
+    stable(caught.value, "MINIMAX_MUSIC3_FAILED")
+    def latentsync_timeout(*_args, **_kwargs):
+        try: raise subprocess.TimeoutExpired([str(tmp_path / "private.exe")], 1, stderr=private.encode())
+        except subprocess.TimeoutExpired as exc: raise music_reply.LatentSyncReplyError("LATENTSYNC_FAILED") from exc
+    monkeypatch.setattr(music_reply, "render_latentsync_video", latentsync_timeout)
+    with pytest.raises(music_reply.MusicReplyError) as caught: music_reply.render_full_face_performance(tmp_path / "base", tmp_path / "voice", tmp_path / "song", tmp_path / "out", latentsync_python_path=python, latentsync_root=comfy)
+    stable(caught.value, "LATENTSYNC_FAILED")
+    ace = lambda: music_reply.AceStepClient("http://127.0.0.1:8001").generate(private, private, tmp_path / "ace.wav", duration_seconds=40)
+    def response(payload): return nullcontext(SimpleNamespace(read=lambda: json.dumps(payload).encode()))
+    def ace_error(provider, code, detail="returncode=unavailable; stderr=process timeout"):
+        monkeypatch.setattr(music_reply, "urlopen", provider)
+        with pytest.raises(music_reply.MusicReplyError) as caught: ace()
+        stable(caught.value, code, detail)
+    ace_error(lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError(private)), "ACESTEP_UNAVAILABLE")
+    responses = iter(({"code": 200, "data": {"task_id": "id"}}, {"code": 200, "data": [{"status": 1, "result": json.dumps([{"file": "/voice.wav"}])}]}))
+    ace_error(lambda request, **_kwargs: response(next(responses)) if isinstance(request, music_reply.Request) else (_ for _ in ()).throw(TimeoutError(private)), "ACESTEP_AUDIO_UNAVAILABLE")
+    responses = iter(({"code": 200, "data": {"task_id": "id"}}, {"code": 200, "data": [{"status": 1, "result": private}]}))
+    ace_error(lambda *_args, **_kwargs: response(next(responses)), "ACESTEP_RESULT_INVALID", "returncode=unavailable; stderr=provider stderr redacted")
+
+
+def test_truncated_video_is_not_recorded_as_completed_stage(tmp_path: Path) -> None:
+    import imageio_ffmpeg
+    manifest, manifest_path = {"artifacts": {}}, tmp_path / "manifest.json"
+    truncated = _write(tmp_path / "song-video.mp4", b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom")
+    with pytest.raises(music_reply.MusicReplyError, match="MUSIC_STAGE_OUTPUT_INVALID"):
+        music_reply._record_stage(manifest, manifest_path, "song_video", truncated, required_streams=("0:v:0", "0:a:0"), ffmpeg_path=Path(imageio_ffmpeg.get_ffmpeg_exe()))
+    assert not manifest_path.exists()
+
+
+def test_short_required_video_stream_is_not_recorded_as_completed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ffmpeg, video = _write(tmp_path / "ffmpeg.exe", b"runtime"), _write(tmp_path / "short-audio.mp4", b"container")
+    manifest, manifest_path = {"artifacts": {}}, tmp_path / "manifest.json"
+    observed: list[list[str]] = []
+    def decode(command, **_kwargs):
+        observed.append(list(command))
+        mapped = [command[index + 1] for index, item in enumerate(command) if item == "-map"]; return subprocess.CompletedProcess(command, 0, stdout=f"out_time=00:00:{40 if mapped == ['0:a:0'] else 60}.000000\n".encode(), stderr=b"")
+    monkeypatch.setattr(music_reply.subprocess, "run", decode)
+    with pytest.raises(music_reply.MusicReplyError, match="MUSIC_STAGE_OUTPUT_INVALID"):
+        music_reply._record_stage(manifest, manifest_path, "song_video", video, required_streams=("0:v:0", "0:a:0"), ffmpeg_path=ffmpeg, minimum_duration_seconds=55)
+    assert not manifest_path.exists()
+    assert [[command[command.index("-map") + 1]] for command in observed] == [["0:v:0"], ["0:a:0"]]
+    assert all("-xerror" in command for command in observed)
+
+
 def _value_after(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 
@@ -327,8 +390,14 @@ def test_prepare_official_spoken_base_uses_only_first_35_seconds(
     reference = _write(tmp_path / "official-complete-reply.mp4")
     destination = tmp_path / "stages" / "official-spoken-000-035s.mp4"
     observed: list[tuple[list[str], str]] = []
+    decoded: list[str] = []
 
     monkeypatch.setattr(music_reply, "_ffmpeg", lambda *_args: "ffmpeg")
+
+    def decode(command, **_kwargs):
+        stream = command[command.index("-map") + 1]
+        decoded.append(stream)
+        return subprocess.CompletedProcess(command, 0 if stream == "0:v:0" else 1, stdout=b"out_time=00:00:35.000000\n", stderr=b"Stream map '0:a:0' matches no streams" if stream == "0:a:0" else b"")
 
     def fake_run(command, error_code, *, timeout=900.0):
         del timeout
@@ -336,6 +405,7 @@ def test_prepare_official_spoken_base_uses_only_first_35_seconds(
         _write(Path(command[-1]), b"official-spoken")
 
     monkeypatch.setattr(music_reply, "_run", fake_run)
+    monkeypatch.setattr(music_reply.subprocess, "run", decode)
 
     result = music_reply.prepare_official_spoken_base(reference, destination)
 
@@ -347,6 +417,7 @@ def test_prepare_official_spoken_base_uses_only_first_35_seconds(
     assert _value_after(command, "-t") == "35"
     assert _value_after(command, "-i") == str(reference)
     assert "-an" in command
+    assert decoded == ["0:v:0", "0:a:0"]
 
 
 def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
@@ -475,6 +546,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
     monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", str(stale_candidate))
+    audio_present = True
+    normal_error = True
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda path, **kwargs: None if audio_present and Path(path) == spoken_action_base and kwargs.get("forbidden_streams") else 60.0)
 
     def fake_plan(content, reply_text, duration_seconds):
         order.append("plan")
@@ -483,6 +557,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
 
     def fake_normal(text, destination, **kwargs):
         order.append("spoken")
+        if normal_error:
+            try: raise subprocess.TimeoutExpired([str(tmp_path / "private.exe")], 1, stderr=b"private-stderr")
+            except subprocess.TimeoutExpired as exc: raise music_reply.ReplyMediaError(str(tmp_path / "private.wav")) from exc
         observed["spoken"] = (text, Path(destination), kwargs)
         _write(Path(destination), b"spoken")
         return {"spoken_stage": "completed"}
@@ -534,10 +611,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
-    result = music_reply.render_musical_reply(
-        "synthetic letter",
-        "synthetic canonical reply",
-        output,
+    def render():
+        return music_reply.render_musical_reply(
+        "synthetic letter", "synthetic canonical reply", output,
         normal_video_path=normal,
         official_reply_reference_path=official_reference,
         song_video_path=song_video,
@@ -548,6 +624,17 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         duration_seconds=40,
         spoken_action_base_path=spoken_action_base,
     )
+
+    with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_SPOKEN_REFERENCE_FAILED"):
+        render()
+    audio_present = False
+    with pytest.raises(music_reply.MusicReplyError) as caught:
+        render()
+    assert (str(caught.value), caught.value.diagnostic, caught.value.__cause__, caught.value.__context__) == \
+        ("MUSIC_REPLY_NORMAL_VIDEO_FAILED", "returncode=unavailable; stderr=process timeout", None, None)
+    normal_error = False
+    order.clear()
+    result = render()
 
     assert order == [
         "plan",
@@ -564,7 +651,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert observed["concat"] == (
         normal,
         song_video,
-        output,
+        output.with_name("final.partial.mp4"),
         {
             "transition_video_path": official_reference,
             "ffmpeg_path": tmp_path / "ffmpeg.exe",
@@ -651,6 +738,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     )
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda path, **kwargs: None if Path(path).read_bytes() == b"poisoned-spoken" and kwargs.get("forbidden_streams") else 60.0)
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -731,6 +819,12 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     assert result["music_stage"] == "reused"
     assert (stage_root / "manifest.json").is_file()
 
+    spoken_base = _write(stage_root / "official-spoken-000-035s.mp4", b"poisoned-spoken")
+    manifest_path = stage_root / "manifest.json"; manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["normal_video"] = music_reply._stage_record(normal, {"spoken_base": spoken_base})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8"); music_reply.render_musical_reply("letter", "reply", output, **kwargs)
+    assert calls == {"spoken": 2, "minimax": 1, "separate": 2}
+
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -743,36 +837,36 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     )
     music_reply.render_musical_reply("letter", "reply", output, **kwargs)
 
-    assert calls == {"spoken": 1, "minimax": 2, "separate": 3}
+    assert calls == {"spoken": 2, "minimax": 2, "separate": 3}
 
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 2, "minimax": 3, "separate": 4}
+    assert calls == {"spoken": 3, "minimax": 3, "separate": 4}
 
     minimax_worker.write_bytes(b"provider-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 2, "minimax": 4, "separate": 5}
+    assert calls == {"spoken": 3, "minimax": 4, "separate": 5}
 
     visual_config.write_bytes(b"visual-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 3, "minimax": 5, "separate": 6}
+    assert calls == {"spoken": 4, "minimax": 5, "separate": 6}
 
     visual_worker.write_bytes(b"worker-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 4, "minimax": 6, "separate": 7}
+    assert calls == {"spoken": 5, "minimax": 6, "separate": 7}
 
 
-def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebuilt(
+def test_render_musical_reply_invalidates_manifest_cached_short_song_audio(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "letter.mp4"
     normal = tmp_path / "letter-spoken.mp4"
     song_video = tmp_path / "letter-song.mp4"
-    stage_root = tmp_path / "letter-music-v2-40s-stages"
+    stage_root = tmp_path / "letter-music-v2-60s-stages"
     minimax_worker = _write(tmp_path / "minimax-worker.py", b"provider-v1")
     calls = {"minimax": 0, "separate": 0, "performance": 0}
 
@@ -786,6 +880,11 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
     )
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", "synthetic-python")
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", "synthetic-root")
+
+    def fake_duration(path, **_kwargs):
+        return 40.0 if Path(path).read_bytes() == b"cached-too-short-song" else 70.0
+
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", fake_duration)
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
@@ -793,7 +892,7 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
             emotion="gentle_reassurance",
             lyrics="[Verse]\\nStay here",
             caption="gentle piano ballad",
-            duration_seconds=40,
+            duration_seconds=60,
         ),
     )
     monkeypatch.setattr(
@@ -842,14 +941,70 @@ def test_render_musical_reply_rebuilds_downstream_stages_when_song_audio_is_rebu
         "visual_config_path": tmp_path / "visual.json",
         "worker_path": tmp_path / "visual-worker.py",
         "performance_video_path": tmp_path / "base-performance.mp4",
-        "duration_seconds": 40,
+        "duration_seconds": 60,
     }
 
     music_reply.render_musical_reply("letter", "reply", output, **kwargs)
-    (stage_root / "song.flac").unlink()
+    song_audio = stage_root / "song.flac"
+    song_audio.write_bytes(b"cached-too-short-song")
+    manifest_path = stage_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["song_audio"] = music_reply._stage_record(song_audio)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     music_reply.render_musical_reply("letter", "reply", output, **kwargs)
 
     assert calls == {"minimax": 2, "separate": 2, "performance": 2}
+
+
+def test_invalid_partials_preserve_every_published_music_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output, stage_root = tmp_path / "letter.mp4", tmp_path / "letter-music-v2-40s-stages"
+    normal = _write(tmp_path / "normal.mp4", b"last-known-good-normal")
+    old_song = _write(stage_root / "song.flac", b"last-known-good")
+    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
+    monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", str(tmp_path / "provider-cache"))
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(_write(tmp_path / "minimax-python.exe")))
+    monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_ROOT", str(tmp_path / "minimax-root"))
+    monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(_write(tmp_path / "minimax-worker.py")))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", str(_write(tmp_path / "latentsync-python.exe")))
+    monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", str(tmp_path / "latentsync-root"))
+    monkeypatch.setattr(music_reply, "plan_song_content", lambda *_args: SongContentPlan(emotion="gentle_reassurance", lyrics="[Verse]\\nStay here", caption="gentle piano ballad", duration_seconds=40))
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda path, **_kwargs: 0.5 if Path(path).read_bytes() == b"short-normal" else (40.0 if Path(path).read_bytes() == b"short-final" else (5.0 if Path(path).read_bytes().startswith(b"short-") else 60.0)))
+    monkeypatch.setattr(music_reply, "render_reply_video", lambda _text, destination, **_kwargs: (_write(Path(destination), b"short-normal") and {"spoken_stage": "completed"}))
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", lambda _self, _content, _reply, destination, **_kwargs: (_write(Path(destination), b"short-song") and {"music_stage": "completed"}))
+    monkeypatch.setattr(music_reply, "separate_vocals", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("short song reached RoFormer")))
+
+    def render():
+        return music_reply.render_musical_reply(
+            "letter", "reply", output, normal_video_path=normal,
+            official_reply_reference_path=_write(tmp_path / "official.mp4"),
+            song_video_path=tmp_path / "song-video.mp4", tts_config_path=tmp_path / "tts.json",
+            visual_config_path=tmp_path / "visual.json", worker_path=tmp_path / "visual-worker.py",
+            performance_video_path=tmp_path / "performance.mp4", duration_seconds=40,
+            spoken_action_base_path=_write(tmp_path / "spoken-base.mp4"),
+    )
+    def rejected(stage, old, expected, partial):
+        with pytest.raises(music_reply.MusicReplyError, match="MUSIC_STAGE_OUTPUT_INVALID") as caught: render()
+        assert f"stage={stage}" in caught.value.diagnostic
+        assert old.read_bytes() == expected and not partial.exists()
+        return caught.value
+    rejected("normal_video", normal, b"last-known-good-normal", tmp_path / "normal.partial.mp4")
+    monkeypatch.setattr(music_reply, "render_reply_video", lambda _text, destination, **_kwargs: (_write(Path(destination), b"valid-normal") and {"spoken_stage": "completed"}))
+    error = rejected("song_audio", old_song, b"last-known-good", stage_root / "song.partial.flac")
+    assert "observed_seconds=5.000" in error.diagnostic and "required_seconds=35.000" in error.diagnostic
+    assert "song_audio" not in json.loads((stage_root / "manifest.json").read_text(encoding="utf-8"))["artifacts"]
+    old_vocals = _write(stage_root / "vocals.wav", b"last-known-good-vocals")
+    monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", lambda _self, _content, _reply, destination, **_kwargs: (_write(Path(destination), b"valid-song") and {"music_stage": "completed"}))
+    monkeypatch.setattr(music_reply, "separate_vocals", lambda _source, destination, **_kwargs: _write(Path(destination), b"short-vocals"))
+    rejected("vocals", old_vocals, b"last-known-good-vocals", stage_root / "vocals.partial.wav")
+    old_video = _write(tmp_path / "song-video.mp4", b"last-known-good-video")
+    monkeypatch.setattr(music_reply, "separate_vocals", lambda _source, destination, **_kwargs: _write(Path(destination), b"valid-vocals"))
+    monkeypatch.setattr(music_reply, "render_full_face_performance", lambda _base, _vocals, _song, destination, **_kwargs: (_write(Path(destination), b"short-video") and {"performance_stage": "completed"}))
+    rejected("song_video", old_video, b"last-known-good-video", tmp_path / "song-video.partial.mp4")
+    old_output = _write(output, b"last-known-good-final")
+    monkeypatch.setattr(music_reply, "render_full_face_performance", lambda _base, _vocals, _song, destination, **_kwargs: (_write(Path(destination), b"valid-video") and {"performance_stage": "completed"}))
+    monkeypatch.setattr(music_reply, "concat_videos", lambda _normal, _song, destination, **_kwargs: _write(Path(destination), b"short-final"))
+    error = rejected("final_output", old_output, b"last-known-good-final", tmp_path / "final.partial.mp4")
+    assert "observed_seconds=40.000" in error.diagnostic and "required_seconds=44.000" in error.diagnostic
 
 
 def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_change(
@@ -893,6 +1048,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     monkeypatch.setenv("OLIVIA_MINIMAX_WORKER", str(minimax_worker))
     monkeypatch.setenv("OLIVIA_LATENTSYNC_PYTHON", str(tmp_path / "latentsync-python.exe"))
     monkeypatch.setenv("OLIVIA_LATENTSYNC_ROOT", str(latentsync_root))
+    monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda *_args, **_kwargs: 60.0)
     monkeypatch.setattr(
         music_reply,
         "plan_song_content",
