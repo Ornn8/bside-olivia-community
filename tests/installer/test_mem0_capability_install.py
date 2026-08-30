@@ -527,6 +527,96 @@ def test_capability_start_returns_before_background_install_finishes() -> None:
     assert installer.status().state is CapabilityState.READY
 
 
+def test_background_preflight_failure_becomes_repair() -> None:
+    class FailingSecondReadLayer(_Layer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready_calls = 0
+
+        def ready(self) -> bool:
+            self.ready_calls += 1
+            if self.ready_calls == 2:
+                raise RuntimeError("synthetic preflight failure")
+            return False
+
+    installer = Mem0CapabilityInstaller(
+        runtime=FailingSecondReadLayer(),
+        model=_Layer(),
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+
+    assert installer.start(source_mode="auto") == "APPLIED"
+    assert installer._thread is not None
+    installer._thread.join(timeout=2)
+
+    status = installer.status()
+    assert status.state is CapabilityState.REPAIR
+    assert status.phase == "queued"
+    assert status.reason_code == "MEM0_CAPABILITY_INSTALL_FAILED"
+
+
+def test_status_reconciles_dead_active_worker_as_repair() -> None:
+    installer = Mem0CapabilityInstaller(
+        runtime=_Layer(),
+        model=_Layer(),
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+    worker = threading.Thread(target=lambda: None)
+    worker.start()
+    worker.join(timeout=1)
+    installer._thread = worker
+    installer._status = installer._new_status(
+        CapabilityState.DOWNLOADING,
+        "runtime",
+        5,
+        current="python-dependencies",
+        source="auto",
+    )
+
+    status = installer.status()
+
+    assert status.state is CapabilityState.REPAIR
+    assert status.phase == "runtime"
+    assert status.downloaded_bytes == 5
+    assert status.current_file == "python-dependencies"
+    assert status.source == "auto"
+    assert status.reason_code == "MEM0_CAPABILITY_INSTALL_FAILED"
+
+
+def test_status_reconciles_dead_active_worker_as_ready_when_layers_are_ready() -> None:
+    installer = Mem0CapabilityInstaller(
+        runtime=_Layer(ready=True),
+        model=_Layer(ready=True),
+        version="fixture-v1",
+        estimated_download_bytes=20,
+        license_summary="fixture licenses",
+        requires_gpu=False,
+    )
+    worker = threading.Thread(target=lambda: None)
+    worker.start()
+    worker.join(timeout=1)
+    installer._thread = worker
+    installer._status = installer._new_status(
+        CapabilityState.DOWNLOADING,
+        "verification",
+        20,
+        source="auto",
+    )
+
+    status = installer.status()
+
+    assert status.state is CapabilityState.READY
+    assert status.phase == "complete"
+    assert status.downloaded_bytes == 20
+    assert status.reason_code is None
+
+
 def test_queued_pause_survives_worker_start_and_resume(monkeypatch) -> None:
     class DeferredThread:
         def __init__(self, *, target, kwargs, **_options) -> None:
@@ -698,6 +788,8 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
         assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
         assert not pause_requested.is_set()
         assert "--ignore-installed" in command
+        assert command[command.index("--timeout") + 1] == "15"
+        assert command[command.index("--retries") + 1] == "1"
         assert progress_roots
         calls.append(list(command))
         target = Path(command[command.index("--target") + 1])
