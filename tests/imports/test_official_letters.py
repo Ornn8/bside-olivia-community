@@ -16,8 +16,11 @@ from conversation_memory_port import (
     MemoryWriteStatus,
     NullConversationMemoryPort,
 )
-from memory_port import NullMemoryPort
+from llm_gateway import GatewayResponse
+from memory_port import LegacyImportResult, NullMemoryPort
+from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldSnapshot
+from private_world_service import PrivateWorldCommandService
 from runtime.imports.official_letters import (
     build_legacy_import_payload,
     collect_official_text_replies,
@@ -36,6 +39,17 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
         "LLM_CONFIG",
         local_server.GatewayConfig(provider="mock", feature_enabled=True),
     )
+
+
+class _ExistingPrivateWorld:
+    def snapshot(self) -> PrivateWorldSnapshot:
+        return PrivateWorldSnapshot(version=2, trust=1)
+
+
+class _ExistingHistoryAudit:
+    @staticmethod
+    def lookup_command(_command_id: str) -> object:
+        return object()
 
 
 def test_official_import_progress_response_matches_public_schema(monkeypatch) -> None:
@@ -987,10 +1001,6 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
             del user_id
             return tuple(self.records.values())[:limit]
 
-    class ExistingPrivateWorld:
-        def snapshot(self) -> PrivateWorldSnapshot:
-            return PrivateWorldSnapshot(version=2, trust=1)
-
     memory = PersistingMemory()
     official_payload = {
         "mode": "read_only",
@@ -1016,8 +1026,10 @@ def test_official_import_persists_memory_before_publishing_read_only_mailbox(
     monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
     monkeypatch.setattr(local_server.letters_adapter, "memory_port", NullMemoryPort())
     monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
-    monkeypatch.setattr(local_server, "private_world_port", ExistingPrivateWorld())
-    monkeypatch.setattr(local_server, "private_world_command_service", object())
+    monkeypatch.setattr(local_server, "private_world_port", _ExistingPrivateWorld())
+    monkeypatch.setattr(
+        local_server, "private_world_command_service", _ExistingHistoryAudit()
+    )
     monkeypatch.setattr(
         local_server,
         "collect_default_official_text_replies",
@@ -1148,10 +1160,6 @@ def test_official_duplicate_does_not_retry_a_previously_skipped_memory(
                 ("memory.unexpected",),
             )
 
-    class ExistingPrivateWorld:
-        def snapshot(self) -> PrivateWorldSnapshot:
-            return PrivateWorldSnapshot(version=2, trust=1)
-
     memory = SkipThenWriteMemory()
     official_payload = {
         "mode": "read_only",
@@ -1176,8 +1184,10 @@ def test_official_duplicate_does_not_retry_a_previously_skipped_memory(
     monkeypatch.setattr(local_server, "memory_adapter", NullMemoryPort())
     monkeypatch.setattr(local_server.letters_adapter, "memory_port", NullMemoryPort())
     monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
-    monkeypatch.setattr(local_server, "private_world_port", ExistingPrivateWorld())
-    monkeypatch.setattr(local_server, "private_world_command_service", object())
+    monkeypatch.setattr(local_server, "private_world_port", _ExistingPrivateWorld())
+    monkeypatch.setattr(
+        local_server, "private_world_command_service", _ExistingHistoryAudit()
+    )
     monkeypatch.setattr(
         local_server,
         "collect_default_official_text_replies",
@@ -1211,6 +1221,139 @@ def test_official_duplicate_does_not_retry_a_previously_skipped_memory(
     assert duplicate["data"]["duplicates"] == 1
     assert duplicate["data"]["memory_migration"]["processed"] == 0
     assert memory.calls == 1
+
+
+def test_official_import_retry_reuses_private_world_audit_after_archive_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+
+    class PersistingMemory:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def status(self) -> ConversationMemoryStatus:
+            return ConversationMemoryStatus(
+                "available", True, "mem0", "qdrant-local"
+            )
+
+        def remember_exchange(self, **kwargs: object) -> MemoryWriteResult:
+            self.calls += 1
+            source_id = str(kwargs["source_id"])
+            if self.calls > 1:
+                return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN, source_id, ("memory.synthetic",)
+            )
+
+    class FailOnceArchive:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_legacy(self) -> list[dict[str, object]]:
+            return []
+
+        def import_legacy_records(
+            self,
+            records,
+            *,
+            atomic: bool = True,
+            promote_duplicate_metadata: bool = False,
+        ) -> LegacyImportResult:
+            del atomic, promote_duplicate_metadata
+            self.calls += 1
+            materialized = tuple(records)
+            if self.calls == 1:
+                raise OSError("synthetic archive failure")
+            return LegacyImportResult(
+                seen=len(materialized), inserted=len(materialized)
+            )
+
+    class CountingAssessmentGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, _messages, *, request_id=None) -> GatewayResponse:
+            self.calls += 1
+            return GatewayResponse(
+                '{"relationship_stage":"familiar","familiarity":48,'
+                '"trust":44,"comfort":42,"closeness":36,"tension":9,'
+                '"evidence_indexes":[1]}',
+                request_id or "request.synthetic",
+                "fixture",
+                "fixture-model",
+            )
+
+    memory = PersistingMemory()
+    archive = FailOnceArchive()
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    service = PrivateWorldCommandService(ledger)
+    gateway = CountingAssessmentGateway()
+    official_payload = build_legacy_import_payload(
+        (
+            {
+                "letter_id": "letter-1",
+                "content": "synthetic user letter",
+                "reply_text": "synthetic official reply",
+                "created_at": 1710000000,
+                "replied_at": 1710000100,
+            },
+        ),
+        account_id="synthetic-account",
+    )
+
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "memory_adapter", archive)
+    monkeypatch.setattr(local_server, "private_world_port", ledger)
+    monkeypatch.setattr(local_server, "private_world_command_service", service)
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "get_persona_policy",
+        lambda: "AUTHORITATIVE PERSONA POLICY",
+    )
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda **_kwargs: official_payload,
+    )
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: archive)
+
+    def post() -> dict[str, object]:
+        return asyncio.run(
+            local_server.route(
+                "POST",
+                "/toy/letter/legacy/official-import",
+                {},
+                {},
+                companion_confirmed=True,
+            )
+        )
+
+    first, second = post(), post()
+
+    assert first["code"] == 503
+    assert first["data"]["error_code"] == "MEMORY_UNAVAILABLE"
+    assert second["code"] == 0, second
+    migration = second["data"]["memory_migration"]
+    assert (
+        migration["written"],
+        migration["duplicates"],
+        migration["private_world_status"],
+    ) == (0, 1, "already_initialized")
+    assert (memory.calls, gateway.calls, len(ledger.events()), archive.calls) == (
+        2,
+        1,
+        1,
+        2,
+    )
 
 
 def test_official_import_failure_returns_only_a_sanitized_error(monkeypatch) -> None:

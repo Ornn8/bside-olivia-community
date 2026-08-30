@@ -16,7 +16,7 @@ from conversation_memory_port import (
 )
 from llm_gateway import Gateway
 from private_world_commands import (
-    InitializeHistoricalRelationship,
+    ApplyHistoricalRelationshipEvidence,
     PrivateWorldActor,
     PrivateWorldCommandSource,
 )
@@ -170,7 +170,10 @@ async def assess_historical_relationship(
         persona_policy,
         max_input_chars=max_input_chars,
     )
-    response = await gateway.complete(messages, request_id=_corpus_id(ordered))
+    response = await gateway.complete(
+        messages,
+        request_id=historical_relationship_command_id(ordered),
+    )
     try:
         payload = json.loads(response.text)
         required = {
@@ -280,21 +283,17 @@ def apply_historical_private_world(
     evidence_refs = tuple(
         ordered[index - 1].memory_source_id for index in assessment.evidence_indexes
     )
-    corpus_id = _corpus_id(ordered)
-    command = InitializeHistoricalRelationship(
+    corpus_id = historical_relationship_command_id(ordered)
+    command = ApplyHistoricalRelationshipEvidence(
         command_id=corpus_id,
         idempotency_key=corpus_id,
         actor=PrivateWorldActor.MIGRATION,
         source=PrivateWorldCommandSource.IMPORT,
         occurred_at=ordered[-1].occurred_at,
-        reason="one-time ordered historical letter import",
+        reason="ordered historical relationship evidence import",
         evidence_refs=evidence_refs,
-        relationship_stage=assessment.relationship_stage,
         familiarity=assessment.familiarity,
-        trust=assessment.trust,
-        comfort=assessment.comfort,
         closeness=assessment.closeness,
-        tension=assessment.tension,
     )
     result = command_service.execute(command)
     status = getattr(result, "status", None)
@@ -524,8 +523,37 @@ def _occurred_at(value: object) -> datetime:
 
 
 def _corpus_id(exchanges: tuple[HistoricalExchange, ...]) -> str:
-    material = "\n".join(item.source_record_id for item in exchanges)
-    return "history.init." + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    material = json.dumps(
+        [item.source_record_id for item in exchanges],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        "history.evidence.v1."
+        + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    )
+
+
+def historical_relationship_command_id(
+    exchanges: Iterable[HistoricalExchange],
+) -> str:
+    """Return the bounded command identity for one canonical historical corpus."""
+
+    supplied = tuple(exchanges)
+    if any(not isinstance(item, HistoricalExchange) for item in supplied):
+        raise TypeError("historical exchanges must be typed")
+    ordered = tuple(
+        sorted(
+            supplied,
+            key=lambda item: (item.occurred_at, item.source_record_id),
+        )
+    )
+    if not ordered:
+        raise ValueError("historical exchanges are required")
+    source_ids = tuple(item.source_record_id for item in ordered)
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("historical source ids must be unique")
+    return _corpus_id(ordered)
 
 
 __all__ = [
@@ -535,5 +563,6 @@ __all__ = [
     "apply_historical_private_world",
     "assess_historical_relationship",
     "exchanges_from_legacy_payload",
+    "historical_relationship_command_id",
     "migrate_historical_exchanges",
 ]

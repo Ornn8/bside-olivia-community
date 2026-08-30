@@ -123,6 +123,7 @@ from runtime.imports.historical_memory import (
     apply_historical_private_world,
     assess_historical_relationship,
     exchanges_from_legacy_payload,
+    historical_relationship_command_id,
     migrate_historical_exchanges,
 )
 from runtime.reply.reply_context import (
@@ -991,14 +992,15 @@ async def _migrate_official_history(
     *,
     skip_source_record_ids: frozenset[str] = frozenset(),
 ) -> HistoricalMigrationResult:
-    exchanges = tuple(
+    full_exchanges = exchanges_from_legacy_payload(payload)
+    pending_memory_exchanges = tuple(
         exchange
-        for exchange in exchanges_from_legacy_payload(payload)
+        for exchange in full_exchanges
         if exchange.source_record_id not in skip_source_record_ids
     )
     result = await asyncio.to_thread(
         migrate_historical_exchanges,
-        exchanges,
+        pending_memory_exchanges,
         memory=conversation_memory_adapter,
         user_id=_memory_config.user_id,
         require_persisted=True,
@@ -1010,7 +1012,7 @@ async def _migrate_official_history(
             retryable=False,
         ),
     )
-    if result.status != "completed" or not exchanges:
+    if result.status != "completed" or not full_exchanges:
         return result
     try:
         memory_status = conversation_memory_adapter.status().status
@@ -1018,16 +1020,6 @@ async def _migrate_official_history(
         memory_status = "unavailable"
     if memory_status == "disabled":
         return replace(result, private_world_status="skipped_memory_disabled")
-    try:
-        if private_world_port.snapshot() != PrivateWorldSnapshot():
-            return replace(result, private_world_status="already_initialized")
-    except Exception:
-        return replace(
-            result,
-            status="partial",
-            private_world_status="unavailable",
-            error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
-        )
     if private_world_command_service is None:
         return replace(
             result,
@@ -1036,21 +1028,31 @@ async def _migrate_official_history(
             error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
         )
     try:
+        command_id = historical_relationship_command_id(full_exchanges)
+        existing = await asyncio.to_thread(
+            private_world_command_service.lookup_command,
+            command_id,
+        )
+        if existing is not None:
+            return replace(
+                result,
+                private_world_status="already_initialized",
+            )
         _update_official_import_progress(
             status="RUNNING",
             stage="relationship",
-            total=len(exchanges),
-            processed=len(exchanges),
+            total=len(full_exchanges),
+            processed=len(full_exchanges),
             retryable=False,
         )
         assessment = await assess_historical_relationship(
-            exchanges,
+            full_exchanges,
             gateway=letters_adapter.gateway,
             persona_policy=letters_adapter.get_persona_policy(),
         )
         private_world_status = await asyncio.to_thread(
             apply_historical_private_world,
-            exchanges,
+            full_exchanges,
             assessment=assessment,
             command_service=private_world_command_service,
         )
