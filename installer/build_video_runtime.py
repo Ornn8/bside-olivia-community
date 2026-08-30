@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 import uuid
 import zipfile
 
@@ -46,7 +47,7 @@ _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MODEL_DIRECTORIES = {"checkpoint", "checkpoints", "downloads", "ffmpeg", "model", "models", "pretrained_models", "source", "sources", "weight", "weights"}
 _MODEL_SUFFIXES = {".ckpt", ".engine", ".gguf", ".h5", ".hdf5", ".onnx", ".pb", ".pt", ".safetensors", ".tflite", ".weights"}
-_AUDIO_SUFFIXES = {".aac", ".aif", ".aiff", ".alac", ".amr", ".caf", ".flac", ".m4a", ".mka", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".wma"}
+_MEDIA_SUFFIXES = {".3g2", ".3gp", ".aac", ".aif", ".aiff", ".alac", ".amr", ".asf", ".avi", ".caf", ".flac", ".flv", ".m2ts", ".m2v", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogg", ".ogv", ".opus", ".vob", ".wav", ".webm", ".wma", ".wmv"}
 _MAX_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 
 def _load_bom(path: Path | None) -> dict[str, object]:
@@ -68,7 +69,8 @@ def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]
         if not isinstance(item, dict) or set(item) != required:
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
         upstream, revision, dependencies = item["upstream"], item["revision"], item["dependencies"]
-        if not isinstance(upstream, str) or re.fullmatch(r"https://[^/@\s]+(?:/[^\s]*)?", upstream) is None or not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
+        parsed = urlsplit(upstream) if isinstance(upstream, str) else None
+        if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None or "?" in upstream or "#" in upstream or re.search(r"\s", upstream) is not None or not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
         if not isinstance(dependencies, list) or not dependencies or len(dependencies) != len({value.casefold() for value in dependencies if isinstance(value, str)}) or not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9+_.-]+", value) for value in dependencies):
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
@@ -81,7 +83,7 @@ def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]
             if not Path(relative).name.casefold().startswith(names):
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID")
             legal.append((relative, digest))
-    except (KeyError, TypeError, VideoCapabilityError) as exc:
+    except (KeyError, TypeError, ValueError, VideoCapabilityError) as exc:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BOM_INVALID") from exc
 
     source_roots = (root,) if (root / "python.exe").is_file() else (root / "python", root / "site-packages")
@@ -94,9 +96,9 @@ def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]
             size, digest = _sha256_file(path)
             suffix = path.suffix.casefold()
             with path.open("rb") as stream:
-                header = stream.read(16)
-            audio_magic = header.startswith((b"fLaC", b"OggS", b"caff", b"ID3", b"#!AMR", b"\x30\x26\xb2\x75\x8e\x66\xcf\x11")) or (header[:4] in {b"RIFF", b"FORM"} and header[8:12] in {b"WAVE", b"AIFF", b"AIFC"}) or (len(header) > 1 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0) or (header[4:8] == b"ftyp" and header[8:12] in {b"M4A ", b"M4B ", b"M4P "})
-            if suffix in _AUDIO_SUFFIXES or audio_magic:
+                header = stream.read(377)
+            media_magic = header.startswith((b"fLaC", b"OggS", b"caff", b"ID3", b"#!AMR", b"FLV\x01", b"\x1a\x45\xdf\xa3", b"\x30\x26\xb2\x75\x8e\x66\xcf\x11")) or (header[:4] in {b"RIFF", b"FORM"} and header[8:12] in {b"WAVE", b"AIFF", b"AIFC", b"AVI "}) or (len(header) > 1 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0) or header[4:8] == b"ftyp" or (len(header) > 376 and header[0] == header[188] == header[376] == 0x47)
+            if suffix in _MEDIA_SUFFIXES or media_magic:
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_PRIVATE_MEDIA_FORBIDDEN")
             pth_config = False
             if suffix == ".pth" and size <= 64 * 1024 and Path(relative).parent.name.casefold() == "site-packages" and not header.startswith((b"PK\x03\x04", b"GGUF", b"\x89HDF", b"\x80")):
@@ -107,7 +109,8 @@ def _checked_item(root: Path, item: object) -> tuple[int, list[dict[str, object]
                     pass
             parents = tuple(part.casefold() for part in Path(relative).parent.parts)
             runtime_bin = suffix == ".bin" and parents[-3:] in {("site-packages", "sentencepiece", "package_data"), ("site-packages", "chardet", "models")}
-            if (any(part.casefold() in _MODEL_DIRECTORIES for part in Path(relative).parts[:-1]) and not runtime_bin) or suffix in _MODEL_SUFFIXES or (suffix == ".bin" and not runtime_bin) or (suffix == ".pth" and not pth_config):
+            package_code = "site-packages" in parents and not any(part in _MODEL_DIRECTORIES for part in parents[:parents.index("site-packages")]) and suffix in {".py", ".pyc", ".pyi", ".pyx", ".yaml", ".yml"}
+            if (any(part in _MODEL_DIRECTORIES for part in parents) and not (runtime_bin or package_code)) or suffix in _MODEL_SUFFIXES or (suffix == ".bin" and not runtime_bin) or (suffix == ".pth" and not pth_config):
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_BUNDLE_CONTENT_FORBIDDEN")
             files.append({"path": relative, "size_bytes": size, "sha256": digest})
     except OSError as exc:
@@ -132,7 +135,7 @@ def _checked_inputs(version: str, output: Path, roots: Mapping[str, Path], bom: 
     components = bom["components"]
     if not isinstance(components, dict) or set(roots) != set(_COMPONENT_ENVIRONMENT) or set(components) != set(_COMPONENT_ENVIRONMENT):
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_COMPONENTS_INVALID")
-    output_root, checked, total = output.resolve(), {}, 0
+    output_root, checked = output.resolve(), {}
     for component in _COMPONENT_ENVIRONMENT:
         raw = roots[component]
         if not isinstance(raw, Path) or not raw.is_absolute() or not raw.is_dir():
@@ -148,31 +151,35 @@ def _checked_inputs(version: str, output: Path, roots: Mapping[str, Path], bom: 
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_PYTHON_MISSING")
         if root in checked.values():
             raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_COMPONENT_DUPLICATE")
-        size, _inventory = _checked_item(root, components[component])
         checked[component] = root
-        total += size
+    total = sum(_checked_item(root, components[component])[0] for component, root in checked.items())
     if total > _MAX_EXPANDED_BYTES:
         raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_TOO_LARGE")
+    environment = {_COMPONENT_ENVIRONMENT[component]: str(root / ("python.exe" if (root / "python.exe").is_file() else "python/python.exe")) for component, root in checked.items()}
+    _probe_environments(environment, checked)
     return output_root, checked
 
-def _probe_environments(environment: Mapping[str, str], runtime_root: Path) -> bool:
-    clean = {key: value for key, value in os.environ.items() if key.upper() not in {"PYTHONHOME", "PYTHONPATH"}}
-    clean.update(PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1")
-    try:
-        for component, key in _COMPONENT_ENVIRONMENT.items():
-            allowed_root = runtime_root / component / "runtime"
-            script = (
-                "from pathlib import Path; import importlib,sys; root=Path(sys.argv[1]).resolve(); "
-                "inside=lambda value:(path:=Path(value).resolve())==root or root in path.parents; "
-                "assert inside(sys.executable) and inside(sys.prefix) and inside(sys.base_prefix); assert all(inside(value) for value in sys.path if value); "
-                f"[importlib.import_module(name) for name in {_COMPONENT_IMPORTS[component]!r}]; import torch; "
-                "assert torch.version.cuda and torch.cuda.is_available(); assert torch.ones(1,device='cuda').is_cuda"
-            )
-            if subprocess.run([environment[key], "-I", "-c", script, str(allowed_root)], cwd=allowed_root, capture_output=True, check=False, timeout=30, env=clean, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode:
-                return False
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return True
+def _probe_environments(environment: Mapping[str, str], roots: Mapping[str, Path]) -> None:
+    clean = {key: value for key, value in os.environ.items() if key.upper() not in {"PATH", "PYTHONHOME", "PYTHONPATH"}}
+    clean.update(PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1", PYTHONDONTWRITEBYTECODE="1")
+    windows_root = Path(os.environ.get("SystemRoot", os.environ.get("WINDIR", r"C:\Windows")))
+    for component, allowed_root in roots.items():
+        executable = Path(environment[_COMPONENT_ENVIRONMENT[component]])
+        probe_environment = dict(clean)
+        probe_environment["PATH"] = os.pathsep.join(str(path) for path in (executable.parent, allowed_root, allowed_root / "Library/bin", allowed_root / "python/Library/bin", allowed_root / "site-packages/torch/lib", allowed_root / "python/site-packages/torch/lib", windows_root, windows_root / "System32") if path.is_dir())
+        script = (
+            "from pathlib import Path; import importlib,sys; root=Path(sys.argv[1]).resolve(); "
+            "inside=lambda value:(path:=Path(value).resolve())==root or root in path.parents; "
+            "assert inside(sys.executable) and inside(sys.prefix) and inside(sys.base_prefix); assert all(inside(value) for value in sys.path if value); "
+            f"[importlib.import_module(name) for name in {_COMPONENT_IMPORTS[component]!r}]; import torch; "
+            "assert torch.version.cuda and torch.cuda.is_available(); assert torch.ones(1,device='cuda').is_cuda"
+        )
+        try:
+            failed = subprocess.run([str(executable), "-I", "-B", "-c", script, str(allowed_root)], cwd=allowed_root, capture_output=True, check=False, timeout=120, env=probe_environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode
+        except (OSError, subprocess.SubprocessError):
+            failed = True
+        if failed:
+            raise VideoRuntimeBuildError(f"VIDEO_RUNTIME_BUILD_{component.upper()}_NOT_PORTABLE")
 
 def _write_zip(runtime_root: Path, target: Path) -> None:
     try:
@@ -250,8 +257,9 @@ def build_video_runtime_archive(*, version: str, output_directory: Path, compone
                 environment[key] = f"{relative}/{executable}"
             manifest_sha = write_runtime_root_manifest(runtime_root, version=version, environment=environment, build_inputs=bom)
             verified = _load_runtime_root_manifest(runtime_root, manifest_sha, verify_files=False)
-            if set(verified) != set(_COMPONENT_ENVIRONMENT.values()) or not _probe_environments(verified, runtime_root):
+            if set(verified) != set(_COMPONENT_ENVIRONMENT.values()):
                 raise VideoRuntimeBuildError("VIDEO_RUNTIME_BUILD_NOT_PORTABLE")
+            _probe_environments(verified, {component: runtime_root / component / "runtime" for component in _COMPONENT_ENVIRONMENT})
             staging = output_root / f".{target.name}.{uuid.uuid4().hex}.tmp"
             try:
                 _write_zip(runtime_root, staging)
