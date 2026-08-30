@@ -24,6 +24,11 @@ class QualityGateStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class DeliveryRepairDisposition(StrEnum):
+    NONE = "none"
+    VIDEO_LENGTH = "video_length"
+
+
 @dataclass(frozen=True)
 class QualityGateResult:
     status: QualityGateStatus
@@ -33,6 +38,9 @@ class QualityGateResult:
     reviewer_calls: int
     rewrite_calls: int
     error_code: str | None = None
+    delivery_repair_disposition: DeliveryRepairDisposition = (
+        DeliveryRepairDisposition.NONE
+    )
 
     @property
     def accepted(self) -> bool:
@@ -61,6 +69,21 @@ def _stable_codes(*groups: Sequence[str]) -> tuple[str, ...]:
                 seen.add(code)
                 ordered.append(code)
     return tuple(ordered)
+
+
+def _delivery_repair_disposition(
+    deterministic_codes: tuple[str, ...],
+    review: ReviewResult,
+) -> DeliveryRepairDisposition:
+    if (
+        frozenset(deterministic_codes)
+        == frozenset({"VIDEO_REPLY_LENGTH_OUT_OF_RANGE"})
+        and not any(item.severity == "hard" for item in review.violations)
+        and review.verdict
+        not in {ReviewVerdict.BLOCK, ReviewVerdict.UNAVAILABLE}
+    ):
+        return DeliveryRepairDisposition.VIDEO_LENGTH
+    return DeliveryRepairDisposition.NONE
 
 
 def run_reply_quality_gate(
@@ -114,6 +137,10 @@ def run_reply_quality_gate(
     )
     review_codes = tuple(item.code for item in review.violations)
     initial_codes = _stable_codes(deterministic_codes, review_codes)
+    initial_delivery_repair = _delivery_repair_disposition(
+        deterministic_codes,
+        review,
+    )
     if (
         review.verdict is ReviewVerdict.UNAVAILABLE
         and review.status is not ReviewStatus.DISABLED
@@ -190,6 +217,7 @@ def run_reply_quality_gate(
             reviewer_calls=1,
             rewrite_calls=1,
             error_code="REWRITE_FAILED",
+            delivery_repair_disposition=initial_delivery_repair,
         )
     if not isinstance(rewritten, str) or not rewritten.strip():
         return QualityGateResult(
@@ -200,6 +228,7 @@ def run_reply_quality_gate(
             reviewer_calls=1,
             rewrite_calls=1,
             error_code="REWRITE_FAILED",
+            delivery_repair_disposition=initial_delivery_repair,
         )
     if (
         effective_intimacy_claims
@@ -296,6 +325,13 @@ def run_reply_quality_gate(
         reviewer_calls=2,
         rewrite_calls=1,
         error_code=final_review.error_code,
+        delivery_repair_disposition=_delivery_repair_disposition(
+            tuple(
+                item.code.value
+                for item in final_deterministic.violations
+            ),
+            final_review,
+        ),
     )
 
 

@@ -29,11 +29,13 @@ from runtime.reply.reply_pipeline import (
     ReplyPipeline,
     UnavailableRewriter,
 )
+from runtime.reply.reply_quality_gate import DeliveryRepairDisposition
 from reply_model_quality import GatewayPersonaReviewer
 from runtime.reply.reply_reviewer import (
     NullReviewer,
     ReviewResult,
     ReviewerScores,
+    ReviewerViolation,
     ReviewStatus,
     ReviewVerdict,
 )
@@ -76,6 +78,14 @@ class PassingReviewer:
             IntimacyRequest.NONE,
             (),
         )
+
+
+class SequencedReviewer:
+    def __init__(self, *results: ReviewResult) -> None:
+        self.results = list(results)
+
+    def review(self, candidate: str, context: ReplyContext) -> ReviewResult:
+        return self.results.pop(0)
 
 
 class FixedRewriter:
@@ -153,6 +163,62 @@ def test_pipeline_preserves_only_length_blocked_video_copy_for_duration_repair()
     assert result.text == "太短。"
     assert result.error_code == "REWRITE_FAILED"
     assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+    assert (
+        result.delivery_repair_disposition
+        is DeliveryRepairDisposition.VIDEO_LENGTH
+    )
+
+
+@pytest.mark.parametrize(
+    ("severity", "expected_text", "expected_disposition"),
+    (
+        (
+            "soft",
+            "Too short.",
+            DeliveryRepairDisposition.VIDEO_LENGTH,
+        ),
+        ("hard", "", DeliveryRepairDisposition.NONE),
+    ),
+)
+def test_pipeline_forwards_only_typed_video_length_repair_candidates(
+    severity: str,
+    expected_text: str,
+    expected_disposition: DeliveryRepairDisposition,
+) -> None:
+    candidate = "Too short."
+    passing = PassingReviewer().review(candidate, _context())
+    finding = ReviewResult(
+        ReviewStatus.COMPLETED,
+        ReviewVerdict.REWRITE,
+        (
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                severity,
+                0,
+                len(candidate),
+            ),
+        ),
+        ReviewerScores(90, 30, 90, 90),
+        IntimacyRequest.NONE,
+        (),
+    )
+    pipeline = ReplyPipeline(
+        CompletedOrchestrator(candidate),
+        reviewer=SequencedReviewer(passing, finding),
+        rewriter=FixedRewriter(candidate),
+    )
+
+    result = asyncio.run(
+        pipeline.run(object(), _context(ReplyMode.MUSICAL_VIDEO))
+    )
+
+    assert result.state is ReplyState.FAILED
+    assert result.text == expected_text
+    assert result.violation_codes == (
+        "VIDEO_REPLY_LENGTH_OUT_OF_RANGE",
+        "MEMORY_FABRICATION",
+    )
+    assert result.delivery_repair_disposition is expected_disposition
 
 
 class RecordingProvider:

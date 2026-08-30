@@ -14,6 +14,7 @@ from llm_gateway import GatewayConfig, GatewayRequestScope
 from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
+from runtime.reply.reply_quality_gate import DeliveryRepairDisposition
 from voice_direction import VoiceDirectionError, VoicePerformancePlan
 
 
@@ -932,9 +933,15 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(
             text="太短",
             error_code="REWRITE_FAILED",
             quality_status="blocked",
-            violation_codes=("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",),
+            violation_codes=(
+                "VIDEO_REPLY_LENGTH_OUT_OF_RANGE",
+                "MEMORY_FABRICATION",
+            ),
             reviewer_calls=1,
             rewrite_calls=1,
+            delivery_repair_disposition=(
+                DeliveryRepairDisposition.VIDEO_LENGTH
+            ),
         )
 
     monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
@@ -951,3 +958,65 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(
     ]
     assert "180到200个汉字" in requests[1].content
     assert letter["reply_text"] == "林" * 190
+
+
+def test_generate_reply_does_not_repair_hard_memory_video_failure(
+    monkeypatch,
+):
+    letter_id = "synthetic-hard-memory-video"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic current letter",
+        "reply_text": "",
+        "reply_mode": ReplyMode.TEXT_LETTER.value,
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    requests = []
+    scheduled = []
+
+    async def classify(_content):
+        return TriageResult(
+            "high",
+            ReplyMode.MUSICAL_VIDEO.value,
+            "melody_carries_this_reply",
+            "completed",
+            True,
+            music_contexts=("melody_idea",),
+            music_intent="compose",
+            music_materially_better=True,
+            character_willing=True,
+        )
+
+    async def run_pipeline(request, _context):
+        requests.append(request)
+        return PipelineResult(
+            letter_id,
+            ReplyState.FAILED,
+            text="太短",
+            error_code="REPLY_QUALITY_BLOCKED",
+            quality_status="blocked",
+            violation_codes=(
+                "VIDEO_REPLY_LENGTH_OUT_OF_RANGE",
+                "MEMORY_FABRICATION",
+            ),
+            delivery_repair_disposition=DeliveryRepairDisposition.NONE,
+        )
+
+    monkeypatch.setattr(local_server.emotion_triage, "classify", classify)
+    monkeypatch.setattr(local_server.reply_pipeline, "run", run_pipeline)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(
+        local_server,
+        "_schedule_media_job",
+        lambda *_args: scheduled.append(True),
+    )
+
+    assert not asyncio.run(
+        local_server.generate_reply(letter_id, letter["content"])
+    )
+    assert [request.request_id for request in requests] == [
+        f"letter-reply:{letter_id}"
+    ]
+    assert scheduled == []
+    assert letter["media_status"] == "NOT_REQUESTED"
