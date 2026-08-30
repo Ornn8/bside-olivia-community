@@ -69,8 +69,15 @@ questions remain allowed.
 ## Evidence-bound hard findings and adjudication
 
 This protocol is enabled only for `text_letter`. Spoken and musical-video
-reviews retain the pre-protocol response schema and call count: they neither
-require `hard_evidence` nor invoke adjudication.
+reviews retain the pre-protocol response schema and normal successful call
+count: they neither require `hard_evidence` nor invoke adjudication.
+
+Across Persona modes, the only failure-path exception that may add a call is
+one retry of the single layer whose result fails `LAYER_CONTRACT`. That retry
+uses a fresh request ID and does not rerun any other layer. A second
+`LAYER_CONTRACT` failure remains `REVIEWER_UNAVAILABLE`. `JSON`,
+`TOP_LEVEL_SCHEMA`, `EVIDENCE_CONTRACT`, `EMPTY_TEXT`, `TRANSPORT`, and
+`INTERNAL` failures are not retried.
 
 In `text_letter`, `identity_boundary`, `voice_style`, and `continuity_memory`
 cannot create a hard finding from a score or drift flag alone. Every hard code
