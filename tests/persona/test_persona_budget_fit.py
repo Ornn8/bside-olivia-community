@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +33,15 @@ def test_release_persona_fits_default_budget() -> None:
     invalid = GatewayConfig.from_mapping({"max_input_chars": "invalid"})
     assert invalid.max_input_chars == 22_000
     assert assembled.budget_report.dropped_ids == ()
+
+
+def test_shipped_llm_config_uses_the_public_input_budget() -> None:
+    payload = json.loads(
+        (ROOT / "contracts" / "llm_config.example.json").read_text(encoding="utf-8")
+    )
+
+    configured = GatewayConfig.from_mapping(payload)
+    assert configured.max_input_chars == GatewayConfig().max_input_chars
 
 
 def test_release_persona_fits_with_full_history() -> None:

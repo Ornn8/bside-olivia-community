@@ -8,7 +8,7 @@
   "max_retries": 2,
   "retry_backoff_seconds": 0.25,
   "stream": false,
-  "max_input_chars": 10000,
+  "max_input_chars": 22000,
   "max_output_chars": 10000,
   "fallback_provider": "none",
   "persona_config": "linli_character/persona_config.json",
