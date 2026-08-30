@@ -16,6 +16,8 @@ $env:MEM0_TELEMETRY = 'False'
 $offlineRoot = if ($OfflineAssetsRoot) { $OfflineAssetsRoot } else { Join-Path $PayloadRoot 'offline' }
 $offlineManifestPath = if ($OfflineAssetsRoot) { Join-Path $OfflineAssetsRoot 'offline-core-assets.json' } else { Join-Path $PayloadRoot 'offline\offline-core-assets.json' }
 $requirements = Join-Path $PayloadRoot 'installer\runtime-requirements.txt'
+$setupDiagnosticPath = if ($SetupResultPath) { $SetupResultPath + '.diagnostic.json' } else { '' }
+$script:OfficialSourceDiagnostic = $null
 
 function Get-SafeSetupErrorCode {
     param([string]$Code)
@@ -44,8 +46,25 @@ function Write-SetupErrorResult {
     }
 }
 
+function Write-SetupDiagnosticResult {
+    param([AllowNull()][object]$Diagnostic)
+
+    if (-not $setupDiagnosticPath -or $null -eq $Diagnostic) { return }
+    try {
+        $utf8NoBom = [Text.UTF8Encoding]::new($false)
+        [IO.File]::WriteAllText(
+            $setupDiagnosticPath,
+            ($Diagnostic | ConvertTo-Json -Compress -Depth 4),
+            $utf8NoBom
+        )
+    } catch {
+        # Diagnostics must never replace the stable installer error code.
+    }
+}
+
 trap {
     $safeCode = Get-SafeSetupErrorCode -Code ([string]$_.Exception.Message)
+    Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
     Write-SetupErrorResult -Code $safeCode
     if (-not $SetupResultPath) { Write-Output $safeCode }
     exit 2
@@ -73,6 +92,46 @@ function Get-Sha256 {
     } finally {
         $hasher.Dispose()
         $stream.Dispose()
+    }
+}
+
+function New-OfficialSourceDiagnostic {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Selection,
+        [Parameter(Mandatory)]
+        [string]$ManifestPath
+    )
+
+    $manifest = [IO.File]::ReadAllText($ManifestPath) | ConvertFrom-Json
+    $selected = [string]$Selection.Path
+    $normalizedSelected = [IO.Path]::GetFullPath($selected).TrimEnd('\').ToLowerInvariant()
+    $pathHasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $selectedId = ([BitConverter]::ToString(
+            $pathHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedSelected))
+        )).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    } finally {
+        $pathHasher.Dispose()
+    }
+    $version = [string]$manifest.client_version
+    $resources = Join-Path (Join-Path $selected $version) 'resources'
+    $feapp = Join-Path $resources 'feapp.dat'
+    $webplayer = Join-Path $resources 'webplayer.dat'
+    $feappInfo = if ([IO.File]::Exists($feapp)) { [IO.FileInfo]::new($feapp) } else { $null }
+    $webplayerInfo = if ([IO.File]::Exists($webplayer)) { [IO.FileInfo]::new($webplayer) } else { $null }
+    return [ordered]@{
+        schema_version = 'olivia.setup-source-diagnostic.v1'
+        selection_mode = [string]$Selection.SelectionMode
+        candidate_count = [int]$Selection.CandidateCount
+        selected_official_id = $selectedId
+        client_version = $version
+        observed_feapp_size = if ($feappInfo) { $feappInfo.Length } else { $null }
+        observed_feapp_sha256 = if ($feappInfo) { Get-Sha256 -LiteralPath $feapp } else { $null }
+        observed_webplayer_size = if ($webplayerInfo) { $webplayerInfo.Length } else { $null }
+        observed_webplayer_sha256 = if ($webplayerInfo) { Get-Sha256 -LiteralPath $webplayer } else { $null }
+        manifest_feapp_sha256 = [string]$manifest.feapp_sha256
+        manifest_webplayer_sha256 = [string]$manifest.webplayer_sha256
     }
 }
 
@@ -159,24 +218,38 @@ function Test-PathsOverlap {
 }
 
 function Resolve-OfficialInstall {
-    param([string]$RequestedRoot)
+    param(
+        [string]$RequestedRoot,
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [string[]]$SteamRoots = @()
+    )
 
     if ($RequestedRoot) {
-        return [IO.Path]::GetFullPath($RequestedRoot)
+        return [pscustomobject]@{
+            Path = [IO.Path]::GetFullPath($RequestedRoot)
+            SelectionMode = 'explicit'
+            CandidateCount = 1
+        }
     }
-    $steamRoots = [Collections.Generic.List[string]]::new()
-    try {
-        $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -Name SteamPath).SteamPath
-        if ($steamPath) { $steamRoots.Add([string]$steamPath) }
-    } catch {
-        # Continue with conventional Steam roots.
-    }
-    foreach ($drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()) {
-        $candidate = $drive + ':\steam'
-        if ([IO.Directory]::Exists($candidate)) { $steamRoots.Add($candidate) }
+    if (-not $PSBoundParameters.ContainsKey('SteamRoots')) {
+        $discoveredSteamRoots = [Collections.Generic.List[string]]::new()
+        try {
+            $steamPath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Valve\Steam' -Name SteamPath).SteamPath
+            if ($steamPath) { $discoveredSteamRoots.Add([string]$steamPath) }
+        } catch {
+            # Continue with conventional Steam roots.
+        }
+        foreach ($drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()) {
+            $candidate = $drive + ':\steam'
+            if ([IO.Directory]::Exists($candidate)) {
+                $discoveredSteamRoots.Add($candidate)
+            }
+        }
+        $SteamRoots = $discoveredSteamRoots.ToArray()
     }
     $libraryRoots = [Collections.Generic.List[string]]::new()
-    foreach ($steamRoot in $steamRoots) {
+    foreach ($steamRoot in $SteamRoots) {
         try {
             $steamFull = [IO.Path]::GetFullPath($steamRoot)
             $libraryRoots.Add($steamFull)
@@ -191,6 +264,10 @@ function Resolve-OfficialInstall {
             # Ignore malformed or inaccessible Steam library entries.
         }
     }
+    $candidates = [Collections.Generic.List[string]]::new()
+    $seenCandidates = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
     foreach ($libraryRoot in $libraryRoots) {
         try {
             $libraryFull = [IO.Path]::GetFullPath($libraryRoot)
@@ -204,13 +281,96 @@ function Resolve-OfficialInstall {
             if (-not $match.Success) { continue }
             $candidate = Join-Path $libraryFull ('steamapps\common\' + $match.Groups[1].Value)
             if ([IO.Directory]::Exists($candidate)) {
-                return [IO.Path]::GetFullPath($candidate)
+                $candidateFull = [IO.Path]::GetFullPath($candidate)
+                if ($seenCandidates.Add($candidateFull)) {
+                    $candidates.Add($candidateFull)
+                }
             }
         } catch {
             # Continue to the next Steam library.
         }
     }
-    throw 'OFFICIAL_INSTALL_NOT_FOUND'
+    if ($candidates.Count -eq 0) { throw 'OFFICIAL_INSTALL_NOT_FOUND' }
+    if ($candidates.Count -eq 1) {
+        return [pscustomobject]@{
+            Path = $candidates[0]
+            SelectionMode = 'auto_single'
+            CandidateCount = 1
+        }
+    }
+
+    try {
+        $manifest = [IO.File]::ReadAllText($ManifestPath) | ConvertFrom-Json
+        $version = [string]$manifest.client_version
+        $expectedFeapp = [string]$manifest.feapp_sha256
+        $expectedWebplayer = [string]$manifest.webplayer_sha256
+        if (
+            -not $version -or
+            $expectedFeapp -cnotmatch '^[0-9a-fA-F]{64}$' -or
+            $expectedWebplayer -cnotmatch '^[0-9a-fA-F]{64}$'
+        ) {
+            throw 'PATCH_MANIFEST_INVALID'
+        }
+    } catch {
+        if ([string]$_.Exception.Message -eq 'PATCH_MANIFEST_INVALID') { throw }
+        throw 'PATCH_MANIFEST_INVALID'
+    }
+    $candidateDiagnostics = [Collections.Generic.List[object]]::new()
+    $candidateIndex = 0
+    foreach ($candidate in $candidates) {
+        $resources = Join-Path (Join-Path $candidate $version) 'resources'
+        $feapp = Join-Path $resources 'feapp.dat'
+        $webplayer = Join-Path $resources 'webplayer.dat'
+        $observedFeappSize = $null
+        $observedWebplayerSize = $null
+        $actualFeapp = $null
+        $actualWebplayer = $null
+        if ([IO.File]::Exists($feapp)) {
+            try {
+                $observedFeappSize = [IO.FileInfo]::new($feapp).Length
+                $actualFeapp = Get-Sha256 -LiteralPath $feapp
+            } catch {
+                # This candidate remains observable but cannot be an exact match.
+            }
+        }
+        if ([IO.File]::Exists($webplayer)) {
+            try {
+                $observedWebplayerSize = [IO.FileInfo]::new($webplayer).Length
+                $actualWebplayer = Get-Sha256 -LiteralPath $webplayer
+            } catch {
+                # This candidate remains observable but cannot be an exact match.
+            }
+        }
+        $candidateDiagnostics.Add([ordered]@{
+            candidate_index = $candidateIndex
+            observed_feapp_size = $observedFeappSize
+            observed_feapp_sha256 = $actualFeapp
+            observed_webplayer_size = $observedWebplayerSize
+            observed_webplayer_sha256 = $actualWebplayer
+        })
+        $candidateIndex += 1
+        if (
+            $actualFeapp -ceq $expectedFeapp.ToLowerInvariant() -and
+            $actualWebplayer -ceq $expectedWebplayer.ToLowerInvariant()
+        ) {
+            return [pscustomobject]@{
+                Path = $candidate
+                SelectionMode = 'auto_manifest_match'
+                CandidateCount = $candidates.Count
+            }
+        }
+    }
+    $script:OfficialSourceDiagnostic = [ordered]@{
+        schema_version = 'olivia.setup-source-diagnostic.v1'
+        selection_mode = 'auto_ambiguous'
+        candidate_count = $candidates.Count
+        selected_official_id = $null
+        client_version = $version
+        manifest_feapp_sha256 = $expectedFeapp.ToLowerInvariant()
+        manifest_webplayer_sha256 = $expectedWebplayer.ToLowerInvariant()
+        candidates = $candidateDiagnostics.ToArray()
+    }
+    throw 'OFFICIAL_INSTALL_AMBIGUOUS'
 }
 
 function Assert-OfficialSource {
@@ -245,12 +405,6 @@ function Assert-OfficialSource {
     $webplayer = Join-Path $resources 'webplayer.dat'
     foreach ($required in @($launcher, $client, $feapp, $webplayer)) {
         if (-not [IO.File]::Exists($required)) { throw 'OFFICIAL_INSTALL_NOT_FOUND' }
-    }
-    if (
-        (Get-Sha256 -LiteralPath $feapp) -cne ([string]$manifest.feapp_sha256).ToLowerInvariant() -or
-        (Get-Sha256 -LiteralPath $webplayer) -cne ([string]$manifest.webplayer_sha256).ToLowerInvariant()
-    ) {
-        throw 'UNSUPPORTED_OFFICIAL_VERSION'
     }
 }
 
@@ -585,12 +739,16 @@ $selectedOfficial = $OfficialRoot
 if (-not $selectedOfficial -and -not $NonInteractive) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
 }
-$selectedOfficial = Resolve-OfficialInstall -RequestedRoot $selectedOfficial
+$manifestPath = Join-Path $PayloadRoot 'installer\full-patch-manifest.json'
+$selectedOfficial = Resolve-OfficialInstall -RequestedRoot $selectedOfficial -ManifestPath $manifestPath
+$officialSelection = $selectedOfficial
+$selectedOfficial = [string]$officialSelection.Path
 Assert-NoReparsePointsInPath -LiteralPath $selectedOfficial -ErrorCode 'OFFICIAL_INSTALL_PATH_REPARSE_POINT'
 if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
     throw 'INSTALL_ROOT_OVERLAPS_OFFICIAL'
 }
-$manifestPath = Join-Path $PayloadRoot 'installer\full-patch-manifest.json'
+$script:OfficialSourceDiagnostic = New-OfficialSourceDiagnostic -Selection $officialSelection -ManifestPath $manifestPath
+Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
 Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
 $runtimeStaging = $runtimeRoot + '.staging.' + [guid]::NewGuid().ToString('N')
@@ -638,9 +796,6 @@ try {
         }
         throw 'OFFLINE_CORE_RUNTIME_PUBLISH_FAILED'
     }
-    if ($runtimeBackup -and (Test-Path -LiteralPath $runtimeBackup)) {
-        Remove-Item -LiteralPath $runtimeBackup -Recurse -Force -ErrorAction SilentlyContinue
-    }
 } catch {
     if (Test-Path -LiteralPath $runtimeStaging) {
         Remove-Item -LiteralPath $runtimeStaging -Recurse -Force
@@ -659,6 +814,12 @@ $bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'
 $installOutput = @(& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments))
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) {
+    if ($runtimeBackup -and (Test-Path -LiteralPath $runtimeBackup)) {
+        if (Test-Path -LiteralPath $runtimeRoot) {
+            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+        }
+        [IO.Directory]::Move($runtimeBackup, $runtimeRoot)
+    }
     $installCode = 'SETUP_INSTALL_FAILED'
     foreach ($line in $installOutput) {
         try {
@@ -677,6 +838,9 @@ if ($installExitCode -ne 0) {
     Write-SetupErrorResult -Code $installCode
     if (-not $SetupResultPath) { $installOutput | Write-Output }
     exit $installExitCode
+}
+if ($runtimeBackup -and (Test-Path -LiteralPath $runtimeBackup)) {
+    Remove-Item -LiteralPath $runtimeBackup -Recurse -Force
 }
 if (-not $SetupResultPath) { $installOutput | Write-Output }
 

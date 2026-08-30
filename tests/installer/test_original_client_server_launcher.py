@@ -319,6 +319,7 @@ def test_launcher_starts_combined_server_before_original_client(
     health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     commands: list[list[str]] = []
     client_commands: list[list[str]] = []
+    client_working_directories: list[Path] = []
     frontend_repairs: list[tuple[Path, int]] = []
 
     class Process:
@@ -330,8 +331,9 @@ def test_launcher_starts_combined_server_before_original_client(
         commands.append([str(value) for value in command])
         return Process()
 
-    def call(command, **_kwargs):
+    def call(command, **kwargs):
         client_commands.append([str(value) for value in command])
+        client_working_directories.append(Path(kwargs["cwd"]))
         return 0
 
     monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
@@ -367,6 +369,9 @@ def test_launcher_starts_combined_server_before_original_client(
         str(root / "local_backend" / "original_client_server.py"),
     ]
     assert client_commands[0][0].endswith("Olivia.exe")
+    assert client_working_directories == [
+        root.resolve() / "app" / "0.0.9.615"
+    ]
     assert not backend_command[-1].endswith("local_server.py")
     assert frontend_repairs == [(root.resolve(), 8899)]
     launcher_log = (root / "data" / "logs" / "launcher.jsonl").read_text(
@@ -374,7 +379,11 @@ def test_launcher_starts_combined_server_before_original_client(
     )
     assert '"event": "backend_start"' in launcher_log
     assert '"event": "backend_ready"' in launcher_log
+    assert '"event": "client_start"' in launcher_log
+    assert '"event": "client_exit"' in launcher_log
+    assert '"exit_code": 0' in launcher_log
     assert "DEEPSEEK_API_KEY" not in launcher_log
+    assert str(root.resolve()) not in launcher_log
 
 
 def test_component_launcher_starts_the_backend_that_owns_start_local(

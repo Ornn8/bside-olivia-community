@@ -746,11 +746,14 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
-        return subprocess.call(
+        _append_launcher_event(data_root, "client_start")
+        exit_code = subprocess.call(
             _client_command(client, local),
-            cwd=root / "app",
+            cwd=client.parent,
             env=_client_environment(client_environment, roaming, local),
         )
+        _append_launcher_event(data_root, "client_exit", exit_code=exit_code)
+        return exit_code
     finally:
         # Stop only the backend process spawned and owned by this launcher.
         # A healthy backend reused from an earlier launcher has no local handle.

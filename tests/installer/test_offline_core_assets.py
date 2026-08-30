@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
+import zipfile
 
 from jsonschema import Draft202012Validator
 import pytest
@@ -153,6 +157,137 @@ def _run_install_preflight(
     )
 
 
+def _run_runtime_publish_fixture(
+    tmp_path: Path,
+    *,
+    bootstrap_exit_code: int,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    payload = tmp_path / "payload"
+    payload_installer = payload / "installer"
+    payload_installer.mkdir(parents=True)
+    for name in (
+        "full-patch-manifest.json",
+        "runtime-requirements.txt",
+        "mem0-runtime-requirements.txt",
+        "verify_mem0_runtime.py",
+    ):
+        shutil.copy2(ROOT / "installer" / name, payload_installer / name)
+    (payload_installer / "bootstrap_install.py").write_text(
+        "import json\n"
+        f"print(json.dumps({{'status': 'ERROR', 'code': 'SYNTHETIC_PATCH_FAILED'}}))\n"
+        f"raise SystemExit({bootstrap_exit_code})\n",
+        encoding="utf-8",
+    )
+    official = tmp_path / "official"
+    resources = official / "0.0.9.627" / "resources"
+    resources.mkdir(parents=True)
+    (official / "launcher.exe").write_bytes(b"launcher")
+    (official / "0.0.9.627" / "Olivia.exe").write_bytes(b"client")
+    (resources / "feapp.dat").write_bytes(b"feapp")
+    (resources / "webplayer.dat").write_bytes(b"webplayer")
+
+    runtime_zip = tmp_path / "runtime.zip"
+    python_executable = Path(getattr(sys, "_base_executable", sys.executable))
+    python_home = python_executable.parent
+    python_tag = f"python{sys.version_info.major}{sys.version_info.minor}"
+    with zipfile.ZipFile(runtime_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(python_executable, "python.exe")
+        for name in (f"{python_tag}.dll", "python3.dll", "vcruntime140.dll"):
+            candidate = python_home / name
+            if candidate.is_file():
+                archive.write(candidate, name)
+        archive.writestr(
+            f"{python_tag}._pth",
+            "\n".join(
+                [
+                    str(python_home / f"{python_tag}.zip"),
+                    str(python_home),
+                    str(python_home / "Lib"),
+                    str(python_home / "Lib" / "site-packages"),
+                    "import site",
+                ]
+            ),
+        )
+
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+    original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements"
+    replacement = "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = '' }"
+    assert script.count(original) == 1
+    script = script.replace(original, replacement)
+    dependency_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {"
+    assert script.count(dependency_probe) == 2
+    script = script.replace(dependency_probe, "if ($false) {", 1)
+    test_script = tmp_path / "Install.ps1"
+    test_script.write_text(script, encoding="utf-8-sig")
+    product = tmp_path / "product"
+    old_runtime = product / "runtime" / "python-3.12.10-embed-amd64"
+    old_runtime.mkdir(parents=True)
+    (old_runtime / "old-runtime.txt").write_text("preserve", encoding="utf-8")
+    environment = os.environ.copy()
+    environment["BSIDE_TEST_RUNTIME_ZIP"] = str(runtime_zip)
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(test_script),
+            "-PayloadRoot",
+            str(payload),
+            "-Destination",
+            str(product),
+            "-OfficialRoot",
+            str(official),
+            "-NonInteractive",
+            "-SkipShortcut",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    return result, product
+
+
+def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=23,
+    )
+
+    runtime_parent = product / "runtime"
+    runtime = runtime_parent / "python-3.12.10-embed-amd64"
+    assert result.returncode == 23, result.stderr or result.stdout
+    assert (runtime / "old-runtime.txt").read_text(encoding="utf-8") == "preserve"
+    assert not (runtime / "python.exe").exists()
+    assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.backup.*"))
+    assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.staging.*"))
+
+
+def test_patch_success_discards_runtime_backup_after_install(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+    )
+
+    runtime_parent = product / "runtime"
+    runtime = runtime_parent / "python-3.12.10-embed-amd64"
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (runtime / "python.exe").is_file()
+    assert not (runtime / "old-runtime.txt").exists()
+    assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.backup.*"))
+    assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.staging.*"))
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction contract")
 @pytest.mark.parametrize("product_name", ["isolated-product", "install"])
 def test_first_install_rejects_a_reparse_point_at_the_selected_product_root(
@@ -264,7 +399,7 @@ def test_first_install_rejects_official_overlap_before_runtime_writes(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows preflight contract")
-def test_first_install_validates_official_files_before_runtime_writes(
+def test_first_install_defers_official_archive_compatibility_to_python_installer(
     tmp_path: Path,
 ) -> None:
     product_root = tmp_path / "product"
@@ -284,8 +419,64 @@ def test_first_install_validates_official_files_before_runtime_writes(
     )
 
     assert result.returncode != 0
-    assert "UNSUPPORTED_OFFICIAL_VERSION" in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "OFFLINE_CORE_ASSETS_MISSING" in output
+    assert "UNSUPPORTED_OFFICIAL_VERSION" not in output
     assert not (product_root / "runtime").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows setup diagnostic contract")
+def test_failed_setup_records_selected_official_archives_and_manifest_hashes(
+    tmp_path: Path,
+) -> None:
+    product_root = tmp_path / "product"
+    official_root = tmp_path / "official"
+    resources = official_root / "0.0.9.627" / "resources"
+    resources.mkdir(parents=True)
+    (official_root / "launcher.exe").write_bytes(b"launcher")
+    (official_root / "0.0.9.627" / "Olivia.exe").write_bytes(b"client")
+    feapp = resources / "feapp.dat"
+    webplayer = resources / "webplayer.dat"
+    feapp.write_bytes(b"observed feapp")
+    webplayer.write_bytes(b"observed webplayer")
+    result_path = tmp_path / "setup-result.txt"
+
+    result = _run_install_preflight(
+        product_root,
+        tmp_path,
+        "-OfficialRoot",
+        str(official_root),
+        "-SetupResultPath",
+        str(result_path),
+    )
+
+    assert result.returncode != 0
+    diagnostic_path = Path(str(result_path) + ".diagnostic.json")
+    diagnostic_text = diagnostic_path.read_text(encoding="utf-8")
+    diagnostic = json.loads(diagnostic_text)
+    manifest = json.loads(
+        (ROOT / "installer" / "full-patch-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert diagnostic == {
+        "schema_version": "olivia.setup-source-diagnostic.v1",
+        "selection_mode": "explicit",
+        "candidate_count": 1,
+        "selected_official_id": hashlib.sha256(
+            str(official_root.resolve()).rstrip("\\").lower().encode("utf-8")
+        ).hexdigest()[:16],
+        "client_version": "0.0.9.627",
+        "observed_feapp_size": feapp.stat().st_size,
+        "observed_feapp_sha256": hashlib.sha256(feapp.read_bytes()).hexdigest(),
+        "observed_webplayer_size": webplayer.stat().st_size,
+        "observed_webplayer_sha256": hashlib.sha256(
+            webplayer.read_bytes()
+        ).hexdigest(),
+        "manifest_feapp_sha256": manifest["feapp_sha256"],
+        "manifest_webplayer_sha256": manifest["webplayer_sha256"],
+    }
+    assert str(official_root) not in diagnostic_text
 
 
 def test_offline_asset_builder_uses_the_hash_locked_windows_wheel_closure() -> None:

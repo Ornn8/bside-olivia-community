@@ -500,6 +500,227 @@ def test_install_entrypoint_uses_dotnet_sha256_not_optional_powershell_cmdlet() 
     assert "Get-FileHash" not in script
 
 
+def _run_official_install_resolution(
+    *,
+    manifest: Path,
+    steam_roots: list[Path],
+    requested_root: Path | None = None,
+    unreadable_root: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).parents[2]
+    command = (
+        "$tokens=$null;$errors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:BSIDE_INSTALL_SCRIPT,[ref]$tokens,[ref]$errors);"
+        "if($errors.Count){throw 'INSTALL_SCRIPT_PARSE_FAILED'};"
+        "$names=@('Get-Sha256','Resolve-OfficialInstall');"
+        "foreach($name in $names){"
+        "$function=$ast.Find({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]"
+        " -and $node.Name -eq $name},$true);"
+        "if(-not $function){throw ('FUNCTION_MISSING:'+$name)};"
+        ". ([scriptblock]::Create($function.Extent.Text))};"
+        "$script:RealGetSha256=${function:Get-Sha256};"
+        "function Get-Sha256{param([string]$LiteralPath)"
+        "if($env:BSIDE_UNREADABLE_ROOT -and "
+        "$LiteralPath.StartsWith($env:BSIDE_UNREADABLE_ROOT,[StringComparison]::OrdinalIgnoreCase))"
+        "{throw 'SYNTHETIC_ARCHIVE_UNREADABLE'};"
+        "& $script:RealGetSha256 -LiteralPath $LiteralPath};"
+        "$roots=@($env:BSIDE_STEAM_ROOTS -split \"`n\");"
+        "try{$selection=Resolve-OfficialInstall "
+        "-RequestedRoot $env:BSIDE_REQUESTED_ROOT "
+        "-ManifestPath $env:BSIDE_PATCH_MANIFEST -SteamRoots $roots;"
+        "$selection|ConvertTo-Json -Compress}catch{"
+        "[pscustomobject]@{code=$_.Exception.Message;"
+        "diagnostic=$script:OfficialSourceDiagnostic}|ConvertTo-Json -Compress -Depth 5;"
+        "exit 2}"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "BSIDE_INSTALL_SCRIPT": str(repo_root / "installer" / "Install.ps1"),
+            "BSIDE_PATCH_MANIFEST": str(manifest),
+            "BSIDE_REQUESTED_ROOT": str(requested_root or ""),
+            "BSIDE_UNREADABLE_ROOT": str(unreadable_root or ""),
+            "BSIDE_STEAM_ROOTS": "\n".join(str(root) for root in steam_roots),
+        }
+    )
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
+def _make_steam_library(
+    library: Path,
+    *,
+    archive_comment: bytes = b"",
+) -> tuple[Path, str, str]:
+    candidate, feapp_sha256, webplayer_sha256 = _make_official(
+        library / "steamapps" / "common" / "Olivia"
+    )
+    if archive_comment:
+        with zipfile.ZipFile(
+            candidate
+            / CURRENT_TEST_CLIENT_VERSION
+            / "resources"
+            / "webplayer.dat",
+            "a",
+        ) as archive:
+            archive.comment = archive_comment
+    (library / "steamapps" / "appmanifest_4532590.acf").write_text(
+        '"AppState" { "installdir" "Olivia" }', encoding="utf-8"
+    )
+    return candidate, feapp_sha256, webplayer_sha256
+
+
+def _selection(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    assert result.returncode == 0, result.stderr or result.stdout
+    return json.loads(result.stdout)
+
+
+def test_automatic_official_discovery_prefers_later_exact_archive_pair(
+    tmp_path: Path,
+) -> None:
+    stale_library = tmp_path / "stale-steam"
+    exact_library = tmp_path / "exact-steam"
+    _, feapp_sha256, webplayer_sha256 = _make_steam_library(
+        stale_library, archive_comment=b"stale official copy"
+    )
+    exact, _, _ = _make_steam_library(exact_library)
+    manifest = _write_manifest(
+        tmp_path / "manifest.json", feapp_sha256, webplayer_sha256
+    )
+
+    selection = _selection(
+        _run_official_install_resolution(
+            manifest=manifest, steam_roots=[stale_library, exact_library]
+        )
+    )
+
+    assert Path(selection["Path"]) == exact
+    assert selection["SelectionMode"] == "auto_manifest_match"
+    assert selection["CandidateCount"] == 2
+
+
+def test_automatic_official_discovery_skips_unreadable_candidate(
+    tmp_path: Path,
+) -> None:
+    unreadable_library = tmp_path / "unreadable-steam"
+    exact_library = tmp_path / "exact-steam"
+    unreadable, feapp_sha256, webplayer_sha256 = _make_steam_library(
+        unreadable_library
+    )
+    exact, _, _ = _make_steam_library(exact_library)
+    manifest = _write_manifest(
+        tmp_path / "manifest.json", feapp_sha256, webplayer_sha256
+    )
+    result = _run_official_install_resolution(
+        manifest=manifest,
+        steam_roots=[unreadable_library, exact_library],
+        unreadable_root=unreadable,
+    )
+
+    selection = _selection(result)
+    assert Path(selection["Path"]) == exact
+    assert selection["SelectionMode"] == "auto_manifest_match"
+    assert selection["CandidateCount"] == 2
+
+
+def test_automatic_official_discovery_rejects_multiple_nonmatching_candidates(
+    tmp_path: Path,
+) -> None:
+    libraries = [tmp_path / "steam-a", tmp_path / "steam-b"]
+    for index, library in enumerate(libraries):
+        _, feapp_sha256, webplayer_sha256 = _make_steam_library(
+            library, archive_comment=f"nonmatching candidate {index}".encode()
+        )
+    manifest = _write_manifest(
+        tmp_path / "manifest.json", feapp_sha256, webplayer_sha256
+    )
+
+    result = _run_official_install_resolution(
+        manifest=manifest, steam_roots=libraries
+    )
+
+    assert result.returncode != 0
+    report = json.loads(result.stdout)
+    assert report["code"] == "OFFICIAL_INSTALL_AMBIGUOUS"
+    diagnostic = report["diagnostic"]
+    assert diagnostic["schema_version"] == "olivia.setup-source-diagnostic.v1"
+    assert diagnostic["selection_mode"] == "auto_ambiguous"
+    assert diagnostic["candidate_count"] == 2
+    assert diagnostic["client_version"] == CURRENT_TEST_CLIENT_VERSION
+    assert diagnostic["manifest_feapp_sha256"] == feapp_sha256
+    assert diagnostic["manifest_webplayer_sha256"] == webplayer_sha256
+    assert len(diagnostic["candidates"]) == 2
+    for candidate in diagnostic["candidates"]:
+        assert set(candidate) == {
+            "candidate_index",
+            "observed_feapp_size",
+            "observed_feapp_sha256",
+            "observed_webplayer_size",
+            "observed_webplayer_sha256",
+        }
+        assert candidate["observed_feapp_size"] > 0
+        assert candidate["observed_webplayer_size"] > 0
+    assert str(libraries[0]) not in result.stdout
+    assert str(libraries[1]) not in result.stdout
+
+
+def test_automatic_official_discovery_defers_single_nonmatching_candidate(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "steam"
+    candidate, feapp_sha256, webplayer_sha256 = _make_steam_library(
+        library, archive_comment=b"compatible nonmatching candidate"
+    )
+    manifest = _write_manifest(
+        tmp_path / "manifest.json", feapp_sha256, webplayer_sha256
+    )
+
+    selection = _selection(
+        _run_official_install_resolution(
+            manifest=manifest, steam_roots=[library]
+        )
+    )
+
+    assert Path(selection["Path"]) == candidate
+    assert selection["SelectionMode"] == "auto_single"
+    assert selection["CandidateCount"] == 1
+
+
+def test_explicit_official_root_bypasses_automatic_candidate_selection(
+    tmp_path: Path,
+) -> None:
+    explicit, feapp_sha256, webplayer_sha256 = _make_official(tmp_path / "explicit")
+    library = tmp_path / "auto-steam"
+    _make_steam_library(library)
+    manifest = _write_manifest(
+        tmp_path / "manifest.json", feapp_sha256, webplayer_sha256
+    )
+
+    selection = _selection(
+        _run_official_install_resolution(
+            manifest=manifest, steam_roots=[library], requested_root=explicit
+        )
+    )
+
+    assert Path(selection["Path"]) == explicit
+    assert selection["SelectionMode"] == "explicit"
+    assert selection["CandidateCount"] == 1
+
+
 def test_managed_runtime_installs_all_server_dependencies() -> None:
     repo_root = Path(__file__).parents[2]
     project = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
@@ -1646,20 +1867,63 @@ def test_incomplete_old_marker_is_not_treated_as_current_install(
         install_full_patch(official, target, payload, manifest)
 
 
-@pytest.mark.parametrize("field", ["feapp_sha256", "webplayer_sha256"])
-def test_install_rejects_bad_source_hash_before_target_write(
+def test_install_rejects_unpatchable_same_version_without_leaving_target(
     fixture_inputs,
     tmp_path: Path,
-    field: str,
 ) -> None:
     official, payload, manifest, _feapp, _webplayer = fixture_inputs
-    bad = json.loads(manifest.read_text(encoding="utf-8"))
-    bad[field] = "0" * 64
-    manifest.write_text(json.dumps(bad), encoding="utf-8")
+    feapp = (
+        official
+        / CURRENT_TEST_CLIENT_VERSION
+        / "resources"
+        / "feapp.dat"
+    )
+    with zipfile.ZipFile(feapp) as archive:
+        members = {
+            info.filename: archive.read(info.filename)
+            for info in archive.infolist()
+        }
+    main_member = "assets/main-917d29fc.js"
+    members[main_member] = members[main_member].replace(
+        b"He=e=>new Promise",
+        b"unsupported=>new Promise",
+    )
+    with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+
     target = tmp_path / "installed"
     with pytest.raises(PatchInstallError, match="UNSUPPORTED_OFFICIAL_VERSION"):
         install_full_patch(official, target, payload, manifest)
     assert not target.exists()
+
+
+def test_install_accepts_patch_compatible_same_version_with_different_archive_hash(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, expected_webplayer = fixture_inputs
+    webplayer = (
+        official
+        / CURRENT_TEST_CLIENT_VERSION
+        / "resources"
+        / "webplayer.dat"
+    )
+    with zipfile.ZipFile(webplayer, "a") as archive:
+        archive.comment = b"same client files, different official package"
+    actual_webplayer = _sha256(webplayer)
+    assert actual_webplayer != expected_webplayer
+
+    target = tmp_path / "installed"
+    report = install_full_patch(official, target, payload, manifest)
+
+    assert report["status"] == "INSTALLED"
+    assert report["official_webplayer_sha256"] == actual_webplayer
+
+    repeated = install_full_patch(official, target, payload, manifest)
+
+    assert repeated["status"] == "ALREADY_INSTALLED"
+    assert repeated["official_webplayer_sha256"] == actual_webplayer
 
 
 def test_install_rejects_official_source_overlap(

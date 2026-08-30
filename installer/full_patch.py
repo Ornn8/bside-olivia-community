@@ -12,9 +12,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-from patch_companion_settings import patch_companion_settings
+from patch_companion_settings import (
+    CompanionSettingsPatchError,
+    patch_companion_settings,
+)
 from patch_feapp import patch_feapp
-from patch_webplayer import patch_webplayer
+from patch_webplayer import WebPlayerPatchError, patch_webplayer
 from installer.uninstall_safety import (
     MARKER_NAME,
     OWNED_PATHS,
@@ -275,13 +278,6 @@ def validate_official_source(
         raise PatchInstallError("OFFICIAL_INSTALL_NOT_FOUND")
     feapp = required[2]
     webplayer = required[3]
-    if (
-        _sha256(feapp).lower()
-        != str(manifest["feapp_sha256"]).lower()
-        or _sha256(webplayer).lower()
-        != str(manifest["webplayer_sha256"]).lower()
-    ):
-        raise PatchInstallError("UNSUPPORTED_OFFICIAL_VERSION")
     return version, feapp, webplayer
 
 
@@ -606,13 +602,14 @@ def _read_marker(path: Path) -> dict[str, Any]:
 
 def _marker_matches_current_install(
     marker: dict[str, Any],
-    manifest: dict[str, Any],
+    source_feapp_sha256: str,
+    source_webplayer_sha256: str,
 ) -> bool:
     return (
         marker.get("official_feapp_sha256")
-        == manifest["feapp_sha256"]
+        == source_feapp_sha256
         and marker.get("official_webplayer_sha256")
-        == manifest["webplayer_sha256"]
+        == source_webplayer_sha256
         and marker.get("original_client_only") is True
         and marker.get("companion_settings_embedded") is True
         and marker.get("webplayer_local_media") is True
@@ -631,17 +628,23 @@ def install_full_patch(
     source = Path(official_source).expanduser().resolve()
     target = Path(destination).expanduser().resolve()
     payload = Path(payload_root).expanduser().resolve()
-    version, _source_feapp, _source_webplayer = validate_official_source(
+    version, source_feapp, source_webplayer = validate_official_source(
         source,
         manifest,
     )
+    source_feapp_sha256 = _sha256(source_feapp)
+    source_webplayer_sha256 = _sha256(source_webplayer)
     if target == source or target in source.parents or source in target.parents:
         raise PatchInstallError("INSTALL_ROOT_OVERLAPS_OFFICIAL")
     marker_path = target / MARKER_NAME
     if target.exists():
         if marker_path.is_file():
             marker = _read_marker(marker_path)
-            if _marker_matches_current_install(marker, manifest):
+            if _marker_matches_current_install(
+                marker,
+                source_feapp_sha256,
+                source_webplayer_sha256,
+            ):
                 refreshed = _refresh_existing_install(target, payload, marker, port)
                 return {"status": "ALREADY_INSTALLED", **refreshed}
         raise PatchInstallError("INSTALL_ROOT_ALREADY_EXISTS")
@@ -659,29 +662,36 @@ def install_full_patch(
         webplayer = resources / "webplayer.dat"
         if (
             _sha256(feapp).lower()
-            != str(manifest["feapp_sha256"]).lower()
+            != source_feapp_sha256.lower()
             or _sha256(webplayer).lower()
-            != str(manifest["webplayer_sha256"]).lower()
+            != source_webplayer_sha256.lower()
         ):
             raise PatchInstallError("STAGED_COPY_VERIFICATION_FAILED")
         if not 1 <= port <= 65535:
             raise PatchInstallError("INVALID_PORT")
 
         base_http = f"http://127.0.0.1:{port}"
-        endpoint_patch = patch_feapp(
-            feapp,
-            f"ws://127.0.0.1:{port}/ws",
-            work_root=resources,
-        )
-        settings_patch = patch_companion_settings(
-            feapp,
-            base_http,
-            work_root=resources,
-        )
-        player_patch = patch_webplayer(
-            webplayer,
-            work_root=resources,
-        )
+        try:
+            endpoint_patch = patch_feapp(
+                feapp,
+                f"ws://127.0.0.1:{port}/ws",
+                work_root=resources,
+            )
+            settings_patch = patch_companion_settings(
+                feapp,
+                base_http,
+                work_root=resources,
+            )
+            player_patch = patch_webplayer(
+                webplayer,
+                work_root=resources,
+            )
+        except (
+            ValueError,
+            CompanionSettingsPatchError,
+            WebPlayerPatchError,
+        ) as exc:
+            raise PatchInstallError("UNSUPPORTED_OFFICIAL_VERSION") from exc
 
         _write_start_scripts(staging, port)
         (staging / "data").mkdir()
@@ -691,7 +701,7 @@ def install_full_patch(
             "client_version": version,
             "official_source": str(source),
             "owned_root": str(target),
-            "official_feapp_sha256": manifest["feapp_sha256"],
+            "official_feapp_sha256": source_feapp_sha256,
             "patched_feapp_sha256": _sha256(feapp),
             "backup_feapp_sha256": endpoint_patch["backup_sha256"],
             "companion_backup_feapp_sha256": settings_patch[
@@ -699,7 +709,7 @@ def install_full_patch(
             ],
             "companion_settings_status": settings_patch["status"],
             "companion_settings_ui_version": settings_patch["ui_version"],
-            "official_webplayer_sha256": manifest["webplayer_sha256"],
+            "official_webplayer_sha256": source_webplayer_sha256,
             "patched_webplayer_sha256": _sha256(webplayer),
             "backup_webplayer_sha256": player_patch["backup_sha256"],
             "webplayer_patch_status": player_patch["status"],

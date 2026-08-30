@@ -154,11 +154,13 @@ var
   PowerShell: String;
   Params: String;
   ExitCode: Integer;
+  DiagnosticContent: AnsiString;
 begin
   Result := '';
   StableInstallCode := '';
   SetupResultPath := ExpandConstant('{tmp}\olivia-setup-result.txt');
   DeleteFile(SetupResultPath);
+  DeleteFile(SetupResultPath + '.diagnostic.json');
   ExitCode := -1;
   try
     ExtractTemporaryFiles('{tmp}\OliviaPayload\*');
@@ -195,7 +197,11 @@ begin
     if StableInstallCode = '' then
       StableInstallCode := 'SETUP_INSTALL_FAILED';
     Log('Olivia installer code: ' + StableInstallCode);
-    if StableInstallCode <> '' then
+    if LoadStringFromFile(SetupResultPath + '.diagnostic.json', DiagnosticContent) then
+      Log('Olivia installer diagnostic: ' + String(DiagnosticContent));
+    if StableInstallCode = 'OFFICIAL_INSTALL_AMBIGUOUS' then
+      Result := '检测到多个 Olivia 正版目录，且无法自动确认当前副本。请点击“上一步”，明确选择 Steam 中正在使用的正版游戏目录。'
+    else if StableInstallCode <> '' then
       Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。'
     else
       Result := Format('安装失败（进程错误码 %d）。请保留安装日志后重试。', [ExitCode]);
