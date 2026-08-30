@@ -161,6 +161,22 @@ def test_failed_letter_preserves_original_failure_and_audit_enums() -> None:
     assert "repliedAt" not in summary
 
 
+def test_failed_letter_ignores_future_reply_publication_deadline() -> None:
+    letter = _letter(
+        letter_status="FAILED",
+        reply_text="",
+        replied_at=None,
+        reply_not_before=NOW + 60,
+    )
+
+    summary = serialize_letter_summary(letter, now=NOW)
+    detail = serialize_letter_detail(letter, now=NOW)
+
+    assert summary["letterStatus"] == OriginalClientLetterStatus.FAILED
+    assert detail["letterStatus"] == OriginalClientLetterStatus.FAILED
+    assert detail["replyText"] == ""
+
+
 def test_exact_aggregate_and_unread_names_are_emitted_with_optional_legacy_aliases() -> None:
     listing = serialize_letter_list(
         [_letter(), _letter(letter_id="letter-fixture-002", is_read=0)],

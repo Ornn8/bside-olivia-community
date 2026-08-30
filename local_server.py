@@ -1186,6 +1186,7 @@ def fake_jwt():
 
 def letter_to_out(l):
     published = l.get("reply_not_before", 0.0) <= time.time()
+    failed = l.get("letter_status") in {"FAILED", "CANCELED", "CANCELLED"}
     metadata = l.get("metadata")
     imported_official = isinstance(metadata, dict) and (
         metadata.get("import_kind") == "official_text_reply"
@@ -1198,7 +1199,11 @@ def letter_to_out(l):
     return {
         "letter_id": l["letter_id"],
         "summary": summary[:50],
-        "letter_status": l.get("letter_status", 4) if published else "PENDING",
+        "letter_status": (
+            l.get("letter_status", 4)
+            if published or failed
+            else "PENDING"
+        ),
         "audit_status": l.get("audit_status", 2),
         "reply_type": 1 if published and l.get("reply_text") else 0,
         "reply_mode": _wire_reply_mode(l.get("reply_mode")) if published else "text",
@@ -2088,7 +2093,8 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
 
 
 def _send_result_for_letter(letter: dict) -> dict:
-    if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
+    letter_status = letter.get("letter_status")
+    if letter_status in {"PENDING", "PROCESSING"}:
         return ok(
             {
                 "letter_id": letter["letter_id"],
@@ -2096,16 +2102,25 @@ def _send_result_for_letter(letter: dict) -> dict:
                 "status": "PENDING",
             }
         )
-    if letter.get("reply_not_before", 0.0) > time.time():
-        return ok({"letter_id": letter["letter_id"], "letterId": letter["letter_id"], "status": "PENDING", "reply_not_before": letter["reply_not_before"]})
-    if letter.get("letter_status") == "COMPLETED" and letter.get("reply_text"):
+    if letter_status in {"CANCELED", "CANCELLED"}:
         return ok(
             {
                 "letter_id": letter["letter_id"],
                 "letterId": letter["letter_id"],
-                "status": "COMPLETED",
+                "status": letter_status,
             }
         )
+    if letter_status == "COMPLETED":
+        if letter.get("reply_not_before", 0.0) > time.time():
+            return ok({"letter_id": letter["letter_id"], "letterId": letter["letter_id"], "status": "PENDING", "reply_not_before": letter["reply_not_before"]})
+        if letter.get("reply_text"):
+            return ok(
+                {
+                    "letter_id": letter["letter_id"],
+                    "letterId": letter["letter_id"],
+                    "status": "COMPLETED",
+                }
+            )
     error_code, retryable = _public_llm_error(letter.get("error_code"))
     return err(
         503,
