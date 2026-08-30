@@ -1433,37 +1433,44 @@ def _complete_layer_reviews(
             layer: _LayerAuthority,
             messages: tuple[dict[str, str], dict[str, str]],
         ) -> _LayerResult:
-            try:
-                text = await _complete_layer_text(
-                    gateway,
-                    messages,
-                    timeout_seconds,
-                    f"quality-{uuid.uuid4().hex}:{layer.name}",
-                    gateway_scope,
-                )
-            except _GatewayInvocationFailure:
-                raise _diagnostic_error(
-                    ReviewFailureStage.LAYER,
-                    ReviewFailureReason.TRANSPORT,
-                    layer.name,
-                ) from None
-            if not isinstance(text, str) or not text.strip():
-                raise _diagnostic_error(
-                    ReviewFailureStage.LAYER,
-                    ReviewFailureReason.EMPTY_TEXT,
-                    layer.name,
-                )
-            try:
-                return _parse_layer_result(
-                    layer,
-                    text,
-                    candidate=candidate,
-                    evidence_bound=evidence_bound,
-                )
-            except _ReviewContractFailure as exc:
-                raise _diagnostic_error(
-                    ReviewFailureStage.LAYER, exc.reason, layer.name
-                ) from None
+            for attempt in range(2):
+                try:
+                    text = await _complete_layer_text(
+                        gateway,
+                        messages,
+                        timeout_seconds,
+                        f"quality-{uuid.uuid4().hex}:{layer.name}",
+                        gateway_scope,
+                    )
+                except _GatewayInvocationFailure:
+                    raise _diagnostic_error(
+                        ReviewFailureStage.LAYER,
+                        ReviewFailureReason.TRANSPORT,
+                        layer.name,
+                    ) from None
+                if not isinstance(text, str) or not text.strip():
+                    raise _diagnostic_error(
+                        ReviewFailureStage.LAYER,
+                        ReviewFailureReason.EMPTY_TEXT,
+                        layer.name,
+                    )
+                try:
+                    return _parse_layer_result(
+                        layer,
+                        text,
+                        candidate=candidate,
+                        evidence_bound=evidence_bound,
+                    )
+                except _ReviewContractFailure as exc:
+                    if (
+                        exc.reason is ReviewFailureReason.LAYER_CONTRACT
+                        and attempt == 0
+                    ):
+                        continue
+                    raise _diagnostic_error(
+                        ReviewFailureStage.LAYER, exc.reason, layer.name
+                    ) from None
+            raise AssertionError("unreachable")
 
         outcomes = await asyncio.gather(
             *(run_one(layer, messages) for layer, messages in requests),

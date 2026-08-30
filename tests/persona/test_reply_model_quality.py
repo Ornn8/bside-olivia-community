@@ -119,6 +119,69 @@ def _run_diagnostic_review(
     return reviewer.review(candidate, context or _intimacy_context()), reviewer
 
 
+def test_layer_contract_failure_retries_only_the_failed_layer_once() -> None:
+    candidate = "Synthetic candidate."
+    layer_reviews = {
+        layer: [_layer_payload(layer)] for layer in _REVIEW_LAYERS
+    }
+    layer_reviews["continuity_memory"] = [
+        _layer_score_payload("continuity_memory", 1),
+        _layer_payload("continuity_memory"),
+    ]
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[],
+        layer_reviews=layer_reviews,
+    )
+
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert reviewer.last_failure_diagnostics == ()
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 2
+    assert all(layer_calls.count(layer) == 1 for layer in _REVIEW_LAYERS[:3])
+    assert layer_calls.count("autonomy_life") == 1
+    assert gateway.call_kinds == ["review"] * 6
+    assert gateway.adjudication_requests == []
+    assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 6
+
+
+def test_repeated_layer_contract_failure_stops_after_one_retry() -> None:
+    candidate = "Synthetic candidate."
+    invalid = _layer_score_payload("continuity_memory", 1)
+    layer_reviews = {
+        layer: [_layer_payload(layer)] for layer in _REVIEW_LAYERS
+    }
+    layer_reviews["continuity_memory"] = [invalid, invalid]
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[],
+        layer_reviews=layer_reviews,
+    )
+
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.LAYER,
+            ReviewFailureReason.LAYER_CONTRACT,
+            "continuity_memory",
+        ),
+    )
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 2
+    assert all(
+        layer_calls.count(layer) == 1
+        for layer in _REVIEW_LAYERS
+        if layer != "continuity_memory"
+    )
+    assert gateway.call_kinds == ["review"] * 6
+    assert gateway.adjudication_requests == []
+    assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 6
+
+
 @pytest.mark.parametrize(
     ("case", "reason", "layer"),
     (
@@ -169,17 +232,40 @@ def test_reviewer_classifies_layer_failure(
             drift_detected=True,
             hard_evidence=[evidence],
         )
-    gateway = (
-        FailingQualityGateway(failure="layer", failing_layer=layer)
-        if case == "transport"
-        else SequencedQualityGateway(candidate=candidate, reviews=reviews)
-    )
+    if case == "transport":
+        gateway = FailingQualityGateway(
+            failure="layer",
+            failing_layer=layer,
+        )
+    else:
+        layer_reviews = {
+            name: [reviews[layer_index]]
+            for layer_index, name in enumerate(_REVIEW_LAYERS)
+        }
+        if reason is ReviewFailureReason.LAYER_CONTRACT:
+            layer_reviews[layer].append(reviews[index])
+        gateway = SequencedQualityGateway(
+            candidate=candidate,
+            reviews=[],
+            layer_reviews=layer_reviews,
+        )
     result, reviewer = _run_diagnostic_review(gateway, candidate)
 
     assert result.error_code == "REVIEWER_UNAVAILABLE"
     assert reviewer.last_failure_diagnostics == (
         ReviewFailureDiagnostic(ReviewFailureStage.LAYER, reason, layer),
     )
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    expected_attempts = (
+        2 if reason is ReviewFailureReason.LAYER_CONTRACT else 1
+    )
+    assert layer_calls.count(layer) == expected_attempts
+    assert all(
+        layer_calls.count(name) == 1
+        for name in _REVIEW_LAYERS
+        if name != layer
+    )
+    assert len(gateway.request_ids) == len(set(gateway.request_ids))
 
 
 def test_reviewer_orders_multiple_layer_failures_by_authority() -> None:
@@ -290,12 +376,11 @@ def test_unexpected_layer_parser_error_is_internal(
         return original(layer, *args, **kwargs)
 
     monkeypatch.setattr(quality_module, "_parse_layer_result", fail_identity_parser)
-    result, reviewer = _run_diagnostic_review(
-        SequencedQualityGateway(
-            candidate="Synthetic candidate.",
-            reviews=_passing_layer_payloads(),
-        )
+    gateway = SequencedQualityGateway(
+        candidate="Synthetic candidate.",
+        reviews=_passing_layer_payloads(),
     )
+    result, reviewer = _run_diagnostic_review(gateway)
 
     assert result.error_code == "REVIEWER_UNAVAILABLE"
     assert reviewer.last_failure_diagnostics == (
@@ -306,6 +391,10 @@ def test_unexpected_layer_parser_error_is_internal(
         ),
     )
     assert "private parser detail" not in repr(reviewer.last_failure_diagnostics)
+    assert [
+        request["layer"] for request in gateway.review_requests
+    ].count("identity_boundary") == 1
+    assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 5
 
 
 def test_layer_cancellation_is_not_converted_to_reviewer_unavailable(
@@ -599,12 +688,18 @@ class SequencedQualityGateway(Gateway):
         reviews: list[str],
         rewritten: str = "我听见了。先不用急着给自己一个结论。",
         adjudications: list[str] | None = None,
+        layer_reviews: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self.candidate = candidate
         self.reviews = list(reviews)
+        self.layer_reviews = {
+            layer: list(responses)
+            for layer, responses in (layer_reviews or {}).items()
+        }
         self.rewritten = rewritten
         self.adjudications = list(adjudications or [])
         self.call_kinds: list[str] = []
+        self.request_ids: list[str | None] = []
         self.review_system_prompts: list[str] = []
         self.review_requests: list[dict[str, object]] = []
         self.rewrite_system_prompts: list[str] = []
@@ -632,6 +727,7 @@ class SequencedQualityGateway(Gateway):
         *,
         request_id: str | None = None,
     ) -> GatewayResponse:
+        self.request_ids.append(request_id)
         system = str(messages[0].get("content", ""))
         user = str(messages[-1].get("content", ""))
         if "P02_REPLY_EVIDENCE_ADJUDICATION_JSON" in system:
@@ -648,11 +744,17 @@ class SequencedQualityGateway(Gateway):
         elif "P02_REPLY_REVIEW_JSON" in system:
             self.call_kinds.append("review")
             self.review_system_prompts.append(system)
-            self.review_requests.append(json.loads(user))
+            request = json.loads(user)
+            self.review_requests.append(request)
             self.review_input_sizes.append(
                 sum(len(str(message.get("content", ""))) for message in messages)
             )
-            text = self.reviews.pop(0)
+            layer = str(request["layer"])
+            text = (
+                self.layer_reviews[layer].pop(0)
+                if self.layer_reviews
+                else self.reviews.pop(0)
+            )
         elif "P02_REPLY_REWRITE_TEXT" in system:
             self.call_kinds.append("rewrite")
             self.rewrite_system_prompts.append(system)
@@ -696,7 +798,11 @@ class FailingQualityGateway(SequencedQualityGateway):
         ):
             raise TimeoutError("private adjudication detail")
         if "P02_REPLY_REVIEW_JSON" in system:
-            layer = str(json.loads(str(messages[-1]["content"]))["layer"])
+            request = json.loads(str(messages[-1]["content"]))
+            layer = str(request["layer"])
+            self.request_ids.append(request_id)
+            self.call_kinds.append("review")
+            self.review_requests.append(request)
             if self.failure == "layer" and layer == self.failing_layer:
                 raise TimeoutError("private upstream detail")
             return GatewayResponse(
