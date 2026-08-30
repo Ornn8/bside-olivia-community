@@ -25,13 +25,15 @@ metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储�
 
 检索内容只作为 `<MEMORY_CONTEXT_UNTRUSTED_DATA>` 内的引用资料。正文在渲染时转义 `<`、`>`、方括号、下划线和反斜杠；角色伪装、命令、重复 delimiter 都不会成为 system 指令。资料区分 `CONVERSATION_MEMORY_CURRENT` 与 `LEGACY_LETTERS_REFERENCE_ONLY`，并携带有限 provenance。
 
-聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。`/toy/letter/legacy/official-import` 由设置页用户确认触发，复用同一只读导入边界，只导入用户原信和官方文字回信，忽略视频；官方凭证只在本次请求内存中使用。一个本地 data-root 只对应一个用户档案：首个含文字回信的官方账号写入稳定账号标记，后续不同账号会在任何归档或记忆写入前被拒绝；需要切换账号时必须使用独立 data-root。导入前必须确认真实 Mem0 与 PrivateWorld 可用，否则在采集官方历史前失败。采集并校验后，系统按 `occurred_at` 从早到晚逐封执行 `remember_exchange`；只有写入或稳定判重成功才会继续，`SKIPPED` 视为失败。全部记忆完成后才允许一次幂等的 PrivateWorld 历史基线初始化；它不会覆盖已有 PrivateWorld。最后一步才把完成标记与记录一起原子写入 SQLite 只读归档，并发布到默认信箱时间线；旧版本留下且没有完成标记的官方归档不会被发布。历史信件保持 `scope=legacy`、`read_only=true`、`is_read=true`，因此可在真实信箱查看，但不增加未读数，也不会生成新回信或视频。
+聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。`/toy/letter/legacy/official-import` 由设置页用户确认触发，复用同一只读导入边界，只导入用户原信和官方文字回信，忽略视频；官方凭证只在本次请求内存中使用。一个本地 data-root 只对应一个用户档案：首个含文字回信的官方账号写入稳定账号标记，后续不同账号会在任何归档或记忆写入前被拒绝；需要切换账号时必须使用独立 data-root。导入前必须确认真实 Mem0 与 PrivateWorld 可用，否则在采集官方历史前失败。采集并校验后，系统按 `occurred_at` 从早到晚逐封执行 `remember_exchange`；只有写入或稳定判重成功才会继续，`SKIPPED` 视为失败。
+
+Mem0 完成后，PrivateWorld 以完整、规范排序的 `source_record_id` 集合生成稳定命令 ID，并在调用评估 provider 前查询命令审计。已有审计直接复用，不再调用 provider；没有审计时，即使 Mem0 全部判重或 PrivateWorld 已有状态，也只评估一次完整语料，并通过 `ApplyHistoricalRelationshipEvidence` 对 `familiarity` / `closeness` 做逐轴 `max`。该命令不改变阶段、trust、comfort、tension、增长配额、亲密授权或其他私人状态。最后一步才把完成标记与记录一起原子写入 SQLite 只读归档，并发布到默认信箱时间线；旧版本留下且没有完成标记的官方归档不会被发布。历史信件保持 `scope=legacy`、`read_only=true`、`is_read=true`，因此可在真实信箱查看，但不增加未读数，也不会生成新回信或视频。
 
 `official_history_publish_status` 是服务端保留 metadata；通用 legacy import 会丢弃调用方提交的同名字段。官方历史成功重试若命中旧版同内容归档，会在同一 SQLite 事务内升级该归档的来源、原时间和完成标记，并在事务结束前恢复只读 update trigger。
 
 `official_history_memory_semantics` 也是服务端保留 metadata。只有值为 `actor_split_first_person_v2` 的官方历史才可跳过记忆重建；旧记录会先删除，再按 actor 分别提取来信用户事实与林离事实，只有林离事实必须使用第一人称“我”。首次导入时 SQLite 尚未创建 `legacy_letters` 表属于空库引导状态，可安全回退到进程内空归档；其他 SQLite 错误继续失败关闭。
 
-官方历史导入期间可通过同一路径的 `GET` 请求读取进度；字段与状态见 `contracts/official_history_import_progress.schema.json`。进程启动后若同时存在内存引导记录和 SQLite 只读归档，信箱会按 `source_record_id`（缺失时按 `letter_id`）合并去重，不会让一侧遮蔽另一侧。已有 PrivateWorld 状态不会被旧的基线初始化覆盖；此时历史信件仍进入长期记忆，客户端明确显示“保留已有关系状态”。
+官方历史导入期间可通过同一路径的 `GET` 请求读取进度；字段与状态见 `contracts/official_history_import_progress.schema.json`。进程启动后若同时存在内存引导记录和 SQLite 只读归档，信箱会按 `source_record_id`（缺失时按 `letter_id`）合并去重，不会让一侧遮蔽另一侧。若 PrivateWorld 已提交而后续只读归档失败，重试会命中同一命令审计并跳过 provider，再继续归档；已有关系只吸收两个亲密轴的更高历史下限，不会被历史导入降级或改写其他状态。
 
 ## 健康检查与验证
 

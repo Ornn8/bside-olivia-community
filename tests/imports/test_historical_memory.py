@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from conversation_memory_port import MemoryWriteResult, MemoryWriteStatus
 from llm_gateway import GatewayResponse
-from private_world_commands import InitializeHistoricalRelationship
+from private_world_commands import (
+    ApplyHistoricalRelationshipEvidence,
+    InitializeHistoricalRelationship,
+    PrivateWorldActor,
+    PrivateWorldCommandSource,
+)
+from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_service import CommandExecutionResult, CommandExecutionStatus
+from private_world_service import PrivateWorldCommandService
 from runtime.imports.historical_memory import (
     HistoricalExchange,
     apply_historical_private_world,
     assess_historical_relationship,
     exchanges_from_legacy_payload,
+    historical_relationship_command_id,
     migrate_historical_exchanges,
 )
+from runtime.reply.reply_context import RelationshipStage
 
 
 class RecordingMemory:
@@ -56,6 +68,47 @@ def _exchange(name: str, timestamp: int) -> HistoricalExchange:
         occurred_at=datetime.fromtimestamp(timestamp, timezone.utc),
         user_message=f"user-{name}",
         assistant_message=f"assistant-{name}",
+    )
+
+
+def _history_payload(
+    order: tuple[str, ...] = ("first", "second"),
+) -> dict[str, object]:
+    timestamps = {"first": 10, "second": 20}
+    return {
+        "mode": "read_only",
+        "letters": [
+            {
+                "source_record_id": f"official:account:{name}",
+                "occurred_at": timestamps[name],
+                "metadata": {
+                    "import_kind": "official_text_reply",
+                    "user_content": f"user-{name}",
+                    "reply_text": f"assistant-{name}",
+                },
+            }
+            for name in order
+        ],
+    }
+
+
+def _wire_history_server(
+    monkeypatch,
+    local_server,
+    *,
+    memory: object,
+    ledger: object,
+    service: object,
+    gateway: object,
+) -> None:
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "private_world_port", ledger)
+    monkeypatch.setattr(local_server, "private_world_command_service", service)
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "get_persona_policy",
+        lambda: "AUTHORITATIVE PERSONA POLICY",
     )
 
 
@@ -395,17 +448,23 @@ class AssessmentGateway:
 
 class RecordingCommandService:
     def __init__(self) -> None:
-        self.commands: list[InitializeHistoricalRelationship] = []
+        self.commands: list[ApplyHistoricalRelationshipEvidence] = []
 
-    def execute(self, command: InitializeHistoricalRelationship) -> CommandExecutionResult:
+    def lookup_command(self, _command_id: str):
+        return None
+
+    def execute(
+        self,
+        command: ApplyHistoricalRelationshipEvidence,
+    ) -> CommandExecutionResult:
         self.commands.append(command)
         return CommandExecutionResult(
             CommandExecutionStatus.APPLIED,
             command.command_id,
             "event.fixture",
-            "INITIALIZE_HISTORICAL_RELATIONSHIP",
+            "APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
             2,
-            ("relationship_stage",),
+            ("familiarity", "closeness"),
         )
 
 
@@ -506,6 +565,15 @@ def test_private_world_initialization_commits_exactly_one_migration_command() ->
     )
 
 
+def test_historical_relationship_command_id_uses_canonical_corpus_order() -> None:
+    first = _exchange("first", 10)
+    second = _exchange("second", 20)
+
+    assert historical_relationship_command_id((second, first)) == (
+        historical_relationship_command_id((first, second))
+    )
+
+
 def test_server_migration_runs_mem0_in_order_before_one_private_world_commit(
     monkeypatch,
 ) -> None:
@@ -515,40 +583,18 @@ def test_server_migration_runs_mem0_in_order_before_one_private_world_commit(
     memory = RecordingMemory([MemoryWriteStatus.WRITTEN, MemoryWriteStatus.WRITTEN])
     gateway = AssessmentGateway()
     service = RecordingCommandService()
-    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
-    monkeypatch.setattr(local_server, "private_world_command_service", service)
-    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
-    monkeypatch.setattr(
-        local_server.letters_adapter,
-        "get_persona_policy",
-        lambda: "AUTHORITATIVE PERSONA POLICY",
+    _wire_history_server(
+        monkeypatch,
+        local_server,
+        memory=memory,
+        ledger=local_server.private_world_port,
+        service=service,
+        gateway=gateway,
     )
 
     result = asyncio.run(
         local_server._migrate_official_history(
-            {
-                "mode": "read_only",
-                "letters": [
-                    {
-                        "source_record_id": "official:account:later",
-                        "occurred_at": 20,
-                        "metadata": {
-                            "import_kind": "official_text_reply",
-                            "user_content": "user-second",
-                            "reply_text": "assistant-second",
-                        },
-                    },
-                    {
-                        "source_record_id": "official:account:first",
-                        "occurred_at": 10,
-                        "metadata": {
-                            "import_kind": "official_text_reply",
-                            "user_content": "user-first",
-                            "reply_text": "assistant-first",
-                        },
-                    },
-                ],
-            }
+            _history_payload(("second", "first"))
         )
     )
 
@@ -559,49 +605,93 @@ def test_server_migration_runs_mem0_in_order_before_one_private_world_commit(
     assert "AUTHORITATIVE PERSONA POLICY" in gateway.messages[0]["content"]
 
 
-def test_server_migration_skips_relationship_llm_when_private_world_already_exists(
+def test_server_migration_applies_historical_axes_to_an_existing_private_world(
+    tmp_path: Path,
     monkeypatch,
 ) -> None:
     import asyncio
     import local_server
-    from private_world_port import PrivateWorldSnapshot
 
-    memory = RecordingMemory([MemoryWriteStatus.DUPLICATE])
+    memory = RecordingMemory(
+        [MemoryWriteStatus.DUPLICATE, MemoryWriteStatus.DUPLICATE]
+    )
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    service = PrivateWorldCommandService(ledger)
+    legacy_corpus_id = "history.init." + hashlib.sha256(
+        (
+            "official:account:first\n"
+            "official:account:second"
+        ).encode("utf-8")
+    ).hexdigest()
+    service.execute(
+        InitializeHistoricalRelationship(
+            command_id=legacy_corpus_id,
+            idempotency_key=legacy_corpus_id,
+            actor=PrivateWorldActor.MIGRATION,
+            source=PrivateWorldCommandSource.IMPORT,
+            occurred_at=datetime.fromtimestamp(1, timezone.utc),
+            reason="synthetic existing relationship",
+            evidence_refs=("history.existing.fixture",),
+            relationship_stage=RelationshipStage.CLOSE,
+            familiarity=60,
+            trust=33,
+            comfort=34,
+            closeness=20,
+            tension=7,
+        )
+    )
+    before = ledger.snapshot()
+    gateway = AssessmentGateway()
 
-    class ExistingWorld:
-        def snapshot(self) -> PrivateWorldSnapshot:
-            return PrivateWorldSnapshot(version=2, trust=20)
-
-    class FailingGateway:
-        async def complete(self, *_args, **_kwargs):
-            raise AssertionError("relationship LLM must not run twice")
-
-    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
-    monkeypatch.setattr(local_server, "private_world_port", ExistingWorld())
-    monkeypatch.setattr(local_server.letters_adapter, "gateway", FailingGateway())
+    _wire_history_server(
+        monkeypatch,
+        local_server,
+        memory=memory,
+        ledger=ledger,
+        service=service,
+        gateway=gateway,
+    )
 
     result = asyncio.run(
-        local_server._migrate_official_history(
-            {
-                "mode": "read_only",
-                "account_id": "account",
-                "letters": [
-                    {
-                        "source_record_id": "official:account:first",
-                        "occurred_at": 10,
-                        "metadata": {
-                            "import_kind": "official_text_reply",
-                            "user_content": "user-first",
-                            "reply_text": "assistant-first",
-                        },
-                    }
-                ],
-            }
-        )
+        local_server._migrate_official_history(_history_payload())
     )
 
     assert result.status == "completed"
-    assert result.private_world_status == "already_initialized"
+    assert result.private_world_status == "initialized"
+    assert gateway.messages
+    assert ledger.snapshot() == replace(
+        before,
+        version=before.version + 1,
+        familiarity=60,
+        closeness=36,
+    )
+
+    class ExplodingGateway:
+        async def complete(self, *_args, **_kwargs):
+            raise AssertionError("persisted history audit must skip provider")
+
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "gateway",
+        ExplodingGateway(),
+    )
+    source_ids = frozenset(
+        {"official:account:first", "official:account:second"}
+    )
+    retry = asyncio.run(
+        local_server._migrate_official_history(
+            _history_payload(("second", "first")),
+            skip_source_record_ids=source_ids,
+        )
+    )
+
+    assert retry.status == "completed"
+    assert retry.private_world_status == "already_initialized"
+    assert len(memory.events) == 2
+    assert sum(
+        event.event_type == "apply_historical_relationship_evidence"
+        for event in ledger.events()
+    ) == 1
 
 
 def test_server_migration_reports_partial_when_private_world_is_unavailable(
