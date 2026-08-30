@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v12"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v13"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -25,6 +25,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";
   const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
+  const MEMORY_RETRY_PATH = "/toy/companion/memory/retry";
   const SETUP_STATUS_PATH = "/toy/setup/status";
   const LLM_TEST_PATH = "/toy/setup/llm/test";
   const LLM_SAVE_PATH = "/toy/setup/llm/save";
@@ -346,7 +347,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
-          || path === OFFICIAL_LETTER_IMPORT_PATH)
+          || path === OFFICIAL_LETTER_IMPORT_PATH
+          || path === MEMORY_RETRY_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -636,11 +638,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  const scheduleMemoryStatusRefresh = (panel, delay = 1000) => {
+    window.clearTimeout(panel.__oliviaMemoryStatusTimer);
+    panel.__oliviaMemoryStatusTimer = window.setTimeout(async () => {
+      if (!panel.isConnected) return;
+      try {
+        const status = await requestJson(STATUS_PATH);
+        await renderMemoryPanel(panel, status.capabilities.memory);
+      } catch (_error) {
+        scheduleMemoryStatusRefresh(panel, Math.min(delay * 2, 5000));
+      }
+    }, delay);
+  };
+
   const renderMemoryPanel = async (panel, capability) => {
+    window.clearTimeout(panel.__oliviaMemoryStatusTimer);
     const state = capabilityState(capability);
     const confirmClear = async () => await confirmAction("确认清空当前用户的 Mem0 长期记忆？")
       && await confirmAction("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
     if (state === "disabled" || state === "unavailable") {
+      if (state === "unavailable" && capability && capability.reason_code === "MEM0_INITIALIZING") {
+        panel.replaceChildren(
+          text("h3", "长期记忆", "text-text-title text-title-m"),
+          text("p", "长期记忆正在准备，其他功能可正常使用。需要长期记忆的回信会在准备完成后继续。", "text-text-secondary text-body-m font-regular")
+        );
+        scheduleMemoryStatusRefresh(panel);
+        return;
+      }
       if (state === "unavailable" && capability && capability.reason_code === "MEMORY_ADMIN_CLEAR_PENDING") {
         const heading = text("h3", "长期记忆", "text-text-title text-title-m");
         const summary = text("p", "上次清空尚未完成。", "text-text-secondary text-body-m font-regular");
@@ -735,6 +759,32 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           }
         });
         panel.replaceChildren(heading, summary, install, resultState);
+        return;
+      }
+      if (state === "unavailable") {
+        const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
+        const retry = button("重新准备长期记忆", async () => {
+          setButtonsBusy([retry], true);
+          try {
+            const payload = await requestMutation(MEMORY_RETRY_PATH, {});
+            if (["INITIALIZING", "AVAILABLE"].includes(payload.status)) {
+              const status = await requestJson(STATUS_PATH);
+              await renderMemoryPanel(panel, status.capabilities.memory);
+              return;
+            }
+            resultState.textContent = "当前配置仍未就绪，请检查长期记忆下载状态。";
+          } catch (_error) {
+            resultState.textContent = "长期记忆仍未准备好，请稍后重试。";
+          } finally {
+            setButtonsBusy([retry], false);
+          }
+        });
+        panel.replaceChildren(
+          text("h3", "长期记忆", "text-text-title text-title-m"),
+          text("p", "长期记忆没有准备成功，其他功能仍可使用；等待中的回信会保留。", "text-text-secondary text-body-m font-regular"),
+          retry,
+          resultState
+        );
         return;
       }
       renderUnavailable(panel, state, "长期记忆");

@@ -84,7 +84,11 @@ from runtime.video_reply_settings import (
     receive_eligibility_from_letter,
 )
 from conversation_memory_port import ConversationMemoryPort
-from conversation_memory_runtime import conversation_memory_runtime_status
+from conversation_memory_runtime import (
+    conversation_memory_runtime_status,
+    ensure_conversation_memory_runtime,
+    stop_conversation_memory_runtime,
+)
 from local_memory import (
     create_conversation_memory_adapter,
     create_memory_adapter,
@@ -276,6 +280,27 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         _os.environ.pop(key_env, None)
     else:
         _os.environ[key_env] = "1"
+    memory_environment = dict(_os.environ)
+    if api_key is not None:
+        memory_environment[key_env] = api_key
+    replacement = create_conversation_memory_adapter(
+        _memory_config,
+        environ=memory_environment,
+        llm_fallback={
+            "base_url": candidate.base_url,
+            "model": candidate.model,
+            "api_key_env": key_env,
+        },
+        defer_initialization=True,
+    )
+    reconfigure = getattr(conversation_memory_adapter, "reconfigure_from", None)
+    if callable(reconfigure) and reconfigure(replacement):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            _start_conversation_memory_initialization(loop)
 
 
 def _persona() -> str:
@@ -845,6 +870,7 @@ conversation_memory_adapter: ConversationMemoryPort = (
             "model": LLM_CONFIG.model,
             "api_key_env": LLM_CONFIG.api_key_env,
         },
+        defer_initialization=True,
     )
 )
 
@@ -942,6 +968,17 @@ def _official_history_memory_available() -> bool:
         and status.enabled is True
         and status.provider == "mem0"
     )
+
+
+def _conversation_memory_ready_for_reply() -> bool:
+    try:
+        status = conversation_memory_adapter.status().status
+        runtime = conversation_memory_runtime_status()
+        return status == "disabled" or (
+            status == "available" and runtime.status == "available"
+        )
+    except Exception:
+        return False
 
 
 def _official_history_private_world_available() -> bool:
@@ -2239,6 +2276,29 @@ async def route(
         query = {}
     if p == "/health":
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
+    if p == "/toy/companion/memory/retry":
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
+                "status": "FAILED",
+                "error_code": "COMPANION_CONFIRMATION_REQUIRED",
+                "retryable": False,
+            })
+        started = _start_conversation_memory_initialization(
+            asyncio.get_running_loop()
+        )
+        status = conversation_memory_adapter.status()
+        runtime_status = (
+            _start_ready_conversation_memory_runtime()
+            if not started and status.status == "available"
+            else None
+        )
+        public_status = "INITIALIZING" if started or status.reason_code == "MEM0_INITIALIZING" else (
+            runtime_status.status.upper() if runtime_status is not None else status.status.upper()
+        )
+        return ok({
+            "status": public_status,
+            "retryable": public_status in {"INITIALIZING", "DEGRADED", "UNAVAILABLE"},
+        })
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
@@ -2761,7 +2821,7 @@ async def route(
         if idempotency_key is not None:
             store.request_keys[idempotency_key] = lid
         _persist_store_state()
-        if defer_reply:
+        if defer_reply or not _conversation_memory_ready_for_reply():
             _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
             return _send_result_for_letter(letter)
         completed = await generate_reply(lid, content, idempotency_key=idempotency_key)
@@ -3044,6 +3104,12 @@ async def _run_reply_job(
         return False
 
 
+async def _run_reply_when_memory_ready(letter_id: str, content: str, *, idempotency_key: str | None) -> bool:
+    while not _conversation_memory_ready_for_reply():
+        await asyncio.sleep(0.25)
+    return await _run_reply_job(letter_id, content, idempotency_key=idempotency_key)
+
+
 def _schedule_reply_job(
     letter_id: str,
     content: str,
@@ -3054,7 +3120,7 @@ def _schedule_reply_job(
     if active is not None and not active.done():
         return
     task = asyncio.create_task(
-        _run_reply_job(
+        _run_reply_when_memory_ready(
             letter_id,
             content,
             idempotency_key=idempotency_key,
@@ -3139,6 +3205,38 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     _schedule_pending_media_jobs()
 
 
+def _start_ready_conversation_memory_runtime():
+    if getattr(conversation_memory_adapter, "closed", False):
+        return None
+    builder = letters_adapter.memory_prompt_builder
+    status = ensure_conversation_memory_runtime(
+        memory_adapter,
+        conversation_memory_adapter,
+        memory_lifecycle=builder.memory_lifecycle,
+    )
+    builder.conversation_runtime_status = status.to_dict()
+    if status.status == "available":
+        _schedule_pending_reply_jobs()
+    return status
+
+
+async def _start_conversation_memory(_app: web.Application) -> None:
+    started = _start_conversation_memory_initialization(asyncio.get_running_loop())
+    if not started and conversation_memory_adapter.status().status == "available":
+        _start_ready_conversation_memory_runtime()
+
+
+def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -> bool:
+    start = getattr(conversation_memory_adapter, "start_initialization", None)
+    if callable(start):
+        return bool(start(
+            on_ready=lambda: loop.call_soon_threadsafe(
+                _start_ready_conversation_memory_runtime
+            )
+        ))
+    return False
+
+
 async def _stop_reply_tasks(_app: web.Application) -> None:
     tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks)
     for task in tasks:
@@ -3152,10 +3250,19 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
     media_jobs.clear()
 
 
+async def _stop_conversation_memory(_app: web.Application) -> None:
+    close = getattr(conversation_memory_adapter, "close", None)
+    if callable(close):
+        close()
+    stop_conversation_memory_runtime()
+
+
 def install_reply_task_lifecycle(app: web.Application) -> None:
     """Resume durable pending replies and stop owned tasks with the HTTP app."""
 
+    app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    app.on_cleanup.append(_stop_conversation_memory)
     app.on_cleanup.append(_stop_reply_tasks)
 
 

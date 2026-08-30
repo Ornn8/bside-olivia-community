@@ -273,6 +273,140 @@ class Mem0Config:
         }
 
 
+class DeferredConversationMemoryAdapter:
+    """Expose Mem0 immediately while constructing its backend off-thread."""
+
+    enabled = True
+
+    def __init__(
+        self,
+        config: Mem0Config,
+        factory: Callable[[], ConversationMemoryPort],
+    ) -> None:
+        self.config = config
+        self._factory = factory
+        self._delegate: ConversationMemoryPort | None = None
+        self._reason_code = "MEM0_INITIALIZING"
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._ready_callbacks: list[Callable[[], None]] = []
+        self._closed = False
+        self._generation = 0
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def reconfigure_from(self, other: object) -> bool:
+        if not isinstance(other, DeferredConversationMemoryAdapter):
+            return False
+        with other._lock:
+            config, factory = other.config, other._factory
+        with self._lock:
+            self._generation += 1
+            self.config, self._factory = config, factory
+            self._delegate = None
+            self._reason_code, self._closed = "MEM0_INITIALIZING", False
+        return True
+
+    def start_initialization(
+        self,
+        *,
+        on_ready: Callable[[], None] | None = None,
+    ) -> bool:
+        with self._lock:
+            if self._closed:
+                self._closed = False
+            if self._delegate is not None:
+                return False
+            if on_ready is not None and not self._ready_callbacks:
+                self._ready_callbacks.append(on_ready)
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._reason_code = "MEM0_INITIALIZING"
+            self._generation += 1
+            self._thread = threading.Thread(target=self._initialize, name="olivia-mem0-initializer", daemon=True)
+            self._thread.start()
+            return True
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._ready_callbacks.clear()
+
+    def status(self) -> ConversationMemoryStatus:
+        with self._lock:
+            delegate = self._delegate
+            reason_code = self._reason_code
+        if delegate is not None:
+            return delegate.status()
+        return ConversationMemoryStatus(
+            "unavailable",
+            True,
+            "mem0",
+            "qdrant-local",
+            reason_code=reason_code,
+        )
+
+    def search_context(self, query: str, *, user_id: str, limit: int):
+        return self._current().search_context(query, user_id=user_id, limit=limit)
+
+    def remember_exchange(self, **kwargs):
+        return self._current().remember_exchange(**kwargs)
+
+    def list_memories(self, *, user_id: str, limit: int = 100):
+        return self._current().list_memories(user_id=user_id, limit=limit)
+
+    def add_manual_memory(self, text: str, *, user_id: str, source_id: str):
+        return self._current().add_manual_memory(text, user_id=user_id, source_id=source_id)
+
+    def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        return self._current().delete_memory(memory_id, user_id=user_id)
+
+    def clear_user(self, *, user_id: str) -> int:
+        return self._current().clear_user(user_id=user_id)
+
+    def export_user(self, *, user_id: str) -> dict[str, object]:
+        return self._current().export_user(user_id=user_id)
+
+    def _current(self) -> ConversationMemoryPort:
+        with self._lock:
+            if self._delegate is not None:
+                return self._delegate
+            reason_code = self._reason_code
+        return UnavailableConversationMemoryPort(reason_code, config=self.config)
+
+    def _initialize(self) -> None:
+        while True:
+            with self._lock:
+                generation, factory = self._generation, self._factory
+            try:
+                candidate = factory()
+                status = candidate.status()
+                reason_code = None if status.status == "available" and status.enabled is True else status.reason_code or "MEM0_INITIALIZATION_FAILED"
+            except Exception:
+                candidate, reason_code = None, "MEM0_INITIALIZATION_FAILED"
+            with self._lock:
+                if self._closed:
+                    self._thread = None
+                    return
+                if generation != self._generation:
+                    candidate = None
+                    continue
+                if reason_code is not None:
+                    self._reason_code, self._thread = reason_code, None
+                    return
+                self._delegate, self._thread = candidate, None
+                callbacks = tuple(self._ready_callbacks)
+                self._ready_callbacks.clear()
+                break
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                pass
+
+
 def _bool(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -1402,6 +1536,7 @@ def create_mem0_adapter(
 
 
 __all__ = [
+    "DeferredConversationMemoryAdapter",
     "MEM0_EMBEDDING_MODEL",
     "MEM0_EMBEDDING_MODEL_REVISION",
     "MEM0_OSS_VERSION",

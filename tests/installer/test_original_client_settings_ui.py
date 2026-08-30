@@ -128,9 +128,31 @@ def test_mem0_runtime_download_explains_temporarily_flat_progress() -> None:
     ) in BOOTSTRAP_JAVASCRIPT
 
 
+def test_memory_initialization_poll_recovers_and_stops_when_detached() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs = require("fs");
+const source = fs.readFileSync(0, "utf8");
+const body = source.split("  const scheduleMemoryStatusRefresh =")[1].split("\n\n  const renderMemoryPanel =")[0];
+let timers = new Map(), nextId = 0, attempts = 0;
+const window = { clearTimeout: (id) => timers.delete(id), setTimeout: (fn) => (timers.set(++nextId, fn), nextId) };
+const requestJson = async () => { if (++attempts === 1) throw new Error("transient"); return { capabilities: { memory: {} } }; };
+const renderMemoryPanel = async () => {}; const STATUS_PATH = "/status";
+eval("var scheduleMemoryStatusRefresh =" + body);
+const panel = { isConnected: true };
+const run = async () => { const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); };
+(async () => { scheduleMemoryStatusRefresh(panel); await run(); const failed = timers.size; await run(); const recovered = timers.size; scheduleMemoryStatusRefresh(panel); panel.isConnected = false; await run(); process.stdout.write(JSON.stringify({ failed, recovered, detached: timers.size })); })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+'''
+    result = subprocess.run([node, "-e", harness], input=BOOTSTRAP_JAVASCRIPT.encode(), capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert json.loads(result.stdout) == {"failed": 1, "recovered": 0, "detached": 0}
+
+
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v12"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v13"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -139,6 +161,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const MEMORY_CLEAR_PATH = "/toy/companion/memory/clear";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
         'const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";',
+        'const MEMORY_RETRY_PATH = "/toy/companion/memory/retry";',
         'const CONFIRM_HEADER = "X-Olivia-Companion-Action";',
         'const CONFIRM_VALUE = "confirmed";',
     ):
@@ -154,6 +177,9 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
     assert "Promise.allSettled" in BOOTSTRAP_JAVASCRIPT
+    assert "长期记忆正在准备，其他功能可正常使用" in BOOTSTRAP_JAVASCRIPT
+    assert "重新准备长期记忆" in BOOTSTRAP_JAVASCRIPT
+    assert '["INITIALIZING", "AVAILABLE"].includes(payload.status)' in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" not in BOOTSTRAP_JAVASCRIPT
     assert "const confirmAction = (message) => new Promise" in BOOTSTRAP_JAVASCRIPT
     assert 'confirmation.style.backgroundColor = "#18191c";' in BOOTSTRAP_JAVASCRIPT

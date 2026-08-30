@@ -17,7 +17,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 错误响应：`{"code":<HTTP 状态>,"message":"<error_code>","data":{"status":"FAILED","error_code":"<error_code>"}}`
 - 真正未实现能力：HTTP `501`，`data.status=NOT_IMPLEMENTED`。
 - 已知但不可用的可选能力：HTTP `501`，`data.status=UNAVAILABLE`，并带 `capability`；不会返回 200 假成功。
-- HTTP 发信先返回 `200`/`PENDING`；LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。重启只恢复尚未派发的 `PENDING`；不确定是否已到达 provider 的 `PROCESSING` 会 fail closed 为 `LLM_INTERRUPTED`，不自动重复生成。
+- HTTP 发信先返回 `200`/`PENDING`；启用的 Mem0 或 durable outbox 尚未就绪时信件保持 `PENDING`，运行时恢复后只派发一次，不会降级为无记忆生成。LLM 超时或不可用随后写入信件 `FAILED` 终态，detail 返回稳定 `error_code` 与 `retryable`。重启只恢复尚未派发的 `PENDING`；不确定是否已到达 provider 的 `PROCESSING` 会 fail closed 为 `LLM_INTERRUPTED`，不自动重复生成。
 - 视频回信的 detail 额外公开 `media_status`、`media_error_code` 与布尔值 `media_retryable`。路由选中视频后、正文仍在生成时为 `PENDING`；若正文生成、质量检查或重启恢复在媒体启动前失败，则为 `NOT_REQUESTED` 且没有媒体错误；只有正文成功后才进入实际媒体任务。`TTS_CONTENT_GATE_UNAVAILABLE` 为可重试的 `UNAVAILABLE`；三条有效候选均被内容门拒绝时，`TTS_CONTENT_GATE_REJECTED` 为不可重试的 `FAILED`。
 
 机器可读定义：
@@ -40,6 +40,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | MIDI | `/toy/midi/*` | terminal/partial | 任务状态兼容现有原型；生成/上传/分享码导入明确 501 |
 | legacy import | `/toy/letter/legacy/import` | available | SQLite 本地扩展；仅接受 `mode=read_only`，以单事务原子导入旧信并按内容哈希去重；导入后旧信域只读且不与新聊天合并 |
 | 官方文字信件导入 | `/toy/letter/legacy/official-import` | available/degraded | 用户在设置页明确确认后，先要求 Mem0 与 PrivateWorld 可用；首次初始化关系状态时还要求大模型已配置。随后临时读取官方客户端登录日志并从官方接口导入原信与文字回信；严格按时间写入 Mem0、初始化 PrivateWorld，最后才原子发布到信箱；忽略视频，不保存或回显凭证 |
+| 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
 
 原生 WebSocket、ASR、TTS、Live 没有假 route；`/health` 的 capability registry 明确为 `unavailable`，错误码分别为 `WEBSOCKET_UNAVAILABLE`、`ASR_UNAVAILABLE`、`TTS_UNAVAILABLE`、`LIVE_UNAVAILABLE`。
 
