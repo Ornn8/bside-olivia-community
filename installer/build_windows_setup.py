@@ -12,6 +12,7 @@ import subprocess
 import sys
 import uuid
 import wave
+import zipfile
 from pathlib import Path, PurePosixPath
 
 
@@ -32,6 +33,13 @@ FORBIDDEN_MEDIA_SUFFIXES = {
     ".wav",
     ".webm",
     ".wmv",
+}
+VIDEO_RUNTIME_PATH = "video-runtime/Olivia-video-runtime-private.zip"
+VIDEO_RUNTIME_ENVIRONMENT_KEYS = {
+    "OLIVIA_COSYVOICE_PYTHON",
+    "OLIVIA_LATENTSYNC_PYTHON",
+    "OLIVIA_MINIMAX_COMFY_PYTHON",
+    "OLIVIA_ROFORMER_PYTHON",
 }
 BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
@@ -214,6 +222,61 @@ def _voice_reference_metadata(path: Path) -> dict[str, object]:
     return metadata
 
 
+def _video_runtime_metadata(path: Path) -> dict[str, object]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if sum(entry.filename == "runtime-manifest.json" for entry in entries) != 1:
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            manifest = json.loads(archive.read("runtime-manifest.json"))
+            archive_entries = {entry.filename: entry for entry in entries}
+    except SetupBuildError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != "olivia.video-runtime-root.v1":
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    environment = manifest.get("environment")
+    if not isinstance(environment, dict) or set(environment) != VIDEO_RUNTIME_ENVIRONMENT_KEYS:
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    for relative in environment.values():
+        if not isinstance(relative, str):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        logical = PurePosixPath(relative)
+        if logical.is_absolute() or any(part in {"", ".", ".."} for part in logical.parts):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        entry = archive_entries.get(relative)
+        if entry is None or entry.is_dir() or entry.file_size < 1:
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    declared: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        relative = item.get("path")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        entry = archive_entries.get(relative) if isinstance(relative, str) else None
+        if (
+            entry is None
+            or entry.is_dir()
+            or type(size) is not int
+            or size < 1
+            or entry.file_size != size
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or relative in declared
+        ):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        declared.add(relative)
+    if not set(environment.values()).issubset(declared):
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    return {"size_bytes": path.stat().st_size, "sha256": _sha256(path)}
+
+
 def _is_reparse_point(path: Path) -> bool:
     attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
     return path.is_symlink() or bool(
@@ -312,7 +375,7 @@ def _load_and_verify_manifest(
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID") from exc
     if not isinstance(manifest, dict):
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID")
-    if "distribution" in manifest or "voice_reference" in manifest:
+    if any(key in manifest for key in ("distribution", "voice_reference", "video_runtime")):
         raise SetupBuildError("SETUP_INPUT_VOICE_REFERENCE_FORBIDDEN")
 
     if validate_schema:
@@ -381,6 +444,7 @@ def prepare_setup_payload(
     *,
     distribution: str = "public",
     voice_reference: Path | None = None,
+    video_runtime: Path | None = None,
     validate_schema: bool = True,
 ) -> None:
     source = source.expanduser().resolve()
@@ -392,6 +456,10 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_VOICE_REFERENCE_PRIVATE_ONLY")
     if distribution == "private" and voice_reference is None:
         raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
+    if video_runtime is not None and distribution != "private":
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_PRIVATE_ONLY")
+    if distribution == "private" and video_runtime is None:
+        raise SetupBuildError("SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED")
     if destination.exists():
         raise SetupBuildError("SETUP_PAYLOAD_EXISTS")
     _load_and_verify_manifest(source, offline, validate_schema=validate_schema)
@@ -418,7 +486,7 @@ def prepare_setup_payload(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
         shutil.copytree(offline, staging / "offline")
-        if voice_reference is not None:
+        if voice_reference is not None and video_runtime is not None:
             reference = voice_reference.expanduser().resolve()
             if (
                 not reference.is_file()
@@ -429,6 +497,17 @@ def prepare_setup_payload(
             target = staging / "offline" / Path(*VOICE_REFERENCE_PATH.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(reference, target)
+            runtime_source = video_runtime.expanduser()
+            if (
+                not runtime_source.is_file()
+                or _is_reparse_point(runtime_source)
+                or runtime_source.stat().st_size < 1
+            ):
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            runtime_target = staging / "offline" / Path(*VIDEO_RUNTIME_PATH.split("/"))
+            runtime_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(runtime_source.resolve(), runtime_target)
+            runtime_metadata = _video_runtime_metadata(runtime_target)
             manifest_path = staging / "offline" / MANIFEST_NAME
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["distribution"] = "private"
@@ -437,6 +516,10 @@ def prepare_setup_payload(
                 "size_bytes": target.stat().st_size,
                 "sha256": _sha256(target),
                 "wave": _voice_reference_metadata(target),
+            }
+            manifest["video_runtime"] = {
+                "path": VIDEO_RUNTIME_PATH,
+                **runtime_metadata,
             }
             manifest_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
@@ -481,13 +564,14 @@ def build_windows_setup(
     iscc: Path | None = None,
     distribution: str = "public",
     voice_reference: Path | None = None,
+    video_runtime: Path | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     setup = output / SETUP_NAME
     checksum = output / f"{SETUP_NAME}.sha256"
-    if setup.exists() or checksum.exists():
+    if any(output.glob("Olivia-Setup-x64*")):
         raise SetupBuildError("SETUP_OUTPUT_EXISTS")
     payload = output / f".setup-payload-{uuid.uuid4().hex}"
     compiler = _find_iscc(iscc)
@@ -499,6 +583,7 @@ def build_windows_setup(
             payload,
             distribution=distribution,
             voice_reference=voice_reference,
+            video_runtime=video_runtime,
         )
         command = [
             os.fspath(compiler),
@@ -507,16 +592,30 @@ def build_windows_setup(
             f"/DAppVersion={version}",
             os.fspath(source / "installer" / "windows_setup.iss"),
         ]
+        if video_runtime is not None:
+            command.insert(-1, "/DPrivatePayload=1")
         result = subprocess.run(command, check=False, timeout=900)
         if result.returncode != 0 or not setup.is_file():
             raise SetupBuildError("SETUP_COMPILE_FAILED")
-        digest = _sha256(setup)
-        checksum.write_text(f"{digest}  {SETUP_NAME}\n", encoding="ascii")
+        artifacts = sorted(
+            path for path in output.glob("Olivia-Setup-x64*")
+            if path.is_file() and path != checksum
+        )
+        records = [
+            {"path": os.fspath(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
+            for path in artifacts
+        ]
+        digest = next(record["sha256"] for record in records if Path(record["path"]) == setup)
+        checksum.write_text(
+            "".join(f"{record['sha256']}  {Path(record['path']).name}\n" for record in records),
+            encoding="ascii",
+        )
         result = {
             "status": "OK",
             "setup": os.fspath(setup),
             "size_bytes": setup.stat().st_size,
             "sha256": digest,
+            "artifacts": records,
         }
         completed = True
         return result
@@ -546,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--distribution", choices=("public", "private"), default="public")
     parser.add_argument("--voice-reference", type=Path)
+    parser.add_argument("--video-runtime", type=Path)
     args = parser.parse_args(argv)
     try:
         result = build_windows_setup(
@@ -556,6 +656,7 @@ def main(argv: list[str] | None = None) -> int:
             iscc=args.iscc,
             distribution=args.distribution,
             voice_reference=args.voice_reference,
+            video_runtime=args.video_runtime,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

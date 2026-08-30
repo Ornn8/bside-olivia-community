@@ -1,6 +1,6 @@
 # Windows 完整版补丁（隔离安装）
 
-公开补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体；经授权单独构建的私有安装器会额外内嵌下文指定的林离参考 WAV。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
+公开补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体；经授权单独构建的私有安装包会额外内嵌下文指定的林离参考 WAV 和视频运行时。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
 
 ## 使用
 
@@ -36,7 +36,7 @@ python installer/build_windows_setup.py `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-上面的默认构建是公开产物：不得传入参考音频，内嵌 offline manifest 也不含 `distribution` 或 `voice_reference`。需要经授权在私有渠道交付固定参考音色时，维护者必须使用隔离输出目录并同时显式提供两个参数：
+上面的默认构建是公开产物：不得传入参考音频或视频运行时，内嵌 offline manifest 也不含 `distribution`、`voice_reference` 或 `video_runtime`。需要经授权在私有渠道交付完整视频回信能力时，维护者必须使用隔离输出目录并同时显式提供私有分发、音色和运行时：
 
 ```powershell
 python installer/build_windows_setup.py `
@@ -45,16 +45,17 @@ python installer/build_windows_setup.py `
   --version 0.1.0 `
   --distribution private `
   --voice-reference '<私有 WAV 的本机路径>' `
+  --video-runtime '<Olivia-video-runtime-*.zip 的本机路径>' `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-私有构建器只接受显式 WAV：它读取并核对实际 PCM 帧，随后把音频、大小、SHA-256 和 WAV 元数据写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带 `voice_reference` manifest 字段或音频文件；公开模式传入 `--voice-reference`、私有模式缺少该参数都会拒绝构建。
+私有构建器只接受显式 WAV 和完整视频运行时 ZIP：它核对 PCM 帧、视频运行时根 manifest 与四个独立 Python 入口，随后把两项资产的大小和 SHA-256 写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带私有字段或资产；公开模式传入任一私有资产、私有模式缺少任一资产都会拒绝构建。
 
-公开与私有构建的文件名仍为 `Olivia-Setup-x64.exe`，不能靠文件名判断边界。私有产物必须只保存在专用 `dist-private` 目录，以该目录和构建生成的 `.sha256` 作为交付识别记录，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。解包审计时，内嵌 manifest 的 `"distribution": "private"` 是第二层识别标记，不代表取得了公开分发授权。
+公开构建仍是单个 `Olivia-Setup-x64.exe`。私有视频运行时超过单个安装程序容量上限，因此私有产物是一个完整目录：`Olivia-Setup-x64.exe`、同名前缀的全部 `.bin` 分卷和 `.sha256`。交付时必须把整个目录压成一个 ZIP，用户完整解压后再运行 EXE；缺少任一分卷都不能安装。私有产物只保存在专用 `dist-private`，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。
 
-除私有模式显式传入的 WAV 外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
+除私有模式显式传入的 WAV 与视频运行时 ZIP 外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。私有构建使用约 2.1 GB 的安装分卷；`.sha256` 会逐项记录 EXE 与全部分卷。
 
-GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV，也不会生成私有安装器。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
+GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV 或视频运行时，也不会生成私有安装器。私有安装包只能由维护者在隔离环境手工构建。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 
 ## 启动器健康检查
 
