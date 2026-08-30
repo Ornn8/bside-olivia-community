@@ -35,6 +35,8 @@ Mem0 完成后，PrivateWorld 以完整、规范排序的 `source_record_id` 集
 
 官方历史导入期间可通过同一路径的 `GET` 请求读取进度；字段与状态见 `contracts/official_history_import_progress.schema.json`。进程启动后若同时存在内存引导记录和 SQLite 只读归档，信箱会按 `source_record_id`（缺失时按 `letter_id`）合并去重，不会让一侧遮蔽另一侧。若 PrivateWorld 已提交而后续只读归档失败，重试会命中同一命令审计并跳过 provider，再继续归档；已有关系只吸收两个亲密轴的更高历史下限，不会被历史导入降级或改写其他状态。
 
+设置页不会给官方历史导入 POST 设置固定总时限；大量信件仍按上述逐封边界处理，并以同路径 GET 进度和各 provider 自身的单次超时判断是否卡住，避免总耗时随信件数增长时被客户端提前中止。
+
 ## 健康检查与验证
 
 `/health?profile=memory` 只返回状态、域计数、FTS5/vector 配置边界和 `network_called=false`，不返回数据根、正文或密钥；memory 不可用不会让 core health 变成假成功或假失败。

@@ -322,11 +322,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
     const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH
-      ? 600000
+      ? null
       : path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
       : 8000;
-    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = timeoutMs === null ? null : window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -364,7 +364,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       return payload;
     } finally {
-      window.clearTimeout(timeout);
+      if (timeout !== null) window.clearTimeout(timeout);
     }
   };
 

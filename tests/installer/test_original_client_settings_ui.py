@@ -240,7 +240,8 @@ def test_original_settings_can_import_official_text_reply_history() -> None:
     assert "双方内容会形成长期语义记忆" in BOOTSTRAP_JAVASCRIPT
     assert "历史往来会初始化关系状态" in BOOTSTRAP_JAVASCRIPT
     assert "requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
-    assert "path === OFFICIAL_LETTER_IMPORT_PATH\n      ? 600000" in BOOTSTRAP_JAVASCRIPT
+    assert "path === OFFICIAL_LETTER_IMPORT_PATH\n      ? null" in BOOTSTRAP_JAVASCRIPT
+    assert "timeoutMs === null ? null" in BOOTSTRAP_JAVASCRIPT
     assert ": 8000;" in BOOTSTRAP_JAVASCRIPT
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
