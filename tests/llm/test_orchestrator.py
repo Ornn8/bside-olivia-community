@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_gateway import Gateway, GatewayDelta, GatewayError, GatewayResponse
+from llm_gateway import (
+    Gateway,
+    GatewayConfig,
+    GatewayDelta,
+    GatewayError,
+    GatewayResponse,
+)
 from reply_orchestrator import (
     ReplyEventType,
     ReplyOrchestrator,
@@ -13,6 +19,10 @@ from reply_orchestrator import (
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_reply_request_uses_the_public_gateway_input_budget() -> None:
+    assert ReplyRequest(content="synthetic").max_input_chars == GatewayConfig().max_input_chars
 
 
 class StreamGateway(Gateway):

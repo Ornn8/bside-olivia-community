@@ -49,8 +49,8 @@ _REQUIRED = frozenset(
 _DROP_ORDER = (
     PromptSection.EVIDENCE_SUMMARY,
     PromptSection.INFERRED_TRAIT,
-    PromptSection.SOFT_CANON,
     PromptSection.HISTORY,
+    PromptSection.SOFT_CANON,
     PromptSection.STYLE_EXAMPLE,
     PromptSection.PRIVATE_BEHAVIOR,
     PromptSection.WORLD_FACT,
