@@ -1673,6 +1673,59 @@ def test_video_capability_api_selects_and_imports_runtime_archive(tmp_path: Path
     )
 
 
+def test_video_capability_api_single_offline_import_detects_runtime_archive(
+    tmp_path: Path,
+) -> None:
+    archive = (tmp_path / "Olivia-video-runtime-fixture.zip").resolve()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("runtime-manifest.json", "{}")
+    observed: list[Path] = []
+
+    class FakeInstaller:
+        def status(self):
+            return {
+                "schema_version": "olivia.video-capability-status.v1",
+                "status": "UNAVAILABLE",
+                "capability": "video",
+                "install_locations": [],
+                "bundles": [],
+            }
+
+        def import_runtime_archive(self, *, runtime_archive: Path):
+            observed.append(runtime_archive)
+            return "APPLIED"
+
+        def import_offline(self, **_kwargs):
+            raise AssertionError("runtime archives must not be treated as component ZIPs")
+
+    async def call():
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FakeInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+            select_offline_archive=lambda: archive,
+        )
+        headers = {
+            "Origin": "http://localhost:3000",
+            "X-Olivia-Capability-Action": "confirmed",
+            "X-Olivia-Setup-Session": "session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/toy/capabilities/video/action",
+                json={"action": "import_offline"},
+                headers=headers,
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(call())
+    assert status == 200
+    assert payload == {"status": "APPLIED"}
+    assert observed == [archive]
+
+
 def test_video_capability_api_selects_and_imports_one_offline_zip_for_both_bundles(
     tmp_path: Path,
 ) -> None:

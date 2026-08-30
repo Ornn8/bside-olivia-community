@@ -1315,15 +1315,39 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       downloaded_bytes: 0,
       total_bytes: 0,
     });
-    const { state, downloadable, runtimeRequired } = videoCapabilityViewState(bundles);
+    const { state, downloadable } = videoCapabilityViewState(bundles);
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
     const runtimeProgress = payload && payload.runtime_import && typeof payload.runtime_import === "object"
       ? payload.runtime_import
       : { state: "idle", checked_bytes: 0, total_bytes: 0 };
     const runtimePreparing = ["queued", "extracting", "checking", "testing"].includes(runtimeProgress.state);
+    const runtimeReasonLabels = {
+      VIDEO_RUNTIME_ARCHIVE_REQUIRED: "当前安装中缺少视频运行环境包",
+      VIDEO_RUNTIME_ARCHIVE_INVALID: "所选 ZIP 不是完整的视频运行环境包",
+      VIDEO_RUNTIME_ROOT_INVALID: "运行环境清单或文件校验失败",
+      VIDEO_RUNTIME_NOT_PORTABLE: "运行环境不能在这台电脑上独立启动",
+      VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE: "林离语音运行环境未准备完整",
+      VIDEO_RUNTIME_PROBE_FAILED: "运行环境自检未通过",
+      VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED: "运行环境配置保存失败",
+      VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED: "运行环境已安装，但本次启用失败",
+      VIDEO_RUNTIME_IMPORT_FAILED: "视频运行环境安装失败",
+    };
+    const runtimeStepMessage = (progress) => {
+      const checked = Math.max(0, Number(progress.checked_bytes) || 0);
+      const total = Math.max(0, Number(progress.total_bytes) || 0);
+      const amount = total > 0 ? ` ${formatBytes(checked)} / ${formatBytes(total)}` : "";
+      if (progress.state === "queued") return "视频运行环境等待安装。";
+      if (progress.state === "extracting") return `正在解压视频运行环境${amount}。`;
+      if (progress.state === "checking") return `正在检查视频运行环境${amount}。`;
+      if (progress.state === "testing") return "正在测试视频运行环境。";
+      if (progress.state === "ready") return "视频运行环境已安装并启用。";
+      if (["required", "failed"].includes(progress.state)) {
+        return runtimeReasonLabels[progress.reason_code] || "视频运行环境尚未安装完成。";
+      }
+      return "";
+    };
     let videoSourceMode = "auto";
-    let runtimeArchive = "";
     const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
     const summary = text(
       "p",
@@ -1369,35 +1393,67 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       progressText
     );
     item.append(sourceControls);
-    const importOffline = button("导入组件离线包", async () => {
+    const runtimeStatusText = text(
+      "div",
+      runtimeStepMessage(runtimeProgress),
+      "text-text-secondary text-caption-m font-regular"
+    );
+    const importOffline = button("断网恢复：导入离线包（ZIP）", async () => {
       setButtonsBusy([importOffline], true);
-      result.textContent = "请选择已经下载好的视频组件 ZIP，无需解压。";
+      result.textContent = "请选择 Olivia 完整离线包（ZIP），无需解压。";
+      let importFinished = false;
+      const updateImportProgress = async () => {
+        try {
+          const statusPayload = await requestJson(VIDEO_CAPABILITY_PATH);
+          if (importFinished) return;
+          const progress = statusPayload && statusPayload.runtime_import;
+          if (progress && typeof progress === "object") {
+            result.textContent = runtimeStepMessage(progress) || "正在导入离线包。";
+          }
+        } catch (_error) {
+          // The active import request remains authoritative; retry on the next tick.
+        }
+      };
+      const progressTimer = window.setInterval(updateImportProgress, 1000);
       try {
         const response = await requestCapability(
           VIDEO_CAPABILITY_ACTION_PATH,
           { action: "import_offline" },
-          310000
+          30 * 60 * 1000
         );
         if (response.status === "CANCELLED") {
           result.textContent = "已取消导入。";
           return;
         }
+        importFinished = true;
         await renderVideoCapabilityPanel(panel);
       } catch (_error) {
-        result.textContent = "组件包无法导入，请确认选择的是 Olivia 视频组件 ZIP。";
+        importFinished = true;
+        try {
+          const failed = await requestJson(VIDEO_CAPABILITY_PATH);
+          const progress = failed && failed.runtime_import;
+          result.textContent = progress && typeof progress === "object"
+            ? runtimeStepMessage(progress) || "离线包导入失败，请重新选择完整 ZIP。"
+            : "离线包导入失败，请重新选择完整 ZIP。";
+        } catch (_statusError) {
+          result.textContent = "离线包导入失败，请重新选择完整 ZIP。";
+        }
       } finally {
+        importFinished = true;
+        window.clearInterval(progressTimer);
         setButtonsBusy([importOffline], false);
       }
     });
-    importOffline.disabled = state === "downloading" || state === "ready";
+    importOffline.disabled = state === "downloading" || state === "ready" || runtimePreparing;
     item.append(
       text(
         "div",
         state === "downloading"
-          ? "也可导入组件 ZIP；请先暂停当前下载。"
-          : "已有组件 ZIP 可直接导入，无需解压。",
+          ? "请先暂停当前下载，再导入离线包。"
+          : "正常下载会自动安装并启用；仅断网恢复时选择 Olivia 离线包，无需解压。",
         "text-text-secondary text-caption-m font-regular"
       ),
+      runtimeStatusText,
       importOffline
     );
     if (state === "downloading") {
@@ -1434,102 +1490,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
       });
       item.append(install);
-    }
-    if (runtimeRequired) {
-      const runtimeNote = text(
-        "p",
-        runtimePreparing
-          ? "Olivia 正在自动准备视频运行环境。这个过程会解压并逐个检查文件，请保持 Olivia 开启。"
-          : "高级恢复：仅当你已经拿到 Olivia 提供的“视频运行环境离线包”时使用。这里不是选择成片保存位置，也不是选择缓存目录。",
-        "text-text-secondary text-caption-m font-regular"
-      );
-      const selectedRuntime = text(
-        "p",
-        runtimePreparing ? "正在准备，无需操作。" : "尚未选择视频运行环境离线包。",
-        "text-text-secondary text-caption-m font-regular"
-      );
-      const chooseRuntime = button("选择视频运行环境离线包（ZIP）", async () => {
-        setButtonsBusy([chooseRuntime], true);
-        try {
-          const selected = await requestCapability(
-            VIDEO_CAPABILITY_ACTION_PATH,
-            { action: "select_runtime_archive" },
-            310000
-          );
-          if (
-            selected.status === "SELECTED"
-            && typeof selected.runtime_archive === "string"
-          ) {
-            runtimeArchive = selected.runtime_archive;
-            selectedRuntime.textContent = `已选择：${runtimeArchive.split(/[\\/]/).pop()}`;
-          }
-        } catch (_error) {
-          result.textContent = "无法读取视频运行环境离线包，请确认选择的是 Olivia 提供的 ZIP。";
-        } finally {
-          setButtonsBusy([chooseRuntime], false);
-        }
-      });
-      const importRuntime = button("校验并启用", async () => {
-        if (!runtimeArchive) {
-          result.textContent = "请先选择 Olivia 视频运行环境离线包（ZIP）。";
-          return;
-        }
-        setButtonsBusy([chooseRuntime, importRuntime], true);
-        result.textContent = "正在解压并检查视频运行环境，文件较多时可能需要几十分钟，请勿关闭 Olivia。";
-        let runtimeImportFinished = false;
-        const updateRuntimeProgress = async () => {
-          try {
-            const statusPayload = await requestJson(VIDEO_CAPABILITY_PATH);
-            if (runtimeImportFinished) return;
-            const progress = statusPayload && statusPayload.runtime_import;
-            if (!progress || typeof progress !== "object") return;
-            const checkedBytes = Math.max(0, Number(progress.checked_bytes) || 0);
-            const totalBytes = Math.max(0, Number(progress.total_bytes) || 0);
-            if (["extracting", "checking"].includes(progress.state)) {
-              const percent = totalBytes > 0
-                ? Math.min(100, Math.floor((checkedBytes / totalBytes) * 100))
-                : 0;
-              result.textContent = totalBytes > 0
-                ? `${progress.state === "extracting" ? "已解压" : "已检查"} ${formatBytes(checkedBytes)} / ${formatBytes(totalBytes)}（${percent}%），请勿关闭 Olivia。`
-                : "正在读取视频运行环境离线包，请勿关闭 Olivia。";
-            } else if (progress.state === "testing") {
-              result.textContent = "文件检查完成，正在测试视频运行环境……";
-            }
-          } catch (_error) {
-            // The active import request remains authoritative; retry on the next tick.
-          }
-        };
-        const progressTimer = window.setInterval(updateRuntimeProgress, 1000);
-        void updateRuntimeProgress();
-        try {
-          await requestCapability(
-            VIDEO_CAPABILITY_ACTION_PATH,
-            {
-              action: "import_runtime_archive",
-              runtime_archive: runtimeArchive,
-            },
-            30 * 60 * 1000
-          );
-          runtimeImportFinished = true;
-          result.textContent = "离线包已检查并安装完成。请重启 Olivia 一次以启用视频回信。";
-          setButtonsBusy([chooseRuntime, importRuntime], false);
-        } catch (_error) {
-          runtimeImportFinished = true;
-          result.textContent = "离线包检查未通过，请重新下载并完整解压后再试。";
-          setButtonsBusy([chooseRuntime, importRuntime], false);
-        } finally {
-          runtimeImportFinished = true;
-          window.clearInterval(progressTimer);
-        }
-      });
-      item.append(
-        runtimeNote,
-        selectedRuntime,
-        chooseRuntime,
-        importRuntime
-      );
-      chooseRuntime.disabled = runtimePreparing;
-      importRuntime.disabled = runtimePreparing;
     }
     item.append(result);
     const list = stack();

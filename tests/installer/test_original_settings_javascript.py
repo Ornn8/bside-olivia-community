@@ -317,39 +317,28 @@ def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value()
     assert "enabled = payload.enabled;" in setting
 
 
-def test_video_capability_offers_clear_advanced_runtime_archive_recovery() -> None:
+def test_video_capability_offers_one_offline_zip_entry_for_components_or_runtime() -> None:
     source = BOOTSTRAP_JAVASCRIPT
-    runtime_import = source.split(
-        'const importRuntime = button("校验并启用"', 1
-    )[1].split("item.append(", 1)[0]
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
 
-    assert '{ action: "select_runtime_archive" }' in source
-    assert 'action: "import_runtime_archive"' in source
-    assert "runtime_archive: runtimeArchive" in source
+    assert video_panel.count('button("断网恢复：导入离线包（ZIP）"') == 1
+    assert '{ action: "import_offline" }' in video_panel
+    assert "正常下载会自动安装并启用" in video_panel
+    assert "select_runtime_archive" not in video_panel
+    assert "import_runtime_archive" not in video_panel
+    assert "选择视频运行环境离线包（ZIP）" not in video_panel
+    assert "校验并启用" not in video_panel
     assert 'source: videoSourceMode' in source
     assert "国内源优先" in source
     assert "仅官方源" in source
-    assert "高级恢复" in source
-    assert "不是选择成片保存位置，也不是选择缓存目录" in source
-    assert "选择视频运行环境离线包（ZIP）" in source
-    assert "校验并启用" in source
-    assert "文件较多时可能需要几十分钟，请勿关闭 Olivia" in source
     assert "runtime_import" in source
-    assert 'progress.state === "extracting" ? "已解压" : "已检查"' in source
-    assert "window.setInterval(updateRuntimeProgress, 1000)" in source
-    assert "window.clearInterval(progressTimer)" in source
-    assert "离线包已检查并安装完成。请重启 Olivia 一次" in runtime_import
-    assert "await renderVideoCapabilityPanel(panel)" not in runtime_import
-    assert "let runtimeImportFinished = false;" in runtime_import
-    assert "if (runtimeImportFinished) return;" in runtime_import
-    assert runtime_import.index("await requestJson(VIDEO_CAPABILITY_PATH)") < runtime_import.index(
-        "if (runtimeImportFinished) return;"
-    )
-    assert runtime_import.index("runtimeImportFinished = true;") < runtime_import.index(
-        "离线包已检查并安装完成"
-    )
-    assert "尚未提供可迁移运行时归档" not in source
-    assert "runtimeDigest" not in source
+    assert "VIDEO_RUNTIME_ARCHIVE_REQUIRED" in video_panel
+    assert "reason_code" in video_panel
+    assert "正在解压" in video_panel
+    assert "正在检查" in video_panel
+    assert "正在测试" in video_panel
     assert 'accept_licenses: dependency.id === "music_video"' in source
 
 
@@ -359,7 +348,7 @@ def test_video_capability_offers_direct_offline_zip_import() -> None:
         "const renderVideoCapabilityPanel = async (panel) => {", 1
     )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
 
-    assert 'button("导入组件离线包"' in video_panel
+    assert 'button("断网恢复：导入离线包（ZIP）"' in video_panel
     assert '{ action: "import_offline" }' in video_panel
     assert "无需解压" in video_panel
     assert "选择解压后的离线包" not in video_panel
