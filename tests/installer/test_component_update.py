@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import shutil
 import stat
 import subprocess
+import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -368,6 +371,283 @@ def test_stable_launcher_runs_without_importing_the_legacy_backend_first(
     assert arguments[0] == os.fspath(entrypoint)
     assert arguments[1:3] == ["--install-root", os.fspath(installation.resolve())]
     assert arguments[3:] == ["--record", os.fspath(record)]
+
+
+def _windows_process_exits_within(process_id: int, timeout_ms: int = 5000) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x00100000, False, process_id)
+    if not handle:
+        return True
+    try:
+        return kernel32.WaitForSingleObject(handle, timeout_ms) == 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects are required")
+@pytest.mark.parametrize(
+    ("abrupt", "expected_exit_code"),
+    ((False, 0), (True, 23)),
+    ids=("normal-exit", "abrupt-exit"),
+)
+def test_stable_start_cli_ends_descendant_with_launcher(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    abrupt: bool,
+    expected_exit_code: int,
+) -> None:
+    sentinel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    request.addfinalizer(lambda: (sentinel.terminate(), sentinel.wait(timeout=5)))
+    installation, legacy = _managed_installation(tmp_path)
+    launcher = installation / "launcher" / "version_launcher.py"
+    launcher.parent.mkdir()
+    shutil.copy2(Path(version_launcher.__file__), launcher)
+    entrypoint = legacy / "installer" / "start_local.py"
+    entrypoint.parent.mkdir()
+    child_pid = tmp_path / "child.pid"
+    entrypoint.write_text(
+        "from pathlib import Path\n"
+        "import os, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)'], stdin=subprocess.DEVNULL, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"Path({str(child_pid)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+        + ("os._exit(23)\n" if abrupt else ""),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            os.fspath(Path(sys.executable)),
+            os.fspath(launcher),
+            "--install-root",
+            os.fspath(installation),
+            "start",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == expected_exit_code, completed.stderr
+    process_id = int(child_pid.read_text())
+    exited = _windows_process_exits_within(process_id, 5000)
+    if not exited:
+        os.kill(process_id, signal.SIGTERM)
+    assert exited
+    assert sentinel.poll() is None
+    recovered = version_launcher._try_acquire_start_instance(installation)
+    assert recovered is not None
+    recovered.close()
+
+
+def test_duplicate_stable_start_cli_does_not_create_job_or_run_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, legacy = _managed_installation(tmp_path)
+    entrypoint = legacy / "installer" / "start_local.py"
+    entrypoint.parent.mkdir()
+    record = tmp_path / "backend-entrypoint-ran.txt"
+    entrypoint.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(record)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    first = version_launcher._try_acquire_start_instance(installation)
+    assert first is not None
+    monkeypatch.setattr(
+        version_launcher,
+        "_own_windows_start_process_tree",
+        lambda: pytest.fail("duplicate start must not create a Job Object"),
+    )
+    try:
+        assert version_launcher._cli(
+            ["--install-root", str(installation), "start"]
+        ) == 0
+    finally:
+        first.close()
+
+    assert not record.exists()
+    events = [
+        json.loads(line)
+        for line in (
+            installation / "data" / "logs" / "launcher.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == [{"event": "launch_already_running"}]
+
+
+def test_stable_start_public_cli_serializes_same_installation(tmp_path: Path) -> None:
+    installation, legacy = _managed_installation(tmp_path)
+    launcher = installation / "launcher" / "version_launcher.py"
+    launcher.parent.mkdir()
+    shutil.copy2(Path(version_launcher.__file__), launcher)
+    record, release = tmp_path / "runs.txt", tmp_path / "release"
+    entrypoint = legacy / "installer" / "start_local.py"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text(
+        "from pathlib import Path\nimport time\n"
+        f"record, release = Path({str(record)!r}), Path({str(release)!r})\n"
+        "record.open('a', encoding='utf-8').write('run\\n')\n"
+        "while not release.exists(): time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable, str(launcher), "--install-root", str(installation), "start"
+    ]
+    first = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if record.exists():
+                break
+            time.sleep(0.05)
+        assert record.exists()
+        second = subprocess.run(command, timeout=5, check=False)
+        assert second.returncode == 0
+        assert record.read_text(encoding="utf-8").splitlines() == ["run"]
+    finally:
+        release.touch()
+        try:
+            first.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait(timeout=5)
+
+
+def test_start_instance_is_scoped_to_one_installation_root(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first = version_launcher._try_acquire_start_instance(first_root)
+    assert first is not None
+    second = None
+    try:
+        assert version_launcher._try_acquire_start_instance(first_root) is None
+        second = version_launcher._try_acquire_start_instance(second_root)
+        assert second is not None
+    finally:
+        if second is not None:
+            second.close()
+        first.close()
+
+
+def test_stable_start_reports_lock_creation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    installation = tmp_path / "installation"
+    monkeypatch.setattr(
+        version_launcher,
+        "_try_acquire_start_instance",
+        lambda _installation: (_ for _ in ()).throw(OSError("lock failed")),
+    )
+
+    assert version_launcher.main(
+        ["--install-root", str(installation), "start"]
+    ) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "ERROR",
+        "code": "START_LOCK_UNAVAILABLE",
+    }
+    events = [
+        json.loads(line)
+        for line in (
+            installation / "data" / "logs" / "launcher.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == [{"event": "launch_lock_unavailable"}]
+
+
+def test_stable_start_cli_reports_windows_job_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    installation = tmp_path / "installation"
+    released: list[bool] = []
+    monkeypatch.setattr(
+        version_launcher,
+        "_try_acquire_start_instance",
+        lambda _installation: version_launcher._StartInstance(
+            lambda: released.append(True)
+        ),
+    )
+    monkeypatch.setattr(
+        version_launcher,
+        "_own_windows_start_process_tree",
+        lambda: (_ for _ in ()).throw(OSError("job failed")),
+    )
+
+    assert version_launcher._cli(
+        ["--install-root", str(installation), "start"]
+    ) == 2
+    assert released == [True]
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "ERROR",
+        "code": "START_JOB_UNAVAILABLE",
+    }
+    events = [
+        json.loads(line)
+        for line in (
+            installation / "data" / "logs" / "launcher.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == [{"event": "launch_job_unavailable"}]
+
+
+def test_stable_configure_cli_does_not_create_start_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, legacy = _managed_installation(tmp_path)
+    entrypoint = legacy / "installer" / "configure.py"
+    entrypoint.parent.mkdir()
+    record = tmp_path / "configured.txt"
+    entrypoint.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(record)!r}).write_text('configured', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        version_launcher,
+        "_own_windows_start_process_tree",
+        lambda: (_ for _ in ()).throw(AssertionError("start job called")),
+    )
+
+    assert version_launcher._cli(
+        ["--install-root", str(installation), "configure"]
+    ) == 0
+    assert record.read_text(encoding="utf-8") == "configured"
+
+
+def test_stable_start_single_instance_is_documented() -> None:
+    documentation = (
+        Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"
+    ).read_text(encoding="utf-8")
+
+    for expected in (
+        "同一安装目录",
+        "重复点击",
+        "`launch_already_running`",
+        "不会重复启动后端或客户端",
+        "异常退出后自动释放",
+        "`START_LOCK_UNAVAILABLE`",
+        "`launch_lock_unavailable`",
+        "`START_JOB_UNAVAILABLE`",
+        "`launch_job_unavailable`",
+    ):
+        assert expected in documentation
 
 
 def test_stable_launcher_cli_rejects_a_reparse_installation_root(

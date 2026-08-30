@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import hashlib
 import json
 import os
 import re
@@ -23,6 +25,157 @@ _LEGACY_PAYLOAD_PATH = "local_backend"
 
 class VersionLauncherError(RuntimeError):
     """Stable, user-safe launcher failure code."""
+
+
+class _StartInstance:
+    """One process-held installation launch lease."""
+
+    def __init__(self, close) -> None:
+        self._close = close
+
+    def close(self) -> None:
+        close, self._close = self._close, None
+        if close is not None:
+            close()
+
+
+def _try_acquire_start_instance(installation: Path) -> _StartInstance | None:
+    """Acquire a non-blocking launch lease scoped to one installation root."""
+
+    root = installation.expanduser().absolute()
+    identity = hashlib.sha256(
+        os.path.normcase(os.fspath(root)).encode("utf-8")
+    ).hexdigest()
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.BOOL,
+            wintypes.LPCWSTR,
+        ]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        ctypes.set_last_error(0)
+        handle = kernel32.CreateMutexW(
+            None,
+            False,
+            f"Local\\Olivia.Local.Start.{identity}",
+        )
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
+        if ctypes.get_last_error() == 183:
+            kernel32.CloseHandle(handle)
+            return None
+        return _StartInstance(lambda: kernel32.CloseHandle(handle))
+
+    import fcntl
+
+    lock_path = root / "data" / "launcher.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return None
+        raise
+
+    def close_file_lock() -> None:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+    return _StartInstance(close_file_lock)
+
+
+def _append_launcher_event(installation: Path, event: str) -> None:
+    """Persist a path-free stable-launcher event."""
+
+    try:
+        log_root = installation / "data" / "logs"
+        log_root.mkdir(parents=True, exist_ok=True)
+        with (log_root / "launcher.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": event}, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _own_windows_start_process_tree() -> object | None:
+    """Make descendants exit when this stable launcher process exits."""
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("read_operation_count", ctypes.c_ulonglong),
+            ("write_operation_count", ctypes.c_ulonglong),
+            ("other_operation_count", ctypes.c_ulonglong),
+            ("read_transfer_count", ctypes.c_ulonglong),
+            ("write_transfer_count", ctypes.c_ulonglong),
+            ("other_transfer_count", ctypes.c_ulonglong),
+        ]
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("per_process_user_time_limit", ctypes.c_longlong),
+            ("per_job_user_time_limit", ctypes.c_longlong),
+            ("limit_flags", wintypes.DWORD),
+            ("minimum_working_set_size", ctypes.c_size_t),
+            ("maximum_working_set_size", ctypes.c_size_t),
+            ("active_process_limit", wintypes.DWORD),
+            ("affinity", ctypes.c_size_t),
+            ("priority_class", wintypes.DWORD),
+            ("scheduling_class", wintypes.DWORD),
+        ]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("basic_limit_information", BasicLimitInformation),
+            ("io_info", IoCounters),
+            ("process_memory_limit", ctypes.c_size_t),
+            ("job_memory_limit", ctypes.c_size_t),
+            ("peak_process_memory_used", ctypes.c_size_t),
+            ("peak_job_memory_used", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+    limits = ExtendedLimitInformation()
+    limits.basic_limit_information.limit_flags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        job,
+        9,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+    ) or not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(job)
+        raise OSError(error, "Windows Job Object setup failed")
+    return job
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -172,12 +325,7 @@ def _entrypoint_arguments(
     return entrypoint, [root_option, os.fspath(root)]
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="olivia-version-launcher")
-    parser.add_argument("--install-root", type=Path, required=True)
-    parser.add_argument("action", choices=("start", "configure", "uninstall"))
-    parser.add_argument("arguments", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+def _run_action(args: argparse.Namespace) -> int:
     try:
         entrypoint, root_arguments = _entrypoint_arguments(
             args.action,
@@ -200,8 +348,55 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
 
 
+def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="olivia-version-launcher")
+    parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("action", choices=("start", "configure", "uninstall"))
+    parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    return parser.parse_args(argv)
+
+
+def _run_main(
+    args: argparse.Namespace,
+    *,
+    own_windows_tree: bool = False,
+) -> int:
+    instance = None
+    if args.action == "start":
+        try:
+            instance = _try_acquire_start_instance(args.install_root)
+        except OSError:
+            _append_launcher_event(args.install_root, "launch_lock_unavailable")
+            print(json.dumps({"status": "ERROR", "code": "START_LOCK_UNAVAILABLE"}))
+            return 2
+        if instance is None:
+            _append_launcher_event(args.install_root, "launch_already_running")
+            return 0
+    try:
+        if own_windows_tree and args.action == "start":
+            try:
+                # The raw handle intentionally remains open until process teardown.
+                _job = _own_windows_start_process_tree()
+            except OSError:
+                _append_launcher_event(args.install_root, "launch_job_unavailable")
+                print(json.dumps({"status": "ERROR", "code": "START_JOB_UNAVAILABLE"}))
+                return 2
+        return _run_action(args)
+    finally:
+        if instance is not None:
+            instance.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    return _run_main(_parse_arguments(argv))
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    return _run_main(_parse_arguments(argv), own_windows_tree=True)
+
+
 __all__ = ["VersionLauncherError", "main", "resolve_active_backend"]
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_cli())
