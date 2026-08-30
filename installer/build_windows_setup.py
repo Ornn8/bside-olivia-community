@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -14,6 +15,7 @@ import uuid
 import wave
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -45,6 +47,12 @@ VIDEO_RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_LATENTSYNC_PYTHON",
     "OLIVIA_MINIMAX_COMFY_PYTHON",
     "OLIVIA_ROFORMER_PYTHON",
+}
+VIDEO_RUNTIME_COMPONENT_ENVIRONMENT = {
+    "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+    "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
+    "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
+    "roformer": "OLIVIA_ROFORMER_PYTHON",
 }
 BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
@@ -234,6 +242,145 @@ def _video_runtime_relative(value: object) -> str:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID") from exc
 
 
+def _video_runtime_sha(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    return value
+
+
+def _video_runtime_upstream(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return bool(
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+            and "?" not in value
+            and "#" not in value
+            and re.search(r"\s", value) is None
+        )
+    except ValueError:
+        return False
+
+
+def _validate_video_runtime_build_inputs(
+    value: object,
+    runtime_files: dict[str, tuple[str, int, str]],
+    environment: dict[str, object],
+) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "components"}
+        or value.get("schema_version") != "olivia.video-runtime-build-inputs.v1"
+        or not isinstance(value.get("components"), dict)
+        or set(value["components"]) != set(VIDEO_RUNTIME_COMPONENT_ENVIRONMENT)
+    ):
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    expected_runtime_files: set[str] = set()
+    required_item_keys = {
+        "upstream",
+        "revision",
+        "tree_sha256",
+        "dependencies",
+        "license",
+        "notice",
+        "files",
+    }
+    for component, environment_key in VIDEO_RUNTIME_COMPONENT_ENVIRONMENT.items():
+        item = value["components"][component]
+        if not isinstance(item, dict) or set(item) != required_item_keys:
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        upstream = item["upstream"]
+        revision = item["revision"]
+        dependencies = item["dependencies"]
+        if (
+            not _video_runtime_upstream(upstream)
+            or not isinstance(revision, str)
+            or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None
+            or not isinstance(dependencies, list)
+            or not dependencies
+            or len(dependencies)
+            != len(
+                {
+                    dependency.casefold()
+                    for dependency in dependencies
+                    if isinstance(dependency, str)
+                }
+            )
+            or not all(
+                isinstance(dependency, str)
+                and re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9+_.-]+", dependency)
+                for dependency in dependencies
+            )
+        ):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        source_files = item["files"]
+        if not isinstance(source_files, list) or not source_files:
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        normalized_files: list[dict[str, object]] = []
+        source_index: dict[str, tuple[int, str]] = {}
+        for raw in source_files:
+            if not isinstance(raw, dict) or set(raw) != {"path", "size_bytes", "sha256"}:
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            relative = _video_runtime_relative(raw.get("path"))
+            size = raw.get("size_bytes")
+            digest = _video_runtime_sha(raw.get("sha256"))
+            folded = relative.casefold()
+            if type(size) is not int or size < 0 or folded in source_index:
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            source_index[folded] = (size, digest)
+            normalized_files.append(
+                {"path": relative, "size_bytes": size, "sha256": digest}
+            )
+            runtime_relative = f"{component}/runtime/{relative}"
+            runtime_record = runtime_files.get(runtime_relative.casefold())
+            if runtime_record != (runtime_relative, size, digest):
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            expected_runtime_files.add(runtime_relative.casefold())
+        if normalized_files != sorted(
+            normalized_files, key=lambda record: str(record["path"]).casefold()
+        ):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        tree_digest = hashlib.sha256(
+            json.dumps(normalized_files, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if tree_digest != _video_runtime_sha(item["tree_sha256"]):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        for legal_key, names in (
+            ("license", ("license", "copying")),
+            ("notice", ("notice",)),
+        ):
+            legal = item[legal_key]
+            if not isinstance(legal, dict) or set(legal) != {"path", "sha256"}:
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+            legal_path = _video_runtime_relative(legal.get("path"))
+            legal_digest = _video_runtime_sha(legal.get("sha256"))
+            if (
+                not Path(legal_path).name.casefold().startswith(names)
+                or source_index.get(legal_path.casefold(), (None, None))[1] != legal_digest
+            ):
+                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        raw_environment_path = environment.get(environment_key)
+        environment_path = _video_runtime_relative(raw_environment_path)
+        expected_prefix = f"{component}/runtime/"
+        source_environment_path = environment_path[len(expected_prefix) :]
+        if (
+            not environment_path.startswith(expected_prefix)
+            or source_environment_path not in {"python.exe", "python/python.exe"}
+            or source_environment_path.casefold() not in source_index
+        ):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    if expected_runtime_files != set(runtime_files):
+        raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+
+
 def _video_runtime_metadata(path: Path) -> dict[str, object]:
     try:
         with zipfile.ZipFile(path) as archive:
@@ -257,12 +404,26 @@ def _video_runtime_metadata(path: Path) -> dict[str, object]:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID") from exc
+    schema_version = (
+        manifest.get("schema_version") if isinstance(manifest, dict) else None
+    )
+    expected_manifest_keys = {"schema_version", "version", "environment", "files"}
+    if schema_version == "olivia.video-runtime-root.v2":
+        expected_manifest_keys.add("build_inputs")
     if (
         not isinstance(manifest, dict)
-        or set(manifest) != {"schema_version", "version", "environment", "files"}
-        or manifest.get("schema_version") != "olivia.video-runtime-root.v1"
+        or set(manifest) != expected_manifest_keys
+        or schema_version not in {
+            "olivia.video-runtime-root.v1",
+            "olivia.video-runtime-root.v2",
+        }
         or not isinstance(manifest.get("version"), str)
         or not 1 <= len(manifest["version"]) <= 64
+        or (
+            schema_version == "olivia.video-runtime-root.v2"
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", manifest["version"])
+            is None
+        )
     ):
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
     environment = manifest.get("environment")
@@ -282,6 +443,7 @@ def _video_runtime_metadata(path: Path) -> dict[str, object]:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
     declared: set[str] = set()
     expected_hashes: dict[str, str] = {}
+    runtime_files: dict[str, tuple[str, int, str]] = {}
     for item in files:
         if not isinstance(item, dict) or set(item) != {"path", "size_bytes", "sha256"}:
             raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
@@ -306,11 +468,20 @@ def _video_runtime_metadata(path: Path) -> dict[str, object]:
             raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
         declared.add(folded)
         expected_hashes[folded] = digest
+        runtime_files[folded] = (relative, size, digest)
     if (
         not environment_paths.issubset(declared)
         or set(archive_files) != declared | {"runtime-manifest.json"}
     ):
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+    if schema_version == "olivia.video-runtime-root.v2":
+        if list(runtime_files.values()) != sorted(
+            runtime_files.values(), key=lambda record: record[0].casefold()
+        ):
+            raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+        _validate_video_runtime_build_inputs(
+            manifest.get("build_inputs"), runtime_files, environment
+        )
     try:
         with zipfile.ZipFile(path) as archive:
             for folded, expected in expected_hashes.items():
