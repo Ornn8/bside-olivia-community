@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -338,6 +339,102 @@ def test_runtime_archive_is_extracted_verified_and_activated(
     assert restarted_without_archive.status()["runtime_import"]["state"] == "ready"
 
 
+def test_restart_repairs_legacy_managed_worker_pair_before_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(
+        video_capability_install, "_runtime_environment_is_portable", lambda *_: True
+    )
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    worker = Path(load_video_runtime_environment(data_root)["OLIVIA_MINIMAX_WORKER"])
+    profile = worker.with_name("minimax_profile.py")
+    profile.unlink()
+    observed: list[dict[str, str]] = []
+
+    restarted = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: pytest.fail(
+            "installed runtime must not reprobe"
+        ),
+        runtime_environment_applier=lambda environment: observed.append(
+            dict(environment)
+        ),
+    )
+
+    source_directory = Path(video_capability_install.__file__).resolve().parent / "tools"
+    assert restarted.status()["runtime_import"]["state"] == "ready"
+    assert profile.read_bytes() == (source_directory / profile.name).read_bytes()
+    assert worker.read_bytes() == (source_directory / worker.name).read_bytes()
+    assert len(observed) == 1
+
+
+def test_restart_fails_closed_when_legacy_managed_worker_pair_cannot_be_repaired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(
+        video_capability_install, "_runtime_environment_is_portable", lambda *_: True
+    )
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    worker = Path(load_video_runtime_environment(data_root)["OLIVIA_MINIMAX_WORKER"])
+    profile = worker.with_name("minimax_profile.py")
+    profile.unlink()
+    real_copy = video_capability_install.shutil.copy2
+
+    def copy(source: object, target: object) -> object:
+        if Path(source).name == "minimax_profile.py":
+            raise PermissionError("profile unavailable")
+        return real_copy(source, target)
+
+    monkeypatch.setattr(video_capability_install.shutil, "copy2", copy)
+    observed: list[dict[str, str]] = []
+
+    restarted = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: pytest.fail(
+            "failed legacy repair must not reprobe"
+        ),
+        runtime_environment_applier=lambda environment: observed.append(
+            dict(environment)
+        ),
+    )
+
+    assert restarted.status()["runtime_import"] == {
+        "state": "failed",
+        "checked_bytes": 0,
+        "total_bytes": 0,
+        "reason_code": "VIDEO_RUNTIME_WORKER_UNAVAILABLE",
+    }
+    assert observed == []
+    assert not profile.exists()
+    assert worker.is_file()
+
+
 def test_runtime_archive_rejects_managed_component_and_voice_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,7 +516,189 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
     assert installer.import_runtime_archive(runtime_archive=_runtime_archive(tmp_path)) == "APPLIED"
     worker = Path(load_video_runtime_environment(data_root)["OLIVIA_MINIMAX_WORKER"])
     assert worker.is_file() and worker.is_relative_to(install_root)
+    profile = worker.with_name("minimax_profile.py")
+    assert profile.is_file() and profile.is_relative_to(install_root)
+    isolated = subprocess.run(
+        [sys.executable, "-I", "-B", str(worker), "--help"],
+        cwd=tmp_path,
+        env={},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert isolated.returncode == 0, isolated.stderr
     assert installer.status()["status"] == "READY"
+
+
+def _managed_worker_import_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[VideoCapabilityInstaller, Path, str, Path]:
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    runtime_root = (tmp_path / "runtime-source").resolve()
+    _runtime_archive(tmp_path)
+    manifest_sha256 = hashlib.sha256(
+        (runtime_root / "runtime-manifest.json").read_bytes()
+    ).hexdigest()
+    monkeypatch.setattr(
+        video_capability_install, "_runtime_environment_is_portable", lambda *_: True
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    worker_directory = (
+        data_root
+        / "capabilities"
+        / "video"
+        / "music_video"
+        / "minimax"
+        / "runtime"
+        / "tools"
+    )
+    return installer, runtime_root, manifest_sha256, worker_directory
+
+
+def test_runtime_import_reports_stable_worker_error_when_worker_directory_cannot_be_prepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, runtime_root, manifest_sha256, worker_directory = (
+        _managed_worker_import_fixture(tmp_path, monkeypatch)
+    )
+    worker_directory = worker_directory.resolve()
+    real_mkdir = Path.mkdir
+
+    def mkdir(path: Path, *args: object, **kwargs: object) -> None:
+        if path.resolve() == worker_directory:
+            raise PermissionError("worker directory unavailable")
+        real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_WORKER_UNAVAILABLE$"
+    ):
+        installer.import_runtime_root(
+            runtime_root=runtime_root, manifest_sha256=manifest_sha256
+        )
+
+    assert installer.status()["runtime_import"]["reason_code"] == (
+        "VIDEO_RUNTIME_WORKER_UNAVAILABLE"
+    )
+
+
+def test_runtime_import_restores_both_managed_worker_files_after_publish_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, runtime_root, manifest_sha256, worker_directory = (
+        _managed_worker_import_fixture(tmp_path, monkeypatch)
+    )
+    worker_directory.mkdir(parents=True)
+    profile = worker_directory / "minimax_profile.py"
+    worker = worker_directory / "minimax_music3_worker.py"
+    profile.write_bytes(b"old-profile")
+    worker.write_bytes(b"old-worker")
+    real_replace = video_capability_install.os.replace
+
+    def replace(source: object, target: object) -> None:
+        if Path(target) == worker and Path(source).suffix == ".tmp":
+            raise PermissionError("worker publication failed")
+        real_replace(source, target)
+
+    real_unlink = Path.unlink
+    denied_profile_delete = False
+
+    def unlink(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal denied_profile_delete
+        if path == profile and not denied_profile_delete:
+            denied_profile_delete = True
+            raise PermissionError("profile still open")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install.os, "replace", replace)
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_WORKER_UNAVAILABLE$"
+    ):
+        installer.import_runtime_root(
+            runtime_root=runtime_root, manifest_sha256=manifest_sha256
+        )
+
+    assert profile.read_bytes() == b"old-profile"
+    assert worker.read_bytes() == b"old-worker"
+    assert not tuple(worker_directory.glob("*.tmp"))
+    assert not tuple(worker_directory.glob("*.bak"))
+
+
+def test_first_runtime_import_removes_partial_managed_worker_after_publish_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, runtime_root, manifest_sha256, worker_directory = (
+        _managed_worker_import_fixture(tmp_path, monkeypatch)
+    )
+    profile = worker_directory / "minimax_profile.py"
+    worker = worker_directory / "minimax_music3_worker.py"
+    real_replace = video_capability_install.os.replace
+
+    def replace(source: object, target: object) -> None:
+        if Path(target) == worker and Path(source).suffix == ".tmp":
+            raise PermissionError("worker publication failed")
+        real_replace(source, target)
+
+    real_unlink = Path.unlink
+    denied_profile_delete = False
+
+    def unlink(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal denied_profile_delete
+        if path == profile and not denied_profile_delete:
+            denied_profile_delete = True
+            raise PermissionError("profile still open")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install.os, "replace", replace)
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_WORKER_UNAVAILABLE$"
+    ):
+        installer.import_runtime_root(
+            runtime_root=runtime_root, manifest_sha256=manifest_sha256
+        )
+
+    assert not profile.exists()
+    assert not worker.exists()
+    assert not tuple(worker_directory.glob("*.tmp"))
+    assert not tuple(worker_directory.glob("*.bak"))
+
+
+def test_repeated_runtime_import_keeps_managed_worker_pair_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, runtime_root, manifest_sha256, worker_directory = (
+        _managed_worker_import_fixture(tmp_path, monkeypatch)
+    )
+
+    assert installer.import_runtime_root(
+        runtime_root=runtime_root, manifest_sha256=manifest_sha256
+    ) == "APPLIED"
+    assert installer.import_runtime_root(
+        runtime_root=runtime_root, manifest_sha256=manifest_sha256
+    ) == "APPLIED"
+
+    source_directory = Path(video_capability_install.__file__).resolve().parent / "tools"
+    for name in ("minimax_profile.py", "minimax_music3_worker.py"):
+        assert (worker_directory / name).read_bytes() == (
+            source_directory / name
+        ).read_bytes()
+    assert not tuple(worker_directory.glob("*.tmp"))
+    assert not tuple(worker_directory.glob("*.bak"))
 
 
 def test_runtime_archive_failure_keeps_the_specific_step_reason(tmp_path: Path) -> None:

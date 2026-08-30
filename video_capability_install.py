@@ -1050,6 +1050,13 @@ class VideoCapabilityInstaller:
         except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
             return False
         try:
+            self._install_managed_minimax_worker()
+        except VideoCapabilityError:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_WORKER_UNAVAILABLE"
+            )
+            return True
+        try:
             if self._runtime_environment_applier is not None:
                 self._runtime_environment_applier(environment)
         except Exception:
@@ -1139,7 +1146,22 @@ class VideoCapabilityInstaller:
         }
 
     def _install_managed_minimax_worker(self) -> None:
-        source = Path(__file__).resolve().parent / "tools" / "minimax_music3_worker.py"
+        try:
+            self._install_managed_minimax_worker_transaction()
+        except Exception as exc:
+            if (
+                isinstance(exc, VideoCapabilityError)
+                and str(exc) == "VIDEO_RUNTIME_WORKER_UNAVAILABLE"
+            ):
+                raise
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE") from exc
+
+    def _install_managed_minimax_worker_transaction(self) -> None:
+        source_root = Path(__file__).resolve().parent / "tools"
+        sources = (
+            source_root / "minimax_profile.py",
+            source_root / "minimax_music3_worker.py",
+        )
         bundle = self._bundle("music_video")
         music = self._final_root(bundle)
         relative = (bundle.runtime_environment or {}).get(
@@ -1149,21 +1171,94 @@ class VideoCapabilityInstaller:
             if "minimax_music3" in bundle.dependencies:
                 raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
             return
-        if not source.is_file() or _is_reparse_point(source):
+        if any(
+            not source.is_file() or _is_reparse_point(source) for source in sources
+        ):
             raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
         _reject_reparse_tree(music)
-        target = _inside(music, music / relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if _is_reparse_point(target.parent) or (target.exists() and _is_reparse_point(target)):
+        worker_target = _inside(music, music / relative)
+        targets = (
+            _inside(music, worker_target.with_name("minimax_profile.py")),
+            worker_target,
+        )
+        worker_target.parent.mkdir(parents=True, exist_ok=True)
+        if _is_reparse_point(worker_target.parent) or any(
+            target.exists() and _is_reparse_point(target) for target in targets
+        ):
             raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
-        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        transaction = uuid.uuid4().hex
+        staged = tuple(
+            target.with_name(f"{target.name}.{transaction}.tmp") for target in targets
+        )
+        backups: dict[Path, Path] = {}
+        originals: dict[Path, tuple[int, str] | None] = {}
+        published: list[Path] = []
+        succeeded = False
         try:
-            shutil.copy2(source, temporary)
-            os.replace(temporary, target)
-        except OSError as exc:
-            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE") from exc
+            for source, temporary in zip(sources, staged, strict=True):
+                shutil.copy2(source, temporary)
+            for target, temporary in zip(targets, staged, strict=True):
+                if target.exists():
+                    originals[target] = _sha256_file(target)
+                    backup = target.with_name(f"{target.name}.{transaction}.bak")
+                    os.replace(target, backup)
+                    backups[target] = backup
+                else:
+                    originals[target] = None
+                os.replace(temporary, target)
+                published.append(target)
+            succeeded = True
+        except Exception as exc:
+            rollback_error: Exception | None = None
+            for target in reversed(targets):
+                try:
+                    if target in published:
+                        target.unlink(missing_ok=True)
+                except Exception as cleanup_exc:
+                    rollback_error = rollback_error or cleanup_exc
+                backup = backups.get(target)
+                if backup is not None:
+                    try:
+                        if backup.exists():
+                            os.replace(backup, target)
+                    except Exception as restore_exc:
+                        rollback_error = rollback_error or restore_exc
+            for target, expected in originals.items():
+                backup = backups.get(target)
+                try:
+                    if expected is None:
+                        target.unlink(missing_ok=True)
+                    elif backup is not None and backup.exists():
+                        os.replace(backup, target)
+                except Exception as reconcile_exc:
+                    rollback_error = rollback_error or reconcile_exc
+            for target, expected in originals.items():
+                try:
+                    restored = (
+                        not target.exists()
+                        if expected is None
+                        else target.is_file() and _sha256_file(target) == expected
+                    )
+                except Exception as verify_exc:
+                    restored = False
+                    rollback_error = rollback_error or verify_exc
+                if not restored and rollback_error is None:
+                    rollback_error = RuntimeError("managed worker rollback incomplete")
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE") from (
+                rollback_error or exc
+            )
         finally:
-            temporary.unlink(missing_ok=True)
+            for temporary in staged:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if succeeded:
+                for backup in backups.values():
+                    try:
+                        backup.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def _import_runtime_root(
         self,
