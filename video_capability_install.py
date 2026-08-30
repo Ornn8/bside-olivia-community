@@ -662,7 +662,7 @@ class VideoCapabilityInstaller:
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._runtime_thread: threading.Thread | None = None
-        self._runtime_failed_archive_identity: tuple[str, int, int, int, int] | None = None
+        self._runtime_failed_archive_identities: set[tuple[str, int, int, int, int]] = set()
         self._status: dict[str, VideoBundleStatus] = {}
         self._runtime_import: dict[str, object] = {
             "state": "idle",
@@ -1091,22 +1091,17 @@ class VideoCapabilityInstaller:
                 "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
             }
             return
-        identified = tuple(
-            (archive, identity)
-            for archive in archives
-            if archive.is_file() and not archive.is_symlink()
-            if (identity := _runtime_archive_identity(archive)) is not None
-        )
+        identified = tuple((archive, identity) for archive in archives if archive.is_file() and not archive.is_symlink() if (identity := _runtime_archive_identity(archive)) is not None)
         if not identified:
             return
+        self._runtime_failed_archive_identities.intersection_update(identity for _, identity in identified)
         candidate = next(
-            (item for item in identified if state != "failed" or item[1] != self._runtime_failed_archive_identity),
+            (item for item in identified if state != "failed" or item[1] not in self._runtime_failed_archive_identities),
             None,
         )
         if candidate is None:
             return
         archive, identity = candidate
-        self._runtime_failed_archive_identity = None
         self._runtime_import["state"] = "queued"
         thread = threading.Thread(
             target=self._run_runtime_archive,
@@ -1121,7 +1116,7 @@ class VideoCapabilityInstaller:
         try:
             self.import_runtime_archive(runtime_archive=archive)
         except Exception as exc:
-            self._runtime_failed_archive_identity = identity
+            self._runtime_failed_archive_identities.add(identity)
             self._set_runtime_import_state(
                 "failed", reason_code=self._runtime_import_error_code(exc)
             )
