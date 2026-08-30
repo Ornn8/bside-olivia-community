@@ -27,7 +27,11 @@ from .conversation_memory_port import (
     NullConversationMemoryPort,
     UnavailableConversationMemoryPort,
 )
-from .mem0_memory import create_mem0_adapter
+from .mem0_memory import (
+    DeferredConversationMemoryAdapter,
+    create_mem0_adapter,
+    load_mem0_config,
+)
 from .memory_port import (
     CONVERSATION_MEMORY,
     LEGACY_LETTERS,
@@ -1199,6 +1203,7 @@ def create_conversation_memory_adapter(
     *,
     environ: Mapping[str, str] | None = None,
     llm_fallback: Mapping[str, str] | None = None,
+    defer_initialization: bool = False,
 ) -> ConversationMemoryPort:
     """Select the optional conversation-memory provider without crossing Archive.
 
@@ -1288,6 +1293,15 @@ def create_conversation_memory_adapter(
         if isinstance(value, str) and value.strip():
             mem0_environment[memory_name] = value.strip()
     try:
+        if defer_initialization:
+            mem0_config = load_mem0_config(environ=mem0_environment)
+            return DeferredConversationMemoryAdapter(
+                mem0_config,
+                lambda: create_mem0_adapter(
+                    config=mem0_config,
+                    environ=mem0_environment,
+                ),
+            )
         return create_mem0_adapter(environ=mem0_environment)
     except Exception:
         return UnavailableConversationMemoryPort(

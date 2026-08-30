@@ -198,6 +198,7 @@ ROUTES: dict[str, dict[str, Any]] = {
         "letters.official_import",
         evidence="local-extension",
     ),
+    "/toy/companion/memory/retry": _route(["POST"], "memory.local", evidence="local-extension"),
     "/toy/getMusicTypeInfo": _route(["GET"], "music.catalog", read_only=True),
     "/toy/searchSongs": _route(["GET"], "music.catalog", read_only=True),
     "/toy/searchPlaylist": _route(["GET"], "music.catalog", read_only=True),

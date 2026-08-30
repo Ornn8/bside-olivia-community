@@ -55,6 +55,151 @@ def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities(
         assert data["capabilities"][capability]["status"] == "unavailable"
 
 
+def test_http_startup_exposes_core_health_while_mem0_initializes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from conversation_memory_port import (
+        ConversationMemoryStatus,
+        NullConversationMemoryPort,
+        UnavailableConversationMemoryPort,
+    )
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+    from mem0_memory import DeferredConversationMemoryAdapter, Mem0Config
+
+    import local_server
+    entered = threading.Event()
+    release = threading.Event()
+    generated: list[str] = []
+    runtime_starts: list[int] = []
+    runtime_state = ["unavailable"]
+    factory_calls: list[str] = []
+    class ReadyMemory(NullConversationMemoryPort):
+        enabled = True
+
+        def status(self) -> ConversationMemoryStatus:
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+
+    def blocked_factory():
+        factory_calls.append("old")
+        entered.set()
+        assert release.wait(2)
+        return ReadyMemory()
+
+    memory = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), blocked_factory)
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server.letters_adapter.memory_prompt_builder, "conversation_runtime_status", None)
+    async def record_generation(_letter_id: str, content: str, **_kwargs) -> bool:
+        generated.append(content)
+        letter = next(item for item in local_server.store.letters if item["letter_id"] == _letter_id)
+        letter["letter_status"] = "COMPLETED"
+        return True
+
+    monkeypatch.setattr(local_server, "generate_reply", record_generation)
+    def runtime_status(*_args, **_kwargs):
+        runtime_starts.append(1)
+        state = "unavailable" if len(runtime_starts) == 1 else "available"
+        runtime_state[0] = state
+        return ConversationMemoryRuntimeStatus(state, True, "mem0-outbox", state == "available")
+    monkeypatch.setattr(
+        local_server,
+        "ensure_conversation_memory_runtime",
+        runtime_status,
+    )
+    monkeypatch.setattr(local_server, "conversation_memory_runtime_status", lambda: ConversationMemoryRuntimeStatus(runtime_state[0], True, "mem0-outbox", runtime_state[0] == "available"))
+    history_calls: list[str] = []
+    monkeypatch.setattr(local_server, "collect_default_official_text_replies", lambda: history_calls.append("collector"))
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: history_calls.append("archive"))
+
+    async def exercise() -> tuple:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        local_server.install_reply_task_lifecycle(app)
+        started_at = asyncio.get_running_loop().time()
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.get("/health", params={"profile": "core"})
+            health = await response.json()
+            health_elapsed = asyncio.get_running_loop().time() - started_at
+            imported = await client.post("/toy/letter/legacy/official-import", json={}, headers={"X-Olivia-Companion-Action": "confirmed"})
+            await client.post("/toy/letter/send", json={"content": "synthetic letter"})
+            assert entered.wait(0.2)
+            generated_before_ready = len(generated)
+            await client.post("/toy/companion/memory/retry", json={}, headers={"X-Olivia-Companion-Action": "confirmed"})
+            latest = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), lambda: (factory_calls.append("latest"), ReadyMemory())[1])
+            assert memory.reconfigure_from(latest) and not memory.start_initialization()
+            assert factory_calls == ["old"]
+            release.set()
+            await asyncio.sleep(0.05)
+            generated_before_runtime_retry = len(generated)
+            retry = await client.post("/toy/companion/memory/retry", json={}, headers={
+                "X-Olivia-Companion-Action": "confirmed"
+            })
+            deadline = asyncio.get_running_loop().time() + 1
+            while not generated and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            runtime_state[0] = "unavailable"
+            await client.post("/toy/letter/send", json={"content": "letter during runtime failure"})
+            await asyncio.sleep(0.05)
+            generated_during_runtime_failure = len(generated)
+            runtime_state[0] = "available"
+            deadline = asyncio.get_running_loop().time() + 2
+            while len(generated) < 2 and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.05)
+            imported_payload, retry_payload = await imported.json(), await retry.json()
+        closed_after_first = memory.closed
+        restarted = web.Application()
+        restarted.router.add_route("*", "/{tail:.*}", local_server.handler)
+        local_server.install_reply_task_lifecycle(restarted)
+        async with TestClient(TestServer(restarted, access_log=None)):
+            pass
+        failure = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), lambda: UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED"))
+        assert memory.reconfigure_from(failure) and memory.start_initialization()
+        await asyncio.sleep(0.05)
+        failure_reason = memory.status().reason_code
+        assert memory.reconfigure_from(DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), ReadyMemory)) and memory.start_initialization()
+        await asyncio.sleep(0.05)
+        recovered = memory.status().status
+        memory.close()
+        return health, health_elapsed, generated_before_ready, generated_before_runtime_retry, generated_during_runtime_failure, imported_payload, retry_payload, closed_after_first, failure_reason, recovered
+
+    try:
+        result, elapsed, generated_before_ready, generated_before_retry, generated_during_runtime_failure, imported, retry, closed_after_first, failure_reason, recovered = asyncio.run(exercise())
+        assert elapsed < 1
+        assert result["data"]["status"] == "HEALTHY"
+        assert result["data"]["providers"]["memory"]["conversation"]["reason_code"] == "MEM0_INITIALIZING"
+        assert generated_before_ready == 0
+        assert generated_before_retry == 0
+        assert generated_during_runtime_failure == 1
+        assert generated == ["synthetic letter", "letter during runtime failure"]
+        assert history_calls == [] and imported["message"] == "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE"
+        assert runtime_starts == [1, 1, 1]
+        assert retry["data"]["status"] == "AVAILABLE"
+        assert closed_after_first and memory.closed and local_server._start_ready_conversation_memory_runtime() is None
+        assert failure_reason == "MEM0_IMPORT_FAILED" and recovered == "available"
+        assert factory_calls == ["old", "latest"]
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(
+    ("adapter_state", "runtime_state", "expected"),
+    [("available", "degraded", ("DEGRADED", True)), ("disabled", None, ("DISABLED", False))],
+)
+def test_memory_retry_reports_runtime_degradation_and_disabled_state(monkeypatch: pytest.MonkeyPatch, adapter_state: str, runtime_state: str | None, expected: tuple[str, bool]) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+    class Adapter:
+        def status(self):
+            return ConversationMemoryStatus(adapter_state, adapter_state != "disabled", "mem0" if adapter_state != "disabled" else "none", "qdrant-local" if adapter_state != "disabled" else "none")
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", Adapter())
+    monkeypatch.setattr(local_server, "_start_conversation_memory_initialization", lambda _loop: False)
+    monkeypatch.setattr(local_server, "_start_ready_conversation_memory_runtime", lambda: None if runtime_state is None else ConversationMemoryRuntimeStatus(runtime_state, True, "mem0-outbox", False))
+    result = asyncio.run(local_server.route("POST", "/toy/companion/memory/retry", {}, {}, companion_confirmed=True))
+    assert (result["data"]["status"], result["data"]["retryable"]) == expected
+
+
 def test_invalid_health_profile_is_a_stable_client_error() -> None:
     import local_server
 
