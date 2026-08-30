@@ -502,6 +502,33 @@ def test_complete_download_automatically_prepares_new_runtime_archive(
     assert [item["state"] for item in installer.status()["bundles"]] == ["ready", "ready"]
 
 
+def test_failed_discovered_runtime_recovers_only_after_archive_replacement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = (tmp_path / "downloads" / "Olivia-video-runtime-fixture.zip").resolve()
+    archive.parent.mkdir()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("runtime-manifest.json", "{}")
+    replacement = _runtime_archive(tmp_path / "replacement")
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root, manifest=manifest,
+        readiness_probe=lambda _environment: {"ordinary_missing_dependencies": [], "music_ready": True},
+        runtime_archive_roots=(archive.parent,),
+    )
+
+    def wait_for(state: str) -> str:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and installer.status()["runtime_import"]["state"] != state:
+            time.sleep(0.01)
+        return str(installer.status()["runtime_import"]["state"])
+
+    assert wait_for("failed") == "failed"
+    replacement.replace(archive)
+    assert wait_for("ready") == "ready"
+
+
 def test_complete_download_reports_missing_runtime_archive_instead_of_idle(
     tmp_path: Path,
 ) -> None:

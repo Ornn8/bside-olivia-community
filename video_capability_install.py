@@ -327,6 +327,14 @@ def _sha256_file(
     return total, digest.hexdigest()
 
 
+def _runtime_archive_identity(path: Path) -> tuple[str, int, int, int, int] | None:
+    try:
+        metadata = path.stat()
+    except OSError:
+        return None
+    return (str(path), metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+
+
 def _verify(path: Path, spec: VideoFile) -> None:
     size, digest = _sha256_file(path)
     if size != spec.size_bytes or digest != spec.sha256:
@@ -654,6 +662,7 @@ class VideoCapabilityInstaller:
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._runtime_thread: threading.Thread | None = None
+        self._runtime_failed_archive_identity: tuple[str, int, int, int, int] | None = None
         self._status: dict[str, VideoBundleStatus] = {}
         self._runtime_import: dict[str, object] = {
             "state": "idle",
@@ -1052,9 +1061,12 @@ class VideoCapabilityInstaller:
         return True
 
     def _maybe_start_runtime_prepare(self) -> None:
-        if self._runtime_import["state"] not in {"idle", "required"}:
+        state = self._runtime_import["state"]
+        if state not in {"idle", "required", "failed"}:
             return
         if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            return
+        if state == "failed" and not self._runtime_archives and not self._runtime_archive_roots:
             return
         if self._resume_persisted_runtime():
             return
@@ -1070,14 +1082,6 @@ class VideoCapabilityInstaller:
         except OSError:
             discovered = ()
         archives = tuple(dict.fromkeys((*self._runtime_archives, *discovered)))
-        if not archives:
-            self._runtime_import = {
-                "state": "required",
-                "checked_bytes": 0,
-                "total_bytes": 0,
-                "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
-            }
-            return
         archive = next((path for path in archives if path.is_file()), None)
         if archive is None:
             self._runtime_import = {
@@ -1087,20 +1091,37 @@ class VideoCapabilityInstaller:
                 "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
             }
             return
+        identified = tuple(
+            (archive, identity)
+            for archive in archives
+            if archive.is_file() and not archive.is_symlink()
+            if (identity := _runtime_archive_identity(archive)) is not None
+        )
+        if not identified:
+            return
+        candidate = next(
+            (item for item in identified if state != "failed" or item[1] != self._runtime_failed_archive_identity),
+            None,
+        )
+        if candidate is None:
+            return
+        archive, identity = candidate
+        self._runtime_failed_archive_identity = None
         self._runtime_import["state"] = "queued"
         thread = threading.Thread(
             target=self._run_runtime_archive,
-            args=(archive,),
+            args=(archive, identity),
             name="olivia-video-runtime",
             daemon=True,
         )
         self._runtime_thread = thread
         thread.start()
 
-    def _run_runtime_archive(self, archive: Path) -> None:
+    def _run_runtime_archive(self, archive: Path, identity: tuple[str, int, int, int, int]) -> None:
         try:
             self.import_runtime_archive(runtime_archive=archive)
         except Exception as exc:
+            self._runtime_failed_archive_identity = identity
             self._set_runtime_import_state(
                 "failed", reason_code=self._runtime_import_error_code(exc)
             )
