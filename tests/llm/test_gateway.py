@@ -156,6 +156,124 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
     assert seen["body"]["messages"] == list(ROOT_MESSAGES)
 
 
+@pytest.mark.parametrize("endpoint", ["opencode-go", "official-deepseek"])
+@pytest.mark.parametrize("request_id", ["letter-reply:fixture", "quality-fixture"])
+def test_deepseek_v4_flash_release_text_requests_max_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    endpoint: str,
+    request_id: str,
+) -> None:
+    async def exercise():
+        seen: dict[str, object] = {}
+
+        async def handler(request: web.Request) -> web.Response:
+            seen.update(await request.json())
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "reasoning_content": "private chain",
+                                "content": "mock reply",
+                            }
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post(f"/{endpoint}/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(
+                    str(client.make_url(f"/{endpoint}/v1")),
+                    model="DeepSeek-V4-Flash",
+                )
+            )
+            response = await adapter.complete(ROOT_MESSAGES, request_id=request_id)
+        return response, seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    response, body = run(exercise())
+
+    assert response.text == "mock reply"
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "max"
+    captured = capsys.readouterr()
+    assert "private chain" not in captured.out
+    assert "private chain" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [None, "historical-import", "live-turn", "song-plan"],
+)
+def test_deepseek_v4_flash_nonrelease_text_requests_keep_legacy_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    request_id: str | None,
+) -> None:
+    async def exercise() -> dict[str, object]:
+        seen: dict[str, object] = {}
+
+        async def handler(request: web.Request) -> web.Response:
+            seen.update(await request.json())
+            return web.json_response(
+                {"choices": [{"message": {"content": "mock reply"}}]}
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(
+                    str(client.make_url("/v1")),
+                    model="deepseek-v4-flash",
+                )
+            )
+            await adapter.complete(ROOT_MESSAGES, request_id=request_id)
+        return seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    body = run(exercise())
+
+    assert "thinking" not in body
+    assert "reasoning_effort" not in body
+
+
+def test_deepseek_v4_flash_release_reasoning_has_a_compatible_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> tuple[str, str]:
+        async def handler(_request: web.Request) -> web.Response:
+            await asyncio.sleep(0.05)
+            return web.json_response(
+                {"choices": [{"message": {"content": "mock reply"}}]}
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(
+                    str(client.make_url("/v1")),
+                    model="deepseek-v4-flash",
+                    timeout_seconds=0.01,
+                )
+            )
+            release = await adapter.complete(
+                ROOT_MESSAGES,
+                request_id="letter-reply:fixture",
+            )
+            with pytest.raises(ProviderTimeout) as nonrelease:
+                await adapter.complete(ROOT_MESSAGES, request_id="live-turn")
+        return release.text, nonrelease.value.code
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+
+    assert run(exercise()) == ("mock reply", "PROVIDER_TIMEOUT")
+
+
 def test_openai_compatible_adapter_returns_required_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -391,6 +509,69 @@ def test_responses_style_and_sse_stream_are_supported(monkeypatch: pytest.Monkey
     response, stream = run(exercise())
     assert response.text == "responses reply"
     assert "".join(delta.text for delta in stream) == "first second"
+
+
+def test_deepseek_v4_flash_release_stream_hides_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def exercise():
+        seen: list[dict[str, object]] = []
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            seen.append(await request.json())
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(
+                b'data: {"choices":[{"delta":{"reasoning_content":"private stream chain"}}]}\n\n'
+            )
+            await response.write(
+                b'data: {"choices":[{"delta":{"content":"visible reply"}}]}\n\n'
+            )
+            await response.write(
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            )
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(
+                    str(client.make_url("/v1")),
+                    model="deepseek-v4-flash",
+                    stream=True,
+                )
+            )
+            release_deltas = [
+                delta
+                async for delta in adapter.stream(
+                    ROOT_MESSAGES,
+                    request_id="quality-fixture",
+                )
+            ]
+            live_deltas = [
+                delta
+                async for delta in adapter.stream(
+                    ROOT_MESSAGES,
+                    request_id="live-turn",
+                )
+            ]
+        return release_deltas, live_deltas, seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    release_deltas, live_deltas, bodies = run(exercise())
+
+    assert "".join(delta.text for delta in release_deltas) == "visible reply"
+    assert "".join(delta.text for delta in live_deltas) == "visible reply"
+    assert bodies[0]["thinking"] == {"type": "enabled"}
+    assert bodies[0]["reasoning_effort"] == "max"
+    assert "thinking" not in bodies[1]
+    assert "reasoning_effort" not in bodies[1]
+    captured = capsys.readouterr()
+    assert "private stream chain" not in captured.out
+    assert "private stream chain" not in captured.err
 
 
 @pytest.mark.parametrize("status", [429, 503])

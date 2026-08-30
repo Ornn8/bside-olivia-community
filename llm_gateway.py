@@ -564,7 +564,26 @@ class OpenAICompatibleAdapter(Gateway):
         headers["X-Request-ID"] = request_id
         return headers
 
-    def _body(self, messages: Sequence[Mapping[str, Any]], *, stream: bool) -> dict[str, Any]:
+    def _uses_max_reasoning(self, request_id: str) -> bool:
+        return (
+            self.config.provider == "openai_compatible"
+            and self.config.api_style == "chat_completions"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+            and request_id.startswith(("letter-reply:", "quality-"))
+        )
+
+    def _request_timeout_seconds(self, *, max_reasoning: bool) -> float:
+        if max_reasoning:
+            return max(self.config.timeout_seconds, 600.0)
+        return self.config.timeout_seconds
+
+    def _body(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        stream: bool,
+        max_reasoning: bool = False,
+    ) -> dict[str, Any]:
         normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
         if self.config.api_style == "responses":
             request_input = [
@@ -572,16 +591,36 @@ class OpenAICompatibleAdapter(Gateway):
                 for message in normalized
             ]
             return {"model": self.config.model, "input": request_input, "stream": stream}
-        return {"model": self.config.model, "messages": list(normalized), "stream": stream}
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": list(normalized),
+            "stream": stream,
+        }
+        if (
+            max_reasoning
+            and self.config.provider == "openai_compatible"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+        ):
+            body["thinking"] = {"type": "enabled"}
+            body["reasoning_effort"] = "max"
+        return body
 
     async def _retry_wait(self, attempt: int) -> None:
         delay = self.config.retry_backoff_seconds * (attempt + 1)
         if delay:
             await asyncio.sleep(delay)
 
-    async def _post_json(self, body: dict[str, Any], request_id: str) -> dict[str, Any]:
+    async def _post_json(
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        *,
+        max_reasoning: bool = False,
+    ) -> dict[str, Any]:
         key = self._ensure_configured()
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        timeout = aiohttp.ClientTimeout(
+            total=self._request_timeout_seconds(max_reasoning=max_reasoning)
+        )
         for attempt in range(self.config.max_retries + 1):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -621,8 +660,13 @@ class OpenAICompatibleAdapter(Gateway):
 
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
-        body = self._body(messages, stream=False)
-        data = await self._post_json(body, request)
+        max_reasoning = self._uses_max_reasoning(request)
+        body = self._body(
+            messages,
+            stream=False,
+            max_reasoning=max_reasoning,
+        )
+        data = await self._post_json(body, request, max_reasoning=max_reasoning)
         text = _extract_response_text(data)
         if not text:
             raise ProviderProtocolError()
@@ -673,9 +717,16 @@ class OpenAICompatibleAdapter(Gateway):
 
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
         request = request_id or uuid.uuid4().hex
-        body = self._body(messages, stream=True)
+        max_reasoning = self._uses_max_reasoning(request)
+        body = self._body(
+            messages,
+            stream=True,
+            max_reasoning=max_reasoning,
+        )
         key = self._ensure_configured()
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        timeout = aiohttp.ClientTimeout(
+            total=self._request_timeout_seconds(max_reasoning=max_reasoning)
+        )
         emitted = False
         for attempt in range(self.config.max_retries + 1):
             try:

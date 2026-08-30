@@ -3169,7 +3169,7 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
                     base_url="https://example.invalid/v1",
                     model="forbidden-review-model",
                     api_key_env="SYNTHETIC_KEY",
-                    timeout_seconds=90.0,
+                    timeout_seconds=180.0,
                     max_input_chars=10_000,
                     fallback_provider="mock",
                 ),
@@ -3185,11 +3185,19 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
 
     assert reviewer is not None
     assert rewriter is not None
-    assert reviewer.adapter.config.timeout_seconds == 60.0
-    assert rewriter.timeout_seconds == 60.0
+    assert reviewer.adapter.config.timeout_seconds == 600.0
+    assert rewriter.timeout_seconds == 600.0
     review_gateway = reviewer.adapter.transport.gateway
     assert review_gateway is rewriter.gateway
     assert review_gateway is not gateway
     assert review_gateway.config.model == "deepseek-v4-flash"
     assert review_gateway.config.max_input_chars == 30_000
     assert review_gateway.config.fallback_provider == "none"
+
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
+    overridden_reviewer, overridden_rewriter = create_model_quality_ports(orchestrator)
+
+    assert overridden_reviewer is not None
+    assert overridden_rewriter is not None
+    assert overridden_reviewer.adapter.config.timeout_seconds == 20.0
+    assert overridden_rewriter.timeout_seconds == 20.0

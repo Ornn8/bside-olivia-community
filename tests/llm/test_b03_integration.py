@@ -73,6 +73,54 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     assert "synthetic-runtime-key" not in repr(local_server.LLM_CFG)
 
 
+def test_deepseek_flash_runtime_extends_only_the_letter_reply_timeout(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    previous = GatewayConfig(
+        provider="openai_compatible",
+        base_url="https://old.example/v1",
+        model="old-model",
+    )
+    marker = object()
+    candidate_analyzer = type(
+        "CandidateAnalyzer",
+        (),
+        {"gateway": object(), "timeout_seconds": 1.0},
+    )()
+    monkeypatch.setattr(local_server, "LLM_CONFIG", previous)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", previous.timeout_seconds)
+    monkeypatch.setattr(local_server, "LLM_CFG", previous.public_dict())
+    monkeypatch.setattr(local_server.letters_adapter, "config", previous)
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", object())
+    monkeypatch.setattr(
+        local_server,
+        "GatewayPrivateWorldCandidateAnalyzer",
+        type(candidate_analyzer),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "private_world_candidate_analyzer",
+        candidate_analyzer,
+    )
+    monkeypatch.setattr(local_server.reply_engine, "timeout_seconds", 1.0)
+    monkeypatch.setattr(local_server, "create_gateway", lambda *_args, **_kwargs: marker)
+    monkeypatch.setattr(local_server.emotion_triage, "gateway", object())
+    monkeypatch.delenv("OLIVIA_LLM_RUNTIME_KEY_CONFIGURED", raising=False)
+
+    local_server.apply_runtime_llm_config(
+        "https://gateway.example/v1",
+        "deepseek-v4-flash",
+        "synthetic-runtime-key",
+    )
+
+    assert local_server.LLM_CONFIG.timeout_seconds == 180.0
+    assert local_server.LLM_TIMEOUT_SECONDS == 180.0
+    assert candidate_analyzer.timeout_seconds == 180.0
+    assert local_server.reply_engine.timeout_seconds == 600.0
+
+
 def test_failed_llm_runtime_replacement_keeps_the_previous_gateway(monkeypatch) -> None:
     import local_server
 

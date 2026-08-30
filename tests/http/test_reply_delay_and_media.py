@@ -10,6 +10,7 @@ from aiohttp.test_utils import make_mocked_request
 
 import local_server
 from letter_triage import TriageResult
+from llm_gateway import GatewayConfig
 from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
@@ -689,13 +690,41 @@ def test_shutdown_cancels_and_releases_owned_media_jobs():
 
 
 def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
+    config = GatewayConfig(
+        provider="openai_compatible",
+        api_style="chat_completions",
+        model="synthetic-model",
+        timeout_seconds=90.0,
+    )
+    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds() == 275.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 275.0
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds() == 155.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 155.0
+
+
+def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication(
+    monkeypatch,
+):
+    config = GatewayConfig(
+        provider="openai_compatible",
+        api_style="chat_completions",
+        model="deepseek-v4-flash",
+        timeout_seconds=180.0,
+    )
+    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
+    monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
+
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 3605.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 2405.0
+
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 705.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 665.0
 
 
 @pytest.mark.parametrize(

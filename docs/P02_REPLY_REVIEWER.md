@@ -165,8 +165,20 @@ accepted warning.
   existing deterministic-clean degraded path;
 - `OLIVIA_REPLY_REWRITE_ENABLED=false` leaves review enabled but disables model
   rewrite;
-- `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` sets a bounded 0.1-120 second timeout;
-  the default is the smaller of 12 seconds and the configured Provider timeout.
+- for OpenAI-compatible Chat Completions with `deepseek-v4-flash`, only durable
+  `letter-reply:` generation and `quality-` review requests explicitly enable
+  thinking with `reasoning_effort=max`; tool calls and unscoped, historical,
+  Live, or song requests retain their previous payload and timeout;
+- `reasoning_content` is consumed only as Provider transport and is discarded;
+  it never enters reply text, review text, logs, or memory;
+- `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` remains an explicit override. For
+  the max-reasoning Flash quality transport it is bounded to 0.1-600 seconds and
+  defaults to 600 seconds; other transports retain the 0.1-120 second bound and
+  the smaller of 60 seconds and their configured Provider timeout;
+- the Flash Letter outer deadline covers every paid stage: text Letter allows
+  generation, review plus optional adjudication, one rewrite, and a fresh review
+  plus optional adjudication (3,605 seconds including slack). Non-text Letter
+  modes retain the three-quality-stage budget (2,405 seconds including slack).
 
 Provider absence, timeout, transport errors, non-JSON output, and
 schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or

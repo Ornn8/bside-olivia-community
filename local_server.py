@@ -219,6 +219,20 @@ LLM_CFG = LLM_CONFIG.public_dict()
 LLM_CFG["persona_file"] = LLM_CONFIG.persona_file
 
 
+def _deepseek_max_reasoning_enabled(config: GatewayConfig) -> bool:
+    return (
+        config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and config.model.casefold() == "deepseek-v4-flash"
+    )
+
+
+def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
+    if _deepseek_max_reasoning_enabled(config):
+        return max(config.timeout_seconds, 600.0)
+    return config.timeout_seconds
+
+
 def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> None:
     """Atomically switch future reply requests to freshly saved local settings."""
 
@@ -251,7 +265,7 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         private_world_candidate_analyzer.gateway = gateway
         private_world_candidate_analyzer.timeout_seconds = candidate.timeout_seconds
     emotion_triage.gateway = gateway
-    reply_engine.timeout_seconds = candidate.timeout_seconds
+    reply_engine.timeout_seconds = _letter_reply_timeout_seconds(candidate)
     LLM_CONFIG = candidate
     LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
     LLM_CFG = candidate.public_dict()
@@ -1062,7 +1076,7 @@ async def _music_voice_plan_for_letter(
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
-    timeout_seconds=LLM_CONFIG.timeout_seconds,
+    timeout_seconds=_letter_reply_timeout_seconds(LLM_CONFIG),
 )
 reply_pipeline = ReplyPipeline(
     reply_engine,
@@ -1980,10 +1994,14 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
     letter["reply_not_before"] = time.time() + delay * 60.0
 
 
-def _reply_pipeline_timeout_seconds() -> float:
+def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
     """Cover generation plus review, one rewrite, and the final recheck."""
 
-    default_quality_timeout = min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    max_reasoning = _deepseek_max_reasoning_enabled(LLM_CONFIG)
+    generation_timeout = _letter_reply_timeout_seconds(LLM_CONFIG)
+    default_quality_timeout = (
+        600.0 if max_reasoning else min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    )
     try:
         quality_timeout = float(
             _os.environ.get(
@@ -1993,8 +2011,16 @@ def _reply_pipeline_timeout_seconds() -> float:
         )
     except (TypeError, ValueError):
         quality_timeout = default_quality_timeout
-    quality_timeout = max(1.0, min(quality_timeout, 300.0))
-    return float(LLM_TIMEOUT_SECONDS) + 3.0 * quality_timeout + 5.0
+    quality_timeout = max(
+        1.0,
+        min(quality_timeout, 600.0 if max_reasoning else 300.0),
+    )
+    quality_stages = (
+        5.0
+        if max_reasoning and exact_mode == ReplyMode.TEXT_LETTER.value
+        else 3.0
+    )
+    return generation_timeout + quality_stages * quality_timeout + 5.0
 
 
 def _send_result_for_letter(letter: dict) -> dict:
@@ -3167,7 +3193,7 @@ async def _run_reply_pipeline_for_letter(
                 request,
                 letters_adapter.build_reply_context(ReplyMode(exact_mode)),
             ),
-            timeout=_reply_pipeline_timeout_seconds(),
+            timeout=_reply_pipeline_timeout_seconds(exact_mode),
         )
     finally:
         _CURRENT_LETTER_MEMORY_SOURCE.reset(source_token)

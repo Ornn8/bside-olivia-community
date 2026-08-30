@@ -788,9 +788,18 @@ def create_model_quality_ports(
             30.0,
         )
     )
+    max_reasoning = (
+        isinstance(config, GatewayConfig)
+        and config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and _REVIEW_MODEL.casefold() == "deepseek-v4-flash"
+    )
     timeout = _env_timeout(
         "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
-        min(configured_timeout, 60.0),
+        max(configured_timeout, 600.0)
+        if max_reasoning
+        else min(configured_timeout, 60.0),
+        maximum=600.0 if max_reasoning else 120.0,
     )
     reviewer = GatewayPersonaReviewer(
         quality_gateway,
@@ -1942,6 +1951,8 @@ def _env_bool(
 def _env_timeout(
     name: str,
     default: float,
+    *,
+    maximum: float,
 ) -> float:
     try:
         value = float(
@@ -1955,7 +1966,7 @@ def _env_timeout(
     return max(
         0.1,
         min(
-            120.0,
+            maximum,
             value,
         ),
     )
