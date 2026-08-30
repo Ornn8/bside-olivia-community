@@ -6,6 +6,7 @@
 #   letter_adapter.reply(content)  -> 本地 LLM 生成回信
 #   music_adapter.generate(midi)   -> 本地音乐模型生成演奏
 import asyncio
+from collections import deque
 from contextvars import ContextVar
 import json
 import os as _os
@@ -209,9 +210,45 @@ def _wire_reply_mode(value: object) -> str:
     return "text" if exact == ReplyMode.TEXT_LETTER.value else "video"
 
 
+_RUNTIME_DIAGNOSTIC_EVENTS: deque[dict[str, object]] = deque(maxlen=200)
+_RUNTIME_DIAGNOSTIC_EVENT_RE = _re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RUNTIME_DIAGNOSTIC_CODE_RE = _re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
+_RUNTIME_DIAGNOSTIC_REPLY_MODES = frozenset(
+    {"text", "video", "text_letter", "normal_video", "music_video", "live"}
+)
+
+
+def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> dict[str, object] | None:
+    """Project one log event into the bounded, path-free export ring."""
+
+    if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
+        return None
+    record: dict[str, object] = {"event": event}
+    for name in ("status", "error_code"):
+        value = fields.get(name)
+        if isinstance(value, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(value):
+            record[name] = value
+    method = fields.get("method")
+    if method in {"GET", "HEAD", "OPTIONS", "POST"}:
+        record["method"] = method
+    reply_mode = fields.get("reply_mode")
+    if reply_mode in _RUNTIME_DIAGNOSTIC_REPLY_MODES:
+        record["reply_mode"] = reply_mode
+    return record
+
+
+def runtime_diagnostic_event_snapshot() -> tuple[dict[str, object], ...]:
+    """Return a detached, bounded projection for support export only."""
+
+    return tuple(dict(record) for record in _RUNTIME_DIAGNOSTIC_EVENTS)
+
+
 def _safe_log(event: str, **fields) -> None:
     """Emit structured diagnostics without request bodies, URLs or user data."""
     record = {"event": event, **fields}
+    projected = _runtime_diagnostic_record(event, fields)
+    if projected is not None:
+        _RUNTIME_DIAGNOSTIC_EVENTS.append(projected)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
 
 

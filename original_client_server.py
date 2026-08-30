@@ -12,8 +12,10 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 import json
 import os
+import platform
 from pathlib import Path
 import sys
+import time
 from types import ModuleType
 from typing import Any
 
@@ -46,6 +48,7 @@ from original_client_companion_mutation_backend import (
     DirectOriginalClientCompanionMutationBackend,
     MemoryAdminMutationService,
 )
+from original_client_diagnostics_api import mount_original_client_diagnostics_api
 from original_client_capability_api import mount_original_client_capability_api
 from original_client_video_capability_api import mount_original_client_video_capability_api
 from video_capability_install import (
@@ -85,6 +88,13 @@ LetterCollection = Callable[[str], Sequence[Mapping[str, object]]]
 _RUNTIME_KEY = web.AppKey("original_client.server_runtime", object)
 _MAILBOX_MOUNTED_KEY = web.AppKey("original_client.mailbox_wire_mounted", bool)
 _MEMORY_ADMIN_FILENAME = "memory_admin_audit.sqlite3"
+_DIAGNOSTIC_TAIL_LIMIT = 200
+_DIAGNOSTIC_LOG_MAX_BYTES = 1 << 20
+_DIAGNOSTIC_PROFILES = ("core", "llm", "memory", "asr")
+_DIAGNOSTIC_CAPABILITIES = {
+    "settings.video_reply": "settings_video_reply",
+    "native.tts": "native_tts",
+}
 
 
 class OriginalClientServerError(RuntimeError):
@@ -334,6 +344,222 @@ class OriginalClientServerRuntime:
         }
 
 
+def _launcher_tail(data_root: Path | None) -> tuple[Mapping[str, object], ...]:
+    """Read only the bounded launcher event tail; raw content is never exported."""
+
+    if data_root is None:
+        return ()
+    path = data_root / "logs" / "launcher.jsonl"
+    if not path.exists():
+        return ()
+    if not path.is_file() or path.stat().st_size > _DIAGNOSTIC_LOG_MAX_BYTES:
+        raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-_DIAGNOSTIC_TAIL_LIMIT:]
+        records = tuple(json.loads(line) for line in lines)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE") from exc
+    if any(not isinstance(record, Mapping) for record in records):
+        raise RuntimeError("DIAGNOSTIC_LAUNCHER_TAIL_UNAVAILABLE")
+    return records
+
+
+def _diagnostic_source(
+    backend: OriginalClientCompanionServiceBackend,
+    *,
+    setup_service: LLMSetupService | None,
+    launcher_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
+    runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
+    health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
+    task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+) -> Callable[[], Mapping[str, object]]:
+    """Bind only safe, aggregate collectors for a diagnostic export request."""
+
+    def state(value: object) -> str:
+        if not isinstance(value, str):
+            return "unknown"
+        normalized = value.strip().lower()
+        aliases = {
+            "healthy": "available",
+            "ready": "available",
+            "cancelled": "cancelled",
+            "canceled": "cancelled",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized and normalized[0].isalpha() and all(
+            character.islower() or character.isdigit() or character == "_"
+            for character in normalized
+        ):
+            return normalized[:32]
+        return "unknown"
+
+    def code(value: object) -> str | None:
+        if not isinstance(value, str) or not 1 <= len(value) <= 96:
+            return None
+        if not value[0].isalpha() or value != value.upper():
+            return None
+        if any(not (character.isupper() or character.isdigit() or character == "_") for character in value):
+            return None
+        return value
+
+    def project_task(value: Mapping[str, object]) -> dict[str, object]:
+        letter_state = state(value.get("letter_status"))
+        media_state = state(value.get("media_status")) if "media_status" in value else None
+        if media_state in {"pending", "queued", "processing"}:
+            stage = "media_generation"
+        else:
+            stage = {
+                "pending": "waiting",
+                "processing": "reply_generation",
+                "completed": "completed",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }.get(letter_state, "unknown")
+        created_at = value.get("created_at")
+        elapsed_bucket = "unknown"
+        if type(created_at) in {int, float}:
+            elapsed = max(0.0, time.time() - float(created_at))
+            if elapsed < 60:
+                elapsed_bucket = "under_1m"
+            elif elapsed < 300:
+                elapsed_bucket = "1m_5m"
+            elif elapsed < 900:
+                elapsed_bucket = "5m_15m"
+            elif elapsed < 3_600:
+                elapsed_bucket = "15m_1h"
+            elif elapsed < 21_600:
+                elapsed_bucket = "1h_6h"
+            else:
+                elapsed_bucket = "over_6h"
+        item: dict[str, object] = {
+            "status": letter_state,
+            "stage": stage,
+            "elapsed_bucket": elapsed_bucket,
+        }
+        error_code = code(value.get("error_code"))
+        if error_code is not None:
+            item["error_code"] = error_code
+        if "media_status" in value:
+            item["media_status"] = media_state
+        media_error_code = code(value.get("media_error_code"))
+        if media_error_code is not None:
+            item["media_error_code"] = media_error_code
+        reply_mode = value.get("reply_mode")
+        if reply_mode in {
+            "text",
+            "video",
+            "text_letter",
+            "normal_video",
+            "music_video",
+            "live",
+        }:
+            item["reply_mode"] = reply_mode
+        for name in ("retryable", "media_retryable"):
+            flag = value.get(name)
+            if type(flag) is bool:
+                item[name] = flag
+        return item
+
+    def collect() -> Mapping[str, object]:
+        status = backend.read_status().to_dict()
+        capabilities = status.get("capabilities")
+        if not isinstance(capabilities, Mapping):
+            raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+        checks: dict[str, object] = {}
+        for name in ("memory", "private_world", "candidates"):
+            value = capabilities.get(name)
+            if not isinstance(value, Mapping):
+                raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+            check: dict[str, object] = {"state": value.get("state")}
+            reason = value.get("reason_code")
+            if reason is not None:
+                check["error_code"] = reason
+            checks[name] = check
+
+        summary: dict[str, object] = {
+            "status": "available",
+            "python_version": platform.python_version(),
+            "os_name": platform.system() or "unknown",
+            "os_release": platform.release() or "unknown",
+            "architecture": platform.machine() or "unknown",
+        }
+        if health_profile_provider is not None:
+            core_data: Mapping[str, object] | None = None
+            for profile_name in _DIAGNOSTIC_PROFILES:
+                envelope = health_profile_provider(profile_name)
+                if not isinstance(envelope, Mapping) or envelope.get("code") != 0:
+                    raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+                data = envelope.get("data")
+                if not isinstance(data, Mapping):
+                    raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+                profile_state = state(data.get("status"))
+                if profile_state == "failed":
+                    profile_state = "unavailable"
+                checks[f"profile_{profile_name}"] = {
+                    "state": profile_state
+                }
+                if profile_name == "core":
+                    core_data = data
+            if core_data is not None:
+                for name in ("contract_version",):
+                    value = core_data.get(name)
+                    if isinstance(value, str):
+                        summary[name] = value
+                raw_capabilities = core_data.get("capabilities")
+                if not isinstance(raw_capabilities, Mapping):
+                    raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+                for public_name, diagnostic_name in _DIAGNOSTIC_CAPABILITIES.items():
+                    value = raw_capabilities.get(public_name)
+                    if not isinstance(value, Mapping):
+                        raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
+                    entry: dict[str, object] = {"state": state(value.get("status"))}
+                    reason = code(value.get("reason_code"))
+                    if reason is not None:
+                        entry["error_code"] = reason
+                    checks[diagnostic_name] = entry
+
+        install: dict[str, object] = {
+            "status": "available" if setup_service is not None else "disabled"
+        }
+        if setup_service is not None:
+            setup = setup_service.status()
+            llm = setup.get("llm")
+            if not isinstance(llm, Mapping):
+                raise RuntimeError("DIAGNOSTIC_INSTALL_UNAVAILABLE")
+            setup_completed = setup.get("setup_completed")
+            key_configured = llm.get("key_configured")
+            if type(setup_completed) is not bool or type(key_configured) is not bool:
+                raise RuntimeError("DIAGNOSTIC_INSTALL_UNAVAILABLE")
+            install.update(
+                setup_completed=setup_completed,
+                key_configured=key_configured,
+            )
+
+        raw_tasks = tuple(task_snapshot_provider() if task_snapshot_provider else ())
+        if len(raw_tasks) > 20 or any(not isinstance(item, Mapping) for item in raw_tasks):
+            raise RuntimeError("DIAGNOSTIC_TASKS_UNAVAILABLE")
+        task_items = [project_task(item) for item in raw_tasks]
+        pending = sum(
+            item.get("status") in {"pending", "processing"}
+            or item.get("media_status") in {"pending", "queued", "processing"}
+            for item in task_items
+        )
+        return {
+            "summary": summary,
+            "health": {"status": "available", "checks": checks},
+            "install": install,
+            "tasks": {
+                "status": "active" if pending else "idle",
+                "pending": pending,
+                "items": task_items,
+            },
+            "launcher_tail": list(launcher_tail_provider() if launcher_tail_provider else ()),
+            "runtime_tail": list(runtime_tail_provider() if runtime_tail_provider else ()),
+        }
+
+    return collect
+
+
 def create_original_client_server_runtime(
     fallback_handler: FallbackHandler,
     *,
@@ -348,6 +574,10 @@ def create_original_client_server_runtime(
     video_capability_installer: VideoCapabilityInstaller | None = None,
     component_updater: ComponentUpdater | None = None,
     trusted_origins: Sequence[str] = (),
+    launcher_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
+    task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
 
@@ -422,6 +652,18 @@ def create_original_client_server_runtime(
     mount_original_client_companion_mutation_api(
         app,
         mutation_backend,
+        trusted_origins=origins,
+    )
+    mount_original_client_diagnostics_api(
+        app,
+        _diagnostic_source(
+            backend,
+            setup_service=setup_service,
+            launcher_tail_provider=launcher_tail_provider,
+            runtime_tail_provider=runtime_tail_provider,
+            health_profile_provider=health_profile_provider,
+            task_snapshot_provider=task_snapshot_provider,
+        ),
         trusted_origins=origins,
     )
     if letter_collection is not None:
@@ -707,6 +949,22 @@ def create_configured_original_client_server_runtime(
     capability_installer = _configured_capability_installer(values, data_root)
     video_capability_installer = _configured_video_capability_installer(values, data_root)
     component_updater = _configured_component_updater(values)
+    runtime_tail = getattr(server_module, "runtime_diagnostic_event_snapshot", None)
+    health_profile = getattr(server_module, "_health_result", None)
+
+    def task_snapshot() -> tuple[Mapping[str, object], ...]:
+        store = getattr(server_module, "store", None)
+        letters = getattr(store, "letters", ())
+        if not isinstance(letters, Sequence) or isinstance(
+            letters, (str, bytes, bytearray)
+        ):
+            return ()
+        return tuple(
+            item
+            for item in tuple(letters)[-20:]
+            if isinstance(item, Mapping)
+        )
+
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -720,6 +978,10 @@ def create_configured_original_client_server_runtime(
         video_capability_installer=video_capability_installer,
         component_updater=component_updater,
         trusted_origins=origins,
+        launcher_tail_provider=lambda: _launcher_tail(data_root),
+        runtime_tail_provider=runtime_tail if callable(runtime_tail) else None,
+        health_profile_provider=health_profile if callable(health_profile) else None,
+        task_snapshot_provider=task_snapshot,
     )
     install_reply_task_lifecycle = getattr(
         server_module,
