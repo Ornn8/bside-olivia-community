@@ -325,7 +325,7 @@ def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path,
         stderr = f"CUDA out of memory {tmp_path / 'voice.wav'}; {private}; secret-token; unlisted-private-fragment".encode()
         _write(Path(command[-1]), b"partial"); return subprocess.CompletedProcess(command, 23, stdout=b"", stderr=stderr)
     adapter = music_reply.MiniMaxMusic3Worker(python_path=python, worker_path=worker, comfy_root=comfy)
-    monkeypatch.setattr(music_reply.subprocess, "run", failed)
+    monkeypatch.setattr(music_reply, "run_managed_process", failed)
     with pytest.raises(music_reply.MusicReplyError) as captured: adapter.generate(private, private, song, duration_seconds=40, lyrics=private, caption=private)
     diagnostic = captured.value.diagnostic
     assert str(captured.value) == "MINIMAX_MUSIC3_FAILED" and "returncode=23" in diagnostic and "CUDA out of memory" in diagnostic and not song.exists()
@@ -333,7 +333,7 @@ def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path,
     assert "MINIMAX_MUSIC3_FAILED" in persisted and "returncode=23" in persisted and len(diagnostic) <= 512
     assert all(value not in diagnostic and value not in persisted for value in sensitive)
     def stable(error, code, detail="returncode=unavailable; stderr=process timeout"): assert (str(error), error.diagnostic, error.__cause__, error.__context__) == (code, detail, None, None)
-    monkeypatch.setattr(music_reply.subprocess, "run", lambda command, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 1, stderr=private.encode())))
+    monkeypatch.setattr(music_reply, "run_managed_process", lambda command, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 1, stderr=private.encode())))
     with pytest.raises(music_reply.MusicReplyError) as caught: adapter.generate(private, private, tmp_path / "song.flac", duration_seconds=40)
     stable(caught.value, "MINIMAX_MUSIC3_FAILED")
     def latentsync_timeout(*_args, **_kwargs):
@@ -353,6 +353,42 @@ def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path,
     ace_error(lambda request, **_kwargs: response(next(responses)) if isinstance(request, music_reply.Request) else (_ for _ in ()).throw(TimeoutError(private)), "ACESTEP_AUDIO_UNAVAILABLE")
     responses = iter(({"code": 200, "data": {"task_id": "id"}}, {"code": 200, "data": [{"status": 1, "result": private}]}))
     ace_error(lambda *_args, **_kwargs: response(next(responses)), "ACESTEP_RESULT_INVALID", "returncode=unavailable; stderr=provider stderr redacted")
+
+
+def test_minimax_timeout_uses_managed_process_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python = _write(tmp_path / "runtime" / "python.exe")
+    worker = _write(tmp_path / "runtime" / "worker.py")
+    comfy_root = tmp_path / "comfy"
+    _write(comfy_root / "main.py")
+    observed: dict[str, object] = {}
+
+    def timeout(command, *, timeout_seconds, env=None, **_kwargs):
+        observed.update(command=list(command), timeout=timeout_seconds, env=env)
+        raise subprocess.TimeoutExpired(command, timeout_seconds, stderr=b"busy")
+
+    monkeypatch.setattr(music_reply, "run_managed_process", timeout, raising=False)
+    monkeypatch.setattr(
+        music_reply.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("MiniMax must not launch an unmanaged process")
+        ),
+    )
+    adapter = music_reply.MiniMaxMusic3Worker(
+        python_path=python,
+        worker_path=worker,
+        comfy_root=comfy_root,
+        timeout_seconds=2.0,
+    )
+
+    with pytest.raises(music_reply.MusicReplyError, match="MINIMAX_MUSIC3_FAILED"):
+        adapter.generate("letter", "reply", tmp_path / "song.flac", duration_seconds=60)
+
+    assert observed["timeout"] == 2.0
+    assert observed["command"][:2] == [str(python), str(worker)]
 
 
 def test_truncated_video_is_not_recorded_as_completed_stage(tmp_path: Path) -> None:

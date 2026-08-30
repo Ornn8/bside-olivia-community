@@ -97,6 +97,8 @@ flowchart LR
 
 LatentSync 单次任务（FFmpeg 准备与口型渲染合计）默认最多等待 1800 秒，可用 `OLIVIA_LATENTSYNC_TIMEOUT_SECONDS` 调整，最高 3600 秒；任一阶段超时都会终止整棵工作进程并在本机媒体日志记录脱敏原因。
 
+后台媒体 worker 在 Windows 归入 Job Object，在 POSIX 归入独立进程组；调用结束前会在剩余清理预算内等待整棵进程树归零。确认归零后的额外清理错误只产生脱敏 warning（已有异常只追加脱敏 note），不会改写原 completed 结果或异常；若预算耗尽仍无法确认归零，completed 路径以稳定脱敏错误 fail-closed，已有 timeout 或 worker 异常则保留原类型并追加 cleanup note。
+
 ## Persona、记忆与 PrivateWorld
 
 Persona 不是一段无限增长的 system prompt。公开人格文件带有来源与版本信息，并通过预算器、上下文合同和质量门装配到单次回信中。

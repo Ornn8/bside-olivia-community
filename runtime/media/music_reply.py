@@ -25,6 +25,7 @@ from runtime.media.latentsync_reply import (
     resolve_ffmpeg_executable,
 )
 from runtime.media.media_paths import configured_media_path
+from runtime.media.managed_subprocess import run_managed_process
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from runtime.reply.reply_media import (
     ReplyMediaError,
@@ -782,13 +783,7 @@ def _run(
     cleanup_path: Path | None = None,
 ) -> None:
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-            env=env,
-        )
+        result = run_managed_process(command, timeout_seconds=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         failure_category = "TimeoutExpired" if isinstance(exc, subprocess.TimeoutExpired) else getattr(exc, "stderr", None) or type(exc).__name__
         diagnostic = _provider_failure_diagnostic(returncode="unavailable", stderr=failure_category)

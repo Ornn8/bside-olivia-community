@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -47,16 +48,36 @@ def _create_windows_job():
             ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t),
         ]
 
+    class BasicAccounting(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_longlong)
+            for name in (
+                "total_user_time", "total_kernel_time",
+                "period_user_time", "period_kernel_time",
+            )
+        ] + [
+            (name, wintypes.DWORD)
+            for name in (
+                "page_faults", "total_processes", "active_processes",
+                "terminated_processes",
+            )
+        ]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.SetInformationJobObject.argtypes = (
         wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
     )
+    kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
     kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
     kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     for function in (
-        kernel32.SetInformationJobObject, kernel32.AssignProcessToJobObject,
+        kernel32.SetInformationJobObject, kernel32.QueryInformationJobObject,
+        kernel32.AssignProcessToJobObject,
         kernel32.TerminateJobObject, kernel32.CloseHandle,
     ):
         function.restype = wintypes.BOOL
@@ -95,6 +116,15 @@ def _create_windows_job():
             if not kernel32.TerminateJobObject(self.handle, 1):
                 raise ctypes.WinError(ctypes.get_last_error())
 
+        def active_processes(self) -> int:
+            accounting = BasicAccounting()
+            if not kernel32.QueryInformationJobObject(
+                self.handle, 1, ctypes.byref(accounting),
+                ctypes.sizeof(accounting), None,
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return int(accounting.active_processes)
+
         def close(self) -> None:
             if self.handle and not kernel32.CloseHandle(self.handle):
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -106,6 +136,7 @@ def _create_windows_job():
 def _report_cleanup_failures(
     active_error: BaseException | None,
     failures: list[tuple[str, BaseException]],
+    tree_exited: bool,
 ) -> None:
     if not failures:
         return
@@ -115,7 +146,17 @@ def _report_cleanup_failures(
     if active_error is not None:
         active_error.add_note(message)
         return
-    raise OSError(message) from failures[0][1]
+    if not tree_exited:
+        raise OSError(message) from None
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
+
+
+def _wait_for_tree_exit(is_empty, cleanup_deadline: float) -> None:
+    while not is_empty():
+        remaining = cleanup_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("PROCESS_TREE_CLEANUP_TIMEOUT")
+        time.sleep(min(0.05, remaining))
 
 
 def run_managed_process(
@@ -193,7 +234,13 @@ def run_managed_process(
         )
     finally:
         active_error = sys.exc_info()[1]
+        cleanup_deadline = time.monotonic() + wait_budget(
+            _TREE_SHUTDOWN_TIMEOUT_SECONDS
+        )
+        def cleanup_budget() -> float:
+            return max(0.0, cleanup_deadline - time.monotonic())
         if job is not None:
+            tree_exited = False
             if assigned and process is not None:
                 try:
                     job.terminate()
@@ -201,20 +248,28 @@ def run_managed_process(
                     failures.append(("terminate", exc))
                 try:
                     reaped_stdout, reaped_stderr = process.communicate(
-                        timeout=wait_budget(_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                        timeout=cleanup_budget()
                     )
                     if isinstance(active_error, subprocess.TimeoutExpired):
                         active_error.output = reaped_stdout or active_error.output
                         active_error.stderr = reaped_stderr or active_error.stderr
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     failures.append(("reap", exc))
+                try:
+                    _wait_for_tree_exit(
+                        lambda: job.active_processes() == 0, cleanup_deadline
+                    )
+                    tree_exited = True
+                except (OSError, TimeoutError) as exc:
+                    failures.append(("quiesce", exc))
             try:
                 job.close()
             except OSError as exc:
                 failures.append(("close", exc))
-            _report_cleanup_failures(active_error, failures)
+            _report_cleanup_failures(active_error, failures, tree_exited)
         elif process is not None:
             failures = []
+            tree_exited = False
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -223,14 +278,25 @@ def run_managed_process(
                 failures.append(("killpg", exc))
             try:
                 reaped_stdout, reaped_stderr = process.communicate(
-                    timeout=wait_budget(_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                    timeout=cleanup_budget()
                 )
                 if isinstance(active_error, subprocess.TimeoutExpired):
                     active_error.output = reaped_stdout or active_error.output
                     active_error.stderr = reaped_stderr or active_error.stderr
             except (OSError, subprocess.TimeoutExpired) as exc:
                 failures.append(("reap", exc))
-            _report_cleanup_failures(active_error, failures)
+            def process_group_is_empty() -> bool:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+            try:
+                _wait_for_tree_exit(process_group_is_empty, cleanup_deadline)
+                tree_exited = True
+            except (OSError, TimeoutError) as exc:
+                failures.append(("quiesce", exc))
+            _report_cleanup_failures(active_error, failures, tree_exited)
 
 
 __all__ = ["run_managed_process"]
