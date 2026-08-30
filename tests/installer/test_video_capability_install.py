@@ -461,18 +461,21 @@ def test_configured_installer_activates_runtime_for_current_server_process(
     )
     monkeypatch.setattr(original_client_server.os, "environ", process_environment)
 
+    install_root = (tmp_path / "install").resolve()
     assert original_client_server._configured_video_capability_installer(
-        {}, (tmp_path / "data").resolve()
+        {"OLIVIA_INSTALL_ROOT": str(install_root)}, (tmp_path / "data").resolve()
     ) is not None
     observed["runtime_environment_applier"]({"OLIVIA_LATENTSYNC_PYTHON": "runtime"})
 
     assert process_environment["OLIVIA_LATENTSYNC_PYTHON"] == "runtime"
+    assert install_root / "downloads" in observed["runtime_archive_roots"]
 
 
-def test_complete_download_automatically_prepares_adjacent_runtime_archive(
+def test_complete_download_automatically_prepares_new_runtime_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _runtime_archive(tmp_path)
+    archive_root = (tmp_path / "downloads").resolve()
+    archive_root.mkdir()
     data_root = (tmp_path / "data").resolve()
     manifest = _runtime_ready_manifest()
     _prepare_runtime_dependencies(data_root, manifest)
@@ -485,8 +488,11 @@ def test_complete_download_automatically_prepares_adjacent_runtime_archive(
             "ordinary_missing_dependencies": [],
             "music_ready": True,
         },
-        runtime_archives=(archive,),
+        runtime_archive_roots=(archive_root,),
     )
+
+    assert installer.status()["runtime_import"]["state"] == "required"
+    _runtime_archive(archive_root)
 
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and installer.status()["runtime_import"]["state"] != "ready":

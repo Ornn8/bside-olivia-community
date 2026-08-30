@@ -69,7 +69,8 @@ def test_installer_accepts_only_complete_private_video_runtime_manifest() -> Non
     assert "$manifestNames += @('distribution', 'voice_reference', 'video_runtime')" in script
     assert "Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')" in script
     assert "$manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip'" in script
-    assert "$videoRuntime = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime" in script
+    assert "$videoRuntimePath = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime" in script
+    assert "verified = [bool]$true" in script
     assert "VideoRuntime = $videoRuntime" in script
 
 
@@ -229,6 +230,9 @@ def _run_runtime_publish_fixture(
     voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
     video_runtime: bytes | None = None, video_runtime_sha256: str | None = None,
     video_runtime_missing: bool = False,
+    video_runtime_verified: bool = True, preinstalled_video_runtime: bytes | None = None,
+    stale_video_backup: bytes | None = None, reject_video_source_rehash: bool = False,
+    block_video_cleanup: bool = False,
     block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
     product_root: Path | None = None, existing_voice_pair: bool = False,
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
@@ -297,6 +301,14 @@ def _run_runtime_publish_fixture(
         "$videoRuntime = if ($voiceManifest) { $voiceManifest.video_runtime.path = $env:BSIDE_TEST_VIDEO_RUNTIME; $voiceManifest.video_runtime } else { $null }\n"
         "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime }"
     )
+    if reject_video_source_rehash:
+        replacement = (
+            "$script:OriginalGetSha256 = ${function:Get-Sha256}\n"
+            "function Get-Sha256 { param([Parameter(Mandatory)][string]$LiteralPath) "
+            "if ($LiteralPath -ceq $env:BSIDE_TEST_VIDEO_RUNTIME) { throw 'VIDEO_RUNTIME_SOURCE_REHASHED' }; "
+            "& $script:OriginalGetSha256 -LiteralPath $LiteralPath }\n"
+            + replacement
+        )
     assert script.count(original) == 1
     script = script.replace(original, replacement)
     dependency_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {"
@@ -319,6 +331,16 @@ def _run_runtime_publish_fixture(
         marker = "$installExitCode = $LASTEXITCODE"
         assert script.count(marker) == 1
         script = script.replace(marker, "[Environment]::FailFast('SYNTHETIC_BOOTSTRAP_INTERRUPTION')\n" + marker)
+    if block_video_cleanup:
+        marker = "Complete-ManagedVideoRuntimeTransaction -Transaction $videoRuntimeTransaction"
+        obstruction = (
+            "if ($videoRuntimeTransaction.Backup) { "
+            "[IO.File]::Delete([string]$videoRuntimeTransaction.Backup); "
+            "[IO.Directory]::CreateDirectory([string]$videoRuntimeTransaction.Backup) | Out-Null }\n"
+            + marker
+        )
+        assert script.count(marker) == 1
+        script = script.replace(marker, obstruction)
     test_script = tmp_path / "Install.ps1"
     test_script.write_text(script, encoding="utf-8-sig")
     product = product_root or tmp_path / "product"
@@ -326,6 +348,14 @@ def _run_runtime_publish_fixture(
     if existing_runtime and not old_runtime.exists():
         old_runtime.mkdir(parents=True)
         (old_runtime / "old-runtime.txt").write_text("preserve", encoding="utf-8")
+    if preinstalled_video_runtime is not None:
+        installed_video_runtime = _managed_video_runtime(product)
+        installed_video_runtime.parent.mkdir(parents=True, exist_ok=True)
+        installed_video_runtime.write_bytes(preinstalled_video_runtime)
+        if stale_video_backup is not None:
+            (installed_video_runtime.parent / (".Olivia-video-runtime." + "0" * 32 + ".bak")).write_bytes(
+                stale_video_backup
+            )
     if bootstrap_replaces_managed_app and seed_existing_install and not (product / "install/local_backend").exists():
         old_backend = product / "install" / "local_backend"
         old_backend.mkdir(parents=True)
@@ -359,7 +389,8 @@ def _run_runtime_publish_fixture(
                     "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()},
                     "video_runtime": {"path": "video-runtime/Olivia-video-runtime-private.zip",
                                        "size_bytes": len(video_runtime),
-                                       "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest()}}
+                                       "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest(),
+                                       "verified": video_runtime_verified}}
         manifest_path = tmp_path / "offline-core-assets.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
@@ -506,6 +537,88 @@ def test_first_install_rejects_bad_video_runtime_before_publish(tmp_path: Path) 
     assert result.returncode != 0
     assert "VIDEO_RUNTIME_HASH_MISMATCH" in result.stdout + result.stderr
     assert not _managed_video_runtime(product).exists()
+
+
+def test_matching_video_runtime_skips_a_missing_payload_archive(tmp_path: Path) -> None:
+    runtime = b"video-runtime-fixture"
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime=runtime,
+        video_runtime_missing=True,
+        preinstalled_video_runtime=runtime,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert _managed_video_runtime(product).read_bytes() == runtime
+
+
+def test_matching_video_runtime_recovers_a_stale_backup_on_retry(tmp_path: Path) -> None:
+    runtime = b"video-runtime-fixture"
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime=runtime,
+        video_runtime_missing=True,
+        preinstalled_video_runtime=runtime,
+        stale_video_backup=b"old-video-runtime",
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert _managed_video_runtime(product).read_bytes() == runtime
+    assert not list(_managed_video_runtime(product).parent.glob(".Olivia-video-runtime.*.bak"))
+
+
+def test_video_runtime_publish_rejects_an_unverified_test_asset(tmp_path: Path) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime_verified=False,
+    )
+
+    assert result.returncode != 0
+    assert "VIDEO_RUNTIME_INVALID" in result.stdout + result.stderr
+    assert not _managed_video_runtime(product).exists()
+
+
+def test_fresh_video_runtime_does_not_rehash_the_verified_source(tmp_path: Path) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        reject_video_source_rehash=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert _managed_video_runtime(product).read_bytes() == b"video-runtime-fixture"
+
+
+def test_video_runtime_cleanup_failure_is_deferred_without_undoing_publish(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        bootstrap_replaces_managed_app=True,
+        voice_reference=_voice_reference_bytes(),
+        block_video_cleanup=True,
+    )
+
+    output = result.stdout + result.stderr
+    target = _managed_video_runtime(product)
+    assert result.returncode == 0, output
+    assert "VIDEO_RUNTIME_INSTALL_CLEANUP_DEFERRED" in output
+    assert target.read_bytes() == b"video-runtime-fixture"
+    assert (product / "install/local_backend/new-backend.txt").is_file()
+    assert (product / "runtime/python-3.12.10-embed-amd64/python.exe").is_file()
+    assert not list(product.glob(".install.rollback.*"))
+    assert not list((product / "runtime").glob("python-3.12.10-embed-amd64.backup.*"))
+    blocked = list(target.parent.glob(".Olivia-video-runtime.*.bak"))
+    assert len(blocked) == 1 and blocked[0].is_dir()
+    shutil.rmtree(blocked[0])
 
 
 def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(

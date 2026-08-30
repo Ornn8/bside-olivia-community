@@ -623,6 +623,7 @@ class VideoCapabilityInstaller:
         readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
         artifact_roots: tuple[Path, ...] = (),
         runtime_archives: tuple[Path, ...] = (),
+        runtime_archive_roots: tuple[Path, ...] = (),
         runtime_environment_applier: Callable[[Mapping[str, str]], object] | None = None,
     ) -> None:
         if not data_root.is_absolute():
@@ -644,6 +645,9 @@ class VideoCapabilityInstaller:
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
         self._runtime_archives = tuple(archive.resolve() for archive in runtime_archives)
+        if any(not root.is_absolute() or (root.exists() and (not root.is_dir() or _is_reparse_point(root))) for root in runtime_archive_roots):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+        self._runtime_archive_roots = tuple(root.resolve() for root in runtime_archive_roots)
         self._runtime_environment_applier = runtime_environment_applier
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
@@ -1048,7 +1052,7 @@ class VideoCapabilityInstaller:
         return True
 
     def _maybe_start_runtime_prepare(self) -> None:
-        if self._runtime_import["state"] != "idle":
+        if self._runtime_import["state"] not in {"idle", "required"}:
             return
         if self._runtime_thread is not None and self._runtime_thread.is_alive():
             return
@@ -1061,7 +1065,12 @@ class VideoCapabilityInstaller:
             for bundle in self.manifest.bundles
         ):
             return
-        if not self._runtime_archives:
+        try:
+            discovered = tuple(candidate.resolve() for root in self._runtime_archive_roots if root.is_dir() and not _is_reparse_point(root) for candidate in root.glob("Olivia-video-runtime-*.zip") if candidate.is_file() and not candidate.is_symlink())
+        except OSError:
+            discovered = ()
+        archives = tuple(dict.fromkeys((*self._runtime_archives, *discovered)))
+        if not archives:
             self._runtime_import = {
                 "state": "required",
                 "checked_bytes": 0,
@@ -1069,7 +1078,7 @@ class VideoCapabilityInstaller:
                 "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
             }
             return
-        archive = next((path for path in self._runtime_archives if path.is_file()), None)
+        archive = next((path for path in archives if path.is_file()), None)
         if archive is None:
             self._runtime_import = {
                 "state": "required",
