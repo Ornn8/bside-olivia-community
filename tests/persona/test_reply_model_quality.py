@@ -20,6 +20,7 @@ from llm_gateway import (
     GatewayDelta,
     GatewayRequestScope,
     GatewayResponse,
+    ProviderRejected,
 )
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
@@ -308,7 +309,10 @@ def test_reviewer_classifies_layer_failure(
     )
     layer_calls = [request["layer"] for request in gateway.review_requests]
     expected_attempts = (
-        2 if reason is ReviewFailureReason.LAYER_CONTRACT else 1
+        2
+        if reason
+        in {ReviewFailureReason.TRANSPORT, ReviewFailureReason.LAYER_CONTRACT}
+        else 1
     )
     assert layer_calls.count(layer) == expected_attempts
     assert all(
@@ -317,6 +321,61 @@ def test_reviewer_classifies_layer_failure(
         if name != layer
     )
     assert len(gateway.request_ids) == len(set(gateway.request_ids))
+
+
+def test_reviewer_retries_only_the_transiently_failed_layer_once() -> None:
+    gateway = TransientLayerFailureGateway(failing_layer="continuity_memory")
+
+    result, reviewer = _run_diagnostic_review(gateway, "Synthetic candidate.")
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert reviewer.last_failure_diagnostics == ()
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 2
+    assert all(
+        layer_calls.count(layer) == 1
+        for layer in _REVIEW_LAYERS
+        if layer != "continuity_memory"
+    )
+
+
+def test_reviewer_does_not_add_transport_retry_to_video_modes() -> None:
+    gateway = TransientLayerFailureGateway(failing_layer="continuity_memory")
+
+    result, reviewer = _run_diagnostic_review(
+        gateway,
+        "Synthetic candidate.",
+        _context(ReplyMode.SPOKEN_VIDEO),
+    )
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert ReviewFailureDiagnostic(
+        ReviewFailureStage.LAYER,
+        ReviewFailureReason.TRANSPORT,
+        "continuity_memory",
+    ) in reviewer.last_failure_diagnostics
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 1
+
+
+def test_reviewer_does_not_retry_non_retryable_provider_failure() -> None:
+    gateway = FailingQualityGateway(
+        failure="rejected_layer",
+        failing_layer="continuity_memory",
+    )
+
+    result, reviewer = _run_diagnostic_review(gateway, "Synthetic candidate.")
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.LAYER,
+            ReviewFailureReason.TRANSPORT,
+            "continuity_memory",
+        ),
+    )
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("continuity_memory") == 1
 
 
 def test_reviewer_orders_multiple_layer_failures_by_authority() -> None:
@@ -856,12 +915,53 @@ class FailingQualityGateway(SequencedQualityGateway):
             self.review_requests.append(request)
             if self.failure == "layer" and layer == self.failing_layer:
                 raise TimeoutError("private upstream detail")
+            if self.failure == "rejected_layer" and layer == self.failing_layer:
+                raise ProviderRejected(400)
             return GatewayResponse(
                 text=self.review_by_layer[layer],
                 request_id=request_id or "synthetic",
                 provider="synthetic",
                 model="synthetic",
             )
+        return await super().complete(messages, request_id=request_id)
+
+
+class TransientLayerFailureGateway(SequencedQualityGateway):
+    def __init__(
+        self,
+        *,
+        failing_layer: str,
+        candidate: str = "Synthetic candidate.",
+        reviews: list[str] | None = None,
+        rewritten: str = "Synthetic rewritten candidate.",
+        adjudications: list[str] | None = None,
+        layer_reviews: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        super().__init__(
+            candidate=candidate,
+            reviews=reviews or _passing_layer_payloads(),
+            rewritten=rewritten,
+            adjudications=adjudications,
+            layer_reviews=layer_reviews,
+        )
+        self.failing_layer = failing_layer
+        self.failed_once = False
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        system = str(messages[0].get("content", ""))
+        if "P02_REPLY_REVIEW_JSON" in system:
+            request = json.loads(str(messages[-1]["content"]))
+            if request["layer"] == self.failing_layer and not self.failed_once:
+                self.failed_once = True
+                self.request_ids.append(request_id)
+                self.call_kinds.append("review")
+                self.review_requests.append(request)
+                raise TimeoutError("private transient upstream detail")
         return await super().complete(messages, request_id=request_id)
 
 
@@ -3095,9 +3195,15 @@ def test_text_letter_forced_question_is_rewritten_then_freshly_reviewed(
         drift_detected=True,
         hard_evidence=[evidence],
     )
-    gateway = SequencedQualityGateway(
+    second_pass = _passing_layer_payloads()
+    gateway = TransientLayerFailureGateway(
+        failing_layer="continuity_memory",
         candidate=candidate,
-        reviews=[*first_pass, *_passing_layer_payloads()],
+        reviews=[],
+        layer_reviews={
+            layer: [first_pass[index], second_pass[index]]
+            for index, layer in enumerate(_REVIEW_LAYERS)
+        },
         rewritten=rewritten,
         adjudications=[_adjudication_payload(evidence, "CONFIRM")],
     )
@@ -3113,13 +3219,16 @@ def test_text_letter_forced_question_is_rewritten_then_freshly_reviewed(
     assert result.text == rewritten
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == 1
+    assert [request["layer"] for request in gateway.review_requests].count(
+        "continuity_memory"
+    ) == 3
     assert all(
         request["candidate_reply"] == candidate
-        for request in gateway.review_requests[:5]
+        for request in gateway.review_requests[:6]
     )
     assert all(
         request["candidate_reply"] == rewritten
-        for request in gateway.review_requests[5:]
+        for request in gateway.review_requests[6:]
     )
     assert "do not add a question just to create a closing" in (
         gateway.rewrite_system_prompts[0]
@@ -3378,7 +3487,7 @@ def test_invalid_enabled_reviewer_json_fails_closed(
 ) -> None:
     gateway = SequencedQualityGateway(
         candidate="我收到了。先去喝口水。",
-        reviews=["not-json"],
+        reviews=["not-json"] * 5,
     )
     pipeline = _pipeline(gateway, monkeypatch)
 
@@ -3405,7 +3514,7 @@ def test_invalid_enabled_reviewer_blocks_before_deterministic_rewrite(
 ) -> None:
     gateway = SequencedQualityGateway(
         candidate="<CONTROL>invalid candidate",
-        reviews=["not-json"],
+        reviews=["not-json"] * 5,
     )
 
     result = asyncio.run(

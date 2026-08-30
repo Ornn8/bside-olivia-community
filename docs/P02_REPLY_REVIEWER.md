@@ -72,12 +72,13 @@ This protocol is enabled only for `text_letter`. Spoken and musical-video
 reviews retain the pre-protocol response schema and normal successful call
 count: they neither require `hard_evidence` nor invoke adjudication.
 
-Across Persona modes, the only failure-path exception that may add a call is
-one retry of the single layer whose result fails `LAYER_CONTRACT` or
-`EVIDENCE_CONTRACT`. That retry uses the same messages with a fresh request ID
-and does not rerun any other layer. A second failure for either allowed reason
-remains `REVIEWER_UNAVAILABLE`. `JSON`, `TOP_LEVEL_SCHEMA`, `EMPTY_TEXT`,
-`TRANSPORT`, and `INTERNAL` failures are not retried.
+Across Persona modes, one retry may be added only for the single layer whose
+result fails `LAYER_CONTRACT` or `EVIDENCE_CONTRACT`. For `text_letter` only, a
+retryable transport failure that remains after the Gateway's provider retry
+budget may also retry that layer once. The retry uses the same messages with a
+fresh request ID and does not rerun any other layer. A second allowed failure
+remains `REVIEWER_UNAVAILABLE`. Non-retryable provider errors, `JSON`,
+`TOP_LEVEL_SCHEMA`, `EMPTY_TEXT`, and `INTERNAL` failures are not retried.
 
 In `text_letter`, `identity_boundary`, `voice_style`, and `continuity_memory`
 cannot create a hard finding from a score or drift flag alone. Every hard code

@@ -15,7 +15,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from llm_gateway import Gateway, GatewayConfig, GatewayRequestScope, create_gateway
+from llm_gateway import (
+    Gateway,
+    GatewayConfig,
+    GatewayError,
+    GatewayRequestScope,
+    create_gateway,
+)
 from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
 from runtime.reply.reply_context import (
     IntimacyRequest,
@@ -305,7 +311,15 @@ class _ReviewDiagnosticsError(RuntimeError):
 
 
 class _GatewayInvocationFailure(RuntimeError):
-    pass
+    def __init__(self, *, retryable: bool) -> None:
+        super().__init__("gateway invocation failed")
+        self.retryable = retryable
+
+
+def _is_retryable_gateway_failure(exc: Exception) -> bool:
+    if isinstance(exc, GatewayError):
+        return exc.retryable
+    return isinstance(exc, (TimeoutError, ConnectionError))
 
 
 def _diagnostic_error(
@@ -1393,7 +1407,9 @@ async def _complete_layer_text(
         try:
             return await asyncio.wait_for(collect(), timeout_seconds)
         except Exception as exc:
-            raise _GatewayInvocationFailure from exc
+            raise _GatewayInvocationFailure(
+                retryable=_is_retryable_gateway_failure(exc)
+            ) from exc
     try:
         completion = (
             gateway.complete_scoped(
@@ -1406,7 +1422,9 @@ async def _complete_layer_text(
         )
         response = await asyncio.wait_for(completion, timeout_seconds)
     except Exception as exc:
-        raise _GatewayInvocationFailure from exc
+        raise _GatewayInvocationFailure(
+            retryable=_is_retryable_gateway_failure(exc)
+        ) from exc
     return response.text
 
 
@@ -1442,7 +1460,13 @@ def _complete_layer_reviews(
                         f"quality-{uuid.uuid4().hex}:{layer.name}",
                         gateway_scope,
                     )
-                except _GatewayInvocationFailure:
+                except _GatewayInvocationFailure as exc:
+                    if (
+                        attempt == 0
+                        and exc.retryable
+                        and mode == ReplyMode.TEXT_LETTER.value
+                    ):
+                        continue
                     raise _diagnostic_error(
                         ReviewFailureStage.LAYER,
                         ReviewFailureReason.TRANSPORT,

@@ -701,10 +701,10 @@ def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 275.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 515.0
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 155.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 235.0
 
 
 def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication(
@@ -721,11 +721,11 @@ def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 4325.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
     assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 365.0
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 4325.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
     assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 245.0
 
 
