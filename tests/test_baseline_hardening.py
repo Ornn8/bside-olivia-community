@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -364,6 +366,81 @@ def test_persona_release_scan_fails_closed_on_blocked_rights_and_source_copy(
         "long_source_copy",
     }
     assert "x" * 20 not in "\n".join(findings)
+
+
+@pytest.mark.parametrize("record_key", ("declarations", "style_exemplars"))
+def test_persona_release_scan_rejects_unregistered_sources(
+    tmp_path: Path,
+    record_key: str,
+) -> None:
+    import json
+    import baseline_hardening_scan as scanner
+
+    release = tmp_path / "linli_character" / "persona_release_v2.json"
+    provenance = (
+        tmp_path
+        / "linli_character"
+        / "persona_release_provenance_v2.json"
+    )
+    release.parent.mkdir()
+    release.write_text(
+        json.dumps({record_key: [{"source_id": "source.unregistered"}]}),
+        encoding="utf-8",
+    )
+    provenance.write_text(
+        json.dumps({"sources": [{"source_id": "source.registered"}]}),
+        encoding="utf-8",
+    )
+
+    findings, _, checked = scanner.scan_persona_release(
+        tmp_path, [release, provenance]
+    )
+
+    assert findings == [
+        "linli_character/persona_release_v2.json:unregistered_source_id"
+    ]
+    assert "source.unregistered" not in "\n".join(findings)
+    assert checked == 1
+
+
+def test_persona_release_scan_accepts_registered_sources(tmp_path: Path) -> None:
+    import json
+    import baseline_hardening_scan as scanner
+
+    release = tmp_path / "linli_character" / "persona_release_v2.json"
+    provenance = (
+        tmp_path
+        / "linli_character"
+        / "persona_release_provenance_v2.json"
+    )
+    release.parent.mkdir()
+    release.write_text(
+        json.dumps(
+            {
+                "declarations": [{"source_id": "source.declaration"}],
+                "style_exemplars": [{"source_id": "source.style"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    provenance.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {"source_id": "source.declaration"},
+                    {"source_id": "source.style"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    findings, _, checked = scanner.scan_persona_release(
+        tmp_path, [release, provenance]
+    )
+
+    assert findings == []
+    assert checked == 1
 
 
 def test_b00_scanner_process_exit_codes_and_sanitized_findings(tmp_path: Path) -> None:

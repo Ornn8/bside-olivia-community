@@ -62,6 +62,7 @@
           ]
         },
         "rights_basis": {"$ref": "#/$defs/rights_basis"},
+        "allowed_public_release": {"const": true},
         "privacy_risk": {"enum": ["LOW", "MEDIUM", "HIGH"]},
         "declaration_ids": {
           "type": "array",

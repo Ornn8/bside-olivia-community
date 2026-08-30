@@ -44,6 +44,7 @@ PERSONA_RELEASE_PATTERNS = (
     "blocked_release_record",
     "long_source_copy",
     "invalid_release_asset",
+    "unregistered_source_id",
 )
 PERSONA_RELEASE_ROOTS = {"linli_character", "persona", "personas", "content"}
 PERSONA_RELEASE_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".md"}
@@ -56,6 +57,10 @@ PERSONA_RELEASE_TEXT_KEYS = {
     "text",
 }
 MAX_PERSONA_RELEASE_TEXT_CHARS = 1_200
+PERSONA_PROVENANCE_FILES = {
+    "persona_release_v2.json": "persona_release_provenance_v2.json",
+    "persona_v2.json": "provenance_v2.json",
+}
 
 
 COMMENT_PATTERNS = (
@@ -443,6 +448,42 @@ def _scan_persona_text(text: str, name: str, findings: list[str]) -> None:
         _append_persona_finding(findings, name, "long_source_copy")
 
 
+def _scan_persona_source_registry(
+    path: Path,
+    payload: object,
+    name: str,
+    findings: list[str],
+) -> None:
+    provenance_name = PERSONA_PROVENANCE_FILES.get(path.name)
+    if provenance_name is None or not isinstance(payload, dict):
+        return
+    source_ids = {
+        record["source_id"]
+        for records in (
+            payload.get("declarations"),
+            payload.get("style_exemplars"),
+        )
+        if isinstance(records, list)
+        for record in records
+        if isinstance(record, dict) and isinstance(record.get("source_id"), str)
+    }
+    if not source_ids:
+        return
+    try:
+        provenance = json.loads(
+            path.with_name(provenance_name).read_text(encoding="utf-8")
+        )
+        registered = {
+            source["source_id"]
+            for source in provenance["sources"]
+            if isinstance(source, dict) and isinstance(source.get("source_id"), str)
+        }
+    except (KeyError, OSError, TypeError, UnicodeError, json.JSONDecodeError):
+        registered = set()
+    if not source_ids <= registered:
+        _append_persona_finding(findings, name, "unregistered_source_id")
+
+
 def scan_persona_release(
     root: Path, files: list[Path]
 ) -> tuple[list[str], list[str], int]:
@@ -464,12 +505,14 @@ def scan_persona_release(
         try:
             text = path.read_text(encoding="utf-8")
             if path.suffix.lower() == ".json":
+                payload = json.loads(text)
                 _scan_persona_json(
-                    json.loads(text),
+                    payload,
                     name,
                     findings,
                     enforce_release_flags=path.name != "persona_v2.json",
                 )
+                _scan_persona_source_registry(path, payload, name, findings)
             else:
                 _scan_persona_text(text, name, findings)
         except (OSError, UnicodeError, json.JSONDecodeError):
