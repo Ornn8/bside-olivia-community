@@ -152,7 +152,7 @@ const run = async () => { const [id, fn] = timers.entries().next().value; timers
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v13"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v14"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -166,7 +166,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         'const CONFIRM_VALUE = "confirmed";',
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 1
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
     assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 2
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT

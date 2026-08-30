@@ -47,6 +47,9 @@
 | 200 detail media | `TTS_CONTENT_GATE_REJECTED` | FAILED | 否 | 三条时长有效的普通说话候选均未通过内容门；不自动重试 |
 | 200 detail media | `TTS_CONTENT_GATE_UNAVAILABLE` | UNAVAILABLE | 是 | 显式配置的离线 ASR 运行时、checkpoint 或临时质量门不可用；可在修复依赖后恢复 |
 | 200 detail media | `MEDIA_PROVIDER_UNAVAILABLE` | UNAVAILABLE | 是 | 未登记的媒体异常或本地媒体依赖不可用；公开 detail 不回显内部异常、provider 文本或本机路径 |
+| 403 | `DIAGNOSTIC_HOST_FORBIDDEN` | FAILED | 否 | 诊断导出请求不是 loopback Host |
+| 403 | `DIAGNOSTIC_ORIGIN_FORBIDDEN` | FAILED | 否 | 诊断导出 Origin 未授权 |
+| 503 | `DIAGNOSTIC_EXPORT_UNAVAILABLE` | UNAVAILABLE | 是 | 诊断采集、投影或归档不可用 |
 
 ## P03 clear mutation registry
 

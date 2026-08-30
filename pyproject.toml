@@ -57,6 +57,7 @@ py-modules = [
     "original_client_companion_backend",
     "original_client_companion_mutation_api",
     "original_client_companion_mutation_backend",
+    "original_client_diagnostics_api",
     "original_client_letter_contract",
     "original_client_media_http",
     "original_client_server",

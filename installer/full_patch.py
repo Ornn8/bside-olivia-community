@@ -47,6 +47,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/reply",
     "runtime/validation",
     "runtime/visual",
+    "runtime/diagnostics",
 )
 PAYLOAD_EXTRA_FILES = (
     "runtime/__init__.py",
@@ -58,6 +59,7 @@ PAYLOAD_ROOT_FILES = {
     "local_server.py",
     "mem0_capability_install.py",
     "original_client_capability_api.py",
+    "original_client_diagnostics_api.py",
     "original_client_video_capability_api.py",
     "original_client_server.py",
     "original_client_setup_api.py",
@@ -82,6 +84,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "original_client_media_http.py",
     "mem0_capability_install.py",
     "original_client_capability_api.py",
+    "original_client_diagnostics_api.py",
     "original_client_server.py",
     "original_client_setup_api.py",
     "original_client_settings_ui.py",
@@ -127,6 +130,8 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/imports/__init__.py",
     "runtime/imports/historical_memory.py",
     "runtime/imports/official_letters.py",
+    "runtime/diagnostics/__init__.py",
+    "runtime/diagnostics/support_bundle.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }

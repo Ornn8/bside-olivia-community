@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v13"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v14"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -18,6 +18,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
+  const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";
   const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
@@ -313,6 +314,43 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         throw error;
       }
       return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const requestDiagnosticExport = async () => {
+    const endpoint = new URL(DIAGNOSTIC_EXPORT_PATH, apiBase);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        cache: "no-store",
+        credentials: "omit",
+        headers: { "Accept": "application/zip" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_error) {
+          payload = null;
+        }
+        const error = new Error("diagnostic-export-unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          ? payload.error_code
+          : "DIAGNOSTIC_EXPORT_UNAVAILABLE";
+        throw error;
+      }
+      const blob = await response.blob();
+      if (!blob || blob.size < 1) {
+        const error = new Error("diagnostic-export-empty");
+        error.code = "DIAGNOSTIC_EXPORT_UNAVAILABLE";
+        throw error;
+      }
+      return blob;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -1981,6 +2019,44 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     void hydrate();
   };
 
+  const mountDiagnosticExport = (section) => {
+    const row = document.createElement("div");
+    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
+    const state = text("div", "导出本机脱敏诊断包，文件仅保存到本地。", "text-text-secondary text-caption-m font-regular");
+    copy.append(
+      text("div", "诊断与反馈", "text-text-body text-label-l"),
+      state
+    );
+    const exportButton = button("导出诊断包", async () => {
+      setButtonsBusy([exportButton], true);
+      state.textContent = "正在生成诊断包…";
+      try {
+        const blob = await requestDiagnosticExport();
+        const url = URL.createObjectURL(blob);
+        const download = document.createElement("a");
+        download.href = url;
+        download.download = "olivia-diagnostic-bundle.zip";
+        download.style.display = "none";
+        document.body.append(download);
+        download.click();
+        download.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        state.textContent = "诊断包已保存到本地下载位置。";
+      } catch (error) {
+        const code = error && typeof error.code === "string"
+          ? error.code
+          : "DIAGNOSTIC_EXPORT_UNAVAILABLE";
+        state.textContent = `导出失败：${code}`;
+      } finally {
+        setButtonsBusy([exportButton], false);
+      }
+    });
+    row.append(copy, exportButton);
+    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
+  };
+
   const mountOfficialLetterImport = (section) => {
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
@@ -2138,6 +2214,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     row.append(copy, button("打开", () => openDialog(false)));
     section.append(title, row);
+    mountDiagnosticExport(section);
     mountVideoReplySetting(section);
     mountOfficialLetterImport(section);
     container.append(section);

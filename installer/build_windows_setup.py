@@ -81,6 +81,7 @@ RELEASE_ROOT_FILES = {
     "original_client_companion_mutation_api.py",
     "original_client_companion_mutation_backend.py",
     "original_client_capability_api.py",
+    "original_client_diagnostics_api.py",
     "original_client_letter_contract.py",
     "original_client_media_http.py",
     "original_client_server.py",
