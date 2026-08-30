@@ -145,6 +145,7 @@ from runtime.reply.reply_reviewer import NullReviewer
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 LLM_TIMEOUT_SECONDS = 30
 LETTER_RETRY_DEDUP_SECONDS = 60
+MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
 
 _official_import_progress_lock = threading.Lock()
 _official_import_progress: dict[str, object] = {
@@ -2253,6 +2254,8 @@ def _public_llm_error(code: str | None) -> tuple[str, bool]:
         return "LLM_TIMEOUT", True
     if code == "LLM_INTERRUPTED":
         return "LLM_INTERRUPTED", True
+    if code == "MEMORY_UNAVAILABLE":
+        return "MEMORY_UNAVAILABLE", True
     if code in {"LLM_PROVIDER_REJECTED", "PROVIDER_REJECTED"}:
         return "LLM_PROVIDER_REJECTED", False
     if code in {"LLM_PROTOCOL_ERROR", "PROVIDER_PROTOCOL"}:
@@ -3293,9 +3296,51 @@ async def _run_reply_job(
         return False
 
 
-async def _run_reply_when_memory_ready(letter_id: str, content: str, *, idempotency_key: str | None) -> bool:
-    while not _conversation_memory_ready_for_reply():
-        await asyncio.sleep(0.25)
+def _fail_pending_reply_for_memory_timeout(letter_id: str) -> None:
+    letter = next(
+        (item for item in store.letters if item["letter_id"] == letter_id),
+        None,
+    )
+    if letter is None or letter.get("letter_status") != "PENDING":
+        return
+    letter["letter_status"] = "FAILED"
+    letter["error_code"] = "MEMORY_UNAVAILABLE"
+    _mark_media_not_requested(letter)
+    _persist_store_state()
+    _safe_log("letter_failed", error_code="MEMORY_UNAVAILABLE")
+
+
+async def _run_reply_when_memory_ready(
+    letter_id: str,
+    content: str,
+    *,
+    idempotency_key: str | None,
+    ready_timeout_seconds: float | None = None,
+) -> bool:
+    timeout_seconds = (
+        MEMORY_READY_REPLY_TIMEOUT_SECONDS
+        if ready_timeout_seconds is None
+        else max(0.0, float(ready_timeout_seconds))
+    )
+    if ready_timeout_seconds is None:
+        letter = next(
+            (item for item in store.letters if item["letter_id"] == letter_id),
+            None,
+        )
+        created_at = None if letter is None else letter.get("created_at")
+        if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+            elapsed = max(0.0, time.time() - float(created_at))
+            timeout_seconds = max(0.0, timeout_seconds - elapsed)
+    if timeout_seconds <= 0.0:
+        _fail_pending_reply_for_memory_timeout(letter_id)
+        return False
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            while not _conversation_memory_ready_for_reply():
+                await asyncio.sleep(0.25)
+    except TimeoutError:
+        _fail_pending_reply_for_memory_timeout(letter_id)
+        return False
     return await _run_reply_job(letter_id, content, idempotency_key=idempotency_key)
 
 

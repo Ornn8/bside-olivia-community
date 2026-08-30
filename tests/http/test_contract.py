@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -221,6 +222,239 @@ def test_http_startup_exposes_core_health_while_mem0_initializes(
         assert factory_calls == ["old", "latest"]
     finally:
         release.set()
+
+
+def test_memory_readiness_deadline_fails_pending_letter_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    letter = {
+        "letter_id": "memory-deadline-letter",
+        "content": "synthetic memory deadline input",
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    generated: list[str] = []
+    persisted: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(
+        local_server,
+        "_conversation_memory_ready_for_reply",
+        lambda: False,
+    )
+
+    async def record_generation(*_args, **_kwargs) -> bool:
+        generated.append("called")
+        return True
+
+    monkeypatch.setattr(local_server, "_run_reply_job", record_generation)
+    monkeypatch.setattr(
+        local_server,
+        "_persist_store_state",
+        lambda: persisted.append(
+            (letter["letter_status"], letter.get("error_code"))
+        ),
+    )
+
+    completed = asyncio.run(
+        local_server._run_reply_when_memory_ready(
+            letter["letter_id"],
+            letter["content"],
+            idempotency_key="memory-deadline-key",
+            ready_timeout_seconds=0.01,
+        )
+    )
+
+    assert completed is False
+    assert generated == []
+    assert persisted == [("FAILED", "MEMORY_UNAVAILABLE")]
+    assert letter["letter_status"] == "FAILED"
+    assert letter["error_code"] == "MEMORY_UNAVAILABLE"
+    assert letter["reply_text"] == ""
+    assert local_server._active_undelivered_letter() is None
+    assert local_server._send_result_for_letter(letter) == {
+        "code": 503,
+        "message": "MEMORY_UNAVAILABLE",
+        "data": {
+            "letter_id": "memory-deadline-letter",
+            "status": "FAILED",
+            "error_code": "MEMORY_UNAVAILABLE",
+            "retryable": True,
+        },
+    }
+
+    second = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic next letter"},
+            {},
+            defer_reply=True,
+        )
+    )
+    assert second["code"] == 0
+    assert second["data"]["letter_id"] != letter["letter_id"]
+
+
+def test_memory_readiness_deadline_does_not_reset_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    letter = {
+        "letter_id": "memory-restart-deadline-letter",
+        "content": "synthetic old pending memory input",
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "letter_status": "PENDING",
+        "created_at": int(time.time()) - 121,
+    }
+    local_server.store.letters[:] = [letter]
+    generated: list[str] = []
+    persisted: list[str] = []
+    monkeypatch.setattr(
+        local_server,
+        "_conversation_memory_ready_for_reply",
+        lambda: True,
+    )
+
+    async def record_generation(*_args, **_kwargs) -> bool:
+        generated.append("called")
+        return True
+
+    monkeypatch.setattr(local_server, "_run_reply_job", record_generation)
+    monkeypatch.setattr(
+        local_server,
+        "_persist_store_state",
+        lambda: persisted.append(letter["letter_status"]),
+    )
+
+    async def exercise() -> bool:
+        return await asyncio.wait_for(
+            local_server._run_reply_when_memory_ready(
+                letter["letter_id"],
+                letter["content"],
+                idempotency_key=None,
+            ),
+            timeout=0.05,
+        )
+
+    assert asyncio.run(exercise()) is False
+    assert letter["letter_status"] == "FAILED"
+    assert letter["error_code"] == "MEMORY_UNAVAILABLE"
+    assert generated == []
+    assert persisted == ["FAILED"]
+
+
+def test_memory_readiness_recovery_dispatches_pending_letter_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    checks = 0
+    generated: list[tuple[str, str, str | None]] = []
+
+    def memory_ready() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+
+    async def record_generation(
+        letter_id: str,
+        content: str,
+        *,
+        idempotency_key: str | None,
+    ) -> bool:
+        generated.append((letter_id, content, idempotency_key))
+        return True
+
+    monkeypatch.setattr(
+        local_server,
+        "_conversation_memory_ready_for_reply",
+        memory_ready,
+    )
+    monkeypatch.setattr(local_server, "_run_reply_job", record_generation)
+
+    completed = asyncio.run(
+        local_server._run_reply_when_memory_ready(
+            "memory-recovered-letter",
+            "synthetic recovered memory input",
+            idempotency_key="memory-recovered-key",
+            ready_timeout_seconds=0.5,
+        )
+    )
+
+    assert completed is True
+    assert generated == [
+        (
+            "memory-recovered-letter",
+            "synthetic recovered memory input",
+            "memory-recovered-key",
+        )
+    ]
+
+
+def test_memory_readiness_waiter_cancellation_keeps_letter_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    letter = {
+        "letter_id": "memory-cancelled-letter",
+        "content": "synthetic cancelled memory wait",
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "letter_status": "PENDING",
+    }
+    local_server.store.letters[:] = [letter]
+    checks: list[bool] = []
+    generated: list[str] = []
+    persisted: list[str] = []
+
+    def memory_ready() -> bool:
+        checks.append(False)
+        return False
+
+    async def record_generation(*_args, **_kwargs) -> bool:
+        generated.append("called")
+        return True
+
+    monkeypatch.setattr(
+        local_server,
+        "_conversation_memory_ready_for_reply",
+        memory_ready,
+    )
+    monkeypatch.setattr(local_server, "_run_reply_job", record_generation)
+    monkeypatch.setattr(
+        local_server,
+        "_persist_store_state",
+        lambda: persisted.append("called"),
+    )
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            local_server._run_reply_when_memory_ready(
+                letter["letter_id"],
+                letter["content"],
+                idempotency_key=None,
+                ready_timeout_seconds=10,
+            )
+        )
+        while not checks:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert letter["letter_status"] == "PENDING"
+    assert "error_code" not in letter
+    assert generated == []
+    assert persisted == []
 
 
 @pytest.mark.parametrize(
@@ -856,7 +1090,7 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
         "letter_status": "PENDING",
         "audit_status": 2,
         "is_read": 1,
-        "created_at": 100,
+        "created_at": int(time.time()),
         "reply_text": "",
         "reply_mode": "text_letter",
         "triage": {"status": "pending"},
@@ -1856,6 +2090,7 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
     generation_contract = {
         "fields": ["letter_status", "error_code", "retryable"],
         "error_codes": {
+            "MEMORY_UNAVAILABLE": {"status": "FAILED", "retryable": True},
             "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": True},
             "LLM_TIMEOUT": {"status": "FAILED", "retryable": True},
             "LLM_INTERRUPTED": {"status": "FAILED", "retryable": True},

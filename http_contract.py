@@ -118,6 +118,7 @@ LETTER_DETAIL_GENERATION_ERROR_CODES: dict[str, dict[str, Any]] = {
         "retryable": ERROR_CODES[code]["retryable"],
     }
     for code in (
+        "MEMORY_UNAVAILABLE",
         "LLM_UNAVAILABLE",
         "LLM_TIMEOUT",
         "LLM_INTERRUPTED",

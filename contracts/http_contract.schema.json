@@ -55,8 +55,9 @@
         "error_codes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["LLM_UNAVAILABLE", "LLM_TIMEOUT", "LLM_INTERRUPTED", "LLM_PROVIDER_REJECTED", "LLM_PROTOCOL_ERROR", "LLM_REPLY_LENGTH_INVALID", "REPLY_QUALITY_BLOCKED", "PERSONA_NOT_READY"],
+          "required": ["MEMORY_UNAVAILABLE", "LLM_UNAVAILABLE", "LLM_TIMEOUT", "LLM_INTERRUPTED", "LLM_PROVIDER_REJECTED", "LLM_PROTOCOL_ERROR", "LLM_REPLY_LENGTH_INVALID", "REPLY_QUALITY_BLOCKED", "PERSONA_NOT_READY"],
           "properties": {
+            "MEMORY_UNAVAILABLE": {"$ref": "#/$defs/generation_error"},
             "LLM_UNAVAILABLE": {"$ref": "#/$defs/generation_error"},
             "LLM_TIMEOUT": {"$ref": "#/$defs/generation_error"},
             "LLM_INTERRUPTED": {"$ref": "#/$defs/generation_error"},
