@@ -629,6 +629,7 @@ class VideoCapabilityInstaller:
         readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
         artifact_roots: tuple[Path, ...] = (),
         runtime_archives: tuple[Path, ...] = (),
+        runtime_environment_applier: Callable[[Mapping[str, str]], object] | None = None,
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -649,6 +650,7 @@ class VideoCapabilityInstaller:
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
         self._runtime_archives = tuple(archive.resolve() for archive in runtime_archives)
+        self._runtime_environment_applier = runtime_environment_applier
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -829,9 +831,20 @@ class VideoCapabilityInstaller:
                 "runtime_import": dict(self._runtime_import),
             }
 
-    def _set_runtime_import_state(self, state: str) -> None:
+    def _set_runtime_import_state(
+        self, state: str, *, reason_code: str | None = None
+    ) -> None:
         with self._lock:
             self._runtime_import["state"] = state
+            self._runtime_import.pop("reason_code", None)
+            if reason_code:
+                self._runtime_import["reason_code"] = reason_code
+
+    @staticmethod
+    def _runtime_import_error_code(exc: Exception) -> str:
+        if isinstance(exc, VideoCapabilityError):
+            return str(exc)
+        return "VIDEO_RUNTIME_IMPORT_FAILED"
 
     def _update_runtime_import_progress(self, checked_bytes: int, total_bytes: int) -> None:
         with self._lock:
@@ -946,8 +959,10 @@ class VideoCapabilityInstaller:
                 runtime_root=runtime_root,
                 manifest_sha256=manifest_sha256,
             )
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
             raise
         with self._lock:
             self._runtime_import["state"] = "ready"
@@ -989,8 +1004,10 @@ class VideoCapabilityInstaller:
                 runtime_root=final.resolve(),
                 manifest_sha256=manifest_sha256,
             )
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
             raise
         finally:
             if staging.exists():
@@ -1007,7 +1024,7 @@ class VideoCapabilityInstaller:
             }
 
     def _maybe_start_runtime_prepare(self) -> None:
-        if self._runtime_import["state"] != "idle" or not self._runtime_archives:
+        if self._runtime_import["state"] != "idle":
             return
         if self._runtime_thread is not None and self._runtime_thread.is_alive():
             return
@@ -1017,6 +1034,14 @@ class VideoCapabilityInstaller:
             not in {VideoCapabilityState.READY, VideoCapabilityState.PREREQUISITES_REQUIRED}
             for bundle in self.manifest.bundles
         ):
+            return
+        if not self._runtime_archives:
+            self._runtime_import = {
+                "state": "required",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+                "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
+            }
             return
         archive = next((path for path in self._runtime_archives if path.is_file()), None)
         if archive is None:
@@ -1034,8 +1059,29 @@ class VideoCapabilityInstaller:
     def _run_runtime_archive(self, archive: Path) -> None:
         try:
             self.import_runtime_archive(runtime_archive=archive)
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
+
+    def _installed_bundle_environment(self) -> dict[str, str]:
+        ordinary = self._final_root(self._bundle("ordinary_video"))
+        candidates = {
+            "OLIVIA_COSYVOICE_MODEL_ROOT": ordinary / "cosyvoice" / "model",
+            "OLIVIA_MINIMAX_WORKER": Path(__file__).resolve().parent
+            / "tools"
+            / "minimax_music3_worker.py",
+            "OLIVIA_REPLY_VOICE_REFERENCE": self.install_root
+            / "shared"
+            / "linli-reference.wav",
+        }
+        for bundle in self.manifest.bundles:
+            root = self._final_root(bundle)
+            for key, relative in (bundle.runtime_environment or {}).items():
+                candidates.setdefault(key, root / relative)
+        return {
+            key: str(path.resolve()) for key, path in candidates.items() if path.exists()
+        }
 
     def _import_runtime_root(
         self,
@@ -1061,6 +1107,8 @@ class VideoCapabilityInstaller:
             environment = load_video_runtime_environment(self.data_root)
         except VideoCapabilityError:
             environment = {}
+        for key, value in self._installed_bundle_environment().items():
+            environment.setdefault(key, value)
         environment.update(external_environment)
         if "OLIVIA_TTS_CONFIG" not in environment:
             cosy_root = Path(environment.get("OLIVIA_COSYVOICE_ROOT", ""))
@@ -1130,9 +1178,19 @@ class VideoCapabilityInstaller:
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        persisted_environment: dict[str, str] = {}
+        for key, value in environment.items():
+            if key in external_environment:
+                persisted_environment[key] = value
+                continue
+            try:
+                Path(value).resolve().relative_to(self.install_root.resolve())
+            except ValueError:
+                continue
+            persisted_environment[key] = value
         payload = {
             "schema_version": "olivia.video-runtime-environment.v1",
-            "environment": environment,
+            "environment": persisted_environment,
             "external_environment": external_environment,
             "runtime_root": str(root),
             "manifest_sha256": _safe_sha(manifest_sha256),
@@ -1147,6 +1205,13 @@ class VideoCapabilityInstaller:
             raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
         finally:
             temporary.unlink(missing_ok=True)
+        if self._runtime_environment_applier is not None:
+            try:
+                self._runtime_environment_applier(environment)
+            except Exception as exc:
+                raise VideoCapabilityError(
+                    "VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+                ) from exc
         with self._lock:
             self._load_status()
         return "APPLIED"

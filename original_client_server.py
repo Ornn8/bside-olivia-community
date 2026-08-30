@@ -535,6 +535,7 @@ def _configured_video_capability_installer(
             readiness_probe=readiness,
             artifact_roots=artifact_roots,
             runtime_archives=tuple(dict.fromkeys(runtime_archives)),
+            runtime_environment_applier=os.environ.update,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
