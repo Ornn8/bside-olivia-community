@@ -57,7 +57,7 @@ webplayer.dat SHA-256：
 565b5e3e113c2a9dfb90d5fa4f2a0ccda9b0151c118ae3365e6ee0c8624a451d
 ```
 
-任一文件缺失或哈希不匹配时，安装在写入目标目录前停止。
+文件缺失时安装在写入目标目录前停止。自动发现多份 Steam 副本时，安装器优先选择上述双 SHA-256 精确匹配的第一份；仅发现一份非精确匹配副本时，由 Python 补丁器继续校验 ZIP 结构与补丁锚点。多份副本均不精确匹配时返回 `OFFICIAL_INSTALL_AMBIGUOUS`，用户必须返回上一步明确选择正版目录。
 
 安装器只在隔离副本中按顺序执行：
 
@@ -85,6 +85,12 @@ webplayer.dat.orig
 正版 Steam 目录不会产生备份、补丁或写入。任何补丁、验证或重打包步骤失败时，整个未完成安装目录会被删除，不留下部分可用的客户端。
 
 已有旧 marker 但缺少原版设置或 webplayer 本机媒体标记时，不会伪装成“已经安装”；安装器会停止并要求先按受控流程处理旧安装。
+
+## 安装源诊断契约
+
+单文件安装器失败时，会把 `olivia.setup-source-diagnostic.v1` JSON 写入本机安装日志。该诊断只包含 `selection_mode`、`candidate_count`、`client_version`、`manifest_feapp_sha256`、`manifest_webplayer_sha256`，以及 `observed_feapp_size`、`observed_feapp_sha256`、`observed_webplayer_size`、`observed_webplayer_sha256`。选中目录仅以 `selected_official_id`（规范化目录路径 SHA-256 的前 16 位）标识；日志不得包含原始正版目录路径。自动发现歧义时，`candidates` 按发现顺序记录 `candidate_index` 与上述观测 size/hash，无法读取的值为 `null`。
+
+稳定安装错误码 `OFFICIAL_INSTALL_AMBIGUOUS` 表示自动发现了多份候选，但没有任何候选同时匹配内嵌 manifest 的 `feapp.dat` 与 `webplayer.dat` SHA-256。该错误不可自动重试；应返回上一步显式选择 Steam 正版目录。
 
 ## 当前能力边界
 

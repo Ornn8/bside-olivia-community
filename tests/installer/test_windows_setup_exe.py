@@ -288,6 +288,10 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "StableInstallCode" in script
     assert "SetupResultPath" in script
     assert "OLIVIA_SETUP_ERROR=" in script
+    assert "OFFICIAL_INSTALL_AMBIGUOUS" in script
+    assert "上一步" in script
+    assert ".diagnostic.json" in script
+    assert "Olivia installer diagnostic:" in script
     assert "function PrepareToInstall" in script
     assert "dontcopy noencryption" in script
     assert "OfficialDirPage: TInputQueryWizardPage" in script
@@ -326,6 +330,18 @@ def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() 
     assert "if (-not $selectedOfficial -and -not $NonInteractive)" in script
     assert "Invoke-WebRequest" not in script
     assert "provision_mem0_embedding.py" not in script
+
+
+def test_windows_installer_documents_ambiguous_source_diagnostic_contract() -> None:
+    documentation = (ROOT / "docs" / "WINDOWS_FULL_PATCH.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "OFFICIAL_INSTALL_AMBIGUOUS" in documentation
+    assert "olivia.setup-source-diagnostic.v1" in documentation
+    assert "selected_official_id" in documentation
+    assert "observed_feapp_sha256" in documentation
+    assert "observed_webplayer_sha256" in documentation
 
 
 def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
