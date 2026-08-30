@@ -83,6 +83,92 @@ def _write_video_runtime(path: Path) -> None:
             archive.writestr(relative, content)
 
 
+def _write_video_runtime_v2(
+    path: Path,
+    *,
+    cosyvoice_extra: dict[str, bytes] | None = None,
+    dedicated_license: bool = True,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    environment: dict[str, str] = {}
+    runtime_files: dict[str, bytes] = {}
+    components: dict[str, object] = {}
+    environment_keys = {
+        "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+        "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
+        "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
+        "roformer": "OLIVIA_ROFORMER_PYTHON",
+    }
+    for index, (component, environment_key) in enumerate(environment_keys.items()):
+        license_path = (
+            f"site-packages/olivia_upstream/{component}/LICENSE.txt"
+            if dedicated_license
+            else "LICENSE.txt"
+        )
+        source_files = {
+            "python/python.exe": f"python-{component}".encode(),
+            "NOTICE.txt": f"notice-{component}".encode(),
+            license_path: f"license-{component}".encode(),
+        }
+        if component == "cosyvoice" and cosyvoice_extra:
+            source_files.update(cosyvoice_extra)
+        file_records = [
+            {
+                "path": relative,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+            for relative, content in source_files.items()
+        ]
+        file_records.sort(key=lambda item: item["path"].casefold())
+        components[component] = {
+            "upstream": f"https://example.com/{component}",
+            "revision": format(index + 1, "040x"),
+            "tree_sha256": hashlib.sha256(
+                json.dumps(file_records, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "dependencies": [f"{component}-runtime==1.0"],
+            "license": {
+                "path": license_path,
+                "sha256": hashlib.sha256(source_files[license_path]).hexdigest(),
+            },
+            "notice": {
+                "path": "NOTICE.txt",
+                "sha256": hashlib.sha256(source_files["NOTICE.txt"]).hexdigest(),
+            },
+            "files": file_records,
+        }
+        prefix = f"{component}/runtime/"
+        runtime_files.update(
+            {
+                prefix + relative: content
+                for relative, content in source_files.items()
+            }
+        )
+        environment[environment_key] = prefix + "python/python.exe"
+    manifest = {
+        "schema_version": "olivia.video-runtime-root.v2",
+        "version": "fixture-v2",
+        "environment": environment,
+        "files": [
+            {
+                "path": relative,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+            for relative, content in sorted(runtime_files.items())
+        ],
+        "build_inputs": {
+            "schema_version": "olivia.video-runtime-build-inputs.v1",
+            "components": components,
+        },
+    }
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("runtime-manifest.json", json.dumps(manifest))
+        for relative, content in runtime_files.items():
+            archive.writestr(relative, content)
+
+
 def _mutate_video_runtime_manifest(path: Path, mutate) -> None:
     with zipfile.ZipFile(path) as archive:
         files = {
@@ -92,7 +178,12 @@ def _mutate_video_runtime_manifest(path: Path, mutate) -> None:
         }
         manifest = json.loads(archive.read("runtime-manifest.json"))
     mutate(manifest)
-    with zipfile.ZipFile(path, "w") as archive:
+    compression = (
+        zipfile.ZIP_DEFLATED
+        if manifest.get("schema_version") == "olivia.video-runtime-root.v2"
+        else zipfile.ZIP_STORED
+    )
+    with zipfile.ZipFile(path, "w", compression=compression) as archive:
         archive.writestr("runtime-manifest.json", json.dumps(manifest))
         for relative, content in files.items():
             archive.writestr(relative, content)
@@ -138,6 +229,15 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
     )
     monkeypatch.setattr("installer.build_windows_setup._git_dirty_files", lambda _: set())
     return source, offline, reference
+
+
+def _prepare_private_runtime(
+    source: Path, offline: Path, reference: Path, runtime: Path, destination: Path
+) -> None:
+    prepare_setup_payload(
+        source, offline, destination, distribution="private",
+        voice_reference=reference, video_runtime=runtime, validate_schema=False,
+    )
 
 
 def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_assets(
@@ -269,6 +369,162 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
             source, offline, tmp_path / "public-runtime", video_runtime=runtime,
             validate_schema=False,
         )
+
+
+def test_prepare_setup_payload_accepts_builder_v2_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "distributor" / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(runtime)
+
+    _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+    assert (
+        tmp_path / "payload/offline/video-runtime/Olivia-video-runtime-private.zip"
+    ).read_bytes() == runtime.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "version",
+        "manifest-order",
+        "build-input-shape",
+        "missing-component",
+        "upstream-malformed",
+        "revision",
+        "dependencies",
+        "tree-hash",
+        "legal-hash",
+        "source-hash",
+        "environment-not-python",
+    ],
+)
+def test_prepare_setup_payload_rejects_invalid_v2_build_inputs(
+    tmp_path: Path, monkeypatch, case: str
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(runtime)
+
+    def mutate(manifest: dict[str, object]) -> None:
+        build_inputs = manifest["build_inputs"]
+        components = build_inputs["components"]
+        cosyvoice = components["cosyvoice"]
+        if case == "version":
+            manifest["version"] = "not a builder version"
+        elif case == "manifest-order":
+            manifest["files"].reverse()
+        elif case == "build-input-shape":
+            build_inputs["extra"] = True
+        elif case == "missing-component":
+            components.pop("roformer")
+        elif case == "upstream-malformed":
+            cosyvoice["upstream"] = "https://["
+        elif case == "revision":
+            cosyvoice["revision"] = "A" * 40
+        elif case == "dependencies":
+            cosyvoice["dependencies"] = ["Torch==1", "torch==1"]
+        elif case == "tree-hash":
+            cosyvoice["tree_sha256"] = "0" * 64
+        elif case == "legal-hash":
+            cosyvoice["license"]["sha256"] = "0" * 64
+        elif case == "source-hash":
+            cosyvoice["files"][0]["sha256"] = "0" * 64
+        elif case == "environment-not-python":
+            manifest["environment"]["OLIVIA_COSYVOICE_PYTHON"] = (
+                "cosyvoice/runtime/LICENSE.txt"
+            )
+
+    _mutate_video_runtime_manifest(runtime, mutate)
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+@pytest.mark.parametrize(
+    ("relative", "content", "dedicated_license"),
+    [
+        ("models/config.json", b"{}", True),
+        ("weights.pt", b"private model", True),
+        ("recording.wav", b"private media", True),
+        ("recording.dat", b"RIFF" + b"\0" * 4 + b"WAVE", True),
+        ("payload.bin", b"private model", True),
+        ("site-packages/payload.pth", b"\x80binary model", True),
+        (None, b"", False),
+    ],
+)
+def test_prepare_setup_payload_rejects_v2_builder_forbidden_content(
+    tmp_path: Path,
+    monkeypatch,
+    relative: str | None,
+    content: bytes,
+    dedicated_license: bool,
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(
+        runtime,
+        cosyvoice_extra=None if relative is None else {relative: content},
+        dedicated_license=dedicated_license,
+    )
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit"),
+    [
+        ("VIDEO_RUNTIME_MAX_ARCHIVE_BYTES", 1),
+        ("VIDEO_RUNTIME_MAX_ENTRIES", 1),
+        ("VIDEO_RUNTIME_MAX_MANIFEST_BYTES", 1),
+        ("VIDEO_RUNTIME_MAX_EXPANDED_BYTES", 1),
+        ("VIDEO_RUNTIME_MAX_COMPRESSION_RATIO", 1),
+    ],
+)
+def test_prepare_setup_payload_applies_v2_zip_bounds_before_expansion(
+    tmp_path: Path, monkeypatch, limit_name: str, limit: int
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(runtime)
+    monkeypatch.setattr(f"installer.build_windows_setup.{limit_name}", limit)
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+def test_prepare_setup_payload_maps_unsupported_v2_zip_compression_to_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(runtime)
+    monkeypatch.setattr(
+        zipfile.ZipFile, "read", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            NotImplementedError("unsupported compression")
+        )
+    )
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+def test_video_runtime_v2_fixture_matches_machine_contracts(tmp_path: Path) -> None:
+    import jsonschema
+
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    _write_video_runtime_v2(runtime)
+    with zipfile.ZipFile(runtime) as archive:
+        manifest = json.loads(archive.read("runtime-manifest.json"))
+    build_inputs_schema = json.loads((ROOT / "contracts/video_runtime_build_inputs.schema.json").read_text())
+    runtime_schema = json.loads((ROOT / "contracts/video_runtime_root_v2.schema.json").read_text())
+
+    jsonschema.validate(manifest["build_inputs"], build_inputs_schema)
+    jsonschema.validate(manifest, runtime_schema)
+    assert set(build_inputs_schema["properties"]["components"]["required"]) == {"cosyvoice", "latentsync", "minimax", "roformer"}
 
 
 def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, monkeypatch) -> None:
