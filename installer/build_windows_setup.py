@@ -15,6 +15,9 @@ import wave
 import zipfile
 from pathlib import Path, PurePosixPath
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from installer.component_update import ComponentUpdateError, _validate_relative_path
 
 

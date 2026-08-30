@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import wave
 import zipfile
@@ -22,6 +24,19 @@ from installer.build_windows_setup import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_setup_builder_direct_entrypoint_reaches_argument_parser() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "installer" / "build_windows_setup.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--video-runtime" in result.stdout
 
 
 def _write_asset(root: Path, relative: str, content: bytes) -> dict[str, object]:
