@@ -119,18 +119,6 @@ def _latentsync_timeout_seconds(
     return min(value, _MAX_LATENTSYNC_TIMEOUT_SECONDS)
 
 
-def _remaining_timeout_seconds(
-    deadline: float,
-    environment: Mapping[str, str],
-) -> float:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise _reported_process_failure(
-            environment, returncode=None, stderr=None, timed_out=True,
-        )
-    return remaining
-
-
 def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the same FFmpeg executable used by the LatentSync renderer."""
 
@@ -205,7 +193,7 @@ def _prepare_source_clip(
     prepared_video: Path,
     *,
     environment: dict[str, str],
-    timeout_seconds: float,
+    deadline: float,
 ) -> None:
     """Decode only the needed span into a stable LatentSync input."""
 
@@ -246,7 +234,7 @@ def _prepare_source_clip(
     ]
     try:
         result = run_managed_process(
-            command, timeout_seconds=timeout_seconds, env=environment,
+            command, deadline=deadline, env=environment,
         )
     except subprocess.TimeoutExpired as exc:
         raise _reported_process_failure(
@@ -268,7 +256,7 @@ def _validate_rendered_video(
     video_path: Path,
     *,
     environment: dict[str, str],
-    timeout_seconds: float,
+    deadline: float,
 ) -> None:
     ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
     if ffmpeg is None:
@@ -280,7 +268,7 @@ def _validate_rendered_video(
     ]
     try:
         result = run_managed_process(
-            command, timeout_seconds=timeout_seconds, env=environment,
+            command, deadline=deadline, env=environment,
         )
     except subprocess.TimeoutExpired as exc:
         raise _reported_process_failure(
@@ -384,7 +372,7 @@ def render_latentsync_video(
             audio_path,
             prepared_video,
             environment=runtime_environment,
-            timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
+            deadline=deadline,
         )
         command = [
             str(python_path),
@@ -414,7 +402,7 @@ def render_latentsync_video(
             result = run_managed_process(
                 command,
                 cwd=latentsync_root,
-                timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
+                deadline=deadline,
                 env=runtime_environment,
             )
         except subprocess.TimeoutExpired as exc:
@@ -442,7 +430,7 @@ def render_latentsync_video(
         _validate_rendered_video(
             working_output,
             environment=runtime_environment,
-            timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
+            deadline=deadline,
         )
         partial_output = output_path.with_suffix(output_path.suffix + ".partial")
         try:

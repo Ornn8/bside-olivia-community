@@ -75,6 +75,37 @@ def test_windows_timeout_owns_and_terminates_suspended_worker(monkeypatch) -> No
     assert observed["timeouts"] == [12, 15.0]
 
 
+def test_absolute_deadline_includes_start_timeout_and_cleanup(monkeypatch) -> None:
+    clock, waits = [0.0], []
+    def spend(seconds):
+        clock[0] += seconds
+    class Process:
+        pid, returncode = 4242, None
+        def communicate(self, timeout):
+            waits.append(timeout)
+            spend(timeout)
+            if len(waits) == 1:
+                raise subprocess.TimeoutExpired(["worker"], timeout)
+            return b"", b"stopped"
+    class Job:
+        def assign(self, _process): spend(1)
+        def resume(self, _process): spend(1)
+        def terminate(self): spend(1)
+        def close(self): pass
+    monkeypatch.setattr(managed_subprocess.os, "name", "nt")
+    monkeypatch.setattr(managed_subprocess, "_TREE_SHUTDOWN_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(managed_subprocess.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: (spend(1) or Job()))
+    monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: (spend(1) or Process()))
+    with pytest.raises(subprocess.TimeoutExpired):
+        managed_subprocess.run_managed_process(["worker"], deadline=10.0)
+    assert clock[0] <= 10.0
+    assert waits == [4.0, 1.0]
+    with pytest.raises(subprocess.TimeoutExpired):
+        managed_subprocess.run_managed_process(["worker"], deadline=10.0)
+    assert clock[0] == 10.0
+
+
 def test_windows_job_creation_failure_does_not_launch(monkeypatch) -> None:
     launched: list[bool] = []
     monkeypatch.setattr(managed_subprocess.os, "name", "nt")
