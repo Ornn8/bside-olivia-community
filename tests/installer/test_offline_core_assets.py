@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import wave
 import zipfile
 
 from jsonschema import Draft202012Validator
@@ -15,6 +17,24 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _voice_reference_bytes() -> bytes:
+    payload = io.BytesIO()
+    with wave.open(payload, "wb") as target:
+        target.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\x00\x00" * 160)
+    return payload.getvalue()
+
+
+def _managed_reference(product: Path) -> Path:
+    return product / "install/data/capabilities/video/shared/linli-reference.wav"
+
+
+def _wave_metadata(**changes: object) -> dict[str, object]:
+    value: dict[str, object] = {"channels": 1, "sample_width_bytes": 2, "sample_rate_hz": 16000, "frame_count": 160, "compression_type": "NONE"}
+    value.update(changes)
+    return value
 
 
 def test_first_install_consumes_only_bundled_core_assets() -> None:
@@ -33,6 +53,7 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
     assert "Update-ManagedPythonPath -PthPath $pth.FullName" in script
     assert "provision_mem0_embedding.py" not in script
     assert "BAAI/bge-small-zh-v1.5" not in script
+    assert "VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED" in script
 
 
 def test_offline_core_asset_example_matches_its_public_schema() -> None:
@@ -49,6 +70,18 @@ def test_offline_core_asset_example_matches_its_public_schema() -> None:
 
     Draft202012Validator.check_schema(schema)
     assert not list(Draft202012Validator(schema).iter_errors(example))
+
+
+def test_public_schema_accepts_only_hash_locked_managed_voice_reference() -> None:
+    schema = json.loads((ROOT / "contracts/offline_core_assets.schema.json").read_text())
+    example = json.loads((ROOT / "contracts/offline_core_assets.example.json").read_text())
+    validator = Draft202012Validator(schema)
+    example["distribution"] = "private"
+    example["voice_reference"] = {"path": "voice/olivia-reference.wav", "size_bytes": 155278, "sha256": "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf", "wave": _wave_metadata(frame_count=77600)}
+    assert not list(validator.iter_errors(example))
+    missing_marker = deepcopy(example)
+    del missing_marker["distribution"]
+    assert list(validator.iter_errors(missing_marker))
 
 
 def test_public_schema_rejects_nonfixed_runtime_and_incomplete_wheel_closure() -> None:
@@ -160,7 +193,12 @@ def _run_install_preflight(
 def _run_runtime_publish_fixture(
     tmp_path: Path,
     *,
-    bootstrap_exit_code: int,
+    bootstrap_exit_code: int, bootstrap_replaces_managed_app: bool = False,
+    voice_reference: bytes | None = None, voice_reference_sha256: str | None = None,
+    voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
+    block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
+    product_root: Path | None = None, existing_voice_pair: bool = False,
+    interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     payload = tmp_path / "payload"
     payload_installer = payload / "installer"
@@ -172,9 +210,18 @@ def _run_runtime_publish_fixture(
         "verify_mem0_runtime.py",
     ):
         shutil.copy2(ROOT / "installer" / name, payload_installer / name)
+    bootstrap_actions = ""
+    if bootstrap_exit_code == 0 or bootstrap_replaces_managed_app:
+        bootstrap_actions = "destination = pathlib.Path(sys.argv[sys.argv.index('--destination') + 1])\n" \
+                            "(destination / 'data').mkdir(parents=True, exist_ok=True)\n"
+        if bootstrap_replaces_managed_app:
+            bootstrap_actions += "shutil.rmtree(destination / 'local_backend', ignore_errors=True)\n" \
+                "(destination / 'local_backend').mkdir()\n" \
+                "(destination / 'local_backend/new-backend.txt').write_text('new')\n"
     (payload_installer / "bootstrap_install.py").write_text(
-        "import json\n"
-        f"print(json.dumps({{'status': 'ERROR', 'code': 'SYNTHETIC_PATCH_FAILED'}}))\n"
+        "import json, pathlib, shutil, sys\n"
+        + bootstrap_actions
+        + f"print(json.dumps({{'status': '{'OK' if bootstrap_exit_code == 0 else 'ERROR'}', 'code': 'SYNTHETIC_PATCH_FAILED'}}))\n"
         f"raise SystemExit({bootstrap_exit_code})\n",
         encoding="utf-8",
     )
@@ -211,20 +258,67 @@ def _run_runtime_publish_fixture(
 
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
     original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements"
-    replacement = "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = '' }"
+    replacement = (
+        "$voiceManifest = if ($env:BSIDE_TEST_VOICE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_VOICE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
+        "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference } else { $null }\n"
+        "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference }"
+    )
     assert script.count(original) == 1
     script = script.replace(original, replacement)
     dependency_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {"
     assert script.count(dependency_probe) == 2
     script = script.replace(dependency_probe, "if ($false) {", 1)
+    if cleanup_obstruction == "voice":
+        marker = "} elseif ($phase -ceq 'cleanup' -and [IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }"
+        obstruction = marker.replace("Repair-Managed", "$voiceLock = [IO.File]::Open((Get-ChildItem -LiteralPath $shared -Filter '*.wav.bak' | Select-Object -First 1).FullName, 'Open', 'Read', 'None'); Repair-Managed")
+        assert script.count(marker) == 1
+        script = script.replace(marker, obstruction)
+    elif cleanup_obstruction == "snapshot":
+        marker = "if ($Snapshot -and (Test-Path -LiteralPath $Snapshot)) { Remove-Item -LiteralPath $Snapshot -Recurse -Force }"
+        assert script.count(marker) == 1
+        script = script.replace(marker, marker.replace("Remove-Item", "$lock = [IO.File]::Open((Join-Path $Snapshot '.locked'), 'Create', 'ReadWrite', 'None'); Remove-Item"))
+    if interrupt_voice_staging:
+        marker = "        [IO.File]::Copy($source, $stagedTarget, $false)"
+        assert script.count(marker) == 1
+        script = script.replace(marker, marker + "\n        [Environment]::FailFast('SYNTHETIC_VOICE_INTERRUPTION')")
+    if interrupt_after_bootstrap:
+        marker = "$installExitCode = $LASTEXITCODE"
+        assert script.count(marker) == 1
+        script = script.replace(marker, "[Environment]::FailFast('SYNTHETIC_BOOTSTRAP_INTERRUPTION')\n" + marker)
     test_script = tmp_path / "Install.ps1"
     test_script.write_text(script, encoding="utf-8-sig")
-    product = tmp_path / "product"
+    product = product_root or tmp_path / "product"
     old_runtime = product / "runtime" / "python-3.12.10-embed-amd64"
-    old_runtime.mkdir(parents=True)
-    (old_runtime / "old-runtime.txt").write_text("preserve", encoding="utf-8")
+    if existing_runtime and not old_runtime.exists():
+        old_runtime.mkdir(parents=True)
+        (old_runtime / "old-runtime.txt").write_text("preserve", encoding="utf-8")
+    if bootstrap_replaces_managed_app and seed_existing_install and not (product / "install/local_backend").exists():
+        old_backend = product / "install" / "local_backend"
+        old_backend.mkdir(parents=True)
+        (old_backend / "old-backend.txt").write_text("preserve", encoding="utf-8")
+    if block_voice_sidecar:
+        installed = _managed_reference(product)
+        installed.parent.mkdir(parents=True)
+        installed.write_bytes(b"old-reference")
+        installed.with_suffix(".json").mkdir()
+    if existing_voice_pair:
+        installed = _managed_reference(product)
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        installed.write_bytes(b"old-reference")
+        installed.with_suffix(".json").write_bytes(b"old-sidecar")
     environment = os.environ.copy()
     environment["BSIDE_TEST_RUNTIME_ZIP"] = str(runtime_zip)
+    if voice_reference is not None:
+        reference = tmp_path / "distributor-reference.wav"
+        if not voice_reference_missing:
+            reference.write_bytes(voice_reference)
+        manifest = {"voice_reference": {"path": "voice/olivia-reference.wav", "size_bytes": len(voice_reference),
+            "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
+            "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()}}
+        manifest_path = tmp_path / "offline-core-assets.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
+        environment["BSIDE_TEST_VOICE_MANIFEST"] = str(manifest_path)
     result = subprocess.run(
         [
             "powershell",
@@ -251,24 +345,137 @@ def _run_runtime_publish_fixture(
         timeout=30,
         check=False,
     )
+    if cleanup_obstruction == "voice":
+        for blocked in _managed_reference(product).parent.glob(".linli-reference.*"):
+            if blocked.is_dir():
+                shutil.rmtree(blocked)
     return result, product
+
+
+def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path: Path) -> None:
+    result, product = _run_runtime_publish_fixture(tmp_path, bootstrap_exit_code=0, voice_reference=_voice_reference_bytes())
+
+    installed = _managed_reference(product)
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert installed.read_bytes() == _voice_reference_bytes()
+    integrity = json.loads(installed.with_suffix(".json").read_text(encoding="utf-8"))
+    assert integrity == {"schema_version": "olivia.managed-voice-reference.v1", "path": "linli-reference.wav",
+        "size_bytes": installed.stat().st_size, "sha256": hashlib.sha256(installed.read_bytes()).hexdigest(),
+        "wave": _wave_metadata()}
+    schema = json.loads((ROOT / "contracts/managed_voice_reference.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    assert not list(Draft202012Validator(schema).iter_errors(integrity))
+def test_voice_publish_failure_restores_managed_app_runtime_and_voice(tmp_path: Path) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path, bootstrap_exit_code=0, bootstrap_replaces_managed_app=True,
+        voice_reference=_voice_reference_bytes(), block_voice_sidecar=True,
+    )
+    installed = _managed_reference(product)
+    runtime = product / "runtime/python-3.12.10-embed-amd64"; backend = product / "install/local_backend"
+    assert result.returncode != 0 and "VOICE_REFERENCE_INSTALL_FAILED" in result.stdout + result.stderr
+    assert (backend / "old-backend.txt").read_text() == "preserve" and not (backend / "new-backend.txt").exists()
+    assert (runtime / "old-runtime.txt").read_text() == "preserve" and not (runtime / "python.exe").exists()
+    assert installed.read_bytes() == b"old-reference" and installed.with_suffix(".json").is_dir()
+    assert not list(product.glob(".install.rollback.*")) and not list((product / "runtime").glob("*.backup.*"))
+
+
+@pytest.mark.parametrize("cleanup_obstruction", ["voice", "snapshot"])
+def test_voice_reference_cleanup_failure_is_fail_closed_and_recovered(
+    tmp_path: Path, cleanup_obstruction: str,
+) -> None:
+    product = tmp_path / "product"
+    failed, _ = _run_runtime_publish_fixture(
+        tmp_path / "first", product_root=product, bootstrap_exit_code=0,
+        bootstrap_replaces_managed_app=True, voice_reference=_voice_reference_bytes(), existing_voice_pair=True,
+        cleanup_obstruction=cleanup_obstruction,
+    )
+    shared = _managed_reference(product).parent
+    assert failed.returncode != 0 and "VOICE_REFERENCE_INSTALL_CLEANUP_FAILED" in failed.stdout + failed.stderr
+    assert (shared / ".linli-reference.transaction.cleanup").is_file() or list(product.glob(".install.rollback.*"))
+    assert (product / "install/local_backend/new-backend.txt").is_file() and (product / "runtime/python-3.12.10-embed-amd64/python.exe").is_file()
+    assert _managed_reference(product).read_bytes() == _voice_reference_bytes()
+    recovered, _ = _run_runtime_publish_fixture(
+        tmp_path / "second", product_root=product, bootstrap_exit_code=23,
+        bootstrap_replaces_managed_app=True, voice_reference=_voice_reference_bytes(),
+    )
+    assert recovered.returncode == 23
+    assert (product / "install/local_backend/new-backend.txt").is_file() and (product / "runtime/python-3.12.10-embed-amd64/python.exe").is_file()
+    assert not list(shared.glob(".linli-reference.*")) and not list(product.glob(".install.rollback.*"))
+
+
+@pytest.mark.parametrize(
+    ("content", "wave_metadata", "missing", "sha256", "code"),
+    [
+        (_voice_reference_bytes(), None, True, None, "VOICE_REFERENCE_MISSING"),
+        (_voice_reference_bytes(), None, False, "0" * 64, "VOICE_REFERENCE_HASH_MISMATCH"),
+        (b"not a wave", None, False, None, "VOICE_REFERENCE_INVALID"),
+        (_voice_reference_bytes(), _wave_metadata(frame_count=159), False, None, "VOICE_REFERENCE_INVALID"),
+        (_voice_reference_bytes(), _wave_metadata(channels="1"), False, None, "VOICE_REFERENCE_INVALID"),
+    ],
+)
+def test_voice_reference_fails_closed_before_publish(
+    tmp_path: Path, content: bytes, wave_metadata: dict[str, object] | None,
+    missing: bool, sha256: str | None, code: str,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path, bootstrap_exit_code=0, voice_reference=content,
+        voice_reference_wave=wave_metadata, voice_reference_missing=missing,
+        voice_reference_sha256=sha256,
+    )
+    assert result.returncode != 0
+    assert code in result.stdout + result.stderr
+    assert not _managed_reference(product).exists()
+
+
+def test_interrupted_voice_staging_has_marker_and_is_recovered(tmp_path: Path) -> None:
+    product = tmp_path / "product"
+    interrupted, _ = _run_runtime_publish_fixture(
+        tmp_path / "first", product_root=product, bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(), existing_voice_pair=True,
+        interrupt_voice_staging=True,
+    )
+    installed = _managed_reference(product)
+    assert interrupted.returncode != 0 and (installed.parent / ".linli-reference.transaction").is_file()
+    assert list(installed.parent.glob(".linli-reference.*.wav.tmp"))
+
+    rejected, _ = _run_runtime_publish_fixture(
+        tmp_path / "second", product_root=product, bootstrap_exit_code=0,
+        voice_reference=b"not a wave",
+    )
+    assert rejected.returncode != 0 and "VOICE_REFERENCE_INVALID" in rejected.stdout + rejected.stderr
+    assert installed.read_bytes() == b"old-reference" and installed.with_suffix(".json").read_bytes() == b"old-sidecar"
+    assert not list(installed.parent.glob(".linli-reference.*"))
 
 
 def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(
     tmp_path: Path,
 ) -> None:
     result, product = _run_runtime_publish_fixture(
-        tmp_path,
-        bootstrap_exit_code=23,
+        tmp_path, bootstrap_exit_code=23, bootstrap_replaces_managed_app=True,
     )
 
     runtime_parent = product / "runtime"
     runtime = runtime_parent / "python-3.12.10-embed-amd64"
+    backend = product / "install/local_backend"
     assert result.returncode == 23, result.stderr or result.stdout
+    assert (backend / "old-backend.txt").is_file() and not (backend / "new-backend.txt").exists()
     assert (runtime / "old-runtime.txt").read_text(encoding="utf-8") == "preserve"
     assert not (runtime / "python.exe").exists()
     assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.backup.*"))
     assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.staging.*"))
+    fresh, fresh_product = _run_runtime_publish_fixture(tmp_path / "fresh", bootstrap_exit_code=23, bootstrap_replaces_managed_app=True, existing_runtime=False, seed_existing_install=False)
+    assert fresh.returncode == 23 and not (fresh_product / "install").exists() and not (fresh_product / "runtime/python-3.12.10-embed-amd64").exists()
+
+
+def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Path) -> None:
+    product = tmp_path / "product"
+    interrupted, _ = _run_runtime_publish_fixture(tmp_path / "first", product_root=product, bootstrap_exit_code=0, bootstrap_replaces_managed_app=True, interrupt_after_bootstrap=True)
+    assert interrupted.returncode != 0
+    retried, _ = _run_runtime_publish_fixture(tmp_path / "second", product_root=product, bootstrap_exit_code=23, bootstrap_replaces_managed_app=True)
+    backend = product / "install/local_backend"
+    assert retried.returncode == 23
+    assert (backend / "old-backend.txt").is_file() and not (backend / "new-backend.txt").exists()
+    assert not list(product.glob(".install.*"))
 
 
 def test_patch_success_discards_runtime_backup_after_install(
