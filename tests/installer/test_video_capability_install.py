@@ -290,29 +290,6 @@ def _prepare_runtime_dependencies(data_root: Path, manifest: VideoManifest) -> N
     reference.write_bytes(b"managed-voice")
 
 
-def _python_only_runtime_archive(tmp_path: Path) -> Path:
-    runtime_root = tmp_path / "python-only-runtime"
-    environment = {
-        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
-        "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
-        "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
-        "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
-    }
-    for relative in environment.values():
-        target = runtime_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"portable-python")
-    write_runtime_root_manifest(
-        runtime_root.resolve(), version="python-only-runtime", environment=environment
-    )
-    archive = tmp_path / "Olivia-video-runtime-python-only.zip"
-    with zipfile.ZipFile(archive, "w") as payload:
-        for path in runtime_root.rglob("*"):
-            if path.is_file():
-                payload.write(path, path.relative_to(runtime_root).as_posix())
-    return archive.resolve()
-
-
 def _mark_bundle_payloads_ready(data_root: Path, manifest: VideoManifest) -> Path:
     install_root = data_root / "capabilities" / "video"
     for bundle in manifest.bundles:
@@ -351,39 +328,28 @@ def test_runtime_archive_is_extracted_verified_and_activated(
     )
     assert Path(profile["runtime_root"]) == (installer.install_root / "runtime").resolve()
     assert Path(profile["environment"]["OLIVIA_TTS_CONFIG"]).is_file()
-
-
-def test_python_only_runtime_uses_downloaded_bundles_and_managed_voice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    archive = _python_only_runtime_archive(tmp_path)
-    data_root = (tmp_path / "data").resolve()
-    manifest = VideoManifest(
-        "1.0",
-        (
-            VideoBundle("ordinary_video", "video", "FIXED", False, (), (), runtime_environment={"OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"}),
-                VideoBundle("music_video", "music", "FIXED", False, (), (), runtime_environment={"OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/model.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/config.yaml"}),
-        ),
-    )
-    install_root = _mark_bundle_payloads_ready(data_root, manifest)
-    for relative in ("ordinary_video/cosyvoice/runtime", "ordinary_video/cosyvoice/model", "ordinary_video/latentsync/runtime", "music_video/minimax/runtime"):
-        (install_root / relative).mkdir(parents=True, exist_ok=True)
-    for relative in ("music_video/roformer/model.ckpt", "music_video/roformer/config.yaml", "shared/linli-reference.wav"):
-        target = install_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"fixture")
     observed: list[dict[str, str]] = []
-    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
-    installer = VideoCapabilityInstaller(
+    monkeypatch.setattr(
+        VideoCapabilityInstaller,
+        "import_runtime_archive",
+        lambda *_args, **_kwargs: pytest.fail("installed runtime must not reimport"),
+    )
+    restarted = VideoCapabilityInstaller(
         data_root=data_root,
         manifest=manifest,
-        readiness_probe=lambda _environment: {"ordinary_missing_dependencies": [], "music_ready": True},
+        readiness_probe=lambda _environment: pytest.fail("installed runtime must not reprobe"),
+        runtime_archives=(archive,),
         runtime_environment_applier=lambda environment: observed.append(dict(environment)),
     )
-
-    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
-    required = ("OLIVIA_COSYVOICE_ROOT", "OLIVIA_COSYVOICE_MODEL_ROOT", "OLIVIA_REPLY_VOICE_REFERENCE", "OLIVIA_TTS_CONFIG", "OLIVIA_LATENTSYNC_ROOT", "OLIVIA_MINIMAX_COMFY_ROOT", "OLIVIA_MINIMAX_WORKER", "OLIVIA_ROFORMER_MODEL_PATH", "OLIVIA_ROFORMER_CONFIG_PATH")
-    assert len(observed) == 1 and all(Path(observed[0][key]).exists() for key in required)
+    assert restarted.status()["runtime_import"]["state"] == "ready"
+    assert len(observed) == 1
+    archive.unlink()
+    restarted_without_archive = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: pytest.fail("installed runtime must not reprobe"),
+    )
+    assert restarted_without_archive.status()["runtime_import"]["state"] == "ready"
 
 
 def test_runtime_archive_rejects_managed_component_and_voice_overrides(

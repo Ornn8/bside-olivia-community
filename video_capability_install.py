@@ -1026,10 +1026,33 @@ class VideoCapabilityInstaller:
                 "total_bytes": total_bytes,
             }
 
+    def _resume_persisted_runtime(self) -> bool:
+        try:
+            payload = json.loads(
+                (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(encoding="utf-8")
+            )
+            if not isinstance(payload, dict) or set(payload.get("external_environment", {})) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
+                return False
+            environment = load_video_runtime_environment(self.data_root)
+        except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
+            return False
+        try:
+            if self._runtime_environment_applier is not None:
+                self._runtime_environment_applier(environment)
+        except Exception:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+            )
+            return True
+        self._runtime_import = {"state": "ready", "checked_bytes": 0, "total_bytes": 0}
+        return True
+
     def _maybe_start_runtime_prepare(self) -> None:
         if self._runtime_import["state"] != "idle":
             return
         if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            return
+        if self._resume_persisted_runtime():
             return
         if any(
             self._status.get(bundle.identifier) is None
