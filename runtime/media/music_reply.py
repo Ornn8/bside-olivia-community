@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -36,10 +38,45 @@ from .voice_direction import VoicePerformancePlan
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
 _MUSIC_STAGE_MANIFEST_VERSION = 3
 _RUNTIME_PROBE_TIMEOUT_SECONDS = 60.0
+_PROVIDER_DIAGNOSTIC_LIMIT = 512
+_MEDIA_VALIDATION_TIMEOUT_SECONDS = 180.0
 
 
 class MusicReplyError(RuntimeError):
     """Stable product error raised when a song stage cannot complete."""
+
+    def __init__(self, error_code: str, *, diagnostic: str = "") -> None:
+        super().__init__(error_code)
+        self.diagnostic = str(diagnostic)[:_PROVIDER_DIAGNOSTIC_LIMIT]
+
+
+def _provider_failure_diagnostic(*, returncode: object, stderr: object) -> str:
+    text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else str(stderr or "")
+    patterns = ((r"TimeoutExpired", "process timeout"), (r"CUDA out of memory|CUDNN_STATUS_ALLOC_FAILED", "CUDA out of memory"),
+                (r"DLL load failed|\.dll\b.*(?:missing|not found)", "DLL load failed"), (r"No module named|ModuleNotFoundError", "Python module missing"),
+                (r"(?:config|configuration).*(?:invalid|missing|not found)", "configuration unavailable"),
+                (r"FileNotFoundError|No such file or directory", "file unavailable"), (r"PermissionError|Access is denied", "permission denied"))
+    summary = ", ".join(label for pattern, label in patterns if re.search(pattern, text, re.I)) or "provider stderr redacted"
+    return f"returncode={returncode}; stderr={summary}"[:_PROVIDER_DIAGNOSTIC_LIMIT]
+
+
+def _persist_provider_failure(error_code: str, diagnostic: str, environment: Mapping[str, str] | None) -> None:
+    data_root = configured_media_path(os.environ if environment is None else environment, "OLIVIA_LOCAL_DATA_ROOT")
+    if data_root is None: return
+    try:
+        log_root = data_root / "logs"; log_root.mkdir(parents=True, exist_ok=True)
+        with (log_root / "media-provider.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"timestamp": int(time.time()), "error_code": error_code, "diagnostic": diagnostic[:_PROVIDER_DIAGNOSTIC_LIMIT]}, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError: return
+
+
+def _provider_exception_failure(error_code: str, exc: BaseException, environment: Mapping[str, str] | None = None) -> MusicReplyError:
+    chain, current = [], exc
+    while current is not None and current not in chain: chain.append(current); current = current.__cause__ or current.__context__
+    root = chain[-1]; category = "TimeoutExpired" if any(isinstance(item, (TimeoutError, subprocess.TimeoutExpired)) for item in chain) else type(root).__name__
+    diagnostic = _provider_failure_diagnostic(returncode=getattr(root, "returncode", "unavailable"), stderr=category)
+    _persist_provider_failure(error_code, diagnostic, environment)
+    return MusicReplyError(error_code, diagnostic=diagnostic)
 
 
 @dataclass(frozen=True)
@@ -573,6 +610,7 @@ class MiniMaxMusic3Worker:
                 ],
                 "MINIMAX_MUSIC3_FAILED",
                 timeout=self.timeout_seconds,
+                cleanup_path=destination,
             )
         if not destination.is_file() or destination.stat().st_size == 0:
             raise MusicReplyError("MINIMAX_MUSIC3_OUTPUT_MISSING")
@@ -609,13 +647,16 @@ class AceStepClient:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
+        failure = None
         try:
             # The first local request may download and initialize several GB
             # of model weights before the API flushes its response body.
             with urlopen(request, timeout=min(600.0, self.timeout_seconds)) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
-            raise MusicReplyError("ACESTEP_UNAVAILABLE") from exc
+            failure = _provider_exception_failure("ACESTEP_UNAVAILABLE", exc)
+        if failure is not None:
+            raise failure
         if not isinstance(result, dict) or result.get("code") != 200:
             raise MusicReplyError("ACESTEP_PROTOCOL_ERROR")
         return result
@@ -625,11 +666,14 @@ class AceStepClient:
         parsed = urlsplit(resolved)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise MusicReplyError("ACESTEP_AUDIO_URL_NOT_LOOPBACK")
+        failure = None
         try:
             with urlopen(resolved, timeout=min(60.0, self.timeout_seconds)) as response:
                 payload = response.read()
         except (HTTPError, URLError, TimeoutError) as exc:
-            raise MusicReplyError("ACESTEP_AUDIO_UNAVAILABLE") from exc
+            failure = _provider_exception_failure("ACESTEP_AUDIO_UNAVAILABLE", exc)
+        if failure is not None:
+            raise failure
         if not payload:
             raise MusicReplyError("ACESTEP_AUDIO_EMPTY")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -696,10 +740,13 @@ class AceStepClient:
             if status == 2:
                 raise MusicReplyError("ACESTEP_GENERATION_FAILED")
             if status == 1:
+                failure = None
                 try:
                     items = json.loads(str(row.get("result", "")))
                 except json.JSONDecodeError as exc:
-                    raise MusicReplyError("ACESTEP_RESULT_INVALID") from exc
+                    failure = _provider_exception_failure("ACESTEP_RESULT_INVALID", exc)
+                if failure is not None:
+                    raise failure
                 item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else None
                 if item is None or not isinstance(item.get("file"), str):
                     raise MusicReplyError("ACESTEP_RESULT_INVALID")
@@ -732,6 +779,7 @@ def _run(
     *,
     timeout: float = 900.0,
     env: dict[str, str] | None = None,
+    cleanup_path: Path | None = None,
 ) -> None:
     try:
         result = subprocess.run(
@@ -742,9 +790,21 @@ def _run(
             env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise MusicReplyError(error_code) from exc
-    if result.returncode != 0:
-        raise MusicReplyError(error_code)
+        failure_category = "TimeoutExpired" if isinstance(exc, subprocess.TimeoutExpired) else getattr(exc, "stderr", None) or type(exc).__name__
+        diagnostic = _provider_failure_diagnostic(returncode="unavailable", stderr=failure_category)
+        _persist_provider_failure(error_code, diagnostic, env)
+        failure = MusicReplyError(error_code, diagnostic=diagnostic)
+    else:
+        failure = None
+    if failure is None and result.returncode != 0:
+        diagnostic = _provider_failure_diagnostic(returncode=result.returncode, stderr=result.stderr)
+        _persist_provider_failure(error_code, diagnostic, env)
+        failure = MusicReplyError(error_code, diagnostic=diagnostic)
+    if failure is not None:
+        if cleanup_path is not None:
+            try: cleanup_path.unlink(missing_ok=True)
+            except OSError: pass
+        raise failure
 
 
 def prepare_official_spoken_base(
@@ -759,7 +819,9 @@ def prepare_official_spoken_base(
     destination = Path(destination)
     if not reference_path.is_file():
         raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
-    if _completed_stage(destination):
+    spoken_gate = {"required_streams": ("0:v:0",), "ffmpeg_path": ffmpeg_path,
+                   "minimum_duration_seconds": 30.0, "forbidden_streams": ("0:a:0",)}
+    if _completed_stage(destination, **spoken_gate):
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(f"{destination.stem}.partial{destination.suffix}")
@@ -795,7 +857,7 @@ def prepare_official_spoken_base(
         "MUSIC_REPLY_SPOKEN_REFERENCE_FAILED",
         timeout=900.0,
     )
-    if not _completed_stage(partial):
+    if not _completed_stage(partial, **spoken_gate):
         raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_FAILED")
     partial.replace(destination)
     return destination
@@ -865,8 +927,15 @@ def separate_vocals(
         candidates = sorted(outputs.rglob("*vocals*.wav"))
         if not candidates:
             raise MusicReplyError("ROFORMER_OUTPUT_MISSING")
+        if not _valid_wave_audio(candidates[0]):
+            raise MusicReplyError("ROFORMER_OUTPUT_INVALID")
         vocals_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(candidates[0], vocals_path)
+
+
+def _valid_wave_audio(path: Path, *, minimum_duration_seconds: float = 0.1) -> bool:
+    duration = _media_duration_seconds(path, required_streams=("0:a:0",))
+    return duration is not None and duration >= minimum_duration_seconds
 
 
 def render_full_face_performance(
@@ -886,6 +955,7 @@ def render_full_face_performance(
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     with tempfile.TemporaryDirectory(prefix="olivia-music-face-", dir=output_path.parent) as temporary:
         raw_video = Path(temporary) / "latentsync-vocals.mp4"
+        failure = None
         try:
             metadata = render_latentsync_video(
                 performance_video_path,
@@ -898,7 +968,9 @@ def render_full_face_performance(
                 environment=environment,
             )
         except LatentSyncReplyError as exc:
-            raise MusicReplyError(str(exc)) from exc
+            failure = _provider_exception_failure(str(exc), exc, environment)
+        if failure is not None:
+            raise failure
         _run(
             [
                 _ffmpeg(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
@@ -909,6 +981,7 @@ def render_full_face_performance(
             ],
             "MUSIC_REPLY_AUDIO_MUX_FAILED",
             timeout=900.0,
+            cleanup_path=output_path,
         )
     return {**metadata, "face_model": "LatentSync-1.5", "mouth_refiner": "native_face_paste"}
 
@@ -1051,9 +1124,55 @@ def concat_videos(
         result.replace(output_path)
 
 
-def _completed_stage(path: Path) -> bool:
+def _media_duration_seconds(path: Path, *, required_streams: tuple[str, ...], ffmpeg_path: Path | None = None,
+                            forbidden_streams: tuple[str, ...] = ()) -> float | None:
+    if not path.is_file():
+        return None
+    if path.suffix.casefold() == ".wav":
+        if required_streams != ("0:a:0",):
+            return None
+        try:
+            with wave.open(str(path), "rb") as stream:
+                frame_rate, frame_count = stream.getframerate(), stream.getnframes()
+                expected_size = frame_count * stream.getnchannels() * stream.getsampwidth()
+                payload = stream.readframes(frame_count)
+            if frame_rate <= 0 or expected_size <= 0 or len(payload) < expected_size: return None
+            return frame_count / frame_rate
+        except (EOFError, OSError, wave.Error): return None
+    def decode(stream: str) -> subprocess.CompletedProcess[bytes] | None:
+        try:
+            return subprocess.run([
+                _ffmpeg(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-nostdin", "-xerror",
+                "-i", str(path), "-map", stream, "-progress", "pipe:1", "-nostats", "-f", "null", os.devnull,
+            ], capture_output=True, check=False, timeout=_MEDIA_VALIDATION_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (MusicReplyError, OSError, subprocess.TimeoutExpired): return None
+
+    durations: list[float] = []
+    for stream in required_streams:
+        result = decode(stream)
+        if result is None or result.returncode != 0: return None
+        stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else str(result.stdout)
+        timestamps = [line.partition("=")[2].strip() for line in stdout.splitlines() if line.startswith("out_time=")]
+        try:
+            hours, minutes, seconds = timestamps[-1].split(":", 2)
+            durations.append(int(hours) * 3600 + int(minutes) * 60 + float(seconds))
+        except (IndexError, TypeError, ValueError): return None
+    for stream in forbidden_streams:
+        result = decode(stream)
+        stderr = result.stderr.decode("utf-8", errors="replace").casefold() if result and isinstance(result.stderr, bytes) else str(result.stderr if result else "").casefold()
+        if result is None or result.returncode == 0 or "matches no streams" not in stderr:
+            return None
+    return min(durations, default=None)
+
+
+def _completed_stage(path: Path, *, required_streams: tuple[str, ...], ffmpeg_path: Path | None = None,
+                     minimum_duration_seconds: float = 0.1,
+                     forbidden_streams: tuple[str, ...] = ()) -> bool:
     try:
-        return path.is_file() and path.stat().st_size > 0
+        duration = _media_duration_seconds(path, required_streams=required_streams, ffmpeg_path=ffmpeg_path, forbidden_streams=forbidden_streams)
+        return bool(path.stat().st_size > 0 and duration is not None and duration >= minimum_duration_seconds)
     except OSError:
         return False
 
@@ -1269,10 +1388,16 @@ def _stage_reusable(
     path: Path,
     *,
     upstream: dict[str, Path] | None = None,
+    required_streams: tuple[str, ...],
+    ffmpeg_path: Path | None = None,
+    minimum_duration_seconds: float = 0.1,
+    forbidden_streams: tuple[str, ...] = (),
 ) -> bool:
     artifacts = manifest.get("artifacts")
     expected = artifacts.get(artifact_name) if isinstance(artifacts, dict) else None
-    return _completed_stage(path) and expected == _stage_record(path, upstream)
+    return _completed_stage(path, required_streams=required_streams, ffmpeg_path=ffmpeg_path,
+                            minimum_duration_seconds=minimum_duration_seconds,
+                            forbidden_streams=forbidden_streams) and expected == _stage_record(path, upstream)
 
 
 def _stage_record(
@@ -1288,6 +1413,28 @@ def _stage_record(
     }
 
 
+def _require_stage(path: Path, artifact_name: str, required_streams: tuple[str, ...],
+                   ffmpeg_path: Path | None, minimum_duration_seconds: float,
+                   forbidden_streams: tuple[str, ...] = ()) -> None:
+    try:
+        duration, size = _media_duration_seconds(path, required_streams=required_streams, ffmpeg_path=ffmpeg_path, forbidden_streams=forbidden_streams), path.stat().st_size
+    except OSError:
+        duration, size = None, 0
+    if size <= 0 or duration is None or duration < minimum_duration_seconds:
+        observed = "unavailable" if duration is None else f"{duration:.3f}"
+        raise MusicReplyError("MUSIC_STAGE_OUTPUT_INVALID", diagnostic=f"stage={artifact_name};observed_seconds={observed};required_seconds={minimum_duration_seconds:.3f}")
+
+
+def _publish_stage(partial: Path, destination: Path, artifact_name: str, required_streams: tuple[str, ...],
+                   ffmpeg_path: Path | None, minimum_duration_seconds: float) -> None:
+    try:
+        _require_stage(partial, artifact_name, required_streams, ffmpeg_path, minimum_duration_seconds)
+        partial.replace(destination)
+    finally:
+        try: partial.unlink(missing_ok=True)
+        except OSError: pass
+
+
 def _record_stage(
     manifest: dict[str, object],
     manifest_path: Path,
@@ -1295,7 +1442,12 @@ def _record_stage(
     path: Path,
     *,
     upstream: dict[str, Path] | None = None,
+    required_streams: tuple[str, ...],
+    ffmpeg_path: Path | None = None,
+    minimum_duration_seconds: float = 0.1,
+    forbidden_streams: tuple[str, ...] = (),
 ) -> None:
+    _require_stage(path, artifact_name, required_streams, ffmpeg_path, minimum_duration_seconds, forbidden_streams)
     artifacts = manifest.setdefault("artifacts", {})
     if not isinstance(artifacts, dict):
         artifacts = {}
@@ -1388,17 +1540,25 @@ def render_musical_reply(
     )
     if spoken_action_base_path is not None and not spoken_base.is_file():
         raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
-    if _stage_reusable(
+    spoken_gate = {"required_streams": ("0:v:0",), "ffmpeg_path": ffmpeg_path,
+                   "minimum_duration_seconds": 30.0, "forbidden_streams": ("0:a:0",)}
+    normal_gate = {"required_streams": ("0:v:0", "0:a:0"),
+                   "ffmpeg_path": ffmpeg_path, "minimum_duration_seconds": 1.0}
+    spoken_ready = _completed_stage(spoken_base, **spoken_gate)
+    if spoken_action_base_path is not None and not spoken_ready:
+        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_FAILED")
+    if spoken_ready and _stage_reusable(
         manifest,
         "normal_video",
         normal_video_path,
         upstream={"spoken_base": spoken_base},
+        **normal_gate,
     ):
         normal_metadata = {"spoken_stage": "reused"}
     else:
         if (
             spoken_action_base_path is None
-            and not _stage_reusable(manifest, "spoken_base", spoken_base)
+            and not _stage_reusable(manifest, "spoken_base", spoken_base, **spoken_gate)
         ):
             spoken_base.unlink(missing_ok=True)
             prepare_official_spoken_base(
@@ -1406,33 +1566,50 @@ def render_musical_reply(
                 spoken_base,
                 ffmpeg_path=ffmpeg_path,
             )
-            _record_stage(manifest, manifest_path, "spoken_base", spoken_base)
-        normal_metadata = render_reply_video(
-            reply_text,
-            normal_video_path,
-            tts_config_path=tts_config_path,
-            visual_config_path=visual_config_path,
-            worker_path=worker_path,
-            scene_path=spoken_base,
-            latentsync_python_path=latentsync_python,
-            latentsync_root=latentsync_root,
-            adaptive_delivery=True,
-            voice_performance_plan=voice_performance_plan,
-            environment=provider_paths.environment,
-            ffmpeg_path=ffmpeg_path,
-            provider_cache_root=provider_cache_root,
-        )
+            _record_stage(manifest, manifest_path, "spoken_base", spoken_base, **spoken_gate)
+        partial_normal = normal_video_path.with_name(f"{normal_video_path.stem}.partial{normal_video_path.suffix}")
+        partial_normal.unlink(missing_ok=True)
+        normal_failure = None
+        try:
+            normal_metadata = render_reply_video(
+                reply_text,
+                partial_normal,
+                tts_config_path=tts_config_path,
+                visual_config_path=visual_config_path,
+                worker_path=worker_path,
+                scene_path=spoken_base,
+                latentsync_python_path=latentsync_python,
+                latentsync_root=latentsync_root,
+                adaptive_delivery=True,
+                voice_performance_plan=voice_performance_plan,
+                environment=provider_paths.environment,
+                ffmpeg_path=ffmpeg_path,
+                provider_cache_root=provider_cache_root,
+            )
+        except ReplyMediaError as exc:
+            normal_failure = _provider_exception_failure("MUSIC_REPLY_NORMAL_VIDEO_FAILED", exc, provider_paths.environment)
+        if normal_failure is not None:
+            try: partial_normal.unlink(missing_ok=True)
+            except OSError: pass
+            raise normal_failure from None
+        _publish_stage(partial_normal, normal_video_path, "normal_video", ("0:v:0", "0:a:0"), ffmpeg_path, 1.0)
         _record_stage(
             manifest,
             manifest_path,
             "normal_video",
             normal_video_path,
             upstream={"spoken_base": spoken_base},
+            **normal_gate,
         )
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"
-    if _stage_reusable(manifest, "song_audio", song_audio):
+    music_stage_minimum = max(1.0, duration_seconds - 5.0)
+    audio_gate = {"required_streams": ("0:a:0",), "ffmpeg_path": ffmpeg_path,
+                  "minimum_duration_seconds": music_stage_minimum}
+    video_gate = {"required_streams": ("0:v:0", "0:a:0"), "ffmpeg_path": ffmpeg_path,
+                  "minimum_duration_seconds": music_stage_minimum}
+    if _stage_reusable(manifest, "song_audio", song_audio, **audio_gate):
         song_metadata = {
             "audio_model": "MiniMax-Music-3",
             "requested_duration_seconds": duration_seconds,
@@ -1454,14 +1631,16 @@ def render_musical_reply(
             lyrics=song_plan.lyrics,
             caption=song_plan.caption,
         )
-        partial_song.replace(song_audio)
-        _record_stage(manifest, manifest_path, "song_audio", song_audio)
+        _publish_stage(partial_song, song_audio, "song_audio", ("0:a:0",),
+                       ffmpeg_path, music_stage_minimum)
+        _record_stage(manifest, manifest_path, "song_audio", song_audio, **audio_gate)
 
     if not _stage_reusable(
         manifest,
         "vocals",
         vocals,
         upstream={"song_audio": song_audio},
+        **audio_gate,
     ):
         partial_vocals = stage_root / "vocals.partial.wav"
         partial_vocals.unlink(missing_ok=True)
@@ -1474,13 +1653,15 @@ def render_musical_reply(
             environment=provider_paths.environment,
             ffmpeg_path=ffmpeg_path,
         )
-        partial_vocals.replace(vocals)
+        _publish_stage(partial_vocals, vocals, "vocals", ("0:a:0",),
+                       ffmpeg_path, music_stage_minimum)
         _record_stage(
             manifest,
             manifest_path,
             "vocals",
             vocals,
             upstream={"song_audio": song_audio},
+            **audio_gate,
         )
 
     if _stage_reusable(
@@ -1488,6 +1669,7 @@ def render_musical_reply(
         "song_video",
         song_video_path,
         upstream={"song_audio": song_audio, "vocals": vocals},
+        **video_gate,
     ):
         face_metadata = {"performance_stage": "reused"}
     else:
@@ -1506,28 +1688,37 @@ def render_musical_reply(
             provider_cache_root=provider_cache_root,
             environment=provider_paths.environment,
         )
-        partial_video.replace(song_video_path)
+        _publish_stage(partial_video, song_video_path, "song_video",
+                       ("0:v:0", "0:a:0"), ffmpeg_path, music_stage_minimum)
         _record_stage(
             manifest,
             manifest_path,
             "song_video",
             song_video_path,
             upstream={"song_audio": song_audio, "vocals": vocals},
+            **video_gate,
         )
 
+    partial_output = output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
+    partial_output.unlink(missing_ok=True)
     concat_videos(
         normal_video_path,
         song_video_path,
-        output_path,
+        partial_output,
         transition_video_path=transition_reference,
         ffmpeg_path=ffmpeg_path,
     )
+    final_stage_minimum = music_stage_minimum + 8.0 + float(normal_gate["minimum_duration_seconds"])
+    _publish_stage(partial_output, output_path, "final_output",
+                   ("0:v:0", "0:a:0"), ffmpeg_path, final_stage_minimum)
     _record_stage(
         manifest,
         manifest_path,
         "final_output",
         output_path,
         upstream={"normal_video": normal_video_path, "song_video": song_video_path},
+        required_streams=("0:v:0", "0:a:0"), ffmpeg_path=ffmpeg_path,
+        minimum_duration_seconds=final_stage_minimum,
     )
     return {
         **normal_metadata,
