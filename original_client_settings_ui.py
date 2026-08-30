@@ -46,6 +46,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const LETTER_SUBMIT_LABEL = "寄出信件";
   const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
   const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
+    ["voice_reference", "受管林离音色"],
     ["cosyvoice", "语音合成（CosyVoice 3）"],
     ["livetalking", "实时驱动（LiveTalking，可选）"],
     ["latentsync", "口型视频（LatentSync）"],
@@ -1970,7 +1971,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             .filter((item) => item && item.state !== "ready" && byId.has(item.id))
             .map((item) => byId.get(item.id))
           : [];
-        message = !ready && enabled
+        const voiceReference = Array.isArray(payload.dependencies)
+          ? payload.dependencies.find((item) => item && item.id === "voice_reference")
+          : null;
+        const voiceNeedsPrivateRepair = voiceReference
+          && voiceReference.install_mode === "managed"
+          && (
+            voiceReference.reason_code === "VOICE_REFERENCE_UNAVAILABLE"
+            || voiceReference.reason_code === "VOICE_REFERENCE_INVALID"
+          );
+        message = voiceNeedsPrivateRepair
+          ? `受管林离音色不可用（${byId.get("voice_reference")}），请重新运行提供此私有版本的安装程序修复。`
+          : !ready && enabled
           ? `视频回信偏好已开启，但当前缺少依赖，不会生效：${missingDependencies.join("、") || "请检查本地能力"}`
           : !ready
           ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`

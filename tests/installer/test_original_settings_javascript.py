@@ -317,6 +317,21 @@ def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value()
     assert "enabled = payload.enabled;" in setting
 
 
+def test_video_reply_setting_shows_private_voice_repair_only_when_reported() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
+        "const mountOfficialLetterImport", 1
+    )[0]
+
+    assert '["voice_reference", "受管林离音色"]' in source
+    assert 'item.id === "voice_reference"' in setting
+    assert 'voiceReference.install_mode === "managed"' in setting
+    assert 'voiceReference.reason_code === "VOICE_REFERENCE_UNAVAILABLE"' in setting
+    assert 'voiceReference.reason_code === "VOICE_REFERENCE_INVALID"' in setting
+    assert "请重新运行提供此私有版本的安装程序修复" in setting
+    assert "随 Olivia 安装包提供" not in source
+
+
 def test_video_capability_offers_one_offline_zip_entry_for_components_or_runtime() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     video_panel = source.split(

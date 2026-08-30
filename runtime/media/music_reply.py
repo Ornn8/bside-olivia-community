@@ -26,6 +26,12 @@ from runtime.media.latentsync_reply import (
 )
 from runtime.media.media_paths import configured_media_path
 from runtime.media.managed_subprocess import run_managed_process
+from runtime.media.managed_voice_reference import (
+    ManagedVoiceReferenceError,
+    managed_voice_reference_declared,
+    resolve_managed_voice_reference,
+    validate_voice_reference,
+)
 from runtime.media.music_duration import MUSIC_DURATION_OPTIONS, normalize_music_duration as _normalize_music_duration
 from runtime.reply.reply_media import (
     ReplyMediaError,
@@ -375,6 +381,33 @@ def video_reply_dependency_status(
         ffmpeg_ready = False
     provider_cache = configured("OLIVIA_PROVIDER_CACHE_ROOT")
     workspace_ready = bool(provider_cache is not None and provider_cache.is_absolute())
+    explicit_voice = str(env.get("OLIVIA_REPLY_VOICE_REFERENCE") or "").strip()
+    voice_declared = bool(explicit_voice)
+    voice_ready = False
+    voice_reason = "VOICE_REFERENCE_UNAVAILABLE"
+    voice_install_mode = "manual" if explicit_voice else "managed"
+    voice_source_summary = (
+        "由 OLIVIA_REPLY_VOICE_REFERENCE 显式配置"
+        if explicit_voice
+        else "由提供此私有版本的安装程序管理"
+    )
+    if explicit_voice:
+        try:
+            effective_reference = configured("OLIVIA_REPLY_VOICE_REFERENCE")
+            if effective_reference is None:
+                raise ManagedVoiceReferenceError("VOICE_REFERENCE_UNAVAILABLE")
+            validate_voice_reference(effective_reference)
+            voice_ready = True
+        except ManagedVoiceReferenceError as exc:
+            voice_reason = str(exc)
+    elif local_data_root is not None:
+        voice_declared = managed_voice_reference_declared(local_data_root)
+        if voice_declared:
+            try:
+                resolve_managed_voice_reference(local_data_root)
+                voice_ready = True
+            except ManagedVoiceReferenceError as exc:
+                voice_reason = str(exc)
 
     def item(
         identifier: str,
@@ -383,12 +416,13 @@ def video_reply_dependency_status(
         install_mode: str,
         source_summary: str,
         sources: tuple[tuple[str, str, str], ...] = (),
+        reason_code: str | None = None,
     ) -> dict[str, object]:
         if identifier == "latentsync":
             source_summary = "国内：ModelScope 社区镜像；备用：GitHub / Hugging Face"
         elif identifier == "minimax_music3":
             source_summary = "国内：ModelScope；备用：Hugging Face"
-        return {
+        result: dict[str, object] = {
             "id": identifier,
             "label": label,
             "state": "ready" if ready else "missing",
@@ -407,6 +441,9 @@ def video_reply_dependency_status(
                 for source_id, source_label, _source_url in sources
             ],
         }
+        if not ready and reason_code is not None:
+            result["reason_code"] = reason_code
+        return result
 
     dependencies = [
         item(
@@ -523,12 +560,26 @@ def video_reply_dependency_status(
             "由客户端自动创建，无需下载",
         ),
     ]
+    if voice_declared:
+        dependencies.insert(
+            0,
+            item(
+                "voice_reference",
+                "受管林离音色",
+                voice_ready,
+                voice_install_mode,
+                voice_source_summary,
+                reason_code=voice_reason,
+            ),
+        )
     ordinary_ids = {
         "cosyvoice",
         "latentsync",
         "official_video_assets",
         "ffmpeg",
     }
+    if voice_declared:
+        ordinary_ids.add("voice_reference")
     ordinary_missing = [
         item["id"]
         for item in dependencies
