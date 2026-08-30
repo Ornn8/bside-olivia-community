@@ -107,15 +107,19 @@ def _create_windows_job():
     return WindowsJob()
 
 
-def _bounded_communicate(
-    process: subprocess.Popen[bytes], original: subprocess.TimeoutExpired
-) -> tuple[bytes, bytes]:
-    try:
-        return process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        exc.output = exc.output or original.output or b""
-        exc.stderr = exc.stderr or original.stderr or b""
-        raise OSError("PROCESS_TREE_TERMINATION_FAILED") from exc
+def _report_cleanup_failures(
+    active_error: BaseException | None,
+    failures: list[tuple[str, BaseException]],
+) -> None:
+    if not failures:
+        return
+    message = "PROCESS_TREE_CLEANUP_FAILED: " + ", ".join(
+        stage for stage, _error in failures
+    )
+    if active_error is not None:
+        active_error.add_note(message)
+        return
+    raise OSError(message) from failures[0][1]
 
 
 def run_managed_process(
@@ -138,42 +142,68 @@ def run_managed_process(
         )
     else:
         kwargs["start_new_session"] = True
+    process: subprocess.Popen[bytes] | None = None
+    assigned = False
     try:
         process = subprocess.Popen(arguments, **kwargs)
         if job is not None:
-            assigned = False
             try:
                 job.assign(process)
                 assigned = True
                 job.resume(process)
             except OSError:
-                job.terminate() if assigned else process.kill()
-                process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                if not assigned:
+                    process.kill()
+                    process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
                 raise
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            if job is not None:
-                job.terminate()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            stdout, stderr = _bounded_communicate(process, exc)
-            exc.output, exc.stderr = stdout, stderr
+        except subprocess.TimeoutExpired:
             raise
         return subprocess.CompletedProcess(
             arguments, int(process.returncode or 0), stdout, stderr
         )
     finally:
-        active_error = sys.exc_info()[0]
+        active_error = sys.exc_info()[1]
         if job is not None:
+            failures: list[tuple[str, BaseException]] = []
+            if assigned and process is not None:
+                try:
+                    job.terminate()
+                except OSError as exc:
+                    failures.append(("terminate", exc))
+                try:
+                    reaped_stdout, reaped_stderr = process.communicate(
+                        timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS
+                    )
+                    if isinstance(active_error, subprocess.TimeoutExpired):
+                        active_error.output = reaped_stdout or active_error.output
+                        active_error.stderr = reaped_stderr or active_error.stderr
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    failures.append(("reap", exc))
             try:
                 job.close()
-            except OSError:
-                if active_error is None:
-                    raise
+            except OSError as exc:
+                failures.append(("close", exc))
+            _report_cleanup_failures(active_error, failures)
+        elif process is not None:
+            failures = []
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                failures.append(("killpg", exc))
+            try:
+                reaped_stdout, reaped_stderr = process.communicate(
+                    timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS
+                )
+                if isinstance(active_error, subprocess.TimeoutExpired):
+                    active_error.output = reaped_stdout or active_error.output
+                    active_error.stderr = reaped_stderr or active_error.stderr
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                failures.append(("reap", exc))
+            _report_cleanup_failures(active_error, failures)
 
 
 __all__ = ["run_managed_process"]
