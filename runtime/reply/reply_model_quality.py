@@ -1463,7 +1463,11 @@ def _complete_layer_reviews(
                     )
                 except _ReviewContractFailure as exc:
                     if (
-                        exc.reason is ReviewFailureReason.LAYER_CONTRACT
+                        exc.reason
+                        in {
+                            ReviewFailureReason.LAYER_CONTRACT,
+                            ReviewFailureReason.EVIDENCE_CONTRACT,
+                        }
                         and attempt == 0
                     ):
                         continue

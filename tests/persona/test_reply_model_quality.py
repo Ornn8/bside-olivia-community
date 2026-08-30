@@ -147,6 +147,70 @@ def test_layer_contract_failure_retries_only_the_failed_layer_once() -> None:
     assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 6
 
 
+def test_evidence_contract_failure_retries_only_the_failed_layer_once() -> None:
+    candidate = "Synthetic candidate."
+    invalid_identity = json.loads(_layer_payload("identity_boundary"))
+    invalid_identity["hard_evidence"] = {}
+    layer_reviews = {
+        layer: [_layer_payload(layer)] for layer in _REVIEW_LAYERS
+    }
+    layer_reviews["identity_boundary"] = [
+        json.dumps(invalid_identity),
+        _layer_payload("identity_boundary"),
+    ]
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[],
+        layer_reviews=layer_reviews,
+    )
+
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert reviewer.last_failure_diagnostics == ()
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("identity_boundary") == 2
+    assert all(layer_calls.count(layer) == 1 for layer in _REVIEW_LAYERS[1:])
+    assert gateway.call_kinds == ["review"] * 6
+    assert gateway.adjudication_requests == []
+    assert gateway.rewrite_requests == []
+    assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 6
+
+
+def test_repeated_evidence_contract_failure_stops_after_one_retry() -> None:
+    candidate = "Synthetic candidate."
+    invalid_identity = json.loads(_layer_payload("identity_boundary"))
+    invalid_identity["hard_evidence"] = {}
+    invalid = json.dumps(invalid_identity)
+    layer_reviews = {
+        layer: [_layer_payload(layer)] for layer in _REVIEW_LAYERS
+    }
+    layer_reviews["identity_boundary"] = [invalid, invalid]
+    gateway = SequencedQualityGateway(
+        candidate=candidate,
+        reviews=[],
+        layer_reviews=layer_reviews,
+    )
+
+    result, reviewer = _run_diagnostic_review(gateway, candidate)
+
+    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    assert reviewer.last_failure_diagnostics == (
+        ReviewFailureDiagnostic(
+            ReviewFailureStage.LAYER,
+            ReviewFailureReason.EVIDENCE_CONTRACT,
+            "identity_boundary",
+        ),
+    )
+    layer_calls = [request["layer"] for request in gateway.review_requests]
+    assert layer_calls.count("identity_boundary") == 2
+    assert all(layer_calls.count(layer) == 1 for layer in _REVIEW_LAYERS[1:])
+    assert gateway.call_kinds == ["review"] * 6
+    assert gateway.adjudication_requests == []
+    assert gateway.rewrite_requests == []
+    assert len(gateway.request_ids) == len(set(gateway.request_ids)) == 6
+
+
 def test_repeated_layer_contract_failure_stops_after_one_retry() -> None:
     candidate = "Synthetic candidate."
     invalid = _layer_score_payload("continuity_memory", 1)
@@ -192,7 +256,6 @@ def test_repeated_layer_contract_failure_stops_after_one_retry() -> None:
         ("layer_mismatch", ReviewFailureReason.TOP_LEVEL_SCHEMA, "continuity_memory"),
         ("score", ReviewFailureReason.LAYER_CONTRACT, "autonomy_life"),
         ("identity", ReviewFailureReason.LAYER_CONTRACT, "identity_boundary"),
-        ("evidence", ReviewFailureReason.EVIDENCE_CONTRACT, "identity_boundary"),
     ),
 )
 def test_reviewer_classifies_layer_failure(
@@ -220,18 +283,6 @@ def test_reviewer_classifies_layer_failure(
         else:
             payload["intimacy_request"] = "invented"
         reviews[index] = json.dumps(payload)
-    else:
-        evidence = _hard_evidence_payload(
-            candidate, "IDENTITY_DRIFT", claim_kind="identity_claim"
-        )
-        evidence["start"] = True
-        reviews[index] = _layer_score_payload(
-            layer,
-            0,
-            hard_violations=["IDENTITY_DRIFT"],
-            drift_detected=True,
-            hard_evidence=[evidence],
-        )
     if case == "transport":
         gateway = FailingQualityGateway(
             failure="layer",
