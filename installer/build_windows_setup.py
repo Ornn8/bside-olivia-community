@@ -11,11 +11,13 @@ import stat
 import subprocess
 import sys
 import uuid
+import wave
 from pathlib import Path, PurePosixPath
 
 
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
+VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
 BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
     "installer/setup-build-requirements.txt",
@@ -165,6 +167,37 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _voice_reference_metadata(path: Path) -> dict[str, object]:
+    try:
+        with wave.open(os.fspath(path), "rb") as source:
+            metadata = {
+                "channels": source.getnchannels(),
+                "sample_width_bytes": source.getsampwidth(),
+                "sample_rate_hz": source.getframerate(),
+                "frame_count": source.getnframes(),
+                "compression_type": source.getcomptype(),
+            }
+            frames = source.readframes(int(metadata["frame_count"]))
+            expected_size = (
+                int(metadata["frame_count"])
+                * int(metadata["channels"])
+                * int(metadata["sample_width_bytes"])
+            )
+            if len(frames) != expected_size:
+                raise SetupBuildError("SETUP_VOICE_REFERENCE_TRUNCATED")
+    except (EOFError, OSError, wave.Error) as exc:
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_INVALID") from exc
+    if (
+        metadata["compression_type"] != "NONE"
+        or not 1 <= int(metadata["channels"]) <= 8
+        or not 1 <= int(metadata["sample_width_bytes"]) <= 4
+        or not 8_000 <= int(metadata["sample_rate_hz"]) <= 192_000
+        or int(metadata["frame_count"]) < 1
+    ):
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_INVALID")
+    return metadata
+
+
 def _is_reparse_point(path: Path) -> bool:
     attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
     return path.is_symlink() or bool(
@@ -263,6 +296,8 @@ def _load_and_verify_manifest(
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID") from exc
     if not isinstance(manifest, dict):
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID")
+    if "distribution" in manifest or "voice_reference" in manifest:
+        raise SetupBuildError("SETUP_INPUT_VOICE_REFERENCE_FORBIDDEN")
 
     if validate_schema:
         try:
@@ -328,11 +363,19 @@ def prepare_setup_payload(
     offline: Path,
     destination: Path,
     *,
+    distribution: str = "public",
+    voice_reference: Path | None = None,
     validate_schema: bool = True,
 ) -> None:
     source = source.expanduser().resolve()
     offline = offline.expanduser().resolve()
     destination = destination.expanduser().resolve()
+    if distribution not in {"public", "private"}:
+        raise SetupBuildError("SETUP_DISTRIBUTION_INVALID")
+    if voice_reference is not None and distribution != "private":
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_PRIVATE_ONLY")
+    if distribution == "private" and voice_reference is None:
+        raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
     if destination.exists():
         raise SetupBuildError("SETUP_PAYLOAD_EXISTS")
     _load_and_verify_manifest(source, offline, validate_schema=validate_schema)
@@ -354,6 +397,31 @@ def prepare_setup_payload(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
         shutil.copytree(offline, staging / "offline")
+        if voice_reference is not None:
+            reference = voice_reference.expanduser().resolve()
+            if (
+                not reference.is_file()
+                or _is_reparse_point(reference)
+                or reference.stat().st_size < 1
+            ):
+                raise SetupBuildError("SETUP_VOICE_REFERENCE_INVALID")
+            target = staging / "offline" / Path(*VOICE_REFERENCE_PATH.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(reference, target)
+            manifest_path = staging / "offline" / MANIFEST_NAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["distribution"] = "private"
+            manifest["voice_reference"] = {
+                "path": VOICE_REFERENCE_PATH,
+                "size_bytes": target.stat().st_size,
+                "sha256": _sha256(target),
+                "wave": _voice_reference_metadata(target),
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
         os.replace(staging, destination)
     except SetupBuildError:
         raise
@@ -390,6 +458,8 @@ def build_windows_setup(
     *,
     version: str,
     iscc: Path | None = None,
+    distribution: str = "public",
+    voice_reference: Path | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -401,7 +471,13 @@ def build_windows_setup(
     payload = output / f".setup-payload-{uuid.uuid4().hex}"
     compiler = _find_iscc(iscc)
     try:
-        prepare_setup_payload(source, offline, payload)
+        prepare_setup_payload(
+            source,
+            offline,
+            payload,
+            distribution=distribution,
+            voice_reference=voice_reference,
+        )
         command = [
             os.fspath(compiler),
             f"/DPayloadRoot={payload}",
@@ -435,6 +511,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--iscc", type=Path)
+    parser.add_argument("--distribution", choices=("public", "private"), default="public")
+    parser.add_argument("--voice-reference", type=Path)
     args = parser.parse_args(argv)
     try:
         result = build_windows_setup(
@@ -443,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             version=args.version,
             iscc=args.iscc,
+            distribution=args.distribution,
+            voice_reference=args.voice_reference,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
