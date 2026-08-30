@@ -231,13 +231,9 @@ def _runtime_archive(tmp_path: Path) -> Path:
     runtime_root = tmp_path / "runtime-source"
     environment = {
         "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
-        "OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime",
-        "OLIVIA_COSYVOICE_MODEL_ROOT": "cosyvoice/model",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
-        "OLIVIA_MINIMAX_WORKER": "minimax/tools/minimax_music3_worker.py",
         "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
-        "OLIVIA_REPLY_VOICE_REFERENCE": "assets/voice.wav",
     }
     for relative in environment.values():
         target = runtime_root / relative
@@ -256,6 +252,42 @@ def _runtime_archive(tmp_path: Path) -> Path:
             if path.is_file():
                 payload.write(path, path.relative_to(runtime_root).as_posix())
     return archive.resolve()
+
+
+def _runtime_ready_manifest() -> VideoManifest:
+    return VideoManifest(
+        "1.0",
+        (
+            VideoBundle(
+                "ordinary_video", "video", "FIXED", False, (), (),
+                runtime_environment={
+                    "OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime",
+                    "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
+                },
+            ),
+            VideoBundle(
+                "music_video", "music", "FIXED", False, (), (),
+                runtime_environment={
+                    "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
+                    "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
+                },
+            ),
+        ),
+    )
+
+
+def _prepare_runtime_dependencies(data_root: Path, manifest: VideoManifest) -> None:
+    install_root = _mark_bundle_payloads_ready(data_root, manifest)
+    for relative in (
+        "ordinary_video/cosyvoice/runtime",
+        "ordinary_video/cosyvoice/model",
+        "ordinary_video/latentsync/runtime",
+        "music_video/minimax/runtime",
+    ):
+        (install_root / relative).mkdir(parents=True, exist_ok=True)
+    reference = install_root / "shared/linli-reference.wav"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_bytes(b"managed-voice")
 
 
 def _python_only_runtime_archive(tmp_path: Path) -> Path:
@@ -298,15 +330,12 @@ def test_runtime_archive_is_extracted_verified_and_activated(
 ) -> None:
     archive = _runtime_archive(tmp_path)
     monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
     installer = VideoCapabilityInstaller(
-        data_root=(tmp_path / "data").resolve(),
-        manifest=VideoManifest(
-            "1.0",
-            (
-                VideoBundle("ordinary_video", "video", "FIXED", False, (), ()),
-                VideoBundle("music_video", "music", "FIXED", False, (), ()),
-            ),
-        ),
+        data_root=data_root,
+        manifest=manifest,
         readiness_probe=lambda _environment: {
             "ordinary_missing_dependencies": [],
             "music_ready": True,
@@ -333,7 +362,7 @@ def test_python_only_runtime_uses_downloaded_bundles_and_managed_voice(
         "1.0",
         (
             VideoBundle("ordinary_video", "video", "FIXED", False, (), (), runtime_environment={"OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"}),
-            VideoBundle("music_video", "music", "FIXED", False, (), (), runtime_environment={"OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/model.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/config.yaml"}),
+                VideoBundle("music_video", "music", "FIXED", False, (), (), runtime_environment={"OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/model.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/config.yaml"}),
         ),
     )
     install_root = _mark_bundle_payloads_ready(data_root, manifest)
@@ -355,6 +384,92 @@ def test_python_only_runtime_uses_downloaded_bundles_and_managed_voice(
     assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
     required = ("OLIVIA_COSYVOICE_ROOT", "OLIVIA_COSYVOICE_MODEL_ROOT", "OLIVIA_REPLY_VOICE_REFERENCE", "OLIVIA_TTS_CONFIG", "OLIVIA_LATENTSYNC_ROOT", "OLIVIA_MINIMAX_COMFY_ROOT", "OLIVIA_MINIMAX_WORKER", "OLIVIA_ROFORMER_MODEL_PATH", "OLIVIA_ROFORMER_CONFIG_PATH")
     assert len(observed) == 1 and all(Path(observed[0][key]).exists() for key in required)
+
+
+def test_runtime_archive_rejects_managed_component_and_voice_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    environment = {
+        "OLIVIA_COSYVOICE_PYTHON": str(runtime_root / "cosyvoice/python/python.exe"),
+        "OLIVIA_LATENTSYNC_PYTHON": str(runtime_root / "latentsync/python/python.exe"),
+        "OLIVIA_MINIMAX_COMFY_PYTHON": str(runtime_root / "minimax/python/python.exe"),
+        "OLIVIA_ROFORMER_PYTHON": str(runtime_root / "roformer/python/python.exe"),
+        "OLIVIA_REPLY_VOICE_REFERENCE": str(runtime_root / "voice.wav"),
+    }
+    monkeypatch.setattr(video_capability_install, "_portable_python_runtime", lambda *_: True)
+    assert not video_capability_install._runtime_environment_is_portable(
+        environment, runtime_root
+    )
+
+
+def test_runtime_activation_failure_does_not_publish_ready_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+        runtime_environment_applier=lambda _environment: (_ for _ in ()).throw(
+            RuntimeError("activation failed")
+        ),
+    )
+    with pytest.raises(
+        VideoCapabilityError, match="VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+    ):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert not (installer.install_root / "runtime-environment.json").exists()
+    status = installer.status()
+    assert status["status"] == "UNAVAILABLE" and all(
+        item["state"] != "ready" for item in status["bundles"]
+    )
+    assert status["runtime_import"]["state"] == "failed"
+
+
+def test_production_manifest_persists_managed_worker_and_finishes_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = load_video_manifest(Path("installer/video-capability-manifest.json"))
+    data_root = (tmp_path / "data").resolve()
+    install_root = _mark_bundle_payloads_ready(data_root, manifest)
+    for bundle in manifest.bundles:
+        root = install_root / bundle.identifier
+        for relative in (bundle.runtime_environment or {}).values():
+            target = root / relative
+            if Path(relative).suffix:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"fixture")
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+    (install_root / "ordinary_video/cosyvoice/model").mkdir(parents=True)
+    voice = install_root / "shared/linli-reference.wav"
+    voice.parent.mkdir(parents=True)
+    voice.write_bytes(b"managed-voice")
+    monkeypatch.setattr(video_capability_install, "_ready_marker_matches", lambda *_: True)
+    monkeypatch.setattr(video_capability_install, "_size_matches", lambda *_: True)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    assert installer.import_runtime_archive(runtime_archive=_runtime_archive(tmp_path)) == "APPLIED"
+    profile = load_video_runtime_environment(data_root)
+    worker = Path(profile["OLIVIA_MINIMAX_WORKER"])
+    assert worker.is_file() and worker.is_relative_to(install_root)
+    status = installer.status()
+    assert status["schema_version"] == "olivia.video-capability-status.v2" and status["status"] == "READY"
 
 
 def test_runtime_archive_failure_keeps_the_specific_step_reason(tmp_path: Path) -> None:
@@ -409,31 +524,13 @@ def test_complete_download_automatically_prepares_adjacent_runtime_archive(
 ) -> None:
     archive = _runtime_archive(tmp_path)
     data_root = (tmp_path / "data").resolve()
-    install_root = data_root / "capabilities" / "video"
-    for bundle_id in ("ordinary_video", "music_video"):
-        root = install_root / bundle_id
-        root.mkdir(parents=True, exist_ok=True)
-        (root / ".ready.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "olivia.video-bundle.v1",
-                    "bundle": bundle_id,
-                    "version": "1.0",
-                }
-            ),
-            encoding="utf-8",
-        )
+    manifest = _runtime_ready_manifest()
+    _prepare_runtime_dependencies(data_root, manifest)
     monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
 
     installer = VideoCapabilityInstaller(
         data_root=data_root,
-        manifest=VideoManifest(
-            "1.0",
-            (
-                VideoBundle("ordinary_video", "video", "FIXED", False, (), ()),
-                VideoBundle("music_video", "music", "FIXED", False, (), ()),
-            ),
-        ),
+        manifest=manifest,
         readiness_probe=lambda _environment: {
             "ordinary_missing_dependencies": [],
             "music_ready": True,
@@ -496,6 +593,28 @@ def test_complete_download_reports_missing_runtime_archive_instead_of_idle(
         )
     )
     Draft202012Validator(status_schema).validate(status)
+
+
+def test_disappeared_runtime_archive_reports_required_instead_of_idle(
+    tmp_path: Path,
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    data_root = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=_runtime_ready_manifest(),
+        readiness_probe=lambda _environment: {},
+        runtime_archives=(archive,),
+    )
+    archive.unlink()
+    _prepare_runtime_dependencies(data_root, installer.manifest)
+    status = installer.status()
+    assert status["runtime_import"] == {
+        "state": "required",
+        "checked_bytes": 0,
+        "total_bytes": 0,
+        "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
+    }
 
 
 def test_bundle_ready_requires_safe_archive_assembly_and_persisted_runtime_wiring(
@@ -1469,7 +1588,7 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
 
     class FakeInstaller:
         def status(self):
-            return {"schema_version": "olivia.video-capability-status.v1", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
+            return {"schema_version": "olivia.video-capability-status.v2", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
 
         def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str):
             observed.append((runtime_root, manifest_sha256))
@@ -1555,7 +1674,7 @@ def test_video_capability_api_selects_and_imports_runtime_archive(tmp_path: Path
 
     class FakeInstaller:
         def status(self):
-            return {"schema_version": "olivia.video-capability-status.v1", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
+            return {"schema_version": "olivia.video-capability-status.v2", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
 
         def import_runtime_archive(self, *, runtime_archive: Path):
             observed.append(runtime_archive)
@@ -1615,7 +1734,7 @@ def test_video_capability_api_selects_and_imports_one_offline_zip_for_both_bundl
     class FakeInstaller:
         def status(self):
             return {
-                "schema_version": "olivia.video-capability-status.v1",
+                "schema_version": "olivia.video-capability-status.v2",
                 "status": "UNAVAILABLE",
                 "capability": "video",
                 "install_locations": [],
@@ -1721,7 +1840,7 @@ def test_video_capability_status_remains_available_during_runtime_import(
     class FakeInstaller:
         def status(self):
             return {
-                "schema_version": "olivia.video-capability-status.v1",
+                "schema_version": "olivia.video-capability-status.v2",
                 "status": "UNAVAILABLE",
                 "capability": "video",
                 "install_locations": [],
