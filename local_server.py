@@ -952,6 +952,40 @@ def _official_history_private_world_available() -> bool:
         return False
 
 
+def _llm_runtime_ready(config: GatewayConfig | None = None) -> bool:
+    runtime_config = config or LLM_CONFIG
+    key_present = api_key_configured(runtime_config)
+    return bool(
+        runtime_config.feature_enabled
+        and (
+            runtime_config.provider == "mock"
+            or (
+                runtime_config.provider == "openai_compatible"
+                and runtime_config.base_url
+                and runtime_config.model
+                and (not runtime_config.requires_api_key or key_present)
+            )
+        )
+    )
+
+
+def _official_history_llm_required() -> bool:
+    try:
+        return private_world_port.snapshot() == PrivateWorldSnapshot()
+    except Exception:
+        return True
+
+
+def _official_history_preflight_error() -> str | None:
+    if not _official_history_memory_available():
+        return "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE"
+    if not _official_history_private_world_available():
+        return "PRIVATE_WORLD_HISTORY_UNAVAILABLE"
+    if _official_history_llm_required() and not _llm_runtime_ready():
+        return "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
+    return None
+
+
 async def _migrate_official_history(
     payload: Mapping[str, object],
     *,
@@ -1593,16 +1627,7 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                 "probe": "in-process" if status in {"available", "degraded"} else "not-run",
             }
         )
-    llm_ready = (
-        LLM_CONFIG.feature_enabled
-        and LLM_CONFIG.provider == "mock"
-    ) or (
-        LLM_CONFIG.feature_enabled
-        and LLM_CONFIG.provider == "openai_compatible"
-        and bool(LLM_CONFIG.base_url)
-        and bool(LLM_CONFIG.model)
-        and (not LLM_CONFIG.requires_api_key or llm_key_present)
-    )
+    llm_ready = _llm_runtime_ready()
     if LLM_CONFIG.provider == "mock" and LLM_CONFIG.feature_enabled:
         llm_status = "available"
         llm_profile_status = "HEALTHY"
@@ -2218,6 +2243,18 @@ async def route(
 
     if p == "/toy/letter/legacy/official-import":
         if method == "GET":
+            if query.get("preflight") == "1":
+                preflight_error = _official_history_preflight_error()
+                if preflight_error is not None:
+                    return err(503, preflight_error, {
+                        "status": "UNAVAILABLE",
+                        "error_code": preflight_error,
+                        "retryable": True,
+                    })
+                return ok({
+                    "status": "READY",
+                    "llm_required": _official_history_llm_required(),
+                })
             return ok(_official_import_progress_snapshot())
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
@@ -2234,22 +2271,14 @@ async def route(
             skipped=0,
             retryable=False,
         )
-        if not _official_history_memory_available():
+        preflight_error = _official_history_preflight_error()
+        if preflight_error is not None:
             _update_official_import_progress(
                 status="FAILED", stage="failed", retryable=True
             )
-            return err(503, "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE", {
+            return err(503, preflight_error, {
                 "status": "UNAVAILABLE",
-                "error_code": "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
-                "retryable": True,
-            })
-        if not _official_history_private_world_available():
-            _update_official_import_progress(
-                status="FAILED", stage="failed", retryable=True
-            )
-            return err(503, "PRIVATE_WORLD_HISTORY_UNAVAILABLE", {
-                "status": "UNAVAILABLE",
-                "error_code": "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
+                "error_code": preflight_error,
                 "retryable": True,
             })
         official_import = True

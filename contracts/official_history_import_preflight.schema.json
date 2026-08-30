@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ornn8/bside-olivia-community/blob/main/contracts/official_history_import_preflight.schema.json",
+  "title": "Official history import preflight response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "data"],
+  "properties": {
+    "code": {"const": 0},
+    "message": {"const": "ok"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "llm_required"],
+      "properties": {
+        "status": {"const": "READY"},
+        "llm_required": {"type": "boolean"}
+      }
+    }
+  }
+}

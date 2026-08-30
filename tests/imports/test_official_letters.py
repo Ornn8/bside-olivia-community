@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from jsonschema import Draft202012Validator, FormatChecker
 
 from conversation_memory_port import (
@@ -28,6 +30,11 @@ def _allow_official_history_preflight(monkeypatch, local_server) -> None:
     )
     monkeypatch.setattr(
         local_server, "_official_history_private_world_available", lambda: True
+    )
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="mock", feature_enabled=True),
     )
 
 
@@ -58,6 +65,57 @@ def test_official_import_progress_response_matches_public_schema(monkeypatch) ->
     )
 
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(response)
+
+
+def test_official_import_preflight_is_a_versioned_public_http_contract(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class EmptyPrivateWorld:
+        @staticmethod
+        def snapshot() -> PrivateWorldSnapshot:
+            return PrivateWorldSnapshot()
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+    monkeypatch.setattr(local_server, "private_world_port", EmptyPrivateWorld())
+    schema = json.loads(
+        (Path("contracts") / "official_history_import_preflight.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    async def scenario() -> None:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            ready_response = await client.get(
+                "/toy/letter/legacy/official-import?preflight=1"
+            )
+            ready_payload = await ready_response.json()
+            assert ready_response.status == 200
+            Draft202012Validator(schema).validate(ready_payload)
+
+            monkeypatch.setattr(
+                local_server,
+                "LLM_CONFIG",
+                local_server.GatewayConfig(provider="none", feature_enabled=False),
+            )
+            unavailable_response = await client.get(
+                "/toy/letter/legacy/official-import?preflight=1"
+            )
+            assert unavailable_response.status == 503
+            assert await unavailable_response.json() == {
+                "code": 503,
+                "message": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+                "data": {
+                    "status": "UNAVAILABLE",
+                    "error_code": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+                    "retryable": True,
+                },
+            }
+
+    asyncio.run(scenario())
 
 
 def test_history_skip_requires_current_first_person_semantics(monkeypatch) -> None:
@@ -693,6 +751,130 @@ def test_official_import_requires_private_world_before_collecting_history(
         "retryable": True,
     }
     assert calls == []
+
+
+def test_official_import_requires_llm_before_collecting_or_writing_history(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    calls: list[str] = []
+    _allow_official_history_preflight(monkeypatch, local_server)
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="none", feature_enabled=False),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "collect_default_official_text_replies",
+        lambda: calls.append("collect") or {},
+    )
+    monkeypatch.setattr(
+        local_server,
+        "_legacy_import_adapter",
+        lambda: (_ for _ in ()).throw(AssertionError("archive must not open")),
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+            companion_confirmed=True,
+        )
+    )
+    progress = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {},
+        )
+    )
+
+    assert local_server.contract.error_metadata(
+        "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
+    ) == {"http_status": 503, "retryable": True}
+    assert response == {
+        "code": 503,
+        "message": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+        "data": {
+            "status": "UNAVAILABLE",
+            "error_code": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+            "retryable": True,
+        },
+    }
+    assert progress["data"]["processed"] == 0
+    assert progress["data"]["imported"] == 0
+    assert calls == []
+
+
+def test_official_import_preflight_reports_llm_before_user_confirmation(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+    monkeypatch.setattr(
+        local_server,
+        "LLM_CONFIG",
+        local_server.GatewayConfig(provider="none", feature_enabled=False),
+    )
+
+    response = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {"preflight": "1"},
+        )
+    )
+
+    assert response == {
+        "code": 503,
+        "message": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+        "data": {
+            "status": "UNAVAILABLE",
+            "error_code": "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
+            "retryable": True,
+        },
+    }
+
+
+def test_official_import_ready_preflight_does_not_call_the_provider(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    class EmptyPrivateWorld:
+        @staticmethod
+        def snapshot() -> PrivateWorldSnapshot:
+            return PrivateWorldSnapshot()
+
+    _allow_official_history_preflight(monkeypatch, local_server)
+    monkeypatch.setattr(local_server, "private_world_port", EmptyPrivateWorld())
+    network_calls_before = local_server.letters_adapter.gateway.network_call_count
+
+    response = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/legacy/official-import",
+            {},
+            {"preflight": "1"},
+        )
+    )
+
+    assert response == {
+        "code": 0,
+        "message": "ok",
+        "data": {"status": "READY", "llm_required": True},
+    }
+    assert (
+        local_server.letters_adapter.gateway.network_call_count
+        == network_calls_before
+    )
 
 
 def test_official_history_is_visible_in_current_mailbox_without_unread_pollution(
