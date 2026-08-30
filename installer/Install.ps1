@@ -523,6 +523,207 @@ function Resolve-OfflineAsset {
     return $path
 }
 
+function Get-PcmWaveMetadata {
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -lt 44 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 4) -cne 'RIFF' -or
+            [Text.Encoding]::ASCII.GetString($bytes, 8, 4) -cne 'WAVE' -or [int64][BitConverter]::ToUInt32($bytes, 4) + 8 -ne $bytes.Length) { throw 'invalid wave container' }
+        $offset = 12; $format = $null; $dataBytes = $null
+        while ($offset + 8 -le $bytes.Length) {
+            $chunk = [Text.Encoding]::ASCII.GetString($bytes, $offset, 4)
+            $length = [int64][BitConverter]::ToUInt32($bytes, $offset + 4); $body = $offset + 8; $next = $body + $length + ($length % 2)
+            if ($length -gt [int]::MaxValue -or $next -gt $bytes.Length) { throw 'invalid wave chunk' }
+            if ($chunk -ceq 'fmt ') {
+                if ($null -ne $format -or $length -lt 16) { throw 'invalid wave format' }
+                $format = @([BitConverter]::ToUInt16($bytes, $body), [BitConverter]::ToUInt16($bytes, $body + 2),
+                    [BitConverter]::ToUInt32($bytes, $body + 4), [BitConverter]::ToUInt32($bytes, $body + 8),
+                    [BitConverter]::ToUInt16($bytes, $body + 12), [BitConverter]::ToUInt16($bytes, $body + 14))
+            } elseif ($chunk -ceq 'data') {
+                if ($null -ne $dataBytes) { throw 'duplicate wave data' }
+                $dataBytes = $length
+            }
+            $offset = [int]$next
+        }
+        if ($offset -ne $bytes.Length -or $null -eq $format -or $null -eq $dataBytes -or
+            $format[0] -ne 1 -or $format[1] -ne 1 -or $format[2] -ne 16000 -or
+            $format[3] -ne 32000 -or $format[4] -ne 2 -or $format[5] -ne 16 -or
+            $dataBytes -lt 2 -or ($dataBytes % 2) -ne 0) { throw 'unsupported wave format' }
+        return [ordered]@{ channels = 1; sample_width_bytes = 2; sample_rate_hz = 16000; frame_count = [int64]($dataBytes / 2); compression_type = 'NONE' }
+    } catch { throw 'VOICE_REFERENCE_INVALID' }
+}
+
+function Set-DurableTransactionState {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$State)
+    $next = "$Path.next"; [IO.File]::WriteAllText($next, $State, [Text.UTF8Encoding]::new($false)); [IO.File]::Move($next, $Path)
+}
+
+function Repair-ManagedVoiceTransaction {
+    param([Parameter(Mandatory)][string]$SharedRoot)
+    $journal = Join-Path $SharedRoot '.linli-reference.transaction'; $publishMarker = "$journal.publish"; $rollbackMarker = "$journal.rollback"; $cleanupMarker = "$journal.cleanup"
+    try { foreach ($next in @("$journal.next", "$publishMarker.next")) { [IO.File]::Delete($next) } } catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
+    if ((@($publishMarker, $rollbackMarker, $cleanupMarker) | Where-Object { [IO.File]::Exists($_) }).Count -gt 1) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    $marker = if ([IO.File]::Exists($cleanupMarker)) { $cleanupMarker } elseif ([IO.File]::Exists($rollbackMarker)) { $rollbackMarker } elseif ([IO.File]::Exists($publishMarker)) { $publishMarker } elseif ([IO.File]::Exists($journal)) { $journal } else {
+        try { foreach ($orphan in [IO.Directory]::EnumerateFiles($SharedRoot, '.linli-reference.*')) { if ([IO.Path]::GetFileName($orphan) -cmatch '^\.linli-reference\.[0-9a-f]{32}\.(wav|json)\.(tmp|bak)$') { [IO.File]::Delete($orphan) } } }
+        catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
+        return
+    }
+    $phase = if ($marker -ceq $cleanupMarker) { 'cleanup' } elseif ($marker -ceq $rollbackMarker) { 'rollback' } elseif ($marker -ceq $publishMarker) { 'publish' } else { 'staging' }
+    $errorCode = if ($phase -ceq 'cleanup') { 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' } else { 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    try {
+        $state = [IO.File]::ReadAllText($marker)
+        if ($state -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<target>[01])\|(?<manifest>[01])$') { throw 'invalid voice transaction' }
+        $id = $Matches.id; $hadTarget = $Matches.target -ceq '1'; $hadManifest = $Matches.manifest -ceq '1'
+        $target = Join-Path $SharedRoot 'linli-reference.wav'; $manifest = Join-Path $SharedRoot 'linli-reference.json'
+        $entries = @(
+            @{ Active = $target; Staged = Join-Path $SharedRoot ".linli-reference.$id.wav.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.wav.bak"; Had = $hadTarget },
+            @{ Active = $manifest; Staged = Join-Path $SharedRoot ".linli-reference.$id.json.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.json.bak"; Had = $hadManifest }
+        )
+        foreach ($entry in $entries) {
+            foreach ($path in @($entry.Active, $entry.Staged, $entry.Backup, $marker)) { if ((Test-Path -LiteralPath $path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'unsafe voice transaction' } }
+            if ($phase -ceq 'publish' -and -not [IO.File]::Exists($entry.Staged)) {
+                if ($entry.Had) {
+                    if (-not [IO.File]::Exists($entry.Backup)) { throw 'missing voice rollback' }
+                    [IO.File]::Copy($entry.Backup, $entry.Active, $true)
+                } else { [IO.File]::Delete($entry.Active) }
+            }
+        }
+        if ($phase -ceq 'publish') { [IO.File]::Move($publishMarker, $rollbackMarker); $marker = $rollbackMarker; $phase = 'rollback' }
+        foreach ($entry in $entries) { [IO.File]::Delete($entry.Staged); [IO.File]::Delete($entry.Backup) }
+        [IO.File]::Delete($marker)
+        [IO.File]::Delete($journal)
+    } catch { throw $errorCode }
+}
+
+function Install-ManagedVoiceReference {
+    param([AllowNull()][object]$VoiceReference, [Parameter(Mandatory)][string]$InstallRoot)
+    $sharedRoot = Join-Path $InstallRoot 'data\capabilities\video\shared'
+    Assert-NoReparsePointsInPath -LiteralPath $sharedRoot -ErrorCode 'VOICE_REFERENCE_INSTALL_PATH_INVALID'
+    if ($null -eq $VoiceReference) { return }
+    $source = [string]$VoiceReference.path; $expectedHash = [string]$VoiceReference.sha256
+    $expectedSize = [int64]$VoiceReference.size_bytes; $wave = $VoiceReference.wave
+    if (-not [IO.File]::Exists($source)) { throw 'VOICE_REFERENCE_MISSING' }
+    foreach ($field in @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count')) { if ($wave.$field -isnot [int] -and $wave.$field -isnot [long]) { throw 'VOICE_REFERENCE_INVALID' } }
+    if ($null -eq $wave -or [int]$wave.channels -ne 1 -or [int]$wave.sample_width_bytes -ne 2 -or
+        [int]$wave.sample_rate_hz -ne 16000 -or [int64]$wave.frame_count -lt 1 -or
+        $wave.compression_type -isnot [string] -or [string]$wave.compression_type -cne 'NONE') { throw 'VOICE_REFERENCE_INVALID' }
+    if ($expectedSize -lt 1 -or [IO.FileInfo]::new($source).Length -ne $expectedSize -or (Get-Sha256 -LiteralPath $source) -cne $expectedHash) { throw 'VOICE_REFERENCE_HASH_MISMATCH' }
+
+    New-Item -ItemType Directory -Force -Path $sharedRoot | Out-Null
+    $target = Join-Path $sharedRoot 'linli-reference.wav'; $manifestPath = Join-Path $sharedRoot 'linli-reference.json'
+    foreach ($leaf in @($target, $manifestPath)) { if ((Test-Path -LiteralPath $leaf) -and (([IO.File]::GetAttributes($leaf) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'VOICE_REFERENCE_INSTALL_PATH_INVALID' } }
+    $transactionId = [guid]::NewGuid().ToString('N')
+    $transactionRoot = Join-Path $sharedRoot ('.linli-reference.' + $transactionId)
+    $stagedTarget = "$transactionRoot.wav.tmp"; $stagedManifest = "$transactionRoot.json.tmp"
+    $targetBackup = "$transactionRoot.wav.bak"; $manifestBackup = "$transactionRoot.json.bak"
+    $journal = Join-Path $sharedRoot '.linli-reference.transaction'; $cleanupMarker = "$journal.cleanup"
+    $utf8NoBom = [Text.UTF8Encoding]::new($false); $state = "$transactionId|$([int][IO.File]::Exists($target))|$([int][IO.File]::Exists($manifestPath))"
+    try {
+        Set-DurableTransactionState -Path $journal -State $state
+        [IO.File]::Copy($source, $stagedTarget, $false)
+        if ([IO.FileInfo]::new($stagedTarget).Length -ne $expectedSize -or (Get-Sha256 -LiteralPath $stagedTarget) -cne $expectedHash) { throw 'VOICE_REFERENCE_HASH_MISMATCH' }
+        $actualWave = Get-PcmWaveMetadata -Path $stagedTarget
+        foreach ($field in @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')) { if ($actualWave.$field -cne $wave.$field) { throw 'VOICE_REFERENCE_INVALID' } }
+        $integrity = [ordered]@{ schema_version = 'olivia.managed-voice-reference.v1'; path = 'linli-reference.wav'; size_bytes = $expectedSize; sha256 = $expectedHash
+            wave = [ordered]@{ channels = [int]$wave.channels; sample_width_bytes = [int]$wave.sample_width_bytes; sample_rate_hz = [int]$wave.sample_rate_hz; frame_count = [int64]$wave.frame_count; compression_type = [string]$wave.compression_type } }
+        [IO.File]::WriteAllText($stagedManifest, ($integrity | ConvertTo-Json -Compress), $utf8NoBom)
+        Set-DurableTransactionState -Path "$journal.publish" -State $state
+        if ([IO.File]::Exists($target)) { [IO.File]::Replace($stagedTarget, $target, $targetBackup) } else { [IO.File]::Move($stagedTarget, $target) }
+        if ([IO.File]::Exists($manifestPath)) { [IO.File]::Replace($stagedManifest, $manifestPath, $manifestBackup) } else { [IO.File]::Move($stagedManifest, $manifestPath) }
+        [IO.File]::Move("$journal.publish", $cleanupMarker)
+    } catch {
+        $failure = $_.Exception.Message
+        try {
+            if ([IO.File]::Exists($journal) -or [IO.File]::Exists("$journal.publish") -or [IO.File]::Exists("$journal.rollback") -or [IO.File]::Exists($cleanupMarker)) { Repair-ManagedVoiceTransaction -SharedRoot $sharedRoot }
+            else { foreach ($cleanup in @($stagedTarget, $stagedManifest, $targetBackup, $manifestBackup)) { [IO.File]::Delete($cleanup) } }
+        } catch { throw $_.Exception.Message }
+        if ($failure -in @('VOICE_REFERENCE_HASH_MISMATCH', 'VOICE_REFERENCE_INSTALL_PATH_INVALID', 'VOICE_REFERENCE_INVALID', 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED')) { throw $failure }
+        throw 'VOICE_REFERENCE_INSTALL_FAILED'
+    }
+}
+
+function Get-ManagedInstallTransactionNames {
+    return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json')
+}
+
+function New-ManagedInstallRollbackSnapshot {
+    param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$Snapshot)
+    if (-not (Test-Path -LiteralPath $InstallRoot)) { return }
+    if (-not [IO.Directory]::Exists($InstallRoot) -or (([IO.File]::GetAttributes($InstallRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'INSTALL_TRANSACTION_SNAPSHOT_FAILED' }
+    try {
+        New-Item -ItemType Directory -Path $Snapshot | Out-Null
+        foreach ($name in Get-ManagedInstallTransactionNames) {
+            $source = Join-Path $InstallRoot $name
+            if ([IO.Directory]::Exists($source)) {
+                if (-not (Test-NoReparsePointsInTree -LiteralPath $source)) { throw 'INSTALL_TRANSACTION_SNAPSHOT_FAILED' }
+                Copy-Item -LiteralPath $source -Destination (Join-Path $Snapshot $name) -Recurse -Force
+            } elseif ([IO.File]::Exists($source)) {
+                if (([IO.File]::GetAttributes($source) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'INSTALL_TRANSACTION_SNAPSHOT_FAILED' }
+                [IO.File]::Copy($source, (Join-Path $Snapshot $name), $false)
+            } elseif (Test-Path -LiteralPath $source) { throw 'INSTALL_TRANSACTION_SNAPSHOT_FAILED' }
+        }
+    } catch { throw 'INSTALL_TRANSACTION_SNAPSHOT_FAILED' }
+}
+
+function Restore-ManagedInstallRollbackSnapshot {
+    param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][bool]$InstallRootExisted, [string]$Snapshot = '')
+    if (-not $InstallRootExisted) {
+        if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
+        return
+    }
+    if (-not $Snapshot -or -not [IO.Directory]::Exists($Snapshot)) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    foreach ($name in Get-ManagedInstallTransactionNames) {
+        $active = Join-Path $InstallRoot $name
+        if (Test-Path -LiteralPath $active) { Remove-Item -LiteralPath $active -Recurse -Force }
+        $backup = Join-Path $Snapshot $name
+        if ([IO.Directory]::Exists($backup)) { Copy-Item -LiteralPath $backup -Destination $active -Recurse -Force }
+        elseif ([IO.File]::Exists($backup)) { [IO.File]::Copy($backup, $active, $true) }
+        elseif (Test-Path -LiteralPath $backup) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    }
+}
+
+function Restore-ManagedRuntimeTransaction {
+    param([Parameter(Mandatory)][string]$RuntimeRoot, [string]$RuntimeBackup = '', [Parameter(Mandatory)][bool]$RuntimeRootExisted)
+    if ($RuntimeBackup -and [IO.Directory]::Exists($RuntimeBackup)) {
+        if (Test-Path -LiteralPath $RuntimeRoot) { Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force }
+        [IO.Directory]::Move($RuntimeBackup, $RuntimeRoot)
+    } elseif (-not $RuntimeRootExisted -and (Test-Path -LiteralPath $RuntimeRoot)) {
+        Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force
+    }
+}
+
+function Remove-ManagedInstallRollbackSnapshot {
+    param([string]$Snapshot = '')
+    if ($Snapshot -and (Test-Path -LiteralPath $Snapshot)) { Remove-Item -LiteralPath $Snapshot -Recurse -Force }
+}
+
+function Repair-ManagedInstallTransaction {
+    param([Parameter(Mandatory)][string]$ProductRoot, [Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$RuntimeRoot); if (-not [IO.Directory]::Exists($ProductRoot)) { return }
+    $journal = Join-Path $ProductRoot '.install.transaction'; $activeMarker = "$journal.active"; $rollbackMarker = "$journal.rollback"; $cleanupMarker = "$journal.cleanup"; try { foreach ($next in @("$journal.next", "$activeMarker.next")) { [IO.File]::Delete($next) } } catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
+    if ((@($activeMarker, $rollbackMarker, $cleanupMarker) | Where-Object { [IO.File]::Exists($_) }).Count -gt 1) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    if (-not [IO.File]::Exists($journal) -and ([IO.File]::Exists($activeMarker) -or [IO.File]::Exists($rollbackMarker) -or [IO.File]::Exists($cleanupMarker))) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    if (-not [IO.File]::Exists($journal)) { $shared = Join-Path $InstallRoot 'data\capabilities\video\shared'; if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }; return }
+    try {
+        $marker = if ([IO.File]::Exists($cleanupMarker)) { $cleanupMarker } elseif ([IO.File]::Exists($rollbackMarker)) { $rollbackMarker } elseif ([IO.File]::Exists($activeMarker)) { $activeMarker } else { $journal }; $phase = if ($marker -ceq $cleanupMarker) { 'cleanup' } elseif ($marker -ceq $rollbackMarker) { 'rollback' } elseif ($marker -ceq $activeMarker) { 'active' } else { 'prepare' }
+        $state = [IO.File]::ReadAllText($marker)
+        if ($state -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<install>[01])\|(?<runtime>[01])$') { throw 'invalid install transaction' }
+        $id = $Matches.id; $installExisted = $Matches.install -ceq '1'; $runtimeExisted = $Matches.runtime -ceq '1'
+        $snapshot = Join-Path $ProductRoot ".install.rollback.$id"; $staging = "$RuntimeRoot.staging.$id"; $backup = "$RuntimeRoot.backup.$id"; $shared = Join-Path $InstallRoot 'data\capabilities\video\shared'
+        $committed = $phase -ceq 'cleanup' -or [IO.File]::Exists((Join-Path $shared '.linli-reference.transaction.cleanup'))
+        if ($committed -and $phase -eq 'active') { [IO.File]::Move($activeMarker, $cleanupMarker); $marker = $cleanupMarker; $phase = 'cleanup' }
+        if ($phase -ceq 'active') {
+            if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }
+            Restore-ManagedInstallRollbackSnapshot -InstallRoot $InstallRoot -InstallRootExisted $installExisted -Snapshot $snapshot
+            Restore-ManagedRuntimeTransaction -RuntimeRoot $RuntimeRoot -RuntimeBackup $backup -RuntimeRootExisted $runtimeExisted
+            [IO.File]::Move($activeMarker, $rollbackMarker); $marker = $rollbackMarker; $phase = 'rollback'
+        } elseif ($phase -ceq 'cleanup' -and [IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }
+        foreach ($path in @($staging, $backup)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
+        Remove-ManagedInstallRollbackSnapshot -Snapshot $snapshot
+        if ($marker -cne $journal) { [IO.File]::Delete($marker) }
+        [IO.File]::Delete($journal)
+    } catch { if ($phase -ceq 'cleanup' -or $committed) { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }; throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+}
+
 function Get-OfflineCoreAssets {
     param(
         [Parameter(Mandatory)]
@@ -539,7 +740,14 @@ function Get-OfflineCoreAssets {
     } catch {
         throw 'OFFLINE_CORE_MANIFEST_INVALID'
     }
-    Assert-OfflineObjectShape -Value $manifest -Names @('schema_version', 'python_runtime', 'pip_bootstrap', 'requirements_sha256', 'wheels')
+    $manifestNames = @('schema_version', 'python_runtime', 'pip_bootstrap', 'requirements_sha256', 'wheels')
+    $hasVoiceReference = $manifest.PSObject.Properties.Name -ccontains 'voice_reference'
+    $hasDistribution = $manifest.PSObject.Properties.Name -ccontains 'distribution'
+    if ($hasVoiceReference -ne $hasDistribution -or ($hasDistribution -and $manifest.distribution -cne 'private')) {
+        throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
+    }
+    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference') }
+    Assert-OfflineObjectShape -Value $manifest -Names $manifestNames
     Assert-OfflineObjectShape -Value $manifest.python_runtime -Names @('path', 'size_bytes', 'sha256', 'source_url')
     Assert-OfflineObjectShape -Value $manifest.pip_bootstrap -Names @('path', 'size_bytes', 'sha256', 'package', 'version')
     if ($manifest.schema_version -ne 'olivia.offline-core-assets.v1') {
@@ -576,6 +784,27 @@ function Get-OfflineCoreAssets {
     }
     $runtime = Resolve-OfflineAsset -Root $Root -Asset $manifest.python_runtime
     $pipBootstrap = Resolve-OfflineAsset -Root $Root -Asset $manifest.pip_bootstrap
+    $voiceReference = $null
+    if ($hasVoiceReference) {
+        Assert-OfflineObjectShape -Value $manifest.voice_reference -Names @('path', 'size_bytes', 'sha256', 'wave')
+        Assert-OfflineObjectShape -Value $manifest.voice_reference.wave -Names @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')
+        if ($manifest.voice_reference.path -cne 'voice/olivia-reference.wav') {
+            throw 'OFFLINE_CORE_MANIFEST_INVALID'
+        }
+        try {
+            $voiceReferencePath = Resolve-OfflineAsset -Root $Root -Asset $manifest.voice_reference
+        } catch {
+            if ($_.Exception.Message -eq 'OFFLINE_CORE_ASSET_MISSING') {
+                throw 'VOICE_REFERENCE_MISSING'
+            }
+            if ($_.Exception.Message -in @('OFFLINE_CORE_ASSET_SIZE_MISMATCH', 'OFFLINE_CORE_ASSET_HASH_MISMATCH')) {
+                throw 'VOICE_REFERENCE_HASH_MISMATCH'
+            }
+            throw 'VOICE_REFERENCE_INVALID'
+        }
+        $voiceReference = $manifest.voice_reference
+        $voiceReference.path = $voiceReferencePath
+    }
     $expectedWheelAssets = Get-ExpectedOfflineWheels
     $wheelPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $manifestWheelHashes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -613,6 +842,7 @@ function Get-OfflineCoreAssets {
         Runtime = $runtime
         PipBootstrap = $pipBootstrap
         Wheelhouse = (Join-Path $Root 'wheelhouse')
+        VoiceReference = $voiceReference
     }
 }
 
@@ -751,8 +981,17 @@ $script:OfficialSourceDiagnostic = New-OfficialSourceDiagnostic -Selection $offi
 Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
 Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
-$runtimeStaging = $runtimeRoot + '.staging.' + [guid]::NewGuid().ToString('N')
-$runtimeBackup = ''
+Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
+New-Item -ItemType Directory -Force -Path $productRoot | Out-Null
+$installRootExisted = [IO.Directory]::Exists($Destination); $runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot
+$installTransactionId = [guid]::NewGuid().ToString('N')
+$installTransaction = Join-Path $productRoot '.install.transaction'; $installRollbackSnapshot = Join-Path $productRoot ".install.rollback.$installTransactionId"
+$runtimeStaging = "$runtimeRoot.staging.$installTransactionId"
+$runtimeBackup = "$runtimeRoot.backup.$installTransactionId"
+$installState = "$installTransactionId|$([int]$installRootExisted)|$([int]$runtimeRootExisted)"
+Set-DurableTransactionState -Path $installTransaction -State $installState
+New-ManagedInstallRollbackSnapshot -InstallRoot $Destination -Snapshot $installRollbackSnapshot
+Set-DurableTransactionState -Path "$installTransaction.active" -State $installState
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $runtimeRoot) | Out-Null
 try {
     Expand-Archive -LiteralPath $coreAssets.Runtime -DestinationPath $runtimeStaging -Force
@@ -785,7 +1024,6 @@ try {
         ) {
             throw 'OFFLINE_CORE_RUNTIME_INVALID'
         }
-        $runtimeBackup = $runtimeRoot + '.backup.' + [guid]::NewGuid().ToString('N')
         [IO.Directory]::Move($runtimeRoot, $runtimeBackup)
     }
     try {
@@ -797,12 +1035,7 @@ try {
         throw 'OFFLINE_CORE_RUNTIME_PUBLISH_FAILED'
     }
 } catch {
-    if (Test-Path -LiteralPath $runtimeStaging) {
-        Remove-Item -LiteralPath $runtimeStaging -Recurse -Force
-    }
-    if ($runtimeBackup -and -not (Test-Path -LiteralPath $runtimeRoot) -and (Test-Path -LiteralPath $runtimeBackup)) {
-        [IO.Directory]::Move($runtimeBackup, $runtimeRoot)
-    }
+    Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
     throw
 }
 $runner = @{ File = $runtimeExe; Args = @() }
@@ -814,12 +1047,7 @@ $bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'
 $installOutput = @(& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments))
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) {
-    if ($runtimeBackup -and (Test-Path -LiteralPath $runtimeBackup)) {
-        if (Test-Path -LiteralPath $runtimeRoot) {
-            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
-        }
-        [IO.Directory]::Move($runtimeBackup, $runtimeRoot)
-    }
+    Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
     $installCode = 'SETUP_INSTALL_FAILED'
     foreach ($line in $installOutput) {
         try {
@@ -839,9 +1067,18 @@ if ($installExitCode -ne 0) {
     if (-not $SetupResultPath) { $installOutput | Write-Output }
     exit $installExitCode
 }
-if ($runtimeBackup -and (Test-Path -LiteralPath $runtimeBackup)) {
-    Remove-Item -LiteralPath $runtimeBackup -Recurse -Force
+try {
+    Install-ManagedVoiceReference -VoiceReference $coreAssets.VoiceReference -InstallRoot $Destination
+} catch {
+    $voiceFailure = [string]$_.Exception.Message
+    try {
+        Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
+    } catch { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    throw $voiceFailure
 }
+
+try { [IO.File]::Move("$installTransaction.active", "$installTransaction.cleanup"); Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot }
+catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
 if (-not $SetupResultPath) { $installOutput | Write-Output }
 
 $LASTEXITCODE = 0
