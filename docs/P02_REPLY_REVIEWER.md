@@ -106,11 +106,13 @@ requires score 1 and no drift, while `false` requires score 2 and no drift. A
 hard claim cannot be used to infer this field. Missing, non-boolean, or
 score/drift-inconsistent values make the review unavailable.
 
-Missing, duplicate, mismatched, out-of-range, or schema-invalid evidence makes
-the whole enabled Letter review unavailable and therefore fails closed. A
-semantic duplicate is keyed by at least `(code, start, end)` across layers;
-changing ids, kinds, sources, or reasons cannot make it distinct. Other review
-layers keep their existing response schema.
+Missing, duplicate, mismatched, out-of-range, or schema-invalid evidence is
+rejected by the strict parser as `EVIDENCE_CONTRACT`. The first such failure
+may trigger the documented one same-layer retry; only if that retry is also
+invalid does the whole enabled Letter review become unavailable and therefore
+fail closed. A semantic duplicate is keyed by at least `(code, start, end)`
+across layers; changing ids, kinds, sources, or reasons cannot make it distinct.
+Other review layers keep their existing response schema.
 
 Well-formed hard evidence conditionally spends at most one additional model
 call per candidate. The call uses the same configured quality Gateway and
