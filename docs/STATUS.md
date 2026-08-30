@@ -8,7 +8,7 @@
 
 - [GitHub Issues](https://github.com/Ornn8/bside-olivia-community/issues)
 - [GitHub Milestones](https://github.com/Ornn8/bside-olivia-community/milestones)
-- [P02 intimacy model contract](P02_17_INTIMACY_MODEL.md)
+- [P02 intimacy model contract](P02_20_INTIMACY_MODEL.md)
 
 ## 状态语义
 

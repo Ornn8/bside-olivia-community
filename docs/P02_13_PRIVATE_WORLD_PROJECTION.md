@@ -13,7 +13,7 @@ Relationship projection adds two finite fields: `intimacy_ceiling`, derived
 only from the relationship stage, and `granted_intimacy`, the highest persisted
 grant tier. A grant statement, grant identifier, growth-window field, or raw
 score is never projected. The stage mapping and append-only semantics are
-defined in [`P02_17_INTIMACY_MODEL.md`](P02_17_INTIMACY_MODEL.md).
+defined in [`P02_20_INTIMACY_MODEL.md`](P02_20_INTIMACY_MODEL.md).
 
 Local Continuation is filtered per fact. `control_only` and `pending`
 statements, identifiers, and awareness labels never enter the model payload.

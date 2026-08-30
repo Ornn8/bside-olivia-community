@@ -5,16 +5,17 @@
 ## 源码与边界
 
 - [ ] `git clone` 后只得到公开源代码、schema、合成 fixture 和文档。
-- [ ] 原版游戏、官方媒体、模型权重、第三方运行时、用户数据和 `.evidence/` 不在提交中。
-- [ ] 没有密钥、token、签名盐、抓包、真实 URL 签名或本机绝对路径。
+- [x] 原版游戏、官方媒体、模型权重、第三方运行时、用户数据和 `.evidence/` 不在提交中；2026-08-30 `baseline_hardening_scan.py --mode all` 的敏感路径、大文件和 evidence 边界均为 0 命中。
+- [x] 没有密钥、token、签名盐、抓包、真实 URL 签名或指向开发者、验收机和用户数据的私有绝对路径；通用系统默认路径与合成测试路径不属于此项。
 - [ ] 所有产品代码、测试和入口都被 Git 跟踪；没有依赖未提交的工作树文件。
 
 ## 可复现性
 
 - [ ] 支持的 Python/Windows 版本已写明。
-- [ ] 依赖可从公开清单安装，模型和官方资源作为显式外部依赖处理。
-- [ ] 干净环境能够完成测试收集，不存在导入错误。
-- [ ] 公开基线 `python -m pytest -q`、静态扫描和 `git diff --check` 全部通过。
+- [x] 依赖可从公开清单安装，模型和官方资源作为显式外部依赖处理；干净 GitHub Windows/Python 3.12 runner 已从 `pyproject.toml` 完成开发依赖安装。
+- [x] 干净环境能够完成测试收集，不存在导入错误；2026-08-30 收集 1630 项。
+- [ ] 最终主干公开基线 `python -m pytest -q` 通过。**BLOCKED**：run `33306240376` 为 1629 passed、1 failed、1 deselected，唯一失败是 Node 子进程 20 秒超时；不能把同树的定向通过替代为最终主干全绿。
+- [x] `baseline_hardening_scan.py --mode all` 与 `git diff --check` 通过；2026-08-30 当前主干复核为 PASS。
 - [ ] ASR/TTS/Live/packaging 等实验测试有独立结果，不被公开基线隐式隐藏。
 - [ ] CI 在无官方安装、无模型和无密钥环境中可通过。
 
@@ -25,7 +26,7 @@
 - [x] `pyproject.toml` 中的直接运行依赖已在 `THIRD_PARTY_NOTICES.md` 记录来源和许可证；若 wheel 包含额外二进制，仍须核对该二进制的随附声明。
 - [x] 实际随安装器分发的 Python、pip 和 14 个锁定 wheel 已按文件内许可证元数据核对并记录在 `THIRD_PARTY_NOTICES.md`；第三方模型、媒体运行时和原版资源不随安装器分发，由用户按需提供。
 - [x] `CONTRIBUTING.md`、`SECURITY.md` 和 `CODE_OF_CONDUCT.md` 已复核，覆盖贡献验证、私密报告、凭据和第三方内容边界。
-- [x] [`releases/v0.1.0.md`](releases/v0.1.0.md) 已记录用户安装方式、已验证能力、未验证边界、已知限制和回滚方式。
+- [x] [`releases/v0.1.0.md`](releases/v0.1.0.md) 与 [`releases/v0.1.2.md`](releases/v0.1.2.md) 已记录用户安装或升级方式、已验证能力、未验证边界、已知限制和回滚方式。
 
 当前公开门禁只覆盖 HTTP/media 基线；实验模块必须按 [`EXPERIMENTAL_MODULES.md`](EXPERIMENTAL_MODULES.md) 单独报告，不能把实验结果写成整体发布通过。
 
