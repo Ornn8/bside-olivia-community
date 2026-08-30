@@ -370,7 +370,7 @@ def test_launcher_starts_combined_server_before_original_client(
     ]
     assert client_commands[0][0].endswith("Olivia.exe")
     assert client_working_directories == [
-        root.resolve() / "app" / "0.0.9.615"
+        root.resolve() / "app"
     ]
     assert not backend_command[-1].endswith("local_server.py")
     assert frontend_repairs == [(root.resolve(), 8899)]
@@ -384,6 +384,178 @@ def test_launcher_starts_combined_server_before_original_client(
     assert '"exit_code": 0' in launcher_log
     assert "DEEPSEEK_API_KEY" not in launcher_log
     assert str(root.resolve()) not in launcher_log
+
+
+def _run_launcher_with_client_results(
+    tmp_path: Path,
+    monkeypatch,
+    client_results: tuple[int, ...],
+    *,
+    existing_profile: bool = False,
+) -> tuple[Path, int, list[tuple[list[str], Path]], list[dict[str, object]], str]:
+    root = _installation(tmp_path)
+    if existing_profile:
+        (root / "profile").mkdir()
+    health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
+    results = iter(client_results)
+    client_runs: list[tuple[list[str], Path]] = []
+
+    class Process:
+        @staticmethod
+        def poll():
+            return None
+
+    def call(command, **kwargs):
+        client_runs.append(
+            ([str(value) for value in command], Path(kwargs["cwd"]))
+        )
+        return next(results)
+
+    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(
+        start_local,
+        "_server_backend_id",
+        lambda _port: start_local._backend_id(root / "local_backend", root.resolve()),
+    )
+    monkeypatch.setattr(
+        start_local,
+        "_backend_executable",
+        lambda: Path("pythonw-fixture.exe"),
+    )
+    monkeypatch.setattr(
+        start_local.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(start_local.subprocess, "call", call)
+    monkeypatch.setattr(
+        start_local,
+        "_repair_client_frontend",
+        lambda *_args: "PATCHED",
+    )
+
+    result = start_local.main(["--install-root", str(root), "--port", "8899"])
+    launcher_log = (root / "data" / "logs" / "launcher.jsonl").read_text(
+        encoding="utf-8"
+    )
+    client_events = [
+        record
+        for line in launcher_log.splitlines()
+        if (record := json.loads(line))["event"].startswith("client_")
+    ]
+    return root, result, client_runs, client_events, launcher_log
+
+
+def test_fresh_profile_retries_known_first_exit_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root, result, client_runs, client_events, launcher_log = (
+        _run_launcher_with_client_results(
+            tmp_path,
+            monkeypatch,
+            (0x0E000003, 0),
+        )
+    )
+
+    assert result == 0
+    assert len(client_runs) == 2
+    assert {run[1] for run in client_runs} == {root.resolve() / "app"}
+    assert client_events == [
+        {"attempt": 1, "event": "client_start"},
+        {"attempt": 1, "event": "client_exit", "exit_code": 0x0E000003},
+        {
+            "attempt": 2,
+            "event": "client_retry",
+            "reason": "known_fresh_profile_exit",
+        },
+        {"attempt": 2, "event": "client_start"},
+        {"attempt": 2, "event": "client_exit", "exit_code": 0},
+    ]
+    assert str(root.resolve()) not in launcher_log
+
+
+def test_fresh_profile_returns_second_failure_without_third_attempt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _root, result, client_runs, client_events, _launcher_log = (
+        _run_launcher_with_client_results(
+            tmp_path,
+            monkeypatch,
+            (0x0E000003, 23),
+        )
+    )
+
+    assert result == 23
+    assert len(client_runs) == 2
+    assert client_events[-1] == {
+        "attempt": 2,
+        "event": "client_exit",
+        "exit_code": 23,
+    }
+
+
+def test_existing_profile_never_retries_known_exit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _root, result, client_runs, client_events, _launcher_log = (
+        _run_launcher_with_client_results(
+            tmp_path,
+            monkeypatch,
+            (0x0E000003,),
+            existing_profile=True,
+        )
+    )
+
+    assert result == 0x0E000003
+    assert len(client_runs) == 1
+    assert [event["event"] for event in client_events] == [
+        "client_start",
+        "client_exit",
+    ]
+
+
+def test_fresh_profile_does_not_retry_other_exit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _root, result, client_runs, client_events, _launcher_log = (
+        _run_launcher_with_client_results(
+            tmp_path,
+            monkeypatch,
+            (19,),
+        )
+    )
+
+    assert result == 19
+    assert len(client_runs) == 1
+    assert [event["event"] for event in client_events] == [
+        "client_start",
+        "client_exit",
+    ]
+
+
+def test_fresh_profile_retry_protocol_is_documented() -> None:
+    documentation = (
+        Path(__file__).resolve().parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"
+    ).read_text(encoding="utf-8")
+
+    for expected in (
+        "创建 `profile/` 前",
+        "`0x0E000003`",
+        "最多启动两次",
+        "第二次退出码原样透传",
+        "`client_start`",
+        "`client_exit`",
+        "`attempt`",
+        "`client_retry`",
+        "`known_fresh_profile_exit`",
+        "不记录安装路径",
+    ):
+        assert expected in documentation
 
 
 def test_component_launcher_starts_the_backend_that_owns_start_local(

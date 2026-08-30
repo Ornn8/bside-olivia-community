@@ -179,6 +179,7 @@ _CORE_HEALTH_REQUIRED_CHECKS = (
 _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
 _BACKEND_START_TIMEOUT_SECONDS = 120
 _BACKEND_ID_RE = re.compile(r"[0-9A-Za-z.+-]{1,160}")
+_KNOWN_FRESH_PROFILE_EXIT_CODE = 0x0E000003
 
 
 def _port_is_bindable(port: int) -> bool:
@@ -742,17 +743,42 @@ def main(argv: list[str] | None = None) -> int:
                 print("LOCAL_SERVER_UNAVAILABLE")
                 return 2
         profile = root / "profile"
+        fresh_profile = not profile.exists()
         roaming = profile / "Roaming"
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
-        _append_launcher_event(data_root, "client_start")
+        _append_launcher_event(data_root, "client_start", attempt=1)
         exit_code = subprocess.call(
             _client_command(client, local),
-            cwd=client.parent,
+            cwd=root / "app",
             env=_client_environment(client_environment, roaming, local),
         )
-        _append_launcher_event(data_root, "client_exit", exit_code=exit_code)
+        _append_launcher_event(
+            data_root,
+            "client_exit",
+            attempt=1,
+            exit_code=exit_code,
+        )
+        if fresh_profile and exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
+            _append_launcher_event(
+                data_root,
+                "client_retry",
+                attempt=2,
+                reason="known_fresh_profile_exit",
+            )
+            _append_launcher_event(data_root, "client_start", attempt=2)
+            exit_code = subprocess.call(
+                _client_command(client, local),
+                cwd=root / "app",
+                env=_client_environment(client_environment, roaming, local),
+            )
+            _append_launcher_event(
+                data_root,
+                "client_exit",
+                attempt=2,
+                exit_code=exit_code,
+            )
         return exit_code
     finally:
         # Stop only the backend process spawned and owned by this launcher.
