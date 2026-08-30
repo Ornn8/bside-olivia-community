@@ -8,6 +8,7 @@ from enum import StrEnum
 import json
 import os
 import re
+from threading import Lock
 import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -261,6 +262,7 @@ class ReviewFailureStage(StrEnum):
 
 
 class ReviewFailureReason(StrEnum):
+    INTERNAL = "internal"
     TRANSPORT = "transport"
     EMPTY_TEXT = "empty_text"
     JSON = "json"
@@ -278,6 +280,10 @@ class ReviewFailureDiagnostic:
     layer: str | None = None
 
     def __post_init__(self) -> None:
+        if type(self.stage) is not ReviewFailureStage:
+            raise TypeError("diagnostic stage must be ReviewFailureStage")
+        if type(self.reason) is not ReviewFailureReason:
+            raise TypeError("diagnostic reason must be ReviewFailureReason")
         if self.layer is not None and self.layer not in _LAYER_SPECS:
             raise ValueError("diagnostic layer is not bounded")
 
@@ -292,6 +298,10 @@ class _ReviewDiagnosticsError(RuntimeError):
     def __init__(self, diagnostics: tuple[ReviewFailureDiagnostic, ...]) -> None:
         super().__init__("quality model unavailable")
         self.diagnostics = diagnostics
+
+
+class _GatewayInvocationFailure(RuntimeError):
+    pass
 
 
 def _diagnostic_error(
@@ -361,10 +371,19 @@ class GatewayReviewTransport:
         self.gateway = gateway
         self.persona_path = persona_path
         self._last_failure_diagnostics: tuple[ReviewFailureDiagnostic, ...] = ()
+        self._diagnostics_lock = Lock()
 
     @property
     def last_failure_diagnostics(self) -> tuple[ReviewFailureDiagnostic, ...]:
-        return self._last_failure_diagnostics
+        with self._diagnostics_lock:
+            return self._last_failure_diagnostics
+
+    def _publish_failure_diagnostics(
+        self,
+        diagnostics: tuple[ReviewFailureDiagnostic, ...],
+    ) -> None:
+        with self._diagnostics_lock:
+            self._last_failure_diagnostics = diagnostics
 
     def review_json(
         self,
@@ -373,19 +392,20 @@ class GatewayReviewTransport:
         model: str,
         timeout_seconds: float,
     ) -> object:
-        self._last_failure_diagnostics = ()
         try:
-            return self._review_json(request, timeout_seconds=timeout_seconds)
+            result = self._review_json(request, timeout_seconds=timeout_seconds)
         except _ReviewDiagnosticsError as exc:
-            self._last_failure_diagnostics = exc.diagnostics
+            self._publish_failure_diagnostics(exc.diagnostics)
             raise RuntimeError("quality model unavailable") from None
         except Exception:
             failure = _diagnostic_error(
                 ReviewFailureStage.AGGREGATION,
-                ReviewFailureReason.AGGREGATION_CONTRACT,
+                ReviewFailureReason.INTERNAL,
             )
-            self._last_failure_diagnostics = failure.diagnostics
+            self._publish_failure_diagnostics(failure.diagnostics)
             raise RuntimeError("quality model unavailable") from None
+        self._publish_failure_diagnostics(())
+        return result
 
     def _review_json(
         self,
@@ -469,13 +489,19 @@ class GatewayReviewTransport:
             except Exception:
                 raise _diagnostic_error(
                     ReviewFailureStage.ADJUDICATION,
-                    ReviewFailureReason.ADJUDICATION_CONTRACT,
+                    ReviewFailureReason.INTERNAL,
                 ) from None
-        return _aggregate_layer_results(
-            results,
-            candidate=str(request.get("candidate", "")),
-            evidence_bound=evidence_bound,
-        )
+        try:
+            return _aggregate_layer_results(
+                results,
+                candidate=str(request.get("candidate", "")),
+                evidence_bound=evidence_bound,
+            )
+        except Exception:
+            raise _diagnostic_error(
+                ReviewFailureStage.AGGREGATION,
+                ReviewFailureReason.AGGREGATION_CONTRACT,
+            ) from None
 
 
 class GatewayPersonaReviewer:
@@ -1166,11 +1192,17 @@ async def _complete_layer_text(
                     chunks.append(delta.text)
             return "".join(chunks)
 
-        return await asyncio.wait_for(collect(), timeout_seconds)
-    response = await asyncio.wait_for(
-        gateway.complete(messages, request_id=request_id),
-        timeout_seconds,
-    )
+        try:
+            return await asyncio.wait_for(collect(), timeout_seconds)
+        except Exception as exc:
+            raise _GatewayInvocationFailure from exc
+    try:
+        response = await asyncio.wait_for(
+            gateway.complete(messages, request_id=request_id),
+            timeout_seconds,
+        )
+    except Exception as exc:
+        raise _GatewayInvocationFailure from exc
     return response.text
 
 
@@ -1203,7 +1235,7 @@ def _complete_layer_reviews(
                     timeout_seconds,
                     f"quality-{uuid.uuid4().hex}:{layer.name}",
                 )
-            except Exception:
+            except _GatewayInvocationFailure:
                 raise _diagnostic_error(
                     ReviewFailureStage.LAYER,
                     ReviewFailureReason.TRANSPORT,
@@ -1236,14 +1268,16 @@ def _complete_layer_reviews(
         for (layer, _), outcome in zip(requests, outcomes, strict=True):
             if isinstance(outcome, _ReviewDiagnosticsError):
                 diagnostics.extend(outcome.diagnostics)
-            elif isinstance(outcome, BaseException):
+            elif isinstance(outcome, Exception):
                 diagnostics.append(
                     ReviewFailureDiagnostic(
                         ReviewFailureStage.LAYER,
-                        ReviewFailureReason.TRANSPORT,
+                        ReviewFailureReason.INTERNAL,
                         layer.name,
                     )
                 )
+            elif isinstance(outcome, BaseException):
+                raise outcome
             else:
                 completed.append(outcome)
         if diagnostics:
@@ -1251,10 +1285,12 @@ def _complete_layer_reviews(
         return tuple(completed)
 
     try:
-        requests = tuple(
-            (
-                layer,
-                _layer_messages(
+        requests: list[
+            tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
+        ] = []
+        for layer in authorities:
+            try:
+                messages = _layer_messages(
                     layer,
                     candidate=candidate,
                     current_user_input=current_user_input,
@@ -1263,10 +1299,14 @@ def _complete_layer_reviews(
                     relationship_context=relationship_context,
                     mode=mode,
                     evidence_bound=evidence_bound,
-                ),
-            )
-            for layer in authorities
-        )
+                )
+            except Exception:
+                raise _diagnostic_error(
+                    ReviewFailureStage.LAYER,
+                    ReviewFailureReason.INTERNAL,
+                    layer.name,
+                ) from None
+            requests.append((layer, messages))
         return asyncio.run(invoke(requests))
     except _ReviewDiagnosticsError:
         raise
@@ -1853,40 +1893,25 @@ def _complete_text(
     *,
     diagnostic: bool = False,
 ) -> str:
-    async def invoke() -> str:
-        request_id = f"quality-{uuid.uuid4().hex}"
-        if bool(getattr(gateway, "stream_enabled", False)):
-            async def collect_stream() -> str:
-                chunks: list[str] = []
-                async for delta in gateway.stream(
-                    messages,
-                    request_id=request_id,
-                ):
-                    if delta.text:
-                        chunks.append(delta.text)
-                return "".join(chunks)
-
-            return await asyncio.wait_for(
-                collect_stream(),
-                timeout_seconds,
-            )
-        response = await asyncio.wait_for(
-            gateway.complete(
-                messages,
-                request_id=request_id,
-            ),
-            timeout_seconds,
-        )
-        return response.text
-
     try:
-        text = asyncio.run(invoke())
-    except Exception:
+        text = asyncio.run(
+            _complete_layer_text(
+                gateway,
+                messages,
+                timeout_seconds,
+                f"quality-{uuid.uuid4().hex}",
+            )
+        )
+    except _GatewayInvocationFailure:
         if diagnostic:
             raise _ReviewContractFailure(ReviewFailureReason.TRANSPORT) from None
         raise RuntimeError(
             "quality model unavailable"
         ) from None
+    except Exception:
+        if diagnostic:
+            raise _ReviewContractFailure(ReviewFailureReason.INTERNAL) from None
+        raise RuntimeError("quality model unavailable") from None
     if (
         not isinstance(text, str)
         or not text.strip()

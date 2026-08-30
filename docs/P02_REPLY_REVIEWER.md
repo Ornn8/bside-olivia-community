@@ -174,6 +174,10 @@ schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or
 as `accepted_degraded`; a hard violation cannot bypass the single-rewrite gate.
 
 The configured gateway transport also keeps an ephemeral in-memory diagnostic tuple
-for the most recent review. It contains only bounded stage, reason, and optional layer
-enums; never candidate text, raw Provider output, exception text, or request identifiers.
-It changes neither public schemas nor external codes and is cleared at every review.
+for the most recently completed review. Every completion atomically replaces the tuple;
+a successful completion publishes an empty tuple. It contains only bounded stage,
+reason, and optional layer enums; never candidate text, raw Provider output, exception
+text, or request identifiers. Known Provider invocation failures are `transport`, known
+aggregation failures are `aggregation_contract`, and unexpected construction or
+programming failures are `internal`. It changes neither public schemas nor external
+codes and does not serialize concurrent Provider calls.
