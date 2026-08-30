@@ -149,7 +149,14 @@ def test_http_startup_exposes_core_health_while_mem0_initializes(
         "ensure_conversation_memory_runtime",
         runtime_status,
     )
-    monkeypatch.setattr(local_server, "conversation_memory_runtime_status", lambda: ConversationMemoryRuntimeStatus(runtime_state[0], True, "mem0-outbox", runtime_state[0] == "available"))
+    def current_runtime_status() -> ConversationMemoryRuntimeStatus:
+        state = runtime_state[0]
+        return ConversationMemoryRuntimeStatus(
+            state, True, "mem0-outbox", state == "available"
+        )
+
+    monkeypatch.setattr(local_server, "conversation_memory_runtime_status", current_runtime_status)
+    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", current_runtime_status)
     history_calls: list[str] = []
     monkeypatch.setattr(local_server, "collect_default_official_text_replies", lambda: history_calls.append("collector"))
     monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: history_calls.append("archive"))
@@ -299,6 +306,67 @@ def test_memory_readiness_deadline_fails_pending_letter_before_generation(
     assert second["data"]["letter_id"] != letter["letter_id"]
 
 
+@pytest.mark.parametrize(
+    ("bootstrap", "runtime_state", "expected"),
+    [
+        (("disabled", "none"), ("disabled", False, False, None), True),
+        (("disabled", "mem0-outbox"), ("disabled", False, False, None), False),
+        (("unavailable", "mem0-outbox"), ("disabled", False, False, None), False),
+        (("available", "mem0-outbox"), ("available", True, True, None), True),
+        (("available", "mem0-outbox"), ("available", True, False, None), False),
+        (("available", "mem0-outbox"), ("degraded", True, True, "MEMORY_ADMIN_PAUSED"), True),
+        (("available", "mem0-outbox"), ("degraded", True, True, "MEMORY_OUTBOX_DELIVERY_FAILED"), False),
+        (("available", "mem0-outbox"), ("unavailable", True, True, "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"), False),
+    ],
+)
+def test_memory_readiness_uses_provider_free_runtime_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    bootstrap: tuple[str, str],
+    runtime_state: tuple[str, bool, bool, str | None],
+    expected: bool,
+) -> None:
+    import local_server
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+
+    bootstrap_status, bootstrap_provider = bootstrap
+    runtime_status, runtime_enabled, runtime_worker, runtime_reason = runtime_state
+
+    class ProviderStatusMustNotRun:
+        def status(self):
+            raise AssertionError("reply readiness must not call the memory provider")
+
+    runtime = ConversationMemoryRuntimeStatus(
+        runtime_status,
+        runtime_worker,
+        "mem0-outbox" if runtime_enabled else "none",
+        runtime_enabled,
+        reason_code=runtime_reason,
+    )
+    monkeypatch.setattr(
+        local_server.letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        {
+            "status": bootstrap_status,
+            "enabled": bootstrap_status != "disabled",
+            "provider": bootstrap_provider,
+            "worker_running": runtime_worker,
+        },
+    )
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_adapter",
+        ProviderStatusMustNotRun(),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "conversation_memory_reply_readiness_status",
+        lambda: runtime,
+        raising=False,
+    )
+
+    assert local_server._conversation_memory_ready_for_reply() is expected
+
+
 def test_memory_readiness_deadline_does_not_reset_after_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -315,10 +383,16 @@ def test_memory_readiness_deadline_does_not_reset_after_restart(
     local_server.store.letters[:] = [letter]
     generated: list[str] = []
     persisted: list[str] = []
+    readiness_checks: list[str] = []
+
+    def memory_ready() -> bool:
+        readiness_checks.append("called")
+        return True
+
     monkeypatch.setattr(
         local_server,
         "_conversation_memory_ready_for_reply",
-        lambda: True,
+        memory_ready,
     )
 
     async def record_generation(*_args, **_kwargs) -> bool:
@@ -347,6 +421,7 @@ def test_memory_readiness_deadline_does_not_reset_after_restart(
     assert letter["error_code"] == "MEMORY_UNAVAILABLE"
     assert generated == []
     assert persisted == ["FAILED"]
+    assert readiness_checks == []
 
 
 def test_memory_readiness_recovery_dispatches_pending_letter_once(
@@ -377,6 +452,12 @@ def test_memory_readiness_recovery_dispatches_pending_letter_once(
         memory_ready,
     )
     monkeypatch.setattr(local_server, "_run_reply_job", record_generation)
+    original_sleep = asyncio.sleep
+
+    async def yield_once(_delay: float) -> None:
+        await original_sleep(0)
+
+    monkeypatch.setattr(local_server.asyncio, "sleep", yield_once)
 
     completed = asyncio.run(
         local_server._run_reply_when_memory_ready(

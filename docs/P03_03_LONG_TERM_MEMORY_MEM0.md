@@ -61,7 +61,7 @@ PersonaAssembly
 - 不把 PrivateWorld hidden score、control-only fact 或管理命令写入 Mem0；
 - 不在本仓库实现新的事实提取、冲突合并、时间推理或向量数据库；
 - 不要求 Mem0 Cloud；
-- 不让记忆失败无限占用回信队列；启用的 Mem0/outbox 超过 B02 总 deadline 仍未就绪时转为可重试失败，不降级为无记忆生成；
+- 不让记忆失败无限占用回信队列；启用的 Mem0/outbox 超过 B02 总 deadline 仍未就绪时转为可重试失败，不降级为无记忆生成；用户主动的 `MEMORY_ADMIN_PAUSED` 继续既有 Archive-only canonical/PrivateWorld 路径，并由 outbox terminal-skip Mem0 delivery；
 - 不用记忆摘要覆盖原始档案；
 - 不要求用户运行 CLI 管理记忆。
 

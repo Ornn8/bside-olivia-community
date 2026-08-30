@@ -87,6 +87,7 @@ from runtime.video_reply_settings import (
 )
 from conversation_memory_port import ConversationMemoryPort
 from conversation_memory_runtime import (
+    conversation_memory_reply_readiness_status,
     conversation_memory_runtime_status,
     ensure_conversation_memory_runtime,
     stop_conversation_memory_runtime,
@@ -1122,14 +1123,30 @@ def _official_history_memory_available() -> bool:
 
 
 def _conversation_memory_ready_for_reply() -> bool:
-    try:
-        status = conversation_memory_adapter.status().status
-        runtime = conversation_memory_runtime_status()
-        return status == "disabled" or (
-            status == "available" and runtime.status == "available"
-        )
-    except Exception:
+    bootstrap = getattr(
+        letters_adapter.memory_prompt_builder,
+        "conversation_runtime_status",
+        None,
+    )
+    if not isinstance(bootstrap, Mapping):
         return False
+    if bootstrap.get("status") == "disabled":
+        return bootstrap.get("provider") == "none"
+    if bootstrap.get("status") not in {"available", "degraded"}:
+        return False
+    runtime = conversation_memory_reply_readiness_status()
+    if (
+        runtime.enabled is True
+        and runtime.worker_running is True
+        and runtime.status == "degraded"
+        and runtime.reason_code == "MEMORY_ADMIN_PAUSED"
+    ):
+        return True
+    return (
+        runtime.enabled is True
+        and runtime.worker_running is True
+        and runtime.status == "available"
+    )
 
 
 def _official_history_private_world_available() -> bool:
