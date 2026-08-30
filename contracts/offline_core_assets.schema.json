@@ -5,7 +5,11 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
-  "dependentRequired": {"voice_reference": ["distribution"], "distribution": ["voice_reference"]},
+  "dependentRequired": {
+    "distribution": ["voice_reference", "video_runtime"],
+    "voice_reference": ["distribution", "video_runtime"],
+    "video_runtime": ["distribution", "voice_reference"]
+  },
   "$defs": {
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "local_asset": {
@@ -66,6 +70,16 @@
             "compression_type": {"const": "NONE"}
           }
         }
+      }
+    },
+    "video_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"const": "video-runtime/Olivia-video-runtime-private.zip"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/digest"}
       }
     },
     "wheels": {

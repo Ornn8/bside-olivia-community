@@ -3,7 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
+from types import SimpleNamespace
 import wave
+import zipfile
 
 import pytest
 
@@ -12,6 +16,7 @@ from installer.build_windows_setup import (
     SetupBuildError,
     _git_tracked_files,
     _is_release_file,
+    _video_runtime_relative,
     build_windows_setup,
     main as build_setup_main,
     prepare_setup_payload,
@@ -19,6 +24,19 @@ from installer.build_windows_setup import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_setup_builder_direct_entrypoint_reaches_argument_parser() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "installer" / "build_windows_setup.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--video-runtime" in result.stdout
 
 
 def _write_asset(root: Path, relative: str, content: bytes) -> dict[str, object]:
@@ -37,6 +55,47 @@ def _write_voice_reference(path: Path) -> None:
     with wave.open(str(path), "wb") as target:
         target.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         target.writeframes(b"\x00\x00" * 160)
+
+
+def _write_video_runtime(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    environment = {
+        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
+        "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
+        "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
+        "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
+    }
+    files = {relative: b"x" for relative in [*environment.values(), "fixture.bin"]}
+    files["empty.marker"] = b""
+    manifest = {
+        "schema_version": "olivia.video-runtime-root.v1",
+        "version": "fixture",
+        "environment": environment,
+        "files": [
+            {"path": relative, "size_bytes": len(content),
+             "sha256": hashlib.sha256(content).hexdigest()}
+            for relative, content in files.items()
+        ],
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("runtime-manifest.json", json.dumps(manifest))
+        for relative, content in files.items():
+            archive.writestr(relative, content)
+
+
+def _mutate_video_runtime_manifest(path: Path, mutate) -> None:
+    with zipfile.ZipFile(path) as archive:
+        files = {
+            item.filename: archive.read(item)
+            for item in archive.infolist()
+            if not item.is_dir() and item.filename != "runtime-manifest.json"
+        }
+        manifest = json.loads(archive.read("runtime-manifest.json"))
+    mutate(manifest)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("runtime-manifest.json", json.dumps(manifest))
+        for relative, content in files.items():
+            archive.writestr(relative, content)
 
 
 def _offline_fixture(root: Path, requirements: bytes) -> None:
@@ -147,6 +206,8 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
 
 def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Path, monkeypatch) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "distributor" / "Olivia-video-runtime-fixture.zip"
+    _write_video_runtime(runtime)
     destination = tmp_path / "payload"
 
     prepare_setup_payload(
@@ -155,6 +216,7 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         destination,
         distribution="private",
         voice_reference=reference,
+        video_runtime=runtime,
         validate_schema=False,
     )
 
@@ -169,16 +231,27 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         "wave": {"channels": 1, "sample_width_bytes": 2, "sample_rate_hz": 16000,
                  "frame_count": 160, "compression_type": "NONE"},
     }
+    installed_runtime = destination / "offline/video-runtime/Olivia-video-runtime-private.zip"
+    assert installed_runtime.read_bytes() == runtime.read_bytes()
+    assert manifest["video_runtime"] == {
+        "path": "video-runtime/Olivia-video-runtime-private.zip",
+        "size_bytes": runtime.stat().st_size,
+        "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+    }
     input_manifest_path = offline / "offline-core-assets.json"
     input_manifest = json.loads(input_manifest_path.read_text())
-    input_manifest.update(distribution="private", voice_reference=manifest["voice_reference"])
+    input_manifest.update(
+        distribution="private",
+        voice_reference=manifest["voice_reference"],
+        video_runtime=manifest["video_runtime"],
+    )
     input_manifest_path.write_text(json.dumps(input_manifest), encoding="utf-8")
     prebundled = offline / "voice" / "olivia-reference.wav"
     prebundled.parent.mkdir()
     prebundled.write_bytes(reference.read_bytes())
     with pytest.raises(SetupBuildError, match="SETUP_INPUT_VOICE_REFERENCE_FORBIDDEN"):
         prepare_setup_payload(source, offline, tmp_path / "prebundled", validate_schema=False)
-    del input_manifest["distribution"], input_manifest["voice_reference"]
+    del input_manifest["distribution"], input_manifest["voice_reference"], input_manifest["video_runtime"]
     input_manifest_path.write_text(json.dumps(input_manifest), encoding="utf-8")
     with pytest.raises(SetupBuildError, match="SETUP_OFFLINE_ASSET_SET_MISMATCH"):
         prepare_setup_payload(source, offline, tmp_path / "orphan", validate_schema=False)
@@ -186,15 +259,23 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         prepare_setup_payload(
             source, offline, tmp_path / "public", voice_reference=reference, validate_schema=False
         )
-    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED"):
+    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED"):
         prepare_setup_payload(
-            source, offline, tmp_path / "private", distribution="private", validate_schema=False
+            source, offline, tmp_path / "private", distribution="private",
+            voice_reference=reference, validate_schema=False
+        )
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_PRIVATE_ONLY"):
+        prepare_setup_payload(
+            source, offline, tmp_path / "public-runtime", video_runtime=runtime,
+            validate_schema=False,
         )
 
 
 def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, monkeypatch) -> None:
     reference = tmp_path / "olivia-reference.wav"
     reference.write_bytes(b"RIFF-voice")
+    runtime = tmp_path / "Olivia-video-runtime-fixture.zip"
+    runtime.write_bytes(b"runtime")
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "installer.build_windows_setup.build_windows_setup",
@@ -204,11 +285,13 @@ def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, mo
     result = build_setup_main([
         "--offline", str(tmp_path / "offline"), "--output", str(tmp_path / "output"),
         "--version", "0.1.test", "--distribution", "private", "--voice-reference", str(reference),
+        "--video-runtime", str(runtime),
     ])
 
     assert result == 0
     assert captured["distribution"] == "private"
     assert captured["voice_reference"] == reference
+    assert captured["video_runtime"] == runtime
 
 
 def test_failed_private_setup_compile_removes_partial_final_artifacts(
@@ -216,6 +299,8 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
     monkeypatch,
 ) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "video-runtime.zip"
+    _write_video_runtime(runtime)
     output = tmp_path / "dist-private"
     compiler = tmp_path / "ISCC.exe"
     compiler.write_bytes(b"compiler")
@@ -230,6 +315,7 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
         assert check is False
         assert timeout == 900
         (output / "Olivia-Setup-x64.exe").write_bytes(b"partial private setup")
+        (output / "Olivia-Setup-x64-1.bin").write_bytes(b"partial runtime")
         return type("Result", (), {"returncode": 1})()
 
     monkeypatch.setattr("installer.build_windows_setup.subprocess.run", fail_compile)
@@ -243,9 +329,11 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            video_runtime=runtime,
         )
 
     assert not (output / "Olivia-Setup-x64.exe").exists()
+    assert not (output / "Olivia-Setup-x64-1.bin").exists()
     assert not (output / "Olivia-Setup-x64.exe.sha256").exists()
 
 
@@ -254,6 +342,8 @@ def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
     monkeypatch,
 ) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "video-runtime.zip"
+    _write_video_runtime(runtime)
     output = tmp_path / "dist-private"
     compiler = tmp_path / "ISCC.exe"
     compiler.write_bytes(b"compiler")
@@ -268,6 +358,7 @@ def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
         assert check is False
         assert timeout == 900
         (output / "Olivia-Setup-x64.exe").write_bytes(b"complete private setup")
+        (output / "Olivia-Setup-x64-1.bin").write_bytes(b"complete runtime")
         return type("Result", (), {"returncode": 0})()
 
     original_write_text = Path.write_text
@@ -290,9 +381,11 @@ def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            video_runtime=runtime,
         )
 
     assert not (output / "Olivia-Setup-x64.exe").exists()
+    assert not (output / "Olivia-Setup-x64-1.bin").exists()
     assert not (output / "Olivia-Setup-x64.exe.sha256").exists()
 
 
@@ -304,14 +397,18 @@ def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> Non
     assert "公开安装器不包含参考音频" in documentation
     assert "--distribution private" in documentation
     assert "--voice-reference" in documentation
+    assert "--video-runtime" in documentation
     assert "dist-private" in documentation
-    assert "文件名仍为 `Olivia-Setup-x64.exe`" in documentation
-    assert "除私有模式显式传入的 WAV 外" in documentation
+    assert "全部 `.bin` 分卷" in documentation
+    assert "私有视频包：下载完整 ZIP" in documentation
+    assert "除私有模式显式传入的 WAV 与视频运行时 ZIP 外" in documentation
     assert "GitHub Actions 只生成公开安装器 artifact" in documentation
 
 
 def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path, monkeypatch) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-fixture.zip"
+    _write_video_runtime(runtime)
     reference.write_bytes(reference.read_bytes()[:-1])
 
     with pytest.raises(SetupBuildError, match="SETUP_VOICE_REFERENCE_TRUNCATED"):
@@ -321,8 +418,125 @@ def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path,
             tmp_path / "payload",
             distribution="private",
             voice_reference=reference,
+            video_runtime=runtime,
             validate_schema=False,
         )
+
+
+def test_private_inno_payload_uses_disk_spanning_for_large_runtime() -> None:
+    script = (ROOT / "installer/windows_setup.iss").read_text(encoding="utf-8")
+    assert "#ifdef PrivatePayload" in script
+    assert "DiskSpanning=yes" in script
+    assert "DiskSliceSize=2100000000" in script
+    assert "video-runtime\\*" in script and "nocompression" in script
+
+
+def test_private_build_hashes_exe_and_all_disk_spanning_parts(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "output"
+    observed: list[str] = []
+
+    def compile_setup(command: list[str], **_: object) -> SimpleNamespace:
+        observed.extend(command)
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        (output / "Olivia-Setup-x64-1.bin").write_bytes(b"runtime")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe")
+    monkeypatch.setattr("installer.build_windows_setup.prepare_setup_payload", lambda *args, **kwargs: None)
+    monkeypatch.setattr("installer.build_windows_setup.subprocess.run", compile_setup)
+
+    result = build_windows_setup(
+        tmp_path / "source",
+        tmp_path / "offline",
+        output,
+        version="fixture",
+        distribution="private",
+        voice_reference=tmp_path / "voice.wav",
+        video_runtime=tmp_path / "runtime.zip",
+    )
+
+    assert "/DPrivatePayload=1" in observed
+    assert [Path(item["path"]).name for item in result["artifacts"]] == [
+        "Olivia-Setup-x64-1.bin",
+        "Olivia-Setup-x64.exe",
+    ]
+    checksum = (output / "Olivia-Setup-x64.exe.sha256").read_text(encoding="ascii")
+    assert "Olivia-Setup-x64-1.bin" in checksum and "Olivia-Setup-x64.exe" in checksum
+
+
+@pytest.mark.parametrize("parts", [(), (1, 3)])
+def test_private_build_requires_contiguous_disk_spanning_parts(
+    tmp_path: Path, monkeypatch, parts: tuple[int, ...]
+) -> None:
+    output = tmp_path / "output"
+
+    def compile_setup(_command: list[str], **_: object) -> SimpleNamespace:
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        for part in parts:
+            (output / f"Olivia-Setup-x64-{part}.bin").write_bytes(b"runtime")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe")
+    monkeypatch.setattr("installer.build_windows_setup.prepare_setup_payload", lambda *args, **kwargs: None)
+    monkeypatch.setattr("installer.build_windows_setup.subprocess.run", compile_setup)
+
+    with pytest.raises(SetupBuildError, match="SETUP_COMPILE_FAILED"):
+        build_windows_setup(
+            tmp_path / "source", tmp_path / "offline", output, version="fixture",
+            distribution="private", voice_reference=tmp_path / "voice.wav",
+            video_runtime=tmp_path / "runtime.zip",
+        )
+
+    assert not list(output.glob("Olivia-Setup-x64*"))
+
+
+@pytest.mark.parametrize("case", [
+    "missing-version", "missing-python", "duplicate-python", "traversal", "backslash",
+    "duplicate", "case-alias", "undeclared", "self-reference", "bad-hash", "file-shape",
+])
+def test_prepare_setup_payload_rejects_invalid_runtime_zip(
+    tmp_path: Path, monkeypatch, case: str
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "runtime.zip"
+    _write_video_runtime(runtime)
+
+    def mutate(manifest: dict[str, object]) -> None:
+        fixture = next(item for item in manifest["files"] if item["path"] == "fixture.bin")
+        if case == "missing-version":
+            manifest.pop("version")
+        elif case == "missing-python":
+            manifest["environment"].pop("OLIVIA_ROFORMER_PYTHON")
+        elif case == "duplicate-python":
+            manifest["environment"] = dict.fromkeys(
+                manifest["environment"], "cosyvoice/python/python.exe"
+            )
+        elif case in {"traversal", "backslash"}:
+            fixture["path"] = "../escape.bin" if case == "traversal" else "dir\\escape.bin"
+        elif case == "self-reference":
+            fixture["path"] = "runtime-manifest.json"
+        elif case == "bad-hash":
+            fixture["sha256"] = "0" * 64
+        elif case == "file-shape":
+            fixture["extra"] = True
+
+    _mutate_video_runtime_manifest(runtime, mutate)
+    extras = {"duplicate": "fixture.bin", "case-alias": "FIXTURE.BIN", "undeclared": "extra.bin"}
+    if case in extras:
+        with zipfile.ZipFile(runtime, "a") as archive:
+            archive.writestr(extras[case], b"x")
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        prepare_setup_payload(
+            source, offline, tmp_path / "payload", distribution="private",
+            voice_reference=reference, video_runtime=runtime, validate_schema=False,
+        )
+
+
+@pytest.mark.parametrize("unsafe", ["NUL/file.bin", "bad:name.bin", "trailing./file.bin"])
+def test_video_runtime_paths_follow_windows_rules(unsafe: str) -> None:
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _video_runtime_relative(unsafe)
 
 
 @pytest.mark.parametrize(
@@ -351,6 +565,8 @@ def test_setup_rejects_git_selected_audio_and_video_payloads(
     distribution: str,
 ) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "video-runtime.zip"
+    _write_video_runtime(runtime)
     relative = f"runtime/reference{suffix}"
     media = source.joinpath(*relative.split("/"))
     media.parent.mkdir()
@@ -372,6 +588,7 @@ def test_setup_rejects_git_selected_audio_and_video_payloads(
             tmp_path / "payload",
             distribution=distribution,
             voice_reference=reference if distribution == "private" else None,
+            video_runtime=runtime if distribution == "private" else None,
             validate_schema=False,
         )
 
