@@ -38,6 +38,23 @@ def reset_local_store():
     local_server.store.request_keys.clear()
 
 
+def _post_current_letter(local_server, content: str) -> tuple[int, dict]:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": content},
+            )
+            return response.status, await response.json()
+
+    return asyncio.run(exercise())
+
+
 def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities() -> None:
     import local_server
 
@@ -886,9 +903,7 @@ def test_corrupt_state_blocks_public_letter_mutation_without_overwrite(
     monkeypatch: pytest.MonkeyPatch,
     corrupt_state: bytes,
 ) -> None:
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
+    import http_contract
     import local_server
 
     state_path = tmp_path / "state.json"
@@ -898,23 +913,24 @@ def test_corrupt_state_blocks_public_letter_mutation_without_overwrite(
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
     local_server._load_store_state()
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
-                "/toy/letter/send",
-                json={"content": "synthetic state recovery letter"},
-            )
-            return response.status, await response.json()
-
-    status, payload = asyncio.run(exercise())
+    status, payload = _post_current_letter(
+        local_server, "synthetic state recovery letter"
+    )
 
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
     assert state_path.read_bytes() == corrupt_state
     assert local_server.store.letters == []
     assert local_server.store.request_keys == {}
+    assert http_contract.error_metadata("STORE_STATE_UNAVAILABLE") == {
+        "http_status": 503,
+        "retryable": False,
+    }
+    error_table = (ROOT / "docs" / "B02_ERROR_CODES.md").read_text(encoding="utf-8")
+    assert any(
+        "| 503 | `STORE_STATE_UNAVAILABLE` | FAILED | 否 |" in row
+        for row in error_table.splitlines()
+    )
 
 
 def test_corrupt_primary_state_recovers_from_durable_backup(
@@ -974,9 +990,6 @@ def test_public_letter_mutation_rolls_back_when_state_replace_fails(
 ) -> None:
     import os
 
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
@@ -995,17 +1008,9 @@ def test_public_letter_mutation_rolls_back_when_state_replace_fails(
 
     monkeypatch.setattr(os, "replace", reject_primary_replace)
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
-                "/toy/letter/send",
-                json={"content": "synthetic failed persistence letter"},
-            )
-            return response.status, await response.json()
-
-    status, payload = asyncio.run(exercise())
+    status, payload = _post_current_letter(
+        local_server, "synthetic failed persistence letter"
+    )
 
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
@@ -1044,25 +1049,52 @@ def test_state_persist_fsyncs_unique_snapshots_before_replace(
 
     local_server._persist_store_state()
 
-    assert [event[0] for event in events] == [
-        "fsync",
-        "replace",
-        "fsync",
-        "replace",
-    ]
+    write_events = ["fsync", "replace"]
+    if os.name != "nt":
+        write_events.append("fsync")
+    assert [event[0] for event in events] == write_events * 2
     temporary_names = [value for event, value in events if event == "replace"]
     assert len(set(temporary_names)) == 2
     assert ".state.json.tmp" not in temporary_names
     assert ".state.json.bak.tmp" not in temporary_names
 
 
+def test_directory_fsync_failure_keeps_committed_letter_scheduled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    scheduled: list[str] = []
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(
+        local_server,
+        "_schedule_reply_job",
+        lambda letter_id, *_args, **_kwargs: scheduled.append(letter_id),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "_fsync_store_directory",
+        lambda *_args: (_ for _ in ()).throw(OSError("synthetic directory fsync failure")),
+    )
+
+    status, payload = _post_current_letter(
+        local_server, "synthetic durability uncertain letter"
+    )
+
+    assert status == 200
+    assert payload["data"]["status"] == "PENDING"
+    assert scheduled == [payload["data"]["letter_id"]]
+    assert local_server.store.letters == json.loads(
+        (tmp_path / "state.json").read_text(encoding="utf-8")
+    )["letters"]
+
+
 def test_public_letter_mutation_normalizes_state_root_creation_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
     import local_server
 
     blocked_root = tmp_path / "blocked-state-root"
@@ -1071,17 +1103,9 @@ def test_public_letter_mutation_normalizes_state_root_creation_failure(
     monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
-                "/toy/letter/send",
-                json={"content": "synthetic blocked state root letter"},
-            )
-            return response.status, await response.json()
-
-    status, payload = asyncio.run(exercise())
+    status, payload = _post_current_letter(
+        local_server, "synthetic blocked state root letter"
+    )
 
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
@@ -1099,9 +1123,6 @@ def test_state_temp_creation_failure_preserves_primary_commit_boundary(
     failed_target: str,
     expected_status: int,
 ) -> None:
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
@@ -1116,17 +1137,9 @@ def test_state_temp_creation_failure_preserves_primary_commit_boundary(
 
     monkeypatch.setattr(local_server._tempfile, "mkstemp", selective_mkstemp)
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
-                "/toy/letter/send",
-                json={"content": "synthetic temp failure letter"},
-            )
-            return response.status, await response.json()
-
-    status, payload = asyncio.run(exercise())
+    status, payload = _post_current_letter(
+        local_server, "synthetic temp failure letter"
+    )
 
     assert status == expected_status
     if failed_target == "state.json":
@@ -1144,26 +1157,13 @@ def test_public_letter_mutation_normalizes_unencodable_state_text(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
 
-    async def exercise() -> tuple[int, dict]:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.post(
-                "/toy/letter/send",
-                json={"content": "synthetic\ud800state text"},
-            )
-            return response.status, await response.json()
-
-    status, payload = asyncio.run(exercise())
+    status, payload = _post_current_letter(local_server, "synthetic\ud800state text")
 
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"

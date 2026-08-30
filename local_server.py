@@ -855,7 +855,6 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
             handle.flush()
             _os.fsync(handle.fileno())
         _os.replace(temporary, path)
-        _fsync_store_directory(path.parent)
     except (OSError, UnicodeError):
         if descriptor is not None:
             try:
@@ -868,6 +867,13 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
         except OSError:
             pass
         raise StoreStateUnavailable(StoreStateUnavailable.code) from None
+    try:
+        _fsync_store_directory(path.parent)
+    except OSError:
+        _safe_log(
+            "store_directory_sync_failed",
+            error_code="STORE_STATE_DURABILITY_UNCERTAIN",
+        )
 
 
 def _load_store_state() -> None:
