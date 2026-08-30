@@ -30,6 +30,7 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     if not isinstance(manifest, dict) or set(manifest) != {
+        "bytecode_policy",
         "requirements_sha256",
         "source",
     }:
@@ -47,6 +48,7 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
         or not isinstance(sources, dict)
         or set(sources) != {"mirror", "official"}
         or any(not isinstance(item, str) for item in sources.values())
+        or manifest.get("bytecode_policy") != "pip-compile-v1"
         or not isinstance(source, str)
         or source not in sources.values()
     ):

@@ -767,6 +767,117 @@ def test_progress_uses_bom_weights_and_actual_transport_source() -> None:
     assert installer.status().downloaded_bytes == 20
 
 
+def test_managed_runtime_atomically_migrates_legacy_uncompiled_marker_once(
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "install"
+    python_root = install_root / "runtime" / "python-3.12"
+    python_root.mkdir(parents=True)
+    python_executable = python_root / "python.exe"
+    python_executable.write_bytes(b"synthetic")
+    target = install_root / "runtime" / "mem0-site-packages"
+    (target / "fixture.dist-info").mkdir(parents=True)
+    legacy_file = target / "legacy-runtime.txt"
+    legacy_file.write_text("preserve until replacement succeeds", encoding="utf-8")
+    pth = python_root / "python312._pth"
+    pth.write_text(
+        f"{target}\n{target / 'win32'}\n{target / 'win32' / 'lib'}\n"
+        "python312.zip\nsite-packages\nimport site\n",
+        encoding="utf-8",
+    )
+    requirements = (
+        install_root / "local_backend" / "installer" / "mem0-runtime-requirements.txt"
+    )
+    requirements.parent.mkdir(parents=True)
+    requirements.write_bytes(REQUIREMENTS.read_bytes())
+    legacy_marker = {
+        "requirements_sha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
+        "source": "https://pypi.org/simple",
+    }
+    marker = target / ".olivia-mem0-runtime-manifest.json"
+    marker.write_text(json.dumps(legacy_marker), encoding="utf-8")
+    attempts: list[list[str]] = []
+    fail_install = True
+
+    def runner(
+        command, *, environment, pause_requested, progress, progress_roots
+    ) -> int:
+        del environment, pause_requested, progress_roots
+        attempts.append(list(command))
+        staging = Path(command[command.index("--target") + 1])
+        (staging / "fixture.dist-info").mkdir(parents=True, exist_ok=True)
+        progress(1)
+        return 1 if fail_install else 0
+
+    def verifier(runtime: Path, requirement_file: Path) -> bool:
+        return (
+            requirement_file == requirements
+            and (runtime / "fixture.dist-info").is_dir()
+        )
+
+    layer = ManagedMem0Runtime(
+        install_root=install_root,
+        python_executable=python_executable,
+        requirements=requirements,
+        sources=(
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+            "https://pypi.org/simple",
+        ),
+        download_bytes=236_253_351,
+        verifier=verifier,
+        runner=runner,
+    )
+
+    assert layer.ready() is False
+    with pytest.raises(RuntimeError, match="MEM0_RUNTIME_DOWNLOAD_FAILED"):
+        layer.install(
+            source_mode="official",
+            offline_root=None,
+            pause_requested=threading.Event(),
+            progress=lambda *_args: None,
+        )
+    assert legacy_file.read_text(encoding="utf-8") == (
+        "preserve until replacement succeeds"
+    )
+    assert json.loads(marker.read_text(encoding="utf-8")) == legacy_marker
+
+    fail_install = False
+    layer.install(
+        source_mode="official",
+        offline_root=None,
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+    )
+    assert not legacy_file.exists()
+    assert json.loads(marker.read_text(encoding="utf-8"))["bytecode_policy"] == (
+        "pip-compile-v1"
+    )
+    assert len(attempts) == 2
+
+    restarted_layer = ManagedMem0Runtime(
+        install_root=install_root,
+        python_executable=python_executable,
+        requirements=requirements,
+        sources=(
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+            "https://pypi.org/simple",
+        ),
+        download_bytes=236_253_351,
+        verifier=verifier,
+        runner=lambda *_args, **_kwargs: pytest.fail(
+            "compiled runtime must not run the installer again"
+        ),
+    )
+    restarted_layer.install(
+        source_mode="official",
+        offline_root=None,
+        pause_requested=threading.Event(),
+        progress=lambda *_args: pytest.fail(
+            "compiled runtime must not report preparation again"
+        ),
+    )
+
+
 def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     tmp_path: Path,
 ) -> None:
@@ -828,6 +939,8 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     )
 
     assert len(calls) == 2
+    assert all("--compile" in command for command in calls)
+    assert all("--no-compile" not in command for command in calls)
     assert "https://pypi.tuna.tsinghua.edu.cn/simple" in calls[0]
     assert "https://pypi.org/simple" in calls[1]
     assert layer.ready() is True
@@ -839,12 +952,12 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
         str(target / "win32"),
         str(target / "win32" / "lib"),
     ]
-    assert progress[0] == (0, 236_253_351, "python-dependencies")
+    assert progress[0] == (0, 236_253_351, "python-runtime-preparation")
     assert any(0 < done < total for done, total, _current in progress)
     assert progress[-1] == (
         236_253_351,
         236_253_351,
-        "python-dependencies",
+        "python-runtime-preparation",
     )
     marker = target / ".olivia-mem0-runtime-manifest.json"
     owned = marker.read_bytes()
@@ -880,6 +993,7 @@ def test_managed_runtime_verifies_in_embedded_python_child_and_caches_result(
     requirements.write_bytes(REQUIREMENTS.read_bytes())
     (target / ".olivia-mem0-runtime-manifest.json").write_text(
         json.dumps({
+            "bytecode_policy": "pip-compile-v1",
             "requirements_sha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
             "source": "https://official.example/simple",
         }), encoding="utf-8",

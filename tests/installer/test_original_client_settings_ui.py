@@ -123,14 +123,14 @@ def test_ready_mem0_preserves_restart_fallback_when_companion_is_offline() -> No
 
 def test_mem0_runtime_download_explains_temporarily_flat_progress() -> None:
     assert (
-        'payload.current_file === "python-dependencies"\n'
-        '        ? "正在连接或解析 Python 依赖，下载进度可能暂时不变"'
+        '["python-runtime-preparation", "python-dependencies"].includes(payload.current_file)\n'
+        '        ? "正在准备运行环境（首次安装或更新时只需进行一次）"'
     ) in BOOTSTRAP_JAVASCRIPT
 
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v11"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v12"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
