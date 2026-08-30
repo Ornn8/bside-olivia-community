@@ -90,6 +90,18 @@ def _offline_archive_path(value: object) -> Path:
         raise VideoCapabilityAPIError("VIDEO_OFFLINE_ARCHIVE_INVALID", status=400) from exc
 
 
+def _is_runtime_archive(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return "runtime-manifest.json" in {
+                name.replace("\\", "/").casefold() for name in archive.namelist()
+            }
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise VideoCapabilityAPIError(
+            "VIDEO_OFFLINE_ARCHIVE_INVALID", status=400
+        ) from exc
+
+
 def _select_windows_runtime_root() -> Path | None:
     if os.name != "nt":
         raise VideoCapabilityAPIError("VIDEO_RUNTIME_PICKER_UNAVAILABLE", status=503)
@@ -338,6 +350,22 @@ def mount_original_client_video_capability_api(
             archive = _offline_archive_path(selected)
             try:
                 async with control_lock:
+                    if _is_runtime_archive(archive):
+                        result = await asyncio.to_thread(
+                            installer.import_runtime_archive,
+                            runtime_archive=archive,
+                        )
+                        if result not in {"APPLIED", "NOOP", "REJECTED"}:
+                            raise VideoCapabilityAPIError(
+                                "VIDEO_CAPABILITY_RESULT_INVALID", status=503
+                            )
+                        return web.json_response(
+                            {"status": result},
+                            headers={
+                                "Access-Control-Allow-Origin": origin,
+                                "Cache-Control": "no-store",
+                            },
+                        )
                     results = [
                         await asyncio.to_thread(
                             installer.import_offline,
