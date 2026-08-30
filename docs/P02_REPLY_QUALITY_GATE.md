@@ -15,7 +15,9 @@ constraints, and violation codes. It returns replacement plain text only.
 `ReplyPipeline` executes the synchronous gate in a worker thread. Provider
 review and rewrite calls therefore do not block the aiohttp event loop. Each
 model call has its own bounded timeout, and the outer reply timeout still owns
-the full request.
+the full request. For a Letter, that outer budget includes the two possible
+same-layer transport retries, two conditional adjudications, and the single
+rewrite between the initial and final five-layer reviews.
 
 After the rewrite budget is consumed, a deterministic hard violation or
 reviewer `block` fails closed. A final reviewer `rewrite` containing only soft

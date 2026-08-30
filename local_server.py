@@ -2116,7 +2116,7 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
 
 
 def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
-    """Cover generation plus review, one rewrite, and the final recheck."""
+    """Cover generation plus bounded review, rewrite, and recheck stages."""
 
     max_reasoning = (
         exact_mode == ReplyMode.TEXT_LETTER.value
@@ -2151,7 +2151,7 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
             LLM_CONFIG.reasoning_timeout_seconds if max_reasoning else 300.0,
         ),
     )
-    quality_stages = 5.0 if max_reasoning else 3.0
+    quality_stages = 7.0 if exact_mode == ReplyMode.TEXT_LETTER.value else 3.0
     return generation_timeout + quality_stages * quality_timeout + 5.0
 
 

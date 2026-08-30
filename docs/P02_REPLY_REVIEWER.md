@@ -73,10 +73,11 @@ reviews retain the pre-protocol response schema and normal successful call
 count: they neither require `hard_evidence` nor invoke adjudication.
 
 Across Persona modes, one retry may be added only for the single layer whose
-result fails `LAYER_CONTRACT` or `EVIDENCE_CONTRACT`, or whose transport call
-remains unavailable after the Gateway's provider retry budget. That retry uses
-the same messages with a fresh request ID and does not rerun any other layer.
-A second allowed failure remains `REVIEWER_UNAVAILABLE`. `JSON`,
+result fails `LAYER_CONTRACT` or `EVIDENCE_CONTRACT`. For `text_letter` only, a
+retryable transport failure that remains after the Gateway's provider retry
+budget may also retry that layer once. The retry uses the same messages with a
+fresh request ID and does not rerun any other layer. A second allowed failure
+remains `REVIEWER_UNAVAILABLE`. Non-retryable provider errors, `JSON`,
 `TOP_LEVEL_SCHEMA`, `EMPTY_TEXT`, and `INTERNAL` failures are not retried.
 
 In `text_letter`, `identity_boundary`, `voice_style`, and `continuity_memory`
