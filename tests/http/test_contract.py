@@ -55,6 +55,28 @@ def _post_current_letter(local_server, content: str) -> tuple[int, dict]:
     return asyncio.run(exercise())
 
 
+def _get_mailbox_responses(local_server) -> list[tuple[int, dict]]:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def exercise() -> list[tuple[int, dict]]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            responses = []
+            for path, params in (
+                ("/toy/letter/list", {}),
+                ("/toy/letter/unread_count", {}),
+                ("/toy/letter/detail", {"letter_id": "synthetic-missing"}),
+                ("/toy/letter/list", {"scope": "legacy"}),
+            ):
+                response = await client.get(path, params=params)
+                responses.append((response.status, await response.json()))
+            return responses
+
+    return asyncio.run(exercise())
+
+
 def test_core_health_is_versioned_and_reports_unavailable_optional_capabilities() -> None:
     import local_server
 
@@ -913,10 +935,18 @@ def test_corrupt_state_blocks_public_letter_mutation_without_overwrite(
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
     local_server._load_store_state()
 
+    *current_reads, legacy_read = _get_mailbox_responses(local_server)
     status, payload = _post_current_letter(
         local_server, "synthetic state recovery letter"
     )
 
+    assert all(
+        read_status == 503
+        and read_payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+        for read_status, read_payload in current_reads
+    )
+    assert legacy_read[0] == 200
+    assert legacy_read[1]["data"]["scope"] == "legacy"
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
     assert state_path.read_bytes() == corrupt_state

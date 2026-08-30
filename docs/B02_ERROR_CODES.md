@@ -23,7 +23,7 @@
 | 501 | `ROUTE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 未登记 route |
 | 200 detail | `LLM_TIMEOUT` / `LLM_UNAVAILABLE` | FAILED | 是 | 发信先确认 PENDING；provider 超时/不可用后 detail 显示 FAILED |
 | 200 detail | `LLM_INTERRUPTED` | FAILED | 是 | 进程在 provider 调用终态落盘前中断；不自动重复生成 |
-| 503 | `STORE_STATE_UNAVAILABLE` | FAILED | 否 | 信箱状态损坏或原子持久化不可用；拒绝新写入且不回显正文、本机路径或底层异常 |
+| 503 | `STORE_STATE_UNAVAILABLE` | FAILED | 否 | 当前信箱状态损坏或原子持久化不可用；拒绝 current 读写且不回显正文、本机路径或底层异常 |
 | 503 | `MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | legacy import 的 SQLite 存储不可用；不回显正文、路径或密钥 |
 | 503 | `OFFICIAL_LETTER_IMPORT_UNAVAILABLE` | UNAVAILABLE | 是 | 官方登录日志或文字信件接口暂不可用；不回显凭证、正文或本机路径 |
 | 503 | `OFFICIAL_HISTORY_MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | Mem0 未安装、未启用或状态不可用；在采集官方历史前拒绝导入 |

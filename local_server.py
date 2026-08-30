@@ -754,6 +754,11 @@ class StoreStateUnavailable(RuntimeError):
     code = "STORE_STATE_UNAVAILABLE"
 
 
+_CURRENT_STORE_CAPABILITIES = frozenset(
+    {"letters.read", "letters.unread", "letters.send"}
+)
+
+
 def _require_store_state_available() -> None:
     if _store_state_error_code is not None:
         raise StoreStateUnavailable(_store_state_error_code)
@@ -2396,6 +2401,11 @@ async def route(
         })
     if query is None:
         query = {}
+    if (
+        spec["capability"] in _CURRENT_STORE_CAPABILITIES
+        and query.get("scope", "current") == "current"
+    ):
+        _require_store_state_available()
     if p == "/health":
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
     if p == "/toy/companion/memory/retry":
@@ -2860,7 +2870,6 @@ async def route(
                 "error_code": "READ_ONLY_SCOPE",
                 "scope": "legacy",
             })
-        _require_store_state_available()
         if "content" not in body:
             return _missing_field("content")
         content = body.get("content")
