@@ -839,22 +839,32 @@ def _fsync_store_directory(root: Path) -> None:
 
 
 def _atomic_write_store_file(path: Path, serialized: str) -> None:
-    descriptor, temporary_name = _tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
+    descriptor: int | None = None
+    temporary: Path | None = None
     try:
-        with _os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+        descriptor, temporary_name = _tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        handle = _os.fdopen(descriptor, "w", encoding="utf-8", newline="")
+        descriptor = None
+        with handle:
             handle.write(serialized)
             handle.flush()
             _os.fsync(handle.fileno())
         _os.replace(temporary, path)
         _fsync_store_directory(path.parent)
-    except OSError:
+    except (OSError, UnicodeError):
+        if descriptor is not None:
+            try:
+                _os.close(descriptor)
+            except OSError:
+                pass
         try:
-            temporary.unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         except OSError:
             pass
         raise StoreStateUnavailable(StoreStateUnavailable.code) from None
@@ -914,7 +924,11 @@ def _persist_store_state() -> None:
     root = _state_root()
     if root is None:
         return
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _store_state_error_code = StoreStateUnavailable.code
+        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
     payload = {
         "letters": store.letters,
         "legacy_letters": store.legacy_letters,
@@ -2921,9 +2935,26 @@ async def route(
             ),
         }
         store.letters.insert(0, letter)
+        previous_request_id = (
+            store.request_keys.get(idempotency_key)
+            if idempotency_key is not None
+            else None
+        )
+        had_request_key = (
+            idempotency_key is not None and idempotency_key in store.request_keys
+        )
         if idempotency_key is not None:
             store.request_keys[idempotency_key] = lid
-        _persist_store_state()
+        try:
+            _persist_store_state()
+        except StoreStateUnavailable:
+            store.letters.remove(letter)
+            if idempotency_key is not None:
+                if had_request_key:
+                    store.request_keys[idempotency_key] = previous_request_id
+                else:
+                    store.request_keys.pop(idempotency_key, None)
+            raise
         if defer_reply or not _conversation_memory_ready_for_reply():
             _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
             return _send_result_for_letter(letter)

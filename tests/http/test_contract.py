@@ -966,9 +966,11 @@ def test_corrupt_primary_state_recovers_from_durable_backup(
     ][0]["letter_id"] == letter["letter_id"]
 
 
+@pytest.mark.parametrize("existing_snapshot", [True, False])
 def test_public_letter_mutation_rolls_back_when_state_replace_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    existing_snapshot: bool,
 ) -> None:
     import os
 
@@ -980,9 +982,10 @@ def test_public_letter_mutation_rolls_back_when_state_replace_fails(
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
-    local_server._persist_store_state()
     state_path = tmp_path / "state.json"
-    previous_state = state_path.read_bytes()
+    if existing_snapshot:
+        local_server._persist_store_state()
+    previous_state = state_path.read_bytes() if existing_snapshot else None
     real_replace = os.replace
 
     def reject_primary_replace(source, destination) -> None:
@@ -1006,7 +1009,10 @@ def test_public_letter_mutation_rolls_back_when_state_replace_fails(
 
     assert status == 503
     assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
-    assert state_path.read_bytes() == previous_state
+    if previous_state is None:
+        assert not state_path.exists()
+    else:
+        assert state_path.read_bytes() == previous_state
     assert local_server.store.letters == []
     assert not tuple(tmp_path.glob("*.tmp"))
 
@@ -1048,6 +1054,120 @@ def test_state_persist_fsyncs_unique_snapshots_before_replace(
     assert len(set(temporary_names)) == 2
     assert ".state.json.tmp" not in temporary_names
     assert ".state.json.bak.tmp" not in temporary_names
+
+
+def test_public_letter_mutation_normalizes_state_root_creation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    blocked_root = tmp_path / "blocked-state-root"
+    blocked_root.write_text("synthetic blocker", encoding="utf-8")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(blocked_root))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic blocked state root letter"},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 503
+    assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+    assert str(blocked_root) not in json.dumps(payload)
+    assert local_server.store.letters == []
+
+
+@pytest.mark.parametrize(
+    ("failed_target", "expected_status"),
+    [("state.json", 503), ("state.json.bak", 200)],
+)
+def test_state_temp_creation_failure_preserves_primary_commit_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_target: str,
+    expected_status: int,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
+    real_mkstemp = local_server._tempfile.mkstemp
+
+    def selective_mkstemp(*args, **kwargs):
+        if kwargs.get("prefix", "").startswith(f".{failed_target}."):
+            raise OSError("synthetic temp creation failure")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(local_server._tempfile, "mkstemp", selective_mkstemp)
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic temp failure letter"},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == expected_status
+    if failed_target == "state.json":
+        assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+        assert local_server.store.letters == []
+        assert not (tmp_path / "state.json").exists()
+    else:
+        assert payload["code"] == 0
+        assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))[
+            "letters"
+        ][0]["content"] == "synthetic temp failure letter"
+
+
+def test_public_letter_mutation_normalizes_unencodable_state_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None, raising=False)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *_args, **_kwargs: None)
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/send",
+                json={"content": "synthetic\ud800state text"},
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 503
+    assert payload["data"]["error_code"] == "STORE_STATE_UNAVAILABLE"
+    assert local_server.store.letters == []
 
 
 def test_failed_idempotent_request_can_retry_with_same_key(
