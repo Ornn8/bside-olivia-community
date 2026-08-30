@@ -56,6 +56,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - 找不到信件或 MIDI job：404，不返回空的成功对象。
 - 空信箱、无匹配歌曲、空 playlist：200，但 `source=local-memory|empty`、列表和计数明确为空。
 - LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。
+- 当前信箱状态损坏或原子写入在 replace 前失败：current list/unread/detail/send 返回 503 `STORE_STATE_UNAVAILABLE`，legacy 只读信箱保持独立；replace 后仅目录同步失败时保留已提交信并继续调度，日志只记录脱敏诊断码。
 - 同一时间只接收一封未交付信：上一封仍为 PENDING/PROCESSING，或虽已生成但尚未到 `reply_not_before` 时，不同的新信返回 409 `LETTER_IN_PROGRESS`；相同请求的网络重试仍复用原信，回信可见后允许继续寄信。
 - 相同正文和素材在短窗口内失败后重试成功时，旧 FAILED 记录保留在本地审计状态，但从 current list 隐藏；直接查询旧 ID 返回 410 `LETTER_SUPERSEDED` 和替代信件 ID，不回显旧正文。
 - `/letter/resend` 当前未实现；重复请求返回相同 501，不改变信件内容或状态。

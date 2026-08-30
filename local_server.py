@@ -17,6 +17,7 @@ import uuid
 import hashlib
 import inspect
 import threading
+import tempfile as _tempfile
 import webbrowser as _webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -746,6 +747,21 @@ class Store:
         self.request_keys = {}
 
 store = Store()
+_store_state_error_code: str | None = None
+
+
+class StoreStateUnavailable(RuntimeError):
+    code = "STORE_STATE_UNAVAILABLE"
+
+
+_CURRENT_STORE_CAPABILITIES = frozenset(
+    {"letters.read", "letters.unread", "letters.send"}
+)
+
+
+def _require_store_state_available() -> None:
+    if _store_state_error_code is not None:
+        raise StoreStateUnavailable(_store_state_error_code)
 
 
 def _local_data_root(environment: Mapping[str, str] | None = None) -> Path | None:
@@ -797,16 +813,96 @@ def _mark_media_not_requested(letter: dict) -> None:
     letter["media_retryable"] = False
 
 
+def _read_store_state(path: Path) -> dict:
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict) or "letters" not in loaded:
+        raise ValueError("store state must be an object")
+    normalized: dict[str, object] = {}
+    for name in ("letters", "legacy_letters", "midi_jobs"):
+        value = loaded.get(name, [])
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise ValueError("store state contains an invalid collection")
+        normalized[name] = value
+    for name in ("settings", "request_keys"):
+        value = loaded.get(name, {})
+        if not isinstance(value, dict):
+            raise ValueError("store state contains invalid metadata")
+        normalized[name] = value
+    return normalized
+
+
+def _fsync_store_directory(root: Path) -> None:
+    if _os.name == "nt":
+        return
+    descriptor = _os.open(root, _os.O_RDONLY)
+    try:
+        _os.fsync(descriptor)
+    finally:
+        _os.close(descriptor)
+
+
+def _atomic_write_store_file(path: Path, serialized: str) -> None:
+    descriptor: int | None = None
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = _tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        handle = _os.fdopen(descriptor, "w", encoding="utf-8", newline="")
+        descriptor = None
+        with handle:
+            handle.write(serialized)
+            handle.flush()
+            _os.fsync(handle.fileno())
+        _os.replace(temporary, path)
+    except (OSError, UnicodeError):
+        if descriptor is not None:
+            try:
+                _os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
+    try:
+        _fsync_store_directory(path.parent)
+    except OSError:
+        _safe_log(
+            "store_directory_sync_failed",
+            error_code="STORE_STATE_DURABILITY_UNCERTAIN",
+        )
+
+
 def _load_store_state() -> None:
+    global _store_state_error_code
     root = _state_root()
     if root is None:
         return
+    recovered_from_backup = False
     try:
-        loaded = json.loads((root / "state.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return
-    if not isinstance(loaded, dict):
-        return
+        loaded = _read_store_state(root / "state.json")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as primary_error:
+        try:
+            loaded = _read_store_state(root / "state.json.bak")
+            recovered_from_backup = True
+        except FileNotFoundError:
+            if isinstance(primary_error, FileNotFoundError):
+                _store_state_error_code = None
+                return
+            _store_state_error_code = StoreStateUnavailable.code
+            return
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            _store_state_error_code = StoreStateUnavailable.code
+            return
+    _store_state_error_code = None
     needs_persist = False
     for name in ("letters", "legacy_letters", "midi_jobs"):
         value = loaded.get(name)
@@ -829,15 +925,24 @@ def _load_store_state() -> None:
         store.settings = loaded["settings"]
     if isinstance(loaded.get("request_keys"), dict):
         store.request_keys = loaded["request_keys"]
-    if needs_persist:
-        _persist_store_state()
+    if needs_persist or recovered_from_backup:
+        try:
+            _persist_store_state()
+        except StoreStateUnavailable:
+            _safe_log("store_primary_repair_failed", error_code=StoreStateUnavailable.code)
 
 
 def _persist_store_state() -> None:
+    global _store_state_error_code
+    _require_store_state_available()
     root = _state_root()
     if root is None:
         return
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _store_state_error_code = StoreStateUnavailable.code
+        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
     payload = {
         "letters": store.letters,
         "legacy_letters": store.legacy_letters,
@@ -845,9 +950,17 @@ def _persist_store_state() -> None:
         "settings": store.settings,
         "request_keys": store.request_keys,
     }
-    temporary = root / ".state.json.tmp"
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    temporary.replace(root / "state.json")
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    try:
+        _atomic_write_store_file(root / "state.json", serialized)
+    except StoreStateUnavailable:
+        _store_state_error_code = StoreStateUnavailable.code
+        raise
+    _store_state_error_code = None
+    try:
+        _atomic_write_store_file(root / "state.json.bak", serialized)
+    except StoreStateUnavailable:
+        _safe_log("store_backup_failed", error_code=StoreStateUnavailable.code)
 
 
 _memory_config = load_memory_config()
@@ -1403,6 +1516,23 @@ async def handler(request: web.Request):
                 companion_confirmed=(
                     request.headers.get("X-Olivia-Companion-Action") == "confirmed"
                 ),
+            )
+        except StoreStateUnavailable:
+            _load_store_state()
+            _safe_log(
+                "route_failure",
+                method=method,
+                path=path,
+                error_code=StoreStateUnavailable.code,
+            )
+            result = err(
+                503,
+                StoreStateUnavailable.code,
+                {
+                    "status": "FAILED",
+                    "error_code": StoreStateUnavailable.code,
+                    "retryable": False,
+                },
             )
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
@@ -2274,6 +2404,11 @@ async def route(
         })
     if query is None:
         query = {}
+    if (
+        spec["capability"] in _CURRENT_STORE_CAPABILITIES
+        and query.get("scope", "current") == "current"
+    ):
+        _require_store_state_available()
     if p == "/health":
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
     if p == "/toy/companion/memory/retry":
@@ -2818,9 +2953,26 @@ async def route(
             ),
         }
         store.letters.insert(0, letter)
+        previous_request_id = (
+            store.request_keys.get(idempotency_key)
+            if idempotency_key is not None
+            else None
+        )
+        had_request_key = (
+            idempotency_key is not None and idempotency_key in store.request_keys
+        )
         if idempotency_key is not None:
             store.request_keys[idempotency_key] = lid
-        _persist_store_state()
+        try:
+            _persist_store_state()
+        except StoreStateUnavailable:
+            store.letters.remove(letter)
+            if idempotency_key is not None:
+                if had_request_key:
+                    store.request_keys[idempotency_key] = previous_request_id
+                else:
+                    store.request_keys.pop(idempotency_key, None)
+            raise
         if defer_reply or not _conversation_memory_ready_for_reply():
             _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
             return _send_result_for_letter(letter)
