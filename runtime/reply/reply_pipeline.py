@@ -12,7 +12,12 @@ from persona_loader import load_persona
 from reply_model_quality import create_model_quality_ports
 from runtime.reply.reply_context import ReplyContext
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
-from runtime.reply.reply_quality_gate import ReviewerPort, RewriterPort, run_reply_quality_gate
+from runtime.reply.reply_quality_gate import (
+    DeliveryRepairDisposition,
+    ReviewerPort,
+    RewriterPort,
+    run_reply_quality_gate,
+)
 from runtime.reply.reply_reviewer import (
     NullReviewer,
     TrustedCharacterReply,
@@ -55,6 +60,9 @@ class PipelineResult:
     violation_codes: tuple[str, ...] = ()
     reviewer_calls: int = 0
     rewrite_calls: int = 0
+    delivery_repair_disposition: DeliveryRepairDisposition = (
+        DeliveryRepairDisposition.NONE
+    )
 
 
 @dataclass(frozen=True)
@@ -131,8 +139,8 @@ class ReplyPipeline:
         if not gate.accepted:
             repairable_text = (
                 gate.text
-                if gate.violation_codes
-                == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+                if gate.delivery_repair_disposition
+                is DeliveryRepairDisposition.VIDEO_LENGTH
                 else ""
             )
             return PipelineResult(
@@ -144,6 +152,9 @@ class ReplyPipeline:
                 violation_codes=gate.violation_codes,
                 reviewer_calls=gate.reviewer_calls,
                 rewrite_calls=gate.rewrite_calls,
+                delivery_repair_disposition=(
+                    gate.delivery_repair_disposition
+                ),
             )
         return PipelineResult(
             candidate.request_id,
@@ -153,6 +164,7 @@ class ReplyPipeline:
             violation_codes=gate.violation_codes,
             reviewer_calls=gate.reviewer_calls,
             rewrite_calls=gate.rewrite_calls,
+            delivery_repair_disposition=gate.delivery_repair_disposition,
         )
 
 

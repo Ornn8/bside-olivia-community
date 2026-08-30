@@ -11,7 +11,11 @@ from runtime.reply.reply_context import (
     TrustedTime,
 )
 from runtime.reply.reply_policy import IntimacyClaim
-from runtime.reply.reply_quality_gate import QualityGateStatus, run_reply_quality_gate
+from runtime.reply.reply_quality_gate import (
+    DeliveryRepairDisposition,
+    QualityGateStatus,
+    run_reply_quality_gate,
+)
 from runtime.reply.reply_reviewer import (
     NullReviewer,
     ReviewerScores,
@@ -481,6 +485,83 @@ def test_short_video_rewrite_is_blocked_without_a_second_rewrite() -> None:
     assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
     assert result.rewrite_calls == 1
     assert rewriter.calls == 1
+
+
+def test_video_length_with_soft_reviewer_finding_is_typed_for_delivery_repair() -> None:
+    candidate = "Too short."
+    final_review = ReviewResult(
+        ReviewStatus.COMPLETED,
+        ReviewVerdict.REWRITE,
+        (
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                "soft",
+                0,
+                len(candidate),
+            ),
+        ),
+        ReviewerScores(90, 90, 90, 90),
+        IntimacyRequest.NONE,
+        (),
+    )
+
+    result = run_reply_quality_gate(
+        candidate,
+        _video_context(),
+        reviewer=_Reviewer(_pass_review(), final_review),
+        rewriter=_Rewriter(candidate),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.violation_codes == (
+        "VIDEO_REPLY_LENGTH_OUT_OF_RANGE",
+        "MEMORY_FABRICATION",
+    )
+    assert (
+        result.delivery_repair_disposition
+        is DeliveryRepairDisposition.VIDEO_LENGTH
+    )
+
+
+def test_video_length_with_hard_reviewer_finding_is_not_delivery_repairable() -> None:
+    candidate = "Too short."
+    final_review = ReviewResult(
+        ReviewStatus.COMPLETED,
+        ReviewVerdict.REWRITE,
+        (
+            ReviewerViolation(
+                "MEMORY_FABRICATION",
+                "hard",
+                0,
+                len(candidate),
+            ),
+        ),
+        ReviewerScores(90, 30, 90, 90),
+        IntimacyRequest.NONE,
+        (),
+    )
+
+    result = run_reply_quality_gate(
+        candidate,
+        _video_context(),
+        reviewer=_Reviewer(_pass_review(), final_review),
+        rewriter=_Rewriter(candidate),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
+
+
+def test_video_length_with_unavailable_reviewer_is_not_delivery_repairable() -> None:
+    result = run_reply_quality_gate(
+        "Too short.",
+        _video_context(),
+        reviewer=_Reviewer(_unavailable_review()),
+        rewriter=_NeverRewrite(),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
 
 
 def test_final_soft_review_issue_is_accepted_with_warnings_after_one_rewrite() -> None:

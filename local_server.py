@@ -3313,6 +3313,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             exact_mode,
             idempotency_key=idempotency_key,
         )
+        from runtime.reply.reply_quality_gate import DeliveryRepairDisposition
+
         if (
             exact_mode
             in {
@@ -3321,11 +3323,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             }
             and result.text
             and not ordinary_video_reply_length_ok(result.text)
-            and (
-                result.state is ReplyState.COMPLETED
-                or result.violation_codes
-                == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
-            )
+            and result.delivery_repair_disposition
+            is DeliveryRepairDisposition.VIDEO_LENGTH
         ):
             result = await _run_reply_pipeline_for_letter(
                 letter,
