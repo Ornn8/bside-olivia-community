@@ -14,7 +14,13 @@ import pytest
 
 import runtime.reply.reply_model_quality as quality_module
 
-from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
+from llm_gateway import (
+    Gateway,
+    GatewayConfig,
+    GatewayDelta,
+    GatewayRequestScope,
+    GatewayResponse,
+)
 from memory_port import CONVERSATION_MEMORY, MemoryRecord, NullMemoryPort
 from memory_prompt import MemoryPromptBuilder
 from runtime.reply.reply_context import (
@@ -605,6 +611,17 @@ class SequencedQualityGateway(Gateway):
         self.adjudication_message_roles: list[tuple[str, ...]] = []
         self.adjudication_system_prompts: list[str] = []
         self.adjudication_input_sizes: list[int] = []
+        self.scopes: list[GatewayRequestScope] = []
+
+    async def complete_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        self.scopes.append(scope)
+        return await self.complete(messages, request_id=request_id)
 
     async def complete(
         self,
@@ -803,6 +820,7 @@ def _pipeline(
     *,
     memory: NullMemoryPort | None = None,
     rewrite_enabled: bool = True,
+    max_reasoning: bool = False,
 ) -> ReplyPipeline:
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "true")
     monkeypatch.setenv(
@@ -811,12 +829,26 @@ def _pipeline(
     )
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "1")
     memory = memory or NullMemoryPort()
-    adapter = SimpleNamespace(
-        config=SimpleNamespace(
+    config = (
+        GatewayConfig(
+            provider="openai_compatible",
+            api_style="chat_completions",
+            model="deepseek-v4-flash",
+            persona_v2_enabled=True,
+            timeout_seconds=3.0,
+            reasoning_timeout_seconds=5.0,
+        )
+        if max_reasoning
+        else SimpleNamespace(
             provider="openai_compatible",
             persona_v2_enabled=True,
             timeout_seconds=3.0,
-        ),
+        )
+    )
+    if max_reasoning:
+        monkeypatch.setattr(quality_module, "create_gateway", lambda _config: gateway)
+    adapter = SimpleNamespace(
+        config=config,
         persona_v2_path=(
             ROOT / "linli_character" / "persona_release_v2.json"
         ),
@@ -853,7 +885,7 @@ def test_configured_provider_runs_structured_persona_review(
         candidate="我听见了。今晚先做一件小事就好。",
         reviews=_passing_layer_payloads(),
     )
-    pipeline = _pipeline(gateway, monkeypatch)
+    pipeline = _pipeline(gateway, monkeypatch, max_reasoning=True)
 
     result = asyncio.run(
         pipeline.run(
@@ -1249,8 +1281,12 @@ def test_adjudicator_rejects_false_style_drift_as_direct_soft_warning(
     )
 
     result = asyncio.run(
-        _pipeline(gateway, monkeypatch).run(
-            ReplyRequest(content="Synthetic current input.", request_id="false-style"),
+        _pipeline(gateway, monkeypatch, max_reasoning=True).run(
+            ReplyRequest(
+                content="Synthetic current input.",
+                request_id="false-style",
+                gateway_scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+            ),
             _context(),
         )
     )
@@ -1260,6 +1296,7 @@ def test_adjudicator_rejects_false_style_drift_as_direct_soft_warning(
     assert result.violation_codes == ("STYLE_DRIFT",)
     assert result.rewrite_calls == 0
     assert gateway.call_kinds == ["generation", *('review',) * 5, "adjudication"]
+    assert gateway.scopes == [GatewayRequestScope.TEXT_LETTER_MAX_REASONING] * 7
 
 
 def test_confirmed_forced_question_rewrites_then_persistent_style_blocks(
@@ -1512,7 +1549,7 @@ def test_non_letter_hard_findings_keep_legacy_schema_without_adjudication(
         reviews=[*first, *_legacy_passing_layer_payloads()],
         rewritten="y" * 190,
     )
-    pipeline = _pipeline(gateway, monkeypatch)
+    pipeline = _pipeline(gateway, monkeypatch, max_reasoning=True)
 
     result = asyncio.run(
         pipeline.run(
@@ -2989,13 +3026,14 @@ def test_deterministic_violation_uses_original_model_for_one_rewrite(
         reviews=[*_passing_layer_payloads(), *_passing_layer_payloads()],
         rewritten="谁让你一个人把事情都扛着的。今晚先停一下。",
     )
-    pipeline = _pipeline(gateway, monkeypatch)
+    pipeline = _pipeline(gateway, monkeypatch, max_reasoning=True)
 
     result = asyncio.run(
         pipeline.run(
             ReplyRequest(
                 content="我又把事情搞砸了。",
                 request_id="rewrite-once",
+                gateway_scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
             ),
             _context(),
         )
@@ -3011,6 +3049,7 @@ def test_deterministic_violation_uses_original_model_for_one_rewrite(
         "rewrite",
         *("review",) * 5,
     ]
+    assert gateway.scopes == [GatewayRequestScope.TEXT_LETTER_MAX_REASONING] * 12
     rewrite = gateway.rewrite_requests[0]
     assert rewrite["user_message"] == "我又把事情搞砸了。"
     assert rewrite["violation_codes"] == ["INTERNAL_CONTROL_MARKUP"]
@@ -3044,6 +3083,7 @@ def test_video_length_rewrite_receives_the_exact_delivery_contract(
         "target_compact_characters": 190,
         "priority": "required_over_concise_style",
     }
+    assert gateway.scopes == []
 
 
 def test_quality_rewriter_uses_configured_streaming_transport() -> None:
@@ -3185,8 +3225,10 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
 
     assert reviewer is not None
     assert rewriter is not None
-    assert reviewer.adapter.config.timeout_seconds == 600.0
-    assert rewriter.timeout_seconds == 600.0
+    assert reviewer.adapter.config.timeout_seconds == 60.0
+    assert reviewer.adapter.transport.reasoning_timeout_seconds == 600.0
+    assert rewriter.timeout_seconds == 60.0
+    assert rewriter.reasoning_timeout_seconds == 600.0
     review_gateway = reviewer.adapter.transport.gateway
     assert review_gateway is rewriter.gateway
     assert review_gateway is not gateway
@@ -3201,3 +3243,5 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
     assert overridden_rewriter is not None
     assert overridden_reviewer.adapter.config.timeout_seconds == 20.0
     assert overridden_rewriter.timeout_seconds == 20.0
+    assert overridden_reviewer.adapter.transport.reasoning_timeout_seconds == 600.0
+    assert overridden_rewriter.reasoning_timeout_seconds == 600.0

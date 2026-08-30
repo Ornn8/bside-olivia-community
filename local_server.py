@@ -35,6 +35,7 @@ from llm_gateway import (
     GatewayConfig,
     GatewayDelta,
     GatewayError,
+    GatewayRequestScope,
     GatewayResponse,
     ProviderTimeout,
     ProviderUnavailable,
@@ -229,7 +230,7 @@ def _deepseek_max_reasoning_enabled(config: GatewayConfig) -> bool:
 
 def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
     if _deepseek_max_reasoning_enabled(config):
-        return max(config.timeout_seconds, 600.0)
+        return config.reasoning_timeout_seconds
     return config.timeout_seconds
 
 
@@ -265,7 +266,7 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         private_world_candidate_analyzer.gateway = gateway
         private_world_candidate_analyzer.timeout_seconds = candidate.timeout_seconds
     emotion_triage.gateway = gateway
-    reply_engine.timeout_seconds = _letter_reply_timeout_seconds(candidate)
+    reply_engine.timeout_seconds = candidate.timeout_seconds
     LLM_CONFIG = candidate
     LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
     LLM_CFG = candidate.public_dict()
@@ -307,7 +308,27 @@ class _LetterGateway(Gateway):
         self.adapter = adapter
         self.stream_enabled = bool(adapter.config.stream)
 
+    def timeout_seconds_for_scope(
+        self,
+        scope: GatewayRequestScope,
+        *,
+        default: float,
+    ) -> float:
+        return self.adapter.gateway.timeout_seconds_for_scope(scope, default=default)
+
     async def complete(self, messages, *, request_id=None) -> GatewayResponse:
+        return await self._complete(messages, request_id=request_id, scope=None)
+
+    async def complete_scoped(
+        self,
+        messages,
+        *,
+        request_id=None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        return await self._complete(messages, request_id=request_id, scope=scope)
+
+    async def _complete(self, messages, *, request_id, scope) -> GatewayResponse:
         content = next(
             (
                 message.get("content", "")
@@ -322,6 +343,7 @@ class _LetterGateway(Gateway):
                 content,
                 "",
                 request_id=request_id,
+                gateway_scope=scope,
             )
         except LLMError as exc:
             if exc.code == "LLM_TIMEOUT":
@@ -339,6 +361,20 @@ class _LetterGateway(Gateway):
         )
 
     async def stream(self, messages, *, request_id=None):
+        async for delta in self._stream(messages, request_id=request_id, scope=None):
+            yield delta
+
+    async def stream_scoped(
+        self,
+        messages,
+        *,
+        request_id=None,
+        scope: GatewayRequestScope,
+    ):
+        async for delta in self._stream(messages, request_id=request_id, scope=scope):
+            yield delta
+
+    async def _stream(self, messages, *, request_id, scope):
         content = next(
             (
                 message.get("content", "")
@@ -348,7 +384,16 @@ class _LetterGateway(Gateway):
             "",
         )
         built_messages = await asyncio.to_thread(self.adapter._messages, content)
-        async for delta in self.adapter.gateway.stream(built_messages, request_id=request_id):
+        stream = (
+            self.adapter.gateway.stream_scoped(
+                built_messages,
+                request_id=request_id,
+                scope=scope,
+            )
+            if scope is not None
+            else self.adapter.gateway.stream(built_messages, request_id=request_id)
+        )
+        async for delta in stream:
             yield GatewayDelta(
                 delta.text,
                 delta.request_id,
@@ -622,13 +667,21 @@ class LetterAdapter:
         context: str = "",
         *,
         request_id: str | None = None,
+        gateway_scope: GatewayRequestScope | None = None,
     ) -> str:
         config, gateway = self._runtime
         try:
             messages = self._messages(content, context)
-            return asyncio.run(
-                gateway.complete(messages, request_id=request_id)
-            ).text
+            completion = (
+                gateway.complete_scoped(
+                    messages,
+                    request_id=request_id,
+                    scope=gateway_scope,
+                )
+                if gateway_scope is not None
+                else gateway.complete(messages, request_id=request_id)
+            )
+            return asyncio.run(completion).text
         except GatewayError as exc:
             code = "LLM_TIMEOUT" if isinstance(exc, ProviderTimeout) else "LLM_UNAVAILABLE"
             if exc.code == "PROVIDER_REJECTED":
@@ -1076,7 +1129,7 @@ async def _music_voice_plan_for_letter(
 music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
-    timeout_seconds=_letter_reply_timeout_seconds(LLM_CONFIG),
+    timeout_seconds=LLM_CONFIG.timeout_seconds,
 )
 reply_pipeline = ReplyPipeline(
     reply_engine,
@@ -1997,29 +2050,40 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
 def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
     """Cover generation plus review, one rewrite, and the final recheck."""
 
-    max_reasoning = _deepseek_max_reasoning_enabled(LLM_CONFIG)
-    generation_timeout = _letter_reply_timeout_seconds(LLM_CONFIG)
-    default_quality_timeout = (
-        600.0 if max_reasoning else min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    max_reasoning = (
+        exact_mode == ReplyMode.TEXT_LETTER.value
+        and _deepseek_max_reasoning_enabled(LLM_CONFIG)
     )
-    try:
-        quality_timeout = float(
-            _os.environ.get(
-                "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
-                str(default_quality_timeout),
-            )
-        )
-    except (TypeError, ValueError):
+    generation_timeout = (
+        _letter_reply_timeout_seconds(LLM_CONFIG)
+        if max_reasoning
+        else float(LLM_TIMEOUT_SECONDS)
+    )
+    default_quality_timeout = (
+        LLM_CONFIG.reasoning_timeout_seconds
+        if max_reasoning
+        else min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    )
+    if max_reasoning:
         quality_timeout = default_quality_timeout
+    else:
+        try:
+            quality_timeout = float(
+                _os.environ.get(
+                    "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
+                    str(default_quality_timeout),
+                )
+            )
+        except (TypeError, ValueError):
+            quality_timeout = default_quality_timeout
     quality_timeout = max(
         1.0,
-        min(quality_timeout, 600.0 if max_reasoning else 300.0),
+        min(
+            quality_timeout,
+            LLM_CONFIG.reasoning_timeout_seconds if max_reasoning else 300.0,
+        ),
     )
-    quality_stages = (
-        5.0
-        if max_reasoning and exact_mode == ReplyMode.TEXT_LETTER.value
-        else 3.0
-    )
+    quality_stages = 5.0 if max_reasoning else 3.0
     return generation_timeout + quality_stages * quality_timeout + 5.0
 
 
@@ -3187,6 +3251,12 @@ async def _run_reply_pipeline_for_letter(
                 else None
             ),
             max_input_chars=LLM_CONFIG.max_input_chars,
+            gateway_scope=(
+                GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+                if exact_mode == ReplyMode.TEXT_LETTER.value
+                and _deepseek_max_reasoning_enabled(LLM_CONFIG)
+                else None
+            ),
         )
         return await asyncio.wait_for(
             reply_pipeline.run(
