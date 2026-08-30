@@ -2,18 +2,121 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+import json
+import logging
+import math
 import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Mapping
 
+from runtime.media.managed_subprocess import run_managed_process
 from runtime.media.media_paths import resolve_media_path
+
+
+_DEFAULT_LATENTSYNC_TIMEOUT_SECONDS = 1800.0
+_MAX_LATENTSYNC_TIMEOUT_SECONDS = 3600.0
+_LOGGER = logging.getLogger(__name__)
 
 
 class LatentSyncReplyError(RuntimeError):
     """Stable product error for the external LatentSync process."""
+
+    def __init__(self, code: str, *, diagnostic: str = "") -> None:
+        super().__init__(code)
+        self.code = code
+        self.diagnostic = diagnostic
+
+
+def _process_diagnostic(
+    *,
+    returncode: int | None,
+    stderr: bytes | str | None,
+    timed_out: bool = False,
+    start_failed: bool = False,
+    management_failed: bool = False,
+) -> str:
+    if isinstance(stderr, bytes):
+        payload = stderr
+    elif stderr is None:
+        payload = b""
+    else:
+        payload = str(stderr).encode("utf-8", errors="replace")
+    normalized = payload.decode("utf-8", errors="replace").casefold()
+    if timed_out:
+        category = "process_timeout"
+    elif start_failed:
+        category = "process_start_failure"
+    elif management_failed:
+        category = "process_management_failure"
+    elif "cuda" in normalized and "out of memory" in normalized:
+        category = "cuda_out_of_memory"
+    elif "dll load failed" in normalized or "winerror 126" in normalized:
+        category = "runtime_dependency_missing"
+    elif "no module named" in normalized or "modulenotfounderror" in normalized:
+        category = "python_module_missing"
+    elif "filenotfounderror" in normalized or "no such file" in normalized:
+        category = "configured_path_missing"
+    elif "cuda" in normalized:
+        category = "cuda_runtime_failure"
+    else:
+        category = "external_process_failure"
+    return (
+        f"returncode={returncode if returncode is not None else 'unknown'};"
+        f"stderr_category={category}"
+    )
+
+
+def _reported_process_failure(
+    environment: Mapping[str, str], *, returncode: int | None,
+    stderr: bytes | str | None, timed_out: bool = False, start_failed: bool = False,
+    management_failed: bool = False,
+) -> LatentSyncReplyError:
+    diagnostic = _process_diagnostic(
+        returncode=returncode, stderr=stderr,
+        timed_out=timed_out, start_failed=start_failed,
+        management_failed=management_failed,
+    )
+    _LOGGER.warning("LatentSync process failed: %s", diagnostic)
+    data_root = resolve_media_path(environment.get("OLIVIA_LOCAL_DATA_ROOT", ""), environment)
+    if data_root is not None:
+        try:
+            log_root = data_root / "logs"
+            log_root.mkdir(parents=True, exist_ok=True)
+            record = {
+                "provider": "latentsync",
+                "error_code": "LATENTSYNC_FAILED",
+                "diagnostic": diagnostic,
+            }
+            with (log_root / "media-provider.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return LatentSyncReplyError("LATENTSYNC_FAILED", diagnostic=diagnostic)
+
+
+def _latentsync_timeout_seconds(
+    requested: float | None,
+    environment: Mapping[str, str],
+) -> float:
+    raw: object = (
+        environment.get("OLIVIA_LATENTSYNC_TIMEOUT_SECONDS")
+        if requested is None
+        else requested
+    )
+    if raw in (None, ""):
+        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
+    return min(value, _MAX_LATENTSYNC_TIMEOUT_SECONDS)
 
 
 def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
@@ -90,6 +193,7 @@ def _prepare_source_clip(
     prepared_video: Path,
     *,
     environment: dict[str, str],
+    deadline: float,
 ) -> None:
     """Decode only the needed span into a stable LatentSync input."""
 
@@ -128,15 +232,70 @@ def _prepare_source_clip(
         "-shortest",
         str(prepared_video),
     ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        timeout=1800,
-        env=environment,
-    )
-    if result.returncode != 0 or not prepared_video.is_file():
+    try:
+        result = run_managed_process(
+            command, deadline=deadline, env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=exc.stderr, timed_out=True,
+        ) from exc
+    except OSError as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=str(exc), management_failed=True,
+        ) from exc
+    if result.returncode != 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr=result.stderr,
+        )
+    if not prepared_video.is_file():
         raise LatentSyncReplyError("LATENTSYNC_SOURCE_PREPARE_FAILED")
+
+
+def _validate_rendered_video(
+    video_path: Path,
+    *,
+    environment: dict[str, str],
+    deadline: float,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
+    if ffmpeg is None:
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-xerror", "-nostats",
+        "-progress", "pipe:1", "-i", str(video_path), "-map", "0:v:0",
+        "-map", "0:a:0", "-f", "null", os.devnull,
+    ]
+    try:
+        result = run_managed_process(
+            command, deadline=deadline, env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=exc.stderr, timed_out=True,
+        ) from exc
+    except OSError as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=str(exc), management_failed=True,
+        ) from exc
+    if result.returncode != 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr=result.stderr,
+        )
+    progress = dict(
+        line.split("=", 1)
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+        if "=" in line
+    )
+    try:
+        frames = int(progress.get("frame", "0"))
+        duration_us = int(progress.get("out_time_us", progress.get("out_time_ms", "0")))
+    except ValueError:
+        frames = duration_us = 0
+    if progress.get("progress") != "end" or frames <= 0 or duration_us <= 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr="decoded_video_invalid",
+        )
 
 
 def render_latentsync_video(
@@ -146,7 +305,7 @@ def render_latentsync_video(
     *,
     python_path: Path,
     latentsync_root: Path,
-    timeout_seconds: float = 21600.0,
+    timeout_seconds: float | None = None,
     ffmpeg_path: Path | None = None,
     provider_cache_root: Path | None = None,
     environment: Mapping[str, str] | None = None,
@@ -175,6 +334,11 @@ def render_latentsync_video(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_environment = os.environ if environment is None else environment
+    timeout_seconds = _latentsync_timeout_seconds(
+        timeout_seconds,
+        source_environment,
+    )
+    deadline = time.monotonic() + timeout_seconds
     cache_root = provider_cache_root
     if cache_root is None:
         cache_root = resolve_media_path(
@@ -188,7 +352,11 @@ def render_latentsync_video(
         raise LatentSyncReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     work_root = cache_root / "latentsync-work"
     work_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="job-", dir=work_root) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="job-",
+        dir=work_root,
+        ignore_cleanup_errors=True,
+    ) as temporary:
         temporary_root = Path(temporary)
         runtime_environment = _environment_with_ffmpeg(
             temporary_root,
@@ -204,6 +372,7 @@ def render_latentsync_video(
             audio_path,
             prepared_video,
             environment=runtime_environment,
+            deadline=deadline,
         )
         command = [
             str(python_path),
@@ -230,34 +399,55 @@ def render_latentsync_video(
             "--enable_deepcache",
         ]
         try:
-            result = subprocess.run(
+            result = run_managed_process(
                 command,
                 cwd=latentsync_root,
-                capture_output=True,
-                check=False,
-                timeout=timeout_seconds,
+                deadline=deadline,
                 env=runtime_environment,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise LatentSyncReplyError("LATENTSYNC_FAILED") from exc
+        except subprocess.TimeoutExpired as exc:
+            failure = _reported_process_failure(
+                source_environment,
+                returncode=None,
+                stderr=exc.stderr,
+                timed_out=True,
+            )
+            raise failure from exc
+        except OSError as exc:
+            failure = _reported_process_failure(
+                source_environment,
+                returncode=None,
+                stderr=str(exc),
+                management_failed=True,
+            )
+            raise failure from exc
         if result.returncode != 0:
-            raise LatentSyncReplyError("LATENTSYNC_FAILED")
+            raise _reported_process_failure(
+                source_environment, returncode=result.returncode, stderr=result.stderr,
+            )
         if not working_output.is_file() or working_output.stat().st_size == 0:
             raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")
+        _validate_rendered_video(
+            working_output,
+            environment=runtime_environment,
+            deadline=deadline,
+        )
         partial_output = output_path.with_suffix(output_path.suffix + ".partial")
         try:
             shutil.copy2(working_output, partial_output)
             partial_output.replace(output_path)
         finally:
-            partial_output.unlink(missing_ok=True)
-    return {
-        "visual_provider": "LatentSync-1.5",
-        "inference_steps": 20,
-        "guidance_scale": 1.5,
-        "deepcache": True,
-        "inference_profile": "stage2_efficient",
-        "scene_source": "official_motion_video",
-    }
+            with suppress(OSError):
+                partial_output.unlink(missing_ok=True)
+        metadata = {
+            "visual_provider": "LatentSync-1.5",
+            "inference_steps": 20,
+            "guidance_scale": 1.5,
+            "deepcache": True,
+            "inference_profile": "stage2_efficient",
+            "scene_source": "official_motion_video",
+        }
+    return metadata
 
 
 __all__ = [

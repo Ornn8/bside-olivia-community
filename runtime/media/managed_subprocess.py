@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -118,17 +119,32 @@ def _report_cleanup_failures(
 
 
 def run_managed_process(
-    command: Sequence[str], *, timeout_seconds: float,
+    command: Sequence[str], *, timeout_seconds: float | None = None,
+    deadline: float | None = None,
     cwd: Path | None = None, env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one worker; Windows descendants are owned before they can execute."""
 
     arguments = [str(value) for value in command]
+    if (timeout_seconds is None) == (deadline is None):
+        raise TypeError("provide exactly one of timeout_seconds or deadline")
+    def wait_budget(fallback: float) -> float:
+        if deadline is None:
+            return fallback
+        return min(fallback, max(0.0, deadline - time.monotonic()))
+    def deadline_error() -> subprocess.TimeoutExpired:
+        return subprocess.TimeoutExpired(arguments, 0)
+    if deadline is not None and wait_budget(float("inf")) <= 0:
+        raise deadline_error()
     kwargs: dict[str, object] = {
         "cwd": cwd, "env": None if env is None else dict(env),
         "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
     }
     job = _create_windows_job() if os.name == "nt" else None
+    if deadline is not None and wait_budget(float("inf")) <= 0:
+        if job is not None:
+            job.close()
+        raise deadline_error()
     if job is not None:
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -146,6 +162,8 @@ def run_managed_process(
             try:
                 job.assign(process)
                 assigned = True
+                if deadline is not None and wait_budget(float("inf")) <= 0:
+                    raise deadline_error()
                 job.resume(process)
             except OSError:
                 if not assigned:
@@ -154,12 +172,20 @@ def run_managed_process(
                     except OSError as exc:
                         failures.append(("kill", exc))
                     try:
-                        process.communicate(timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS)
+                        process.communicate(timeout=wait_budget(_TREE_SHUTDOWN_TIMEOUT_SECONDS))
                     except (OSError, subprocess.TimeoutExpired) as exc:
                         failures.append(("reap", exc))
                 raise
         try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
+            process_timeout = (
+                timeout_seconds if timeout_seconds is not None
+                else wait_budget(float("inf"))
+            )
+            if deadline is not None:
+                process_timeout -= min(_TREE_SHUTDOWN_TIMEOUT_SECONDS, process_timeout / 2)
+            if process_timeout <= 0:
+                raise deadline_error()
+            stdout, stderr = process.communicate(timeout=process_timeout)
         except subprocess.TimeoutExpired:
             raise
         return subprocess.CompletedProcess(
@@ -175,7 +201,7 @@ def run_managed_process(
                     failures.append(("terminate", exc))
                 try:
                     reaped_stdout, reaped_stderr = process.communicate(
-                        timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS
+                        timeout=wait_budget(_TREE_SHUTDOWN_TIMEOUT_SECONDS)
                     )
                     if isinstance(active_error, subprocess.TimeoutExpired):
                         active_error.output = reaped_stdout or active_error.output
@@ -197,7 +223,7 @@ def run_managed_process(
                 failures.append(("killpg", exc))
             try:
                 reaped_stdout, reaped_stderr = process.communicate(
-                    timeout=_TREE_SHUTDOWN_TIMEOUT_SECONDS
+                    timeout=wait_budget(_TREE_SHUTDOWN_TIMEOUT_SECONDS)
                 )
                 if isinstance(active_error, subprocess.TimeoutExpired):
                     active_error.output = reaped_stdout or active_error.output
