@@ -25,7 +25,9 @@ from runtime.reply.reply_policy import IntimacyClaim
 from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     ReviewReference,
+    ReviewerViolation,
     ReviewResult,
+    ReviewStatus,
     ReviewerConfig,
     TrustedReviewEvidence,
 )
@@ -590,6 +592,23 @@ class GatewayPersonaReviewer:
             references=references,
         )
 
+    def confirmed_rewrite_evidence(
+        self,
+        _candidate: str,
+        context: ReplyContext,
+        review: ReviewResult,
+    ) -> tuple[ReviewerViolation, ...]:
+        if (
+            context.mode is not ReplyMode.TEXT_LETTER
+            or review.status is not ReviewStatus.COMPLETED
+        ):
+            return ()
+        return tuple(
+            item
+            for item in review.violations
+            if item.severity == "hard"
+        )
+
 
 class GatewayPersonaRewriter:
     def __init__(
@@ -635,6 +654,26 @@ class GatewayPersonaRewriter:
             ),
         )
 
+    def rewrite_with_evidence(
+        self,
+        candidate: str,
+        context: ReplyContext,
+        violation_codes: tuple[str, ...],
+        generation_messages: Sequence[
+            Mapping[str, Any]
+        ],
+        confirmed_violations: tuple[ReviewerViolation, ...],
+    ) -> str:
+        return self._rewrite(
+            candidate,
+            context,
+            violation_codes,
+            user_text=_last_user_text(
+                generation_messages
+            ),
+            confirmed_violations=confirmed_violations,
+        )
+
     def _rewrite(
         self,
         candidate: str,
@@ -642,7 +681,13 @@ class GatewayPersonaRewriter:
         violation_codes: tuple[str, ...],
         *,
         user_text: str,
+        confirmed_violations: tuple[ReviewerViolation, ...] = (),
     ) -> str:
+        confirmed_violation_evidence = _confirmed_violation_evidence_payload(
+            candidate,
+            violation_codes,
+            confirmed_violations,
+        )
         delivery_length_contract = None
         if "VIDEO_REPLY_LENGTH_OUT_OF_RANGE" in violation_codes:
             delivery_length_contract = {
@@ -690,6 +735,7 @@ class GatewayPersonaRewriter:
             "violation_codes": list(
                 violation_codes
             ),
+            "confirmed_violation_evidence": confirmed_violation_evidence,
         }
         if delivery_length_contract is not None:
             payload["delivery_length_contract"] = delivery_length_contract
@@ -697,6 +743,14 @@ class GatewayPersonaRewriter:
             " In text_letter, do not add a question just to create a closing; "
             "keep one only when it obtains necessary information or choice."
             if context.mode.value == "text_letter"
+            else ""
+        )
+        evidence_repair = (
+            " confirmed_violation_evidence contains adjudicated hard spans in "
+            "the candidate. Repair or qualify those exact spans. Do not replace "
+            "one unsupported current or past fact, location, action, or habit "
+            "with another unsupported claim."
+            if confirmed_violation_evidence
             else ""
         )
         messages = (
@@ -711,6 +765,7 @@ class GatewayPersonaRewriter:
                     "plain-text reply: no analysis, JSON, Markdown heading, stage direction, "
                     "speaker prefix, or control markup."
                     f"{text_letter_repair}"
+                    f"{evidence_repair}"
                     " When delivery_length_contract is present, it overrides the usual "
                     "concise style: rewrite to its target length and verify the compact "
                     "character count is within the inclusive range before returning. "
@@ -742,6 +797,42 @@ class GatewayPersonaRewriter:
             ),
             gateway_scope=reasoning_scope,
         ).strip()
+
+
+def _confirmed_violation_evidence_payload(
+    candidate: str,
+    violation_codes: tuple[str, ...],
+    confirmed_violations: tuple[ReviewerViolation, ...],
+) -> list[dict[str, object]]:
+    if not isinstance(confirmed_violations, tuple) or any(
+        not isinstance(item, ReviewerViolation)
+        for item in confirmed_violations
+    ):
+        raise TypeError("confirmed violations must be a typed tuple")
+    if len(confirmed_violations) > 16:
+        raise ValueError("confirmed violation evidence exceeds limit")
+    payload: list[dict[str, object]] = []
+    for item in confirmed_violations:
+        if (
+            item.severity != "hard"
+            or item.code not in violation_codes
+            or isinstance(item.start, bool)
+            or not isinstance(item.start, int)
+            or isinstance(item.end, bool)
+            or not isinstance(item.end, int)
+            or item.start < 0
+            or item.end <= item.start
+            or item.end > len(candidate)
+        ):
+            raise ValueError("confirmed violation evidence is invalid")
+        payload.append(
+            {
+                "code": item.code,
+                "start": item.start,
+                "end": item.end,
+            }
+        )
+    return payload
 
 
 def create_model_quality_ports(
