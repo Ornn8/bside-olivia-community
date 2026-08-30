@@ -52,9 +52,9 @@ python installer/build_windows_setup.py `
 
 公开与私有构建的文件名仍为 `Olivia-Setup-x64.exe`，不能靠文件名判断边界。私有产物必须只保存在专用 `dist-private` 目录，以该目录和构建生成的 `.sha256` 作为交付识别记录，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。解包审计时，内嵌 manifest 的 `"distribution": "private"` 是第二层识别标记，不代表取得了公开分发授权。
 
-构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
+除私有模式显式传入的 WAV 外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
 
-GitHub Actions 会在 PR 和 `main` 更新时生成同样的可下载 artifact。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
+GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV，也不会生成私有安装器。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 
 ## 启动器健康检查
 

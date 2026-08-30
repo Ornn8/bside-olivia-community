@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
 VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
+PUBLIC_MEDIA_SUFFIXES = {".flac", ".mp3", ".mp4", ".wav"}
 BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
     "installer/setup-build-requirements.txt",
@@ -383,6 +384,11 @@ def prepare_setup_payload(
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
     selected = sorted(relative for relative in tracked if _is_release_file(relative))
+    if distribution == "public" and any(
+        PurePosixPath(relative).suffix.lower() in PUBLIC_MEDIA_SUFFIXES
+        for relative in selected
+    ):
+        raise SetupBuildError("SETUP_PUBLIC_MEDIA_FORBIDDEN")
     build_inputs = set(selected) | BUILD_CONTROL_FILES
     if not build_inputs.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
@@ -470,6 +476,7 @@ def build_windows_setup(
         raise SetupBuildError("SETUP_OUTPUT_EXISTS")
     payload = output / f".setup-payload-{uuid.uuid4().hex}"
     compiler = _find_iscc(iscc)
+    completed = False
     try:
         prepare_setup_payload(
             source,
@@ -490,18 +497,29 @@ def build_windows_setup(
             raise SetupBuildError("SETUP_COMPILE_FAILED")
         digest = _sha256(setup)
         checksum.write_text(f"{digest}  {SETUP_NAME}\n", encoding="ascii")
-        return {
+        result = {
             "status": "OK",
             "setup": os.fspath(setup),
             "size_bytes": setup.stat().st_size,
             "sha256": digest,
         }
+        completed = True
+        return result
     except SetupBuildError:
         raise
     except (OSError, subprocess.SubprocessError) as exc:
         raise SetupBuildError("SETUP_BUILD_FAILED") from exc
     finally:
         shutil.rmtree(payload, ignore_errors=True)
+        if not completed:
+            cleanup_failed = False
+            for artifact in (setup, checksum):
+                try:
+                    artifact.unlink(missing_ok=True)
+                except OSError:
+                    cleanup_failed = True
+            if cleanup_failed:
+                raise SetupBuildError("SETUP_OUTPUT_CLEANUP_FAILED")
 
 
 def main(argv: list[str] | None = None) -> int:
