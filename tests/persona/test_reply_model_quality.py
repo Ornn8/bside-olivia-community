@@ -274,6 +274,9 @@ def test_reviewer_classifies_aggregation_failure_without_details(
     assert "private aggregation detail" not in repr(
         reviewer.last_failure_diagnostics
     )
+    assert reviewer.confirmed_rewrite_evidence(
+        "Synthetic candidate.", _intimacy_context(), result
+    ) == ()
 
 
 def test_unexpected_layer_parser_error_is_internal(
@@ -2419,7 +2422,7 @@ def test_rejected_and_confirmed_claims_in_one_layer_are_both_reported() -> None:
     }
 
 
-def test_first_letter_confirmed_memory_evidence_reaches_configured_rewriter(
+def test_only_adjudicated_first_letter_evidence_reaches_configured_rewriter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidate = (
@@ -2438,6 +2441,12 @@ def test_first_letter_confirmed_memory_evidence_reaches_configured_rewriter(
         claim_kind="location",
     )
     first = _passing_layer_payloads()
+    first[2] = _layer_score_payload(
+        "focus_response",
+        0,
+        hard_violations=["GENERIC_COUNSELOR"],
+        drift_detected=True,
+    )
     first[3] = _layer_score_payload(
         "continuity_memory",
         0,
@@ -2499,6 +2508,26 @@ def test_first_letter_confirmed_memory_evidence_reaches_configured_rewriter(
         "world_facts": "[]",
         "known_continuations": "[]",
     }
+
+
+def test_confirmed_rewrite_evidence_is_candidate_bound_and_single_use() -> None:
+    candidate = "Synthetic unsupported current location."
+    evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
+    reviewer = GatewayPersonaReviewer(
+        SequencedQualityGateway(
+            candidate=candidate,
+            reviews=_reviews_requiring_adjudication(candidate),
+            adjudications=[_adjudication_payload(evidence, "CONFIRM")],
+        ),
+        ROOT / "linli_character" / "persona_release_v2.json",
+        1,
+    )
+    review = reviewer.review(candidate, _context())
+
+    with pytest.raises(ValueError, match="candidate mismatch"):
+        reviewer.confirmed_rewrite_evidence(candidate + "x", _context(), review)
+    with pytest.raises(ValueError, match="unavailable"):
+        reviewer.confirmed_rewrite_evidence(candidate, _context(), review)
 
 
 def test_rewrite_uses_fresh_candidate_evidence_and_adjudication(

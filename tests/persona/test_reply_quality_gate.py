@@ -274,6 +274,7 @@ def test_invalid_confirmed_repair_evidence_fails_before_rewriter(
 
     assert result.status is QualityGateStatus.BLOCKED
     assert result.error_code == "REWRITE_FAILED"
+    assert result.rewrite_calls == 0
     assert rewriter.calls == 0
 
 

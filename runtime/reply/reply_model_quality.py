@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from hashlib import sha256
 import json
 import os
 import re
@@ -364,6 +366,22 @@ class _LayerResult:
         )
 
 
+@dataclass(frozen=True)
+class _ConfirmedRewriteEvidence:
+    candidate_digest: str
+    violations: tuple[ReviewerViolation, ...]
+
+
+@dataclass(frozen=True)
+class _AdjudicationOutcome:
+    results: tuple[_LayerResult, ...]
+    confirmed_evidence: tuple[ReviewerViolation, ...]
+
+
+def _candidate_digest(candidate: str) -> str:
+    return sha256(candidate.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
 class GatewayReviewTransport:
     def __init__(
         self,
@@ -376,6 +394,12 @@ class GatewayReviewTransport:
         self.reasoning_timeout_seconds = reasoning_timeout_seconds
         self._last_failure_diagnostics: tuple[ReviewFailureDiagnostic, ...] = ()
         self._diagnostics_lock = Lock()
+        self._confirmed_rewrite_evidence: ContextVar[
+            _ConfirmedRewriteEvidence | None
+        ] = ContextVar(
+            f"confirmed_rewrite_evidence_{id(self)}",
+            default=None,
+        )
 
     @property
     def last_failure_diagnostics(self) -> tuple[ReviewFailureDiagnostic, ...]:
@@ -396,12 +420,15 @@ class GatewayReviewTransport:
         model: str,
         timeout_seconds: float,
     ) -> object:
+        self._confirmed_rewrite_evidence.set(None)
         try:
             result = self._review_json(request, timeout_seconds=timeout_seconds)
         except _ReviewDiagnosticsError as exc:
+            self._confirmed_rewrite_evidence.set(None)
             self._publish_failure_diagnostics(exc.diagnostics)
             raise RuntimeError("quality model unavailable") from None
         except Exception:
+            self._confirmed_rewrite_evidence.set(None)
             failure = _diagnostic_error(
                 ReviewFailureStage.AGGREGATION,
                 ReviewFailureReason.INTERNAL,
@@ -410,6 +437,22 @@ class GatewayReviewTransport:
             raise RuntimeError("quality model unavailable") from None
         self._publish_failure_diagnostics(())
         return result
+
+    def consume_confirmed_rewrite_evidence(
+        self,
+        candidate: str,
+        *,
+        required: bool = True,
+    ) -> tuple[ReviewerViolation, ...]:
+        batch = self._confirmed_rewrite_evidence.get()
+        self._confirmed_rewrite_evidence.set(None)
+        if batch is None:
+            if required:
+                raise ValueError("confirmed rewrite evidence unavailable")
+            return ()
+        if batch.candidate_digest != _candidate_digest(candidate):
+            raise ValueError("confirmed rewrite evidence candidate mismatch")
+        return batch.violations
 
     def _review_json(
         self,
@@ -482,7 +525,7 @@ class GatewayReviewTransport:
         )
         if evidence_bound:
             try:
-                results = _adjudicate_hard_evidence(
+                adjudication = _adjudicate_hard_evidence(
                     self.gateway,
                     results,
                     authorities=authorities,
@@ -498,6 +541,7 @@ class GatewayReviewTransport:
                     timeout_seconds=effective_timeout,
                     gateway_scope=reasoning_scope,
                 )
+                results = adjudication.results
             except _ReviewContractFailure as exc:
                 raise _diagnostic_error(
                     ReviewFailureStage.ADJUDICATION, exc.reason
@@ -508,7 +552,7 @@ class GatewayReviewTransport:
                     ReviewFailureReason.INTERNAL,
                 ) from None
         try:
-            return _aggregate_layer_results(
+            aggregate = _aggregate_layer_results(
                 results,
                 candidate=str(request.get("candidate", "")),
                 evidence_bound=evidence_bound,
@@ -518,6 +562,14 @@ class GatewayReviewTransport:
                 ReviewFailureStage.AGGREGATION,
                 ReviewFailureReason.AGGREGATION_CONTRACT,
             ) from None
+        if evidence_bound:
+            self._confirmed_rewrite_evidence.set(
+                _ConfirmedRewriteEvidence(
+                    _candidate_digest(str(request.get("candidate", ""))),
+                    adjudication.confirmed_evidence,
+                )
+            )
+        return aggregate
 
 
 class GatewayPersonaReviewer:
@@ -594,7 +646,7 @@ class GatewayPersonaReviewer:
 
     def confirmed_rewrite_evidence(
         self,
-        _candidate: str,
+        candidate: str,
         context: ReplyContext,
         review: ReviewResult,
     ) -> tuple[ReviewerViolation, ...]:
@@ -602,12 +654,11 @@ class GatewayPersonaReviewer:
             context.mode is not ReplyMode.TEXT_LETTER
             or review.status is not ReviewStatus.COMPLETED
         ):
+            self._transport.consume_confirmed_rewrite_evidence(
+                candidate, required=False
+            )
             return ()
-        return tuple(
-            item
-            for item in review.violations
-            if item.severity == "hard"
-        )
+        return self._transport.consume_confirmed_rewrite_evidence(candidate)
 
 
 class GatewayPersonaRewriter:
@@ -1481,7 +1532,7 @@ def _adjudicate_hard_evidence(
     relationship_context: Mapping[str, object],
     timeout_seconds: float,
     gateway_scope: GatewayRequestScope | None,
-) -> tuple[_LayerResult, ...]:
+) -> _AdjudicationOutcome:
     claims = tuple(
         (item.layer, evidence)
         for item in results
@@ -1489,7 +1540,7 @@ def _adjudicate_hard_evidence(
         for evidence in item.hard_evidence
     )
     if not claims:
-        return tuple(results)
+        return _AdjudicationOutcome(tuple(results), ())
     if len(claims) > 16:
         raise RuntimeError("ADJUDICATION_EVIDENCE_LIMIT")
     evidence_ids = tuple(evidence.evidence_id for _, evidence in claims)
@@ -1626,7 +1677,12 @@ def _adjudicate_hard_evidence(
                 soft_evidence=rejected,
             )
         )
-    return tuple(revised)
+    confirmed_evidence = tuple(
+        ReviewerViolation(item.code, "hard", item.start, item.end)
+        for item in decisions
+        if item.confirmed
+    )
+    return _AdjudicationOutcome(tuple(revised), confirmed_evidence)
 
 
 def _adjudication_authority_layer(

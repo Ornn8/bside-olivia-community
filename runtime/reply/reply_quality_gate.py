@@ -155,19 +155,31 @@ def run_reply_quality_gate(
             rewrite_calls=0,
         )
     try:
+        confirmed_evidence = _confirmed_rewrite_evidence(
+            reviewer,
+            candidate,
+            reviewed_context,
+            review,
+            initial_codes,
+        )
+    except Exception:
+        return QualityGateResult(
+            QualityGateStatus.BLOCKED,
+            candidate,
+            initial_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=0,
+            error_code="REWRITE_FAILED",
+        )
+    try:
         rewritten = _rewrite_candidate(
             rewriter,
             candidate,
             reviewed_context,
             initial_codes,
             generation_messages,
-            _confirmed_rewrite_evidence(
-                reviewer,
-                candidate,
-                reviewed_context,
-                review,
-                initial_codes,
-            ),
+            confirmed_evidence,
         )
     except Exception:
         return QualityGateResult(
