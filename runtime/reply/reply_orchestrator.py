@@ -104,6 +104,12 @@ class ReplyRun:
     async def wait(self) -> ReplyResult:
         return await self._result
 
+    def _has_retryable_failure(self) -> bool:
+        if not self._result.done() or self._result.cancelled():
+            return False
+        result = self._result.result()
+        return result.state is ReplyState.FAILED and result.retryable
+
     def cancel(self) -> bool:
         if self.task is None or self.task.done():
             return False
@@ -146,7 +152,9 @@ class ReplyOrchestrator:
                         name=f"reply-conflict-{request.request_id}",
                     )
                     return conflict
-                return existing
+                if not existing._has_retryable_failure():
+                    return existing
+                request = existing.request
             run = ReplyRun(request, queue_size=self.queue_size)
             self._runs[key] = run
             run.task = asyncio.create_task(
