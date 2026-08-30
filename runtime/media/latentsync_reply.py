@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Mapping
 
@@ -37,6 +38,7 @@ def _process_diagnostic(
     stderr: bytes | str | None,
     timed_out: bool = False,
     start_failed: bool = False,
+    management_failed: bool = False,
 ) -> str:
     if isinstance(stderr, bytes):
         payload = stderr
@@ -49,6 +51,8 @@ def _process_diagnostic(
         category = "process_timeout"
     elif start_failed:
         category = "process_start_failure"
+    elif management_failed:
+        category = "process_management_failure"
     elif "cuda" in normalized and "out of memory" in normalized:
         category = "cuda_out_of_memory"
     elif "dll load failed" in normalized or "winerror 126" in normalized:
@@ -73,10 +77,12 @@ def _process_diagnostic(
 def _reported_process_failure(
     environment: Mapping[str, str], *, returncode: int | None,
     stderr: bytes | str | None, timed_out: bool = False, start_failed: bool = False,
+    management_failed: bool = False,
 ) -> LatentSyncReplyError:
     diagnostic = _process_diagnostic(
         returncode=returncode, stderr=stderr,
         timed_out=timed_out, start_failed=start_failed,
+        management_failed=management_failed,
     )
     _LOGGER.warning("LatentSync process failed: %s", diagnostic)
     data_root = resolve_media_path(environment.get("OLIVIA_LOCAL_DATA_ROOT", ""), environment)
@@ -190,6 +196,7 @@ def _prepare_source_clip(
     prepared_video: Path,
     *,
     environment: dict[str, str],
+    timeout_seconds: float,
 ) -> None:
     """Decode only the needed span into a stable LatentSync input."""
 
@@ -228,13 +235,18 @@ def _prepare_source_clip(
         "-shortest",
         str(prepared_video),
     ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        timeout=1800,
-        env=environment,
-    )
+    try:
+        result = run_managed_process(
+            command, timeout_seconds=timeout_seconds, env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=exc.stderr, timed_out=True,
+        ) from exc
+    except OSError as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=str(exc), management_failed=True,
+        ) from exc
     if result.returncode != 0 or not prepared_video.is_file():
         raise LatentSyncReplyError("LATENTSYNC_SOURCE_PREPARE_FAILED")
 
@@ -279,6 +291,7 @@ def render_latentsync_video(
         timeout_seconds,
         source_environment,
     )
+    deadline = time.monotonic() + timeout_seconds
     cache_root = provider_cache_root
     if cache_root is None:
         cache_root = resolve_media_path(
@@ -312,6 +325,7 @@ def render_latentsync_video(
             audio_path,
             prepared_video,
             environment=runtime_environment,
+            timeout_seconds=max(0.1, deadline - time.monotonic()),
         )
         command = [
             str(python_path),
@@ -341,7 +355,7 @@ def render_latentsync_video(
             result = run_managed_process(
                 command,
                 cwd=latentsync_root,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=max(0.1, deadline - time.monotonic()),
                 env=runtime_environment,
             )
         except subprocess.TimeoutExpired as exc:
@@ -356,8 +370,8 @@ def render_latentsync_video(
             failure = _reported_process_failure(
                 source_environment,
                 returncode=None,
-                stderr=None,
-                start_failed=True,
+                stderr=str(exc),
+                management_failed=True,
             )
             raise failure from exc
         if result.returncode != 0:

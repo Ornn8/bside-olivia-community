@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -29,8 +27,11 @@ def _fixture(tmp_path: Path) -> SimpleNamespace:
     )
 
 
-def _prepare(_source: Path, _audio: Path, target: Path, *, environment) -> None:
+def _prepare(
+    _source: Path, _audio: Path, target: Path, *, environment, timeout_seconds
+) -> None:
     assert environment["TEMP"]
+    assert timeout_seconds > 0
     _write(target)
 
 
@@ -70,72 +71,6 @@ def test_published_output_survives_locked_temp_cleanup(tmp_path: Path, monkeypat
     assert observed["ignored"] is True
 
 
-def test_timeout_terminates_windows_job_tree(monkeypatch) -> None:
-    from runtime.media import managed_subprocess
-
-    observed = {"timeouts": []}
-
-    class Process:
-        pid, returncode = 4242, None
-
-        def communicate(self, timeout=None):
-            observed["timeouts"].append(timeout)
-            if len(observed["timeouts"]) == 1:
-                raise subprocess.TimeoutExpired(["worker"], timeout, stderr=b"busy")
-            return b"", b"stopped"
-
-    class Job:
-        def assign(self, process): observed["assigned"] = process.pid
-        def terminate(self): observed["terminated"] = True
-        def close(self): observed["closed"] = True
-
-    def popen(_command, **kwargs):
-        observed["kwargs"] = kwargs
-        return Process()
-
-    monkeypatch.setattr(managed_subprocess.os, "name", "nt")
-    monkeypatch.setattr(managed_subprocess, "_create_windows_job", Job)
-    monkeypatch.setattr(managed_subprocess.subprocess, "Popen", popen)
-    with pytest.raises(subprocess.TimeoutExpired):
-        managed_subprocess.run_managed_process(["worker"], timeout_seconds=12)
-    flags = observed["kwargs"]["creationflags"]
-    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP and flags & subprocess.CREATE_NO_WINDOW
-    assert (observed["assigned"], observed["terminated"], observed["closed"]) == (4242, True, True)
-    assert observed["timeouts"] == [12, 15.0]
-
-
-def test_windows_job_failure_does_not_launch(monkeypatch) -> None:
-    from runtime.media import managed_subprocess
-
-    launched = []
-    monkeypatch.setattr(managed_subprocess.os, "name", "nt")
-    monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: (_ for _ in ()).throw(OSError("job")))
-    monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: launched.append(True))
-    with pytest.raises(OSError):
-        managed_subprocess.run_managed_process(["worker"], timeout_seconds=1)
-    assert not launched
-
-
-def test_windows_job_close_failure_is_reported(monkeypatch) -> None:
-    from runtime.media import managed_subprocess
-
-    job = SimpleNamespace(assign=lambda _p: None, terminate=lambda: None, close=lambda: (_ for _ in ()).throw(OSError("close")))
-    process = SimpleNamespace(returncode=0, communicate=lambda timeout: (b"", b""))
-    monkeypatch.setattr(managed_subprocess.os, "name", "nt")
-    monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: job)
-    monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: process)
-    with pytest.raises(OSError, match="close"):
-        managed_subprocess.run_managed_process(["worker"], timeout_seconds=1)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object contract")
-def test_real_windows_job_terminates_worker() -> None:
-    from runtime.media.managed_subprocess import run_managed_process
-
-    with pytest.raises(subprocess.TimeoutExpired):
-        run_managed_process([sys.executable, "-c", "import time; time.sleep(30)"], timeout_seconds=0.2)
-
-
 @pytest.mark.parametrize(("configured", "expected"), [(None, 1800.0), ("999999", 3600.0)])
 def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, expected) -> None:
     fixture, observed = _fixture(tmp_path), {}
@@ -147,11 +82,32 @@ def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, ex
 
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
+    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: 0.0)
     environment = {"PATH": ""}
     if configured is not None:
         environment["OLIVIA_LATENTSYNC_TIMEOUT_SECONDS"] = configured
     _render(fixture, environment=environment)
     assert observed["timeout"] == expected
+
+
+def test_prepare_and_worker_share_one_timeout_budget(tmp_path: Path, monkeypatch) -> None:
+    fixture, observed = _fixture(tmp_path), {}
+    moments = iter((0.0, 100.0, 300.0))
+
+    def prepare(_source, _audio, target, *, environment, timeout_seconds):
+        observed["prepare"] = timeout_seconds
+        _write(target)
+
+    def run(command, *, timeout_seconds, **_kwargs):
+        observed["worker"] = timeout_seconds
+        _write(Path(command[command.index("--video_out_path") + 1]), b"video")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", prepare)
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
+    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: next(moments))
+    _render(fixture)
+    assert observed == {"prepare": 1700.0, "worker": 1500.0}
 
 
 def test_failure_persists_redacted_diagnostic(tmp_path: Path, monkeypatch) -> None:
@@ -172,3 +128,26 @@ def test_failure_persists_redacted_diagnostic(tmp_path: Path, monkeypatch) -> No
     assert "returncode=23" in record["diagnostic"] and "cuda_out_of_memory" in record["diagnostic"]
     assert len(record["diagnostic"]) <= 240
     assert not any(value in json.dumps(record) for value in ("C:\\private", "secret", "words"))
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    (
+        (subprocess.TimeoutExpired(["ffmpeg"], 1, stderr=b"busy"), "process_timeout"),
+        (OSError("PROCESS_TREE_TERMINATION_FAILED"), "process_management_failure"),
+    ),
+)
+def test_prepare_process_failure_is_reported(
+    tmp_path: Path, monkeypatch, failure: Exception, category: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    monkeypatch.setattr(
+        latentsync_reply, "run_managed_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError) as caught:
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    assert str(caught.value) == "LATENTSYNC_FAILED"
+    record = json.loads((data_root / "logs/media-provider.jsonl").read_text())
+    assert f"stderr_category={category}" in record["diagnostic"]
