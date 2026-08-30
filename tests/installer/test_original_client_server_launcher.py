@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+import wave
 import zipfile
 
 import pytest
@@ -256,6 +257,46 @@ def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> N
     )
     assert explicit["OLIVIA_LATENTSYNC_ROOT"] == "D:/managed/latentsync"
     assert explicit["OLIVIA_MINIMAX_WORKER"] == "D:/managed/minimax-worker.py"
+
+
+def test_launcher_auto_uses_private_voice_but_keeps_public_absence_valid(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "private"
+    reference = data_root / "capabilities/video/shared/linli-reference.wav"
+    reference.parent.mkdir(parents=True)
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0" * 1_600)
+    digest = hashlib.sha256(reference.read_bytes()).hexdigest()
+    reference.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.managed-voice-reference.v1",
+                "path": reference.name,
+                "size_bytes": reference.stat().st_size,
+                "sha256": digest,
+                "wave": {
+                    "channels": 1,
+                    "sample_width_bytes": 2,
+                    "sample_rate_hz": 16_000,
+                    "frame_count": 1_600,
+                    "compression_type": "NONE",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    private = start_local._load_video_environment(
+        {}, data_root, expected_voice_reference_sha256=digest
+    )
+    public_root = tmp_path / "public"
+    public_root.mkdir()
+    public = start_local._load_video_environment({}, public_root)
+
+    assert private["OLIVIA_REPLY_VOICE_REFERENCE"] == str(reference.absolute())
+    assert "OLIVIA_REPLY_VOICE_REFERENCE" not in public
 
 
 def test_launcher_uses_fixed_scene_assets_from_the_installed_client(tmp_path: Path) -> None:

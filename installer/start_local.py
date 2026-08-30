@@ -25,6 +25,11 @@ from video_capability_install import (
     VideoCapabilityError,
     load_video_runtime_environment,
 )
+from runtime.media.managed_voice_reference import (
+    MANAGED_VOICE_REFERENCE_SHA256,
+    ManagedVoiceReferenceError,
+    resolve_managed_voice_reference,
+)
 
 
 def _load_dpapi_key(path: Path) -> str:
@@ -60,7 +65,10 @@ _LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 def _load_video_environment(
-    environment: dict[str, str], data_root: Path
+    environment: dict[str, str],
+    data_root: Path,
+    *,
+    expected_voice_reference_sha256: str = MANAGED_VOICE_REFERENCE_SHA256,
 ) -> dict[str, str]:
     """Load only verified paths persisted by the video bundle assembler."""
 
@@ -68,9 +76,23 @@ def _load_video_environment(
     try:
         persisted = load_video_runtime_environment(data_root.resolve())
     except (OSError, TypeError, ValueError, VideoCapabilityError):
+        persisted = None
+    if persisted is not None:
+        for key, value in persisted.items():
+            values.setdefault(key, value)
+    if not str(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", "")).strip():
+        values.pop("OLIVIA_REPLY_VOICE_REFERENCE", None)
+        try:
+            reference = resolve_managed_voice_reference(
+                data_root,
+                expected_sha256=expected_voice_reference_sha256,
+            )
+        except ManagedVoiceReferenceError:
+            pass
+        else:
+            values["OLIVIA_REPLY_VOICE_REFERENCE"] = str(reference)
+    if persisted is None:
         return values
-    for key, value in persisted.items():
-        values.setdefault(key, value)
     backend_tools = Path(__file__).resolve().parents[1] / "tools"
     minimax_worker = backend_tools / "minimax_music3_worker.py"
     minimax_profile = backend_tools / "minimax_profile.py"
