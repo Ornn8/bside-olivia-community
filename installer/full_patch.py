@@ -114,6 +114,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
     "installer/version_launcher.py",
+    "installer/start_hidden.vbs.txt",
     "installer/assets/olivia.ico",
     "installer/mem0-capability-manifest.json",
     "installer/video-capability-manifest.json",
@@ -513,12 +514,12 @@ def _write_start_scripts(root: Path, port: int) -> None:
         f"@echo off\nsetlocal\nset ROOT=%~dp0\nset OLIVIA_PORT={port}\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" start --port %OLIVIA_PORT%\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",
     )
+    hidden_launcher = (
+        root / "local_backend" / "installer" / "start_hidden.vbs.txt"
+    ).read_text(encoding="utf-8")
     (root / "START.vbs").write_text(
-        'Set shell = CreateObject("WScript.Shell")\n'
-        'Set fso = CreateObject("Scripting.FileSystemObject")\n'
-        'root = fso.GetParentFolderName(WScript.ScriptFullName)\n'
-        'shell.Run Chr(34) & root & "\\START.cmd" & Chr(34), 0, False\n',
-        encoding="utf-8",
+        hidden_launcher,
+        encoding="utf-16",
     )
     (root / "UNINSTALL.cmd").write_text(
         "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" uninstall --apply\nexit /b %ERRORLEVEL%\n",

@@ -179,7 +179,8 @@ begin
     ' -Destination ' + AddQuotes(InstallDirPage.Values[0]) +
     ' -OfflineAssetsRoot ' + AddQuotes(ExpandConstant('{tmp}\OliviaPayload\offline')) +
     ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
-    ' -NonInteractive';
+    ' -NonInteractive' +
+    ' -SkipShortcut';
   if Trim(OfficialDirPage.Values[0]) <> '' then
     Params := Params + ' -OfficialRoot ' + AddQuotes(OfficialDirPage.Values[0]);
 

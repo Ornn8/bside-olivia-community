@@ -9,9 +9,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $InstallRoot).Path
 $start = Join-Path $root 'START.cmd'
+$startHidden = Join-Path $root 'START.vbs'
+$startHiddenTemplate = Join-Path $PSScriptRoot 'start_hidden.vbs.txt'
+$wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+$hiddenArguments = '//B //Nologo "' + $startHidden + '"'
 $markerPath = Join-Path $root '.olivia-full-patch.json'
 if (-not (Test-Path -LiteralPath $start -PathType Leaf)) {
     throw 'LOCAL_START_ENTRYPOINT_NOT_FOUND'
+}
+if (-not (Test-Path -LiteralPath $startHiddenTemplate -PathType Leaf)) {
+    throw 'LOCAL_HIDDEN_START_TEMPLATE_NOT_FOUND'
 }
 if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
     throw 'PATCH_MARKER_NOT_FOUND'
@@ -49,6 +56,18 @@ function Resolve-OliviaIcon {
 }
 
 $icon = Resolve-OliviaIcon
+
+$hiddenLauncher = [IO.File]::ReadAllText($startHiddenTemplate, [Text.Encoding]::UTF8)
+$hiddenLauncherTemp = $startHidden + '.tmp-' + [Guid]::NewGuid().ToString('N')
+try {
+    [IO.File]::WriteAllText($hiddenLauncherTemp, $hiddenLauncher, [Text.Encoding]::Unicode)
+    Move-Item -LiteralPath $hiddenLauncherTemp -Destination $startHidden -Force
+}
+finally {
+    if (Test-Path -LiteralPath $hiddenLauncherTemp -PathType Leaf) {
+        Remove-Item -LiteralPath $hiddenLauncherTemp -Force
+    }
+}
 
 if ($RefreshExisting) {
     $shortcutPaths = @()
@@ -96,15 +115,28 @@ foreach ($path in $shortcutPaths) {
             New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
         }
         $shortcut = $shell.CreateShortcut($path)
-        if ($RefreshExisting -and -not [string]::Equals(
-            [IO.Path]::GetFullPath([string]$shortcut.TargetPath),
-            [IO.Path]::GetFullPath($start),
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-            continue
+        if ($RefreshExisting) {
+            $target = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+            $isLegacyShortcut = [string]::Equals(
+                $target,
+                [IO.Path]::GetFullPath($start),
+                [StringComparison]::OrdinalIgnoreCase
+            )
+            $isHiddenShortcut = [string]::Equals(
+                $target,
+                [IO.Path]::GetFullPath($wscript),
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and [string]::Equals(
+                [string]$shortcut.Arguments,
+                $hiddenArguments,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+            if (-not ($isLegacyShortcut -or $isHiddenShortcut)) {
+                continue
+            }
         }
-        $shortcut.TargetPath = $start
-        $shortcut.Arguments = ''
+        $shortcut.TargetPath = $wscript
+        $shortcut.Arguments = $hiddenArguments
         $shortcut.WorkingDirectory = $root
         $shortcut.Description = 'Olivia local client and backend'
         $shortcut.IconLocation = "$icon,0"

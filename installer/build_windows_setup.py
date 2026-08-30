@@ -116,6 +116,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/provision_mem0_embedding.py",
     "installer/runtime-requirements.txt",
     "installer/start_local.py",
+    "installer/start_hidden.vbs.txt",
     "installer/uninstall.py",
     "installer/uninstall_safety.py",
     "installer/verify_mem0_runtime.py",

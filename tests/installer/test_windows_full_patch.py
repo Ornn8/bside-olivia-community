@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
 def test_video_seed_patch_is_a_required_runtime_payload() -> None:
     assert "installer/seed-vc-overlap-frames.patch" in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert "installer/assets/olivia.ico" in PAYLOAD_REQUIRED_RELATIVE_FILES
+    assert "installer/start_hidden.vbs.txt" in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert {"contracts/video_capability_action.schema.json", "contracts/video_capability_manifest.schema.json", "contracts/video_capability_status.schema.json"} <= PAYLOAD_REQUIRED_RELATIVE_FILES
 
 
@@ -67,6 +69,55 @@ def test_install_entrypoint_is_parseable_by_windows_powershell() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Script Host is required")
+@pytest.mark.parametrize(
+    ("start_exit", "expected_exit"),
+    ((None, 2), (7, 7), (0, 0)),
+    ids=("missing-start", "nonzero-start", "successful-start"),
+)
+def test_hidden_start_uses_visible_error_branch_only_for_failures(
+    tmp_path: Path,
+    start_exit: int | None,
+    expected_exit: int,
+) -> None:
+    template = (Path(__file__).parents[2] / "installer" / "start_hidden.vbs.txt").read_text(
+        encoding="utf-8"
+    )
+    error_record = tmp_path / "visible-error.txt"
+    escaped_record = str(error_record).replace('"', '""')
+    instrumented = template.replace(
+        "shell.Run noticeCommand, 0, False",
+        "' startup notice intercepted",
+    ).replace(
+        "shell.Run errorCommand, 0, False",
+        f'Set testLog = fso.CreateTextFile("{escaped_record}", True, True)\n'
+        "testLog.Write CStr(exitCode)\ntestLog.Close",
+    )
+    assert "shell.Run noticeCommand, 0, False" not in instrumented
+    assert "shell.Run errorCommand, 0, False" not in instrumented
+    script = tmp_path / "START.vbs"
+    script.write_text(instrumented, encoding="utf-16")
+    if start_exit is not None:
+        (tmp_path / "START.cmd").write_text(
+            f"@echo off\nexit /b {start_exit}\n", encoding="utf-8"
+        )
+
+    result = subprocess.run(
+        [os.environ["WINDIR"] + r"\System32\cscript.exe", "//B", "//Nologo", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == expected_exit
+    if expected_exit:
+        assert error_record.read_text(encoding="utf-16") == str(expected_exit)
+    else:
+        assert not error_record.exists()
+
+
 def test_installer_shortcut_starts_selected_install_entrypoint(
     tmp_path: Path,
 ) -> None:
@@ -79,12 +130,14 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
     client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
     icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
     start = install_root / "START.cmd"
+    start_hidden = install_root / "START.vbs"
     shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
     client.parent.mkdir(parents=True)
     icon.parent.mkdir(parents=True)
     client.write_bytes(b"synthetic client")
     icon.write_bytes(b"synthetic icon")
     start.write_text("@exit /b 0\n", encoding="utf-8")
+    start_hidden.write_text("' synthetic hidden launcher\n", encoding="utf-8")
     (install_root / ".olivia-full-patch.json").write_text(
         json.dumps({"client_version": "0.0.9.615"}),
         encoding="utf-8",
@@ -160,8 +213,9 @@ def test_installer_shortcut_starts_selected_install_entrypoint(
         check=False,
     )
     metadata = json.loads(inspect.stdout)
-    assert Path(metadata["target"]) == start
-    assert metadata["arguments"] == ""
+    expected_wscript = Path(os.environ["WINDIR"]) / "System32" / "wscript.exe"
+    assert Path(metadata["target"]) == expected_wscript
+    assert metadata["arguments"] == f'//B //Nologo "{start_hidden}"'
     assert Path(metadata["working"]) == install_root
     assert metadata["icon"] == f"{icon},0"
 
@@ -180,6 +234,7 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
     active_root = install_root / "versions" / "local_backend" / f"1.1.0-{'a' * 64}"
     active_icon = active_root / "installer" / "assets" / "olivia.ico"
     start = install_root / "START.cmd"
+    start_hidden = install_root / "START.vbs"
     shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
     client.parent.mkdir(parents=True)
     legacy_icon.parent.mkdir(parents=True)
@@ -188,6 +243,7 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
     legacy_icon.write_bytes(b"legacy icon")
     active_icon.write_bytes(b"active icon")
     start.write_text("@exit /b 0\n", encoding="utf-8")
+    start_hidden.write_text("' synthetic hidden launcher\n", encoding="utf-8")
     (install_root / ".olivia-full-patch.json").write_text(
         json.dumps({"client_version": "0.0.9.615"}),
         encoding="utf-8",
@@ -222,7 +278,7 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
         check=False,
     )
     assert created.returncode == 0, created.stderr or created.stdout
-    arguments = '--preserve "two words"'
+    legacy_arguments = '--preserve "two words"'
     configured = subprocess.run(
         [
             powershell,
@@ -232,7 +288,7 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
             (
                 "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
                 "[Console]::In.ReadToEnd().Trim());"
-                f"$s.Arguments='{arguments}';$s.Save()"
+                f"$s.TargetPath='{start}';$s.Arguments='{legacy_arguments}';$s.Save()"
             ),
         ],
         input=str(shortcut),
@@ -284,13 +340,117 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
         check=False,
     )
     metadata = json.loads(inspect.stdout)
-    assert Path(metadata["target"]) == start
-    assert metadata["arguments"] == ""
+    expected_wscript = Path(os.environ["WINDIR"]) / "System32" / "wscript.exe"
+    assert Path(metadata["target"]) == expected_wscript
+    assert metadata["arguments"] == f'//B //Nologo "{start_hidden}"'
+    assert metadata["icon"] == f"{active_icon},0"
+    refreshed_launcher = start_hidden.read_text(encoding="utf-16")
+    assert "Olivia 正在启动，请稍候" in refreshed_launcher
+    assert "If exitCode <> 0 Then" in refreshed_launcher
+
+
+def test_shortcut_refresh_updates_this_installation_hidden_shortcut(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows shortcuts are only available on Windows")
+
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "installer" / "Create-Shortcut.ps1"
+    install_root = tmp_path / "installation"
+    client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
+    legacy_icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
+    active_root = install_root / "versions" / "local_backend" / f"1.1.0-{'b' * 64}"
+    active_icon = active_root / "installer" / "assets" / "olivia.ico"
+    start = install_root / "START.cmd"
+    start_hidden = install_root / "START.vbs"
+    shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
+    client.parent.mkdir(parents=True)
+    legacy_icon.parent.mkdir(parents=True)
+    active_icon.parent.mkdir(parents=True)
+    client.write_bytes(b"synthetic client")
+    legacy_icon.write_bytes(b"legacy icon")
+    active_icon.write_bytes(b"active icon")
+    start.write_text("@exit /b 0\n", encoding="utf-8")
+    start_hidden.write_text("' synthetic hidden launcher\n", encoding="utf-8")
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"client_version": "0.0.9.615"}),
+        encoding="utf-8",
+    )
+    powershell = str(
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    base_command = [
+        powershell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-InstallRoot",
+        str(install_root),
+        "-ShortcutPath",
+        str(shortcut),
+    ]
+    created = subprocess.run(base_command, capture_output=True, text=True, check=False)
+    assert created.returncode == 0, created.stderr or created.stdout
+    (install_root / ".olivia-update-state.json").write_text(
+        json.dumps(
+            {
+                "active_components": {
+                    "local_backend": {
+                        "payload_path": active_root.relative_to(install_root).as_posix()
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = subprocess.run(
+        [*base_command, "-RefreshExisting"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert refreshed.returncode == 0, refreshed.stderr or refreshed.stdout
+    inspect = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+                "[Console]::In.ReadToEnd().Trim());"
+                "[pscustomobject]@{target=$s.TargetPath;arguments=$s.Arguments;"
+                "working=$s.WorkingDirectory;icon=$s.IconLocation}"
+                "|ConvertTo-Json -Compress"
+            ),
+        ],
+        input=str(shortcut),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    metadata = json.loads(inspect.stdout)
+    expected_wscript = Path(os.environ["WINDIR"]) / "System32" / "wscript.exe"
+    assert Path(metadata["target"]) == expected_wscript
+    assert metadata["arguments"] == f'//B //Nologo "{start_hidden}"'
+    assert Path(metadata["working"]) == install_root
     assert metadata["icon"] == f"{active_icon},0"
 
 
+@pytest.mark.parametrize("shortcut_kind", ["legacy", "hidden"])
 def test_shortcut_refresh_does_not_rewrite_another_installation(
     tmp_path: Path,
+    shortcut_kind: str,
 ) -> None:
     if os.name != "nt":
         pytest.skip("Windows shortcuts are only available on Windows")
@@ -301,11 +461,13 @@ def test_shortcut_refresh_does_not_rewrite_another_installation(
     client = install_root / "app" / "0.0.9.615" / "Olivia.exe"
     icon = install_root / "local_backend" / "installer" / "assets" / "olivia.ico"
     start = install_root / "START.cmd"
+    start_hidden = install_root / "START.vbs"
     client.parent.mkdir(parents=True)
     icon.parent.mkdir(parents=True)
     client.write_bytes(b"synthetic client")
     icon.write_bytes(b"current icon")
     start.write_text("@exit /b 0\n", encoding="utf-8")
+    start_hidden.write_text("' synthetic hidden launcher\n", encoding="utf-8")
     (install_root / ".olivia-full-patch.json").write_text(
         json.dumps({"client_version": "0.0.9.615"}),
         encoding="utf-8",
@@ -313,13 +475,21 @@ def test_shortcut_refresh_does_not_rewrite_another_installation(
 
     other_root = tmp_path / "other installation"
     other_start = other_root / "START.cmd"
+    other_start_hidden = other_root / "START.vbs"
     other_icon = other_root / "olivia.ico"
     other_root.mkdir(parents=True)
     other_start.write_text("@exit /b 0\n", encoding="utf-8")
+    other_start_hidden.write_text("' other hidden launcher\n", encoding="utf-8")
     other_icon.write_bytes(b"other icon")
     shortcut = tmp_path / "desktop" / "Olivia-local.lnk"
     shortcut.parent.mkdir(parents=True)
-    arguments = '--keep "other install"'
+    wscript = Path(os.environ["WINDIR"]) / "System32" / "wscript.exe"
+    target = other_start if shortcut_kind == "legacy" else wscript
+    arguments = (
+        '--keep "other install"'
+        if shortcut_kind == "legacy"
+        else f'//B //Nologo "{other_start_hidden}"'
+    )
     description = "Other Olivia installation"
     powershell = str(
         Path(os.environ["WINDIR"])
@@ -345,7 +515,7 @@ def test_shortcut_refresh_does_not_rewrite_another_installation(
         input=json.dumps(
             {
                 "shortcut": str(shortcut),
-                "target": str(other_start),
+                "target": str(target),
                 "arguments": arguments,
                 "working": str(other_root),
                 "description": description,
@@ -402,7 +572,7 @@ def test_shortcut_refresh_does_not_rewrite_another_installation(
         check=False,
     )
     metadata = json.loads(inspect.stdout)
-    assert Path(metadata["target"]) == other_start
+    assert Path(metadata["target"]) == target
     assert metadata["arguments"] == arguments
     assert Path(metadata["working"]) == other_root
     assert metadata["description"] == description
@@ -1709,10 +1879,29 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert not (installed / "local_backend" / "memory_store.json").exists()
     assert not (installed / "local_backend" / "llm_config.json").exists()
     assert (installed / "CONFIGURE.cmd").is_file()
-    start_hidden = (installed / "START.vbs").read_text(encoding="utf-8")
+    start_hidden_path = installed / "START.vbs"
+    assert start_hidden_path.read_bytes().startswith(codecs.BOM_UTF16_LE)
+    start_hidden = start_hidden_path.read_text(encoding="utf-16")
     assert "START.cmd" in start_hidden
-    assert ".Run" in start_hidden
-    assert ", 0, False" in start_hidden
+    assert 'WScript.Arguments.Named.Exists("notice")' in start_hidden
+    assert 'WScript.Arguments.Named.Exists("error")' in start_hidden
+    assert "Olivia 正在启动，请稍候" in start_hidden
+    assert 'WScript.ScriptFullName & Chr(34) & " /notice"' in start_hidden
+    assert "shell.Run noticeCommand, 0, False" in start_hidden
+    assert "On Error Resume Next" in start_hidden
+    assert "exitCode = shell.Run" in start_hidden
+    assert "launchErrorNumber = Err.Number" in start_hidden
+    assert "launchErrorDescription = Err.Description" in start_hidden
+    assert "MsgBox launchErrorDescription" not in start_hidden
+    assert ", 0, True)" in start_hidden
+    assert "If exitCode <> 0 Then" in start_hidden
+    assert '" /error:" & CStr(exitCode)' in start_hidden
+    assert "shell.Run errorCommand, 0, False" in start_hidden
+    assert "Olivia 启动失败（错误码" in start_hidden
+    assert start_hidden.count("MsgBox") == 1
+    assert start_hidden.index("shell.Run noticeCommand, 0, False") < start_hidden.index(
+        "exitCode = shell.Run"
+    )
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start
