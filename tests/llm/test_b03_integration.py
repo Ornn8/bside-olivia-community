@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_gateway import GatewayConfig, OfflineDeterministicAdapter, UnconfiguredAdapter
+from llm_gateway import (
+    Gateway,
+    GatewayConfig,
+    GatewayRequestScope,
+    GatewayResponse,
+    OfflineDeterministicAdapter,
+    UnconfiguredAdapter,
+)
 
 
 def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
@@ -71,6 +78,87 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     assert local_server.reply_engine.timeout_seconds == 180.0
     assert local_server.LLM_CFG["model"] == "new-model"
     assert "synthetic-runtime-key" not in repr(local_server.LLM_CFG)
+
+
+def test_deepseek_flash_runtime_keeps_generic_engine_timeout_for_non_scoped_calls(
+    monkeypatch,
+) -> None:
+    import local_server
+
+    previous = GatewayConfig(
+        provider="openai_compatible",
+        base_url="https://old.example/v1",
+        model="old-model",
+    )
+    marker = object()
+    candidate_analyzer = type(
+        "CandidateAnalyzer",
+        (),
+        {"gateway": object(), "timeout_seconds": 1.0},
+    )()
+    monkeypatch.setattr(local_server, "LLM_CONFIG", previous)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", previous.timeout_seconds)
+    monkeypatch.setattr(local_server, "LLM_CFG", previous.public_dict())
+    monkeypatch.setattr(local_server.letters_adapter, "config", previous)
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", object())
+    monkeypatch.setattr(
+        local_server,
+        "GatewayPrivateWorldCandidateAnalyzer",
+        type(candidate_analyzer),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "private_world_candidate_analyzer",
+        candidate_analyzer,
+    )
+    monkeypatch.setattr(local_server.reply_engine, "timeout_seconds", 1.0)
+    monkeypatch.setattr(local_server, "create_gateway", lambda *_args, **_kwargs: marker)
+    monkeypatch.setattr(local_server.emotion_triage, "gateway", object())
+    monkeypatch.delenv("OLIVIA_LLM_RUNTIME_KEY_CONFIGURED", raising=False)
+
+    local_server.apply_runtime_llm_config(
+        "https://gateway.example/v1",
+        "deepseek-v4-flash",
+        "synthetic-runtime-key",
+    )
+
+    assert local_server.LLM_CONFIG.timeout_seconds == 180.0
+    assert local_server.LLM_TIMEOUT_SECONDS == 180.0
+    assert candidate_analyzer.timeout_seconds == 180.0
+    assert local_server.reply_engine.timeout_seconds == 180.0
+
+
+def test_letter_gateway_preserves_scoped_text_call_without_changing_request_id() -> None:
+    import local_server
+
+    seen = []
+
+    class RecordingGateway(Gateway):
+        async def complete(self, messages, *, request_id=None):
+            raise AssertionError("text Letter scope was dropped")
+
+        async def complete_scoped(self, messages, *, request_id=None, scope):
+            seen.append((tuple(messages), request_id, scope))
+            return GatewayResponse("scoped reply", request_id or "", "mock", "mock")
+
+    config = GatewayConfig(provider="mock", persona_v2_enabled=False)
+    adapter = local_server.LetterAdapter(config)
+    adapter.replace_runtime(config, RecordingGateway())
+    bridge = local_server._LetterGateway(adapter)
+
+    response = asyncio.run(
+        bridge.complete_scoped(
+            ({"role": "user", "content": "synthetic letter"},),
+            request_id="letter-reply:stable",
+            scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+        )
+    )
+
+    assert response.request_id == "letter-reply:stable"
+    assert seen[0][1:] == (
+        "letter-reply:stable",
+        GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+    )
 
 
 def test_failed_llm_runtime_replacement_keeps_the_previous_gateway(monkeypatch) -> None:

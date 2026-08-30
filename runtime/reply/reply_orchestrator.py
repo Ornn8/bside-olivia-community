@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Mapping, Sequence
 
-from llm_gateway import Gateway, GatewayDelta, GatewayError, GatewayResponse, validate_messages
+from llm_gateway import (
+    Gateway,
+    GatewayDelta,
+    GatewayError,
+    GatewayRequestScope,
+    GatewayResponse,
+    validate_messages,
+)
 
 
 class ReplyEventType(str, Enum):
@@ -46,6 +53,7 @@ class ReplyRequest:
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     idempotency_key: str | None = None
     max_input_chars: int = 10000
+    gateway_scope: GatewayRequestScope | None = None
 
     def normalized_messages(self) -> tuple[dict[str, str], ...]:
         if self.messages is not None:
@@ -207,21 +215,42 @@ class ReplyOrchestrator:
             return
 
         provider_gateway = _provider_gateway(self.gateway, request)
+        provider_timeout = self.timeout_seconds
+        if request.gateway_scope is not None:
+            provider_timeout = provider_gateway.timeout_seconds_for_scope(
+                request.gateway_scope,
+                default=self.timeout_seconds,
+            )
         try:
             await self._publish(
                 run, ReplyEventType.REQUEST_ACCEPTED, ReplyState.ACCEPTED
             )
             if getattr(provider_gateway, "stream_enabled", False):
                 result = await asyncio.wait_for(
-                    self._consume_stream(run, messages, provider_gateway),
-                    self.timeout_seconds,
+                    self._consume_stream(
+                        run,
+                        messages,
+                        provider_gateway,
+                        scope=request.gateway_scope,
+                    ),
+                    provider_timeout,
                 )
             else:
+                completion = (
+                    provider_gateway.complete_scoped(
+                        messages,
+                        request_id=request.request_id,
+                        scope=request.gateway_scope,
+                    )
+                    if request.gateway_scope is not None
+                    else provider_gateway.complete(
+                        messages,
+                        request_id=request.request_id,
+                    )
+                )
                 response = await asyncio.wait_for(
-                    provider_gateway.complete(
-                        messages, request_id=request.request_id
-                    ),
-                    self.timeout_seconds,
+                    completion,
+                    provider_timeout,
                 )
                 result = await self._complete_response(run, response)
             self._set_result(run, result)
@@ -309,11 +338,20 @@ class ReplyOrchestrator:
         run: ReplyRun,
         messages: Sequence[Mapping[str, Any]],
         gateway: Gateway,
+        *,
+        scope: GatewayRequestScope | None,
     ) -> ReplyResult:
         chunks: list[str] = []
-        async for delta in gateway.stream(
-            messages, request_id=run.request.request_id
-        ):
+        stream = (
+            gateway.stream_scoped(
+                messages,
+                request_id=run.request.request_id,
+                scope=scope,
+            )
+            if scope is not None
+            else gateway.stream(messages, request_id=run.request.request_id)
+        )
+        async for delta in stream:
             if delta.text:
                 chunks.append(delta.text)
                 await self._publish(
@@ -393,7 +431,10 @@ def _request_fingerprint(request: ReplyRequest) -> str:
         payload: Any = list(request.messages)
     else:
         payload = [{"role": "user", "content": request.content or ""}]
-    return uuid.uuid5(uuid.NAMESPACE_URL, repr(payload)).hex
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        repr((payload, request.gateway_scope)),
+    ).hex
 
 
 __all__ = [

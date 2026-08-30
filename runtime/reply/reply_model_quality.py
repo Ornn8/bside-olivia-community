@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from llm_gateway import Gateway, GatewayConfig, create_gateway
+from llm_gateway import Gateway, GatewayConfig, GatewayRequestScope, create_gateway
 from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
 from runtime.reply.reply_context import (
     IntimacyRequest,
@@ -367,9 +367,11 @@ class GatewayReviewTransport:
         self,
         gateway: Gateway,
         persona_path: Path,
+        reasoning_timeout_seconds: float | None = None,
     ) -> None:
         self.gateway = gateway
         self.persona_path = persona_path
+        self.reasoning_timeout_seconds = reasoning_timeout_seconds
         self._last_failure_diagnostics: tuple[ReviewFailureDiagnostic, ...] = ()
         self._diagnostics_lock = Lock()
 
@@ -415,6 +417,16 @@ class GatewayReviewTransport:
     ) -> object:
         mode = str(request.get("mode", ""))
         evidence_bound = mode == ReplyMode.TEXT_LETTER.value
+        reasoning_scope = (
+            GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+            if evidence_bound and self.reasoning_timeout_seconds is not None
+            else None
+        )
+        effective_timeout = (
+            self.reasoning_timeout_seconds
+            if reasoning_scope is not None
+            else timeout_seconds
+        )
         authorities = _build_release_layer_authorities(
             load_persona(self.persona_path).snapshot,
             mode=mode,
@@ -463,7 +475,8 @@ class GatewayReviewTransport:
             ),
             mode=mode,
             evidence_bound=evidence_bound,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=effective_timeout,
+            gateway_scope=reasoning_scope,
         )
         if evidence_bound:
             try:
@@ -480,7 +493,8 @@ class GatewayReviewTransport:
                         if isinstance(request.get("relationship_context"), Mapping)
                         else {}
                     ),
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=effective_timeout,
+                    gateway_scope=reasoning_scope,
                 )
             except _ReviewContractFailure as exc:
                 raise _diagnostic_error(
@@ -510,8 +524,13 @@ class GatewayPersonaReviewer:
         gateway: Gateway,
         persona_path: Path,
         timeout_seconds: float,
+        reasoning_timeout_seconds: float | None = None,
     ) -> None:
-        self._transport = GatewayReviewTransport(gateway, persona_path)
+        self._transport = GatewayReviewTransport(
+            gateway,
+            persona_path,
+            reasoning_timeout_seconds,
+        )
         self.adapter = JsonReviewerAdapter(
             self._transport,
             ReviewerConfig(
@@ -578,10 +597,12 @@ class GatewayPersonaRewriter:
         gateway: Gateway,
         persona_path: Path,
         timeout_seconds: float,
+        reasoning_timeout_seconds: float | None = None,
     ) -> None:
         self.gateway = gateway
         self.persona_path = persona_path
         self.timeout_seconds = timeout_seconds
+        self.reasoning_timeout_seconds = reasoning_timeout_seconds
 
     def rewrite(
         self,
@@ -705,10 +726,21 @@ class GatewayPersonaRewriter:
                 ),
             },
         )
+        reasoning_scope = (
+            GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+            if context.mode is ReplyMode.TEXT_LETTER
+            and self.reasoning_timeout_seconds is not None
+            else None
+        )
         return _complete_text(
             self.gateway,
             messages,
-            self.timeout_seconds,
+            (
+                self.reasoning_timeout_seconds
+                if reasoning_scope is not None
+                else self.timeout_seconds
+            ),
+            gateway_scope=reasoning_scope,
         ).strip()
 
 
@@ -788,20 +820,34 @@ def create_model_quality_ports(
             30.0,
         )
     )
+    max_reasoning = (
+        isinstance(config, GatewayConfig)
+        and config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and _REVIEW_MODEL.casefold() == "deepseek-v4-flash"
+    )
     timeout = _env_timeout(
         "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
         min(configured_timeout, 60.0),
+        maximum=120.0,
+    )
+    reasoning_timeout = (
+        config.reasoning_timeout_seconds
+        if max_reasoning and isinstance(config, GatewayConfig)
+        else None
     )
     reviewer = GatewayPersonaReviewer(
         quality_gateway,
         persona_path,
         timeout,
+        reasoning_timeout,
     )
     rewriter = (
         GatewayPersonaRewriter(
             quality_gateway,
             persona_path,
             timeout,
+            reasoning_timeout,
         )
         if _env_bool(
             "OLIVIA_REPLY_REWRITE_ENABLED",
@@ -1183,11 +1229,21 @@ async def _complete_layer_text(
     messages: Sequence[Mapping[str, Any]],
     timeout_seconds: float,
     request_id: str,
+    gateway_scope: GatewayRequestScope | None = None,
 ) -> str:
     if bool(getattr(gateway, "stream_enabled", False)):
         async def collect() -> str:
             chunks: list[str] = []
-            async for delta in gateway.stream(messages, request_id=request_id):
+            stream = (
+                gateway.stream_scoped(
+                    messages,
+                    request_id=request_id,
+                    scope=gateway_scope,
+                )
+                if gateway_scope is not None
+                else gateway.stream(messages, request_id=request_id)
+            )
+            async for delta in stream:
                 if delta.text:
                     chunks.append(delta.text)
             return "".join(chunks)
@@ -1197,10 +1253,16 @@ async def _complete_layer_text(
         except Exception as exc:
             raise _GatewayInvocationFailure from exc
     try:
-        response = await asyncio.wait_for(
-            gateway.complete(messages, request_id=request_id),
-            timeout_seconds,
+        completion = (
+            gateway.complete_scoped(
+                messages,
+                request_id=request_id,
+                scope=gateway_scope,
+            )
+            if gateway_scope is not None
+            else gateway.complete(messages, request_id=request_id)
         )
+        response = await asyncio.wait_for(completion, timeout_seconds)
     except Exception as exc:
         raise _GatewayInvocationFailure from exc
     return response.text
@@ -1218,6 +1280,7 @@ def _complete_layer_reviews(
     mode: str,
     evidence_bound: bool,
     timeout_seconds: float,
+    gateway_scope: GatewayRequestScope | None,
 ) -> tuple[_LayerResult, ...]:
     async def invoke(
         requests: Sequence[
@@ -1234,6 +1297,7 @@ def _complete_layer_reviews(
                     messages,
                     timeout_seconds,
                     f"quality-{uuid.uuid4().hex}:{layer.name}",
+                    gateway_scope,
                 )
             except _GatewayInvocationFailure:
                 raise _diagnostic_error(
@@ -1325,6 +1389,7 @@ def _adjudicate_hard_evidence(
     memory_evidence: Mapping[str, str],
     relationship_context: Mapping[str, object],
     timeout_seconds: float,
+    gateway_scope: GatewayRequestScope | None,
 ) -> tuple[_LayerResult, ...]:
     claims = tuple(
         (item.layer, evidence)
@@ -1445,6 +1510,7 @@ def _adjudicate_hard_evidence(
         messages,
         timeout_seconds,
         diagnostic=True,
+        gateway_scope=gateway_scope,
     )
     decisions = _parse_adjudication_result(text, claims=claims)
     by_id = {item.evidence_id: item for item in decisions}
@@ -1892,6 +1958,7 @@ def _complete_text(
     timeout_seconds: float,
     *,
     diagnostic: bool = False,
+    gateway_scope: GatewayRequestScope | None = None,
 ) -> str:
     try:
         text = asyncio.run(
@@ -1900,6 +1967,7 @@ def _complete_text(
                 messages,
                 timeout_seconds,
                 f"quality-{uuid.uuid4().hex}",
+                gateway_scope,
             )
         )
     except _GatewayInvocationFailure:
@@ -1942,6 +2010,8 @@ def _env_bool(
 def _env_timeout(
     name: str,
     default: float,
+    *,
+    maximum: float,
 ) -> float:
     try:
         value = float(
@@ -1955,7 +2025,7 @@ def _env_timeout(
     return max(
         0.1,
         min(
-            120.0,
+            maximum,
             value,
         ),
     )

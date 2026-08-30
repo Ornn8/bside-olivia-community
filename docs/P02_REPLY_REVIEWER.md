@@ -167,6 +167,9 @@ accepted warning.
   rewrite;
 - `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` sets a bounded 0.1-120 second timeout;
   the default is the smaller of 12 seconds and the configured Provider timeout.
+  This control applies only to non-max review, including video modes. A scoped
+  `deepseek-v4-flash` text Letter review instead uses the public
+  `reasoning_timeout_seconds` setting shared by its max-reasoning stages.
 
 Provider absence, timeout, transport errors, non-JSON output, and
 schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or

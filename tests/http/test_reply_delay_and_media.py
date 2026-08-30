@@ -10,6 +10,7 @@ from aiohttp.test_utils import make_mocked_request
 
 import local_server
 from letter_triage import TriageResult
+from llm_gateway import GatewayConfig, GatewayRequestScope
 from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
@@ -689,13 +690,89 @@ def test_shutdown_cancels_and_releases_owned_media_jobs():
 
 
 def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
+    config = GatewayConfig(
+        provider="openai_compatible",
+        api_style="chat_completions",
+        model="synthetic-model",
+        timeout_seconds=90.0,
+    )
+    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds() == 275.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 275.0
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds() == 155.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 155.0
+
+
+def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication(
+    monkeypatch,
+):
+    config = GatewayConfig(
+        provider="openai_compatible",
+        api_style="chat_completions",
+        model="deepseek-v4-flash",
+        timeout_seconds=180.0,
+        reasoning_timeout_seconds=720.0,
+    )
+    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
+    monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
+
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 4325.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 365.0
+
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 4325.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 245.0
+
+
+def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning(
+    monkeypatch,
+):
+    seen = []
+
+    class RecordingPipeline:
+        async def run(self, request, context):
+            seen.append((request, context.mode))
+            return object()
+
+    config = GatewayConfig(
+        provider="openai_compatible",
+        api_style="chat_completions",
+        model="deepseek-v4-flash",
+        timeout_seconds=180.0,
+        reasoning_timeout_seconds=720.0,
+    )
+    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
+    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
+    monkeypatch.setattr(local_server, "reply_pipeline", RecordingPipeline())
+
+    async def exercise():
+        await local_server._run_reply_pipeline_for_letter(
+            {"letter_id": "text-fixture"},
+            "synthetic text letter",
+            ReplyMode.TEXT_LETTER.value,
+            idempotency_key="stable",
+        )
+        await local_server._run_reply_pipeline_for_letter(
+            {"letter_id": "video-fixture"},
+            "synthetic video request",
+            ReplyMode.SPOKEN_VIDEO.value,
+            idempotency_key="stable",
+        )
+
+    asyncio.run(exercise())
+
+    assert seen[0][0].gateway_scope is GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+    assert seen[0][0].request_id == "letter-reply:text-fixture"
+    assert seen[0][0].idempotency_key == "stable:text-fixture"
+    assert seen[0][1] is ReplyMode.TEXT_LETTER
+    assert seen[1][0].gateway_scope is None
+    assert seen[1][0].request_id == "letter-reply:video-fixture"
+    assert seen[1][0].idempotency_key == "stable:video-fixture"
+    assert seen[1][1] is ReplyMode.SPOKEN_VIDEO
 
 
 @pytest.mark.parametrize(

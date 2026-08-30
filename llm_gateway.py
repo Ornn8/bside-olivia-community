@@ -13,6 +13,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
@@ -24,6 +25,12 @@ PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
+
+
+class GatewayRequestScope(str, Enum):
+    """Trusted in-process call scope; never serialized into provider request ids."""
+
+    TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
 
 
 class GatewayError(RuntimeError):
@@ -86,6 +93,7 @@ class GatewayConfig:
     api_key_env: str = ""
     api_style: str = "chat_completions"
     timeout_seconds: float = 30.0
+    reasoning_timeout_seconds: float = 600.0
     max_retries: int = 2
     retry_backoff_seconds: float = 0.0
     stream: bool = False
@@ -141,6 +149,12 @@ class GatewayConfig:
             api_key_env=str(api_key_env or "").strip(),
             api_style=_normalize_api_style(api_style),
             timeout_seconds=_bounded_float(data.get("timeout_seconds", 30.0), 30.0, 0.05, 600.0),
+            reasoning_timeout_seconds=_bounded_float(
+                data.get("reasoning_timeout_seconds", 600.0),
+                600.0,
+                0.05,
+                1800.0,
+            ),
             max_retries=_bounded_int(data.get("max_retries", 2), 2, 0, 8),
             retry_backoff_seconds=_bounded_float(
                 data.get("retry_backoff_seconds", 0.0), 0.0, 0.0, 30.0
@@ -173,6 +187,7 @@ class GatewayConfig:
             "api_key_env_configured": bool(self.api_key_env),
             "api_style": self.api_style,
             "timeout_seconds": self.timeout_seconds,
+            "reasoning_timeout_seconds": self.reasoning_timeout_seconds,
             "max_retries": self.max_retries,
             "stream": self.stream,
             "max_input_chars": self.max_input_chars,
@@ -254,6 +269,7 @@ def _env_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
         "OLIVIA_LLM_API_KEY_ENV": "api_key_env",
         "OLIVIA_LLM_API_STYLE": "api_style",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "timeout_seconds",
+        "OLIVIA_LLM_REASONING_TIMEOUT_SECONDS": "reasoning_timeout_seconds",
         "OLIVIA_LLM_MAX_RETRIES": "max_retries",
         "OLIVIA_LLM_RETRY_BACKOFF_SECONDS": "retry_backoff_seconds",
         "OLIVIA_LLM_STREAM": "stream",
@@ -350,6 +366,14 @@ class Gateway:
 
         self.network_call_count = int(getattr(self, "network_call_count", 0)) + 1
 
+    def timeout_seconds_for_scope(
+        self,
+        scope: GatewayRequestScope,
+        *,
+        default: float,
+    ) -> float:
+        return default
+
     async def complete(
         self,
         messages: Sequence[Mapping[str, Any]],
@@ -357,6 +381,15 @@ class Gateway:
         request_id: str | None = None,
     ) -> GatewayResponse:
         raise NotImplementedError
+
+    async def complete_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        return await self.complete(messages, request_id=request_id)
 
     async def complete_with_tools(
         self,
@@ -376,6 +409,16 @@ class Gateway:
     ) -> AsyncIterator[GatewayDelta]:
         response = await self.complete(messages, request_id=request_id)
         yield GatewayDelta(response.text, response.request_id, finish_reason="stop")
+
+    async def stream_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> AsyncIterator[GatewayDelta]:
+        async for delta in self.stream(messages, request_id=request_id):
+            yield delta
 
 
 class UnconfiguredAdapter(Gateway):
@@ -397,6 +440,14 @@ class FallbackAdapter(Gateway):
             getattr(self.fallback, "network_call_count", 0)
         )
 
+    def timeout_seconds_for_scope(
+        self,
+        scope: GatewayRequestScope,
+        *,
+        default: float,
+    ) -> float:
+        return self.primary.timeout_seconds_for_scope(scope, default=default)
+
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
         try:
             return await self.primary.complete(messages, request_id=request_id)
@@ -404,6 +455,28 @@ class FallbackAdapter(Gateway):
             if not exc.retryable:
                 raise
             return await self.fallback.complete(messages, request_id=request_id)
+
+    async def complete_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        try:
+            return await self.primary.complete_scoped(
+                messages,
+                request_id=request_id,
+                scope=scope,
+            )
+        except GatewayError as exc:
+            if not exc.retryable:
+                raise
+            return await self.fallback.complete_scoped(
+                messages,
+                request_id=request_id,
+                scope=scope,
+            )
 
     async def complete_with_tools(
         self,
@@ -442,6 +515,34 @@ class FallbackAdapter(Gateway):
             if emitted or not exc.retryable:
                 raise
         async for delta in self.fallback.stream(messages, request_id=request_id):
+            yield delta
+
+    async def stream_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> AsyncIterator[GatewayDelta]:
+        emitted = False
+        try:
+            async for delta in self.primary.stream_scoped(
+                messages,
+                request_id=request_id,
+                scope=scope,
+            ):
+                if delta.text:
+                    emitted = True
+                yield delta
+            return
+        except GatewayError as exc:
+            if emitted or not exc.retryable:
+                raise
+        async for delta in self.fallback.stream_scoped(
+            messages,
+            request_id=request_id,
+            scope=scope,
+        ):
             yield delta
 
 
@@ -564,7 +665,36 @@ class OpenAICompatibleAdapter(Gateway):
         headers["X-Request-ID"] = request_id
         return headers
 
-    def _body(self, messages: Sequence[Mapping[str, Any]], *, stream: bool) -> dict[str, Any]:
+    def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:
+        return (
+            self.config.provider == "openai_compatible"
+            and self.config.api_style == "chat_completions"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+            and scope is GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+        )
+
+    def _request_timeout_seconds(self, *, max_reasoning: bool) -> float:
+        if max_reasoning:
+            return self.config.reasoning_timeout_seconds
+        return self.config.timeout_seconds
+
+    def timeout_seconds_for_scope(
+        self,
+        scope: GatewayRequestScope,
+        *,
+        default: float,
+    ) -> float:
+        if self._uses_max_reasoning(scope):
+            return self.config.reasoning_timeout_seconds
+        return default
+
+    def _body(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        stream: bool,
+        max_reasoning: bool = False,
+    ) -> dict[str, Any]:
         normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
         if self.config.api_style == "responses":
             request_input = [
@@ -572,16 +702,36 @@ class OpenAICompatibleAdapter(Gateway):
                 for message in normalized
             ]
             return {"model": self.config.model, "input": request_input, "stream": stream}
-        return {"model": self.config.model, "messages": list(normalized), "stream": stream}
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": list(normalized),
+            "stream": stream,
+        }
+        if (
+            max_reasoning
+            and self.config.provider == "openai_compatible"
+            and self.config.model.casefold() == "deepseek-v4-flash"
+        ):
+            body["thinking"] = {"type": "enabled"}
+            body["reasoning_effort"] = "max"
+        return body
 
     async def _retry_wait(self, attempt: int) -> None:
         delay = self.config.retry_backoff_seconds * (attempt + 1)
         if delay:
             await asyncio.sleep(delay)
 
-    async def _post_json(self, body: dict[str, Any], request_id: str) -> dict[str, Any]:
+    async def _post_json(
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        *,
+        max_reasoning: bool = False,
+    ) -> dict[str, Any]:
         key = self._ensure_configured()
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        timeout = aiohttp.ClientTimeout(
+            total=self._request_timeout_seconds(max_reasoning=max_reasoning)
+        )
         for attempt in range(self.config.max_retries + 1):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -620,9 +770,40 @@ class OpenAICompatibleAdapter(Gateway):
         raise ProviderUnavailable()
 
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
+        return await self._complete(
+            messages,
+            request_id=request_id,
+            scope=None,
+        )
+
+    async def complete_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        return await self._complete(
+            messages,
+            request_id=request_id,
+            scope=scope,
+        )
+
+    async def _complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None,
+        scope: GatewayRequestScope | None,
+    ) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
-        body = self._body(messages, stream=False)
-        data = await self._post_json(body, request)
+        max_reasoning = self._uses_max_reasoning(scope)
+        body = self._body(
+            messages,
+            stream=False,
+            max_reasoning=max_reasoning,
+        )
+        data = await self._post_json(body, request, max_reasoning=max_reasoning)
         text = _extract_response_text(data)
         if not text:
             raise ProviderProtocolError()
@@ -672,10 +853,45 @@ class OpenAICompatibleAdapter(Gateway):
         return calls
 
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
+        async for delta in self._stream(
+            messages,
+            request_id=request_id,
+            scope=None,
+        ):
+            yield delta
+
+    async def stream_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> AsyncIterator[GatewayDelta]:
+        async for delta in self._stream(
+            messages,
+            request_id=request_id,
+            scope=scope,
+        ):
+            yield delta
+
+    async def _stream(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None,
+        scope: GatewayRequestScope | None,
+    ) -> AsyncIterator[GatewayDelta]:
         request = request_id or uuid.uuid4().hex
-        body = self._body(messages, stream=True)
+        max_reasoning = self._uses_max_reasoning(scope)
+        body = self._body(
+            messages,
+            stream=True,
+            max_reasoning=max_reasoning,
+        )
         key = self._ensure_configured()
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        timeout = aiohttp.ClientTimeout(
+            total=self._request_timeout_seconds(max_reasoning=max_reasoning)
+        )
         emitted = False
         for attempt in range(self.config.max_retries + 1):
             try:
@@ -919,6 +1135,7 @@ __all__ = [
     "GatewayToolCall",
     "FallbackAdapter",
     "GatewayResponse",
+    "GatewayRequestScope",
     "InvalidGatewayInput",
     "LLMConfig",
     "MockAdapter",

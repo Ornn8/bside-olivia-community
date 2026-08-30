@@ -29,7 +29,7 @@ rtk python tools/healthcheck.py --profile core
 rtk python tools/healthcheck.py --profile llm
 ```
 
-也可用环境变量覆盖配置：`OLIVIA_LLM_BASE_URL`、`OLIVIA_LLM_MODEL`、`OLIVIA_LLM_API_STYLE`、`OLIVIA_LLM_TIMEOUT_SECONDS`、`OLIVIA_LLM_MAX_RETRIES`、`OLIVIA_LLM_RETRY_BACKOFF_SECONDS`、`OLIVIA_LLM_STREAM`、`OLIVIA_LLM_MAX_INPUT_CHARS`、`OLIVIA_LLM_MAX_OUTPUT_CHARS`、`OLIVIA_LLM_FALLBACK_PROVIDER`、`OLIVIA_PERSONA_FILE`。
+也可用环境变量覆盖配置：`OLIVIA_LLM_BASE_URL`、`OLIVIA_LLM_MODEL`、`OLIVIA_LLM_API_STYLE`、`OLIVIA_LLM_TIMEOUT_SECONDS`、`OLIVIA_LLM_REASONING_TIMEOUT_SECONDS`、`OLIVIA_LLM_MAX_RETRIES`、`OLIVIA_LLM_RETRY_BACKOFF_SECONDS`、`OLIVIA_LLM_STREAM`、`OLIVIA_LLM_MAX_INPUT_CHARS`、`OLIVIA_LLM_MAX_OUTPUT_CHARS`、`OLIVIA_LLM_FALLBACK_PROVIDER`、`OLIVIA_PERSONA_FILE`。
 
 ## 配置与自定义 provider
 
@@ -42,12 +42,15 @@ rtk python tools/healthcheck.py --profile llm
 | `api_key_env` / `requires_api_key` | 只保存环境变量名，不保存密钥 |
 | `api_style` | `chat_completions` 或 `responses` |
 | `timeout_seconds` / `max_retries` / `retry_backoff_seconds` | 单次请求超时、429/5xx/网络失败重试预算 |
+| `reasoning_timeout_seconds` | 文本信件使用 `deepseek-v4-flash` max thinking 时的单阶段超时；默认 600 秒，范围 0.05-1800 秒 |
 | `stream` | 内部事件编排是否消费 provider 流；HTTP `/toy` 仍是非 SSE 响应 |
 | `max_input_chars` / `max_output_chars` | 输入消息总长度和输出长度上限 |
 | `fallback_provider` | 显式降级登记；默认 `none`，不会无提示生成占位回信 |
 | persona_v2_file / persona_v2_enabled | 默认 Persona 2.0 release 文件与开关；关闭该开关才进入 legacy 路径 |
 | persona_file / feature_enabled | 可选 legacy DRAFT 文件和总开关；默认配置不再引用该文件 |
 | persona_config / persona_evidence_file | 候选结构化配置与短 provenance/evidence 索引；候选包默认独立关闭，不会替换 DRAFT |
+
+仅 `text_letter` 的生成、五层 review、条件 adjudication、一次 rewrite 与 recheck 使用可信的进程内 scope，向 OpenAI-compatible Chat Completions（OpenCode Go 或 DeepSeek 官方同形端点）发送 `thinking={"type":"enabled"}` 与 `reasoning_effort="max"`。scope 不写入 `Idempotency-Key` 或 `X-Request-ID`；视频、音乐、Live、历史导入和 tool call 保持原 payload 与 `timeout_seconds`。Provider 返回的 `reasoning_content` 只在传输层丢弃，不进入回复、日志或记忆。
 
 代码可通过 `llm_gateway.register_provider("name", factory)` 注册 provider。factory 接收 `GatewayConfig`，返回实现 `Gateway.complete()` 与可选 `Gateway.stream()` 的对象；异常只能使用 `GatewayError` 的稳定 code/retryable 分类，不能把响应 body、header、key 或 prompt 放入异常文本。
 
