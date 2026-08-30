@@ -18,7 +18,21 @@ from pathlib import Path, PurePosixPath
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
 VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
-PUBLIC_MEDIA_SUFFIXES = {".flac", ".mp3", ".mp4", ".wav"}
+FORBIDDEN_MEDIA_SUFFIXES = {
+    ".aac",
+    ".avi",
+    ".flac",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+    ".wmv",
+}
 BUILD_CONTROL_FILES = {
     "installer/build_windows_setup.py",
     "installer/setup-build-requirements.txt",
@@ -384,11 +398,11 @@ def prepare_setup_payload(
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
     selected = sorted(relative for relative in tracked if _is_release_file(relative))
-    if distribution == "public" and any(
-        PurePosixPath(relative).suffix.lower() in PUBLIC_MEDIA_SUFFIXES
+    if any(
+        PurePosixPath(relative).suffix.lower() in FORBIDDEN_MEDIA_SUFFIXES
         for relative in selected
     ):
-        raise SetupBuildError("SETUP_PUBLIC_MEDIA_FORBIDDEN")
+        raise SetupBuildError("SETUP_TRACKED_MEDIA_FORBIDDEN")
     build_inputs = set(selected) | BUILD_CONTROL_FILES
     if not build_inputs.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")

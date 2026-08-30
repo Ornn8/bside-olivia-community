@@ -249,6 +249,53 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
     assert not (output / "Olivia-Setup-x64.exe.sha256").exists()
 
 
+def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    output = tmp_path / "dist-private"
+    compiler = tmp_path / "ISCC.exe"
+    compiler.write_bytes(b"compiler")
+    contracts = source / "contracts"
+    contracts.mkdir()
+    (contracts / "offline_core_assets.schema.json").write_text(
+        json.dumps({"type": "object"}),
+        encoding="utf-8",
+    )
+
+    def compile_setup(_command, *, check, timeout):
+        assert check is False
+        assert timeout == 900
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"complete private setup")
+        return type("Result", (), {"returncode": 0})()
+
+    original_write_text = Path.write_text
+
+    def fail_checksum_write(path: Path, content: str, *args, **kwargs):
+        if path.name == "Olivia-Setup-x64.exe.sha256":
+            original_write_text(path, "partial checksum", encoding="ascii")
+            raise OSError("checksum write failed")
+        return original_write_text(path, content, *args, **kwargs)
+
+    monkeypatch.setattr("installer.build_windows_setup.subprocess.run", compile_setup)
+    monkeypatch.setattr(Path, "write_text", fail_checksum_write)
+
+    with pytest.raises(SetupBuildError, match="SETUP_BUILD_FAILED"):
+        build_windows_setup(
+            source,
+            offline,
+            output,
+            version="0.1.test",
+            iscc=compiler,
+            distribution="private",
+            voice_reference=reference,
+        )
+
+    assert not (output / "Olivia-Setup-x64.exe").exists()
+    assert not (output / "Olivia-Setup-x64.exe.sha256").exists()
+
+
 def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> None:
     documentation = (ROOT / "docs" / "WINDOWS_FULL_PATCH.md").read_text(
         encoding="utf-8"
@@ -279,20 +326,32 @@ def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path,
 
 
 @pytest.mark.parametrize(
-    "relative",
+    "suffix",
     [
-        "linli_character/reference.wav",
-        "runtime/reference.flac",
-        "runtime/reference.mp3",
-        "runtime/reference.mp4",
+        ".aac",
+        ".avi",
+        ".flac",
+        ".m4a",
+        ".mkv",
+        ".mov",
+        ".mp3",
+        ".mp4",
+        ".ogg",
+        ".opus",
+        ".wav",
+        ".webm",
+        ".wmv",
     ],
 )
-def test_public_setup_rejects_tracked_audio_and_video_payloads(
+@pytest.mark.parametrize("distribution", ["public", "private"])
+def test_setup_rejects_git_selected_audio_and_video_payloads(
     tmp_path: Path,
     monkeypatch,
-    relative: str,
+    suffix: str,
+    distribution: str,
 ) -> None:
-    source, offline, _reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    relative = f"runtime/reference{suffix}"
     media = source.joinpath(*relative.split("/"))
     media.parent.mkdir()
     media.write_bytes(b"private media")
@@ -306,11 +365,13 @@ def test_public_setup_rejects_tracked_audio_and_video_payloads(
         },
     )
 
-    with pytest.raises(SetupBuildError, match="SETUP_PUBLIC_MEDIA_FORBIDDEN"):
+    with pytest.raises(SetupBuildError, match="SETUP_TRACKED_MEDIA_FORBIDDEN"):
         prepare_setup_payload(
             source,
             offline,
             tmp_path / "payload",
+            distribution=distribution,
+            voice_reference=reference if distribution == "private" else None,
             validate_schema=False,
         )
 
