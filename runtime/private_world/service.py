@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Protocol, runtime_checkable
 
 from .commands import (
+    ApplyHistoricalRelationshipEvidence,
     ConfirmRelationshipStage,
     GrantIntimacy,
     PrivateWorldActor,
@@ -20,7 +21,11 @@ from .commands import (
     RecordConflict,
     RecordRepair,
 )
-from .ledger import LedgerEvent, LedgerWriteError
+from .ledger import (
+    LedgerEvent,
+    LedgerVersionConflictError,
+    LedgerWriteError,
+)
 from .port import PrivateWorldSnapshot
 from .reducer import reduce_private_world_command
 
@@ -72,6 +77,7 @@ class PrivateWorldCommandLedger(Protocol):
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool: ...
 
 
@@ -165,6 +171,15 @@ class PrivateWorldCommandService:
 
     @staticmethod
     def _authorize(command: PrivateWorldCommand) -> None:
+        if isinstance(command, ApplyHistoricalRelationshipEvidence):
+            if (
+                command.actor is not PrivateWorldActor.MIGRATION
+                or command.source is not PrivateWorldCommandSource.IMPORT
+            ):
+                raise PrivateWorldCommandServiceError(
+                    "PRIVATE_WORLD_COMMAND_SOURCE_FORBIDDEN"
+                )
+            return
         if isinstance(command, GrantIntimacy):
             if (
                 command.actor is not PrivateWorldActor.LOCAL_USER
@@ -324,6 +339,34 @@ class PrivateWorldCommandService:
                 "PRIVATE_WORLD_COMMAND_EVIDENCE_INVALID"
             )
 
+    def lookup_command(
+        self,
+        command_id: str,
+    ) -> CommandExecutionResult | None:
+        """Return bounded persisted command metadata without its audit body."""
+
+        if not isinstance(command_id, str):
+            raise TypeError("a PrivateWorld command id is required")
+        event_id = _digest("command", command_id)
+        with self._lock:
+            matches = tuple(
+                event
+                for event in self._ledger_events()
+                if event.event_id == event_id
+            )
+        if not matches:
+            return None
+        if (
+            len(matches) != 1
+            or matches[0].payload.get("schema_version")
+            != PRIVATE_WORLD_COMMAND_AUDIT_SCHEMA
+            or matches[0].payload.get("command_id") != command_id
+        ):
+            raise PrivateWorldCommandServiceError(
+                "PRIVATE_WORLD_COMMAND_AUDIT_INVALID"
+            )
+        return _result_from_audit(matches[0], duplicate=False)
+
     @staticmethod
     def _audit_payload(
         command: PrivateWorldCommand,
@@ -373,68 +416,94 @@ class PrivateWorldCommandService:
             if existing is not None:
                 return existing
             self._validate_stage_basis(command)
-            reduced = reduce_private_world_command(
-                self._ledger_snapshot(),
-                command,
-            )
-            change_fields = tuple(
-                change.field for change in reduced.delta.changes
-            )
-            audit = self._audit_payload(
-                command,
-                fingerprint,
-                applied=reduced.delta.applied,
-                reason_code=reduced.delta.reason_code,
-                change_fields=change_fields,
-                snapshot_version=reduced.snapshot.version,
-            )
-            event = LedgerEvent(
-                event_id=event_id,
-                delivery_id=delivery_id,
-                event_type=command.kind.value,
-                payload=audit,
-                occurred_at=command.occurred_at.isoformat(),
-            )
-            try:
-                applied = self._ledger.apply_once(
-                    event,
-                    reduced.snapshot,
-                )
-            except (
-                LedgerWriteError,
-                OSError,
-                RuntimeError,
-                ValueError,
-                KeyError,
-                TypeError,
-            ) as exc:
-                raise PrivateWorldCommandServiceError(
-                    "PRIVATE_WORLD_COMMAND_STORAGE_UNAVAILABLE"
-                ) from exc
-            if not applied:
-                duplicate = self._resolve_existing(
+            attempt_limit = (
+                2
+                if isinstance(
                     command,
-                    event_id,
-                    delivery_id,
-                    fingerprint,
+                    ApplyHistoricalRelationshipEvidence,
                 )
-                if duplicate is not None:
-                    return duplicate
-                raise PrivateWorldCommandServiceError(
-                    "PRIVATE_WORLD_COMMAND_IDENTITY_CONFLICT"
-                )
-            return CommandExecutionResult(
-                (
-                    CommandExecutionStatus.APPLIED
-                    if reduced.delta.applied
-                    else CommandExecutionStatus.NOOP
-                ),
-                command.command_id,
-                event_id,
-                reduced.delta.reason_code,
-                reduced.snapshot.version,
-                change_fields,
+                else 1
             )
+            for attempt in range(attempt_limit):
+                base_snapshot = self._ledger_snapshot()
+                reduced = reduce_private_world_command(
+                    base_snapshot,
+                    command,
+                )
+                change_fields = tuple(
+                    change.field for change in reduced.delta.changes
+                )
+                audit = self._audit_payload(
+                    command,
+                    fingerprint,
+                    applied=reduced.delta.applied,
+                    reason_code=reduced.delta.reason_code,
+                    change_fields=change_fields,
+                    snapshot_version=reduced.snapshot.version,
+                )
+                event = LedgerEvent(
+                    event_id=event_id,
+                    delivery_id=delivery_id,
+                    event_type=command.kind.value,
+                    payload=audit,
+                    occurred_at=command.occurred_at.isoformat(),
+                )
+                try:
+                    applied = self._ledger.apply_once(
+                        event,
+                        reduced.snapshot,
+                        expected_snapshot_version=base_snapshot.version,
+                    )
+                except LedgerVersionConflictError as exc:
+                    duplicate = self._resolve_existing(
+                        command,
+                        event_id,
+                        delivery_id,
+                        fingerprint,
+                    )
+                    if duplicate is not None:
+                        return duplicate
+                    if attempt + 1 < attempt_limit:
+                        continue
+                    raise PrivateWorldCommandServiceError(
+                        "PRIVATE_WORLD_COMMAND_STORAGE_UNAVAILABLE"
+                    ) from exc
+                except (
+                    LedgerWriteError,
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    raise PrivateWorldCommandServiceError(
+                        "PRIVATE_WORLD_COMMAND_STORAGE_UNAVAILABLE"
+                    ) from exc
+                if not applied:
+                    duplicate = self._resolve_existing(
+                        command,
+                        event_id,
+                        delivery_id,
+                        fingerprint,
+                    )
+                    if duplicate is not None:
+                        return duplicate
+                    raise PrivateWorldCommandServiceError(
+                        "PRIVATE_WORLD_COMMAND_IDENTITY_CONFLICT"
+                    )
+                return CommandExecutionResult(
+                    (
+                        CommandExecutionStatus.APPLIED
+                        if reduced.delta.applied
+                        else CommandExecutionStatus.NOOP
+                    ),
+                    command.command_id,
+                    event_id,
+                    reduced.delta.reason_code,
+                    reduced.snapshot.version,
+                    change_fields,
+                )
+        raise AssertionError("PrivateWorld command attempt limit is invalid")
 
 
 __all__ = [

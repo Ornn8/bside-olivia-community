@@ -26,6 +26,14 @@ Scores remain within `0..100`. The growth window is 7 days with a maximum of 6 p
 
 Canonical reply delivery, high-frequency messaging, gifts, repeated phrases, confessions, and inactivity have no relationship effect. Stage changes require an explicit confirmation command with evidence; ordinary communication never auto-upgrades or auto-downgrades a stage.
 
+An assessed historical corpus may establish bounded `familiarity` and
+`closeness` floors through `ApplyHistoricalRelationshipEvidence`. A pristine
+relationship starts at those two floors; an existing relationship uses
+`max(current, assessed)` independently for each axis. This import command never
+changes stage, trust, comfort, tension, growth accounting, intimacy grants,
+nickname or home boundaries, or continuation facts. Stage remains exclusive to
+an evidenced Control Center confirmation.
+
 ## Append-only intimacy
 
 Intimacy grants are append-only shared facts. The command surface has no grant revoke operation, and reducer events cannot lower or rewrite a persisted grant. A new grant must have a unique identifier, stay at or below the stage ceiling, and pass the local command authorization boundary. The private grant statement remains control-only; persona projection receives only `intimacy_ceiling` and the highest `granted_intimacy` tier.

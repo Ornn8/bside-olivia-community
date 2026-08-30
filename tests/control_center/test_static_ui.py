@@ -27,6 +27,7 @@ class FakeLedger:
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool:
         with self._lock:
             self.items.append(event)
