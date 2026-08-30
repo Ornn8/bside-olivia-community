@@ -727,6 +727,7 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(latentsync_reply.subprocess, "run", run)
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
 
     render_latentsync_video(
         source,
