@@ -711,9 +711,16 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
 
     def run(command, **kwargs):
         if Path(command[0]).name.casefold() == "ffmpeg.exe":
+            if "-progress" in command:
+                observed["validation_command"] = command
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=b"frame=25\nout_time_us=1000000\nprogress=end\n",
+                    stderr=b"",
+                )
             Path(command[-1]).write_bytes(b"prepared-video")
             observed["prepare_command"] = command
-            return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0, stderr=b"")
         observed["environment"] = kwargs.get("env")
         observed["config_path"] = command[
             command.index("--unet_config_path") + 1
@@ -724,7 +731,7 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
         Path(command[command.index("--video_out_path") + 1]).write_bytes(
             b"synthetic-video"
         )
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stderr=b"")
 
     monkeypatch.setattr(latentsync_reply.subprocess, "run", run)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
@@ -745,6 +752,7 @@ def test_latentsync_process_receives_bundled_ffmpeg(tmp_path, monkeypatch):
     assert Path(environment["TEMP"]).is_relative_to(tmp_path)
     assert output.read_bytes() == b"synthetic-video"
     assert Path(observed["prepare_command"][0]).name.casefold() == "ffmpeg.exe"
+    assert Path(observed["validation_command"][0]).name.casefold() == "ffmpeg.exe"
     assert "libx264" in observed["prepare_command"]
     assert Path(observed["config_path"]).name == "stage2_efficient.yaml"
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+from contextlib import suppress
 import json
 import logging
 import math
@@ -67,11 +67,8 @@ def _process_diagnostic(
         category = "external_process_failure"
     return (
         f"returncode={returncode if returncode is not None else 'unknown'};"
-        f"timed_out={str(timed_out).lower()};"
-        f"stderr_category={category};"
-        f"stderr_bytes={len(payload)};"
-        f"stderr_sha256={hashlib.sha256(payload).hexdigest()}"
-    )[:240]
+        f"stderr_category={category}"
+    )
 
 
 def _reported_process_failure(
@@ -120,6 +117,18 @@ def _latentsync_timeout_seconds(
     if not math.isfinite(value) or value <= 0:
         return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
     return min(value, _MAX_LATENTSYNC_TIMEOUT_SECONDS)
+
+
+def _remaining_timeout_seconds(
+    deadline: float,
+    environment: Mapping[str, str],
+) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=None, timed_out=True,
+        )
+    return remaining
 
 
 def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
@@ -247,8 +256,58 @@ def _prepare_source_clip(
         raise _reported_process_failure(
             environment, returncode=None, stderr=str(exc), management_failed=True,
         ) from exc
-    if result.returncode != 0 or not prepared_video.is_file():
+    if result.returncode != 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr=result.stderr,
+        )
+    if not prepared_video.is_file():
         raise LatentSyncReplyError("LATENTSYNC_SOURCE_PREPARE_FAILED")
+
+
+def _validate_rendered_video(
+    video_path: Path,
+    *,
+    environment: dict[str, str],
+    timeout_seconds: float,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
+    if ffmpeg is None:
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-xerror", "-nostats",
+        "-progress", "pipe:1", "-i", str(video_path), "-map", "0:v:0",
+        "-map", "0:a:0", "-f", "null", os.devnull,
+    ]
+    try:
+        result = run_managed_process(
+            command, timeout_seconds=timeout_seconds, env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=exc.stderr, timed_out=True,
+        ) from exc
+    except OSError as exc:
+        raise _reported_process_failure(
+            environment, returncode=None, stderr=str(exc), management_failed=True,
+        ) from exc
+    if result.returncode != 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr=result.stderr,
+        )
+    progress = dict(
+        line.split("=", 1)
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+        if "=" in line
+    )
+    try:
+        frames = int(progress.get("frame", "0"))
+        duration_us = int(progress.get("out_time_us", progress.get("out_time_ms", "0")))
+    except ValueError:
+        frames = duration_us = 0
+    if progress.get("progress") != "end" or frames <= 0 or duration_us <= 0:
+        raise _reported_process_failure(
+            environment, returncode=result.returncode, stderr="decoded_video_invalid",
+        )
 
 
 def render_latentsync_video(
@@ -325,7 +384,7 @@ def render_latentsync_video(
             audio_path,
             prepared_video,
             environment=runtime_environment,
-            timeout_seconds=max(0.1, deadline - time.monotonic()),
+            timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
         )
         command = [
             str(python_path),
@@ -355,7 +414,7 @@ def render_latentsync_video(
             result = run_managed_process(
                 command,
                 cwd=latentsync_root,
-                timeout_seconds=max(0.1, deadline - time.monotonic()),
+                timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
                 env=runtime_environment,
             )
         except subprocess.TimeoutExpired as exc:
@@ -380,12 +439,18 @@ def render_latentsync_video(
             )
         if not working_output.is_file() or working_output.stat().st_size == 0:
             raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")
+        _validate_rendered_video(
+            working_output,
+            environment=runtime_environment,
+            timeout_seconds=_remaining_timeout_seconds(deadline, source_environment),
+        )
         partial_output = output_path.with_suffix(output_path.suffix + ".partial")
         try:
             shutil.copy2(working_output, partial_output)
             partial_output.replace(output_path)
         finally:
-            partial_output.unlink(missing_ok=True)
+            with suppress(OSError):
+                partial_output.unlink(missing_ok=True)
         metadata = {
             "visual_provider": "LatentSync-1.5",
             "inference_steps": 20,

@@ -52,7 +52,7 @@ def test_published_output_survives_locked_temp_cleanup(tmp_path: Path, monkeypat
             self.path = Path(dir) / f"{prefix}locked"
 
         def __enter__(self):
-            self.path.mkdir(parents=True)
+            self.path.mkdir(parents=True, exist_ok=True)
             return str(self.path)
 
         def __exit__(self, *_args):
@@ -60,8 +60,13 @@ def test_published_output_survives_locked_temp_cleanup(tmp_path: Path, monkeypat
                 raise PermissionError("locked")
 
     def run(command, **_kwargs):
-        _write(Path(command[command.index("--video_out_path") + 1]), b"video")
-        return SimpleNamespace(returncode=0, stderr=b"")
+        if "--video_out_path" in command:
+            _write(Path(command[command.index("--video_out_path") + 1]), b"video")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        observed["validation"] = command
+        return SimpleNamespace(
+            returncode=0, stdout=b"frame=25\nout_time_us=1000000\nprogress=end\n", stderr=b"",
+        )
 
     monkeypatch.setattr(latentsync_reply.tempfile, "TemporaryDirectory", LockedTemp)
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
@@ -69,6 +74,40 @@ def test_published_output_survives_locked_temp_cleanup(tmp_path: Path, monkeypat
     assert _render(fixture)["visual_provider"] == "LatentSync-1.5"
     assert fixture.output.read_bytes() == b"video"
     assert observed["ignored"] is True
+    assert all(flag in observed["validation"] for flag in ("-xerror", "-f", "-progress"))
+
+    def fail(error):
+        return lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
+    monkeypatch.setattr(latentsync_reply.shutil, "copy2", fail(FileNotFoundError("copy failed")))
+    monkeypatch.setattr(Path, "unlink", fail(PermissionError("locked")))
+    with pytest.raises(FileNotFoundError, match="copy failed"):
+        _render(fixture)
+
+
+@pytest.mark.parametrize("failure", ("corrupt", "missing_audio"))
+def test_invalid_output_is_not_published(tmp_path: Path, monkeypatch, failure) -> None:
+    fixture = _fixture(tmp_path)
+
+    def run(command, **_kwargs):
+        if "--video_out_path" in command:
+            _write(Path(command[command.index("--video_out_path") + 1]), failure.encode())
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if failure == "missing_audio":
+            return subprocess.CompletedProcess(
+                command, int("0:a:0" in command), b"frame=25\nout_time_us=1000000\nprogress=end\n",
+                b"missing audio",
+            )
+        return subprocess.CompletedProcess(
+            command, 0, b"frame=0\nout_time_us=0\nprogress=end\n", b"",
+        )
+
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError) as caught:
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    assert str(caught.value) == "LATENTSYNC_FAILED"
+    assert not fixture.output.exists()
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 1800.0), ("999999", 3600.0)])
@@ -77,8 +116,11 @@ def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, ex
 
     def run(command, *, timeout_seconds, **_kwargs):
         observed["timeout"] = timeout_seconds
-        _write(Path(command[command.index("--video_out_path") + 1]), b"video")
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        if "--video_out_path" in command:
+            _write(Path(command[command.index("--video_out_path") + 1]), b"video")
+        return subprocess.CompletedProcess(
+            command, 0, b"frame=25\nout_time_us=1000000\nprogress=end\n", b"",
+        )
 
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
@@ -92,22 +134,59 @@ def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, ex
 
 def test_prepare_and_worker_share_one_timeout_budget(tmp_path: Path, monkeypatch) -> None:
     fixture, observed = _fixture(tmp_path), {}
-    moments = iter((0.0, 100.0, 300.0))
+    moments = iter((0.0, 100.0, 300.0, 400.0))
 
     def prepare(_source, _audio, target, *, environment, timeout_seconds):
         observed["prepare"] = timeout_seconds
         _write(target)
 
     def run(command, *, timeout_seconds, **_kwargs):
-        observed["worker"] = timeout_seconds
-        _write(Path(command[command.index("--video_out_path") + 1]), b"video")
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        phase = "worker" if "--video_out_path" in command else "validation"
+        observed[phase] = timeout_seconds
+        if phase == "worker":
+            _write(Path(command[command.index("--video_out_path") + 1]), b"video")
+        return subprocess.CompletedProcess(
+            command, 0, b"frame=25\nout_time_us=1000000\nprogress=end\n", b"",
+        )
 
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
     monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: next(moments))
     _render(fixture)
-    assert observed == {"prepare": 1700.0, "worker": 1500.0}
+    assert observed == {"prepare": 1700.0, "worker": 1500.0, "validation": 1400.0}
+
+
+def test_exhausted_total_deadline_does_not_start_worker(tmp_path: Path, monkeypatch) -> None:
+    fixture = _fixture(tmp_path)
+
+    def unexpected_worker(*_args, **_kwargs):
+        raise AssertionError("worker started after the total deadline")
+
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", unexpected_worker)
+    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: next(iter_moments))
+    iter_moments = iter((0.0, 100.0, 1801.0))
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError) as caught:
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    assert str(caught.value) == "LATENTSYNC_FAILED"
+    assert caught.value.diagnostic == "returncode=unknown;stderr_category=process_timeout"
+
+
+def test_prepare_nonzero_uses_stable_reported_failure(tmp_path: Path, monkeypatch) -> None:
+    fixture = _fixture(tmp_path)
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 19, b"", b"ffmpeg failed")
+
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError) as caught:
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    assert str(caught.value) == "LATENTSYNC_FAILED"
+    record = json.loads((data_root / "logs/media-provider.jsonl").read_text())
+    assert "returncode=19" in record["diagnostic"]
+    assert "stderr_category=external_process_failure" in record["diagnostic"]
 
 
 def test_failure_persists_redacted_diagnostic(tmp_path: Path, monkeypatch) -> None:
@@ -125,8 +204,7 @@ def test_failure_persists_redacted_diagnostic(tmp_path: Path, monkeypatch) -> No
     record = json.loads((data_root / "logs/media-provider.jsonl").read_text())
     assert record["diagnostic"] == failure.value.diagnostic
     assert record["provider"] == "latentsync" and record["error_code"] == "LATENTSYNC_FAILED"
-    assert "returncode=23" in record["diagnostic"] and "cuda_out_of_memory" in record["diagnostic"]
-    assert len(record["diagnostic"]) <= 240
+    assert record["diagnostic"] == "returncode=23;stderr_category=cuda_out_of_memory"
     assert not any(value in json.dumps(record) for value in ("C:\\private", "secret", "words"))
 
 
