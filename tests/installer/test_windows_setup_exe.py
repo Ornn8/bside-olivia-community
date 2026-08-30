@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import random
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -491,6 +492,59 @@ def test_prepare_setup_payload_applies_v2_zip_bounds_before_expansion(
     runtime = tmp_path / "Olivia-video-runtime-v2.zip"
     _write_video_runtime_v2(runtime)
     monkeypatch.setattr(f"installer.build_windows_setup.{limit_name}", limit)
+
+    with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
+        _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+def test_prepare_setup_payload_accepts_realistic_high_ratio_v2_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    payload_size = 1024 * 1024
+    compressed_payload = (
+        b"0" * (payload_size - 1950) + random.Random(17).randbytes(1950)
+    )
+    ballast = random.Random(23).randbytes(64 * 1024)
+    _write_video_runtime_v2(
+        runtime,
+        cosyvoice_extra={
+            "zz-large-data.txt": compressed_payload,
+            "zz-ballast.txt": ballast,
+        },
+    )
+
+    with zipfile.ZipFile(runtime) as archive:
+        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        ratio = entry.file_size / entry.compress_size
+        overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
+    assert 320 < ratio < 322
+    assert overall_ratio < 200
+
+    _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")
+
+
+def test_prepare_setup_payload_rejects_v2_entry_above_ratio_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "Olivia-video-runtime-v2.zip"
+    ballast = random.Random(23).randbytes(64 * 1024)
+    _write_video_runtime_v2(
+        runtime,
+        cosyvoice_extra={
+            "zz-large-data.txt": b"0" * (1024 * 1024),
+            "zz-ballast.txt": ballast,
+        },
+    )
+
+    with zipfile.ZipFile(runtime) as archive:
+        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        ratio = entry.file_size / entry.compress_size
+        overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
+    assert ratio > 512
+    assert overall_ratio < 200
 
     with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
         _prepare_private_runtime(source, offline, reference, runtime, tmp_path / "payload")

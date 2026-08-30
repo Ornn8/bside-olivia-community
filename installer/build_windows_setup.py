@@ -59,6 +59,7 @@ VIDEO_RUNTIME_MAX_ENTRIES = 250_000
 VIDEO_RUNTIME_MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 VIDEO_RUNTIME_MAX_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 VIDEO_RUNTIME_MAX_COMPRESSION_RATIO = 200
+VIDEO_RUNTIME_MAX_ENTRY_COMPRESSION_RATIO = 512
 VIDEO_RUNTIME_MODEL_DIRECTORIES = {"checkpoint", "checkpoints", "downloads", "ffmpeg", "model", "models", "pretrained_models", "source", "sources", "weight", "weights"}
 VIDEO_RUNTIME_MODEL_SUFFIXES = {".ckpt", ".engine", ".gguf", ".h5", ".hdf5", ".onnx", ".pb", ".pt", ".safetensors", ".tflite", ".weights"}
 VIDEO_RUNTIME_MEDIA_SUFFIXES = {".3g2", ".3gp", ".aac", ".aif", ".aiff", ".alac", ".amr", ".asf", ".avi", ".caf", ".flac", ".flv", ".m2ts", ".m2v", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogg", ".ogv", ".opus", ".vob", ".wav", ".webm", ".wma", ".wmv"}
@@ -431,7 +432,7 @@ def _video_runtime_metadata(path: Path) -> dict[str, object]:
         with zipfile.ZipFile(path) as archive:
             entries = archive.infolist()
             expanded = sum(entry.file_size for entry in entries)
-            excessive_ratio = any(entry.file_size / max(1, entry.compress_size) > VIDEO_RUNTIME_MAX_COMPRESSION_RATIO for entry in entries)
+            excessive_ratio = any(entry.file_size / max(1, entry.compress_size) > VIDEO_RUNTIME_MAX_ENTRY_COMPRESSION_RATIO for entry in entries)
             if len(entries) > VIDEO_RUNTIME_MAX_ENTRIES or any(entry.flag_bits & 1 for entry in entries) or expanded > VIDEO_RUNTIME_MAX_EXPANDED_BYTES or excessive_ratio or expanded / physical_size > VIDEO_RUNTIME_MAX_COMPRESSION_RATIO:
                 raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
             archive_files: dict[str, tuple[str, zipfile.ZipInfo]] = {}
