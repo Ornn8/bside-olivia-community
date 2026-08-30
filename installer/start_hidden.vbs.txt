@@ -1,0 +1,37 @@
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+root = fso.GetParentFolderName(WScript.ScriptFullName)
+If WScript.Arguments.Named.Exists("notice") Then
+    shell.Popup "Olivia 正在启动，请稍候……", 4, "Olivia 本地版", 64
+    WScript.Quit 0
+End If
+If WScript.Arguments.Named.Exists("error") Then
+    errorCode = WScript.Arguments.Named.Item("error")
+    MsgBox "Olivia 启动失败（错误码 " & errorCode & "）。" & vbCrLf & "请重新打开；如果仍然失败，请在设置中打开“客户端日志”查看原因。", 16, "Olivia 本地版"
+    WScript.Quit 0
+End If
+wscriptExe = shell.ExpandEnvironmentStrings("%WINDIR%") & "\System32\wscript.exe"
+noticeCommand = Chr(34) & wscriptExe & Chr(34) & " //Nologo " & Chr(34) & WScript.ScriptFullName & Chr(34) & " /notice"
+shell.Run noticeCommand, 0, False
+startCommand = root & "\START.cmd"
+launchErrorNumber = 0
+launchErrorDescription = ""
+If Not fso.FileExists(startCommand) Then
+    launchErrorNumber = 2
+    launchErrorDescription = "START_CMD_NOT_FOUND"
+Else
+    On Error Resume Next
+    exitCode = shell.Run(Chr(34) & startCommand & Chr(34), 0, True)
+    launchErrorNumber = Err.Number
+    launchErrorDescription = Err.Description
+    Err.Clear
+    On Error GoTo 0
+End If
+If launchErrorNumber <> 0 Then
+    exitCode = 2
+End If
+If exitCode <> 0 Then
+    errorCommand = Chr(34) & wscriptExe & Chr(34) & " //Nologo " & Chr(34) & WScript.ScriptFullName & Chr(34) & " /error:" & CStr(exitCode)
+    shell.Run errorCommand, 0, False
+End If
+WScript.Quit exitCode

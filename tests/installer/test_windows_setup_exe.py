@@ -150,6 +150,7 @@ def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("installer/full_patch.py")
     assert _is_release_file("installer/component_package.py")
     assert _is_release_file("installer/seed-vc-overlap-frames.patch")
+    assert _is_release_file("installer/start_hidden.vbs.txt")
     assert _is_release_file("installer/assets/olivia.ico")
     assert _is_release_file("tools/livetalking_worker.py")
 
@@ -317,6 +318,13 @@ def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> N
     assert '{sys}\\wscript.exe' in script
     assert '\\install\\START.vbs' in script
     assert '\\install\\START.cmd' not in script
+    hidden_launch = (
+        'Filename: "{sys}\\wscript.exe"; Parameters: "//B //Nologo '
+        '""{code:GetInstallRoot}\\install\\START.vbs"""'
+    )
+    assert script.count(hidden_launch) == 3
+    assert script.count('WorkingDir: "{code:GetInstallRoot}\\install"') == 3
+    assert "' -SkipShortcut'" in script
     assert 'IconFilename: "{code:GetInstallRoot}\\install\\local_backend\\installer\\assets\\olivia.ico"' in script
 
 
