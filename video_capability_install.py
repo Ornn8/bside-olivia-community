@@ -54,6 +54,7 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_REPLY_VOICE_REFERENCE",
     "OLIVIA_PROVIDER_CACHE_ROOT",
 }
+_PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_COSYVOICE_PYTHON", "OLIVIA_LATENTSYNC_PYTHON", "OLIVIA_MINIMAX_COMFY_PYTHON", "OLIVIA_ROFORMER_PYTHON"))
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
@@ -339,12 +340,18 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
         "from pathlib import Path; import sys; "
         "root=Path(sys.argv[1]).resolve(); "
         "inside=lambda value: (path:=Path(value).resolve()) == root or root in path.parents; "
-        "assert inside(sys.executable) and inside(sys.prefix) and inside(sys.base_prefix)"
+        "assert inside(sys.executable) and inside(sys.prefix) and inside(sys.base_prefix); "
+        "assert all(inside(value) for value in sys.path if value)"
     )
+    runtime_environment = dict(os.environ)
+    runtime_environment.pop("PYTHONHOME", None)
+    runtime_environment.pop("PYTHONPATH", None)
+    runtime_environment.update(PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1")
     try:
         completed = subprocess.run(
-            [str(python), "-c", script, str(runtime_root)],
+            [str(python), "-I", "-c", script, str(runtime_root)],
             cwd=runtime_root,
+            env=runtime_environment,
             capture_output=True,
             check=False,
             timeout=_RUNTIME_PORTABILITY_TIMEOUT_SECONDS,
@@ -358,22 +365,9 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
 def _runtime_environment_is_portable(
     environment: Mapping[str, str], runtime_root: Path
 ) -> bool:
-    required = (
-        "OLIVIA_COSYVOICE_PYTHON",
-        "OLIVIA_LATENTSYNC_PYTHON",
-        "OLIVIA_MINIMAX_COMFY_PYTHON",
-        "OLIVIA_ROFORMER_PYTHON",
-    )
-    if any(key not in environment for key in required):
+    if set(environment) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
         return False
-    candidates = [Path(environment[key]) for key in required]
-    if "OLIVIA_ROFORMER_EXE" in environment:
-        executable = Path(environment["OLIVIA_ROFORMER_EXE"])
-        candidates.append(
-            executable
-            if executable.name.casefold() == "python.exe"
-            else executable.parent / "python.exe"
-        )
+    candidates = [Path(environment[key]) for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS]
     return bool(candidates) and all(
         _portable_python_runtime(candidate, runtime_root) for candidate in candidates
     )
@@ -629,6 +623,7 @@ class VideoCapabilityInstaller:
         readiness_probe: Callable[[Mapping[str, str]], Mapping[str, object]] | None = None,
         artifact_roots: tuple[Path, ...] = (),
         runtime_archives: tuple[Path, ...] = (),
+        runtime_environment_applier: Callable[[Mapping[str, str]], object] | None = None,
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -649,6 +644,7 @@ class VideoCapabilityInstaller:
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
         self._runtime_archives = tuple(archive.resolve() for archive in runtime_archives)
+        self._runtime_environment_applier = runtime_environment_applier
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -820,8 +816,17 @@ class VideoCapabilityInstaller:
                 self._load_status()
             self._maybe_start_runtime_prepare()
             bundles = [self._status[item.identifier].to_dict() for item in self.manifest.bundles]
+            if self._runtime_import["state"] == "failed":
+                for item in bundles:
+                    if item["state"] == "ready":
+                        item["state"] = "prerequisites_required"
+                        item["reason_code"] = str(
+                            self._runtime_import.get(
+                                "reason_code", "VIDEO_RUNTIME_IMPORT_FAILED"
+                            )
+                        )
             return {
-                "schema_version": "olivia.video-capability-status.v1",
+                "schema_version": "olivia.video-capability-status.v2",
                 "status": "READY" if all(item["state"] == "ready" for item in bundles) else "UNAVAILABLE",
                 "capability": "video",
                 "install_locations": [{"root": "local_data_root", "relative_path": "capabilities/video"}],
@@ -829,9 +834,20 @@ class VideoCapabilityInstaller:
                 "runtime_import": dict(self._runtime_import),
             }
 
-    def _set_runtime_import_state(self, state: str) -> None:
+    def _set_runtime_import_state(
+        self, state: str, *, reason_code: str | None = None
+    ) -> None:
         with self._lock:
             self._runtime_import["state"] = state
+            self._runtime_import.pop("reason_code", None)
+            if reason_code:
+                self._runtime_import["reason_code"] = reason_code
+
+    @staticmethod
+    def _runtime_import_error_code(exc: Exception) -> str:
+        if isinstance(exc, VideoCapabilityError):
+            return str(exc)
+        return "VIDEO_RUNTIME_IMPORT_FAILED"
 
     def _update_runtime_import_progress(self, checked_bytes: int, total_bytes: int) -> None:
         with self._lock:
@@ -946,8 +962,10 @@ class VideoCapabilityInstaller:
                 runtime_root=runtime_root,
                 manifest_sha256=manifest_sha256,
             )
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
             raise
         with self._lock:
             self._runtime_import["state"] = "ready"
@@ -989,8 +1007,10 @@ class VideoCapabilityInstaller:
                 runtime_root=final.resolve(),
                 manifest_sha256=manifest_sha256,
             )
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
             raise
         finally:
             if staging.exists():
@@ -1006,10 +1026,33 @@ class VideoCapabilityInstaller:
                 "total_bytes": total_bytes,
             }
 
+    def _resume_persisted_runtime(self) -> bool:
+        try:
+            payload = json.loads(
+                (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(encoding="utf-8")
+            )
+            if not isinstance(payload, dict) or set(payload.get("external_environment", {})) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
+                return False
+            environment = load_video_runtime_environment(self.data_root)
+        except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
+            return False
+        try:
+            if self._runtime_environment_applier is not None:
+                self._runtime_environment_applier(environment)
+        except Exception:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+            )
+            return True
+        self._runtime_import = {"state": "ready", "checked_bytes": 0, "total_bytes": 0}
+        return True
+
     def _maybe_start_runtime_prepare(self) -> None:
-        if self._runtime_import["state"] != "idle" or not self._runtime_archives:
+        if self._runtime_import["state"] != "idle":
             return
         if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            return
+        if self._resume_persisted_runtime():
             return
         if any(
             self._status.get(bundle.identifier) is None
@@ -1018,8 +1061,22 @@ class VideoCapabilityInstaller:
             for bundle in self.manifest.bundles
         ):
             return
+        if not self._runtime_archives:
+            self._runtime_import = {
+                "state": "required",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+                "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
+            }
+            return
         archive = next((path for path in self._runtime_archives if path.is_file()), None)
         if archive is None:
+            self._runtime_import = {
+                "state": "required",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+                "reason_code": "VIDEO_RUNTIME_ARCHIVE_REQUIRED",
+            }
             return
         self._runtime_import["state"] = "queued"
         thread = threading.Thread(
@@ -1034,8 +1091,54 @@ class VideoCapabilityInstaller:
     def _run_runtime_archive(self, archive: Path) -> None:
         try:
             self.import_runtime_archive(runtime_archive=archive)
-        except Exception:
-            self._set_runtime_import_state("failed")
+        except Exception as exc:
+            self._set_runtime_import_state(
+                "failed", reason_code=self._runtime_import_error_code(exc)
+            )
+
+    def _installed_bundle_environment(self) -> dict[str, str]:
+        ordinary = self._final_root(self._bundle("ordinary_video"))
+        candidates = {
+            "OLIVIA_COSYVOICE_ROOT": ordinary / "cosyvoice" / "runtime",
+            "OLIVIA_COSYVOICE_MODEL_ROOT": ordinary / "cosyvoice" / "model",
+            "OLIVIA_REPLY_VOICE_REFERENCE": self.install_root
+            / "shared"
+            / "linli-reference.wav",
+        }
+        for bundle in self.manifest.bundles:
+            root = self._final_root(bundle)
+            for key, relative in (bundle.runtime_environment or {}).items():
+                candidates.setdefault(key, root / relative)
+        return {
+            key: str(path.resolve()) for key, path in candidates.items() if path.exists()
+        }
+
+    def _install_managed_minimax_worker(self) -> None:
+        source = Path(__file__).resolve().parent / "tools" / "minimax_music3_worker.py"
+        bundle = self._bundle("music_video")
+        music = self._final_root(bundle)
+        relative = (bundle.runtime_environment or {}).get(
+            "OLIVIA_MINIMAX_WORKER"
+        )
+        if not relative:
+            if "minimax_music3" in bundle.dependencies:
+                raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+            return
+        if not source.is_file() or _is_reparse_point(source):
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+        _reject_reparse_tree(music)
+        target = _inside(music, music / relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if _is_reparse_point(target.parent) or (target.exists() and _is_reparse_point(target)):
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _import_runtime_root(
         self,
@@ -1057,13 +1160,19 @@ class VideoCapabilityInstaller:
         self._set_runtime_import_state("testing")
         if not _runtime_environment_is_portable(external_environment, root):
             raise VideoCapabilityError("VIDEO_RUNTIME_NOT_PORTABLE")
+        self._install_managed_minimax_worker()
         try:
             environment = load_video_runtime_environment(self.data_root)
         except VideoCapabilityError:
             environment = {}
+        for key, value in self._installed_bundle_environment().items():
+            environment.setdefault(key, value)
         environment.update(external_environment)
         if "OLIVIA_TTS_CONFIG" not in environment:
-            cosy_root = Path(environment.get("OLIVIA_COSYVOICE_ROOT", ""))
+            cosy_root = (
+                Path(environment["OLIVIA_COSYVOICE_ROOT"])
+                if environment.get("OLIVIA_COSYVOICE_ROOT") else None
+            )
             model_root = Path(
                 environment.get(
                     "OLIVIA_COSYVOICE_MODEL_ROOT",
@@ -1075,7 +1184,7 @@ class VideoCapabilityInstaller:
                 )
             )
             reference = Path(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", ""))
-            if not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
+            if cosy_root is None or not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
                 raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
             generated_root = self.install_root / "generated"
             generated_root.mkdir(parents=True, exist_ok=True)
@@ -1130,23 +1239,63 @@ class VideoCapabilityInstaller:
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        persisted_environment: dict[str, str] = {}
+        for key, value in environment.items():
+            if key in external_environment:
+                persisted_environment[key] = value
+                continue
+            try:
+                Path(value).resolve().relative_to(self.install_root.resolve())
+            except ValueError:
+                continue
+            persisted_environment[key] = value
         payload = {
             "schema_version": "olivia.video-runtime-environment.v1",
-            "environment": environment,
+            "environment": persisted_environment,
             "external_environment": external_environment,
             "runtime_root": str(root),
             "manifest_sha256": _safe_sha(manifest_sha256),
         }
+        backup = target.with_name(f"{target.name}.{uuid.uuid4().hex}.backup")
+        previous_environment = {key: os.environ.get(key) for key in environment}
+        applier_started = False
+        published = False
         try:
             temporary.write_text(
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
                 encoding="utf-8",
             )
+            if target.exists():
+                os.replace(target, backup)
+            if self._runtime_environment_applier is not None:
+                applier_started = True
+                try:
+                    self._runtime_environment_applier(environment)
+                except Exception as exc:
+                    raise VideoCapabilityError(
+                        "VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+                    ) from exc
             os.replace(temporary, target)
-        except OSError as exc:
-            raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
+            published = True
+        except Exception as exc:
+            if applier_started:
+                for key, value in previous_environment.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            if backup.exists():
+                os.replace(backup, target)
+            if isinstance(exc, OSError):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED") from exc
+            raise
         finally:
             temporary.unlink(missing_ok=True)
+            if published:
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    pass
         with self._lock:
             self._load_status()
         return "APPLIED"

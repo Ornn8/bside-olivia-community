@@ -1,13 +1,13 @@
 # Windows 完整版补丁（隔离安装）
 
-本补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
+公开补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体；经授权单独构建的私有安装器会额外内嵌下文指定的林离参考 WAV。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
 
 ## 使用
 
 1. 下载 `Olivia-Setup-x64.exe` 及同目录的 `.sha256` 文件，并先核对 SHA-256。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。两个快捷方式都由 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动，不会显示可被误关的命令行窗口；工作目录固定为安装目录。点击后会立即显示“Olivia 正在启动，请稍候”的短暂提示，实际启动同时开始，不会等待提示关闭。只有隐藏启动器最终返回非零退出码时才显示中文失败对话框；正常关闭返回 `0` 时不会弹出错误。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
-4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。`CONFIGURE.cmd` 仍可用于管理参考音频/视频。这些文件不进入补丁包。
+4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。`CONFIGURE.cmd` 仍可用于管理参考音频/视频。公开安装器不包含参考音频；只有下文由维护者显式构建的私有安装器才会内嵌指定 WAV。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
@@ -36,9 +36,25 @@ python installer/build_windows_setup.py `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
+上面的默认构建是公开产物：不得传入参考音频，内嵌 offline manifest 也不含 `distribution` 或 `voice_reference`。需要经授权在私有渠道交付固定参考音色时，维护者必须使用隔离输出目录并同时显式提供两个参数：
 
-GitHub Actions 会在 PR 和 `main` 更新时生成同样的可下载 artifact。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
+```powershell
+python installer/build_windows_setup.py `
+  --offline offline `
+  --output dist-private `
+  --version 0.1.0 `
+  --distribution private `
+  --voice-reference '<私有 WAV 的本机路径>' `
+  --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+私有构建器只接受显式 WAV：它读取并核对实际 PCM 帧，随后把音频、大小、SHA-256 和 WAV 元数据写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带 `voice_reference` manifest 字段或音频文件；公开模式传入 `--voice-reference`、私有模式缺少该参数都会拒绝构建。
+
+公开与私有构建的文件名仍为 `Olivia-Setup-x64.exe`，不能靠文件名判断边界。私有产物必须只保存在专用 `dist-private` 目录，以该目录和构建生成的 `.sha256` 作为交付识别记录，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。解包审计时，内嵌 manifest 的 `"distribution": "private"` 是第二层识别标记，不代表取得了公开分发授权。
+
+除私有模式显式传入的 WAV 外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。输出为 `Olivia-Setup-x64.exe` 和对应 `.sha256` 文件。
+
+GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV，也不会生成私有安装器。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 
 ## 启动器健康检查
 
