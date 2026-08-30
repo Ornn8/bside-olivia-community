@@ -117,7 +117,10 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
     assert "Traditional East Asian" not in system
     assert '"mode":"musical_video"' in system
     assert "Persona status is DRAFT" not in system
-    assert sum(len(message["content"]) for message in messages) <= 10_000
+    assert (
+        sum(len(message["content"]) for message in messages)
+        <= GatewayConfig().max_input_chars
+    )
 
     user = json.loads(messages[1]["content"])
     assert user == {
@@ -175,7 +178,10 @@ def test_invalid_lyric_count_is_repaired_once_by_the_planner() -> None:
     repair_messages = gateway.calls[1][0]
     assert repair_messages[-1]["role"] == "user"
     assert "SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID" in repair_messages[-1]["content"]
-    assert sum(len(message["content"]) for message in repair_messages) <= 10_000
+    assert (
+        sum(len(message["content"]) for message in repair_messages)
+        <= GatewayConfig().max_input_chars
+    )
 
 
 def test_song_planner_legacy_persona_requires_explicit_opt_in() -> None:

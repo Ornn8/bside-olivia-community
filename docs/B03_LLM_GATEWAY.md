@@ -44,7 +44,7 @@ rtk python tools/healthcheck.py --profile llm
 | `timeout_seconds` / `max_retries` / `retry_backoff_seconds` | 单次请求超时、429/5xx/网络失败重试预算 |
 | `reasoning_timeout_seconds` | 文本信件使用 `deepseek-v4-flash` max thinking 时的单阶段超时；默认 600 秒，范围 0.05-1800 秒 |
 | `stream` | 内部事件编排是否消费 provider 流；HTTP `/toy` 仍是非 SSE 响应 |
-| `max_input_chars` / `max_output_chars` | 输入消息总长度和输出长度上限 |
+| `max_input_chars` / `max_output_chars` | 输入消息总长度和输出长度上限；模板的输入默认值为 22,000，与 `GatewayConfig` 和 `ReplyRequest` 的公共默认一致 |
 | `fallback_provider` | 显式降级登记；默认 `none`，不会无提示生成占位回信 |
 | persona_v2_file / persona_v2_enabled | 默认 Persona 2.0 release 文件与开关；关闭该开关才进入 legacy 路径 |
 | persona_file / feature_enabled | 可选 legacy DRAFT 文件和总开关；默认配置不再引用该文件 |
