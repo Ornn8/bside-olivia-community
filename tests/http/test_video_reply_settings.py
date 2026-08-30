@@ -130,6 +130,47 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     assert not list(validator.iter_errors({"status": "OPENED", "capability": "cosyvoice", "source": "domestic"}))
     for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}, {"code": 400, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": False}}):
         assert list(validator.iter_errors(value))
+
+
+def test_schema_accepts_private_managed_voice_readiness() -> None:
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        Path("contracts/video_reply_settings.schema.json").read_text(encoding="utf-8")
+    )
+    validator = Draft202012Validator(schema)
+    dependency = {
+        "id": "voice_reference",
+        "label": "受管林离音色",
+        "state": "missing",
+        "install_mode": "managed",
+        "source_summary": "由提供此私有版本的安装程序管理",
+        "sources": [],
+        "reason_code": "VOICE_REFERENCE_UNAVAILABLE",
+    }
+
+    available = {
+        "state": "available",
+        "enabled": True,
+        "effective_enabled": False,
+        "ready": False,
+        "dependencies": [dependency],
+    }
+    missing = {
+        "code": 409,
+        "message": "missing",
+        "data": {
+            "status": "FAILED",
+            "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
+            "retryable": False,
+            "missing_dependencies": ["voice_reference"],
+        },
+    }
+
+    assert not list(validator.iter_errors(available))
+    assert not list(validator.iter_errors(missing))
+
+
 @pytest.mark.parametrize("value", ["bare", "letter:shared", "memory:shared"])
 def test_request_namespace_is_enforced(tmp_path, value):
     with pytest.raises(VideoReplySettingsError) as invalid:

@@ -62,6 +62,8 @@ def _wave_facts(path: Path) -> dict[str, int | str]:
                 "compression_type": source.getcomptype(),
             }
             frames = source.readframes(int(facts["frame_count"]))
+    except FileNotFoundError as exc:
+        raise ManagedVoiceReferenceError("VOICE_REFERENCE_UNAVAILABLE") from exc
     except (EOFError, OSError, wave.Error) as exc:
         raise ManagedVoiceReferenceError("VOICE_REFERENCE_INVALID") from exc
     if any(facts[key] != value for key, value in MANAGED_VOICE_REFERENCE_WAVE.items() if key != "frame_count"):
@@ -74,6 +76,24 @@ def _wave_facts(path: Path) -> dict[str, int | str]:
     if expected_bytes <= 0 or len(frames) != expected_bytes:
         raise ManagedVoiceReferenceError("VOICE_REFERENCE_INVALID")
     return facts
+
+
+def validate_voice_reference(path: Path) -> dict[str, int | str]:
+    """Validate the WAV facts shared by managed and explicit references."""
+
+    return _wave_facts(Path(path).absolute())
+
+
+def managed_voice_reference_declared(data_root: Path) -> bool:
+    """Return whether a trusted private installer sidecar declares the pair."""
+
+    root = Path(data_root).absolute()
+    reference = root / MANAGED_VOICE_REFERENCE_RELATIVE_PATH
+    sidecar = reference.with_suffix(".json")
+    if not _is_reparse_point(sidecar) and not sidecar.exists():
+        return False
+    _reject_reparse_points(root, reference)
+    return sidecar.is_file()
 
 
 def resolve_managed_voice_reference(
@@ -116,5 +136,7 @@ __all__ = [
     "MANAGED_VOICE_REFERENCE_SHA256",
     "MANAGED_VOICE_REFERENCE_WAVE",
     "ManagedVoiceReferenceError",
+    "managed_voice_reference_declared",
     "resolve_managed_voice_reference",
+    "validate_voice_reference",
 ]

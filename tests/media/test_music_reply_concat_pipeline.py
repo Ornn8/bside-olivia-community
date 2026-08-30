@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
+import wave
 
 import pytest
 
@@ -111,6 +112,138 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     )
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
+
+
+def test_video_reply_requires_voice_only_when_private_pair_is_declared(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    sidecar = data_root / "capabilities/video/shared/linli-reference.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        music_reply,
+        "resolve_ffmpeg_executable",
+        lambda _environment: (_ for _ in ()).throw(
+            music_reply.LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        ),
+    )
+
+    status = music_reply.video_reply_dependency_status(
+        {"OLIVIA_LOCAL_DATA_ROOT": str(data_root)},
+        performance_video_path=None,
+    )
+    dependencies = {item["id"]: item for item in status["dependencies"]}
+
+    assert dependencies["voice_reference"] == {
+        "id": "voice_reference",
+        "label": "受管林离音色",
+        "state": "missing",
+        "install_mode": "managed",
+        "source_summary": "由提供此私有版本的安装程序管理",
+        "sources": [],
+        "reason_code": "VOICE_REFERENCE_UNAVAILABLE",
+    }
+    assert "voice_reference" in status["ordinary_missing_dependencies"]
+
+
+def test_video_reply_ignores_orphan_voice_wav_without_private_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "public-data"
+    _write(
+        data_root / "capabilities/video/shared/linli-reference.wav",
+        b"orphan-public-file",
+    )
+    monkeypatch.setattr(
+        music_reply,
+        "resolve_ffmpeg_executable",
+        lambda _environment: (_ for _ in ()).throw(
+            music_reply.LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        ),
+    )
+
+    status = music_reply.video_reply_dependency_status(
+        {"OLIVIA_LOCAL_DATA_ROOT": str(data_root)},
+        performance_video_path=None,
+    )
+
+    assert all(item["id"] != "voice_reference" for item in status["dependencies"])
+    assert "voice_reference" not in status["ordinary_missing_dependencies"]
+
+
+def test_video_reply_prefers_a_valid_explicit_voice_over_a_bad_managed_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "private-data"
+    managed = _write(
+        data_root / "capabilities/video/shared/linli-reference.wav",
+        b"damaged-managed-reference",
+    )
+    managed.with_suffix(".json").write_text("{}", encoding="utf-8")
+    explicit = tmp_path / "explicit-reference.wav"
+    with wave.open(str(explicit), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0" * 1_600)
+    monkeypatch.setattr(
+        music_reply,
+        "resolve_ffmpeg_executable",
+        lambda _environment: (_ for _ in ()).throw(
+            music_reply.LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        ),
+    )
+
+    status = music_reply.video_reply_dependency_status(
+        {
+            "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+            "OLIVIA_REPLY_VOICE_REFERENCE": str(explicit),
+        },
+        performance_video_path=None,
+    )
+    voice = next(
+        item for item in status["dependencies"] if item["id"] == "voice_reference"
+    )
+
+    assert voice["state"] == "ready"
+    assert voice["install_mode"] == "manual"
+    assert "reason_code" not in voice
+    assert "voice_reference" not in status["ordinary_missing_dependencies"]
+
+
+def test_video_reply_blocks_an_invalid_explicit_effective_voice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    explicit = _write(tmp_path / "invalid-explicit.wav", b"not-a-wave")
+    monkeypatch.setattr(
+        music_reply,
+        "resolve_ffmpeg_executable",
+        lambda _environment: (_ for _ in ()).throw(
+            music_reply.LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+        ),
+    )
+
+    status = music_reply.video_reply_dependency_status(
+        {"OLIVIA_REPLY_VOICE_REFERENCE": str(explicit)},
+        performance_video_path=None,
+    )
+    voice = next(
+        item for item in status["dependencies"] if item["id"] == "voice_reference"
+    )
+
+    assert voice == {
+        "id": "voice_reference",
+        "label": "受管林离音色",
+        "state": "missing",
+        "install_mode": "manual",
+        "source_summary": "由 OLIVIA_REPLY_VOICE_REFERENCE 显式配置",
+        "sources": [],
+        "reason_code": "VOICE_REFERENCE_INVALID",
+    }
+    assert "voice_reference" in status["ordinary_missing_dependencies"]
 
 
 def test_video_reply_readiness_does_not_require_livetalking(
