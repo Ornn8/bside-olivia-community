@@ -278,6 +278,24 @@ def test_stale_divergent_snapshot_raises_typed_version_conflict(
     assert ledger.snapshot() == PrivateWorldSnapshot(version=2, trust=1)
 
 
+def test_explicit_stale_base_rejects_matching_current_snapshot(
+    tmp_path: Path,
+) -> None:
+    ledger = SQLitePrivateWorldLedger(tmp_path / "private-world.sqlite3")
+    current = PrivateWorldSnapshot(version=2, familiarity=48)
+    ledger.apply_once(_event(1), current)
+
+    with pytest.raises(LedgerVersionConflictError):
+        ledger.apply_once(
+            _event(2),
+            current,
+            expected_snapshot_version=1,
+        )
+
+    assert ledger.events() == (_event(1),)
+    assert ledger.snapshot() == current
+
+
 def test_older_snapshot_raises_typed_version_conflict(
     tmp_path: Path,
 ) -> None:

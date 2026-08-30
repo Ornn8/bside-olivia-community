@@ -77,6 +77,7 @@ class PrivateWorldCommandLedger(Protocol):
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool: ...
 
 
@@ -424,8 +425,9 @@ class PrivateWorldCommandService:
                 else 1
             )
             for attempt in range(attempt_limit):
+                base_snapshot = self._ledger_snapshot()
                 reduced = reduce_private_world_command(
-                    self._ledger_snapshot(),
+                    base_snapshot,
                     command,
                 )
                 change_fields = tuple(
@@ -450,6 +452,7 @@ class PrivateWorldCommandService:
                     applied = self._ledger.apply_once(
                         event,
                         reduced.snapshot,
+                        expected_snapshot_version=base_snapshot.version,
                     )
                 except LedgerVersionConflictError as exc:
                     duplicate = self._resolve_existing(

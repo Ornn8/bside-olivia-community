@@ -58,6 +58,7 @@ class FakeLedger:
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool:
         if self.fail_writes:
             raise LedgerWriteError("synthetic write failure")

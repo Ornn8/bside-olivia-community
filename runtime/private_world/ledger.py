@@ -295,6 +295,7 @@ class SQLitePrivateWorldLedger:
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool:
         if not isinstance(event, LedgerEvent) or not isinstance(
             snapshot,
@@ -302,6 +303,13 @@ class SQLitePrivateWorldLedger:
         ):
             raise TypeError(
                 "apply_once requires a typed event and snapshot"
+            )
+        if expected_snapshot_version is not None and (
+            type(expected_snapshot_version) is not int
+            or expected_snapshot_version < 1
+        ):
+            raise TypeError(
+                "expected snapshot version must be a positive integer"
             )
         try:
             with self._connection() as connection:
@@ -322,6 +330,18 @@ class SQLitePrivateWorldLedger:
                 ).fetchone()
                 if latest is not None:
                     self._strict_stored_snapshot(latest[0], latest[1])
+                current_version = (
+                    latest[0]
+                    if latest is not None
+                    else PrivateWorldSnapshot().version
+                )
+                if (
+                    expected_snapshot_version is not None
+                    and current_version != expected_snapshot_version
+                ):
+                    raise LedgerVersionConflictError(
+                        "snapshot base version is stale"
+                    )
                 snapshot_json = self._snapshot_json(snapshot)
                 if latest is None:
                     if snapshot.version not in {1, 2}:

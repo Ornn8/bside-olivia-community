@@ -18,6 +18,7 @@ from private_world_commands import (
     PrivateWorldCommandSource,
     RecordBoundaryRespected,
     RecordConflict,
+    RecordRepair,
     SetHomeAccess,
     UpsertContinuationFact,
 )
@@ -64,6 +65,7 @@ class _GenericWriteFailureLedger(SQLitePrivateWorldLedger):
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool:
         self.apply_calls += 1
         raise LedgerWriteError("synthetic generic storage failure")
@@ -74,6 +76,7 @@ class _VersionConflictFailureLedger(_GenericWriteFailureLedger):
         self,
         event: LedgerEvent,
         snapshot: PrivateWorldSnapshot,
+        expected_snapshot_version: int | None = None,
     ) -> bool:
         self.apply_calls += 1
         raise LedgerVersionConflictError("synthetic stale snapshot")
@@ -202,9 +205,10 @@ def test_new_corpus_max_merges_only_existing_intimacy_axes(
             awareness=ContinuationAwareness.CONTROL_ONLY,
         )
     )
+    service.execute(RecordRepair(**_control_common(7)))
     service.execute(
         GrantIntimacy(
-            **_control_common(7),
+            **_control_common(8),
             grant_id="intimacy.history-fixture",
             tier=IntimacyTier.LIGHT_CONTACT,
             statement="A synthetic granted interaction.",
@@ -214,6 +218,9 @@ def test_new_corpus_max_merges_only_existing_intimacy_axes(
         _incremental_command(1, familiarity=60, closeness=10)
     )
     before = ledger.snapshot()
+    assert before.trust > 0
+    assert before.comfort > 0
+    assert before.intimacy_grants
 
     result = service.execute(
         _incremental_command(2, familiarity=48, closeness=36)
@@ -394,8 +401,8 @@ def test_independent_services_retry_stale_historical_join(
         PrivateWorldCommandService(ledger) for ledger in ledgers
     )
     commands = (
-        _incremental_command(1, familiarity=60, closeness=10),
-        _incremental_command(2, familiarity=48, closeness=36),
+        _incremental_command(1, familiarity=60, closeness=36),
+        _incremental_command(2, familiarity=60, closeness=36),
     )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -405,32 +412,36 @@ def test_independent_services_retry_stale_historical_join(
         )
         results = tuple(future.result(timeout=10) for future in futures)
 
-    assert all(
-        result.status is CommandExecutionStatus.APPLIED
-        for result in results
-    )
-    assert {result.snapshot_version for result in results} == {2, 3}
+    assert {result.status for result in results} == {
+        CommandExecutionStatus.APPLIED,
+        CommandExecutionStatus.NOOP,
+    }
+    assert {result.snapshot_version for result in results} == {2}
     assert sorted(ledger.snapshot_calls for ledger in ledgers) == [1, 2]
     stored = SQLitePrivateWorldLedger(database)
     assert stored.snapshot() == replace(
         PrivateWorldSnapshot(),
-        version=3,
+        version=2,
         familiarity=60,
         closeness=36,
     )
-    audits = {
-        event.payload["snapshot_version"]: event.payload
-        for event in stored.events()
-    }
-    assert audits[2]["change_fields"] == ["familiarity", "closeness"]
-    assert audits[3]["change_fields"] in (["familiarity"], ["closeness"])
+    audits = tuple(event.payload for event in stored.events())
+    assert [audit["applied"] for audit in audits].count(True) == 1
+    assert [audit["applied"] for audit in audits].count(False) == 1
+    assert next(
+        audit for audit in audits if audit["applied"] is True
+    )["change_fields"] == ["familiarity", "closeness"]
+    assert next(
+        audit for audit in audits if audit["applied"] is False
+    )["change_fields"] == []
+    assert {audit["snapshot_version"] for audit in audits} == {2}
     assert {
         event.payload["command_id"] for event in stored.events()
     } == {command.command_id for command in commands}
     assert stored.health() == {
         "status": "READY",
         "event_count": 2,
-        "snapshot_count": 2,
+        "snapshot_count": 1,
     }
 
 
