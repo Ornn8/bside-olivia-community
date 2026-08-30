@@ -742,11 +742,16 @@ function Get-OfflineCoreAssets {
     }
     $manifestNames = @('schema_version', 'python_runtime', 'pip_bootstrap', 'requirements_sha256', 'wheels')
     $hasVoiceReference = $manifest.PSObject.Properties.Name -ccontains 'voice_reference'
+    $hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'
     $hasDistribution = $manifest.PSObject.Properties.Name -ccontains 'distribution'
-    if ($hasVoiceReference -ne $hasDistribution -or ($hasDistribution -and $manifest.distribution -cne 'private')) {
+    if (
+        $hasVideoRuntime -ne $hasVoiceReference -or
+        $hasVoiceReference -ne $hasDistribution -or
+        ($hasDistribution -and $manifest.distribution -cne 'private')
+    ) {
         throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
     }
-    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference') }
+    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference', 'video_runtime') }
     Assert-OfflineObjectShape -Value $manifest -Names $manifestNames
     Assert-OfflineObjectShape -Value $manifest.python_runtime -Names @('path', 'size_bytes', 'sha256', 'source_url')
     Assert-OfflineObjectShape -Value $manifest.pip_bootstrap -Names @('path', 'size_bytes', 'sha256', 'package', 'version')
@@ -785,6 +790,7 @@ function Get-OfflineCoreAssets {
     $runtime = Resolve-OfflineAsset -Root $Root -Asset $manifest.python_runtime
     $pipBootstrap = Resolve-OfflineAsset -Root $Root -Asset $manifest.pip_bootstrap
     $voiceReference = $null
+    $videoRuntime = $null
     if ($hasVoiceReference) {
         Assert-OfflineObjectShape -Value $manifest.voice_reference -Names @('path', 'size_bytes', 'sha256', 'wave')
         Assert-OfflineObjectShape -Value $manifest.voice_reference.wave -Names @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')
@@ -804,6 +810,11 @@ function Get-OfflineCoreAssets {
         }
         $voiceReference = $manifest.voice_reference
         $voiceReference.path = $voiceReferencePath
+        Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')
+        if ($manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip') {
+            throw 'OFFLINE_CORE_MANIFEST_INVALID'
+        }
+        $videoRuntime = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime
     }
     $expectedWheelAssets = Get-ExpectedOfflineWheels
     $wheelPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -843,6 +854,7 @@ function Get-OfflineCoreAssets {
         PipBootstrap = $pipBootstrap
         Wheelhouse = (Join-Path $Root 'wheelhouse')
         VoiceReference = $voiceReference
+        VideoRuntime = $videoRuntime
     }
 }
 

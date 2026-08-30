@@ -4,10 +4,10 @@
 
 ## 使用
 
-1. 下载 `Olivia-Setup-x64.exe` 及同目录的 `.sha256` 文件，并先核对 SHA-256。
+1. 公开包：下载 EXE 和 `.sha256`。私有视频包：下载完整 ZIP，解压后把 EXE、全部 `.bin` 分卷和 `.sha256` 保持在同一目录。运行前先核对 SHA-256。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。两个快捷方式都由 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动，不会显示可被误关的命令行窗口；工作目录固定为安装目录。点击后会立即显示“Olivia 正在启动，请稍候”的短暂提示，实际启动同时开始，不会等待提示关闭。只有隐藏启动器最终返回非零退出码时才显示中文失败对话框；正常关闭返回 `0` 时不会弹出错误。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
-4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。`CONFIGURE.cmd` 仍可用于管理参考音频/视频。公开安装器不包含参考音频；只有下文由维护者显式构建的私有安装器才会内嵌指定 WAV。
+4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频或视频运行时；私有视频包已包含，无需用户再选离线包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
@@ -24,7 +24,7 @@ python installer/build_offline_core_assets.py --output offline
 
 构建器只接受哈希锁定的二进制 wheel；pip 源仍兼容标准 `PIP_INDEX_URL` / pip 配置，因此发布构建可使用可信镜像，最终产物仍按仓库固定 SHA-256 验证。公开清单契约见 `contracts/offline_core_assets.schema.json` 和 `contracts/offline_core_assets.example.json`。
 
-## 构建单文件安装器
+## 构建 Windows 安装包
 
 构建机需要 Python 3.12、`jsonschema` 和 Inno Setup 6.7.1 或兼容的新版本。先生成离线核心资产，再执行：
 

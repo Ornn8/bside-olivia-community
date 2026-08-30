@@ -56,6 +56,18 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
     assert "VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED" in script
 
 
+def test_installer_accepts_only_complete_private_video_runtime_manifest() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+
+    assert "$hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'" in script
+    assert "$hasVideoRuntime -ne $hasVoiceReference" in script
+    assert "$manifestNames += @('distribution', 'voice_reference', 'video_runtime')" in script
+    assert "Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')" in script
+    assert "$manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip'" in script
+    assert "$videoRuntime = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime" in script
+    assert "VideoRuntime = $videoRuntime" in script
+
+
 def test_offline_core_asset_example_matches_its_public_schema() -> None:
     schema = json.loads(
         (ROOT / "contracts" / "offline_core_assets.schema.json").read_text(
@@ -72,13 +84,21 @@ def test_offline_core_asset_example_matches_its_public_schema() -> None:
     assert not list(Draft202012Validator(schema).iter_errors(example))
 
 
-def test_public_schema_accepts_only_hash_locked_managed_voice_reference() -> None:
+def test_public_schema_accepts_only_complete_hash_locked_private_assets() -> None:
     schema = json.loads((ROOT / "contracts/offline_core_assets.schema.json").read_text())
     example = json.loads((ROOT / "contracts/offline_core_assets.example.json").read_text())
     validator = Draft202012Validator(schema)
     example["distribution"] = "private"
     example["voice_reference"] = {"path": "voice/olivia-reference.wav", "size_bytes": 155278, "sha256": "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf", "wave": _wave_metadata(frame_count=77600)}
+    example["video_runtime"] = {
+        "path": "video-runtime/Olivia-video-runtime-private.zip",
+        "size_bytes": 1,
+        "sha256": "0" * 64,
+    }
     assert not list(validator.iter_errors(example))
+    missing_runtime = deepcopy(example)
+    del missing_runtime["video_runtime"]
+    assert list(validator.iter_errors(missing_runtime))
     missing_marker = deepcopy(example)
     del missing_marker["distribution"]
     assert list(validator.iter_errors(missing_marker))
