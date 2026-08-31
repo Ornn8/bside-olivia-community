@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any
 import uuid
 from urllib.error import HTTPError, URLError
@@ -350,20 +351,29 @@ def _runtime_archive_identity(path: Path) -> tuple[str, int, int, int, int] | No
 
 
 def _runtime_archive_fingerprint(path: Path) -> str | None:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            entries = [
-                (
-                    member.filename,
-                    member.CRC,
-                    member.file_size,
-                    member.compress_size,
-                    member.flag_bits,
-                    member.external_attr,
-                )
-                for member in archive.infolist()
-            ]
-    except (OSError, zipfile.BadZipFile):
+    entries = None
+    for attempt in range(8):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                entries = [
+                    (
+                        member.filename,
+                        member.CRC,
+                        member.file_size,
+                        member.compress_size,
+                        member.flag_bits,
+                        member.external_attr,
+                    )
+                    for member in archive.infolist()
+                ]
+            break
+        except zipfile.BadZipFile:
+            return None
+        except OSError:
+            if attempt == 7:
+                return None
+            time.sleep(min(0.1 * (2**attempt), 2.0))
+    if entries is None:
         return None
     return hashlib.sha256(
         json.dumps(entries, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -843,6 +853,7 @@ class VideoCapabilityInstaller:
         runtime_archives: tuple[Path, ...] = (),
         runtime_archive_roots: tuple[Path, ...] = (),
         runtime_environment_applier: Callable[[Mapping[str, str]], object] | None = None,
+        runtime_progress: Callable[[str, int, int], object] | None = None,
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -867,6 +878,7 @@ class VideoCapabilityInstaller:
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
         self._runtime_archive_roots = tuple(root.resolve() for root in runtime_archive_roots)
         self._runtime_environment_applier = runtime_environment_applier
+        self._runtime_progress = runtime_progress
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -1078,6 +1090,19 @@ class VideoCapabilityInstaller:
             self._runtime_import.pop("reason_code", None)
             if reason_code:
                 self._runtime_import["reason_code"] = reason_code
+            checked_bytes = int(self._runtime_import.get("checked_bytes", 0))
+            total_bytes = int(self._runtime_import.get("total_bytes", 0))
+        self._report_runtime_progress(state, checked_bytes, total_bytes)
+
+    def _report_runtime_progress(
+        self, state: str, checked_bytes: int, total_bytes: int
+    ) -> None:
+        if self._runtime_progress is None:
+            return
+        try:
+            self._runtime_progress(state, checked_bytes, total_bytes)
+        except Exception:
+            pass
 
     @staticmethod
     def _runtime_import_error_code(exc: Exception) -> str:
@@ -1092,6 +1117,7 @@ class VideoCapabilityInstaller:
                 "checked_bytes": checked_bytes,
                 "total_bytes": total_bytes,
             }
+        self._report_runtime_progress("checking", checked_bytes, total_bytes)
 
     def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None) -> None:
         self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason)
@@ -1187,12 +1213,7 @@ class VideoCapabilityInstaller:
         runtime_root: Path,
         manifest_sha256: str,
     ) -> str:
-        with self._lock:
-            self._runtime_import = {
-                "state": "checking",
-                "checked_bytes": 0,
-                "total_bytes": 0,
-            }
+        self._update_runtime_import_progress(0, 0)
         try:
             result = self._import_runtime_root(
                 runtime_root=runtime_root,
@@ -1206,6 +1227,9 @@ class VideoCapabilityInstaller:
         with self._lock:
             self._runtime_import["state"] = "ready"
             self._runtime_import["checked_bytes"] = self._runtime_import["total_bytes"]
+            checked_bytes = int(self._runtime_import["checked_bytes"])
+            total_bytes = int(self._runtime_import["total_bytes"])
+        self._report_runtime_progress("ready", checked_bytes, total_bytes)
         return result
 
     def import_runtime_archive(self, *, runtime_archive: Path) -> str:
@@ -1217,15 +1241,9 @@ class VideoCapabilityInstaller:
             not archive.is_file()
             or archive.is_symlink()
             or archive.suffix.casefold() != ".zip"
-            or not zipfile.is_zipfile(archive)
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
-        with self._lock:
-            self._runtime_import = {
-                "state": "extracting",
-                "checked_bytes": 0,
-                "total_bytes": 0,
-            }
+        self._update_runtime_extract_progress(0, 0)
         identity = _runtime_archive_fingerprint(archive)
         if identity is None:
             raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
@@ -1272,7 +1290,7 @@ class VideoCapabilityInstaller:
                     staging,
                     manifest_sha256,
                     verify_files=True,
-                    progress=None,
+                    progress=self._update_runtime_import_progress,
                 )
             except Exception:
                 _discard_runtime_import_checkpoint(cache_root, staging)
@@ -1374,6 +1392,7 @@ class VideoCapabilityInstaller:
                 "checked_bytes": checked_bytes,
                 "total_bytes": total_bytes,
             }
+        self._report_runtime_progress("extracting", checked_bytes, total_bytes)
 
     def _resume_persisted_runtime(self) -> bool:
         try:

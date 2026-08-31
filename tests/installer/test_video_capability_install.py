@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -339,6 +340,147 @@ def test_runtime_archive_is_extracted_verified_and_activated(
         readiness_probe=lambda _environment: pytest.fail("installed runtime must not reprobe"),
     )
     assert restarted_without_archive.status()["runtime_import"]["state"] == "ready"
+
+
+def test_runtime_archive_import_retries_a_transient_archive_open_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    real_zip_file = zipfile.ZipFile
+    archive_opens = 0
+    observed_delays: list[float] = []
+
+    def transient_zip_file(*args: object, **kwargs: object) -> zipfile.ZipFile:
+        nonlocal archive_opens
+        archive_opens += 1
+        if archive_opens == 1:
+            raise PermissionError("archive is temporarily held by another process")
+        return real_zip_file(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install.zipfile, "ZipFile", transient_zip_file)
+    monkeypatch.setattr(
+        video_capability_install,
+        "time",
+        SimpleNamespace(sleep=observed_delays.append),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        video_capability_install,
+        "_runtime_environment_is_portable",
+        lambda *_: True,
+    )
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert archive_opens >= 2
+    assert observed_delays == [0.1]
+
+
+def test_runtime_archive_import_does_not_retry_bad_zip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "corrupt.zip"
+    archive.write_bytes(b"not a zip")
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=_runtime_ready_manifest(),
+    )
+    archive_opens = 0
+
+    def corrupt_zip_file(*_args: object, **_kwargs: object) -> zipfile.ZipFile:
+        nonlocal archive_opens
+        archive_opens += 1
+        raise zipfile.BadZipFile
+
+    monkeypatch.setattr(video_capability_install.zipfile, "ZipFile", corrupt_zip_file)
+    monkeypatch.setattr(
+        video_capability_install,
+        "time",
+        SimpleNamespace(
+            sleep=lambda _delay: pytest.fail("corrupt archives must not be retried")
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(VideoCapabilityError, match="^VIDEO_RUNTIME_ARCHIVE_INVALID$"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert archive_opens == 1
+
+
+def test_runtime_archive_import_bounds_transient_open_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "locked.zip"
+    archive.write_bytes(b"present")
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=_runtime_ready_manifest(),
+    )
+    archive_opens = 0
+    observed_delays: list[float] = []
+
+    def locked_zip_file(*_args: object, **_kwargs: object) -> zipfile.ZipFile:
+        nonlocal archive_opens
+        archive_opens += 1
+        raise PermissionError("archive remains locked")
+
+    monkeypatch.setattr(video_capability_install.zipfile, "ZipFile", locked_zip_file)
+    monkeypatch.setattr(
+        video_capability_install,
+        "time",
+        SimpleNamespace(sleep=observed_delays.append),
+        raising=False,
+    )
+
+    with pytest.raises(VideoCapabilityError, match="^VIDEO_RUNTIME_ARCHIVE_INVALID$"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert archive_opens == 8
+    assert observed_delays == [0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0]
+
+
+def test_runtime_archive_import_publishes_extract_verify_and_test_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    observed: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(
+        video_capability_install,
+        "_runtime_environment_is_portable",
+        lambda *_: True,
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+        runtime_progress=lambda state, current, total: observed.append(
+            (state, current, total)
+        ),
+    )
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert any(state == "extracting" and total > 0 for state, _, total in observed)
+    assert any(
+        state == "checking" and total > 0 and current == total
+        for state, current, total in observed
+    )
+    assert any(state == "testing" for state, _, _ in observed)
+    assert observed[-1][0] == "ready"
 
 
 def test_runtime_archive_resumes_interrupted_extraction_from_bound_checkpoint(

@@ -1624,8 +1624,37 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "Install.ps1" in script
     assert "-NonInteractive" in script
     assert "GetInstallRoot" in script
-    assert "Exec(" in script
-    assert "ExecAndLogOutput" not in script
+    assert "CreateOutputProgressPage" in script
+    assert "InstallProgressPage.Show" in script
+    assert "InstallProgressPage.Hide" in script
+    assert "ExecAndLogOutput(" in script
+    assert "@InstallOutputLine" in script
+    assert "SW_HIDE" in script
+    assert "OLIVIA_SETUP_PROGRESS=" in script
+    assert "Separator := Pos('|', Payload)" in script
+    assert "Pos('|', TotalText) > 0" in script
+    for phase in (
+        "PREPARE",
+        "VERIFY_OFFICIAL",
+        "VERIFY_CORE",
+        "INSTALL_CORE",
+        "INSTALL_PATCH",
+        "COPY_VIDEO_RUNTIME",
+        "VERIFY_VIDEO_OFFLINE",
+        "INSTALL_ORDINARY_VIDEO",
+        "INSTALL_MUSIC_VIDEO",
+        "EXTRACT_VIDEO_RUNTIME",
+        "VERIFY_VIDEO_RUNTIME",
+        "TEST_VIDEO_RUNTIME",
+        "FINALIZE",
+    ):
+        assert f"Phase = '{phase}'" in script
+    assert "Caption := InstallPhaseCaption(Phase)" in script
+    assert "if Caption = '' then" in script
+    assert "InstallProgressPage.SetText" in script
+    assert "InstallProgressPage.SetProgress" in script
+    assert "StrToInt64Def" in script
+    assert "Log(S)" not in script
     assert "StableInstallCode" in script
     assert "SetupResultPath" in script
     assert "OLIVIA_SETUP_ERROR=" in script

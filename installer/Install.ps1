@@ -64,6 +64,85 @@ function Write-SetupDiagnosticResult {
     }
 }
 
+$script:SetupProgressPhases = @(
+    'PREPARE',
+    'VERIFY_OFFICIAL',
+    'VERIFY_CORE',
+    'INSTALL_CORE',
+    'INSTALL_PATCH',
+    'COPY_VIDEO_RUNTIME',
+    'VERIFY_VIDEO_OFFLINE',
+    'INSTALL_ORDINARY_VIDEO',
+    'INSTALL_MUSIC_VIDEO',
+    'EXTRACT_VIDEO_RUNTIME',
+    'VERIFY_VIDEO_RUNTIME',
+    'TEST_VIDEO_RUNTIME',
+    'FINALIZE'
+)
+$script:SetupProgressLinePattern = '^OLIVIA_SETUP_PROGRESS=(?<phase>' +
+    (($script:SetupProgressPhases | ForEach-Object { [regex]::Escape($_) }) -join '|') +
+    ')\|(?<current>[0-9]{1,19})\|(?<total>[0-9]{1,19})$'
+
+function Write-SetupProgress {
+    param(
+        [Parameter(Mandatory)][string]$Phase,
+        [Parameter(Mandatory)][int64]$CurrentBytes,
+        [Parameter(Mandatory)][int64]$TotalBytes
+    )
+
+    try {
+        if (
+            $script:SetupProgressPhases -cnotcontains $Phase -or
+            $CurrentBytes -lt 0 -or
+            $TotalBytes -lt 0 -or
+            ($TotalBytes -gt 0 -and $CurrentBytes -gt $TotalBytes)
+        ) {
+            return
+        }
+        $line = 'OLIVIA_SETUP_PROGRESS=' + $Phase + '|' +
+            $CurrentBytes.ToString([Globalization.CultureInfo]::InvariantCulture) + '|' +
+            $TotalBytes.ToString([Globalization.CultureInfo]::InvariantCulture)
+        [Console]::Out.WriteLine($line)
+        [Console]::Out.Flush()
+    } catch {
+        # Progress is advisory and must never change installation behavior.
+    }
+}
+
+function Forward-SetupProgressLine {
+    param([Parameter(Mandatory)][string]$Line)
+
+    try {
+        $match = [regex]::Match($Line, $script:SetupProgressLinePattern)
+        if (-not $match.Success) { return $false }
+        [int64]$current = 0
+        [int64]$total = 0
+        if (
+            -not [int64]::TryParse(
+                $match.Groups['current'].Value,
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$current
+            ) -or
+            -not [int64]::TryParse(
+                $match.Groups['total'].Value,
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$total
+            ) -or
+            $current -lt 0 -or
+            $total -lt 0 -or
+            ($total -gt 0 -and $current -gt $total)
+        ) {
+            return $false
+        }
+        Write-SetupProgress -Phase $match.Groups['phase'].Value -CurrentBytes $current -TotalBytes $total
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 trap {
     $safeCode = Get-SafeSetupErrorCode -Code ([string]$_.Exception.Message)
     Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
@@ -722,6 +801,8 @@ function Copy-FileWithSha256 {
     )
 
     $sourceStream, $destinationStream, $hasher = $null, $null, $null
+    [int64]$totalBytes = [IO.FileInfo]::new($Source).Length
+    Write-SetupProgress -Phase 'COPY_VIDEO_RUNTIME' -CurrentBytes 0 -TotalBytes $totalBytes
     try {
         $sourceStream = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         $destinationStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -733,6 +814,7 @@ function Copy-FileWithSha256 {
             [void]$hasher.TransformBlock($buffer, 0, $read, $buffer, 0)
             $destinationStream.Write($buffer, 0, $read)
             $size += $read
+            Write-SetupProgress -Phase 'COPY_VIDEO_RUNTIME' -CurrentBytes $size -TotalBytes $totalBytes
         }
         [void]$hasher.TransformFinalBlock($empty, 0, 0)
         $destinationStream.Flush($true)
@@ -1563,8 +1645,10 @@ function Test-ManagedServerDependencies {
     }
 }
 
+Write-SetupProgress -Phase 'PREPARE' -CurrentBytes 0 -TotalBytes 0
 Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
 Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
+Write-SetupProgress -Phase 'VERIFY_OFFICIAL' -CurrentBytes 0 -TotalBytes 0
 $selectedOfficial = $OfficialRoot
 if (-not $selectedOfficial -and -not $NonInteractive) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
@@ -1580,7 +1664,10 @@ if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
 $script:OfficialSourceDiagnostic = New-OfficialSourceDiagnostic -Selection $officialSelection -ManifestPath $manifestPath
 Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
 Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
+Write-SetupProgress -Phase 'VERIFY_OFFICIAL' -CurrentBytes 1 -TotalBytes 1
+Write-SetupProgress -Phase 'VERIFY_CORE' -CurrentBytes 0 -TotalBytes 0
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot
+Write-SetupProgress -Phase 'VERIFY_CORE' -CurrentBytes 1 -TotalBytes 1
 New-Item -ItemType Directory -Force -Path $productRoot | Out-Null
 $installRootExisted = [IO.Directory]::Exists($Destination); $runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot
 $installTransactionId = [guid]::NewGuid().ToString('N')
@@ -1593,6 +1680,7 @@ New-ManagedInstallRollbackSnapshot -InstallRoot $Destination -Snapshot $installR
 Set-DurableTransactionState -Path "$installTransaction.active" -State $installState
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $runtimeRoot) | Out-Null
 try {
+    Write-SetupProgress -Phase 'INSTALL_CORE' -CurrentBytes 0 -TotalBytes 0
     Expand-Archive -LiteralPath $coreAssets.Runtime -DestinationPath $runtimeStaging -Force
     if (-not [IO.File]::Exists((Join-Path $runtimeStaging 'python.exe'))) {
         throw 'OFFLINE_CORE_RUNTIME_INVALID'
@@ -1633,6 +1721,7 @@ try {
         }
         throw 'OFFLINE_CORE_RUNTIME_PUBLISH_FAILED'
     }
+    Write-SetupProgress -Phase 'INSTALL_CORE' -CurrentBytes 1 -TotalBytes 1
 } catch {
     Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
     throw
@@ -1643,6 +1732,7 @@ $arguments = @('install', '--payload', $PayloadRoot, '--destination', $Destinati
 $oldPythonPath = if ($env:PYTHONPATH) { $env:PYTHONPATH } else { '' }
 $env:PYTHONPATH = $PayloadRoot + [IO.Path]::PathSeparator + $oldPythonPath
 $bootstrap = Join-Path $PayloadRoot 'installer\bootstrap_install.py'
+Write-SetupProgress -Phase 'INSTALL_PATCH' -CurrentBytes 0 -TotalBytes 0
 $installOutput = @(& $runner.File @($runner.Args + @($bootstrap, $PayloadRoot) + $arguments))
 $installExitCode = $LASTEXITCODE
 if ($installExitCode -ne 0) {
@@ -1666,6 +1756,7 @@ if ($installExitCode -ne 0) {
     if (-not $SetupResultPath) { $installOutput | Write-Output }
     exit $installExitCode
 }
+Write-SetupProgress -Phase 'INSTALL_PATCH' -CurrentBytes 1 -TotalBytes 1
 try {
     $privateVideoPending = "$installTransaction.private-video-pending"
     $privateVideoTransaction = $null
@@ -1680,6 +1771,7 @@ try {
     }
     Install-ManagedVoiceReference -VoiceReference $coreAssets.VoiceReference -InstallRoot $Destination
     if ($null -ne $coreAssets.VideoOffline) {
+        Write-SetupProgress -Phase 'VERIFY_VIDEO_OFFLINE' -CurrentBytes 0 -TotalBytes 0
         $privateVideoActivator = Join-Path $PayloadRoot 'installer\activate_private_video.py'
         if (-not [IO.File]::Exists($privateVideoActivator)) {
             throw 'VIDEO_PRIVATE_ACTIVATION_FAILED'
@@ -1697,7 +1789,14 @@ try {
             '--expected-size-bytes', [string]$coreAssets.VideoOffline.size_bytes,
             '--timeout-seconds', '14400'
         )
-        $privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))
+        $privateVideoOutput = [Collections.Generic.List[string]]::new()
+        & $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments) |
+            ForEach-Object {
+                $line = [string]$_
+                if (-not (Forward-SetupProgressLine -Line $line)) {
+                    [void]$privateVideoOutput.Add($line)
+                }
+            }
         $privateVideoExitCode = $LASTEXITCODE
         $privateVideoStatus = $null
         $privateVideoFailure = 'VIDEO_PRIVATE_ACTIVATION_FAILED'
@@ -1724,6 +1823,7 @@ try {
         }
         if ($privateVideoExitCode -ne 0) { throw $privateVideoFailure }
         if ($privateVideoStatus -notin @('READY', 'UNAVAILABLE')) { throw 'VIDEO_PRIVATE_NOT_READY' }
+        Write-SetupProgress -Phase 'VERIFY_VIDEO_OFFLINE' -CurrentBytes 1 -TotalBytes 1
     }
 } catch {
     $assetFailure = [string]$_.Exception.Message
@@ -1744,10 +1844,12 @@ try {
     throw $assetFailure
 }
 
+Write-SetupProgress -Phase 'FINALIZE' -CurrentBytes 0 -TotalBytes 0
 try { [IO.File]::Move("$installTransaction.active", "$installTransaction.cleanup"); Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot }
 catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
 try { Complete-ManagedVideoRuntimeTransaction -Transaction $videoRuntimeTransaction }
 catch { Write-Warning 'VIDEO_RUNTIME_INSTALL_CLEANUP_DEFERRED' }
+Write-SetupProgress -Phase 'FINALIZE' -CurrentBytes 1 -TotalBytes 1
 if (-not $SetupResultPath) { $installOutput | Write-Output }
 
 $LASTEXITCODE = 0
