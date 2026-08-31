@@ -1679,6 +1679,10 @@ def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> N
 
     assert '[Tasks]' in script
     assert 'Name: "desktopicon"' in script
+    desktop_task = next(
+        line for line in script.splitlines() if 'Name: "desktopicon"' in line
+    )
+    assert "unchecked" not in desktop_task.casefold()
     assert '[Icons]' in script
     assert '{userprograms}\\Olivia 本地版' in script
     assert '{userdesktop}\\Olivia 本地版' in script

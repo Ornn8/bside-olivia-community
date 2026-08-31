@@ -36,7 +36,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#PayloadRoot}\*"; Excludes: "offline\video-runtime\*"; DestDir: "{tmp}\OliviaPayload"; Flags: recursesubdirs createallsubdirs dontcopy noencryption ignoreversion
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
 
 [Icons]
 Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"
