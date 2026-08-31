@@ -342,7 +342,7 @@ def conversation_memory_runtime_status() -> ConversationMemoryRuntimeStatus:
 
 
 def conversation_memory_reply_readiness_status() -> ConversationMemoryRuntimeStatus:
-    """Read the in-process reply gate snapshot without provider or SQLite I/O."""
+    """Read the in-process reply gate state without provider or SQLite I/O."""
 
     with _RUNTIME_LOCK:
         runtime = _RUNTIME
