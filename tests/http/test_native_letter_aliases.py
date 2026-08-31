@@ -324,3 +324,41 @@ def test_unknown_native_letter_path_is_not_prefix_mapped() -> None:
             "error_code": "ROUTE_NOT_IMPLEMENTED",
         },
     }
+
+
+def test_native_webview_origin_can_preflight_letter_routes() -> None:
+    import local_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def scenario() -> None:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.options(
+                "/toy/letter/list",
+                headers={
+                    "Origin": "https://olivia.local",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+
+            assert response.status == 204
+            assert (
+                response.headers["Access-Control-Allow-Origin"]
+                == "https://olivia.local"
+            )
+            assert response.headers["Access-Control-Allow-Credentials"] == "true"
+
+            spoofed = await client.options(
+                "/toy/letter/list",
+                headers={
+                    "Origin": "https://olivia.local.example",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+
+            assert spoofed.status == 403
+            assert "Access-Control-Allow-Origin" not in spoofed.headers
+
+    asyncio.run(scenario())

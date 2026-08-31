@@ -1609,6 +1609,7 @@ async def handler(request: web.Request):
     )
 
 TRUSTED_FRONTEND_ORIGINS = frozenset({
+    'https://olivia.local',
     'https://toy-cnbeta01.olivia.miyoushe.com',
 })
 ALLOWED_HEADERS = ', '.join((
