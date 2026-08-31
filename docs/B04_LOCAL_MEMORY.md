@@ -19,6 +19,8 @@ SQLite 表、FTS 索引和配置都属于本机数据，位于被 `.gitignore` �
 
 `tools.memory_import.LegacyLetterImporter` 支持 JSON、JSONL、CSV 和逐行文本。支持显式映射、BOM/UTF-8/常见本地编码、路径根限制、dry-run 和 checkpoint；格式、编码、JSON 行和字段错误返回稳定代码，不把正文或路径放入报告。默认 `atomic=true`，坏行或存储失败整批回滚；内容 SHA-256 用于幂等重复检测。
 
+本机已有成对文字备份时，`python -m runtime.imports.offline_letter_pairs --source <json> --memory-root <memory-root>` 默认只 dry-run；用户确认后附加 `--apply` 才会原子写入。输入必须是只含非空 `content`/`reply` 的 JSON 数组，输出仅含计数、状态和源文件 SHA-256。恢复记录使用独立的 typed provenance 与 `offline_mailbox_publish_status=validated_pair_v1`，可作为 `scope=legacy`、`read_only=true`、已读历史显示在默认信箱；它不会调用 LLM、Mem0、PrivateWorld 或媒体，也不会写 `history.evidence.v1`、`official_history_publish_status` 或官方历史记忆语义。通用 HTTP legacy import 会剥离这些本机发布字段，不能伪造默认信箱可见性；原始备份仍不进入仓库或安装包。
+
 metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储；超过安全上限会拒绝整条记录，绝不会截断序列化后的 JSON。`export_records(domains=...)` 要求调用方显式选择域，并在返回前校验可以生成有效 JSON；未选择域会拒绝。
 
 ## Prompt 与删除语义

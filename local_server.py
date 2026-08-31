@@ -125,6 +125,11 @@ from runtime.memory.private_world_runtime import (
     resolve_private_world_database,
 )
 from runtime.imports.official_letters import collect_default_official_text_replies
+from runtime.imports.offline_letter_pairs import (
+    OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
+    OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
+    is_published_offline_letter_pair,
+)
 from runtime.imports.historical_memory import (
     HistoricalMigrationResult,
     apply_historical_private_world,
@@ -1428,14 +1433,16 @@ def letter_to_out(l):
     published = l.get("reply_not_before", 0.0) <= time.time()
     failed = l.get("letter_status") in {"FAILED", "CANCELED", "CANCELLED"}
     metadata = l.get("metadata")
-    imported_official = isinstance(metadata, dict) and (
-        metadata.get("import_kind") == "official_text_reply"
-    )
+    imported_history = (
+        isinstance(metadata, dict)
+        and metadata.get("import_kind") == "official_text_reply"
+    ) or is_published_offline_letter_pair(metadata)
     summary = (
         l.get("content")
-        if imported_official
+        if imported_history
         else l.get("reply_text") or l.get("content")
-    ) or ""
+    )
+    summary = summary or ""
     return {
         "letter_id": l["letter_id"],
         "summary": summary[:50],
@@ -2110,11 +2117,14 @@ def _official_history_mailbox_projection() -> list[dict]:
     projected: list[dict] = []
     for letter in _legacy_letter_collection():
         metadata = letter.get("metadata")
-        if (
-            not isinstance(metadata, Mapping)
-            or metadata.get("import_kind") != "official_text_reply"
-            or metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
-            != OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+        official_history_completed = bool(
+            isinstance(metadata, Mapping)
+            and metadata.get("import_kind") == "official_text_reply"
+            and metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
+            == OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
+        )
+        if not official_history_completed and not is_published_offline_letter_pair(
+            metadata
         ):
             continue
         projected.append(
@@ -2234,6 +2244,8 @@ def _legacy_records(body: dict) -> list[LegacyLetter] | None:
         metadata = dict(submitted_metadata)
         metadata.pop(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY, None)
         metadata.pop(OFFICIAL_HISTORY_MEMORY_SEMANTICS_KEY, None)
+        metadata.pop(OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY, None)
+        metadata.pop(OFFLINE_LETTER_PAIR_PROVENANCE_KEY, None)
         records.append(
             LegacyLetter(
                 content=item.get("content", ""),
