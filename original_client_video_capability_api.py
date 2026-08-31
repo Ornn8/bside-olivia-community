@@ -44,6 +44,7 @@ class VideoCapabilityAPIInstaller(Protocol):
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str: ...
     def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str) -> str: ...
     def import_runtime_archive(self, *, runtime_archive: Path) -> str: ...
+    def start_runtime_archive_import(self, *, runtime_archive: Path) -> str: ...
 
 
 def _runtime_root_path(value: object) -> Path:
@@ -334,7 +335,7 @@ def mount_original_client_video_capability_api(
         elif action_name == "import_runtime_archive":
             if set(payload) != {"action", "runtime_archive"}:
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            call = installer.import_runtime_archive
+            call = installer.start_runtime_archive_import
             kwargs = {
                 "runtime_archive": _offline_archive_path(payload.get("runtime_archive")),
             }
@@ -352,7 +353,7 @@ def mount_original_client_video_capability_api(
                 async with control_lock:
                     if _is_runtime_archive(archive):
                         result = await asyncio.to_thread(
-                            installer.import_runtime_archive,
+                            installer.start_runtime_archive_import,
                             runtime_archive=archive,
                         )
                         if result not in {"APPLIED", "NOOP", "REJECTED"}:

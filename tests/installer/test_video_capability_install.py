@@ -705,10 +705,13 @@ def test_runtime_archive_failure_keeps_the_specific_step_reason(tmp_path: Path) 
     archive = (tmp_path / "Olivia-video-runtime-broken.zip").resolve()
     with zipfile.ZipFile(archive, "w") as payload:
         payload.writestr("runtime-manifest.json", "{}")
+    configured_downloads = (tmp_path / "downloads").resolve()
+    configured_downloads.mkdir()
     installer = VideoCapabilityInstaller(
         data_root=(tmp_path / "data").resolve(),
         manifest=VideoManifest("1.0", ()),
         readiness_probe=lambda _environment: {},
+        runtime_archive_roots=(configured_downloads,),
     )
 
     with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ROOT_INVALID"):
@@ -720,6 +723,67 @@ def test_runtime_archive_failure_keeps_the_specific_step_reason(tmp_path: Path) 
         "total_bytes": 0,
         "reason_code": "VIDEO_RUNTIME_ROOT_INVALID",
     }
+
+
+def test_runtime_archive_background_start_returns_before_extraction_and_deduplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = (tmp_path / "Olivia-video-runtime-slow.zip").resolve()
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("runtime-manifest.json", "{}")
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_extract(
+        _archive: Path,
+        staging: Path,
+        *,
+        progress,
+    ) -> None:
+        staging.mkdir(parents=True)
+        progress(1, 2)
+        started.set()
+        assert release.wait(2)
+        (staging / "runtime-manifest.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        video_capability_install,
+        "_extract_runtime_zip_safely",
+        slow_extract,
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest("1.0", ()),
+        readiness_probe=lambda _environment: {},
+    )
+
+    try:
+        assert (
+            installer.start_runtime_archive_import(runtime_archive=archive)
+            == "APPLIED"
+        )
+        assert started.wait(1)
+        assert installer.status()["runtime_import"] == {
+            "state": "extracting",
+            "checked_bytes": 1,
+            "total_bytes": 2,
+        }
+        assert (
+            installer.start_runtime_archive_import(runtime_archive=archive) == "NOOP"
+        )
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 2
+    while (
+        time.monotonic() < deadline
+        and installer.status()["runtime_import"]["state"] != "failed"
+    ):
+        time.sleep(0.01)
+    failed = installer.status()["runtime_import"]
+    assert failed["state"] == "failed"
+    assert failed["reason_code"] == "VIDEO_RUNTIME_ROOT_INVALID"
 
 
 def test_configured_installer_activates_runtime_for_current_server_process(
@@ -1942,9 +2006,12 @@ def test_video_capability_api_selects_and_imports_runtime_archive(tmp_path: Path
         def status(self):
             return {"schema_version": "olivia.video-capability-status.v2", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
 
-        def import_runtime_archive(self, *, runtime_archive: Path):
+        def start_runtime_archive_import(self, *, runtime_archive: Path):
             observed.append(runtime_archive)
             return "APPLIED"
+
+        def import_runtime_archive(self, *, runtime_archive: Path):
+            pytest.fail("the HTTP request must not run the archive import inline")
 
     async def call():
         app = web.Application()
@@ -2007,9 +2074,12 @@ def test_video_capability_api_single_offline_import_detects_runtime_archive(
                 "bundles": [],
             }
 
-        def import_runtime_archive(self, *, runtime_archive: Path):
+        def start_runtime_archive_import(self, *, runtime_archive: Path):
             observed.append(runtime_archive)
             return "APPLIED"
+
+        def import_runtime_archive(self, *, runtime_archive: Path):
+            pytest.fail("the HTTP request must not run the archive import inline")
 
         def import_offline(self, **_kwargs):
             raise AssertionError("runtime archives must not be treated as component ZIPs")
