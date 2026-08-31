@@ -79,6 +79,11 @@ def test_reasoning_timeout_is_an_explicit_bounded_public_config() -> None:
     assert configured.public_dict()["reasoning_timeout_seconds"] == 720.0
 
 
+def test_retry_backoff_default_matches_public_template() -> None:
+    assert GatewayConfig().retry_backoff_seconds == 0.25
+    assert GatewayConfig.from_mapping({}).retry_backoff_seconds == 0.25
+
+
 def test_reasoning_timeout_environment_override_is_loaded(tmp_path) -> None:
     config = load_gateway_config(
         tmp_path / "missing.json",
@@ -176,6 +181,37 @@ def test_chat_completion_adapter_uses_local_mock_server_and_env_key(monkeypatch:
     assert seen["request_id"] == "request-1"
     assert seen["body"]["model"] == "synthetic-model"
     assert seen["body"]["messages"] == list(ROOT_MESSAGES)
+
+
+def test_nonstream_length_finish_reason_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> ProviderProtocolError:
+        async def handler(_request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "partial private reply"},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            with pytest.raises(ProviderProtocolError) as caught:
+                await adapter.complete(ROOT_MESSAGES)
+        return caught.value
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    error = run(exercise())
+
+    assert str(error) == "PROVIDER_PROTOCOL"
+    assert "partial private reply" not in str(error)
 
 
 @pytest.mark.parametrize("endpoint", ["opencode-go", "official-deepseek"])
