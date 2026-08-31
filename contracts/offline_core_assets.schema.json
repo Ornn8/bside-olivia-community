@@ -6,9 +6,10 @@
   "additionalProperties": false,
   "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
   "dependentRequired": {
-    "distribution": ["voice_reference", "video_runtime"],
-    "voice_reference": ["distribution", "video_runtime"],
-    "video_runtime": ["distribution", "voice_reference"]
+    "distribution": ["voice_reference", "video_runtime", "video_offline"],
+    "voice_reference": ["distribution", "video_runtime", "video_offline"],
+    "video_runtime": ["distribution", "voice_reference", "video_offline"],
+    "video_offline": ["distribution", "voice_reference", "video_runtime"]
   },
   "$defs": {
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -77,9 +78,21 @@
       "additionalProperties": false,
       "required": ["path", "size_bytes", "sha256"],
       "properties": {
-        "path": {"const": "video-runtime/Olivia-video-runtime-private.zip"},
+        "path": {"const": "Olivia-video-runtime-private.zip"},
         "size_bytes": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "video_offline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "manifest_version", "manifest_sha256", "file_count", "size_bytes"],
+      "properties": {
+        "path": {"const": "Olivia-video-offline-private"},
+        "manifest_version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "manifest_sha256": {"$ref": "#/$defs/digest"},
+        "file_count": {"type": "integer", "minimum": 1},
+        "size_bytes": {"type": "integer", "minimum": 1}
       }
     },
     "wheels": {

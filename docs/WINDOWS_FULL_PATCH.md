@@ -1,10 +1,10 @@
 # Windows 完整版补丁（隔离安装）
 
-公开补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体；经授权单独构建的私有安装包会额外内嵌下文指定的林离参考 WAV 和视频运行时。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
+公开补丁只复制并修改用户自己的正版 Steam 文件副本，不写入正版目录，也不分发原版游戏、可选模型或媒体；经授权单独构建的私有安装包会额外交付下文指定的林离参考 WAV、视频 Python 运行时和 ordinary/music 两套完整离线 BOM 资产。大体积内容作为与 EXE 同目录的受校验 sidecar，不进入 Inno 临时目录。`Olivia-Setup-x64.exe` 内含固定版本的核心 Python 运行时和依赖，使首次安装不依赖 Python.org、PyPI 或 Hugging Face。安装目标默认是 `%LOCALAPPDATA%\BSideOliviaLocal\install`，用户数据和未来外部缓存保留在同一产品目录的 `data` / `third-party` 下。
 
 ## 使用
 
-1. 公开包：下载 EXE 和 `.sha256`。私有视频包：下载完整 ZIP，解压后把 EXE、全部 `.bin` 分卷和 `.sha256` 保持在同一目录。运行前先核对 SHA-256。
+1. 公开包：下载 EXE 和 `.sha256`。私有视频包：下载完整 ZIP并完整解压，保持 `Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `.sha256` 的同目录结构。运行前按 `.sha256` 逐项核对 EXE、runtime ZIP、receipt 和 offline root 内每个文件。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。两个快捷方式都由 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动，不会显示可被误关的命令行窗口；工作目录固定为安装目录。点击后会立即显示“Olivia 正在启动，请稍候”的短暂提示，实际启动同时开始，不会等待提示关闭。只有隐藏启动器最终返回非零退出码时才显示中文失败对话框；正常关闭返回 `0` 时不会弹出错误。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
 4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频或视频运行时；私有视频包已包含，无需用户再选离线包。
@@ -36,7 +36,7 @@ python installer/build_windows_setup.py `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-上面的默认构建是公开产物：不得传入参考音频或视频运行时，内嵌 offline manifest 也不含 `distribution`、`voice_reference` 或 `video_runtime`。需要经授权在私有渠道交付完整视频回信能力时，维护者必须使用隔离输出目录并同时显式提供私有分发、音色和运行时：
+上面的默认构建是公开产物：不得传入参考音频、视频运行时或视频离线根目录，内嵌 offline manifest 也不含 `distribution`、`voice_reference`、`video_runtime` 或 `video_offline`。需要经授权在私有渠道交付完整视频回信能力时，维护者必须使用隔离输出目录并同时显式提供私有分发、音色、运行时和与生产视频 BOM 完全匹配的离线根目录：
 
 ```powershell
 python installer/build_windows_setup.py `
@@ -46,14 +46,15 @@ python installer/build_windows_setup.py `
   --distribution private `
   --voice-reference '<私有 WAV 的本机路径>' `
   --video-runtime '<Olivia-video-runtime-*.zip 的本机路径>' `
+  --video-offline-root '<含 ordinary_video 与 music_video 的离线根目录>' `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-私有构建器只接受显式 WAV 和完整视频运行时 ZIP：它核对 PCM 帧、视频运行时根 manifest 与四个独立 Python 入口，随后把两项资产的大小和 SHA-256 写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带私有字段或资产；公开模式传入任一私有资产、私有模式缺少任一资产都会拒绝构建。
+私有构建器只接受三项显式输入：WAV、完整视频运行时 ZIP、完整视频离线根目录。它核对 PCM 帧、视频运行时根 manifest 与四个独立 Python 入口；再以 `installer/video-capability-manifest.json` 为唯一 BOM，要求离线根目录同时包含 `ordinary_video` 与 `music_video`，逐文件核对路径、大小和 SHA-256，并拒绝缺失、多余、重解析点或被修改的文件。随后把三项资产的固定名称和摘要写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带私有字段或资产；公开模式传入任一私有资产、私有模式缺少任一资产都会拒绝构建。
 
-公开构建仍是单个 `Olivia-Setup-x64.exe`。私有视频运行时超过单个安装程序容量上限，因此私有产物是一个完整目录：`Olivia-Setup-x64.exe`、同名前缀的全部 `.bin` 分卷和 `.sha256`。交付时必须把整个目录压成一个 ZIP，用户完整解压后再运行 EXE；缺少任一分卷都不能安装。私有产物只保存在专用 `dist-private`，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。
+公开构建仍是单个 `Olivia-Setup-x64.exe`。私有产物是自包含目录：`Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `Olivia-Setup-x64.exe.sha256`。交付时必须把整个目录压成一个 ZIP，用户完整解压后再运行 EXE；Inno 只把小型核心 payload 解到 `{tmp}`，并把 `{src}` 下固定名称的 runtime ZIP 与 offline root 传给 `Install.ps1`。runtime 由既有事务原子复制到受管 `install/downloads`，ordinary/music 资产由既有视频能力导入链校验、组装与激活；两类大文件都不会进入 Inno `{tmp}`。缺少、改名或篡改任一 sidecar 都会在发布安装结果前失败。私有产物只保存在专用 `dist-private`，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。
 
-除私有模式显式传入的 WAV 与视频运行时 ZIP 外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。私有构建使用约 2.1 GB 的安装分卷；`.sha256` 会逐项记录 EXE 与全部分卷。
+除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。构建器先把两类大 sidecar 原子发布到输出目录并以这些最终字节生成内嵌 BOM；Inno 编译完成后再次复验，防止编译期间的替换进入交付。私有 receipt 记录 EXE、runtime ZIP 与 offline root 内每个文件的相对路径、大小和 SHA-256；`.sha256` 再覆盖这些文件及 receipt 本身，因而没有自引用。公开构建流程与原有输出保持不变，只校验并记录 EXE。
 
 GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV 或视频运行时，也不会生成私有安装器。私有安装包只能由维护者在隔离环境手工构建。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 

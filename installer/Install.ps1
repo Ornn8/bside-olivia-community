@@ -4,6 +4,8 @@ param(
     [string]$Destination = (Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal'),
     [string]$OfficialRoot = '',
     [string]$OfflineAssetsRoot = '',
+    [string]$VideoRuntimePath = '',
+    [string]$VideoOfflineRoot = '',
     [string]$SetupResultPath = '',
     [switch]$NonInteractive,
     [switch]$SkipShortcut,
@@ -523,6 +525,77 @@ function Resolve-OfflineAsset {
     return $path
 }
 
+function Resolve-VideoRuntimeSidecar {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath,
+        [Parameter(Mandatory)]
+        [object]$Asset
+    )
+
+    if (-not $LiteralPath) { throw 'VIDEO_RUNTIME_MISSING' }
+    try {
+        if (-not [IO.Path]::IsPathRooted($LiteralPath)) {
+            throw 'VIDEO_RUNTIME_INVALID'
+        }
+        $path = [IO.Path]::GetFullPath($LiteralPath)
+        if ([IO.Path]::GetFileName($path) -cne [string]$Asset.path) {
+            throw 'VIDEO_RUNTIME_INVALID'
+        }
+        $parent = [IO.Path]::GetDirectoryName($path)
+        if (-not $parent) { throw 'VIDEO_RUNTIME_INVALID' }
+        Assert-NoReparsePointsInPath -LiteralPath $parent -ErrorCode 'VIDEO_RUNTIME_INVALID'
+        if ((Test-Path -LiteralPath $path) -and -not [IO.File]::Exists($path)) {
+            throw 'VIDEO_RUNTIME_INVALID'
+        }
+        if ([IO.File]::Exists($path) -and ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'VIDEO_RUNTIME_INVALID'
+        }
+        return $path
+    } catch {
+        $code = [string]$_.Exception.Message
+        if ($code -in @('VIDEO_RUNTIME_MISSING', 'VIDEO_RUNTIME_HASH_MISMATCH')) {
+            throw $code
+        }
+        throw 'VIDEO_RUNTIME_INVALID'
+    }
+}
+
+function Resolve-VideoOfflineSidecar {
+    param(
+        [string]$LiteralPath = '',
+        [Parameter(Mandatory)]
+        [object]$Asset
+    )
+
+    if (-not $LiteralPath) { throw 'VIDEO_PRIVATE_OFFLINE_MISSING' }
+    try {
+        if (-not [IO.Path]::IsPathRooted($LiteralPath)) {
+            throw 'VIDEO_PRIVATE_OFFLINE_INVALID'
+        }
+        $path = [IO.Path]::GetFullPath($LiteralPath)
+        if ([IO.Path]::GetFileName($path) -cne [string]$Asset.path) {
+            throw 'VIDEO_PRIVATE_OFFLINE_INVALID'
+        }
+        $parent = [IO.Path]::GetDirectoryName($path)
+        if (-not $parent) { throw 'VIDEO_PRIVATE_OFFLINE_INVALID' }
+        Assert-NoReparsePointsInPath -LiteralPath $parent -ErrorCode 'VIDEO_PRIVATE_OFFLINE_INVALID'
+        if (-not [IO.Directory]::Exists($path)) {
+            throw 'VIDEO_PRIVATE_OFFLINE_MISSING'
+        }
+        if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'VIDEO_PRIVATE_OFFLINE_INVALID'
+        }
+        return $path
+    } catch {
+        $code = [string]$_.Exception.Message
+        if ($code -in @('VIDEO_PRIVATE_OFFLINE_MISSING', 'VIDEO_PRIVATE_OFFLINE_INVALID')) {
+            throw $code
+        }
+        throw 'VIDEO_PRIVATE_OFFLINE_INVALID'
+    }
+}
+
 function Get-PcmWaveMetadata {
     param([Parameter(Mandatory)][string]$Path)
     try {
@@ -839,6 +912,255 @@ function Complete-ManagedVideoRuntimeTransaction {
     }
 }
 
+function Get-ManagedPrivateVideoTransactionPaths {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId
+    )
+
+    if ($TransactionId -cnotmatch '^[0-9a-f]{32}$') {
+        throw 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+    }
+    $capabilityRoot = Join-Path $InstallRoot 'data\capabilities'
+    $downloadRoot = Join-Path $InstallRoot 'downloads'
+    return [pscustomobject]@{
+        CapabilityRoot = $capabilityRoot
+        VideoRoot = Join-Path $capabilityRoot 'video'
+        Backup = Join-Path $capabilityRoot ('.video.private-backup.' + $TransactionId)
+        Discard = Join-Path $capabilityRoot ('.video.private-discard.' + $TransactionId)
+        DownloadRoot = $downloadRoot
+        RuntimeTarget = Join-Path $downloadRoot 'Olivia-video-runtime-private.zip'
+        RuntimeBackup = Join-Path $downloadRoot ('.Olivia-private-runtime-backup.' + $TransactionId + '.zip')
+        RuntimeDiscard = Join-Path $downloadRoot ('.Olivia-private-runtime-discard.' + $TransactionId + '.zip')
+    }
+}
+
+function Start-ManagedPrivateVideoTransaction {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId,
+        [Parameter(Mandatory)][string]$PendingMarker,
+        [Parameter(Mandatory)][object]$VideoRuntime
+    )
+
+    $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
+    try {
+        Assert-NoReparsePointsInPath -LiteralPath $paths.CapabilityRoot -ErrorCode 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+        Assert-NoReparsePointsInPath -LiteralPath $paths.DownloadRoot -ErrorCode 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+        New-Item -ItemType Directory -Force -Path $paths.CapabilityRoot | Out-Null
+        New-Item -ItemType Directory -Force -Path $paths.DownloadRoot | Out-Null
+        if (
+            (Test-Path -LiteralPath $paths.Backup) -or
+            (Test-Path -LiteralPath $paths.Discard) -or
+            (Test-Path -LiteralPath $paths.RuntimeBackup) -or
+            (Test-Path -LiteralPath $paths.RuntimeDiscard)
+        ) {
+            throw 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+        }
+        $existed = [IO.Directory]::Exists($paths.VideoRoot)
+        $runtimeExisted = [IO.File]::Exists($paths.RuntimeTarget)
+        if (
+            ((Test-Path -LiteralPath $paths.VideoRoot) -and -not $existed) -or
+            ($existed -and -not (Test-NoReparsePointsInTree -LiteralPath $paths.VideoRoot)) -or
+            ((Test-Path -LiteralPath $paths.RuntimeTarget) -and -not $runtimeExisted) -or
+            ($runtimeExisted -and (([IO.File]::GetAttributes($paths.RuntimeTarget) -band [IO.FileAttributes]::ReparsePoint) -ne 0))
+        ) {
+            throw 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+        }
+        $runtimeMode = 0
+        if ($runtimeExisted) {
+            $runtimeMode = if (
+                [IO.FileInfo]::new($paths.RuntimeTarget).Length -eq [int64]$VideoRuntime.size_bytes -and
+                (Get-Sha256 -LiteralPath $paths.RuntimeTarget) -ceq [string]$VideoRuntime.sha256
+            ) { 2 } else { 1 }
+        }
+        if ($runtimeMode -eq 2) {
+            Remove-StaleManagedVideoRuntimeArtifacts -DownloadRoot $paths.DownloadRoot -Extensions @('tmp', 'bak')
+        }
+        Set-DurableTransactionState -Path $PendingMarker -State "$TransactionId|$([int]$existed)|$runtimeMode"
+        if ($existed) {
+            [IO.Directory]::Move($paths.VideoRoot, $paths.Backup)
+        }
+        if ($runtimeMode -eq 1) {
+            [IO.File]::Move($paths.RuntimeTarget, $paths.RuntimeBackup)
+        }
+        return [pscustomobject]@{ RuntimeMode = $runtimeMode }
+    } catch {
+        throw 'VIDEO_PRIVATE_TRANSACTION_FAILED'
+    }
+}
+
+function Restore-ManagedPrivateVideoTransaction {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId,
+        [Parameter(Mandatory)][bool]$VideoRootExisted
+    )
+
+    $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
+    try {
+        $videoPresent = Test-Path -LiteralPath $paths.VideoRoot
+        $backupPresent = Test-Path -LiteralPath $paths.Backup
+        $discardPresent = Test-Path -LiteralPath $paths.Discard
+        foreach ($entry in @($paths.VideoRoot, $paths.Backup, $paths.Discard)) {
+            if ((Test-Path -LiteralPath $entry) -and (
+                -not [IO.Directory]::Exists($entry) -or
+                -not (Test-NoReparsePointsInTree -LiteralPath $entry)
+            )) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        }
+        if ($VideoRootExisted) {
+            if ($backupPresent) {
+                if ($videoPresent) {
+                    if ($discardPresent) {
+                        throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+                    }
+                    [IO.Directory]::Move($paths.VideoRoot, $paths.Discard)
+                    $discardPresent = $true
+                }
+                [IO.Directory]::Move($paths.Backup, $paths.VideoRoot)
+            } elseif (-not $videoPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        } else {
+            if ($backupPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+            if ($videoPresent) {
+                if ($discardPresent) {
+                    throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+                }
+                [IO.Directory]::Move($paths.VideoRoot, $paths.Discard)
+                $discardPresent = $true
+            }
+        }
+        if ($discardPresent) {
+            Remove-Item -LiteralPath $paths.Discard -Recurse -Force
+        }
+    } catch {
+        throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+    }
+}
+
+function Complete-ManagedPrivateVideoTransaction {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId,
+        [Parameter(Mandatory)][bool]$VideoRootExisted
+    )
+
+    $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
+    try {
+        if (Test-Path -LiteralPath $paths.Discard) {
+            throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+        }
+        if (-not [IO.Directory]::Exists($paths.VideoRoot) -or
+            -not (Test-NoReparsePointsInTree -LiteralPath $paths.VideoRoot)) {
+            throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+        }
+        if (Test-Path -LiteralPath $paths.Backup) {
+            if (-not $VideoRootExisted -or -not [IO.Directory]::Exists($paths.Backup) -or
+                -not (Test-NoReparsePointsInTree -LiteralPath $paths.Backup)) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+            }
+            Remove-Item -LiteralPath $paths.Backup -Recurse -Force
+        }
+    } catch {
+        throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+    }
+}
+
+function Restore-ManagedPrivateRuntimeSidecarTransaction {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId,
+        [Parameter(Mandatory)][ValidateSet(0, 1, 2)][int]$RuntimeMode
+    )
+
+    $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
+    try {
+        Assert-NoReparsePointsInPath -LiteralPath $paths.DownloadRoot -ErrorCode 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+        $targetPresent = Test-Path -LiteralPath $paths.RuntimeTarget
+        $backupPresent = Test-Path -LiteralPath $paths.RuntimeBackup
+        $discardPresent = Test-Path -LiteralPath $paths.RuntimeDiscard
+        foreach ($entry in @($paths.RuntimeTarget, $paths.RuntimeBackup, $paths.RuntimeDiscard)) {
+            if ((Test-Path -LiteralPath $entry) -and (
+                -not [IO.File]::Exists($entry) -or
+                (([IO.File]::GetAttributes($entry) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            )) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        }
+        if ($RuntimeMode -eq 2) {
+            if (-not $targetPresent -or $backupPresent -or $discardPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        } elseif ($RuntimeMode -eq 1) {
+            if ($backupPresent) {
+                if ($targetPresent) {
+                    if ($discardPresent) {
+                        throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+                    }
+                    [IO.File]::Move($paths.RuntimeTarget, $paths.RuntimeDiscard)
+                    $discardPresent = $true
+                }
+                [IO.File]::Move($paths.RuntimeBackup, $paths.RuntimeTarget)
+            } elseif (-not $targetPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        } else {
+            if ($backupPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+            if ($targetPresent) {
+                if ($discardPresent) {
+                    throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+                }
+                [IO.File]::Move($paths.RuntimeTarget, $paths.RuntimeDiscard)
+                $discardPresent = $true
+            }
+        }
+        if ($discardPresent) {
+            [IO.File]::Delete($paths.RuntimeDiscard)
+        }
+    } catch {
+        throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+    }
+}
+
+function Complete-ManagedPrivateRuntimeSidecarTransaction {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$TransactionId,
+        [Parameter(Mandatory)][ValidateSet(0, 1, 2)][int]$RuntimeMode
+    )
+
+    $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
+    try {
+        Assert-NoReparsePointsInPath -LiteralPath $paths.DownloadRoot -ErrorCode 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+        if (
+            -not [IO.File]::Exists($paths.RuntimeTarget) -or
+            (([IO.File]::GetAttributes($paths.RuntimeTarget) -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            (Test-Path -LiteralPath $paths.RuntimeDiscard)
+        ) {
+            throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+        }
+        if (Test-Path -LiteralPath $paths.RuntimeBackup) {
+            if (
+                $RuntimeMode -ne 1 -or
+                -not [IO.File]::Exists($paths.RuntimeBackup) -or
+                (([IO.File]::GetAttributes($paths.RuntimeBackup) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            ) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+            }
+            [IO.File]::Delete($paths.RuntimeBackup)
+        }
+    } catch {
+        throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+    }
+}
+
 function Get-ManagedInstallTransactionNames {
     return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json')
 }
@@ -896,7 +1218,7 @@ function Remove-ManagedInstallRollbackSnapshot {
 
 function Repair-ManagedInstallTransaction {
     param([Parameter(Mandatory)][string]$ProductRoot, [Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$RuntimeRoot); if (-not [IO.Directory]::Exists($ProductRoot)) { return }
-    $journal = Join-Path $ProductRoot '.install.transaction'; $activeMarker = "$journal.active"; $rollbackMarker = "$journal.rollback"; $cleanupMarker = "$journal.cleanup"; try { foreach ($next in @("$journal.next", "$activeMarker.next")) { [IO.File]::Delete($next) } } catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
+    $journal = Join-Path $ProductRoot '.install.transaction'; $activeMarker = "$journal.active"; $rollbackMarker = "$journal.rollback"; $cleanupMarker = "$journal.cleanup"; $privateVideoPending = "$journal.private-video-pending"; try { foreach ($next in @("$journal.next", "$activeMarker.next", "$privateVideoPending.next")) { [IO.File]::Delete($next) } } catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
     if ((@($activeMarker, $rollbackMarker, $cleanupMarker) | Where-Object { [IO.File]::Exists($_) }).Count -gt 1) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
     if (-not [IO.File]::Exists($journal) -and ([IO.File]::Exists($activeMarker) -or [IO.File]::Exists($rollbackMarker) -or [IO.File]::Exists($cleanupMarker))) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
     if (-not [IO.File]::Exists($journal)) { $shared = Join-Path $InstallRoot 'data\capabilities\video\shared'; if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }; return }
@@ -905,18 +1227,41 @@ function Repair-ManagedInstallTransaction {
         $state = [IO.File]::ReadAllText($marker)
         if ($state -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<install>[01])\|(?<runtime>[01])$') { throw 'invalid install transaction' }
         $id = $Matches.id; $installExisted = $Matches.install -ceq '1'; $runtimeExisted = $Matches.runtime -ceq '1'
+        $privateVideoState = $null
+        if ([IO.File]::Exists($privateVideoPending)) {
+            $pendingState = [IO.File]::ReadAllText($privateVideoPending)
+            if ($pendingState -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<video>[01])\|(?<runtime>[012])$' -or $Matches.id -cne $id) {
+                throw 'invalid private video transaction'
+            }
+            $privateVideoState = [pscustomobject]@{
+                Id = $id
+                Existed = $Matches.video -ceq '1'
+                RuntimeMode = [int]$Matches.runtime
+            }
+        }
         $snapshot = Join-Path $ProductRoot ".install.rollback.$id"; $staging = "$RuntimeRoot.staging.$id"; $backup = "$RuntimeRoot.backup.$id"; $shared = Join-Path $InstallRoot 'data\capabilities\video\shared'
-        $committed = $phase -ceq 'cleanup' -or [IO.File]::Exists((Join-Path $shared '.linli-reference.transaction.cleanup'))
+        $committed = ($phase -ceq 'cleanup' -or [IO.File]::Exists((Join-Path $shared '.linli-reference.transaction.cleanup'))) -and -not [IO.File]::Exists($privateVideoPending)
         if ($committed -and $phase -eq 'active') { [IO.File]::Move($activeMarker, $cleanupMarker); $marker = $cleanupMarker; $phase = 'cleanup' }
         if ($phase -ceq 'active') {
             if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }
             Restore-ManagedInstallRollbackSnapshot -InstallRoot $InstallRoot -InstallRootExisted $installExisted -Snapshot $snapshot
             Restore-ManagedRuntimeTransaction -RuntimeRoot $RuntimeRoot -RuntimeBackup $backup -RuntimeRootExisted $runtimeExisted
+            if ($null -ne $privateVideoState) {
+                Restore-ManagedPrivateVideoTransaction -InstallRoot $InstallRoot -TransactionId $privateVideoState.Id -VideoRootExisted $privateVideoState.Existed
+                Restore-ManagedPrivateRuntimeSidecarTransaction -InstallRoot $InstallRoot -TransactionId $privateVideoState.Id -RuntimeMode $privateVideoState.RuntimeMode
+            }
             [IO.File]::Move($activeMarker, $rollbackMarker); $marker = $rollbackMarker; $phase = 'rollback'
-        } elseif ($phase -ceq 'cleanup' -and [IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }
+        } elseif ($phase -ceq 'cleanup') {
+            if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }
+            if ($null -ne $privateVideoState) {
+                Complete-ManagedPrivateVideoTransaction -InstallRoot $InstallRoot -TransactionId $privateVideoState.Id -VideoRootExisted $privateVideoState.Existed
+                Complete-ManagedPrivateRuntimeSidecarTransaction -InstallRoot $InstallRoot -TransactionId $privateVideoState.Id -RuntimeMode $privateVideoState.RuntimeMode
+            }
+        }
         foreach ($path in @($staging, $backup)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
         Remove-ManagedInstallRollbackSnapshot -Snapshot $snapshot
         if ($marker -cne $journal) { [IO.File]::Delete($marker) }
+        [IO.File]::Delete($privateVideoPending)
         [IO.File]::Delete($journal)
     } catch { if ($phase -ceq 'cleanup' -or $committed) { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }; throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
 }
@@ -928,7 +1273,9 @@ function Get-OfflineCoreAssets {
         [Parameter(Mandatory)]
         [string]$ManifestPath,
         [Parameter(Mandatory)]
-        [string]$RequirementsPath
+        [string]$RequirementsPath,
+        [string]$VideoRuntimePath = '',
+        [string]$VideoOfflineRoot = ''
     )
 
     if (-not [IO.File]::Exists($ManifestPath)) { throw 'OFFLINE_CORE_ASSETS_MISSING' }
@@ -940,15 +1287,18 @@ function Get-OfflineCoreAssets {
     $manifestNames = @('schema_version', 'python_runtime', 'pip_bootstrap', 'requirements_sha256', 'wheels')
     $hasVoiceReference = $manifest.PSObject.Properties.Name -ccontains 'voice_reference'
     $hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'
+    $hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'
     $hasDistribution = $manifest.PSObject.Properties.Name -ccontains 'distribution'
     if (
-        $hasVideoRuntime -ne $hasVoiceReference -or
+        $hasVideoRuntime -ne $hasVoiceReference -or $hasVideoOffline -ne $hasVoiceReference -or
         $hasVoiceReference -ne $hasDistribution -or
         ($hasDistribution -and $manifest.distribution -cne 'private')
     ) {
         throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
     }
-    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference', 'video_runtime') }
+    if (-not $hasVideoRuntime -and $VideoRuntimePath) { throw 'VIDEO_RUNTIME_INVALID' }
+    if (-not $hasVideoOffline -and $VideoOfflineRoot) { throw 'VIDEO_PRIVATE_OFFLINE_INVALID' }
+    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference', 'video_runtime', 'video_offline') }
     Assert-OfflineObjectShape -Value $manifest -Names $manifestNames
     Assert-OfflineObjectShape -Value $manifest.python_runtime -Names @('path', 'size_bytes', 'sha256', 'source_url')
     Assert-OfflineObjectShape -Value $manifest.pip_bootstrap -Names @('path', 'size_bytes', 'sha256', 'package', 'version')
@@ -988,6 +1338,7 @@ function Get-OfflineCoreAssets {
     $pipBootstrap = Resolve-OfflineAsset -Root $Root -Asset $manifest.pip_bootstrap
     $voiceReference = $null
     $videoRuntime = $null
+    $videoOffline = $null
     if ($hasVoiceReference) {
         Assert-OfflineObjectShape -Value $manifest.voice_reference -Names @('path', 'size_bytes', 'sha256', 'wave')
         Assert-OfflineObjectShape -Value $manifest.voice_reference.wave -Names @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')
@@ -1008,11 +1359,11 @@ function Get-OfflineCoreAssets {
         $voiceReference = $manifest.voice_reference
         $voiceReference.path = $voiceReferencePath
         Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')
-        if ($manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip') {
+        if ($manifest.video_runtime.path -cne 'Olivia-video-runtime-private.zip') {
             throw 'OFFLINE_CORE_MANIFEST_INVALID'
         }
         try {
-            $videoRuntimePath = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime
+            $videoRuntimePath = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $manifest.video_runtime
         } catch {
             if ($_.Exception.Message -eq 'OFFLINE_CORE_ASSET_MISSING') {
                 throw 'VIDEO_RUNTIME_MISSING'
@@ -1027,6 +1378,28 @@ function Get-OfflineCoreAssets {
             size_bytes = [int64]$manifest.video_runtime.size_bytes
             sha256 = [string]$manifest.video_runtime.sha256
             verified = [bool]$true
+        }
+        Assert-OfflineObjectShape -Value $manifest.video_offline -Names @('path', 'manifest_version', 'manifest_sha256', 'file_count', 'size_bytes')
+        if (
+            $manifest.video_offline.path -cne 'Olivia-video-offline-private' -or
+            $manifest.video_offline.manifest_version -isnot [string] -or
+            -not [string]$manifest.video_offline.manifest_version -or
+            $manifest.video_offline.manifest_sha256 -isnot [string] -or
+            $manifest.video_offline.manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            ($manifest.video_offline.file_count -isnot [int] -and $manifest.video_offline.file_count -isnot [long]) -or
+            [int]$manifest.video_offline.file_count -lt 1 -or
+            ($manifest.video_offline.size_bytes -isnot [int] -and $manifest.video_offline.size_bytes -isnot [long]) -or
+            [int64]$manifest.video_offline.size_bytes -lt 1
+        ) {
+            throw 'OFFLINE_CORE_MANIFEST_INVALID'
+        }
+        $videoOfflinePath = Resolve-VideoOfflineSidecar -LiteralPath $VideoOfflineRoot -Asset $manifest.video_offline
+        $videoOffline = [pscustomobject]@{
+            path = $videoOfflinePath
+            manifest_version = [string]$manifest.video_offline.manifest_version
+            manifest_sha256 = [string]$manifest.video_offline.manifest_sha256
+            file_count = [int]$manifest.video_offline.file_count
+            size_bytes = [int64]$manifest.video_offline.size_bytes
         }
     }
     $expectedWheelAssets = Get-ExpectedOfflineWheels
@@ -1068,6 +1441,7 @@ function Get-OfflineCoreAssets {
         Wheelhouse = (Join-Path $Root 'wheelhouse')
         VoiceReference = $voiceReference
         VideoRuntime = $videoRuntime
+        VideoOffline = $videoOffline
     }
 }
 
@@ -1190,6 +1564,7 @@ function Test-ManagedServerDependencies {
 }
 
 Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
+Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
 $selectedOfficial = $OfficialRoot
 if (-not $selectedOfficial -and -not $NonInteractive) {
     $selectedOfficial = Read-Host 'Steam 游戏目录（留空则按 AppID 自动发现）'
@@ -1205,8 +1580,7 @@ if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
 $script:OfficialSourceDiagnostic = New-OfficialSourceDiagnostic -Selection $officialSelection -ManifestPath $manifestPath
 Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
 Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
-$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements
-Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
+$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot
 New-Item -ItemType Directory -Force -Path $productRoot | Out-Null
 $installRootExisted = [IO.Directory]::Exists($Destination); $runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot
 $installTransactionId = [guid]::NewGuid().ToString('N')
@@ -1293,8 +1667,58 @@ if ($installExitCode -ne 0) {
     exit $installExitCode
 }
 try {
-    $videoRuntimeTransaction = Install-ManagedVideoRuntime -VideoRuntime $coreAssets.VideoRuntime -InstallRoot $Destination
+    $privateVideoPending = "$installTransaction.private-video-pending"
+    $privateVideoTransaction = $null
+    if ($null -ne $coreAssets.VideoOffline) {
+        $privateVideoTransaction = Start-ManagedPrivateVideoTransaction -InstallRoot $Destination -TransactionId $installTransactionId -PendingMarker $privateVideoPending -VideoRuntime $coreAssets.VideoRuntime
+    }
+    $videoRuntimeTransaction = if (
+        $null -ne $privateVideoTransaction -and
+        [int]$privateVideoTransaction.RuntimeMode -eq 2
+    ) { $null } else {
+        Install-ManagedVideoRuntime -VideoRuntime $coreAssets.VideoRuntime -InstallRoot $Destination
+    }
     Install-ManagedVoiceReference -VoiceReference $coreAssets.VoiceReference -InstallRoot $Destination
+    if ($null -ne $coreAssets.VideoOffline) {
+        $privateVideoActivator = Join-Path $PayloadRoot 'installer\activate_private_video.py'
+        if (-not [IO.File]::Exists($privateVideoActivator)) {
+            throw 'VIDEO_PRIVATE_ACTIVATION_FAILED'
+        }
+        $managedVideoRuntime = Join-Path $Destination 'downloads\Olivia-video-runtime-private.zip'
+        $videoManifest = Join-Path $PayloadRoot 'installer\video-capability-manifest.json'
+        $privateVideoArguments = @(
+            '--install-root', $Destination,
+            '--offline-root', [string]$coreAssets.VideoOffline.path,
+            '--runtime-archive', $managedVideoRuntime,
+            '--manifest', $videoManifest,
+            '--manifest-version', [string]$coreAssets.VideoOffline.manifest_version,
+            '--manifest-sha256', [string]$coreAssets.VideoOffline.manifest_sha256,
+            '--expected-file-count', [string]$coreAssets.VideoOffline.file_count,
+            '--expected-size-bytes', [string]$coreAssets.VideoOffline.size_bytes,
+            '--timeout-seconds', '14400'
+        )
+        $privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))
+        $privateVideoExitCode = $LASTEXITCODE
+        $privateVideoReady = $false
+        $privateVideoFailure = 'VIDEO_PRIVATE_ACTIVATION_FAILED'
+        foreach ($line in $privateVideoOutput) {
+            try {
+                $record = $line | ConvertFrom-Json
+                if ($record.status -eq 'READY') { $privateVideoReady = $true }
+                if (
+                    $record.status -eq 'ERROR' -and
+                    $record.code -is [string] -and
+                    $record.code -cmatch '^[A-Z][A-Z0-9_]{3,95}$'
+                ) {
+                    $privateVideoFailure = $record.code
+                }
+            } catch {
+                # Ignore non-contract child output; setup logs must not expose paths.
+            }
+        }
+        if ($privateVideoExitCode -ne 0) { throw $privateVideoFailure }
+        if (-not $privateVideoReady) { throw 'VIDEO_PRIVATE_NOT_READY' }
+    }
 } catch {
     $assetFailure = [string]$_.Exception.Message
     $rollbackFailed = $false
