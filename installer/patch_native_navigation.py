@@ -19,6 +19,19 @@ OFFLINE_WIDGETS_DISABLED = (
     "l.value.musicWidget!==!1&&(l.value.musicWidget=!1))"
 )
 OFFLINE_WIDGETS_ENABLED = "l.value.mailWidget=!0,l.value.musicWidget=!0"
+OFFLINE_REQUEST_BLOCKED = "if(t.isOfflineMode)throw new Ol(e)"
+OFFLINE_REQUEST_ALLOWED = "if(!1)throw new Ol(e)"
+MAIL_FETCH_SKIPPED = "He(()=>{p.value||d.fetchMailList(!0)})"
+MAIL_FETCH_ALLOWED = "He(()=>{d.fetchMailList(!0)})"
+OFFLINE_POLL_SKIPPED = (
+    "s.isOfflineMode||(s.appMode===Se.PRO?Lt().proRestoreFromApi():"
+    "s.appMode===Se.LITE&&(Lt().liteStartPoll(),uo().startPolling()))"
+)
+OFFLINE_POLL_ALLOWED = (
+    "s.appMode===Se.PRO?Lt().proRestoreFromApi():"
+    "s.appMode===Se.LITE&&(s.isOfflineMode?uo().startPolling():"
+    "(Lt().liteStartPoll(),uo().startPolling()))"
+)
 OFFLINE_CALL_PATCH = bytes((0x33, 0xC0, 0x90, 0x90, 0x90, 0x90))
 STUDIO_SIGNATURES = (
     bytes.fromhex("CB E8 D2 37 08 00 EB 1E FF 15 B2 EC 08 00 48 8D 8F A8"),
@@ -83,6 +96,24 @@ def _patched_feapp(source: bytes) -> bytes:
                     OFFLINE_WIDGETS_DISABLED,
                     OFFLINE_WIDGETS_ENABLED,
                     "offline widgets",
+                )
+                javascript = _replace_unique(
+                    javascript,
+                    OFFLINE_REQUEST_BLOCKED,
+                    OFFLINE_REQUEST_ALLOWED,
+                    "offline request",
+                )
+                javascript = _replace_unique(
+                    javascript,
+                    MAIL_FETCH_SKIPPED,
+                    MAIL_FETCH_ALLOWED,
+                    "offline mail fetch",
+                )
+                javascript = _replace_unique(
+                    javascript,
+                    OFFLINE_POLL_SKIPPED,
+                    OFFLINE_POLL_ALLOWED,
+                    "offline mail polling",
                 )
                 payload = javascript.encode("utf-8")
             archive.writestr(info, payload)

@@ -24,6 +24,23 @@ OFFLINE_WIDGETS_DISABLED = (
     "l.value.musicWidget!==!1&&(l.value.musicWidget=!1))"
 )
 OFFLINE_WIDGETS_ENABLED = "l.value.mailWidget=!0,l.value.musicWidget=!0"
+OFFLINE_REQUEST_BLOCKED = "if(t.isOfflineMode)throw new Ol(e)"
+OFFLINE_REQUEST_ALLOWED = "if(!1)throw new Ol(e)"
+MAIL_FETCH_SKIPPED = "He(()=>{p.value||d.fetchMailList(!0)})"
+MAIL_FETCH_ALLOWED = "He(()=>{d.fetchMailList(!0)})"
+OFFLINE_POLL_SKIPPED = (
+    "s.isOfflineMode||(s.appMode===Se.PRO?Lt().proRestoreFromApi():"
+    "s.appMode===Se.LITE&&(Lt().liteStartPoll(),uo().startPolling()))"
+)
+OFFLINE_POLL_ALLOWED = (
+    "s.appMode===Se.PRO?Lt().proRestoreFromApi():"
+    "s.appMode===Se.LITE&&(s.isOfflineMode?uo().startPolling():"
+    "(Lt().liteStartPoll(),uo().startPolling()))"
+)
+LOCAL_BRIDGE = (
+    'c.appConf.toyWsUrl="ws://127.0.0.1:8899/ws",'
+    'c.appConf.toyApiUrl="http://127.0.0.1:8899"'
+)
 OFFLINE_CALL_PATCH = bytes((0x33, 0xC0, 0x90, 0x90, 0x90, 0x90))
 STUDIO_SIGNATURES = (
     bytes.fromhex("CB E8 D2 37 08 00 EB 1E FF 15 B2 EC 08 00 48 8D 8F A8"),
@@ -54,7 +71,13 @@ def _write_supported_client(root: Path) -> dict[Path, bytes]:
     originals = {
         feapp: _write_feapp(
             feapp,
-            HOME_ROUTE + MAILBOX_DISABLED + OFFLINE_WIDGETS_DISABLED,
+            HOME_ROUTE
+            + MAILBOX_DISABLED
+            + OFFLINE_WIDGETS_DISABLED
+            + OFFLINE_REQUEST_BLOCKED
+            + MAIL_FETCH_SKIPPED
+            + OFFLINE_POLL_SKIPPED
+            + LOCAL_BRIDGE,
         )
     }
     studio = root / "plugins" / "Studio" / "NutStudioUI.dll"
@@ -103,6 +126,7 @@ def test_patch_native_navigation_enables_widgets_without_changing_home_route(
     assert OFFLINE_WIDGETS_ENABLED in patched
     assert OFFLINE_WIDGETS_DISABLED not in patched
     assert HOME_ROUTE in patched
+    assert LOCAL_BRIDGE in patched
     assert 'localStorage.setItem("appMode","lite")' not in patched
     assert "await t.replace({name:ve.Collection})" not in patched
 
@@ -131,6 +155,46 @@ def test_patch_native_navigation_patches_both_native_dlls_with_original_backups(
     container_patched = container.read_bytes()
     assert CONTAINER_SIGNATURE not in container_patched
     assert _patched_signature(CONTAINER_SIGNATURE, 6) in container_patched
+
+
+def test_patch_native_navigation_allows_mail_requests_through_local_bridge(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    _write_supported_client(client_root)
+
+    patch_native_navigation(client_root, work_root=tmp_path)
+
+    patched = _read_main(client_root / "resources" / "feapp.dat")
+    assert OFFLINE_REQUEST_ALLOWED in patched
+    assert OFFLINE_REQUEST_BLOCKED not in patched
+    assert LOCAL_BRIDGE in patched
+
+
+def test_patch_native_navigation_fetches_mail_while_client_is_offline(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    _write_supported_client(client_root)
+
+    patch_native_navigation(client_root, work_root=tmp_path)
+
+    patched = _read_main(client_root / "resources" / "feapp.dat")
+    assert MAIL_FETCH_ALLOWED in patched
+    assert MAIL_FETCH_SKIPPED not in patched
+
+
+def test_patch_native_navigation_starts_lite_mail_polling_while_offline(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    _write_supported_client(client_root)
+
+    patch_native_navigation(client_root, work_root=tmp_path)
+
+    patched = _read_main(client_root / "resources" / "feapp.dat")
+    assert OFFLINE_POLL_ALLOWED in patched
+    assert OFFLINE_POLL_SKIPPED not in patched
 
 
 def test_patch_native_navigation_rejects_a_missing_signature_before_writes(
