@@ -429,7 +429,7 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
         imports=("torch", "provider.module"),
         accepted_torch_versions=("2.9.1+cu128",),
     )
-    assert observed["command"][1] == "-B"
+    assert observed["command"][1:3] == ["-I", "-B"]
     script = observed["command"][-1]
     assert "sys.version_info[:2]" in script
     assert "import_module" in script
@@ -448,6 +448,52 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
         imports=("torch",),
         accepted_torch_versions=("2.9.1+cu128",),
     )
+
+
+def test_runtime_probe_retries_transient_failures_once_with_sanitized_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    python = _write(tmp_path / "python.exe")
+    monkeypatch.setenv("PYTHONHOME", "sensitive-home")
+    monkeypatch.setenv("PYTHONPATH", "sensitive-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "sensitive-venv")
+    monkeypatch.setenv("CONDA_PREFIX", "sensitive-conda")
+    monkeypatch.setenv("PATH", "system-path")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+
+    for first in (
+        subprocess.TimeoutExpired("python", 1),
+        OSError("private probe failure"),
+        subprocess.CompletedProcess(["python"], 7),
+    ):
+        calls: list[dict[str, object]] = []
+
+        def retry_once(command, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                if isinstance(first, BaseException):
+                    raise first
+                return first
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(music_reply.subprocess, "run", retry_once)
+        assert music_reply._run_runtime_probe([str(python), "--help"], cwd=tmp_path)
+        assert len(calls) == 2
+        assert calls[0]["timeout"] == 120.0
+        probe_env = calls[0]["env"]
+        assert probe_env["PATH"] == "system-path"
+        assert probe_env["CUDA_VISIBLE_DEVICES"] == "0"
+        assert all(key not in probe_env for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"))
+
+    calls = []
+
+    def always_fails(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 7)
+
+    monkeypatch.setattr(music_reply.subprocess, "run", always_fails)
+    assert not music_reply._run_runtime_probe([str(python), "--help"], cwd=tmp_path)
+    assert len(calls) == 2
 
 
 def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
