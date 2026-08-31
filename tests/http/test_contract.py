@@ -315,6 +315,7 @@ def test_memory_readiness_deadline_fails_pending_letter_before_generation(
         (("available", "mem0-outbox"), ("available", True, True, None), True),
         (("available", "mem0-outbox"), ("available", True, False, None), False),
         (("available", "mem0-outbox"), ("degraded", True, True, "MEMORY_ADMIN_PAUSED"), True),
+        (("available", "mem0-outbox"), ("degraded", True, False, "MEMORY_ADMIN_PAUSED"), False),
         (("available", "mem0-outbox"), ("degraded", True, True, "MEMORY_OUTBOX_DELIVERY_FAILED"), False),
         (("available", "mem0-outbox"), ("unavailable", True, True, "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"), False),
     ],
@@ -336,12 +337,14 @@ def test_memory_readiness_uses_provider_free_runtime_snapshot(
             raise AssertionError("reply readiness must not call the memory provider")
 
     runtime = ConversationMemoryRuntimeStatus(
-        runtime_status,
-        runtime_worker,
-        "mem0-outbox" if runtime_enabled else "none",
-        runtime_enabled,
+        status=runtime_status,
+        enabled=runtime_enabled,
+        provider="mem0-outbox" if runtime_enabled else "none",
+        worker_running=runtime_worker,
         reason_code=runtime_reason,
     )
+    assert runtime.enabled is runtime_enabled
+    assert runtime.worker_running is runtime_worker
     monkeypatch.setattr(
         local_server.letters_adapter.memory_prompt_builder,
         "conversation_runtime_status",
