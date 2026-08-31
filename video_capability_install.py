@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
@@ -58,6 +60,8 @@ _PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_COSYVOICE_PYTHON", "OLIV
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
+_RUNTIME_MANIFEST_MAX_WORKERS = 8
+_RUNTIME_MANIFEST_PENDING_PER_WORKER = 2
 _RUNTIME_HOST_UNAVAILABLE = "VIDEO_RUNTIME_HOST_UNAVAILABLE"
 _RUNTIME_IMPORT_CACHE = ".video-runtime-import-cache"
 _RUNTIME_IMPORT_CHECKPOINT = ".runtime-import-checkpoint.json"
@@ -511,6 +515,76 @@ def _runtime_environment_is_portable(
     )
 
 
+def _verify_runtime_manifest_files(
+    specifications: list[tuple[Path, int, str]],
+    *,
+    total_bytes: int,
+    progress: Callable[[int, int], None] | None,
+) -> None:
+    if not specifications:
+        return
+    workers = min(
+        len(specifications),
+        _RUNTIME_MANIFEST_MAX_WORKERS,
+        max(1, os.cpu_count() or 1),
+    )
+    pending_limit = workers * _RUNTIME_MANIFEST_PENDING_PER_WORKER
+    stop = threading.Event()
+    progress_lock = threading.Lock()
+    file_progress = [0] * len(specifications)
+    checked_bytes = 0
+
+    def report(index: int, current: int) -> None:
+        nonlocal checked_bytes
+        if progress is None:
+            return
+        with progress_lock:
+            delta = max(0, current - file_progress[index])
+            if delta == 0:
+                return
+            file_progress[index] = current
+            checked_bytes = min(total_bytes, checked_bytes + delta)
+            progress(checked_bytes, total_bytes)
+
+    def verify(index: int) -> tuple[int, str]:
+        candidate, _expected_size, _expected_digest = specifications[index]
+        return _sha256_file(
+            candidate,
+            pause=stop,
+            progress=(None if progress is None else lambda current: report(index, current)),
+        )
+
+    executor = ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="olivia-runtime-verify",
+    )
+    pending: deque[tuple[int, Future[tuple[int, str]]]] = deque()
+    next_index = 0
+    try:
+        while next_index < len(specifications) and len(pending) < pending_limit:
+            pending.append((next_index, executor.submit(verify, next_index)))
+            next_index += 1
+        while pending:
+            index, future = pending.popleft()
+            try:
+                actual = future.result()
+            except OSError as exc:
+                stop.set()
+                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
+            _candidate, expected_size, expected_digest = specifications[index]
+            if actual != (expected_size, expected_digest):
+                stop.set()
+                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
+            while next_index < len(specifications) and len(pending) < pending_limit:
+                pending.append((next_index, executor.submit(verify, next_index)))
+                next_index += 1
+    finally:
+        stop.set()
+        for _index, future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _load_runtime_root_manifest(
     runtime_root: Path,
     manifest_sha256: str,
@@ -579,9 +653,9 @@ def _load_runtime_root_manifest(
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
         total_bytes += raw["size_bytes"]
-    checked_bytes = 0
     if verify_files and progress is not None:
         progress(0, total_bytes)
+    specifications: list[tuple[Path, int, str]] = []
     for raw in payload["files"]:
         try:
             relative = _safe_relative(raw.get("path"))
@@ -594,25 +668,13 @@ def _load_runtime_root_manifest(
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
         seen_files.add(folded)
         files[relative] = (raw["size_bytes"], digest)
-        if verify_files:
-            try:
-                actual_size, actual_digest = _sha256_file(
-                    candidate,
-                    progress=(
-                        None
-                        if progress is None
-                        else lambda current, base=checked_bytes: progress(
-                            min(total_bytes, base + current), total_bytes
-                        )
-                    ),
-                )
-            except OSError as exc:
-                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from exc
-            if (actual_size, actual_digest) != files[relative]:
-                raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
-            checked_bytes += actual_size
-            if progress is not None:
-                progress(checked_bytes, total_bytes)
+        specifications.append((candidate, raw["size_bytes"], digest))
+    if verify_files:
+        _verify_runtime_manifest_files(
+            specifications,
+            total_bytes=total_bytes,
+            progress=progress,
+        )
     required_files = {
         relative
         for key, relative in environment_paths.items()
