@@ -11,9 +11,29 @@ import pytest
 
 from installer.activate_private_video import (
     PrivateVideoActivationError,
+    _setup_progress_writer,
     activate_private_video,
     main as activate_private_video_main,
 )
+
+
+def test_setup_progress_writer_throttles_large_and_repeated_updates() -> None:
+    lines: list[str] = []
+    emit = _setup_progress_writer(lines.append)
+    total = 100 * 1024 * 1024 * 1024
+
+    for current in range(0, total + 1, 1024 * 1024):
+        emit("VERIFY_VIDEO_RUNTIME", min(current, total), total)
+    emit("VERIFY_VIDEO_RUNTIME", total, total)
+    for _ in range(1_000):
+        emit("TEST_VIDEO_RUNTIME", 0, 0)
+
+    assert lines[0] == f"OLIVIA_SETUP_PROGRESS=VERIFY_VIDEO_RUNTIME|0|{total}"
+    assert lines[-2] == (
+        f"OLIVIA_SETUP_PROGRESS=VERIFY_VIDEO_RUNTIME|{total}|{total}"
+    )
+    assert lines[-1] == "OLIVIA_SETUP_PROGRESS=TEST_VIDEO_RUNTIME|0|0"
+    assert len(lines) < 1_100
 
 
 def test_private_activation_cli_bootstraps_payload_root_under_isolated_python() -> None:
@@ -172,6 +192,46 @@ def test_private_activation_uses_existing_installer_in_strict_ready_order(
     assert result["status"] == "READY"
     assert result["runtime_import"]["state"] == "ready"
     assert [item["state"] for item in result["bundles"]] == ["ready", "ready"]
+
+
+def test_private_activation_reports_verified_bytes_and_named_install_stages(
+    tmp_path: Path,
+) -> None:
+    manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
+    runtime = tmp_path / "Olivia-video-runtime-private.zip"
+    runtime.write_bytes(b"runtime")
+    installer = _FakeInstaller([])
+    progress: list[tuple[str, int, int]] = []
+
+    activate_private_video(
+        install_root=tmp_path / "install",
+        offline_root=offline,
+        runtime_archive=runtime,
+        manifest_path=manifest,
+        expected_manifest_version="fixture-video",
+        expected_manifest_sha256=manifest_sha256,
+        expected_file_count=2,
+        expected_size_bytes=len(b"ordinary") + len(b"music"),
+        installer_factory=lambda **_kwargs: installer,
+        timeout_seconds=1,
+        progress=lambda phase, current, total: progress.append(
+            (phase, current, total)
+        ),
+    )
+
+    assert progress[0] == (
+        "VERIFY_VIDEO_OFFLINE",
+        0,
+        len(b"ordinary") + len(b"music"),
+    )
+    assert (
+        "VERIFY_VIDEO_OFFLINE",
+        len(b"ordinary") + len(b"music"),
+        len(b"ordinary") + len(b"music"),
+    ) in progress
+    assert ("INSTALL_ORDINARY_VIDEO", 1, 1) in progress
+    assert ("INSTALL_MUSIC_VIDEO", 1, 1) in progress
+    assert ("EXTRACT_VIDEO_RUNTIME", 0, 0) in progress
 
 
 def test_private_activation_accepts_verified_runtime_with_unavailable_host(

@@ -31,6 +31,7 @@ OFFLINE_ROOT_NAME = "Olivia-video-offline-private"
 RUNTIME_ARCHIVE_NAME = "Olivia-video-runtime-private.zip"
 _ASSEMBLED_STATES = {"ready", "prerequisites_required"}
 _ACTIVE_STATES = {"missing", "queued", "downloading", "verifying"}
+_SETUP_PROGRESS_PREFIX = "OLIVIA_SETUP_PROGRESS="
 
 
 class PrivateVideoActivationError(RuntimeError):
@@ -45,11 +46,50 @@ class _ManifestSnapshot:
         return self._payload.decode(encoding)
 
 
-def _sha256(path: Path) -> str:
+def _report_progress(
+    progress: Callable[[str, int, int], object] | None,
+    phase: str,
+    current: int,
+    total: int,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress(phase, max(0, current), max(0, total))
+    except Exception:
+        pass
+
+
+def _setup_progress_writer(
+    write_line: Callable[[str], object] | None = None,
+) -> Callable[[str, int, int], None]:
+    if write_line is None:
+        write_line = lambda line: print(line, flush=True)
+    reported: dict[str, tuple[int, int]] = {}
+
+    def emit(phase: str, current: int, total: int) -> None:
+        previous = reported.get(phase)
+        if previous == (current, total):
+            return
+        if total > 0 and current not in {0, total}:
+            minimum_delta = max(64 * 1024 * 1024, total // 1_000)
+            if previous is not None and current - previous[0] < minimum_delta:
+                return
+        reported[phase] = (current, total)
+        write_line(f"{_SETUP_PROGRESS_PREFIX}{phase}|{current}|{total}")
+
+    return emit
+
+
+def _sha256(path: Path, *, progress: Callable[[int], object] | None = None) -> str:
     digest = hashlib.sha256()
+    checked = 0
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
+            checked += len(block)
+            if progress is not None:
+                progress(checked)
     return digest.hexdigest()
 
 
@@ -107,6 +147,7 @@ def _verify_offline_root(
     *,
     expected_file_count: int,
     expected_size_bytes: int,
+    progress: Callable[[str, int, int], object] | None = None,
 ) -> Path:
     candidate = _absolute_path(root, code="VIDEO_PRIVATE_OFFLINE_INVALID")
     if candidate.name != OFFLINE_ROOT_NAME or not candidate.is_dir() or _is_reparse_point(candidate):
@@ -164,18 +205,37 @@ def _verify_offline_root(
     }
     if set(actual) != set(expected) or actual_directories - expected_directories:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_OFFLINE_INVALID")
+    checked_bytes = 0
+    _report_progress(
+        progress, "VERIFY_VIDEO_OFFLINE", checked_bytes, expected_size_bytes
+    )
     for folded, (_, size, digest) in expected.items():
         path = actual[folded]
         try:
-            if path.stat().st_size != size or _sha256(path) != digest:
+            if path.stat().st_size != size or _sha256(
+                path,
+                progress=lambda current, base=checked_bytes: _report_progress(
+                    progress,
+                    "VERIFY_VIDEO_OFFLINE",
+                    base + current,
+                    expected_size_bytes,
+                ),
+            ) != digest:
                 raise PrivateVideoActivationError("VIDEO_PRIVATE_OFFLINE_INVALID")
         except OSError as exc:
             raise PrivateVideoActivationError("VIDEO_PRIVATE_OFFLINE_INVALID") from exc
+        checked_bytes += size
+        _report_progress(
+            progress, "VERIFY_VIDEO_OFFLINE", checked_bytes, expected_size_bytes
+        )
     return candidate
 
 
 def _create_installer(
-    *, install_root: Path, manifest: VideoManifest
+    *,
+    install_root: Path,
+    manifest: VideoManifest,
+    runtime_progress: Callable[[str, int, int], object] | None = None,
 ) -> VideoCapabilityInstaller:
     data_root = install_root / "data"
     environment = _load_fixed_video_assets_environment(
@@ -205,6 +265,7 @@ def _create_installer(
         manifest=manifest,
         readiness_probe=readiness,
         runtime_environment_applier=os.environ.update,
+        runtime_progress=runtime_progress,
     )
 
 
@@ -225,11 +286,14 @@ def _wait_for_bundle(
     deadline: float,
     clock: Callable[[], float],
     sleep: Callable[[float], object],
+    phase: str,
+    progress: Callable[[str, int, int], object] | None,
 ) -> None:
     while True:
         item = _bundle_state(installer.status(), bundle_id)
         state = item.get("state")
         if state in _ASSEMBLED_STATES:
+            _report_progress(progress, phase, 1, 1)
             return
         if state not in _ACTIVE_STATES:
             reason = item.get("reason_code")
@@ -237,6 +301,14 @@ def _wait_for_bundle(
             raise PrivateVideoActivationError(code)
         if clock() >= deadline:
             raise PrivateVideoActivationError("VIDEO_PRIVATE_ACTIVATION_TIMEOUT")
+        current = item.get("downloaded_bytes")
+        total = item.get("total_bytes")
+        _report_progress(
+            progress,
+            phase,
+            current if type(current) is int else 0,
+            total if type(total) is int else 0,
+        )
         sleep(0.1)
 
 
@@ -254,6 +326,7 @@ def activate_private_video(
     installer_factory: Callable[..., Any] = _create_installer,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], object] = time.sleep,
+    progress: Callable[[str, int, int], object] | None = None,
 ) -> dict[str, object]:
     if timeout_seconds <= 0:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_ACTIVATION_TIMEOUT")
@@ -271,6 +344,7 @@ def activate_private_video(
         manifest,
         expected_file_count=expected_file_count,
         expected_size_bytes=expected_size_bytes,
+        progress=progress,
     )
     runtime = _absolute_path(
         runtime_archive, code="VIDEO_RUNTIME_ARCHIVE_INVALID"
@@ -282,11 +356,32 @@ def activate_private_video(
     ):
         raise PrivateVideoActivationError("VIDEO_RUNTIME_ARCHIVE_INVALID")
     try:
-        installer = installer_factory(install_root=root, manifest=manifest)
+        def report_runtime(state: str, current: int, total: int) -> None:
+            phase = {
+                "queued": "EXTRACT_VIDEO_RUNTIME",
+                "extracting": "EXTRACT_VIDEO_RUNTIME",
+                "checking": "VERIFY_VIDEO_RUNTIME",
+                "testing": "TEST_VIDEO_RUNTIME",
+                "ready": "TEST_VIDEO_RUNTIME",
+            }.get(state)
+            if phase is not None:
+                _report_progress(progress, phase, current, total)
+
+        installer = installer_factory(
+            install_root=root,
+            manifest=manifest,
+            runtime_progress=report_runtime,
+        )
         deadline = clock() + timeout_seconds
         for bundle_id in ("ordinary_video", "music_video"):
+            phase = (
+                "INSTALL_ORDINARY_VIDEO"
+                if bundle_id == "ordinary_video"
+                else "INSTALL_MUSIC_VIDEO"
+            )
             current = _bundle_state(installer.status(), bundle_id)
             if current.get("state") not in _ASSEMBLED_STATES:
+                _report_progress(progress, phase, 0, 0)
                 installer.import_offline(
                     bundle_id=bundle_id,
                     offline_root=offline / bundle_id,
@@ -299,7 +394,12 @@ def activate_private_video(
                     deadline=deadline,
                     clock=clock,
                     sleep=sleep,
+                    phase=phase,
+                    progress=progress,
                 )
+            else:
+                _report_progress(progress, phase, 1, 1)
+        _report_progress(progress, "EXTRACT_VIDEO_RUNTIME", 0, 0)
         installer.import_runtime_archive(runtime_archive=runtime)
         final = installer.status()
     except PrivateVideoActivationError:
@@ -337,6 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-size-bytes", type=int, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=14_400)
     args = parser.parse_args(argv)
+
+    emit_progress = _setup_progress_writer()
+
     try:
         result = activate_private_video(
             install_root=args.install_root,
@@ -348,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_file_count=args.expected_file_count,
             expected_size_bytes=args.expected_size_bytes,
             timeout_seconds=args.timeout_seconds,
+            progress=emit_progress,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

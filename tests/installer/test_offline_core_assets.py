@@ -41,6 +41,25 @@ def _managed_video_runtime(product: Path) -> Path:
     return product / "install/downloads/Olivia-video-runtime-private.zip"
 
 
+def _setup_progress(output: str) -> list[tuple[str, int, int]]:
+    prefix = "OLIVIA_SETUP_PROGRESS="
+    records: list[tuple[str, int, int]] = []
+    for line in output.splitlines():
+        if not line.startswith(prefix):
+            continue
+        phase, current, total = line.removeprefix(prefix).split("|")
+        records.append((phase, int(current), int(total)))
+    return records
+
+
+def _video_runtime_zip_bytes(payload_size: int) -> bytes:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+        archive.writestr("runtime-manifest.json", "{}")
+        archive.writestr("runtime/fixture.bin", b"x" * payload_size)
+    return payload.getvalue()
+
+
 def test_first_install_consumes_only_bundled_core_assets() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
@@ -85,7 +104,10 @@ def test_installer_accepts_only_complete_private_video_runtime_manifest() -> Non
 def test_private_video_activation_must_finish_before_install_transaction_commit() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
-    activation = "$privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))"
+    activation = (
+        "& $runner.File @($runner.Args + @($privateVideoActivator) + "
+        "$privateVideoArguments) |"
+    )
     assert activation in script
     assert "--manifest-version" in script
     assert "--manifest-sha256" in script
@@ -280,6 +302,7 @@ def _run_runtime_publish_fixture(
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
     private_video_exit_code: int = 0,
     private_video_status: str | None = None,
+    private_video_progress_lines: tuple[str, ...] = (),
     private_video_mutates_tree: bool = False,
     interrupt_after_private_video: bool = False,
     fail_core_asset_preflight: bool = False,
@@ -311,8 +334,12 @@ def _run_runtime_publish_fixture(
         encoding="utf-8",
     )
     private_status = private_video_status or ("READY" if private_video_exit_code == 0 else "ERROR")
+    private_progress = "".join(
+        f"print({line!r}, flush=True)\n" for line in private_video_progress_lines
+    )
     (payload_installer / "activate_private_video.py").write_text(
         "import json, pathlib, sys\n"
+        + private_progress
         + (
             "install_root = pathlib.Path(sys.argv[sys.argv.index('--install-root') + 1])\n"
             "video_root = install_root / 'data/capabilities/video'\n"
@@ -415,11 +442,12 @@ def _run_runtime_publish_fixture(
         assert script.count(marker) == 1
         script = script.replace(marker, "[Environment]::FailFast('SYNTHETIC_BOOTSTRAP_INTERRUPTION')\n" + marker)
     if interrupt_after_private_video:
-        marker = "$privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))"
+        marker = "$privateVideoExitCode = $LASTEXITCODE"
         assert script.count(marker) == 1
         script = script.replace(
             marker,
-            marker + "\n        [Environment]::FailFast('SYNTHETIC_PRIVATE_VIDEO_INTERRUPTION')",
+            "[Environment]::FailFast('SYNTHETIC_PRIVATE_VIDEO_INTERRUPTION')\n        "
+            + marker,
         )
     if block_voice_sidecar:
         marker = "$privateVideoTransaction = Start-ManagedPrivateVideoTransaction -InstallRoot $Destination -TransactionId $installTransactionId -PendingMarker $privateVideoPending -VideoRuntime $coreAssets.VideoRuntime"
@@ -560,6 +588,83 @@ def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path
     schema = json.loads((ROOT / "contracts/managed_voice_reference.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
     assert not list(Draft202012Validator(schema).iter_errors(integrity))
+
+
+def test_first_install_emits_setup_progress_contract(tmp_path: Path) -> None:
+    result, _product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    progress = _setup_progress(result.stdout)
+    phases = [phase for phase, _current, _total in progress]
+    for phase in (
+        "PREPARE",
+        "VERIFY_OFFICIAL",
+        "VERIFY_CORE",
+        "INSTALL_CORE",
+        "INSTALL_PATCH",
+        "VERIFY_VIDEO_OFFLINE",
+        "FINALIZE",
+    ):
+        assert phase in phases
+    assert progress[-1] == ("FINALIZE", 1, 1)
+
+
+def test_fresh_linli_install_reports_real_video_runtime_copy_bytes(
+    tmp_path: Path,
+) -> None:
+    runtime = _video_runtime_zip_bytes((4 * 1024 * 1024) + 17)
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        product_root=tmp_path / "linli",
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime=runtime,
+        existing_runtime=False,
+        seed_existing_install=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    managed = _managed_video_runtime(product)
+    assert managed.read_bytes() == runtime
+    with zipfile.ZipFile(managed) as archive:
+        assert archive.testzip() is None
+    copy_progress = [
+        (current, total)
+        for phase, current, total in _setup_progress(result.stdout)
+        if phase == "COPY_VIDEO_RUNTIME"
+    ]
+    assert copy_progress[0] == (0, len(runtime))
+    assert copy_progress[-1] == (len(runtime), len(runtime))
+    assert any(0 < current < total for current, total in copy_progress)
+    assert [current for current, _total in copy_progress] == sorted(
+        current for current, _total in copy_progress
+    )
+
+
+def test_private_video_progress_is_forwarded_without_losing_error_contract(
+    tmp_path: Path,
+) -> None:
+    progress_line = (
+        "OLIVIA_SETUP_PROGRESS=INSTALL_ORDINARY_VIDEO|1048576|4194304"
+    )
+    result, _product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        private_video_progress_lines=(progress_line,),
+        private_video_exit_code=2,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert progress_line in result.stdout.splitlines()
+    assert "VIDEO_PRIVATE_ACTIVATION_FAILED" in output
+
+
 def test_voice_publish_failure_restores_managed_app_runtime_and_voice(tmp_path: Path) -> None:
     result, product = _run_runtime_publish_fixture(
         tmp_path, bootstrap_exit_code=0, bootstrap_replaces_managed_app=True,
