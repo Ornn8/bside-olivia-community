@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -339,6 +340,71 @@ def test_runtime_archive_is_extracted_verified_and_activated(
     assert restarted_without_archive.status()["runtime_import"]["state"] == "ready"
 
 
+def test_runtime_archive_resumes_interrupted_extraction_from_bound_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {"ordinary_missing_dependencies": [], "music_ready": True},
+    )
+    real_extract = video_capability_install._extract_runtime_zip_safely
+    resume_values: list[bool] = []
+
+    def interrupted_extract(
+        archive_path: Path,
+        destination: Path,
+        *,
+        resume: bool = False,
+        next_member_index: int = 0,
+        checkpoint_progress: object = None,
+        progress: object = None,
+    ) -> None:
+        resume_values.append(resume)
+        destination.mkdir(parents=True)
+        with zipfile.ZipFile(archive_path) as payload:
+            member = next(item for item in payload.infolist() if not item.is_dir())
+            target = destination / member.filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload.read(member))
+        raise RuntimeError("simulated extraction termination")
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", interrupted_extract)
+    with pytest.raises(RuntimeError, match="simulated extraction termination"):
+        installer.import_runtime_archive(runtime_archive=archive)
+
+    cache = data_root / "capabilities" / ".video-runtime-import-cache"
+    checkpoint = cache / ".runtime-import-checkpoint.json"
+    assert checkpoint.is_file()
+    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    candidate = cache / checkpoint_payload["candidate"]
+    assert candidate.is_dir()
+    first_member = next(item for item in zipfile.ZipFile(archive).infolist() if not item.is_dir())
+    preserved = candidate / first_member.filename
+    assert preserved.is_file()
+    def resumed_extract(
+        archive_path: Path,
+        destination: Path,
+        *,
+        resume: bool = False,
+        next_member_index: int = 0,
+        checkpoint_progress: object = None,
+        progress: object = None,
+    ) -> None:
+        resume_values.append(resume)
+        real_extract(archive_path, destination, resume=resume, progress=progress)
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", resumed_extract)
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert resume_values == [False, True]
+    assert not checkpoint.exists()
+
+
 def test_runtime_host_unavailable_keeps_verified_artifact_and_degrades_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -381,6 +447,209 @@ def test_runtime_host_unavailable_keeps_verified_artifact_and_degrades_bundles(
         "status": "UNAVAILABLE",
         "reason_code": "VIDEO_RUNTIME_HOST_UNAVAILABLE",
     }
+
+
+def test_runtime_archive_retries_verified_candidate_without_reextract_or_rehash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    attempts = 0
+    verify_values: list[bool] = []
+    real_load = video_capability_install._load_runtime_root_manifest
+
+    def counted_load(*args: object, **kwargs: object) -> dict[str, str]:
+        verify_values.append(kwargs["verify_files"])
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "_load_runtime_root_manifest", counted_load)
+
+    def readiness(_environment: dict[str, str]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "ordinary_missing_dependencies": ["ffmpeg"],
+                "music_ready": False,
+                "dependencies": [{"id": "ffmpeg", "state": "missing"}],
+            }
+        return {"ordinary_missing_dependencies": [], "music_ready": True}
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root, manifest=manifest, readiness_probe=readiness
+    )
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PROBE_FAILED"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    resume_values: list[bool] = []
+    real_extract = video_capability_install._extract_runtime_zip_safely
+
+    def counted_extract(*args: object, **kwargs: object) -> None:
+        resume_values.append(bool(kwargs.get("resume", False)))
+        real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", counted_extract)
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert verify_values == [True, True, True, True]
+    assert resume_values == [True]
+
+
+def test_runtime_archive_ignores_checkpoint_for_another_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    attempts = 0
+
+    def readiness(_environment: dict[str, str]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "ordinary_missing_dependencies": ["ffmpeg"],
+                "music_ready": False,
+                "dependencies": [{"id": "ffmpeg", "state": "missing"}],
+            }
+        return {"ordinary_missing_dependencies": [], "music_ready": True}
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root, manifest=manifest, readiness_probe=readiness
+    )
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PROBE_FAILED"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    checkpoint = data_root / "capabilities" / ".video-runtime-import-cache" / ".runtime-import-checkpoint.json"
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    old_candidate = checkpoint.parent / payload["candidate"]
+    payload["archive_identity"] = "foreign-runtime-fingerprint"
+    checkpoint.write_text(json.dumps(payload), encoding="utf-8")
+    resume_values: list[bool] = []
+    real_extract = video_capability_install._extract_runtime_zip_safely
+
+    def counted_extract(*args: object, **kwargs: object) -> None:
+        resume_values.append(bool(kwargs.get("resume", False)))
+        real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", counted_extract)
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert resume_values == [False]
+    assert not old_candidate.exists()
+
+
+def test_runtime_archive_copy_with_new_inode_and_mtime_resumes_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    copied = (tmp_path / "copied-runtime.zip").resolve()
+    shutil.copyfile(archive, copied)
+    os.utime(copied, ns=(1_000_000_000, 1_000_000_000))
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    attempts = 0
+
+    def readiness(_environment: dict[str, str]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "ordinary_missing_dependencies": ["ffmpeg"],
+                "music_ready": False,
+                "dependencies": [{"id": "ffmpeg", "state": "missing"}],
+            }
+        return {"ordinary_missing_dependencies": [], "music_ready": True}
+
+    installer = VideoCapabilityInstaller(data_root=data_root, manifest=manifest, readiness_probe=readiness)
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PROBE_FAILED"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    resume_values: list[bool] = []
+    real_extract = video_capability_install._extract_runtime_zip_safely
+
+    def counted_extract(*args: object, **kwargs: object) -> None:
+        resume_values.append(bool(kwargs.get("resume", False)))
+        real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", counted_extract)
+    assert installer.import_runtime_archive(runtime_archive=copied) == "APPLIED"
+    assert resume_values == [True]
+
+
+def test_runtime_archive_system_exit_keeps_cache_after_video_root_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: (_ for _ in ()).throw(SystemExit(7)),
+    )
+    with pytest.raises(SystemExit):
+        installer.import_runtime_archive(runtime_archive=archive)
+    cache = data_root / "capabilities" / ".video-runtime-import-cache"
+    checkpoint = cache / ".runtime-import-checkpoint.json"
+    assert checkpoint.is_file()
+    shutil.rmtree(installer.install_root)
+    _prepare_runtime_dependencies(data_root, manifest)
+    resume_values: list[bool] = []
+    real_extract = video_capability_install._extract_runtime_zip_safely
+
+    def counted_extract(*args: object, **kwargs: object) -> None:
+        resume_values.append(bool(kwargs.get("resume", False)))
+        real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "_extract_runtime_zip_safely", counted_extract)
+    restarted = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [], "music_ready": True
+        },
+    )
+    assert restarted.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert resume_values == [True]
+
+
+def test_runtime_archive_same_size_candidate_tamper_fails_full_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    attempts = 0
+
+    def readiness(_environment: dict[str, str]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "ordinary_missing_dependencies": ["ffmpeg"],
+                "music_ready": False,
+                "dependencies": [{"id": "ffmpeg", "state": "missing"}],
+            }
+        return {"ordinary_missing_dependencies": [], "music_ready": True}
+
+    installer = VideoCapabilityInstaller(data_root=data_root, manifest=manifest, readiness_probe=readiness)
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PROBE_FAILED"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    cache = data_root / "capabilities" / ".video-runtime-import-cache"
+    payload = json.loads((cache / ".runtime-import-checkpoint.json").read_text(encoding="utf-8"))
+    candidate = cache / payload["candidate"]
+    tampered = next(path for path in candidate.rglob("*") if path.is_file() and path.name != "runtime-manifest.json")
+    tampered.write_bytes(b"tamper!")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ROOT_INVALID"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert not (cache / ".runtime-import-checkpoint.json").exists()
 
 
 def test_runtime_hard_failure_restores_previous_runtime_directory(
@@ -919,6 +1188,8 @@ def test_runtime_archive_background_start_returns_before_extraction_and_deduplic
         _archive: Path,
         staging: Path,
         *,
+        next_member_index=0,
+        checkpoint_progress=None,
         progress,
     ) -> None:
         staging.mkdir(parents=True)

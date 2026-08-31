@@ -479,6 +479,8 @@ PrivateWorld
 
 私有视频运行时的归档、manifest、哈希、路径、reparse point、worker 和配置错误必须硬失败并回滚。归档和逐文件校验已通过、但 portable Python、readiness probe 或 Windows loader 在当前宿主不可用时，安装仍以 exit code 0 完成：`runtime_import.state=ready` 只表示运行时归档已安装，整体状态为 `UNAVAILABLE`，两个视频 bundle 均为 `prerequisites_required`，原因固定为 `VIDEO_RUNTIME_HOST_UNAVAILABLE`。安装器会保存已验证运行时 profile 和不含路径的宿主状态；重启只恢复该状态，不重新解压、重哈希或重新 probe，核心、语音及视频字节仍提交。兼容宿主保持 `READY`。
 
+运行时归档解压使用 `data/capabilities/.video-runtime-import-cache` 下的内部断点状态；它绑定 ZIP 中央目录指纹而非 inode、mtime 或路径，每 256 个条目原子记录进度。安装中断或外层事务删除 `video` 目录后，同一归档可复用安全 staging，最终仍必须完整 manifest、逐文件哈希、路径集合和 reparse 校验；每次候选重试都会再次完整校验。该 checkpoint 不是公开状态/API，不出现在 `contracts/video_capability_status.schema.json`，成功完成 TTS、readiness、profile 和状态发布后才清理。
+
 ## 17. 完成条件
 
 - clean Windows 用户可以完成 Core 安装；
