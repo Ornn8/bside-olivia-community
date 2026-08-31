@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
+import pytest
 
 from persona_assembly import assemble_persona
 from persona_loader import load_persona
@@ -69,6 +70,80 @@ def test_release_profile_contains_character_behavior_not_only_safety_rules() -> 
     assert any(row["facet"] == "AUTONOMY" for row in by_id.values())
     assert any(row["facet"] == "EXPRESSION_STYLE" for row in by_id.values())
     assert any(row["facet"] == "RELATIONSHIP_STYLE" for row in by_id.values())
+
+
+@pytest.mark.parametrize(
+    ("declaration_id", "facet", "confidence", "statement"),
+    (
+        (
+            "anchor.current_piece",
+            "BACKGROUND",
+            "HIGH",
+            "这学期她长期在练肖邦《夜曲 Op.9 No.2》；同一首作品她会连续练很久。",
+        ),
+        (
+            "anchor.quit_prep_school",
+            "BACKGROUND",
+            "MEDIUM",
+            "十二岁那年她主动放弃报考上海音乐学院附中，去了普通中学；原因是厌倦了靠比赛拿奖，不想让音乐变成工具。",
+        ),
+        (
+            "anchor.listening_shelf",
+            "BACKGROUND",
+            "MEDIUM",
+            "墙上挂着几张黑胶：王菲《只爱陌生人》、Bill Evans《Waltz for Debby》、肖邦夜曲。古典之外她也听爵士和华语流行；练琴累或者心绪杂乱时会循环王菲《暗涌》。",
+        ),
+        (
+            "anchor.grandmother_traces",
+            "BACKGROUND",
+            "MEDIUM",
+            "她是外婆带大的。墙上那份《夜曲》乐谱由外婆手抄；矮桌上摆着四岁时与外婆的合影，照片里她手上拿着一个来历不明的小铃铛。",
+        ),
+        (
+            "anchor.desk_objects",
+            "BACKGROUND",
+            "MEDIUM",
+            "窗台上有个逛天文展买回来的行星模型，水星和火星的位置被她挪过，嫌它们离得太远看着不顺眼；钢琴顶上放着香薰蜡烛和一个四面体的节拍器；电脑桌上那副平光眼镜只用来防蓝光，她并不近视，也不常戴。",
+        ),
+        (
+            "anchor.stopping_ritual",
+            "CORE_TRAIT",
+            "HIGH",
+            "她偶尔会看茶叶在玻璃杯里慢慢沉下去，用这个让自己安静下来；这是心理学课上教授教的一种注意力与放松方法。",
+        ),
+        (
+            "anchor.everyday_taste",
+            "BACKGROUND",
+            "HIGH",
+            "喜甜、不吃辣，口味偏清淡，粤菜和日料吃得多，偶尔才碰一点微辣。葱油饼、葱油拌面、学校门外那家小馄饨店是她会随口提起的地方；外婆做的糖醋排骨和糯米藕她一直记得，也嫌有时候甜得过头。",
+        ),
+    ),
+)
+def test_release_profile_contains_exact_concrete_anchors(
+    declaration_id: str,
+    facet: str,
+    confidence: str,
+    statement: str,
+) -> None:
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    by_id = {row["declaration_id"]: row for row in payload["declarations"]}
+
+    assert by_id[declaration_id] == {
+        "declaration_id": declaration_id,
+        "source_id": "P02.LINLI.CONSTITUTION",
+        "tier": "COMMUNITY_SOFT_CANON",
+        "facet": facet,
+        "confidence": confidence,
+        "rights_status": "SUMMARY_ONLY",
+        "allowed_public_release": True,
+        "statement": statement,
+    }
+
+
+def test_release_profile_contains_64_declarations_after_anchor_batch() -> None:
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+
+    assert len(payload["declarations"]) == 64
 
 
 def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None:
@@ -217,16 +292,22 @@ def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() ->
     Draft202012Validator(
         schema, format_checker=FormatChecker()
     ).validate(payload)
-    declarations = {
+    asset_record_ids = {
         row["declaration_id"] for row in release["declarations"]
+    } | {
+        row["exemplar_id"] for row in release["style_exemplars"]
     }
     linked = {
         declaration_id
         for source in payload["sources"]
         for declaration_id in source["declaration_ids"]
     }
-    assert linked == declarations
-    source = payload["sources"][0]
+    assert linked == asset_record_ids
+    source = next(
+        row
+        for row in payload["sources"]
+        if row["source_id"] == "P02.LINLI.CONSTITUTION"
+    )
     assert source["source_id"] == "P02.LINLI.CONSTITUTION"
     reference_revision = "15453c7bf8d242b58c445d27399979a6550ac203"
     reference_path = "docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md"
@@ -251,6 +332,55 @@ def test_release_provenance_is_bidirectional_and_pinned_to_public_reference() ->
     )
     assert migration["kind"] == "declaration_migration"
     assert "relationship-not-performed" in migration["summary"]
+
+
+def test_release_provenance_registers_every_asset_source_bidirectionally() -> None:
+    release = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
+    asset_ids_by_source: dict[str, set[str]] = {}
+    for collection, id_key in (
+        (release["declarations"], "declaration_id"),
+        (release["style_exemplars"], "exemplar_id"),
+    ):
+        for record in collection:
+            asset_ids_by_source.setdefault(record["source_id"], set()).add(
+                record[id_key]
+            )
+    registry_ids_by_source = {
+        source["source_id"]: set(source["declaration_ids"])
+        for source in provenance["sources"]
+    }
+
+    assert registry_ids_by_source == asset_ids_by_source
+
+
+def test_release_style_source_records_rights_and_distillation_boundary() -> None:
+    release = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
+    source = next(
+        row
+        for row in provenance["sources"]
+        if row["source_id"] == "P02.LINLI.STYLE.CV5.TRAINING"
+    )
+    style_records = release["style_exemplars"]
+
+    assert source["rights_status"] == "SUMMARY_ONLY"
+    assert {row["rights_status"] for row in style_records} == {
+        source["rights_status"]
+    }
+    assert source["allowed_public_release"] is True
+    assert set(source["declaration_ids"]) == {
+        row["exemplar_id"] for row in style_records
+    }
+    evidence = next(
+        row
+        for row in provenance["evidence"]
+        if row["source_id"] == source["source_id"]
+    )
+    assert evidence["kind"] == "style_distillation"
+    assert "Thirty indivisible user folders" in evidence["summary"]
+    assert "five deterministic folds" in evidence["summary"]
+    assert "holdout with bodies unread" in evidence["summary"]
 
 
 def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:

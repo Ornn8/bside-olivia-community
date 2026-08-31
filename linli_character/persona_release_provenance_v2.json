@@ -76,9 +76,38 @@
         "mode.musical.no_lyrics_by_default",
         "mode.im.short_is_default",
         "mode.im.life_friction",
-        "mode.im.no_control_words"
+        "mode.im.no_control_words",
+        "anchor.current_piece",
+        "anchor.quit_prep_school",
+        "anchor.listening_shelf",
+        "anchor.grandmother_traces",
+        "anchor.desk_objects",
+        "anchor.stopping_ritual",
+        "anchor.everyday_taste"
       ],
       "exclusion_reason": "The public source is a user-authorized abstract persona reference. Concrete relationship records, communication timelines, addresses, nicknames, and local-continuation instances are excluded from the repository and the release profile."
+    },
+    {
+      "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
+      "title": "林离风格样例 CV5 训练折分摘要",
+      "source_url": "https://github.com/Ornn8/bside-olivia-community/blob/819c25818b42e98ed0bb8fd16ac1578185be5e1c/linli_character/persona_release_v2.json",
+      "publisher": "Ornn8/bside-olivia-community maintainers",
+      "published_at": "2026-08-30",
+      "accessed_at": "2026-08-30",
+      "source_type": "user_authorized_style_distillation",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "allowed_public_release": true,
+      "privacy_risk": "MEDIUM",
+      "declaration_ids": [
+        "style.text.brief_greeting",
+        "style.text.ordinary_smalltalk",
+        "style.text.emotional_acknowledgement",
+        "style.text.boundary_refusal",
+        "style.text.natural_close",
+        "style.text.music_request"
+      ],
+      "exclusion_reason": "Only non-verbatim style abstractions from training folds are released; holdout bodies, private source text, and videos remain excluded."
     }
   ],
   "evidence": [
@@ -116,6 +145,13 @@
       "kind": "declaration_migration",
       "summary": "PR-4 keeps the release profile's existing relationship-not-performed rule, adds separate product-promise, confirmed-relationship, request-gated intimacy, and append-only intimacy rules, and restores the unchanged real-person and crisis safeguards carried by the configurable Persona v2 constitution.",
       "reference": "WORKORDER-intimacy-model PR-4 section 4.1"
+    },
+    {
+      "evidence_id": "P02.LINLI.STYLE.CV5.TRAINING.distillation",
+      "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
+      "kind": "style_distillation",
+      "summary": "Thirty indivisible user folders were assigned across five deterministic folds. Fold 0 remained holdout with bodies unread; folds 1-4 supplied 120 training texts. Videos were excluded, user prompts are synthetic, assistant examples are non-verbatim abstractions, and no contiguous seven-character overlap was found.",
+      "reference": "persona_release_v2.json style_exemplar_provenance"
     }
   ]
 }
