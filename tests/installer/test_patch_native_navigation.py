@@ -18,6 +18,16 @@ OFFLINE_WIDGETS_DISABLED = (
     "l.value.musicWidget!==!1&&(l.value.musicWidget=!1))"
 )
 OFFLINE_WIDGETS_ENABLED = "l.value.mailWidget=!0,l.value.musicWidget=!0"
+OFFLINE_CALL_PATCH = bytes((0x33, 0xC0, 0x90, 0x90, 0x90, 0x90))
+STUDIO_SIGNATURES = (
+    bytes.fromhex("CB E8 D2 37 08 00 EB 1E FF 15 B2 EC 08 00 48 8D 8F A8"),
+    bytes.fromhex("CB E8 72 34 08 00 EB 1E FF 15 52 E9 08 00 48 8D 8F A8"),
+    bytes.fromhex("CB E8 B2 1F 08 00 EB 2B FF 15 92 D4 08 00 84 C0 75 14"),
+    bytes.fromhex("CB E8 FF 1D 08 00 EB 1C FF 15 DF D2 08 00 48 8D 4F 38"),
+)
+CONTAINER_SIGNATURE = bytes.fromhex(
+    "48 8B DA 48 8B F9 FF 15 61 A4 04 00 84 C0 0F 85"
+)
 
 
 def _write_feapp(path: Path, javascript: str) -> bytes:
@@ -33,15 +43,39 @@ def _read_main(path: Path) -> str:
         return archive.read(MAIN_MEMBER).decode("utf-8")
 
 
+def _write_supported_client(root: Path) -> dict[Path, bytes]:
+    feapp = root / "resources" / "feapp.dat"
+    originals = {
+        feapp: _write_feapp(
+            feapp,
+            HOME_ROUTE + MAILBOX_DISABLED + OFFLINE_WIDGETS_DISABLED,
+        )
+    }
+    studio = root / "plugins" / "Studio" / "NutStudioUI.dll"
+    studio.parent.mkdir(parents=True)
+    studio.write_bytes(b"studio-prefix" + b"gap".join(STUDIO_SIGNATURES) + b"studio-suffix")
+    originals[studio] = studio.read_bytes()
+    container = root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    container.parent.mkdir(parents=True)
+    container.write_bytes(b"container-prefix" + CONTAINER_SIGNATURE + b"container-suffix")
+    originals[container] = container.read_bytes()
+    return originals
+
+
+def _patched_signature(signature: bytes, call_offset: int) -> bytes:
+    return (
+        signature[:call_offset]
+        + OFFLINE_CALL_PATCH
+        + signature[call_offset + len(OFFLINE_CALL_PATCH) :]
+    )
+
+
 def test_patch_native_navigation_enables_widgets_without_changing_home_route(
     tmp_path: Path,
 ) -> None:
     client_root = tmp_path / "0.0.9.627"
     feapp = client_root / "resources" / "feapp.dat"
-    original = _write_feapp(
-        feapp,
-        HOME_ROUTE + MAILBOX_DISABLED + OFFLINE_WIDGETS_DISABLED,
-    )
+    originals = _write_supported_client(client_root)
 
     result = patch_native_navigation(client_root, work_root=tmp_path)
 
@@ -49,7 +83,7 @@ def test_patch_native_navigation_enables_widgets_without_changing_home_route(
     backup = feapp.with_name("feapp.dat.native-nav.orig")
     assert result["status"] == "PATCHED"
     assert result["client_version"] == "0.0.9.627"
-    assert backup.read_bytes() == original
+    assert backup.read_bytes() == originals[feapp]
     assert MAILBOX_ENABLED in patched
     assert MAILBOX_DISABLED not in patched
     assert OFFLINE_WIDGETS_ENABLED in patched
@@ -57,3 +91,29 @@ def test_patch_native_navigation_enables_widgets_without_changing_home_route(
     assert HOME_ROUTE in patched
     assert 'localStorage.setItem("appMode","lite")' not in patched
     assert "await t.replace({name:ve.Collection})" not in patched
+
+
+def test_patch_native_navigation_patches_both_native_dlls_with_original_backups(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+
+    result = patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert set(result["files"]) == {"feapp", "studio_ui", "container_plugin"}
+    for path, original in originals.items():
+        assert path.with_name(path.name + ".native-nav.orig").read_bytes() == original
+
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    studio_patched = studio.read_bytes()
+    for signature in STUDIO_SIGNATURES:
+        assert signature not in studio_patched
+        assert _patched_signature(signature, 8) in studio_patched
+
+    container = (
+        client_root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    )
+    container_patched = container.read_bytes()
+    assert CONTAINER_SIGNATURE not in container_patched
+    assert _patched_signature(CONTAINER_SIGNATURE, 6) in container_patched
