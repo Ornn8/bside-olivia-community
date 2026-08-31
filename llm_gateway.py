@@ -95,7 +95,7 @@ class GatewayConfig:
     timeout_seconds: float = 30.0
     reasoning_timeout_seconds: float = 600.0
     max_retries: int = 2
-    retry_backoff_seconds: float = 0.0
+    retry_backoff_seconds: float = 0.25
     stream: bool = False
     max_input_chars: int = 22000
     max_output_chars: int = 10000
@@ -157,7 +157,7 @@ class GatewayConfig:
             ),
             max_retries=_bounded_int(data.get("max_retries", 2), 2, 0, 8),
             retry_backoff_seconds=_bounded_float(
-                data.get("retry_backoff_seconds", 0.0), 0.0, 0.0, 30.0
+                data.get("retry_backoff_seconds", 0.25), 0.25, 0.0, 30.0
             ),
             stream=_as_bool(data.get("stream", False)),
             max_input_chars=_bounded_int(data.get("max_input_chars", 22000), 22000, 1, 100000),
@@ -804,6 +804,8 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
         )
         data = await self._post_json(body, request, max_reasoning=max_reasoning)
+        if _extract_finish_reason(data) == "length":
+            raise ProviderProtocolError()
         text = _extract_response_text(data)
         if not text:
             raise ProviderProtocolError()
