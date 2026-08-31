@@ -1255,6 +1255,61 @@ def test_private_build_receipt_reuses_post_compile_verified_sidecar_records(
     ] == expected_ordinary_sha256
 
 
+def test_private_build_rejects_runtime_output_reparse_before_final_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "distributor/Olivia-video-runtime-fixture.zip"
+    _write_video_runtime(runtime)
+    video_offline = reference.parent / "Olivia-video-offline-fixture"
+    output = tmp_path / "output"
+    runtime_output = output / "Olivia-video-runtime-private.zip"
+    compiled = False
+
+    def prepare_without_schema(*args: object, **kwargs: object) -> None:
+        kwargs["validate_schema"] = False
+        prepare_setup_payload(*args, **kwargs)
+
+    def compile_setup(_command: list[str], **_: object) -> SimpleNamespace:
+        nonlocal compiled
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        compiled = True
+        return SimpleNamespace(returncode=0)
+
+    original_is_reparse_point = setup_builder._is_reparse_point
+
+    def mark_runtime_output(path: Path) -> bool:
+        return (compiled and Path(path) == runtime_output) or original_is_reparse_point(
+            Path(path)
+        )
+
+    monkeypatch.setattr(
+        "installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe"
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.prepare_setup_payload", prepare_without_schema
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup._is_reparse_point", mark_runtime_output
+    )
+    monkeypatch.setattr("installer.build_windows_setup.subprocess.run", compile_setup)
+
+    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_SIDECAR_CHANGED"):
+        build_windows_setup(
+            source,
+            offline,
+            output,
+            version="fixture",
+            distribution="private",
+            voice_reference=reference,
+            video_runtime=runtime,
+            video_offline_root=video_offline,
+        )
+
+    assert not any(output.iterdir())
+
+
 @pytest.mark.parametrize("parts", [(1,), (1, 3)])
 def test_private_build_rejects_unexpected_compiler_disk_parts(
     tmp_path: Path, monkeypatch, parts: tuple[int, ...]

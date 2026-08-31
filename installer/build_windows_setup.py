@@ -790,6 +790,8 @@ def _verify_pinned_private_sidecars(
         )
         expected_runtime = private_manifest["video_runtime"]
         expected_offline = private_manifest["video_offline"]
+        if _is_reparse_point(runtime):
+            raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
         actual_runtime = {
             "path": VIDEO_RUNTIME_SIDECAR_NAME,
             "size_bytes": runtime.stat().st_size,
