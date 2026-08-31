@@ -477,6 +477,8 @@ PrivateWorld
 
 设置页的“一键下载并安装”负责下载公开可分发的语音、音乐、口型和媒体工具，并优先选择国内源。私有完整安装器同时携带只含四套隔离 Python 的 `Olivia-video-runtime-*.zip` 与受管林离音色；组件下载完成后会自动发现、解压、逐文件校验、补齐受管 MiniMax worker、应用到当前服务进程并立即重新检测。状态契约为 `olivia.video-capability-status.v2`；设置页只保留一个手动选择 ZIP 的断网恢复入口。
 
+私有视频运行时的归档、manifest、哈希、路径、reparse point、worker 和配置错误必须硬失败并回滚。归档和逐文件校验已通过、但 portable Python、readiness probe 或 Windows loader 在当前宿主不可用时，安装仍以 exit code 0 完成：`runtime_import.state=ready` 只表示运行时归档已安装，整体状态为 `UNAVAILABLE`，两个视频 bundle 均为 `prerequisites_required`，原因固定为 `VIDEO_RUNTIME_HOST_UNAVAILABLE`。安装器会保存已验证运行时 profile 和不含路径的宿主状态；重启只恢复该状态，不重新解压、重哈希或重新 probe，核心、语音及视频字节仍提交。兼容宿主保持 `READY`。
+
 ## 17. 完成条件
 
 - clean Windows 用户可以完成 Core 安装；

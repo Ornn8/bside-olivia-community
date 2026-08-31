@@ -339,6 +339,186 @@ def test_runtime_archive_is_extracted_verified_and_activated(
     assert restarted_without_archive.status()["runtime_import"]["state"] == "ready"
 
 
+def test_runtime_host_unavailable_keeps_verified_artifact_and_degrades_bundles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": ["loader"],
+            "music_ready": False,
+            "dependencies": [
+                {"id": "cosyvoice", "state": "missing"},
+                {"id": "minimax_music3", "state": "missing"},
+            ],
+        },
+    )
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+
+    status = installer.status()
+    assert status["status"] == "UNAVAILABLE"
+    assert status["runtime_import"]["state"] == "ready"
+    assert status["runtime_import"]["reason_code"] == "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+    assert [item["state"] for item in status["bundles"]] == [
+        "prerequisites_required",
+        "prerequisites_required",
+    ]
+    assert all(
+        item["reason_code"] == "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+        for item in status["bundles"]
+    )
+    profile = json.loads(
+        (installer.install_root / "runtime-environment.json").read_text(encoding="utf-8")
+    )
+    assert profile["host_status"] == {
+        "status": "UNAVAILABLE",
+        "reason_code": "VIDEO_RUNTIME_HOST_UNAVAILABLE",
+    }
+
+
+def test_runtime_hard_failure_restores_previous_runtime_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    previous = installer.install_root / "runtime"
+    previous.mkdir()
+    (previous / "old.txt").write_text("preserve", encoding="utf-8")
+    monkeypatch.setattr(
+        installer,
+        "_install_managed_minimax_worker",
+        lambda: (_ for _ in ()).throw(
+            VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+        ),
+    )
+
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_WORKER_UNAVAILABLE"):
+        installer.import_runtime_archive(runtime_archive=archive)
+
+    assert (previous / "old.txt").read_text(encoding="utf-8") == "preserve"
+    assert not list(installer.install_root.glob(".runtime.backup"))
+
+
+def test_successful_runtime_upgrade_removes_directory_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+    previous = installer.install_root / "runtime"
+    previous.mkdir()
+    (previous / "old.txt").write_text("replace", encoding="utf-8")
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    assert not (installer.install_root / ".runtime.backup").exists()
+    assert not (installer.install_root / "runtime" / "old.txt").exists()
+    assert (installer.install_root / "runtime" / "runtime-manifest.json").is_file()
+
+
+def test_structurally_nonportable_runtime_hard_fails_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: False)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [],
+            "music_ready": True,
+        },
+    )
+
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_NOT_PORTABLE"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert not (installer.install_root / "runtime").exists()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "loader"])
+def test_runtime_host_start_failure_soft_degrades_without_reprobe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+
+    def failed_process(*_args: object, **_kwargs: object) -> object:
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("portable-python", 20)
+        return subprocess.CompletedProcess([], 0xC0000135)
+
+    monkeypatch.setattr(video_capability_install.subprocess, "run", failed_process)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: pytest.fail("host failure must not reprobe"),
+    )
+
+    assert installer.import_runtime_archive(runtime_archive=archive) == "APPLIED"
+    status = installer.status()
+    assert status["status"] == "UNAVAILABLE"
+    assert status["runtime_import"]["state"] == "ready"
+    assert status["runtime_import"]["reason_code"] == "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+    assert all(item["reason_code"] == "VIDEO_RUNTIME_HOST_UNAVAILABLE" for item in status["bundles"])
+    schema = json.loads(Path("contracts/video_capability_status.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(status)
+
+
+def test_static_dependency_probe_failure_remains_hard_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _runtime_archive(tmp_path)
+    monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
+    manifest = _runtime_ready_manifest()
+    data_root = (tmp_path / "data").resolve()
+    _prepare_runtime_dependencies(data_root, manifest)
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": ["ffmpeg"],
+            "music_ready": False,
+            "dependencies": [{"id": "ffmpeg", "state": "missing"}],
+        },
+    )
+
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_PROBE_FAILED"):
+        installer.import_runtime_archive(runtime_archive=archive)
+    assert not (installer.install_root / "runtime").exists()
+
+
 def test_restart_repairs_legacy_managed_worker_pair_before_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

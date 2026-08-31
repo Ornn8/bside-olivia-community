@@ -126,6 +126,22 @@ class _FakeInstaller:
         return "APPLIED"
 
 
+class _UnavailableHostInstaller(_FakeInstaller):
+    def import_runtime_archive(self, *, runtime_archive: Path) -> str:
+        result = super().import_runtime_archive(runtime_archive=runtime_archive)
+        self.states = {bundle_id: "prerequisites_required" for bundle_id in self.states}
+        return result
+
+    def status(self) -> dict[str, object]:
+        result = super().status()
+        result["status"] = "UNAVAILABLE"
+        result["bundles"] = [
+            {**item, "reason_code": "VIDEO_RUNTIME_HOST_UNAVAILABLE"}
+            for item in result["bundles"]
+        ]
+        return result
+
+
 def test_private_activation_uses_existing_installer_in_strict_ready_order(
     tmp_path: Path,
 ) -> None:
@@ -156,6 +172,35 @@ def test_private_activation_uses_existing_installer_in_strict_ready_order(
     assert result["status"] == "READY"
     assert result["runtime_import"]["state"] == "ready"
     assert [item["state"] for item in result["bundles"]] == ["ready", "ready"]
+
+
+def test_private_activation_accepts_verified_runtime_with_unavailable_host(
+    tmp_path: Path,
+) -> None:
+    manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
+    runtime = tmp_path / "Olivia-video-runtime-private.zip"
+    runtime.write_bytes(b"runtime")
+    installer = _UnavailableHostInstaller([])
+
+    result = activate_private_video(
+        install_root=tmp_path / "install",
+        offline_root=offline,
+        runtime_archive=runtime,
+        manifest_path=manifest,
+        expected_manifest_version="fixture-video",
+        expected_manifest_sha256=manifest_sha256,
+        expected_file_count=2,
+        expected_size_bytes=len(b"ordinary") + len(b"music"),
+        installer_factory=lambda **_kwargs: installer,
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["runtime_import"]["state"] == "ready"
+    assert [item["state"] for item in result["bundles"]] == [
+        "prerequisites_required",
+        "prerequisites_required",
+    ]
 
 
 def test_private_activation_parses_the_exact_manifest_bytes_that_were_hashed(
