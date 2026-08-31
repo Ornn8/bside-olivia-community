@@ -14,6 +14,7 @@ from runtime.media import managed_subprocess
 def test_windows_success_terminates_assigned_job_before_close(monkeypatch) -> None:
     events: list[str] = []
     active_processes = iter((2, 0))
+    monotonic_times = iter((100.0, 100.000003, 100.000004))
 
     class Process:
         pid, returncode = 4242, 0
@@ -32,20 +33,24 @@ def test_windows_success_terminates_assigned_job_before_close(monkeypatch) -> No
         close=lambda: events.append("close"),
     )
     monkeypatch.setattr(managed_subprocess.os, "name", "nt")
+    monkeypatch.setattr(
+        managed_subprocess.time, "monotonic", lambda: next(monotonic_times)
+    )
     monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: job)
     monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: Process())
 
     result = managed_subprocess.run_managed_process(["worker"], timeout_seconds=12)
 
     assert result.stdout == b"out"
-    assert events == [
-        "assign", "resume", "reap:12", "terminate", "reap:15.0",
-        "active", "active", "close",
-    ]
+    assert events[:4] == ["assign", "resume", "reap:12", "terminate"]
+    assert events[4].startswith("reap:")
+    assert float(events[4].removeprefix("reap:")) == pytest.approx(15.0)
+    assert events[5:] == ["active", "active", "close"]
 
 
 def test_windows_timeout_owns_and_terminates_suspended_worker(monkeypatch) -> None:
     observed: dict[str, object] = {"timeouts": []}
+    monotonic_times = iter((100.0, 100.000003))
 
     class Process:
         pid, returncode = 4242, None
@@ -70,6 +75,9 @@ def test_windows_timeout_owns_and_terminates_suspended_worker(monkeypatch) -> No
     monkeypatch.setattr(managed_subprocess.os, "name", "nt")
     monkeypatch.setattr(managed_subprocess, "_create_windows_job", Job)
     monkeypatch.setattr(managed_subprocess.subprocess, "Popen", popen)
+    monkeypatch.setattr(
+        managed_subprocess.time, "monotonic", lambda: next(monotonic_times)
+    )
     with pytest.raises(subprocess.TimeoutExpired):
         managed_subprocess.run_managed_process(["worker"], timeout_seconds=12)
     flags = observed["kwargs"]["creationflags"]
@@ -77,7 +85,10 @@ def test_windows_timeout_owns_and_terminates_suspended_worker(monkeypatch) -> No
     assert flags & getattr(subprocess, "CREATE_SUSPENDED", 4)
     assert (observed["assigned"], observed["resumed"]) == (4242, 4242)
     assert observed["terminated"] is True and observed["closed"] is True
-    assert observed["timeouts"] == [12, 15.0]
+    timeouts = observed["timeouts"]
+    assert isinstance(timeouts, list)
+    assert timeouts[0] == 12
+    assert timeouts[1] == pytest.approx(15.0)
 
 
 def test_absolute_deadline_includes_start_timeout_and_cleanup(monkeypatch) -> None:
