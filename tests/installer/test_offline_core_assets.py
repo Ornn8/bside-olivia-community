@@ -279,6 +279,7 @@ def _run_runtime_publish_fixture(
     product_root: Path | None = None, existing_voice_pair: bool = False,
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
     private_video_exit_code: int = 0,
+    private_video_status: str | None = None,
     private_video_mutates_tree: bool = False,
     interrupt_after_private_video: bool = False,
     fail_core_asset_preflight: bool = False,
@@ -309,6 +310,7 @@ def _run_runtime_publish_fixture(
         f"raise SystemExit({bootstrap_exit_code})\n",
         encoding="utf-8",
     )
+    private_status = private_video_status or ("READY" if private_video_exit_code == 0 else "ERROR")
     (payload_installer / "activate_private_video.py").write_text(
         "import json, pathlib, sys\n"
         + (
@@ -324,9 +326,9 @@ def _run_runtime_publish_fixture(
             else ""
         )
         + (
-            "print(json.dumps({'status': 'READY', 'bundles': "
+            f"print(json.dumps({{'status': '{private_status}', 'bundles': "
             if private_video_exit_code == 0
-            else "print(json.dumps({'status': 'ERROR', 'code': 'VIDEO_PRIVATE_ACTIVATION_FAILED', 'bundles': "
+            else f"print(json.dumps({{'status': '{private_status}', 'code': 'VIDEO_PRIVATE_ACTIVATION_FAILED', 'bundles': "
         )
         +
         "[{'id': 'ordinary_video', 'state': 'ready'}, "
@@ -612,6 +614,21 @@ def test_private_video_activation_failure_rolls_back_install_and_runtime_archive
     assert not (old_video / "music_video/partial.txt").exists()
     assert not (old_video / "runtime/partial.txt").exists()
     assert not list(old_video.parent.glob(".video.private-*"))
+
+
+def test_private_video_host_unavailable_commits_verified_assets(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        private_video_status="UNAVAILABLE",
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert _managed_video_runtime(product).read_bytes() == b"video-runtime-fixture"
+    assert (product / "install/data/capabilities/video").is_dir()
 
 
 def test_private_video_activation_failure_removes_fresh_partial_tree(

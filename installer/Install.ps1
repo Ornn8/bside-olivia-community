@@ -1699,12 +1699,18 @@ try {
         )
         $privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))
         $privateVideoExitCode = $LASTEXITCODE
-        $privateVideoReady = $false
+        $privateVideoStatus = $null
         $privateVideoFailure = 'VIDEO_PRIVATE_ACTIVATION_FAILED'
         foreach ($line in $privateVideoOutput) {
             try {
                 $record = $line | ConvertFrom-Json
-                if ($record.status -eq 'READY') { $privateVideoReady = $true }
+                if ($record.status -in @('READY', 'UNAVAILABLE')) {
+                    if ($null -ne $privateVideoStatus -and $privateVideoStatus -ne $record.status) {
+                        $privateVideoStatus = $null
+                        break
+                    }
+                    $privateVideoStatus = $record.status
+                }
                 if (
                     $record.status -eq 'ERROR' -and
                     $record.code -is [string] -and
@@ -1717,7 +1723,7 @@ try {
             }
         }
         if ($privateVideoExitCode -ne 0) { throw $privateVideoFailure }
-        if (-not $privateVideoReady) { throw 'VIDEO_PRIVATE_NOT_READY' }
+        if ($privateVideoStatus -notin @('READY', 'UNAVAILABLE')) { throw 'VIDEO_PRIVATE_NOT_READY' }
     }
 } catch {
     $assetFailure = [string]$_.Exception.Message

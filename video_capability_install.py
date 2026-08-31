@@ -58,12 +58,20 @@ _PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_COSYVOICE_PYTHON", "OLIV
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
+_RUNTIME_HOST_UNAVAILABLE = "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+_RUNTIME_HOST_DEPENDENCIES = frozenset(
+    {"cosyvoice", "latentsync", "minimax_music3", "roformer"}
+)
 _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
 _PROMOTION_LOCK = threading.RLock()
 
 
 class VideoCapabilityError(ValueError):
     """Raised for invalid manifests or unsafe installation inputs."""
+
+
+class _RuntimeHostUnavailable(RuntimeError):
+    """The portable runtime process could not start on this host."""
 
 
 class VideoCapabilityState(StrEnum):
@@ -365,9 +373,12 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
             timeout=_RUNTIME_PORTABILITY_TIMEOUT_SECONDS,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _RuntimeHostUnavailable from exc
+    returncode = int(completed.returncode)
+    if os.name == "nt" and returncode & 0xFFFFFFFF >= 0xC0000000:
+        raise _RuntimeHostUnavailable
+    return returncode == 0
 
 
 def _runtime_environment_is_portable(
@@ -712,7 +723,9 @@ class VideoCapabilityInstaller:
 
     def _runtime_wiring_ready(self, root: Path, bundle: VideoBundle) -> bool:
         try:
-            persisted = load_video_runtime_environment(self.data_root)
+            persisted = _load_video_runtime_environment(
+                self.data_root, restore_backups=False
+            )
             ready = all(
                 key in persisted and Path(persisted[key]).exists()
                 for key in (bundle.runtime_environment or {})
@@ -801,6 +814,16 @@ class VideoCapabilityInstaller:
                 "manifest_sha256",
             }:
                 return VideoCapabilityState.READY, None
+            if isinstance(profile, dict) and profile.get("host_status") == {
+                "status": "READY",
+                "reason_code": None,
+            }:
+                return VideoCapabilityState.READY, None
+            if isinstance(profile, dict) and profile.get("host_status") == {
+                "status": "UNAVAILABLE",
+                "reason_code": _RUNTIME_HOST_UNAVAILABLE,
+            }:
+                return VideoCapabilityState.PREREQUISITES_REQUIRED, _RUNTIME_HOST_UNAVAILABLE
         except (OSError, UnicodeError, json.JSONDecodeError):
             pass
         return self._runtime_dependency_state(bundle, probe_cache=probe_cache)
@@ -1024,6 +1047,7 @@ class VideoCapabilityInstaller:
             }
         staging = self.install_root / f".runtime-staging-{uuid.uuid4().hex}"
         final = self.install_root / "runtime"
+        backup = self.install_root / ".runtime.backup"
         try:
             _extract_runtime_zip_safely(
                 archive,
@@ -1034,12 +1058,46 @@ class VideoCapabilityInstaller:
             if not manifest_path.is_file() or manifest_path.is_symlink():
                 raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
             manifest_sha256 = _sha256_file(manifest_path)[1]
-            self._promote_directory(staging, final)
-            return self.import_runtime_root(
-                runtime_root=final.resolve(),
-                manifest_sha256=manifest_sha256,
-            )
+            with self._commit_lock:
+                if backup.exists():
+                    _restore_interrupted_promotions(self.install_root)
+                if final.exists():
+                    _reject_reparse_tree(final)
+                    os.replace(final, backup)
+                os.replace(staging, final)
+            try:
+                result = self.import_runtime_root(
+                    runtime_root=final.resolve(),
+                    manifest_sha256=manifest_sha256,
+                )
+                if backup.exists():
+                    shutil.rmtree(backup)
+                return result
+            except Exception as exc:
+                rollback_error: Exception | None = None
+                with self._commit_lock:
+                    try:
+                        if final.exists():
+                            _reject_reparse_tree(final)
+                            shutil.rmtree(final)
+                        if backup.exists():
+                            os.replace(backup, final)
+                    except Exception as restore_exc:
+                        rollback_error = restore_exc
+                if rollback_error is not None:
+                    raise VideoCapabilityError(
+                        "VIDEO_RUNTIME_IMPORT_ROLLBACK_FAILED"
+                    ) from rollback_error
+                raise
         except Exception as exc:
+            if backup.exists() and not final.exists():
+                try:
+                    os.replace(backup, final)
+                except OSError as rollback_exc:
+                    exc = VideoCapabilityError(
+                        "VIDEO_RUNTIME_IMPORT_ROLLBACK_FAILED"
+                    )
+                    exc.__cause__ = rollback_exc
             self._set_runtime_import_state(
                 "failed", reason_code=self._runtime_import_error_code(exc)
             )
@@ -1100,7 +1158,17 @@ class VideoCapabilityInstaller:
             payload = json.loads(
                 (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(encoding="utf-8")
             )
-            if not isinstance(payload, dict) or set(payload.get("external_environment", {})) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
+            if (
+                not isinstance(payload, dict)
+                or set(payload.get("external_environment", {})) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+                or payload.get("host_status") not in (None, {
+                    "status": "READY",
+                    "reason_code": None,
+                }, {
+                    "status": "UNAVAILABLE",
+                    "reason_code": _RUNTIME_HOST_UNAVAILABLE,
+                })
+            ):
                 return False
             environment = load_video_runtime_environment(self.data_root)
         except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
@@ -1120,7 +1188,14 @@ class VideoCapabilityInstaller:
                 "failed", reason_code="VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
             )
             return True
-        self._runtime_import = {"state": "ready", "checked_bytes": 0, "total_bytes": 0}
+        self._runtime_import = {
+            "state": "ready",
+            "checked_bytes": 0,
+            "total_bytes": 0,
+        }
+        host_status = payload.get("host_status")
+        if isinstance(host_status, dict) and host_status.get("status") == "UNAVAILABLE":
+            self._runtime_import["reason_code"] = _RUNTIME_HOST_UNAVAILABLE
         return True
 
     def _maybe_start_runtime_prepare(self) -> None:
@@ -1337,11 +1412,19 @@ class VideoCapabilityInstaller:
             progress=self._update_runtime_import_progress,
         )
         self._set_runtime_import_state("testing")
-        if not _runtime_environment_is_portable(external_environment, root):
+        host_unavailable = False
+        try:
+            portable = _runtime_environment_is_portable(external_environment, root)
+        except _RuntimeHostUnavailable:
+            portable = False
+            host_unavailable = True
+        if not portable and not host_unavailable:
             raise VideoCapabilityError("VIDEO_RUNTIME_NOT_PORTABLE")
         self._install_managed_minimax_worker()
         try:
-            environment = load_video_runtime_environment(self.data_root)
+            environment = _load_video_runtime_environment(
+                self.data_root, restore_backups=False
+            )
         except VideoCapabilityError:
             environment = {}
         for key, value in self._installed_bundle_environment().items():
@@ -1398,23 +1481,45 @@ class VideoCapabilityInstaller:
             finally:
                 generated_temporary.unlink(missing_ok=True)
             environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
-        if self._readiness_probe is None:
-            raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_UNAVAILABLE")
-        probe_environment = dict(os.environ)
-        probe_environment.update(environment)
-        probe_environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
-        try:
-            readiness = self._readiness_probe(probe_environment)
-            ordinary_missing = readiness.get("ordinary_missing_dependencies")
-            ready = (
-                isinstance(ordinary_missing, (list, tuple))
-                and not ordinary_missing
-                and readiness.get("music_ready") is True
-            )
-        except Exception:
-            ready = False
-        if not ready:
-            raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_FAILED")
+        ready = False
+        probe_exception = False
+        if not host_unavailable:
+            if self._readiness_probe is None:
+                raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_UNAVAILABLE")
+            probe_environment = dict(os.environ)
+            probe_environment.update(environment)
+            probe_environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+            try:
+                readiness = self._readiness_probe(probe_environment)
+                ordinary_missing = readiness.get("ordinary_missing_dependencies")
+                ready = (
+                    isinstance(ordinary_missing, (list, tuple))
+                    and not ordinary_missing
+                    and readiness.get("music_ready") is True
+                )
+            except Exception:
+                probe_exception = True
+                ready = False
+        if not ready and not host_unavailable and not probe_exception:
+            dependencies = readiness.get("dependencies")
+            if not isinstance(dependencies, list):
+                raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_FAILED")
+            missing_ids: set[str] = set()
+            for dependency in dependencies:
+                if (
+                    not isinstance(dependency, Mapping)
+                    or not isinstance(dependency.get("id"), str)
+                    or dependency.get("state") not in {"ready", "missing"}
+                ):
+                    raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_FAILED")
+                if dependency["state"] == "missing":
+                    missing_ids.add(dependency["id"])
+            if not missing_ids or not missing_ids <= _RUNTIME_HOST_DEPENDENCIES:
+                raise VideoCapabilityError("VIDEO_RUNTIME_PROBE_FAILED")
+        host_status = {
+            "status": "READY" if portable and ready else "UNAVAILABLE",
+            "reason_code": None if portable and ready else _RUNTIME_HOST_UNAVAILABLE,
+        }
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
@@ -1434,6 +1539,7 @@ class VideoCapabilityInstaller:
             "external_environment": external_environment,
             "runtime_root": str(root),
             "manifest_sha256": _safe_sha(manifest_sha256),
+            "host_status": host_status,
         }
         backup = target.with_name(f"{target.name}.{uuid.uuid4().hex}.backup")
         previous_environment = {key: os.environ.get(key) for key in environment}
@@ -1476,6 +1582,8 @@ class VideoCapabilityInstaller:
                 except OSError:
                     pass
         with self._lock:
+            if host_status["status"] == "UNAVAILABLE":
+                self._runtime_import["reason_code"] = _RUNTIME_HOST_UNAVAILABLE
             self._load_status()
         return "APPLIED"
 
@@ -1871,11 +1979,14 @@ def _extract_runtime_zip_safely(
         raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
 
 
-def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
+def _load_video_runtime_environment(
+    data_root: Path, *, restore_backups: bool = True
+) -> dict[str, str]:
     if not data_root.is_absolute():
         raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
     install_root = _checked_install_root(data_root.resolve(), create=False)
-    _restore_interrupted_promotions(install_root)
+    if restore_backups:
+        _restore_interrupted_promotions(install_root)
     path = install_root / _RUNTIME_ENVIRONMENT_FILE
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -1884,21 +1995,37 @@ def _load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID") from exc
     managed_fields = {"schema_version", "environment"}
+    managed_fields_with_host = managed_fields | {"host_status"}
     external_fields = managed_fields | {
         "external_environment",
         "runtime_root",
         "manifest_sha256",
     }
+    external_fields_with_host = external_fields | {"host_status"}
     if (
         not isinstance(payload, dict)
-        or set(payload) not in {frozenset(managed_fields), frozenset(external_fields)}
+        or set(payload) not in {
+            frozenset(managed_fields),
+            frozenset(managed_fields_with_host),
+            frozenset(external_fields),
+            frozenset(external_fields_with_host),
+        }
         or payload.get("schema_version") != "olivia.video-runtime-environment.v1"
         or not isinstance(payload.get("environment"), dict)
         or set(payload["environment"]) - _RUNTIME_ENVIRONMENT_KEYS
     ):
         raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+    host_status = payload.get("host_status")
+    if host_status is not None and host_status not in ({
+        "status": "READY",
+        "reason_code": None,
+    }, {
+        "status": "UNAVAILABLE",
+        "reason_code": _RUNTIME_HOST_UNAVAILABLE,
+    }):
+        raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
     external_environment: dict[str, str] | None = None
-    if set(payload) == external_fields:
+    if set(payload) in (external_fields, external_fields_with_host):
         raw_root = payload.get("runtime_root")
         declared_external = payload.get("external_environment")
         if (

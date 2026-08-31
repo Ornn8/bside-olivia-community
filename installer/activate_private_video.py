@@ -311,15 +311,16 @@ def activate_private_video(
         raise PrivateVideoActivationError("VIDEO_PRIVATE_ACTIVATION_FAILED") from exc
     except Exception as exc:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_ACTIVATION_FAILED") from exc
-    if (
-        final.get("status") != "READY"
-        or any(
-            _bundle_state(final, bundle_id).get("state") != "ready"
-            for bundle_id in ("ordinary_video", "music_video")
-        )
-        or not isinstance(final.get("runtime_import"), Mapping)
-        or final["runtime_import"].get("state") != "ready"
-    ):
+    runtime_import = final.get("runtime_import")
+    runtime_ready = isinstance(runtime_import, Mapping) and runtime_import.get("state") == "ready"
+    bundle_items = [_bundle_state(final, bundle_id) for bundle_id in ("ordinary_video", "music_video")]
+    ready = final.get("status") == "READY" and all(item.get("state") == "ready" for item in bundle_items)
+    unavailable = final.get("status") == "UNAVAILABLE" and all(
+        item.get("state") == "prerequisites_required"
+        and item.get("reason_code") == "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+        for item in bundle_items
+    )
+    if not runtime_ready or not (ready or unavailable):
         raise PrivateVideoActivationError("VIDEO_PRIVATE_NOT_READY")
     return dict(final)
 
