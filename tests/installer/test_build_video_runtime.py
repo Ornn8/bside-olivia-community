@@ -63,7 +63,9 @@ def test_builds_verified_v2_archive_and_confines_four_role_probes(tmp_path: Path
     roots, calls = _roots(tmp_path), []; monkeypatch.setenv("PATH", r"C:\host-only-poison"); _allow_probes(monkeypatch, calls)
     archive = _build(tmp_path, roots, _bom(tmp_path, roots))
     with zipfile.ZipFile(archive) as payload:
-        manifest, names = json.loads(payload.read("runtime-manifest.json")), set(payload.namelist())
+        manifest_bytes = payload.read("runtime-manifest.json")
+        manifest, names = json.loads(manifest_bytes), set(payload.namelist())
+        assert manifest_bytes == (json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
         assert payload.testzip() is None
         assert all((len(content := payload.read(item["path"])), hashlib.sha256(content).hexdigest()) == (item["size_bytes"], item["sha256"]) for item in manifest["files"])
     commands, environments = [call[0] for call in calls], [call[1]["env"] for call in calls]

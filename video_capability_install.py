@@ -570,8 +570,15 @@ def write_runtime_root_manifest(
     temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
             encoding="utf-8",
+            newline="\n",
         )
         os.replace(temporary, target)
         return _sha256_file(target)[1]
