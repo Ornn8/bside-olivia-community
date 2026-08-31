@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import hashlib
 import os
@@ -1702,6 +1703,212 @@ def test_runtime_manifest_verification_reports_real_byte_progress(tmp_path: Path
     assert [checked for checked, _total in progress] == sorted(
         checked for checked, _total in progress
     )
+
+
+def test_runtime_manifest_file_hashes_run_in_parallel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python")
+    for index in range(4):
+        target = runtime_root / f"packages/item-{index}.bin"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"item-{index}".encode())
+    manifest_sha256 = write_runtime_root_manifest(
+        runtime_root,
+        version="parallel-test",
+        environment={"OLIVIA_LATENTSYNC_PYTHON": "python/python.exe"},
+    )
+    real_sha256_file = video_capability_install._sha256_file
+    started_together = threading.Event()
+    active = 0
+    maximum_active = 0
+    lock = threading.Lock()
+
+    def observed_sha256(path: Path, **kwargs: object) -> tuple[int, str]:
+        nonlocal active, maximum_active
+        if path.name == "runtime-manifest.json":
+            return real_sha256_file(path, **kwargs)
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if active >= 2:
+                started_together.set()
+        try:
+            started_together.wait(timeout=0.5)
+            return real_sha256_file(path, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(video_capability_install, "_sha256_file", observed_sha256)
+    monkeypatch.setattr(video_capability_install.os, "cpu_count", lambda: 4)
+
+    video_capability_install._load_runtime_root_manifest(
+        runtime_root,
+        manifest_sha256,
+        verify_files=True,
+    )
+
+    assert maximum_active >= 2
+
+
+def test_runtime_manifest_parallel_hash_queue_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python")
+    for index in range(64):
+        target = runtime_root / f"packages/item-{index:03d}.bin"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"item-{index}".encode())
+    manifest_sha256 = write_runtime_root_manifest(
+        runtime_root,
+        version="bounded-test",
+        environment={"OLIVIA_LATENTSYNC_PYTHON": "python/python.exe"},
+    )
+    real_sha256_file = video_capability_install._sha256_file
+    release = threading.Event()
+    pending = 0
+    maximum_pending = 0
+    lock = threading.Lock()
+
+    class TrackedFuture:
+        def __init__(self, future: Future[tuple[int, str]]) -> None:
+            self._future = future
+            self._released = False
+
+        def _release(self) -> None:
+            nonlocal pending
+            with lock:
+                if not self._released:
+                    self._released = True
+                    pending -= 1
+
+        def result(self) -> tuple[int, str]:
+            try:
+                return self._future.result()
+            finally:
+                self._release()
+
+        def cancel(self) -> bool:
+            cancelled = self._future.cancel()
+            if cancelled:
+                self._release()
+            return cancelled
+
+    class TrackingExecutor:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._executor = ThreadPoolExecutor(*args, **kwargs)
+
+        def submit(self, function: object, *args: object) -> TrackedFuture:
+            nonlocal pending, maximum_pending
+            future = self._executor.submit(function, *args)
+            with lock:
+                pending += 1
+                maximum_pending = max(maximum_pending, pending)
+            return TrackedFuture(future)
+
+        def shutdown(self, **kwargs: object) -> None:
+            self._executor.shutdown(**kwargs)
+
+    def blocked_sha256(path: Path, **kwargs: object) -> tuple[int, str]:
+        if path.name != "runtime-manifest.json":
+            release.wait(timeout=1)
+        return real_sha256_file(path, **kwargs)
+
+    monkeypatch.setattr(video_capability_install, "ThreadPoolExecutor", TrackingExecutor)
+    monkeypatch.setattr(video_capability_install, "_sha256_file", blocked_sha256)
+    monkeypatch.setattr(video_capability_install.os, "cpu_count", lambda: 4)
+    timer = threading.Timer(0.2, release.set)
+    timer.start()
+    try:
+        video_capability_install._load_runtime_root_manifest(
+            runtime_root,
+            manifest_sha256,
+            verify_files=True,
+        )
+    finally:
+        release.set()
+        timer.cancel()
+
+    assert maximum_pending <= 8
+    assert maximum_pending < 64
+
+
+def test_runtime_manifest_parallel_hash_rejects_same_size_tamper(
+    tmp_path: Path,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    python = runtime_root / "python/python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"original")
+    manifest_sha256 = write_runtime_root_manifest(
+        runtime_root,
+        version="tamper-test",
+        environment={"OLIVIA_LATENTSYNC_PYTHON": "python/python.exe"},
+    )
+    python.write_bytes(b"tampered")
+
+    with pytest.raises(VideoCapabilityError, match="^VIDEO_RUNTIME_ROOT_INVALID$"):
+        video_capability_install._load_runtime_root_manifest(
+            runtime_root,
+            manifest_sha256,
+            verify_files=True,
+        )
+
+
+def test_runtime_manifest_parallel_hash_reports_first_manifest_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = (tmp_path / "runtime").resolve()
+    first = runtime_root / "a-first.bin"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second = runtime_root / "b-second.bin"
+    second.write_bytes(b"second")
+    manifest_sha256 = write_runtime_root_manifest(
+        runtime_root,
+        version="ordered-error-test",
+        environment={"OLIVIA_LATENTSYNC_PYTHON": "a-first.bin"},
+    )
+    real_sha256_file = video_capability_install._sha256_file
+    both_started = threading.Event()
+    started = 0
+    lock = threading.Lock()
+
+    def failing_sha256(path: Path, **kwargs: object) -> tuple[int, str]:
+        nonlocal started
+        if path.name == "runtime-manifest.json":
+            return real_sha256_file(path, **kwargs)
+        with lock:
+            started += 1
+            if started >= 2:
+                both_started.set()
+        both_started.wait(timeout=1)
+        if path.name == "a-first.bin":
+            raise FileNotFoundError("first manifest entry")
+        raise PermissionError("second manifest entry")
+
+    monkeypatch.setattr(video_capability_install, "_sha256_file", failing_sha256)
+    monkeypatch.setattr(video_capability_install.os, "cpu_count", lambda: 2)
+
+    with pytest.raises(VideoCapabilityError) as error:
+        video_capability_install._load_runtime_root_manifest(
+            runtime_root,
+            manifest_sha256,
+            verify_files=True,
+        )
+
+    assert isinstance(error.value.__cause__, FileNotFoundError)
+    assert str(error.value.__cause__) == "first manifest entry"
 
 
 def test_runtime_manifest_generator_hashes_the_exact_sorted_tree(tmp_path: Path) -> None:
