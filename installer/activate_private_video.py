@@ -33,6 +33,14 @@ class PrivateVideoActivationError(RuntimeError):
     """Stable private-video activation failure code."""
 
 
+class _ManifestSnapshot:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read_text(self, *, encoding: str) -> str:
+        return self._payload.decode(encoding)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -55,9 +63,9 @@ def _absolute_path(path: Path, *, code: str) -> Path:
     try:
         candidate = Path(os.path.abspath(candidate))
         for current in reversed((candidate, *candidate.parents)):
-            if current.exists() and _is_reparse_point(current):
+            if (current.is_symlink() or current.exists()) and _is_reparse_point(current):
                 raise PrivateVideoActivationError(code)
-        return candidate.resolve(strict=True)
+        return candidate
     except PrivateVideoActivationError:
         raise
     except (OSError, RuntimeError) as exc:
@@ -70,14 +78,18 @@ def _verify_manifest(
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_MANIFEST_INVALID")
     manifest_path = _absolute_path(path, code="VIDEO_PRIVATE_MANIFEST_INVALID")
-    if (
-        not manifest_path.is_file()
-        or _is_reparse_point(manifest_path)
-        or _sha256(manifest_path) != expected_sha256
-    ):
+    try:
+        if not manifest_path.is_file() or _is_reparse_point(manifest_path):
+            raise PrivateVideoActivationError("VIDEO_PRIVATE_MANIFEST_INVALID")
+        payload = manifest_path.read_bytes()
+    except PrivateVideoActivationError:
+        raise
+    except OSError as exc:
+        raise PrivateVideoActivationError("VIDEO_PRIVATE_MANIFEST_INVALID") from exc
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_MANIFEST_INVALID")
     try:
-        manifest = load_video_manifest(manifest_path)
+        manifest = load_video_manifest(_ManifestSnapshot(payload))  # type: ignore[arg-type]
     except VideoCapabilityError as exc:
         raise PrivateVideoActivationError("VIDEO_PRIVATE_MANIFEST_INVALID") from exc
     if manifest.version != expected_version:
@@ -161,7 +173,7 @@ def _verify_offline_root(
 def _create_installer(
     *, install_root: Path, manifest: VideoManifest
 ) -> VideoCapabilityInstaller:
-    data_root = (install_root / "data").resolve()
+    data_root = install_root / "data"
     environment = _load_fixed_video_assets_environment(
         {
             **os.environ,
@@ -244,6 +256,7 @@ def activate_private_video(
     root = _absolute_path(install_root, code="VIDEO_PRIVATE_INSTALL_ROOT_INVALID")
     if not root.is_dir() or _is_reparse_point(root):
         raise PrivateVideoActivationError("VIDEO_PRIVATE_INSTALL_ROOT_INVALID")
+    _absolute_path(root / "data", code="VIDEO_PRIVATE_INSTALL_ROOT_INVALID")
     manifest = _verify_manifest(
         manifest_path,
         expected_version=expected_manifest_version,
