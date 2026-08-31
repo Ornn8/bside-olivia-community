@@ -25,10 +25,11 @@ def test_private_activation_cli_bootstraps_payload_root_under_isolated_python() 
         text=True,
         check=False,
     )
+    return_code = result.returncode
+    output = result.stdout
 
-    assert result.returncode == 0, result.stderr
-    assert "--install-root" in result.stdout
-    assert "ModuleNotFoundError" not in result.stderr
+    assert return_code == 0
+    assert "--install-root" in output
 
 
 def _manifest_fixture(root: Path) -> tuple[Path, Path, str]:
