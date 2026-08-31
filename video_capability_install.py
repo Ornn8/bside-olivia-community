@@ -680,6 +680,7 @@ class VideoCapabilityInstaller:
         self._pause = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
         self._runtime_thread: threading.Thread | None = None
+        self._runtime_archive_identity: tuple[str, int, int, int, int] | None = None
         self._runtime_failed_archive_identities: set[tuple[str, int, int, int, int]] = set()
         self._status: dict[str, VideoBundleStatus] = {}
         self._runtime_import: dict[str, object] = {
@@ -1047,6 +1048,43 @@ class VideoCapabilityInstaller:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
 
+    def start_runtime_archive_import(self, *, runtime_archive: Path) -> str:
+        try:
+            archive = runtime_archive.resolve(strict=True)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
+        identity = _runtime_archive_identity(archive)
+        if (
+            identity is None
+            or not archive.is_file()
+            or archive.is_symlink()
+            or archive.suffix.casefold() != ".zip"
+        ):
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+        with self._lock:
+            if self._runtime_thread is not None and self._runtime_thread.is_alive():
+                return "NOOP"
+            if (
+                self._runtime_import["state"] == "ready"
+                and self._runtime_archive_identity == identity
+            ):
+                return "NOOP"
+            self._runtime_import = {
+                "state": "queued",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+            }
+            self._runtime_archive_identity = identity
+            thread = threading.Thread(
+                target=self._run_runtime_archive,
+                args=(archive, identity),
+                name="olivia-video-runtime",
+                daemon=True,
+            )
+            self._runtime_thread = thread
+            thread.start()
+        return "APPLIED"
+
     def _update_runtime_extract_progress(
         self, checked_bytes: int, total_bytes: int
     ) -> None:
@@ -1128,6 +1166,7 @@ class VideoCapabilityInstaller:
             return
         archive, identity = candidate
         self._runtime_import["state"] = "queued"
+        self._runtime_archive_identity = identity
         thread = threading.Thread(
             target=self._run_runtime_archive,
             args=(archive, identity),
