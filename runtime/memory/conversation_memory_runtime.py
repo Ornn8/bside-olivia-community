@@ -91,6 +91,14 @@ class ConversationMemoryRuntime:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
+        self._reply_status_lock = threading.Lock()
+        self._reply_status = ConversationMemoryRuntimeStatus(
+            "unavailable",
+            True,
+            "mem0-outbox",
+            False,
+            reason_code="MEMORY_OUTBOX_INITIALIZING",
+        )
 
     def start(self) -> bool:
         with self._thread_lock:
@@ -138,7 +146,7 @@ class ConversationMemoryRuntime:
             except Exception:
                 status = "unavailable"
                 reason_code = "MEMORY_ADMIN_AUDIT_UNAVAILABLE"
-        return ConversationMemoryRuntimeStatus(
+        resolved = ConversationMemoryRuntimeStatus(
             status=status,
             enabled=True,
             provider="mem0-outbox",
@@ -148,14 +156,44 @@ class ConversationMemoryRuntime:
             pending_count=_count(health.get("pending_count")),
             attempt_count=_count(health.get("attempt_count")),
         )
+        with self._reply_status_lock:
+            self._reply_status = resolved
+        return resolved
+
+    def reply_readiness_status(self) -> ConversationMemoryRuntimeStatus:
+        """Return the worker's last status without provider or storage I/O."""
+
+        with self._reply_status_lock:
+            cached = self._reply_status
+        with self._thread_lock:
+            worker_running = bool(self._thread and self._thread.is_alive())
+        if not worker_running:
+            return ConversationMemoryRuntimeStatus(
+                "degraded",
+                True,
+                "mem0-outbox",
+                False,
+                reason_code="MEMORY_OUTBOX_WORKER_NOT_RUNNING",
+                terminal_count=cached.terminal_count,
+                pending_count=cached.pending_count,
+                attempt_count=cached.attempt_count,
+            )
+        return cached
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
                 asyncio.run(self.outbox.scan_once())
+                self.status()
             except Exception:
-                # Optional memory delivery never terminates the letter runtime.
-                pass
+                with self._reply_status_lock:
+                    self._reply_status = ConversationMemoryRuntimeStatus(
+                        "unavailable",
+                        True,
+                        "mem0-outbox",
+                        True,
+                        reason_code="MEMORY_OUTBOX_RUNTIME_UNAVAILABLE",
+                    )
             if self._stop_event.wait(self.interval_seconds):
                 break
 
@@ -303,6 +341,21 @@ def conversation_memory_runtime_status() -> ConversationMemoryRuntimeStatus:
     return runtime.status()
 
 
+def conversation_memory_reply_readiness_status() -> ConversationMemoryRuntimeStatus:
+    """Read the in-process reply gate state without provider or SQLite I/O."""
+
+    with _RUNTIME_LOCK:
+        runtime = _RUNTIME
+    if runtime is None:
+        return ConversationMemoryRuntimeStatus(
+            "disabled",
+            False,
+            "none",
+            False,
+        )
+    return runtime.reply_readiness_status()
+
+
 def stop_conversation_memory_runtime() -> None:
     global _RUNTIME, _RUNTIME_KEY
     with _RUNTIME_LOCK:
@@ -447,6 +500,7 @@ def _count(value: object) -> int:
 __all__ = [
     "ConversationMemoryRuntime",
     "ConversationMemoryRuntimeStatus",
+    "conversation_memory_reply_readiness_status",
     "conversation_memory_runtime_status",
     "ensure_conversation_memory_runtime",
     "stop_conversation_memory_runtime",

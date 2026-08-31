@@ -300,7 +300,10 @@ def test_adapter_runtime_configuration_wins_over_host_outbox_environment(
 
 def test_available_ledger_without_worker_reports_degraded_runtime(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    import conversation_memory_runtime as runtime_module
+
     root = tmp_path / "configured-state-root"
     _write_state(root)
 
@@ -314,6 +317,14 @@ def test_available_ledger_without_worker_reports_degraded_runtime(
     assert status.status == "degraded"
     assert status.worker_running is False
     assert status.reason_code == "MEMORY_OUTBOX_WORKER_NOT_RUNNING"
+    runtime = runtime_module._RUNTIME
+    assert runtime is not None
+
+    def unexpected_health_probe():
+        raise AssertionError("reply readiness must use the in-process snapshot")
+
+    monkeypatch.setattr(runtime.outbox, "health", unexpected_health_probe)
+    assert runtime_module.conversation_memory_reply_readiness_status() == status
 
 
 def test_memory_prompt_builder_configures_runtime_but_keeps_prompt_available(

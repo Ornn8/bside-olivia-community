@@ -96,6 +96,7 @@
   "letter_detail_generation": {
     "fields": ["letter_status", "error_code", "retryable"],
     "error_codes": {
+      "MEMORY_UNAVAILABLE": {"status": "FAILED", "retryable": true},
       "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": true},
       "LLM_TIMEOUT": {"status": "FAILED", "retryable": true},
       "LLM_INTERRUPTED": {"status": "FAILED", "retryable": true},
