@@ -222,18 +222,33 @@ def _sha256(path: Path) -> str:
 
 def _directory_file_records(root: Path, *, prefix: str) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        records.append(
-            {
-                "path": f"{prefix}/{relative}",
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            }
-        )
-    return records
+    try:
+        if not root.is_dir() or _is_reparse_point(root):
+            raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+        for current, directories, filenames in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            if _is_reparse_point(current_path):
+                raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            for name in directories:
+                if _is_reparse_point(current_path / name):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            for name in filenames:
+                path = current_path / name
+                if not path.is_file() or _is_reparse_point(path):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                relative = path.relative_to(root).as_posix()
+                records.append(
+                    {
+                        "path": f"{prefix}/{relative}",
+                        "size_bytes": path.stat().st_size,
+                        "sha256": _sha256(path),
+                    }
+                )
+        return sorted(records, key=lambda record: str(record["path"]).casefold())
+    except SetupBuildError:
+        raise
+    except OSError as exc:
+        raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID") from exc
 
 
 def _tree_sha256(records: list[dict[str, object]]) -> str:
@@ -650,7 +665,12 @@ def _copytree_without_reparse(source: Path, destination: Path) -> None:
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID") from exc
 
 
-def _video_offline_metadata(manifest_path: Path, root: Path) -> dict[str, object]:
+def _video_offline_metadata(
+    manifest_path: Path,
+    root: Path,
+    *,
+    file_records: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     try:
         manifest_bytes = manifest_path.read_bytes()
         payload = json.loads(manifest_bytes.decode("utf-8"))
@@ -734,11 +754,21 @@ def _video_offline_metadata(manifest_path: Path, root: Path) -> dict[str, object
         if set(actual_files) != set(expected) or actual_directories - expected_directories:
             raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
         total = 0
-        for folded, (_, size, digest) in expected.items():
+        for folded, (relative, size, digest) in expected.items():
             path = actual_files[folded]
             if path.stat().st_size != size or _sha256(path) != digest:
                 raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
             total += size
+            if file_records is not None:
+                file_records.append(
+                    {
+                        "path": f"{VIDEO_OFFLINE_SIDECAR_NAME}/{relative}",
+                        "size_bytes": size,
+                        "sha256": digest,
+                    }
+                )
+        if file_records is not None:
+            file_records.sort(key=lambda record: str(record["path"]).casefold())
         return {
             "manifest_version": payload["version"],
             "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
@@ -753,7 +783,7 @@ def _video_offline_metadata(manifest_path: Path, root: Path) -> dict[str, object
 
 def _verify_pinned_private_sidecars(
     payload: Path, runtime: Path, video_offline_root: Path
-) -> None:
+) -> tuple[dict[str, object], list[dict[str, object]]]:
     try:
         private_manifest = json.loads(
             (payload / "offline" / MANIFEST_NAME).read_text(encoding="utf-8")
@@ -765,15 +795,24 @@ def _verify_pinned_private_sidecars(
             "size_bytes": runtime.stat().st_size,
             "sha256": _sha256(runtime),
         }
+        offline_file_records: list[dict[str, object]] = []
         actual_offline = {
             "path": VIDEO_OFFLINE_SIDECAR_NAME,
             **_video_offline_metadata(
                 payload / "installer" / "video-capability-manifest.json",
                 video_offline_root,
+                file_records=offline_file_records,
             ),
         }
         if actual_runtime != expected_runtime or actual_offline != expected_offline:
             raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
+        return (
+            {
+                **actual_runtime,
+                "path": os.fspath(runtime),
+            },
+            offline_file_records,
+        )
     except SetupBuildError as exc:
         if str(exc) == "SETUP_PRIVATE_SIDECAR_CHANGED":
             raise
@@ -1156,18 +1195,34 @@ def build_windows_setup(
         )
         if compiled_artifacts != [setup]:
             raise SetupBuildError("SETUP_COMPILE_FAILED")
+        verified_sidecars = None
         if video_runtime is not None and video_offline_root is not None:
-            _verify_pinned_private_sidecars(payload, sidecar, offline_sidecar)
+            verified_sidecars = _verify_pinned_private_sidecars(
+                payload, sidecar, offline_sidecar
+            )
         artifacts = [setup]
-        if video_runtime is not None:
-            artifacts.append(sidecar)
         file_records = [
             {"path": os.fspath(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
             for path in artifacts
         ]
+        if video_runtime is not None:
+            artifacts.append(sidecar)
+            file_records.append(
+                verified_sidecars[0]
+                if verified_sidecars is not None
+                else {
+                    "path": os.fspath(sidecar),
+                    "size_bytes": sidecar.stat().st_size,
+                    "sha256": _sha256(sidecar),
+                }
+            )
         if video_offline_root is not None:
-            offline_file_records = _directory_file_records(
-                offline_sidecar, prefix=VIDEO_OFFLINE_SIDECAR_NAME
+            offline_file_records = (
+                verified_sidecars[1]
+                if verified_sidecars is not None
+                else _directory_file_records(
+                    offline_sidecar, prefix=VIDEO_OFFLINE_SIDECAR_NAME
+                )
             )
             offline_size = sum(int(record["size_bytes"]) for record in offline_file_records)
             file_records.extend(offline_file_records)

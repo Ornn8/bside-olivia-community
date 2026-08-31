@@ -12,6 +12,7 @@ import zipfile
 
 import pytest
 
+import installer.build_windows_setup as setup_builder
 from installer.build_windows_setup import (
     BUILD_CONTROL_FILES,
     SetupBuildError,
@@ -1017,6 +1018,7 @@ def test_private_build_publishes_hash_locked_video_runtime_sidecar(
     [
         ("runtime", "SETUP_VIDEO_RUNTIME_INVALID"),
         ("offline-file", "SETUP_VIDEO_OFFLINE_INVALID"),
+        ("offline-output", "SETUP_VIDEO_OFFLINE_INVALID"),
     ],
 )
 def test_private_build_rejects_reparse_sidecar_sources_before_copy(
@@ -1035,7 +1037,14 @@ def test_private_build_rejects_reparse_sidecar_sources_before_copy(
     music = video_offline / "music_video/music.bin"
     ordinary.write_bytes(b"ordinary")
     music.write_bytes(b"music")
-    marked = runtime if marked_source == "runtime" else music
+    marked = {
+        "runtime": runtime,
+        "offline-file": music,
+        "offline-output": (
+            output
+            / "Olivia-video-offline-private/music_video/music.bin"
+        ),
+    }[marked_source]
 
     def compile_setup(_command: list[str], **_: object) -> SimpleNamespace:
         (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
@@ -1157,6 +1166,93 @@ def test_private_build_rejects_runtime_sidecar_changed_after_payload_pin(
         )
 
     assert not any(output.iterdir())
+
+
+def test_private_build_receipt_reuses_post_compile_verified_sidecar_records(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "distributor/Olivia-video-runtime-fixture.zip"
+    _write_video_runtime(runtime)
+    expected_runtime_sha256 = hashlib.sha256(runtime.read_bytes()).hexdigest()
+    video_offline = reference.parent / "Olivia-video-offline-fixture"
+    expected_ordinary_sha256 = hashlib.sha256(b"ordinary").hexdigest()
+    output = tmp_path / "output"
+
+    def prepare_without_schema(*args: object, **kwargs: object) -> None:
+        kwargs["validate_schema"] = False
+        prepare_setup_payload(*args, **kwargs)
+
+    def compile_setup(_command: list[str], **_: object) -> SimpleNamespace:
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        return SimpleNamespace(returncode=0)
+
+    original_verify = setup_builder._verify_pinned_private_sidecars
+
+    def verify_then_replace(
+        payload: Path,
+        runtime_sidecar: Path,
+        offline_sidecar: Path,
+    ) -> object:
+        verified = original_verify(payload, runtime_sidecar, offline_sidecar)
+        runtime_sidecar.write_bytes(b"replacement runtime")
+        (offline_sidecar / "ordinary_video/ordinary.bin").write_bytes(b"replaced")
+        return verified
+
+    monkeypatch.setattr(
+        "installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe"
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.prepare_setup_payload", prepare_without_schema
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup._verify_pinned_private_sidecars",
+        verify_then_replace,
+    )
+    monkeypatch.setattr("installer.build_windows_setup.subprocess.run", compile_setup)
+
+    build_windows_setup(
+        source,
+        offline,
+        output,
+        version="fixture",
+        distribution="private",
+        voice_reference=reference,
+        video_runtime=runtime,
+        video_offline_root=video_offline,
+    )
+
+    receipt = json.loads(
+        (output / "Olivia-Setup-x64.receipt.json").read_text(encoding="utf-8")
+    )
+    receipt_records = {record["path"]: record for record in receipt["files"]}
+    checksum_records = {
+        relative: digest
+        for digest, relative in (
+            line.split("  ", 1)
+            for line in (output / "Olivia-Setup-x64.exe.sha256")
+            .read_text(encoding="ascii")
+            .splitlines()
+        )
+    }
+
+    assert (output / "Olivia-video-runtime-private.zip").read_bytes() == b"replacement runtime"
+    assert (
+        output / "Olivia-video-offline-private/ordinary_video/ordinary.bin"
+    ).read_bytes() == b"replaced"
+    assert receipt_records["Olivia-video-runtime-private.zip"]["sha256"] == (
+        expected_runtime_sha256
+    )
+    assert receipt_records[
+        "Olivia-video-offline-private/ordinary_video/ordinary.bin"
+    ]["sha256"] == expected_ordinary_sha256
+    assert checksum_records["Olivia-video-runtime-private.zip"] == (
+        expected_runtime_sha256
+    )
+    assert checksum_records[
+        "Olivia-video-offline-private/ordinary_video/ordinary.bin"
+    ] == expected_ordinary_sha256
 
 
 @pytest.mark.parametrize("parts", [(1,), (1, 3)])
