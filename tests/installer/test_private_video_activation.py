@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,21 @@ from installer.activate_private_video import (
     activate_private_video,
     main as activate_private_video_main,
 )
+
+
+def test_private_activation_cli_bootstraps_payload_root_under_isolated_python() -> None:
+    script = Path(__file__).parents[2] / "installer" / "activate_private_video.py"
+
+    result = subprocess.run(
+        [sys.executable, "-I", str(script), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--install-root" in result.stdout
+    assert "ModuleNotFoundError" not in result.stderr
 
 
 def _manifest_fixture(root: Path) -> tuple[Path, Path, str]:
