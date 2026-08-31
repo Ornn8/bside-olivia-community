@@ -59,6 +59,8 @@ _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
 _RUNTIME_HOST_UNAVAILABLE = "VIDEO_RUNTIME_HOST_UNAVAILABLE"
+_RUNTIME_IMPORT_CACHE = ".video-runtime-import-cache"
+_RUNTIME_IMPORT_CHECKPOINT = ".runtime-import-checkpoint.json"
 _RUNTIME_HOST_DEPENDENCIES = frozenset(
     {"cosyvoice", "latentsync", "minimax_music3", "roformer"}
 )
@@ -341,6 +343,97 @@ def _runtime_archive_identity(path: Path) -> tuple[str, int, int, int, int] | No
     except OSError:
         return None
     return (str(path), metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+
+
+def _runtime_import_cache(data_root: Path) -> Path:
+    cache_root = data_root / "capabilities" / _RUNTIME_IMPORT_CACHE
+    if cache_root.exists() and (
+        _is_reparse_point(cache_root) or not cache_root.is_dir()
+    ):
+        raise VideoCapabilityError("VIDEO_RUNTIME_IMPORT_CHECKPOINT_INVALID")
+    return cache_root
+
+
+def _discard_runtime_import_checkpoint(cache_root: Path, candidate: Path) -> None:
+    (cache_root / _RUNTIME_IMPORT_CHECKPOINT).unlink(missing_ok=True)
+    try:
+        _reject_reparse_tree(candidate)
+        shutil.rmtree(candidate)
+    except (FileNotFoundError, OSError, VideoCapabilityError):
+        pass
+
+
+def _write_runtime_import_checkpoint(
+    cache_root: Path,
+    *,
+    archive_identity: tuple[str, int, int, int, int],
+    candidate: Path,
+    manifest_sha256: str | None = None,
+    verified_files: bool = False,
+    next_member_index: int = 0,
+) -> None:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    relative_candidate = candidate.relative_to(cache_root).as_posix()
+    payload: dict[str, object] = {
+        "schema_version": "olivia.video-runtime-import-checkpoint.v1",
+        "archive_identity": list(archive_identity),
+        "candidate": relative_candidate,
+        "verified_files": verified_files,
+        "next_member_index": next_member_index,
+    }
+    if manifest_sha256 is not None:
+        payload["manifest_sha256"] = _safe_sha(manifest_sha256)
+    temporary = cache_root / f"{_RUNTIME_IMPORT_CHECKPOINT}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, cache_root / _RUNTIME_IMPORT_CHECKPOINT)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_runtime_import_checkpoint(
+    cache_root: Path,
+    archive_identity: tuple[str, int, int, int, int],
+) -> tuple[Path, bool, str | None, int] | None:
+    checkpoint = cache_root / _RUNTIME_IMPORT_CHECKPOINT
+    try:
+        payload: Any = json.loads(checkpoint.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) not in (
+            {"schema_version", "archive_identity", "candidate", "verified_files", "next_member_index"},
+            {"schema_version", "archive_identity", "candidate", "verified_files", "manifest_sha256", "next_member_index"},
+        )
+        or payload.get("schema_version") != "olivia.video-runtime-import-checkpoint.v1"
+        or payload.get("archive_identity") != list(archive_identity)
+        or type(payload.get("verified_files")) is not bool
+        or type(payload.get("next_member_index")) is not int
+        or payload["next_member_index"] < 0
+        or not isinstance(payload.get("candidate"), str)
+        or (payload["verified_files"] != ("manifest_sha256" in payload))
+    ):
+        return None
+    candidate_name = payload["candidate"]
+    if (
+        not candidate_name.startswith(".runtime-staging-")
+        or Path(candidate_name).name != candidate_name
+    ):
+        return None
+    try:
+        candidate = _inside(cache_root, cache_root / candidate_name)
+        if not candidate.is_dir():
+            return None
+        _reject_reparse_tree(candidate)
+        manifest_sha256 = (
+            _safe_sha(payload["manifest_sha256"])
+            if "manifest_sha256" in payload
+            else None
+        )
+    except (OSError, VideoCapabilityError):
+        return None
+    return candidate, payload["verified_files"], manifest_sha256, payload["next_member_index"]
 
 
 def _verify(path: Path, spec: VideoFile) -> None:
@@ -1005,6 +1098,7 @@ class VideoCapabilityInstaller:
         *,
         runtime_root: Path,
         manifest_sha256: str,
+        verify_files: bool = True,
     ) -> str:
         with self._lock:
             self._runtime_import = {
@@ -1016,6 +1110,7 @@ class VideoCapabilityInstaller:
             result = self._import_runtime_root(
                 runtime_root=runtime_root,
                 manifest_sha256=manifest_sha256,
+                verify_files=verify_files,
             )
         except Exception as exc:
             self._set_runtime_import_state(
@@ -1045,19 +1140,69 @@ class VideoCapabilityInstaller:
                 "checked_bytes": 0,
                 "total_bytes": 0,
             }
-        staging = self.install_root / f".runtime-staging-{uuid.uuid4().hex}"
+        identity = _runtime_archive_identity(archive)
+        if identity is None:
+            raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+        cache_root = _runtime_import_cache(self.data_root)
+        checkpoint = _read_runtime_import_checkpoint(cache_root, identity)
+        if checkpoint is None:
+            staging = cache_root / f".runtime-staging-{uuid.uuid4().hex}"
+            _write_runtime_import_checkpoint(
+                cache_root, archive_identity=identity, candidate=staging
+            )
+            verified_files = False
+            manifest_sha256: str | None = None
+            next_member_index = 0
+        else:
+            staging, verified_files, manifest_sha256, next_member_index = checkpoint
         final = self.install_root / "runtime"
         backup = self.install_root / ".runtime.backup"
         try:
-            _extract_runtime_zip_safely(
-                archive,
-                staging,
-                progress=self._update_runtime_extract_progress,
-            )
+            if not verified_files:
+                resume = staging.exists()
+                _extract_runtime_zip_safely(
+                    archive,
+                    staging,
+                    **({"resume": True} if resume else {}),
+                    next_member_index=next_member_index,
+                    checkpoint_progress=lambda index: _write_runtime_import_checkpoint(
+                        cache_root,
+                        archive_identity=identity,
+                        candidate=staging,
+                        next_member_index=index,
+                    ),
+                    progress=self._update_runtime_extract_progress,
+                )
+            with self._lock:
+                self._runtime_import = {
+                    "state": "checking",
+                    "checked_bytes": 0,
+                    "total_bytes": 0,
+                }
             manifest_path = staging / "runtime-manifest.json"
             if not manifest_path.is_file() or manifest_path.is_symlink():
                 raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
-            manifest_sha256 = _sha256_file(manifest_path)[1]
+            if manifest_sha256 is None:
+                manifest_sha256 = _sha256_file(manifest_path)[1]
+            if not verified_files:
+                try:
+                    _load_runtime_root_manifest(
+                        staging,
+                        manifest_sha256,
+                        verify_files=True,
+                        progress=None,
+                    )
+                except Exception:
+                    _discard_runtime_import_checkpoint(cache_root, staging)
+                    raise
+                _write_runtime_import_checkpoint(
+                    cache_root,
+                    archive_identity=identity,
+                    candidate=staging,
+                    manifest_sha256=manifest_sha256,
+                    verified_files=True,
+                    next_member_index=next_member_index,
+                )
             with self._commit_lock:
                 if backup.exists():
                     _restore_interrupted_promotions(self.install_root)
@@ -1069,9 +1214,14 @@ class VideoCapabilityInstaller:
                 result = self.import_runtime_root(
                     runtime_root=final.resolve(),
                     manifest_sha256=manifest_sha256,
+                    verify_files=False,
                 )
                 if backup.exists():
-                    shutil.rmtree(backup)
+                    if backup.is_dir():
+                        shutil.rmtree(backup)
+                    else:
+                        backup.unlink()
+                (cache_root / _RUNTIME_IMPORT_CHECKPOINT).unlink(missing_ok=True)
                 return result
             except Exception as exc:
                 rollback_error: Exception | None = None
@@ -1079,7 +1229,7 @@ class VideoCapabilityInstaller:
                     try:
                         if final.exists():
                             _reject_reparse_tree(final)
-                            shutil.rmtree(final)
+                            os.replace(final, staging)
                         if backup.exists():
                             os.replace(backup, final)
                     except Exception as restore_exc:
@@ -1103,8 +1253,7 @@ class VideoCapabilityInstaller:
             )
             raise
         finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+            pass
 
     def start_runtime_archive_import(self, *, runtime_archive: Path) -> str:
         try:
@@ -1399,6 +1548,7 @@ class VideoCapabilityInstaller:
         *,
         runtime_root: Path,
         manifest_sha256: str,
+        verify_files: bool = True,
     ) -> str:
         try:
             root = runtime_root.resolve(strict=True)
@@ -1408,7 +1558,7 @@ class VideoCapabilityInstaller:
         external_environment = _load_runtime_root_manifest(
             root,
             manifest_sha256,
-            verify_files=True,
+            verify_files=verify_files,
             progress=self._update_runtime_import_progress,
         )
         self._set_runtime_import_state("testing")
@@ -1927,11 +2077,16 @@ def _extract_runtime_zip_safely(
     archive_path: Path,
     destination: Path,
     *,
+    resume: bool = False,
+    next_member_index: int = 0,
+    checkpoint_progress: Callable[[int], None] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
     """Extract a published portable runtime; its signed manifest verifies files next."""
 
-    destination.mkdir(parents=True, exist_ok=False)
+    destination.mkdir(parents=True, exist_ok=resume)
+    if resume:
+        _reject_reparse_tree(destination)
     written: set[str] = set()
     extracted_bytes = 0
     try:
@@ -1942,6 +2097,7 @@ def _extract_runtime_zip_safely(
                 raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_TOO_LARGE")
             if progress is not None:
                 progress(0, total_bytes)
+            normalized: list[tuple[zipfile.ZipInfo, str]] = []
             for member in members:
                 mode = (member.external_attr >> 16) & 0o170000
                 raw = (
@@ -1960,19 +2116,51 @@ def _extract_runtime_zip_safely(
                 if folded in written:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_DUPLICATE_PATH")
                 written.add(folded)
+                normalized.append((member, relative))
+            start_index = 0
+            if resume:
+                checkpoint_index = min(next_member_index, len(normalized))
+                start_index = max(0, checkpoint_index - 256)
+                for member, relative in normalized[start_index:checkpoint_index]:
+                    if member.is_dir():
+                        continue
+                    target = _inside(destination, destination / relative)
+                    if (
+                        not target.is_file()
+                        or _is_reparse_point(target)
+                        or target.stat().st_size != member.file_size
+                    ):
+                        break
+                    start_index += 1
+            for index, (member, relative) in enumerate(normalized[start_index:], start=start_index):
                 target = _inside(destination, destination / relative)
                 if member.is_dir():
+                    if target.exists() and not target.is_dir():
+                        raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
                     target.mkdir(parents=True, exist_ok=True)
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    if not target.is_file() or _is_reparse_point(target):
+                        raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+                    if target.stat().st_size == member.file_size:
+                        extracted_bytes += member.file_size
+                        if progress is not None:
+                            progress(extracted_bytes, total_bytes)
+                        continue
+                    target.unlink()
                 with archive.open(member) as source, target.open("xb") as output:
                     while chunk := source.read(1024 * 1024):
                         output.write(chunk)
                         extracted_bytes += len(chunk)
                         if progress is not None:
                             progress(extracted_bytes, total_bytes)
+                if checkpoint_progress is not None and (index + 1) % 256 == 0:
+                    checkpoint_progress(index + 1)
+            if checkpoint_progress is not None:
+                checkpoint_progress(len(normalized))
             if "runtime-manifest.json" not in {
-                value.casefold() for value in written
+                value.casefold() for _, value in normalized
             }:
                 raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
