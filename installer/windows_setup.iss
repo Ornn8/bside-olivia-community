@@ -22,10 +22,6 @@ OutputDir={#OutputDir}
 OutputBaseFilename=Olivia-Setup-x64
 Compression=lzma2/max
 SolidCompression=yes
-#ifdef PrivatePayload
-DiskSpanning=yes
-DiskSliceSize=2100000000
-#endif
 WizardStyle=modern
 LicenseFile={#PayloadRoot}\LICENSE
 SetupIconFile={#PayloadRoot}\installer\assets\olivia.ico
@@ -38,9 +34,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#PayloadRoot}\*"; Excludes: "offline\video-runtime\*"; DestDir: "{tmp}\OliviaPayload"; Flags: recursesubdirs createallsubdirs dontcopy noencryption ignoreversion
-#ifdef PrivatePayload
-Source: "{#PayloadRoot}\offline\video-runtime\*"; DestDir: "{tmp}\OliviaPayload\offline\video-runtime"; Flags: recursesubdirs createallsubdirs dontcopy noencryption ignoreversion nocompression
-#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："; Flags: unchecked
@@ -188,6 +181,15 @@ begin
     ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
     ' -NonInteractive' +
     ' -SkipShortcut';
+#ifdef PrivatePayload
+  Params := Params +
+    ' -VideoRuntimePath ' + AddQuotes(
+      ExpandConstant('{src}\Olivia-video-runtime-private.zip')
+    ) +
+    ' -VideoOfflineRoot ' + AddQuotes(
+      ExpandConstant('{src}\Olivia-video-offline-private')
+    );
+#endif
   if Trim(OfficialDirPage.Values[0]) <> '' then
     Params := Params + ' -OfficialRoot ' + AddQuotes(OfficialDirPage.Values[0]);
 

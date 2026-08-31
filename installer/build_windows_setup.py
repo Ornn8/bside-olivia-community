@@ -25,6 +25,9 @@ from installer.component_update import ComponentUpdateError, _validate_relative_
 
 MANIFEST_NAME = "offline-core-assets.json"
 SETUP_NAME = "Olivia-Setup-x64.exe"
+VIDEO_RUNTIME_SIDECAR_NAME = "Olivia-video-runtime-private.zip"
+VIDEO_OFFLINE_SIDECAR_NAME = "Olivia-video-offline-private"
+PRIVATE_RECEIPT_NAME = "Olivia-Setup-x64.receipt.json"
 VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
 FORBIDDEN_MEDIA_SUFFIXES = {
     ".aac",
@@ -41,7 +44,7 @@ FORBIDDEN_MEDIA_SUFFIXES = {
     ".webm",
     ".wmv",
 }
-VIDEO_RUNTIME_PATH = "video-runtime/Olivia-video-runtime-private.zip"
+VIDEO_RUNTIME_PATH = VIDEO_RUNTIME_SIDECAR_NAME
 VIDEO_RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_COSYVOICE_PYTHON",
     "OLIVIA_LATENTSYNC_PYTHON",
@@ -158,6 +161,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/full_patch.py",
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
+    "installer/activate_private_video.py",
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
@@ -199,6 +203,9 @@ REQUIRED_PAYLOAD_FILES = {
     "installer/Install.ps1",
     "installer/runtime-requirements.txt",
 }
+PRIVATE_REQUIRED_PAYLOAD_FILES = {
+    "installer/activate_private_video.py",
+}
 
 
 class SetupBuildError(RuntimeError):
@@ -211,6 +218,28 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _directory_file_records(root: Path, *, prefix: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        records.append(
+            {
+                "path": f"{prefix}/{relative}",
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    return records
+
+
+def _tree_sha256(records: list[dict[str, object]]) -> str:
+    return hashlib.sha256(
+        json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _voice_reference_metadata(path: Path) -> dict[str, object]:
@@ -570,6 +599,189 @@ def _is_reparse_point(path: Path) -> bool:
     )
 
 
+def _absolute_sidecar_source(
+    path: Path, *, directory: bool, error_code: str
+) -> Path:
+    try:
+        candidate = Path(os.path.abspath(path.expanduser()))
+        for current in reversed((candidate, *candidate.parents)):
+            if os.path.lexists(current) and _is_reparse_point(current):
+                raise SetupBuildError(error_code)
+        valid = candidate.is_dir() if directory else candidate.is_file()
+        if not valid:
+            raise SetupBuildError(error_code)
+        return candidate
+    except SetupBuildError:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise SetupBuildError(error_code) from exc
+
+
+def _assert_no_reparse_tree(root: Path, *, error_code: str) -> None:
+    try:
+        for current, directories, filenames in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for name in (*directories, *filenames):
+                if _is_reparse_point(current_path / name):
+                    raise SetupBuildError(error_code)
+    except SetupBuildError:
+        raise
+    except OSError as exc:
+        raise SetupBuildError(error_code) from exc
+
+
+def _copytree_without_reparse(source: Path, destination: Path) -> None:
+    def reject_reparse(directory: str, names: list[str]) -> tuple[str, ...]:
+        current = Path(directory)
+        if any(_is_reparse_point(current / name) for name in names):
+            raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+        return ()
+
+    try:
+        shutil.copytree(
+            source,
+            destination,
+            symlinks=True,
+            ignore=reject_reparse,
+        )
+    except SetupBuildError:
+        raise
+    except OSError as exc:
+        raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID") from exc
+
+
+def _video_offline_metadata(manifest_path: Path, root: Path) -> dict[str, object]:
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        payload = json.loads(manifest_bytes.decode("utf-8"))
+        physical_root = _absolute_sidecar_source(
+            root, directory=True, error_code="SETUP_VIDEO_OFFLINE_INVALID"
+        )
+        bundles = payload.get("bundles") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != "olivia.video-capability-bom.v1"
+            or not isinstance(payload.get("version"), str)
+            or not payload["version"]
+            or not isinstance(bundles, list)
+        ):
+            raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+        expected: dict[str, tuple[str, int, str]] = {}
+        seen_bundles: set[str] = set()
+        for bundle in bundles:
+            if not isinstance(bundle, dict):
+                raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            bundle_id = bundle.get("id")
+            files = bundle.get("files")
+            if (
+                bundle_id not in {"ordinary_video", "music_video"}
+                or bundle_id in seen_bundles
+                or not isinstance(files, list)
+                or not files
+            ):
+                raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            seen_bundles.add(bundle_id)
+            for item in files:
+                if not isinstance(item, dict):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                try:
+                    relative = _validate_relative_path(item.get("path"))
+                except ComponentUpdateError as exc:
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID") from exc
+                size = item.get("size_bytes")
+                digest = item.get("sha256")
+                path = f"{bundle_id}/{relative}"
+                folded = path.casefold()
+                if (
+                    type(size) is not int
+                    or size < 1
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or folded in expected
+                ):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                expected[folded] = (path, size, digest)
+        if seen_bundles != {"ordinary_video", "music_video"}:
+            raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+
+        actual_files: dict[str, Path] = {}
+        actual_directories: set[str] = set()
+        for current, directories, filenames in os.walk(physical_root, followlinks=False):
+            current_path = Path(current)
+            if _is_reparse_point(current_path):
+                raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            for name in directories:
+                directory = current_path / name
+                if _is_reparse_point(directory):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                relative = directory.relative_to(physical_root).as_posix()
+                actual_directories.add(relative.casefold())
+            for name in filenames:
+                path = current_path / name
+                if not path.is_file() or _is_reparse_point(path):
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                relative = path.relative_to(physical_root).as_posix()
+                folded = relative.casefold()
+                if folded in actual_files:
+                    raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+                actual_files[folded] = path
+        expected_directories = {
+            parent.as_posix().casefold()
+            for path, _, _ in expected.values()
+            for parent in PurePosixPath(path).parents
+            if parent.as_posix() != "."
+        }
+        if set(actual_files) != set(expected) or actual_directories - expected_directories:
+            raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+        total = 0
+        for folded, (_, size, digest) in expected.items():
+            path = actual_files[folded]
+            if path.stat().st_size != size or _sha256(path) != digest:
+                raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID")
+            total += size
+        return {
+            "manifest_version": payload["version"],
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "file_count": len(expected),
+            "size_bytes": total,
+        }
+    except SetupBuildError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SetupBuildError("SETUP_VIDEO_OFFLINE_INVALID") from exc
+
+
+def _verify_pinned_private_sidecars(
+    payload: Path, runtime: Path, video_offline_root: Path
+) -> None:
+    try:
+        private_manifest = json.loads(
+            (payload / "offline" / MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+        expected_runtime = private_manifest["video_runtime"]
+        expected_offline = private_manifest["video_offline"]
+        actual_runtime = {
+            "path": VIDEO_RUNTIME_SIDECAR_NAME,
+            "size_bytes": runtime.stat().st_size,
+            "sha256": _sha256(runtime),
+        }
+        actual_offline = {
+            "path": VIDEO_OFFLINE_SIDECAR_NAME,
+            **_video_offline_metadata(
+                payload / "installer" / "video-capability-manifest.json",
+                video_offline_root,
+            ),
+        }
+        if actual_runtime != expected_runtime or actual_offline != expected_offline:
+            raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
+    except SetupBuildError as exc:
+        if str(exc) == "SETUP_PRIVATE_SIDECAR_CHANGED":
+            raise
+        raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED") from exc
+    except (KeyError, OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED") from exc
+
+
 def _git_tracked_files(source: Path) -> set[str]:
     try:
         result = subprocess.run(
@@ -661,7 +873,10 @@ def _load_and_verify_manifest(
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID") from exc
     if not isinstance(manifest, dict):
         raise SetupBuildError("SETUP_OFFLINE_MANIFEST_INVALID")
-    if any(key in manifest for key in ("distribution", "voice_reference", "video_runtime")):
+    if any(
+        key in manifest
+        for key in ("distribution", "voice_reference", "video_runtime", "video_offline")
+    ):
         raise SetupBuildError("SETUP_INPUT_VOICE_REFERENCE_FORBIDDEN")
 
     if validate_schema:
@@ -731,6 +946,7 @@ def prepare_setup_payload(
     distribution: str = "public",
     voice_reference: Path | None = None,
     video_runtime: Path | None = None,
+    video_offline_root: Path | None = None,
     validate_schema: bool = True,
 ) -> None:
     source = source.expanduser().resolve()
@@ -746,11 +962,20 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_PRIVATE_ONLY")
     if distribution == "private" and video_runtime is None:
         raise SetupBuildError("SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED")
+    if video_offline_root is not None and distribution != "private":
+        raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
+    if distribution == "private" and video_offline_root is None:
+        raise SetupBuildError("SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED")
     if destination.exists():
         raise SetupBuildError("SETUP_PAYLOAD_EXISTS")
     _load_and_verify_manifest(source, offline, validate_schema=validate_schema)
     tracked = _git_tracked_files(source)
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
+        raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
+    if (
+        distribution == "private"
+        and not PRIVATE_REQUIRED_PAYLOAD_FILES.issubset(tracked)
+    ):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
     selected = sorted(relative for relative in tracked if _is_release_file(relative))
     if any(
@@ -772,28 +997,33 @@ def prepare_setup_payload(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
         shutil.copytree(offline, staging / "offline")
-        if voice_reference is not None and video_runtime is not None:
-            reference = voice_reference.expanduser().resolve()
-            if (
-                not reference.is_file()
-                or _is_reparse_point(reference)
-                or reference.stat().st_size < 1
-            ):
+        if (
+            voice_reference is not None
+            and video_runtime is not None
+            and video_offline_root is not None
+        ):
+            reference = _absolute_sidecar_source(
+                voice_reference,
+                directory=False,
+                error_code="SETUP_VOICE_REFERENCE_INVALID",
+            )
+            if reference.stat().st_size < 1:
                 raise SetupBuildError("SETUP_VOICE_REFERENCE_INVALID")
             target = staging / "offline" / Path(*VOICE_REFERENCE_PATH.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(reference, target)
-            runtime_source = video_runtime.expanduser()
-            if (
-                not runtime_source.is_file()
-                or _is_reparse_point(runtime_source)
-                or runtime_source.stat().st_size < 1
-            ):
+            runtime_source = _absolute_sidecar_source(
+                video_runtime,
+                directory=False,
+                error_code="SETUP_VIDEO_RUNTIME_INVALID",
+            )
+            if runtime_source.stat().st_size < 1:
                 raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
-            runtime_target = staging / "offline" / Path(*VIDEO_RUNTIME_PATH.split("/"))
-            runtime_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(runtime_source.resolve(), runtime_target)
-            runtime_metadata = _video_runtime_metadata(runtime_target)
+            runtime_metadata = _video_runtime_metadata(runtime_source)
+            video_offline_metadata = _video_offline_metadata(
+                staging / "installer" / "video-capability-manifest.json",
+                video_offline_root,
+            )
             manifest_path = staging / "offline" / MANIFEST_NAME
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["distribution"] = "private"
@@ -806,6 +1036,10 @@ def prepare_setup_payload(
             manifest["video_runtime"] = {
                 "path": VIDEO_RUNTIME_PATH,
                 **runtime_metadata,
+            }
+            manifest["video_offline"] = {
+                "path": VIDEO_OFFLINE_SIDECAR_NAME,
+                **video_offline_metadata,
             }
             manifest_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
@@ -851,25 +1085,58 @@ def build_windows_setup(
     distribution: str = "public",
     voice_reference: Path | None = None,
     video_runtime: Path | None = None,
+    video_offline_root: Path | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     setup = output / SETUP_NAME
     checksum = output / f"{SETUP_NAME}.sha256"
-    if any(output.glob("Olivia-Setup-x64*")):
+    sidecar = output / VIDEO_RUNTIME_SIDECAR_NAME
+    offline_sidecar = output / VIDEO_OFFLINE_SIDECAR_NAME
+    receipt = output / PRIVATE_RECEIPT_NAME
+    if (
+        any(output.glob("Olivia-Setup-x64*"))
+        or sidecar.exists()
+        or offline_sidecar.exists()
+        or receipt.exists()
+    ):
         raise SetupBuildError("SETUP_OUTPUT_EXISTS")
     payload = output / f".setup-payload-{uuid.uuid4().hex}"
+    sidecar_staging = output / f".{VIDEO_RUNTIME_SIDECAR_NAME}.{uuid.uuid4().hex}.tmp"
+    offline_staging = output / f".{VIDEO_OFFLINE_SIDECAR_NAME}.{uuid.uuid4().hex}.tmp"
     compiler = _find_iscc(iscc)
     completed = False
     try:
+        if video_runtime is not None:
+            runtime_source = _absolute_sidecar_source(
+                video_runtime,
+                directory=False,
+                error_code="SETUP_VIDEO_RUNTIME_INVALID",
+            )
+            shutil.copy2(runtime_source, sidecar_staging)
+            os.replace(sidecar_staging, sidecar)
+        if video_offline_root is not None:
+            offline_source = _absolute_sidecar_source(
+                video_offline_root,
+                directory=True,
+                error_code="SETUP_VIDEO_OFFLINE_INVALID",
+            )
+            _assert_no_reparse_tree(
+                offline_source, error_code="SETUP_VIDEO_OFFLINE_INVALID"
+            )
+            _copytree_without_reparse(offline_source, offline_staging)
+            os.replace(offline_staging, offline_sidecar)
         prepare_setup_payload(
             source,
             offline,
             payload,
             distribution=distribution,
             voice_reference=voice_reference,
-            video_runtime=video_runtime,
+            video_runtime=sidecar if video_runtime is not None else None,
+            video_offline_root=(
+                offline_sidecar if video_offline_root is not None else None
+            ),
         )
         command = [
             os.fspath(compiler),
@@ -883,31 +1150,83 @@ def build_windows_setup(
         result = subprocess.run(command, check=False, timeout=900)
         if result.returncode != 0 or not setup.is_file():
             raise SetupBuildError("SETUP_COMPILE_FAILED")
-        artifacts = sorted(
+        compiled_artifacts = sorted(
             path for path in output.glob("Olivia-Setup-x64*")
             if path.is_file() and path != checksum
         )
+        if compiled_artifacts != [setup]:
+            raise SetupBuildError("SETUP_COMPILE_FAILED")
+        if video_runtime is not None and video_offline_root is not None:
+            _verify_pinned_private_sidecars(payload, sidecar, offline_sidecar)
+        artifacts = [setup]
         if video_runtime is not None:
-            part_numbers: list[int] = []
-            for artifact in artifacts:
-                if artifact == setup:
-                    continue
-                prefix, suffix = "Olivia-Setup-x64-", ".bin"
-                if not artifact.name.startswith(prefix) or not artifact.name.endswith(suffix):
-                    raise SetupBuildError("SETUP_COMPILE_FAILED")
-                number = artifact.name[len(prefix):-len(suffix)]
-                if not number.isdecimal() or str(int(number)) != number:
-                    raise SetupBuildError("SETUP_COMPILE_FAILED")
-                part_numbers.append(int(number))
-            if not part_numbers or sorted(part_numbers) != list(range(1, len(part_numbers) + 1)):
-                raise SetupBuildError("SETUP_COMPILE_FAILED")
-        records = [
+            artifacts.append(sidecar)
+        file_records = [
             {"path": os.fspath(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
             for path in artifacts
         ]
+        if video_offline_root is not None:
+            offline_file_records = _directory_file_records(
+                offline_sidecar, prefix=VIDEO_OFFLINE_SIDECAR_NAME
+            )
+            offline_size = sum(int(record["size_bytes"]) for record in offline_file_records)
+            file_records.extend(offline_file_records)
+            artifacts.append(offline_sidecar)
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "olivia.private-setup-receipt.v1",
+                        "distribution": "private",
+                        "version": version,
+                        "offline_root": VIDEO_OFFLINE_SIDECAR_NAME,
+                        "files": [
+                            {
+                                **record,
+                                "path": (
+                                    Path(str(record["path"])).name
+                                    if Path(str(record["path"])).is_absolute()
+                                    else record["path"]
+                                ),
+                            }
+                            for record in file_records
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            file_records.append(
+                {
+                    "path": PRIVATE_RECEIPT_NAME,
+                    "size_bytes": receipt.stat().st_size,
+                    "sha256": _sha256(receipt),
+                }
+            )
+            records = [
+                *(
+                    record
+                    for record in file_records
+                    if Path(str(record["path"])).is_absolute()
+                ),
+                {
+                    "path": os.fspath(offline_sidecar),
+                    "size_bytes": offline_size,
+                    "sha256": _tree_sha256(offline_file_records),
+                },
+            ]
+        else:
+            records = file_records
+        artifacts.sort()
         digest = next(record["sha256"] for record in records if Path(record["path"]) == setup)
         checksum.write_text(
-            "".join(f"{record['sha256']}  {Path(record['path']).name}\n" for record in records),
+            "".join(
+                f"{record['sha256']}  "
+                f"{Path(str(record['path'])).name if Path(str(record['path'])).is_absolute() else record['path']}\n"
+                for record in file_records
+            ),
             encoding="ascii",
         )
         result = {
@@ -925,13 +1244,20 @@ def build_windows_setup(
         raise SetupBuildError("SETUP_BUILD_FAILED") from exc
     finally:
         shutil.rmtree(payload, ignore_errors=True)
+        sidecar_staging.unlink(missing_ok=True)
+        shutil.rmtree(offline_staging, ignore_errors=True)
         if not completed:
             cleanup_failed = False
-            for artifact in output.glob("Olivia-Setup-x64*"):
+            for artifact in (*output.glob("Olivia-Setup-x64*"), sidecar, receipt):
                 try:
                     artifact.unlink(missing_ok=True)
                 except OSError:
                     cleanup_failed = True
+            try:
+                if offline_sidecar.exists():
+                    shutil.rmtree(offline_sidecar)
+            except OSError:
+                cleanup_failed = True
             if cleanup_failed:
                 raise SetupBuildError("SETUP_OUTPUT_CLEANUP_FAILED")
 
@@ -946,6 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--distribution", choices=("public", "private"), default="public")
     parser.add_argument("--voice-reference", type=Path)
     parser.add_argument("--video-runtime", type=Path)
+    parser.add_argument("--video-offline-root", type=Path)
     args = parser.parse_args(argv)
     try:
         result = build_windows_setup(
@@ -957,6 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
             distribution=args.distribution,
             voice_reference=args.voice_reference,
             video_runtime=args.video_runtime,
+            video_offline_root=args.video_offline_root,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

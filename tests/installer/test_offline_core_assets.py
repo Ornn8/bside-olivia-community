@@ -64,14 +64,37 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
 def test_installer_accepts_only_complete_private_video_runtime_manifest() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
+    assert "[string]$VideoRuntimePath = ''" in script
+    assert "[string]$VideoOfflineRoot = ''" in script
     assert "$hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'" in script
-    assert "$hasVideoRuntime -ne $hasVoiceReference" in script
-    assert "$manifestNames += @('distribution', 'voice_reference', 'video_runtime')" in script
+    assert "$hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'" in script
+    assert "$hasVideoRuntime -ne $hasVoiceReference -or $hasVideoOffline -ne $hasVoiceReference" in script
+    assert "$manifestNames += @('distribution', 'voice_reference', 'video_runtime', 'video_offline')" in script
     assert "Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')" in script
-    assert "$manifest.video_runtime.path -cne 'video-runtime/Olivia-video-runtime-private.zip'" in script
-    assert "$videoRuntimePath = Resolve-OfflineAsset -Root $Root -Asset $manifest.video_runtime" in script
+    assert "Assert-OfflineObjectShape -Value $manifest.video_offline -Names @('path', 'manifest_version', 'manifest_sha256', 'file_count', 'size_bytes')" in script
+    assert "$manifest.video_runtime.path -cne 'Olivia-video-runtime-private.zip'" in script
+    assert "$manifest.video_offline.path -cne 'Olivia-video-offline-private'" in script
+    assert "$videoRuntimePath = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $manifest.video_runtime" in script
+    assert "$videoOfflinePath = Resolve-VideoOfflineSidecar -LiteralPath $VideoOfflineRoot -Asset $manifest.video_offline" in script
+    assert "Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot" in script
     assert "verified = [bool]$true" in script
     assert "VideoRuntime = $videoRuntime" in script
+    assert "VideoOffline = $videoOffline" in script
+
+
+def test_private_video_activation_must_finish_before_install_transaction_commit() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+
+    activation = "$privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))"
+    assert activation in script
+    assert "--manifest-version" in script
+    assert "--manifest-sha256" in script
+    assert "--expected-file-count" in script
+    assert "--expected-size-bytes" in script
+    assert "VIDEO_PRIVATE_NOT_READY" in script
+    assert script.index(activation) < script.index(
+        '[IO.File]::Move("$installTransaction.active", "$installTransaction.cleanup")'
+    )
 
 
 def test_offline_core_asset_example_matches_its_public_schema() -> None:
@@ -97,20 +120,38 @@ def test_public_schema_accepts_only_complete_hash_locked_private_assets() -> Non
     example["distribution"] = "private"
     example["voice_reference"] = {"path": "voice/olivia-reference.wav", "size_bytes": 155278, "sha256": "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf", "wave": _wave_metadata(frame_count=77600)}
     example["video_runtime"] = {
-        "path": "video-runtime/Olivia-video-runtime-private.zip",
+        "path": "Olivia-video-runtime-private.zip",
         "size_bytes": 1,
         "sha256": "0" * 64,
+    }
+    example["video_offline"] = {
+        "path": "Olivia-video-offline-private",
+        "manifest_version": "fixture-video",
+        "manifest_sha256": "1" * 64,
+        "file_count": 32,
+        "size_bytes": 28_146_607_024,
     }
     assert not list(validator.iter_errors(example))
     missing_runtime = deepcopy(example)
     del missing_runtime["video_runtime"]
     assert list(validator.iter_errors(missing_runtime))
+    missing_offline = deepcopy(example)
+    del missing_offline["video_offline"]
+    assert list(validator.iter_errors(missing_offline))
     missing_marker = deepcopy(example)
     del missing_marker["distribution"]
     assert list(validator.iter_errors(missing_marker))
     wrong_path = deepcopy(example)
     wrong_path["voice_reference"]["path"] = "voice/arbitrary.wav"
     assert list(validator.iter_errors(wrong_path))
+    embedded_runtime = deepcopy(example)
+    embedded_runtime["video_runtime"]["path"] = (
+        "video-runtime/Olivia-video-runtime-private.zip"
+    )
+    assert list(validator.iter_errors(embedded_runtime))
+    renamed_offline = deepcopy(example)
+    renamed_offline["video_offline"]["path"] = "renamed-video-offline"
+    assert list(validator.iter_errors(renamed_offline))
     extra_field = deepcopy(example)
     extra_field["voice_reference"]["license"] = "caller-asserted"
     assert list(validator.iter_errors(extra_field))
@@ -230,12 +271,17 @@ def _run_runtime_publish_fixture(
     voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
     video_runtime: bytes | None = None, video_runtime_sha256: str | None = None,
     video_runtime_missing: bool = False,
+    video_runtime_name: str = "Olivia-video-runtime-private.zip",
     video_runtime_verified: bool = True, preinstalled_video_runtime: bytes | None = None,
     stale_video_backup: bytes | None = None, reject_video_source_rehash: bool = False,
     block_video_cleanup: bool = False,
     block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
     product_root: Path | None = None, existing_voice_pair: bool = False,
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
+    private_video_exit_code: int = 0,
+    private_video_mutates_tree: bool = False,
+    interrupt_after_private_video: bool = False,
+    fail_core_asset_preflight: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     payload = tmp_path / "payload"
     payload_installer = payload / "installer"
@@ -245,6 +291,7 @@ def _run_runtime_publish_fixture(
         "runtime-requirements.txt",
         "mem0-runtime-requirements.txt",
         "verify_mem0_runtime.py",
+        "video-capability-manifest.json",
     ):
         shutil.copy2(ROOT / "installer" / name, payload_installer / name)
     bootstrap_actions = ""
@@ -260,6 +307,32 @@ def _run_runtime_publish_fixture(
         + bootstrap_actions
         + f"print(json.dumps({{'status': '{'OK' if bootstrap_exit_code == 0 else 'ERROR'}', 'code': 'SYNTHETIC_PATCH_FAILED'}}))\n"
         f"raise SystemExit({bootstrap_exit_code})\n",
+        encoding="utf-8",
+    )
+    (payload_installer / "activate_private_video.py").write_text(
+        "import json, pathlib, sys\n"
+        + (
+            "install_root = pathlib.Path(sys.argv[sys.argv.index('--install-root') + 1])\n"
+            "video_root = install_root / 'data/capabilities/video'\n"
+            "(video_root / 'ordinary_video').mkdir(parents=True, exist_ok=True)\n"
+            "(video_root / 'music_video').mkdir(parents=True, exist_ok=True)\n"
+            "(video_root / 'runtime').mkdir(parents=True, exist_ok=True)\n"
+            "(video_root / 'ordinary_video/old.txt').write_text('replaced')\n"
+            "(video_root / 'music_video/partial.txt').write_text('partial')\n"
+            "(video_root / 'runtime/partial.txt').write_text('partial')\n"
+            if private_video_mutates_tree
+            else ""
+        )
+        + (
+            "print(json.dumps({'status': 'READY', 'bundles': "
+            if private_video_exit_code == 0
+            else "print(json.dumps({'status': 'ERROR', 'code': 'VIDEO_PRIVATE_ACTIVATION_FAILED', 'bundles': "
+        )
+        +
+        "[{'id': 'ordinary_video', 'state': 'ready'}, "
+        "{'id': 'music_video', 'state': 'ready'}], "
+        "'runtime_import': {'state': 'ready'}}))\n"
+        f"raise SystemExit({private_video_exit_code})\n",
         encoding="utf-8",
     )
     official = tmp_path / "official"
@@ -294,28 +367,36 @@ def _run_runtime_publish_fixture(
         )
 
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
-    original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements"
+    original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot"
     replacement = (
         "$voiceManifest = if ($env:BSIDE_TEST_PRIVATE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_PRIVATE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
         "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference } else { $null }\n"
-        "$videoRuntime = if ($voiceManifest) { $voiceManifest.video_runtime.path = $env:BSIDE_TEST_VIDEO_RUNTIME; $voiceManifest.video_runtime } else { $null }\n"
-        "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime }"
+        "$videoRuntime = if ($voiceManifest) { $resolvedVideoRuntime = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $voiceManifest.video_runtime; $voiceManifest.video_runtime.path = $resolvedVideoRuntime; $voiceManifest.video_runtime } else { $null }\n"
+        "$videoOffline = if ($voiceManifest) { $resolvedVideoOffline = Resolve-VideoOfflineSidecar -LiteralPath $VideoOfflineRoot -Asset $voiceManifest.video_offline; $voiceManifest.video_offline.path = $resolvedVideoOffline; $voiceManifest.video_offline } else { $null }\n"
+        "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime; VideoOffline = $videoOffline }"
     )
     if reject_video_source_rehash:
         replacement = (
             "$script:OriginalGetSha256 = ${function:Get-Sha256}\n"
+            "$script:VideoRuntimeSourceHashCalls = 0\n"
             "function Get-Sha256 { param([Parameter(Mandatory)][string]$LiteralPath) "
-            "if ($LiteralPath -ceq $env:BSIDE_TEST_VIDEO_RUNTIME) { throw 'VIDEO_RUNTIME_SOURCE_REHASHED' }; "
+            "if ($LiteralPath -ceq $env:BSIDE_TEST_VIDEO_RUNTIME) { $script:VideoRuntimeSourceHashCalls += 1; "
+            "if ($script:VideoRuntimeSourceHashCalls -gt 1) { throw 'VIDEO_RUNTIME_SOURCE_REHASHED' } }; "
             "& $script:OriginalGetSha256 -LiteralPath $LiteralPath }\n"
             + replacement
         )
+    if fail_core_asset_preflight:
+        replacement = "throw 'VIDEO_RUNTIME_MISSING'\n" + replacement
     assert script.count(original) == 1
     script = script.replace(original, replacement)
     dependency_probe = "if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {"
     assert script.count(dependency_probe) == 2
     script = script.replace(dependency_probe, "if ($false) {", 1)
     if cleanup_obstruction == "voice":
-        marker = "} elseif ($phase -ceq 'cleanup' -and [IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }"
+        marker = (
+            "} elseif ($phase -ceq 'cleanup') {\n"
+            "            if ([IO.Directory]::Exists($shared)) { Repair-ManagedVoiceTransaction -SharedRoot $shared }"
+        )
         obstruction = marker.replace("Repair-Managed", "$voiceLock = [IO.File]::Open((Get-ChildItem -LiteralPath $shared -Filter '*.wav.bak' | Select-Object -First 1).FullName, 'Open', 'Read', 'None'); Repair-Managed")
         assert script.count(marker) == 1
         script = script.replace(marker, obstruction)
@@ -331,6 +412,21 @@ def _run_runtime_publish_fixture(
         marker = "$installExitCode = $LASTEXITCODE"
         assert script.count(marker) == 1
         script = script.replace(marker, "[Environment]::FailFast('SYNTHETIC_BOOTSTRAP_INTERRUPTION')\n" + marker)
+    if interrupt_after_private_video:
+        marker = "$privateVideoOutput = @(& $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments))"
+        assert script.count(marker) == 1
+        script = script.replace(
+            marker,
+            marker + "\n        [Environment]::FailFast('SYNTHETIC_PRIVATE_VIDEO_INTERRUPTION')",
+        )
+    if block_voice_sidecar:
+        marker = "$privateVideoTransaction = Start-ManagedPrivateVideoTransaction -InstallRoot $Destination -TransactionId $installTransactionId -PendingMarker $privateVideoPending -VideoRuntime $coreAssets.VideoRuntime"
+        assert script.count(marker) == 1
+        script = script.replace(
+            marker,
+            marker
+            + "\n        New-Item -ItemType Directory -Force -Path (Join-Path $Destination 'data\\capabilities\\video\\shared\\linli-reference.json') | Out-Null",
+        )
     if block_video_cleanup:
         marker = "Complete-ManagedVideoRuntimeTransaction -Transaction $videoRuntimeTransaction"
         obstruction = (
@@ -381,23 +477,31 @@ def _run_runtime_publish_fixture(
         reference = tmp_path / "distributor-reference.wav"
         if not voice_reference_missing:
             reference.write_bytes(voice_reference)
-        runtime_archive = tmp_path / "Olivia-video-runtime-private.zip"
+        runtime_archive = tmp_path / video_runtime_name
+        video_offline_root = tmp_path / "Olivia-video-offline-private"
+        video_offline_root.mkdir()
         if not video_runtime_missing:
             runtime_archive.write_bytes(video_runtime)
         manifest = {"voice_reference": {"path": "voice/olivia-reference.wav", "size_bytes": len(voice_reference),
                     "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
                     "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()},
-                    "video_runtime": {"path": "video-runtime/Olivia-video-runtime-private.zip",
+                    "video_runtime": {"path": "Olivia-video-runtime-private.zip",
                                        "size_bytes": len(video_runtime),
                                        "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest(),
-                                       "verified": video_runtime_verified}}
+                                       "verified": video_runtime_verified},
+                    "video_offline": {"path": "Olivia-video-offline-private",
+                                      "manifest_version": "2026.08.28",
+                                      "manifest_sha256": hashlib.sha256(
+                                          (payload_installer / "video-capability-manifest.json").read_bytes()
+                                      ).hexdigest(),
+                                      "file_count": 32,
+                                      "size_bytes": 28_146_607_024}}
         manifest_path = tmp_path / "offline-core-assets.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
         environment["BSIDE_TEST_VIDEO_RUNTIME"] = str(runtime_archive)
         environment["BSIDE_TEST_PRIVATE_MANIFEST"] = str(manifest_path)
-    result = subprocess.run(
-        [
+    command = [
             "powershell",
             "-NoProfile",
             "-NonInteractive",
@@ -413,7 +517,18 @@ def _run_runtime_publish_fixture(
             str(official),
             "-NonInteractive",
             "-SkipShortcut",
-        ],
+        ]
+    if voice_reference is not None:
+        command.extend(
+            (
+                "-VideoRuntimePath",
+                str(runtime_archive),
+                "-VideoOfflineRoot",
+                str(video_offline_root),
+            )
+        )
+    result = subprocess.run(
+        command,
         env=environment,
         capture_output=True,
         text=True,
@@ -456,6 +571,99 @@ def test_voice_publish_failure_restores_managed_app_runtime_and_voice(tmp_path: 
     assert installed.read_bytes() == b"old-reference" and installed.with_suffix(".json").is_dir()
     assert _managed_video_runtime(product).read_bytes() == b"old-video-runtime"
     assert not list(product.glob(".install.rollback.*")) and not list((product / "runtime").glob("*.backup.*"))
+
+
+def test_private_video_activation_failure_rolls_back_install_and_runtime_archive(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    old_video = product / "install/data/capabilities/video"
+    for relative, content in (
+        ("ordinary_video/old.txt", "ordinary-old"),
+        ("music_video/old.txt", "music-old"),
+        ("runtime/old.txt", "runtime-old"),
+        ("runtime-environment.json", "environment-old"),
+        ("shared/old.txt", "shared-old"),
+    ):
+        target = old_video / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        product_root=product,
+        bootstrap_exit_code=0,
+        bootstrap_replaces_managed_app=True,
+        voice_reference=_voice_reference_bytes(),
+        private_video_exit_code=2,
+        private_video_mutates_tree=True,
+    )
+
+    assert result.returncode != 0
+    assert "VIDEO_PRIVATE_ACTIVATION_FAILED" in result.stdout + result.stderr
+    assert (product / "install/local_backend/old-backend.txt").is_file()
+    assert not (product / "install/local_backend/new-backend.txt").exists()
+    assert (product / "runtime/python-3.12.10-embed-amd64/old-runtime.txt").is_file()
+    assert _managed_video_runtime(product).read_bytes() == b"old-video-runtime"
+    assert (old_video / "ordinary_video/old.txt").read_text() == "ordinary-old"
+    assert (old_video / "music_video/old.txt").read_text() == "music-old"
+    assert (old_video / "runtime/old.txt").read_text() == "runtime-old"
+    assert (old_video / "runtime-environment.json").read_text() == "environment-old"
+    assert (old_video / "shared/old.txt").read_text() == "shared-old"
+    assert not (old_video / "music_video/partial.txt").exists()
+    assert not (old_video / "runtime/partial.txt").exists()
+    assert not list(old_video.parent.glob(".video.private-*"))
+
+
+def test_private_video_activation_failure_removes_fresh_partial_tree(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        private_video_exit_code=2,
+        private_video_mutates_tree=True,
+    )
+
+    assert result.returncode != 0
+    assert not (product / "install/data/capabilities/video").exists()
+
+
+def test_interrupted_private_video_activation_recovers_old_tree_on_next_run(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    old_video = product / "install/data/capabilities/video"
+    (old_video / "ordinary_video").mkdir(parents=True)
+    (old_video / "ordinary_video/old.txt").write_text("ordinary-old")
+    old_runtime_sidecar = _managed_video_runtime(product)
+    old_runtime_sidecar.parent.mkdir(parents=True)
+    old_runtime_sidecar.write_bytes(b"runtime-old")
+
+    interrupted, _ = _run_runtime_publish_fixture(
+        tmp_path / "first",
+        product_root=product,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        private_video_mutates_tree=True,
+        interrupt_after_private_video=True,
+    )
+    assert interrupted.returncode != 0
+
+    recovered, _ = _run_runtime_publish_fixture(
+        tmp_path / "second",
+        product_root=product,
+        bootstrap_exit_code=23,
+        fail_core_asset_preflight=True,
+    )
+
+    assert recovered.returncode != 0
+    assert "VIDEO_RUNTIME_MISSING" in recovered.stdout + recovered.stderr
+    assert (old_video / "ordinary_video/old.txt").read_text() == "ordinary-old"
+    assert old_runtime_sidecar.read_bytes() == b"runtime-old"
+    assert not (old_video / "music_video/partial.txt").exists()
+    assert not list(old_video.parent.glob(".video.private-*"))
+    assert not list(product.glob(".install.transaction*"))
 
 
 @pytest.mark.parametrize("cleanup_obstruction", ["voice", "snapshot"])
@@ -536,6 +744,21 @@ def test_first_install_rejects_bad_video_runtime_before_publish(tmp_path: Path) 
 
     assert result.returncode != 0
     assert "VIDEO_RUNTIME_HASH_MISMATCH" in result.stdout + result.stderr
+    assert not _managed_video_runtime(product).exists()
+
+
+def test_first_install_rejects_renamed_video_runtime_sidecar_before_publish(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        video_runtime_name="renamed-runtime.zip",
+    )
+
+    assert result.returncode != 0
+    assert "VIDEO_RUNTIME_INVALID" in result.stdout + result.stderr
     assert not _managed_video_runtime(product).exists()
 
 
