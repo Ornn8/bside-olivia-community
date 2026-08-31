@@ -705,10 +705,13 @@ def test_runtime_archive_failure_keeps_the_specific_step_reason(tmp_path: Path) 
     archive = (tmp_path / "Olivia-video-runtime-broken.zip").resolve()
     with zipfile.ZipFile(archive, "w") as payload:
         payload.writestr("runtime-manifest.json", "{}")
+    configured_downloads = (tmp_path / "downloads").resolve()
+    configured_downloads.mkdir()
     installer = VideoCapabilityInstaller(
         data_root=(tmp_path / "data").resolve(),
         manifest=VideoManifest("1.0", ()),
         readiness_probe=lambda _environment: {},
+        runtime_archive_roots=(configured_downloads,),
     )
 
     with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ROOT_INVALID"):

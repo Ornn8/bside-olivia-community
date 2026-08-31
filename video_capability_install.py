@@ -1147,6 +1147,8 @@ class VideoCapabilityInstaller:
         archives = tuple(dict.fromkeys((*self._runtime_archives, *discovered)))
         archive = next((path for path in archives if path.is_file()), None)
         if archive is None:
+            if state == "failed":
+                return
             self._runtime_import = {
                 "state": "required",
                 "checked_bytes": 0,
