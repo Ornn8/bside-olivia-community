@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import zipfile
 
-from installer.patch_native_navigation import patch_native_navigation
+import pytest
+
+import installer.patch_native_navigation as native_navigation
+from installer.patch_native_navigation import (
+    NativeNavigationPatchError,
+    patch_native_navigation,
+)
 
 
 MAIN_MEMBER = "assets/main-31595bd3.js"
@@ -70,6 +76,14 @@ def _patched_signature(signature: bytes, call_offset: int) -> bytes:
     )
 
 
+def _assert_transaction_rolled_back(originals: dict[Path, bytes]) -> None:
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+        assert not path.with_name(path.name + ".native-nav.orig").exists()
+    roots = {path.parents[2] for path in originals}
+    assert not [temporary for root in roots for temporary in root.rglob("*.tmp")]
+
+
 def test_patch_native_navigation_enables_widgets_without_changing_home_route(
     tmp_path: Path,
 ) -> None:
@@ -117,3 +131,131 @@ def test_patch_native_navigation_patches_both_native_dlls_with_original_backups(
     container_patched = container.read_bytes()
     assert CONTAINER_SIGNATURE not in container_patched
     assert _patched_signature(CONTAINER_SIGNATURE, 6) in container_patched
+
+
+def test_patch_native_navigation_rejects_a_missing_signature_before_writes(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    studio.write_bytes(
+        studio.read_bytes().replace(
+            STUDIO_SIGNATURES[2],
+            b"\x7f" * len(STUDIO_SIGNATURES[2]),
+            1,
+        )
+    )
+    originals[studio] = studio.read_bytes()
+
+    with pytest.raises(
+        NativeNavigationPatchError,
+        match=r"NutStudioUI\.dll offline call #3 signature.*found 0",
+    ):
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+        assert not path.with_name(path.name + ".native-nav.orig").exists()
+    assert not list(client_root.rglob("*.tmp"))
+
+
+def test_patch_native_navigation_rejects_a_repeated_signature_before_writes(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+    container = (
+        client_root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    )
+    container.write_bytes(container.read_bytes() + b"duplicate" + CONTAINER_SIGNATURE)
+    originals[container] = container.read_bytes()
+
+    with pytest.raises(
+        NativeNavigationPatchError,
+        match=r"NutContainerPlugin\.dll lite-bar call #1 signature.*found 2",
+    ):
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+        assert not path.with_name(path.name + ".native-nav.orig").exists()
+    assert not list(client_root.rglob("*.tmp"))
+
+
+def test_patch_native_navigation_rolls_back_when_second_target_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    real_replace = native_navigation.os.replace
+    failed = False
+
+    def fail_once_on_studio(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if Path(destination) == studio and not failed:
+            failed = True
+            raise OSError("synthetic second-target publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(native_navigation.os, "replace", fail_once_on_studio)
+
+    with pytest.raises(
+        NativeNavigationPatchError,
+        match="native navigation publication failed",
+    ):
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert failed is True
+    _assert_transaction_rolled_back(originals)
+
+
+def test_patch_native_navigation_rolls_back_when_third_target_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+    container = (
+        client_root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    )
+    real_replace = native_navigation.os.replace
+    failed = False
+
+    def fail_once_on_container(source: Path, destination: Path) -> None:
+        nonlocal failed
+        if Path(destination) == container and not failed:
+            failed = True
+            raise OSError("synthetic third-target publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(native_navigation.os, "replace", fail_once_on_container)
+
+    with pytest.raises(
+        NativeNavigationPatchError,
+        match="native navigation publication failed",
+    ):
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert failed is True
+    _assert_transaction_rolled_back(originals)
+
+
+def test_patch_native_navigation_is_idempotent_with_complete_backups(
+    tmp_path: Path,
+) -> None:
+    client_root = tmp_path / "0.0.9.627"
+    originals = _write_supported_client(client_root)
+
+    first = patch_native_navigation(client_root, work_root=tmp_path)
+    first_patched = {path: path.read_bytes() for path in originals}
+    repeated = patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert first["status"] == "PATCHED"
+    assert repeated["status"] == "ALREADY_PATCHED"
+    assert repeated["files"] == first["files"]
+    for path, original in originals.items():
+        assert path.read_bytes() == first_patched[path]
+        assert path.with_name(path.name + ".native-nav.orig").read_bytes() == original

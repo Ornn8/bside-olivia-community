@@ -307,7 +307,9 @@ def patch_native_navigation(
             raise NativeNavigationPatchError(
                 "native navigation rollback failed"
             ) from exc
-        raise
+        raise NativeNavigationPatchError(
+            "native navigation publication failed"
+        ) from exc
     finally:
         for temporary in staged:
             temporary.unlink(missing_ok=True)
