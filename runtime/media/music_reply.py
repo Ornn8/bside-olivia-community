@@ -44,7 +44,13 @@ from .voice_direction import VoicePerformancePlan
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
 _MUSIC_STAGE_MANIFEST_VERSION = 3
-_RUNTIME_PROBE_TIMEOUT_SECONDS = 60.0
+_RUNTIME_PROBE_TIMEOUT_SECONDS = 120.0
+_RUNTIME_PROBE_REMOVED_ENVIRONMENT = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+)
 _PROVIDER_DIAGNOSTIC_LIMIT = 512
 _MEDIA_VALIDATION_TIMEOUT_SECONDS = 180.0
 
@@ -104,18 +110,27 @@ class MusicProviderPathSnapshot:
 
 
 def _run_runtime_probe(command: list[str], *, cwd: Path) -> bool:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            capture_output=True,
-            check=False,
-            timeout=_RUNTIME_PROBE_TIMEOUT_SECONDS,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+    environment = dict(os.environ)
+    for key in _RUNTIME_PROBE_REMOVED_ENVIRONMENT:
+        environment.pop(key, None)
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                capture_output=True,
+                check=False,
+                env=environment,
+                timeout=_RUNTIME_PROBE_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            if attempt == 0:
+                continue
+            return False
+        if result.returncode == 0:
+            return True
+    return False
 
 
 def _python_runtime_ready(
@@ -138,7 +153,7 @@ def _python_runtime_ready(
         "assert torch.cuda.is_available(); "
         "torch.ones(1, device='cuda')"
     )
-    return _run_runtime_probe([str(executable), "-B", "-c", script], cwd=cwd)
+    return _run_runtime_probe([str(executable), "-I", "-B", "-c", script], cwd=cwd)
 
 
 def _executable_runtime_ready(executable: Path | None) -> bool:
@@ -307,7 +322,6 @@ def video_reply_dependency_status(
             )
         except ReplyMediaError:
             pass
-
     minimax_root = configured("OLIVIA_MINIMAX_COMFY_ROOT")
     minimax_ready = bool(
         minimax_root is not None
