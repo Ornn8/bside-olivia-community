@@ -1161,6 +1161,9 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
         '!z.isNew||$?(await t.replace({name:ve.Home}),'
         'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
         '"hide-write":o(p)||!o(N3)'
+        "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+        's.replace({name:ve.Home}),G(T.value,Fe||"",!1)):'
+        "s.replace({name:ve.Login})"
     )
     with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(main_member, javascript)
@@ -1179,8 +1182,95 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert 'localStorage.setItem("appMode","lite")' in patched
     assert "await t.replace({name:ve.Collection})" in patched
     assert "await t.replace({name:ve.Home})" not in patched
+    assert (
+        "s.replace({name:P.value===Se.LITE?ve.Collection:ve.Home})"
+        in patched
+    )
     assert '"hide-write":!1' in patched
     assert '"hide-write":o(p)||!o(N3)' not in patched
+
+
+def test_patch_feapp_routes_saved_lite_session_to_mailbox_without_moving_pro_home(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    import patch_feapp
+
+    feapp = tmp_path / "feapp.dat"
+    main_member = "assets/main-31595bd3.js"
+    saved_session_route = (
+        "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+        "s.replace({name:ve.Home}),G(T.value,Fe||\"\",!1)):"
+        "s.replace({name:ve.Login})"
+    )
+    javascript = (
+        'We=e=>new Promise((t,s)=>{try{,'
+        '"query.response":io(a)}}),t(c)},onFailure:'
+        '!z.isNew||$?(await t.replace({name:ve.Home}),'
+        'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+        '"hide-write":o(p)||!o(N3)'
+        + saved_session_route
+    )
+    with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(main_member, javascript)
+
+    patch_feapp.patch_feapp(
+        feapp,
+        "ws://127.0.0.1:8899/ws",
+        work_root=tmp_path,
+    )
+
+    with zipfile.ZipFile(feapp) as archive:
+        patched = archive.read(main_member).decode("utf-8")
+
+    assert saved_session_route not in patched
+    assert (
+        "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+        "s.replace({name:P.value===Se.LITE?ve.Collection:ve.Home}),"
+        'G(T.value,Fe||"",!1)):s.replace({name:ve.Login})'
+    ) in patched
+
+
+@pytest.mark.parametrize("saved_session_copies", (0, 2))
+def test_patch_feapp_rejects_ambiguous_saved_session_route_without_mutation(
+    tmp_path: Path,
+    saved_session_copies: int,
+) -> None:
+    import zipfile
+
+    import patch_feapp
+
+    feapp = tmp_path / "feapp.dat"
+    main_member = "assets/main-31595bd3.js"
+    saved_session_route = (
+        "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+        "s.replace({name:ve.Home}),G(T.value,Fe||\"\",!1)):"
+        "s.replace({name:ve.Login})"
+    )
+    javascript = (
+        'We=e=>new Promise((t,s)=>{try{,'
+        '"query.response":io(a)}}),t(c)},onFailure:'
+        '!z.isNew||$?(await t.replace({name:ve.Home}),'
+        'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
+        '"hide-write":o(p)||!o(N3)'
+        + (saved_session_route * saved_session_copies)
+    )
+    with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(main_member, javascript)
+    before = feapp.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match="saved lite session mailbox anchor is missing or not unique",
+    ):
+        patch_feapp.patch_feapp(
+            feapp,
+            "ws://127.0.0.1:8899/ws",
+            work_root=tmp_path,
+        )
+
+    assert feapp.read_bytes() == before
 
 
 def test_patch_feapp_requires_explicit_local_ws_and_rolls_back_on_failure(tmp_path: Path) -> None:

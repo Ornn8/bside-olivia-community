@@ -44,6 +44,16 @@ MAILBOX_LOGIN_REPLACEMENT_0627 = (
     'await t.replace({name:ve.Collection}),'
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
 )
+MAILBOX_SAVED_SESSION_ANCHOR_0627 = (
+    "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+    's.replace({name:ve.Home}),G(T.value,Fe||"",!1)):'
+    "s.replace({name:ve.Login})"
+)
+MAILBOX_SAVED_SESSION_REPLACEMENT_0627 = (
+    "P.value===Se.LITE||Ce>=bo.SURVEY_ANALYZED?("
+    "s.replace({name:P.value===Se.LITE?ve.Collection:ve.Home}),"
+    'G(T.value,Fe||"",!1)):s.replace({name:ve.Login})'
+)
 MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
 MAILBOX_WRITE_REPLACEMENT_0627 = '"hide-write":!1'
 
@@ -57,6 +67,8 @@ class _PatchProfile:
     mailbox_anchor: str
     mailbox_replacement: str
     collection_route: str
+    saved_session_anchor: str | None
+    saved_session_replacement: str | None
     mailbox_write_anchor: str | None
     mailbox_write_replacement: str | None
 
@@ -72,6 +84,8 @@ _PATCH_PROFILES = (
         "await t.replace({name:ye.Collection})",
         None,
         None,
+        None,
+        None,
     ),
     _PatchProfile(
         MAIN_JS_0627,
@@ -81,6 +95,8 @@ _PATCH_PROFILES = (
         MAILBOX_LOGIN_ANCHOR_0627,
         MAILBOX_LOGIN_REPLACEMENT_0627,
         "await t.replace({name:ve.Collection})",
+        MAILBOX_SAVED_SESSION_ANCHOR_0627,
+        MAILBOX_SAVED_SESSION_REPLACEMENT_0627,
         MAILBOX_WRITE_ANCHOR_0627,
         MAILBOX_WRITE_REPLACEMENT_0627,
     ),
@@ -183,6 +199,25 @@ def _patch_mailbox_default_route(
     )
 
 
+def _patch_saved_session_mailbox_default_route(
+    javascript: str,
+    profile: _PatchProfile,
+) -> str:
+    if profile.saved_session_anchor is None:
+        return javascript
+    if profile.saved_session_replacement is None:
+        raise ValueError("saved lite session mailbox replacement is missing")
+    if javascript.count(profile.saved_session_anchor) != 1:
+        raise ValueError(
+            "saved lite session mailbox anchor is missing or not unique"
+        )
+    return javascript.replace(
+        profile.saved_session_anchor,
+        profile.saved_session_replacement,
+        1,
+    )
+
+
 def _patch_mailbox_write_access(
     javascript: str,
     profile: _PatchProfile,
@@ -265,6 +300,10 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 patched_javascript,
                 profile,
             )
+            mailbox_javascript = _patch_saved_session_mailbox_default_route(
+                mailbox_javascript,
+                profile,
+            )
             main_path.write_text(
                 _patch_mailbox_write_access(mailbox_javascript, profile),
                 encoding="utf-8",
@@ -282,6 +321,10 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 or new_ws not in patched_js
                 or 'localStorage.setItem("appMode","lite")' not in patched_js
                 or profile.collection_route not in patched_js
+                or (
+                    profile.saved_session_replacement is not None
+                    and profile.saved_session_replacement not in patched_js
+                )
                 or (
                     profile.mailbox_write_replacement is not None
                     and profile.mailbox_write_replacement not in patched_js
