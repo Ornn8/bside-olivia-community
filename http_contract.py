@@ -157,6 +157,22 @@ def _route(
 
 # Paths are the stable local compatibility paths.  The source protocol uses
 # the same /toy base path; no source URL or private identifier is retained.
+NATIVE_LETTER_ROUTE_ALIASES = {
+    "/letter/list": "/toy/letter/list",
+    "/letter/unread_count": "/toy/letter/unread_count",
+    "/letter/detail": "/toy/letter/detail",
+    "/letter/send": "/toy/letter/send",
+    "/letter/resend": "/toy/letter/resend",
+    "/letter/share": "/toy/letter/share",
+}
+
+
+def canonical_route_path(path: str) -> str:
+    """Resolve an exact native-client compatibility path to its toy route."""
+
+    return NATIVE_LETTER_ROUTE_ALIASES.get(path, path)
+
+
 ROUTES: dict[str, dict[str, Any]] = {
     "/health": _route(["GET"], "core.health", read_only=True, evidence="local"),
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),

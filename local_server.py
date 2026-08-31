@@ -1523,6 +1523,7 @@ async def handler(request: web.Request):
     if request.path.startswith("/toy/media/"):
         return await _media_handler(request)
     path = request.path  # /toy/xxx
+    canonical_path = contract.canonical_route_path(path.rstrip("/"))
     method = request.method
     origin = request.headers.get('Origin', '')
     if origin and not origin_allowed(origin):
@@ -1574,7 +1575,7 @@ async def handler(request: web.Request):
                 path,
                 body,
                 query,
-                defer_reply=(method == "POST" and path.rstrip("/") == "/toy/letter/send"),
+                defer_reply=(method == "POST" and canonical_path == "/toy/letter/send"),
                 companion_confirmed=(
                     request.headers.get("X-Olivia-Companion-Action") == "confirmed"
                 ),
@@ -2449,7 +2450,7 @@ async def route(
     defer_reply: bool = False,
     companion_confirmed: bool = False,
 ):
-    p = path.rstrip("/")
+    p = contract.canonical_route_path(path.rstrip("/"))
     official_import = False
 
     spec = contract.route_spec(p)
