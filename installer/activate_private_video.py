@@ -6,10 +6,14 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, os.fspath(Path(os.path.abspath(__file__)).parents[1]))
 
 from installer.component_update import ComponentUpdateError, _validate_relative_path
 from installer.start_local import _load_fixed_video_assets_environment
