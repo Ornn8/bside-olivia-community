@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,31 @@ def test_native_letter_list_alias_matches_toy_route_contract() -> None:
     toy = asyncio.run(local_server.route("GET", "/toy/letter/list", {}, {}))
 
     assert native == toy
+
+
+def test_versioned_contract_registers_exact_native_letter_aliases() -> None:
+    import http_contract
+
+    document = http_contract.contract_document()
+    routes = document["routes"]
+
+    assert document["contract_version"] == http_contract.CONTRACT_VERSION
+    for (
+        native_path,
+        canonical_path,
+    ) in http_contract.NATIVE_LETTER_ROUTE_ALIASES.items():
+        expected = dict(routes[canonical_path])
+        expected["evidence"] = "local"
+        assert routes[native_path] == expected
+
+
+def test_native_letter_aliases_are_documented() -> None:
+    import http_contract
+
+    documentation = Path("docs/B02_HTTP_CONTRACT.md").read_text(encoding="utf-8")
+
+    for native_path in http_contract.NATIVE_LETTER_ROUTE_ALIASES:
+        assert f"`{native_path}`" in documentation
 
 
 @pytest.mark.parametrize(
@@ -326,32 +352,52 @@ def test_unknown_native_letter_path_is_not_prefix_mapped() -> None:
     }
 
 
-def test_native_webview_origin_can_preflight_letter_routes() -> None:
+def test_assembled_runtime_applies_cors_to_native_letter_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import local_server
-    from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
+    from original_client_server import create_original_client_server_runtime
+
+    isolated_store = local_server.Store()
+    monkeypatch.setattr(local_server, "store", isolated_store)
 
     async def scenario() -> None:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", local_server.handler)
-        async with TestClient(TestServer(app, access_log=None)) as client:
-            response = await client.options(
-                "/toy/letter/list",
+        runtime = create_original_client_server_runtime(
+            local_server.handler,
+            letter_collection=local_server._letter_collection,
+        )
+        async with TestClient(TestServer(runtime.app, access_log=None)) as client:
+            preflight = await client.options(
+                "/letter/list",
                 headers={
                     "Origin": "https://olivia.local",
                     "Access-Control-Request-Method": "GET",
                 },
             )
 
-            assert response.status == 204
+            assert preflight.status == 204
             assert (
-                response.headers["Access-Control-Allow-Origin"]
+                preflight.headers["Access-Control-Allow-Origin"]
                 == "https://olivia.local"
             )
-            assert response.headers["Access-Control-Allow-Credentials"] == "true"
+            assert preflight.headers["Access-Control-Allow-Credentials"] == "true"
+
+            listed = await client.get(
+                "/letter/list",
+                headers={"Origin": "https://olivia.local"},
+            )
+
+            assert listed.status == 200
+            assert (
+                listed.headers["Access-Control-Allow-Origin"]
+                == "https://olivia.local"
+            )
+            assert listed.headers["Access-Control-Allow-Credentials"] == "true"
+            assert (await listed.json())["code"] == 0
 
             spoofed = await client.options(
-                "/toy/letter/list",
+                "/letter/list",
                 headers={
                     "Origin": "https://olivia.local.example",
                     "Access-Control-Request-Method": "GET",
@@ -360,5 +406,6 @@ def test_native_webview_origin_can_preflight_letter_routes() -> None:
 
             assert spoofed.status == 403
             assert "Access-Control-Allow-Origin" not in spoofed.headers
+            assert (await spoofed.json())["message"] == "CORS_ORIGIN_DENIED"
 
     asyncio.run(scenario())

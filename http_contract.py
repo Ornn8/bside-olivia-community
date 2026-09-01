@@ -308,6 +308,19 @@ ROUTES: dict[str, dict[str, Any]] = {
     ),
 }
 
+# The native webview calls these exact non-/toy paths.  Publish them in the
+# versioned machine contract while keeping their behavior tied to the canonical
+# route metadata.
+ROUTES.update(
+    {
+        native_path: {
+            **deepcopy(ROUTES[canonical_path]),
+            "evidence": "local",
+        }
+        for native_path, canonical_path in NATIVE_LETTER_ROUTE_ALIASES.items()
+    }
+)
+
 
 CAPABILITIES: dict[str, dict[str, Any]] = {
     "core.health": {

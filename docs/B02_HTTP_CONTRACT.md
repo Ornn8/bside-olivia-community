@@ -35,6 +35,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 信件只读 | `/toy/letter/list`, `/toy/letter/detail`, `/toy/letter/unread_count` | available | `scope=current` 默认；`scope=legacy` 只读隔离视图 |
 | 发信 | `/toy/letter/send` | available/degraded | 先确认 `PENDING`，后台调用 LLM adapter；失败写入 detail，不生成占位回信 |
 | 回信重发/分享 | `/toy/letter/resend`, `/toy/letter/share` | unavailable | 501 稳定错误；未实现不伪造写入 |
+| 原生信箱兼容别名 | `/letter/list`, `/letter/detail`, `/letter/unread_count`, `/letter/send`, `/letter/resend`, `/letter/share` | 与对应 `/toy/letter/*` 路由一致 | 仅精确路径映射；方法、查询、请求体、延迟回信与错误状态均沿用对应版本化路由，未知 `/letter/*` 前缀不会被映射 |
 | 音乐目录 | `/toy/getMusicTypeInfo`, `/toy/searchSongs`, `/toy/searchPlaylist`, `/toy/searchUserSongs`, `/toy/searchPerformances`, `/toy/getSongStats` | available | 只返回脱敏 fixture 或显式空数据 |
 | 音乐写操作 | `/toy/addPerformance` 等 | unavailable | 501 `MUSIC_WRITE_NOT_IMPLEMENTED` |
 | MIDI | `/toy/midi/*` | terminal/partial | 任务状态兼容现有原型；生成/上传/分享码导入明确 501 |
