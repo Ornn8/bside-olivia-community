@@ -4,6 +4,7 @@ from threading import Event
 
 import pytest
 
+from installer import native_window_layout
 from installer.native_window_layout import (
     LayoutStatus,
     Rect,
@@ -98,6 +99,20 @@ def test_pairing_never_combines_windows_from_different_processes() -> None:
     assert api.moves == [(2, Rect(0, 0, 1014, 914))]
 
 
+def test_pairing_rejects_unknown_process_ids() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    main, sidebar = _pair(client)
+    api = FakeApi(
+        (
+            WindowSnapshot(main.handle, main.rect, client, process_id=0),
+            WindowSnapshot(sidebar.handle, sidebar.rect, client, process_id=0),
+        )
+    )
+
+    assert adjust_native_window_layout(client, api=api) is LayoutStatus.NOT_OBSERVED
+    assert api.moves == []
+
+
 def test_adjustment_pairs_before_ranking_and_moves_only_the_matching_main() -> None:
     client = Path(r"C:\Olivia\Olivia.exe")
     windows = (
@@ -110,6 +125,21 @@ def test_adjustment_pairs_before_ranking_and_moves_only_the_matching_main() -> N
 
     assert adjust_native_window_layout(client, api=api) is LayoutStatus.ADJUSTED
     assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_adjustment_preserves_main_when_sidebar_is_visible_on_adjacent_monitor() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+
+    class AdjacentMonitorApi(FakeApi):
+        def monitor_geometry(self, handle: int) -> tuple[Rect, Rect]:
+            if handle == 3:
+                return Rect(1080, 0, 2160, 1080), Rect(1080, 0, 2160, 1040)
+            return super().monitor_geometry(handle)
+
+    api = AdjacentMonitorApi(_pair(client))
+
+    assert adjust_native_window_layout(client, api=api) is LayoutStatus.ALREADY_VISIBLE
+    assert api.moves == []
 
 
 @pytest.mark.parametrize("state", ("minimized", "maximized", "fullscreen"))
@@ -158,6 +188,82 @@ def test_guard_never_chases_a_sidebar_that_did_not_follow_the_first_move() -> No
     assert api.moves == [(2, Rect(0, 0, 1021, 914))]
 
 
+def test_guard_does_not_verify_with_another_client_instance() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    other_instance = (
+        WindowSnapshot(20, Rect(0, 0, 1021, 914), client, process_id=10),
+        WindowSnapshot(30, Rect(1024, 64, 1080, 180), client, process_id=10),
+    )
+    api = FakeApi(pair, pair, other_instance)
+
+    assert guard_native_window_layout(
+        client, api=api, timeout_seconds=1, poll_interval=0
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_guard_verifies_original_pair_when_another_instance_is_larger() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    adjusted = _pair(client, main=Rect(0, 0, 1021, 914))
+    larger_instance = (
+        WindowSnapshot(20, Rect(0, 0, 1050, 914), client, process_id=11),
+        WindowSnapshot(30, Rect(1053, 64, 1109, 180), client, process_id=11),
+    )
+    api = FakeApi(pair, pair, (*adjusted, *larger_instance))
+
+    assert guard_native_window_layout(
+        client, api=api, timeout_seconds=1, poll_interval=0
+    ) is LayoutStatus.ADJUSTED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_guard_does_not_verify_when_the_original_handles_change_process() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    reused_handles = (
+        WindowSnapshot(2, Rect(0, 0, 1021, 914), client, process_id=11),
+        WindowSnapshot(3, Rect(1024, 64, 1080, 180), client, process_id=11),
+    )
+    api = FakeApi(pair, pair, reused_handles)
+
+    assert guard_native_window_layout(
+        client, api=api, timeout_seconds=1, poll_interval=0
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_guard_fails_safe_when_the_target_window_repositions_itself() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    self_repositioned = (
+        WindowSnapshot(2, Rect(20, 0, 1021, 914), client, process_id=10),
+        WindowSnapshot(3, Rect(1024, 64, 1080, 180), client, process_id=10),
+    )
+    api = FakeApi(pair, pair, self_repositioned)
+
+    assert guard_native_window_layout(
+        client, api=api, timeout_seconds=1, poll_interval=0
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_guard_verifies_the_original_sidebar_reached_its_planned_rect() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    independently_moved_sidebar = (
+        WindowSnapshot(2, Rect(0, 0, 1021, 914), client, process_id=10),
+        WindowSnapshot(3, Rect(1024, 100, 1080, 216), client, process_id=10),
+    )
+    api = FakeApi(pair, pair, independently_moved_sidebar)
+
+    assert guard_native_window_layout(
+        client, api=api, timeout_seconds=1, poll_interval=0
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
 def test_guard_rechecks_cancellation_before_moving_a_stable_pair() -> None:
     client = Path(r"C:\Olivia\Olivia.exe")
     stop = Event()
@@ -183,6 +289,135 @@ def test_guard_rechecks_cancellation_before_moving_a_stable_pair() -> None:
     assert api.moves == []
 
 
+def test_guard_rechecks_cancellation_after_geometry_before_moving() -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    stop = Event()
+    pair = _pair(client)
+
+    class GeometryCancellingApi(FakeApi):
+        def monitor_geometry(self, handle: int) -> tuple[Rect, Rect]:
+            geometry = super().monitor_geometry(handle)
+            if handle == pair[1].handle:
+                stop.set()
+            return geometry
+
+    api = GeometryCancellingApi(pair, pair)
+
+    assert guard_native_window_layout(
+        client,
+        api=api,
+        stop_event=stop,
+        timeout_seconds=1,
+        poll_interval=0,
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == []
+
+
+def test_guard_rechecks_deadline_after_geometry_before_moving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    now = [0.0]
+    monkeypatch.setattr(native_window_layout.time, "monotonic", lambda: now[0])
+
+    class SlowGeometryApi(FakeApi):
+        def monitor_geometry(self, handle: int) -> tuple[Rect, Rect]:
+            geometry = super().monitor_geometry(handle)
+            if handle == pair[1].handle:
+                now[0] = 2.0
+            return geometry
+
+    api = SlowGeometryApi(pair, pair)
+
+    assert guard_native_window_layout(
+        client,
+        api=api,
+        timeout_seconds=1,
+        poll_interval=0,
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == []
+
+
+def test_guard_does_not_report_adjusted_after_verification_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    adjusted = _pair(client, main=Rect(0, 0, 1021, 914))
+    now = [0.0]
+    monkeypatch.setattr(native_window_layout.time, "monotonic", lambda: now[0])
+
+    class SlowVerificationApi(FakeApi):
+        calls = 0
+
+        def visible_windows(self) -> tuple[WindowSnapshot, ...]:
+            value = super().visible_windows()
+            self.calls += 1
+            if self.calls == 3:
+                now[0] = 2.0
+            return value
+
+    api = SlowVerificationApi(pair, pair, adjusted)
+
+    assert guard_native_window_layout(
+        client,
+        api=api,
+        timeout_seconds=1,
+        poll_interval=0,
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
+def test_guard_rechecks_deadline_after_verification_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Path(r"C:\Olivia\Olivia.exe")
+    pair = _pair(client)
+    adjusted = _pair(client, main=Rect(0, 0, 1021, 914))
+    now = [0.0]
+    monkeypatch.setattr(native_window_layout.time, "monotonic", lambda: now[0])
+
+    class SlowVerificationGeometryApi(FakeApi):
+        geometry_calls = 0
+
+        def monitor_geometry(self, handle: int) -> tuple[Rect, Rect]:
+            geometry = super().monitor_geometry(handle)
+            self.geometry_calls += 1
+            if self.geometry_calls == 4:
+                now[0] = 2.0
+            return geometry
+
+    api = SlowVerificationGeometryApi(pair, pair, adjusted)
+
+    assert guard_native_window_layout(
+        client,
+        api=api,
+        timeout_seconds=1,
+        poll_interval=0,
+    ) is LayoutStatus.SKIPPED
+    assert api.moves == [(2, Rect(0, 0, 1021, 914))]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Win32 bindings are Windows-only")
 def test_win32_factory_loads_without_changing_a_window() -> None:
     assert create_window_api() is not None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 bindings are Windows-only")
+def test_win32_move_requests_async_cross_queue_dispatch() -> None:
+    api = create_window_api()
+    assert api is not None
+
+    class RecordingUser32:
+        flags = 0
+
+        def SetWindowPos(self, *_arguments) -> int:
+            self.flags = int(_arguments[-1].value)
+            return 1
+
+    user32 = RecordingUser32()
+    api.user32 = user32  # type: ignore[attr-defined]
+
+    assert api.move_window(2, Rect(10, 20, 810, 620)) is True
+    assert user32.flags & 0x4000

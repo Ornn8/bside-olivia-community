@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from threading import Event
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +105,11 @@ def _window_pair(
     expected = _normalized_path(executable)
     matching = [w for w in windows if _normalized_path(w.executable) == expected]
     mains = sorted(
-        (w for w in matching if w.rect.width >= 600 and w.rect.height >= 400),
+        (
+            w
+            for w in matching
+            if w.process_id > 0 and w.rect.width >= 600 and w.rect.height >= 400
+        ),
         key=lambda w: w.rect.width * w.rect.height,
         reverse=True,
     )
@@ -153,6 +157,16 @@ def _pair_target(
         and main.rect.bottom >= monitor.bottom
     ):
         return LayoutStatus.SKIPPED, None
+    sidebar_geometry = api.monitor_geometry(sidebar.handle)
+    if sidebar_geometry is not None:
+        _, sidebar_work_area = sidebar_geometry
+        if (
+            sidebar.rect.left >= sidebar_work_area.left
+            and sidebar.rect.top >= sidebar_work_area.top
+            and sidebar.rect.right <= sidebar_work_area.right
+            and sidebar.rect.bottom <= sidebar_work_area.bottom
+        ):
+            return LayoutStatus.ALREADY_VISIBLE, main.rect
     target = plan_native_window_layout(
         main=main.rect,
         sidebar=sidebar.rect,
@@ -166,16 +180,18 @@ def _pair_target(
 
 
 def _adjust_pair(
-    api: WindowApi, pair: tuple[WindowSnapshot, WindowSnapshot]
-) -> LayoutStatus:
+    api: WindowApi,
+    pair: tuple[WindowSnapshot, WindowSnapshot],
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[LayoutStatus, Rect | None]:
     status, target = _pair_target(api, pair)
     if status is not LayoutStatus.ADJUSTED or target is None:
-        return status
-    return (
-        LayoutStatus.ADJUSTED
-        if api.move_window(pair[0].handle, target)
-        else LayoutStatus.SKIPPED
-    )
+        return status, target
+    if cancelled is not None and cancelled():
+        return LayoutStatus.SKIPPED, target
+    moved = api.move_window(pair[0].handle, target)
+    return (LayoutStatus.ADJUSTED if moved else LayoutStatus.SKIPPED), target
 
 
 def create_window_api() -> WindowApi | None:
@@ -198,7 +214,11 @@ def adjust_native_window_layout(
     if api is None:
         return LayoutStatus.UNSUPPORTED
     pair = _window_pair(api.visible_windows(), client_executable)
-    return LayoutStatus.NOT_OBSERVED if pair is None else _adjust_pair(api, pair)
+    return (
+        LayoutStatus.NOT_OBSERVED
+        if pair is None
+        else _adjust_pair(api, pair)[0]
+    )
 
 
 def guard_native_window_layout(
@@ -231,22 +251,61 @@ def guard_native_window_layout(
         if pair is not None and stable >= 2:
             if stop.is_set() or time.monotonic() >= deadline:
                 return LayoutStatus.SKIPPED
-            status = _adjust_pair(api, pair)
-            if status is not LayoutStatus.ADJUSTED:
+            status, target = _adjust_pair(
+                api,
+                pair,
+                cancelled=lambda: stop.is_set() or time.monotonic() >= deadline,
+            )
+            if status is not LayoutStatus.ADJUSTED or target is None:
                 return status
             remaining = max(0.0, deadline - time.monotonic())
             if stop.wait(min(max(0.0, poll_interval), remaining)):
                 return LayoutStatus.SKIPPED
             if time.monotonic() >= deadline:
                 return LayoutStatus.SKIPPED
-            verified = _window_pair(api.visible_windows(), client_executable)
-            if stop.is_set():
+            observed = api.visible_windows()
+            if stop.is_set() or time.monotonic() >= deadline:
                 return LayoutStatus.SKIPPED
-            if verified is None:
+            verified_main = next(
+                (
+                    window
+                    for window in observed
+                    if window.handle == pair[0].handle
+                    and window.process_id == pair[0].process_id
+                ),
+                None,
+            )
+            verified_sidebar = next(
+                (
+                    window
+                    for window in observed
+                    if window.handle == pair[1].handle
+                    and window.process_id == pair[1].process_id
+                ),
+                None,
+            )
+            if verified_main is None or verified_sidebar is None:
+                return LayoutStatus.SKIPPED
+            verified = verified_main, verified_sidebar
+            sidebar_dx = target.right - pair[0].rect.right
+            sidebar_dy = target.top - pair[0].rect.top
+            expected_sidebar = Rect(
+                pair[1].rect.left + sidebar_dx,
+                pair[1].rect.top + sidebar_dy,
+                pair[1].rect.right + sidebar_dx,
+                pair[1].rect.bottom + sidebar_dy,
+            )
+            if (
+                verified[0].rect != target
+                or verified[1].rect != expected_sidebar
+            ):
+                return LayoutStatus.SKIPPED
+            verified_status = _pair_target(api, verified)[0]
+            if stop.is_set() or time.monotonic() >= deadline:
                 return LayoutStatus.SKIPPED
             return (
                 LayoutStatus.ADJUSTED
-                if _pair_target(api, verified)[0] is LayoutStatus.ALREADY_VISIBLE
+                if verified_status is LayoutStatus.ALREADY_VISIBLE
                 else LayoutStatus.SKIPPED
             )
         remaining = deadline - time.monotonic()
@@ -357,7 +416,8 @@ class _CtypesWindowApi:
         return self._rect(info.rcMonitor), self._rect(info.rcWork)
 
     def move_window(self, handle: int, target: Rect) -> bool:
-        flags = 0x0004 | 0x0010 | 0x0200  # no z-order, activation, or owner z-order
+        # Keep z-order/focus unchanged and never block on another input queue.
+        flags = 0x0004 | 0x0010 | 0x0200 | 0x4000
         return bool(
             self.user32.SetWindowPos(
                 self.w.HWND(handle),
