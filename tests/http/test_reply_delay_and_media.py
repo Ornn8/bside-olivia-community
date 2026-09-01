@@ -48,6 +48,7 @@ def test_exact_modes_keep_legacy_wire_compatibility():
     assert local_server._wire_reply_mode("spoken_video") == "video"
     assert local_server._wire_reply_mode("musical_video") == "video"
     assert local_server._exact_reply_mode("video") == "musical_video"
+    assert local_server._exact_reply_mode("spoken_video") == "musical_video"
 
 
 def test_media_output_directory_failure_is_normalized(tmp_path: Path, monkeypatch):
@@ -442,7 +443,7 @@ def test_public_detail_projects_every_legacy_internal_media_status(
     assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == expected
 
 
-def test_video_routes_use_separate_ordinary_and_musical_renderers(
+def test_internal_spoken_segment_and_complete_musical_renderers(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -666,7 +667,7 @@ def test_startup_resumes_only_valid_pending_or_interrupted_media_jobs(monkeypatc
     asyncio.run(local_server._start_reply_tasks(web.Application()))
 
     assert scheduled == [
-        ("resume-spoken", "saved letter", "saved reply", ReplyMode.SPOKEN_VIDEO.value),
+        ("resume-spoken", "saved letter", "saved reply", ReplyMode.MUSICAL_VIDEO.value),
         ("resume-musical", "saved musical letter", "saved musical reply", ReplyMode.MUSICAL_VIDEO.value),
     ]
 
@@ -802,8 +803,8 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
                 direct_response_sufficient=True,
                 voice_materially_better=True,
             ),
-            ReplyMode.SPOKEN_VIDEO.value,
-            (ReplyMode.SPOKEN_VIDEO.value,),
+            ReplyMode.MUSICAL_VIDEO.value,
+            (ReplyMode.MUSICAL_VIDEO.value,),
         ),
         (
             ReplyMode.MUSICAL_VIDEO.value,

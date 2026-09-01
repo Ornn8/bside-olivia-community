@@ -116,7 +116,7 @@ webplayer.dat.orig
 
 - 原版 UI：用户日常只打开原版 Olivia。原版 Settings 内可读取长期记忆、PrivateWorld 和待确认建议；不发布独立浏览器 Control Center 或第二个桌面入口。
 - 文字回信：接入 main 的本地 HTTP 契约；LLM 未配置时返回真实 `UNAVAILABLE`，不伪造成功。
-- 视频回信、音乐视频：已迁入情绪分流、普通视频 delivery、LatentSync、音乐内容/渲染与 MiniMax Music 3 worker 的调用边界；实际 TTS、视觉、分离和音乐模型均为外部依赖。依赖缺失时明确返回 `UNAVAILABLE`，不会伪造媒体 URL。完成的本机 MP4 默认通过 Collection 内的 `BaseVideo` 展示；`webplayer` 仅保留为可选的显式 `uid` 本机回退，不替代书信编排路线。
+- 视频回信：只有“自然说话段 + 约 60 秒音乐段”的完整成片格式。内部先渲染说话段，再串接固定转场、音乐演唱与收尾；不存在用户可选或自动投递的纯说话视频。实际 TTS、口型、视觉、分离和音乐模型均为外部依赖，任一必需依赖缺失时明确返回 `UNAVAILABLE`，不会退化为纯说话视频或伪造媒体 URL。完成的本机 MP4 默认通过 Collection 内的 `BaseVideo` 展示；`webplayer` 仅保留为可选的显式 `uid` 本机回退，不替代书信编排路线。
 - Live：暂停，manifest 标记为 `UNAVAILABLE_PAUSED`，不会注入 Live 入口。
 - 核心 Python/runtime：随发布包离线分发并在安装前完整校验，不在用户安装时访问外网。
 - 可选模型与扩展依赖：不随核心安装器分发。长期记忆的 Mem0 runtime 和 BGE 模型已从首装移除，后续由登录后的初始设置按需安装，并可在客户端 Settings 中管理。当前版本缺失时明确降级为 `UNAVAILABLE`。

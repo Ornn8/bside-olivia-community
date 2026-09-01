@@ -54,7 +54,7 @@ _INTERNAL_AUDIT_STATUS = {
     "REJECTED": OriginalClientAuditStatus.REJECTED,
 }
 _MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.mp4$")
-_VIDEO_MODES = frozenset({"spoken_video", "musical_video", "video"})
+_VIDEO_MODES = frozenset({"musical_video"})
 
 
 class OriginalClientContractError(ValueError):
@@ -118,9 +118,7 @@ def _audit_status(value: object) -> int:
 
 def _exact_reply_mode(value: object) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"spoken_video", "musical_video", "text_letter"}:
-        return normalized
-    if normalized == "video":
+    if normalized in {"video", "spoken_video", "musical_video"}:
         return "musical_video"
     return "text_letter"
 
@@ -169,10 +167,8 @@ def _reply_projection(
     if mode not in _VIDEO_MODES or media_status != "COMPLETED" or not media_url:
         # Canonical text remains usable while media is pending or unavailable.
         return int(OriginalClientReplyType.TEXT), reply_text, ""
-    if mode == "spoken_video":
-        return int(OriginalClientReplyType.SPEECH), reply_text, media_url
-    # The local musical-video mode contains generated singing, so the closest
-    # original-client semantic is MIX_SVS rather than instrumental MIX_PLAY.
+    # Every local video reply contains generated singing, so the closest
+    # original-client semantic is MIX_SVS rather than speech or instrumental.
     return int(OriginalClientReplyType.MIX_SVS), reply_text, media_url
 
 

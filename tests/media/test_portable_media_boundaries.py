@@ -12,6 +12,45 @@ import wave
 
 import pytest
 
+
+def test_public_docs_define_one_spoken_plus_sixty_second_music_video() -> None:
+    root = Path(__file__).parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    windows = (root / "docs/WINDOWS_FULL_PATCH.md").read_text(encoding="utf-8")
+    stabilization = (root / "docs/P03_01C_MINIMAX_MUSIC_STABILIZATION.md").read_text(
+        encoding="utf-8"
+    )
+    acceptance = (root / "docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
+        encoding="utf-8"
+    )
+    client_contract = (root / "docs/P03_ORIGINAL_CLIENT_LETTER_CONTRACT.md").read_text(
+        encoding="utf-8"
+    )
+    installation = (root / "docs/P03_05_INSTALLATION_AND_DEFAULTS.md").read_text(
+        encoding="utf-8"
+    )
+    setup = (root / "installer/windows_setup.iss").read_text(encoding="utf-8-sig")
+
+    assert "`spoken_video` 交付" not in readme
+    assert "| 普通视频 |" not in readme
+    assert "说话段" in readme
+    assert "约 60 秒" in readme
+    assert "视频回信、音乐视频" not in windows
+    assert "说话段" in windows
+    assert "60 秒音乐" in windows
+    assert "普通视频回信组件" not in setup
+    assert "说话与口型基础组件" in setup
+    assert "音乐生成与合成组件" in setup
+    assert "正式产品只保留 40 秒和 60 秒" not in stabilization
+    assert "音频时长符合 40/60 秒配置" not in acceptance
+    assert "正式产品固定 60 秒" in stabilization
+    assert "音乐段时长约 60 秒" in acceptance
+    assert "`spoken_video` | `COMPLETED`" not in client_contract
+    assert "TEXT -> SPEECH/MIX_SVS" not in client_contract
+    assert "可选说话视频" not in installation
+    assert "可选音乐视频" not in installation
+    assert "只有说话视频" not in installation
+
 from runtime.media import latentsync_reply
 import music_reply
 from runtime.reply import reply_media

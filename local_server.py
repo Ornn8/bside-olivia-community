@@ -68,7 +68,6 @@ from music_reply import (
     video_reply_dependency_status,
     video_reply_source_url,
 )
-from runtime.media.music_duration import MUSIC_DURATION_OPTIONS
 from runtime.reply.reply_media import ReplyMediaError, render_reply_video
 from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
@@ -149,6 +148,7 @@ from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
 from runtime.reply.reply_reviewer import NullReviewer
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
+VIDEO_REPLY_MUSIC_DURATION_SECONDS = 60
 LLM_TIMEOUT_SECONDS = 30
 LETTER_RETRY_DEDUP_SECONDS = 60
 MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
@@ -204,10 +204,13 @@ def _exact_reply_mode(value: object) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"text", ReplyMode.TEXT_LETTER.value}:
         return ReplyMode.TEXT_LETTER.value
-    if normalized == ReplyMode.SPOKEN_VIDEO.value:
-        return ReplyMode.SPOKEN_VIDEO.value
-    if normalized in {"video", ReplyMode.MUSICAL_VIDEO.value}:
-        # Before P03 every video reply was rendered by the musical path.
+    if normalized in {
+        "video",
+        ReplyMode.SPOKEN_VIDEO.value,
+        ReplyMode.MUSICAL_VIDEO.value,
+    }:
+        # The product has one video format: spoken reply plus music. Preserve
+        # old persisted/wire values by upgrading them to that canonical mode.
         return ReplyMode.MUSICAL_VIDEO.value
     return ReplyMode.TEXT_LETTER.value
 
@@ -2964,8 +2967,11 @@ async def route(
         if not isinstance(content, str) or not content.strip():
             return err(400, 'INVALID_CONTENT', {'status': 'FAILED', 'error_code': 'INVALID_CONTENT'})
         duration = material.get("music_duration_seconds", 60)
-        if isinstance(duration, bool) or duration not in MUSIC_DURATION_OPTIONS:
-            return err(400, "MUSIC_DURATION_INVALID", {"status": "FAILED", "error_code": "MUSIC_DURATION_INVALID", "allowed": list(MUSIC_DURATION_OPTIONS)})
+        if (
+            isinstance(duration, bool)
+            or duration != VIDEO_REPLY_MUSIC_DURATION_SECONDS
+        ):
+            return err(400, "MUSIC_DURATION_INVALID", {"status": "FAILED", "error_code": "MUSIC_DURATION_INVALID", "allowed": [VIDEO_REPLY_MUSIC_DURATION_SECONDS]})
         if len(content) > 10000:
             return err(400, 'CONTENT_TOO_LONG', {
                 'status': 'FAILED',
@@ -3297,7 +3303,14 @@ def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mod
     active = media_jobs.get(letter_id)
     if active is not None and not active.done():
         return
-    task = asyncio.create_task(_render_media_job(letter_id, content, reply_text, reply_mode))
+    task = asyncio.create_task(
+        _render_media_job(
+            letter_id,
+            content,
+            reply_text,
+            _exact_reply_mode(reply_mode),
+        )
+    )
     media_tasks.add(task)
     media_jobs[letter_id] = task
 

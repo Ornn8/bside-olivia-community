@@ -188,7 +188,7 @@ def test_original_collection_list_and_unread_use_camel_case_numeric_contract() -
             assert rows["letter.pending"]["letterStatus"] == 1
             assert rows["letter.pending"]["replyType"] == 0
             assert rows["letter.spoken"]["letterStatus"] == 4
-            assert rows["letter.spoken"]["replyType"] == 2
+            assert rows["letter.spoken"]["replyType"] == 4
             assert rows["letter.musical"]["letterStatus"] == 4
             assert rows["letter.musical"]["replyType"] == 1
             assert rows["letter.failed"]["letterStatus"] == 5
@@ -217,7 +217,7 @@ def test_original_collection_detail_keeps_text_and_only_exposes_completed_local_
             spoken_data = (await spoken.json())["data"]
             assert spoken_data["letterId"] == "letter.spoken"
             assert spoken_data["letterStatus"] == 4
-            assert spoken_data["replyType"] == 2
+            assert spoken_data["replyType"] == 4
             assert spoken_data["replyText"] == "已经完成的说话视频正文"
             assert spoken_data["replyVideoUrl"].endswith(
                 "/toy/media/letter.spoken.mp4"
@@ -274,7 +274,7 @@ def test_send_adds_original_terminal_fields_without_losing_internal_status() -> 
             assert data["status"] == "COMPLETED"
             assert data["letterId"] == "letter.spoken"
             assert data["letterStatus"] == 4
-            assert data["replyType"] == 2
+            assert data["replyType"] == 4
             assert data["letter_id"] == "letter.spoken"
             assert data["letter_status"] == 4
 

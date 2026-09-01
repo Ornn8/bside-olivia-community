@@ -311,7 +311,7 @@ class ReplyModeAdapter:
         if value == "text":
             return ReplyMode.TEXT_LETTER
         if value == "video":
-            return ReplyMode.SPOKEN_VIDEO
+            return ReplyMode.MUSICAL_VIDEO
         raise UnsupportedReplyMode()
 
     def to_wire(self, mode: ReplyMode) -> str:

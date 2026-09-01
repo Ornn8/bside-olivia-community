@@ -930,7 +930,7 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     assert detail["data"]["read_only"] is False
 
 
-def test_send_accepts_only_the_short_music_duration_options(
+def test_send_accepts_only_the_sixty_second_video_music_duration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import local_server
@@ -949,6 +949,14 @@ def test_send_accepts_only_the_short_music_duration_options(
             {},
         )
     )
+    rejected_legacy_short = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/send",
+            {"content": "synthetic input", "material": {"music_duration_seconds": 40}},
+            {},
+        )
+    )
     accepted = asyncio.run(
         local_server.route(
             "POST",
@@ -964,9 +972,10 @@ def test_send_accepts_only_the_short_music_duration_options(
         "data": {
             "status": "FAILED",
             "error_code": "MUSIC_DURATION_INVALID",
-            "allowed": [40, 60],
+            "allowed": [60],
         },
     }
+    assert rejected_legacy_short == rejected
     assert accepted["code"] == 0
 
 

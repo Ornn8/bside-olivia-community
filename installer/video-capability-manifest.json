@@ -15,7 +15,7 @@
   "bundles": [
     {
       "id": "ordinary_video",
-      "label": "普通视频",
+      "label": "说话与口型基础组件",
       "status": "FIXED",
       "requires_gpu": true,
       "dependencies": ["cosyvoice", "latentsync", "ffmpeg"],
@@ -56,7 +56,7 @@
     },
     {
       "id": "music_video",
-      "label": "音乐视频扩展",
+      "label": "视频回信（说话 + 60 秒音乐）",
       "status": "FIXED",
       "requires_gpu": true,
       "dependencies": ["ordinary_video", "minimax_music3", "roformer"],

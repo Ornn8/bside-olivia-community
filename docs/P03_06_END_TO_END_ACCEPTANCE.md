@@ -295,7 +295,7 @@ spoken_video / musical_video ReplyContext
 
 - SongSemanticPlan 合法；
 - Caption 只来自程序模板；
-- 音频时长符合 40/60 秒配置；
+- 音乐段时长约 60 秒，并完整包含主歌与副歌；
 - 歌曲和 vocals 非空；
 - normal video 与 song video 均生成；
 - 拼接顺序为 spoken -> mandatory official silent turn/black transition -> performance；

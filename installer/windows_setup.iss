@@ -72,9 +72,9 @@ begin
   else if Phase = 'VERIFY_VIDEO_OFFLINE' then
     Result := '正在校验视频离线组件…'
   else if Phase = 'INSTALL_ORDINARY_VIDEO' then
-    Result := '正在安装普通视频回信组件…'
+    Result := '正在安装说话与口型基础组件…'
   else if Phase = 'INSTALL_MUSIC_VIDEO' then
-    Result := '正在安装音乐视频回信组件…'
+    Result := '正在安装音乐生成与合成组件…'
   else if Phase = 'EXTRACT_VIDEO_RUNTIME' then
     Result := '正在解压视频运行环境…'
   else if Phase = 'VERIFY_VIDEO_RUNTIME' then

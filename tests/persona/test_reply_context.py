@@ -169,7 +169,7 @@ def test_legacy_video_mapping_is_preserved_and_future_im_requires_opt_in() -> No
     adapter = ReplyModeAdapter()
     trusted_time = TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))
 
-    assert adapter.from_wire("video") is ReplyMode.SPOKEN_VIDEO
+    assert adapter.from_wire("video") is ReplyMode.MUSICAL_VIDEO
     assert adapter.to_wire(ReplyMode.MUSICAL_VIDEO) == "video"
     with pytest.raises(UnsupportedReplyMode):
         adapter.from_wire("future_im")

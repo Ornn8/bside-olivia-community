@@ -89,7 +89,7 @@ def _route(*, context=None, **overrides):
     result = asyncio.run(
         LetterReplyRouter(
             gateway,
-            routing_context=context or RoutingContext(True, True),
+            routing_context=context or RoutingContext(True),
         ).classify("synthetic current letter")
     )
     return result, gateway
@@ -179,7 +179,7 @@ def test_explicit_request_alone_cannot_trigger_musical_video():
 
 def test_media_unavailable_blocks_otherwise_valid_musical_choice():
     result, _ = _route(
-        context=RoutingContext(True, False),
+        context=RoutingContext(False),
         mode="musical_video",
         reason_code="performance_would_carry_reply",
         music_contexts=["explicit_performance_or_adaptation_request"],
@@ -228,7 +228,7 @@ def test_router_accepts_one_offline_structured_musical_tool_call():
     result = asyncio.run(
         LetterReplyRouter(
             gateway,
-            routing_context=RoutingContext(True, True),
+            routing_context=RoutingContext(True),
         ).classify("请把这段心事唱给我听。")
     )
 
@@ -300,7 +300,7 @@ def test_public_mock_gateway_routes_configured_tool_result(
     result = asyncio.run(
         LetterReplyRouter(
             gateway,
-            routing_context=RoutingContext(True, True),
+            routing_context=RoutingContext(True),
         ).classify("synthetic current letter")
     )
 
@@ -357,7 +357,7 @@ def test_deepseek_flash_thinking_omits_tool_choice_and_routes_valid_structured_c
             )
             result = await LetterReplyRouter(
                 gateway,
-                routing_context=RoutingContext(True, True),
+                routing_context=RoutingContext(True),
             ).classify("synthetic current letter")
         return result, seen["body"]
 
@@ -373,7 +373,7 @@ def test_deepseek_flash_thinking_omits_tool_choice_and_routes_valid_structured_c
 
 def test_current_work_relevance_requires_trusted_current_work():
     result, _ = _route(
-        context=RoutingContext(True, True, ()),
+        context=RoutingContext(True, ()),
         mode="musical_video",
         reason_code="current_piece_matches_event",
         music_contexts=["current_work_relevance"],
@@ -389,7 +389,7 @@ def test_current_work_relevance_requires_trusted_current_work():
 
 def test_current_work_relevance_accepts_bounded_trusted_work():
     result, _ = _route(
-        context=RoutingContext(True, True, ("正在整理《花》的新段落",)),
+        context=RoutingContext(True, ("正在整理《花》的新段落",)),
         mode="musical_video",
         reason_code="current_piece_matches_event",
         music_contexts=["current_work_relevance"],
@@ -429,7 +429,7 @@ def test_melody_idea_requires_spontaneous_motif_and_compose():
 
 
 def test_router_receives_trusted_context_separately_from_letter():
-    context = RoutingContext(True, True, ("练习中的合成作品",))
+    context = RoutingContext(True, ("练习中的合成作品",))
     result, gateway = _route(context=context)
     assert result.reply_mode == "text_letter"
     payload = json.loads(gateway.messages[1]["content"])
@@ -438,6 +438,7 @@ def test_router_receives_trusted_context_separately_from_letter():
         "练习中的合成作品"
     ]
     assert payload["routing_context"]["musical_video_available"] is True
+    assert "spoken_video_available" not in payload["routing_context"]
 
 
 def test_environment_overrides_do_not_claim_video_availability_and_current_work_is_bounded():
@@ -448,7 +449,6 @@ def test_environment_overrides_do_not_claim_video_availability_and_current_work_
             "OLIVIA_CURRENT_MUSIC_WORK": '["作品甲", "作品乙", "作品甲"]',
         }
     )
-    assert context.spoken_video_available is False
     assert context.musical_video_available is False
     assert context.current_music_work == ("作品甲", "作品乙")
 
@@ -467,7 +467,7 @@ def test_routing_context_does_not_wait_for_the_full_runtime_probe(monkeypatch):
     elapsed = time.perf_counter() - started
 
     assert elapsed < 0.2
-    assert context == RoutingContext(True, True)
+    assert context == RoutingContext(True)
 
 
 def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
@@ -478,7 +478,6 @@ def test_spoken_reason_is_unavailable_without_complete_video_pipeline():
         }
     )
 
-    assert context.spoken_video_available is False
     assert context.musical_video_available is False
 
 
@@ -599,12 +598,12 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         lambda *_args: True,
     )
 
-    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    assert routing_context_from_environment(env) == RoutingContext(True)
 
     # LiveTalking is optional and is not part of the LatentSync video-reply path.
     Path(env["OLIVIA_VISUAL_CONFIG"]).unlink()
     Path(env["OLIVIA_LIVETALKING_WORKER"]).unlink()
-    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    assert routing_context_from_environment(env) == RoutingContext(True)
     Path(env["OLIVIA_VISUAL_CONFIG"]).write_bytes(b"synthetic")
     Path(env["OLIVIA_LIVETALKING_WORKER"]).write_bytes(b"synthetic")
 
@@ -619,16 +618,16 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
             env[name] = Path(value).relative_to(tmp_path).as_posix()
         except (TypeError, ValueError):
             pass
-    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    assert routing_context_from_environment(env) == RoutingContext(True)
 
     quality_checkpoint.unlink()
-    assert routing_context_from_environment(env) == RoutingContext(True, True)
+    assert routing_context_from_environment(env) == RoutingContext(True)
     quality_checkpoint.write_bytes(b"synthetic")
 
     for missing in required:
         original = missing.read_bytes()
         missing.unlink()
-        assert routing_context_from_environment(env) == RoutingContext(False, False), missing
+        assert routing_context_from_environment(env) == RoutingContext(False), missing
         missing.write_bytes(original)
 
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
@@ -638,7 +637,7 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
             "which",
             lambda _name: resolved_ffmpeg,
         )
-        assert routing_context_from_environment(env) == RoutingContext(False, False)
+        assert routing_context_from_environment(env) == RoutingContext(False)
 
     acceptance_document = Path("docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
         encoding="utf-8"
@@ -651,7 +650,7 @@ def test_invalid_router_output_fails_closed_to_text_letter():
     result = asyncio.run(
         LetterReplyRouter(
             _Gateway({}),
-            routing_context=RoutingContext(True, True),
+            routing_context=RoutingContext(True),
         ).classify("普通聊天")
     )
     assert result.reply_mode == "text_letter"
