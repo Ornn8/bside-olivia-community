@@ -2117,19 +2117,23 @@ def _official_history_mailbox_projection() -> list[dict]:
     projected: list[dict] = []
     for letter in _legacy_letter_collection():
         metadata = letter.get("metadata")
+        offline_pair = is_published_offline_letter_pair(metadata)
         official_history_completed = bool(
             isinstance(metadata, Mapping)
             and metadata.get("import_kind") == "official_text_reply"
             and metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
             == OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
         )
-        if not official_history_completed and not is_published_offline_letter_pair(
-            metadata
-        ):
+        if not official_history_completed and not offline_pair:
             continue
         projected.append(
             {
                 **letter,
+                **(
+                    {"created_at": None, "replied_at": None}
+                    if offline_pair
+                    else {}
+                ),
                 "letter_status": "COMPLETED",
                 "is_read": 1,
                 "read_only": True,

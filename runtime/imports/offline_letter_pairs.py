@@ -84,7 +84,12 @@ def is_published_offline_letter_pair(metadata: object) -> bool:
 
 
 def _pair_archive_content(pair: tuple[str, str]) -> str:
-    return f"User letter:\n{pair[0]}\nLinli reply:\n{pair[1]}"
+    return json.dumps(
+        {"content": pair[0], "reply": pair[1]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _build_records(
@@ -200,7 +205,6 @@ def apply_offline_letter_pair_recovery(
         result = archive.import_legacy_records(
             _build_records(raw, pairs),
             atomic=True,
-            promote_duplicate_metadata=True,
         )
     finally:
         archive.close()
