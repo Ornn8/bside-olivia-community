@@ -21,6 +21,7 @@ from typing import Any
 
 from aiohttp import web
 
+import http_contract as contract
 from control_center.private_world_candidate_api import CandidateReviewBackend
 from control_center.private_world_candidate_backend import (
     SQLiteCandidateReviewBackend,
@@ -295,7 +296,14 @@ def mount_original_mailbox_wire_adapter(
         raise RuntimeError("ORIGINAL_CLIENT_MAILBOX_ALREADY_MOUNTED")
 
     async def adapted(request: web.Request) -> web.StreamResponse:
-        response = await fallback_handler(request)
+        canonical_path = contract.canonical_route_path(request.path)
+        canonical_request = request
+        if canonical_path != request.path:
+            canonical_url = request.rel_url.with_path(canonical_path).with_query(
+                request.rel_url.query
+            )
+            canonical_request = request.clone(rel_url=canonical_url)
+        response = await fallback_handler(canonical_request)
         if not isinstance(response, web.Response):
             return response
         payload = _response_payload(response)
@@ -303,7 +311,7 @@ def mount_original_mailbox_wire_adapter(
             return response
         try:
             adapted_payload = _adapt_mailbox_payload(
-                request,
+                canonical_request,
                 payload,
                 letter_collection,
             )
@@ -316,6 +324,12 @@ def mount_original_mailbox_wire_adapter(
     app.router.add_get("/toy/letter/unread_count", adapted)
     app.router.add_get("/toy/letter/detail", adapted)
     app.router.add_post("/toy/letter/send", adapted)
+    for native_path, toy_path in contract.NATIVE_LETTER_ROUTE_ALIASES.items():
+        spec = contract.route_spec(toy_path)
+        if spec is None:
+            raise RuntimeError("ORIGINAL_CLIENT_MAILBOX_ALIAS_INVALID")
+        for method in spec["methods"]:
+            app.router.add_route(method, native_path, adapted)
 
 
 @dataclass(frozen=True)

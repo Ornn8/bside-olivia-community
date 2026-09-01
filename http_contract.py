@@ -157,6 +157,22 @@ def _route(
 
 # Paths are the stable local compatibility paths.  The source protocol uses
 # the same /toy base path; no source URL or private identifier is retained.
+NATIVE_LETTER_ROUTE_ALIASES = {
+    "/letter/list": "/toy/letter/list",
+    "/letter/unread_count": "/toy/letter/unread_count",
+    "/letter/detail": "/toy/letter/detail",
+    "/letter/send": "/toy/letter/send",
+    "/letter/resend": "/toy/letter/resend",
+    "/letter/share": "/toy/letter/share",
+}
+
+
+def canonical_route_path(path: str) -> str:
+    """Resolve an exact native-client compatibility path to its toy route."""
+
+    return NATIVE_LETTER_ROUTE_ALIASES.get(path, path)
+
+
 ROUTES: dict[str, dict[str, Any]] = {
     "/health": _route(["GET"], "core.health", read_only=True, evidence="local"),
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),
@@ -291,6 +307,19 @@ ROUTES: dict[str, dict[str, Any]] = {
         error_code="SHARE_TOKEN_NOT_IMPLEMENTED",
     ),
 }
+
+# The native webview calls these exact non-/toy paths.  Publish them in the
+# versioned machine contract while keeping their behavior tied to the canonical
+# route metadata.
+ROUTES.update(
+    {
+        native_path: {
+            **deepcopy(ROUTES[canonical_path]),
+            "evidence": "local",
+        }
+        for native_path, canonical_path in NATIVE_LETTER_ROUTE_ALIASES.items()
+    }
+)
 
 
 CAPABILITIES: dict[str, dict[str, Any]] = {
@@ -471,9 +500,10 @@ PROFILES: dict[str, dict[str, Any]] = {
 
 
 def route_spec(path: str) -> dict[str, Any] | None:
-    """Return a defensive copy of the normalized route metadata."""
+    """Return a defensive copy of the route metadata for the requested path."""
 
-    return deepcopy(ROUTES.get(path.rstrip("/") or "/"))
+    normalized_path = path.rstrip("/") if path.startswith("/toy/") else path
+    return deepcopy(ROUTES.get(normalized_path or "/"))
 
 
 def contract_document() -> dict[str, Any]:

@@ -35,6 +35,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 信件只读 | `/toy/letter/list`, `/toy/letter/detail`, `/toy/letter/unread_count` | available | `scope=current` 默认；`scope=legacy` 只读隔离视图 |
 | 发信 | `/toy/letter/send` | available/degraded | 先确认 `PENDING`，后台调用 LLM adapter；失败写入 detail，不生成占位回信 |
 | 回信重发/分享 | `/toy/letter/resend`, `/toy/letter/share` | unavailable | 501 稳定错误；未实现不伪造写入 |
+| 原生信箱兼容别名 | `/letter/list`, `/letter/detail`, `/letter/unread_count`, `/letter/send`, `/letter/resend`, `/letter/share` | 与对应 `/toy/letter/*` 路由一致 | 仅精确路径映射；方法、查询、请求体、延迟回信与错误状态均沿用对应版本化路由，未知 `/letter/*` 前缀不会被映射 |
 | 音乐目录 | `/toy/getMusicTypeInfo`, `/toy/searchSongs`, `/toy/searchPlaylist`, `/toy/searchUserSongs`, `/toy/searchPerformances`, `/toy/getSongStats` | available | 只返回脱敏 fixture 或显式空数据 |
 | 音乐写操作 | `/toy/addPerformance` 等 | unavailable | 501 `MUSIC_WRITE_NOT_IMPLEMENTED` |
 | MIDI | `/toy/midi/*` | terminal/partial | 任务状态兼容现有原型；生成/上传/分享码导入明确 501 |
@@ -42,6 +43,10 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 官方文字信件导入 | `/toy/letter/legacy/official-import` | available/degraded | 用户在设置页明确确认后，先要求 Mem0 与 PrivateWorld 可用；首次初始化关系状态时还要求大模型已配置。随后临时读取官方客户端登录日志并从官方接口导入原信与文字回信；严格按时间写入 Mem0、初始化 PrivateWorld，最后才原子发布到信箱；忽略视频，不保存或回显凭证 |
 | 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
 | 诊断包导出 | `/toy/diagnostics/export` | available | 设置页显式触发，只在本机生成并下载严格白名单 ZIP；不上传，不包含密钥、正文、记忆、真实 ID、绝对路径、完整 URL 或原始日志 |
+
+CORS 仅允许 loopback Origin，或精确命中原生客户端固定信任源
+`https://olivia.local`、`https://toy-cnbeta01.olivia.miyoushe.com`。匹配是完整字符串匹配；
+相似后缀、子域和其他 HTTPS Origin 均返回 `403 CORS_ORIGIN_DENIED`。
 
 原生 WebSocket、ASR、TTS、Live 没有假 route；`/health` 的 capability registry 明确为 `unavailable`，错误码分别为 `WEBSOCKET_UNAVAILABLE`、`ASR_UNAVAILABLE`、`TTS_UNAVAILABLE`、`LIVE_UNAVAILABLE`。
 
