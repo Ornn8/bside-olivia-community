@@ -1808,34 +1808,55 @@ def test_handler_rejects_malformed_json_and_wrong_methods() -> None:
     assert asyncio.run(exercise()) == (400, "INVALID_JSON", 405, "METHOD_NOT_ALLOWED")
 
 
-def test_llm_failure_is_retryable_but_resend_is_explicitly_unavailable(
+def test_llm_failure_can_be_retried_through_the_resend_route(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import local_server
 
-    def fail(_content, _context="", **_kwargs):
-        raise local_server.LLMError("LLM_TIMEOUT")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    outcomes: list[str | Exception] = [
+        local_server.LLMError("LLM_TIMEOUT"),
+        "synthetic successful resend",
+    ]
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", fail)
+    def reply(_content, _context="", **_kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
     failed = asyncio.run(
         local_server.route(
             "POST", "/toy/letter/send", {"content": "synthetic retry input"}, {}
         )
     )
     first_retry = asyncio.run(
-        local_server.route("POST", "/toy/letter/resend", {}, {})
+        local_server.route(
+            "POST",
+            "/toy/letter/resend",
+            {"letter_id": failed["data"]["letter_id"]},
+            {},
+        )
     )
     second_retry = asyncio.run(
-        local_server.route("POST", "/toy/letter/resend", {}, {})
+        local_server.route(
+            "POST",
+            "/toy/letter/resend",
+            {"letter_id": failed["data"]["letter_id"]},
+            {},
+        )
     )
 
     assert failed["code"] == 503
     assert failed["data"]["error_code"] == "LLM_TIMEOUT"
     assert failed["data"]["retryable"] is True
-    assert first_retry["code"] == second_retry["code"] == 501
-    assert first_retry["data"]["status"] == "NOT_IMPLEMENTED"
-    assert first_retry["data"]["error_code"] == "LETTER_RESEND_NOT_IMPLEMENTED"
-    assert len(local_server.store.letters) == 1
+    assert first_retry["code"] == 0
+    assert first_retry["data"]["status"] == "COMPLETED"
+    assert second_retry["code"] == 410
+    assert second_retry["data"]["error_code"] == "LETTER_SUPERSEDED"
+    assert len(local_server.store.letters) == 2
 
 
 def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(

@@ -1605,14 +1605,64 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "v0.1 暂停手动补丁导入；请使用我们发布的完整安装包更新。",
+      "下载我们发布的 .oliviapatch 后，可在这里增量更新，无需重装完整运行包。",
       "text-text-secondary text-body-m font-regular"
     );
+    let packagePath = "";
+    const selectedPatch = text(
+      "p",
+      "尚未选择补丁文件。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const digest = setupInput("发布说明提供的 Manifest SHA-256");
+    digest.input.maxLength = 64;
+    digest.input.autocomplete = "off";
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
+    const choose = button("选择已下载的补丁", async () => {
+      setButtonsBusy([choose], true);
+      try {
+        const payload = await requestUpdate({ action: "select" });
+        if (payload.status === "SELECTED" && typeof payload.package_path === "string") {
+          packagePath = payload.package_path;
+          selectedPatch.textContent = `已选择：${packagePath.split(/[\\/]/).pop()}`;
+          result.textContent = "";
+        }
+      } catch (error) {
+        result.textContent = `无法选择补丁：${error && error.code ? error.code : "UPDATE_PICKER_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([choose], false);
+      }
+    });
+    const install = button("安装本地补丁", async () => {
+      const manifestSha256 = digest.input.value.trim().toLowerCase();
+      if (!packagePath) {
+        result.textContent = "请选择已下载的 .oliviapatch 文件。";
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/.test(manifestSha256)) {
+        result.textContent = "请输入发布说明提供的 64 位 Manifest SHA-256。";
+        return;
+      }
+      if (!await confirmAction("确认校验并安装这个本地补丁？")) return;
+      setButtonsBusy([choose, install, rollback], true);
+      result.textContent = "正在校验并安装补丁……";
+      try {
+        const payload = await requestUpdate({
+          action: "apply",
+          package_path: packagePath,
+          manifest_sha256: manifestSha256,
+        });
+        result.textContent = `版本 ${payload.version} 已安装，关闭并重新打开 Olivia 后生效。`;
+      } catch (error) {
+        result.textContent = `补丁安装失败：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([choose, install, rollback], false);
+      }
+    });
     const rollback = button("回滚上一版本", async () => {
       if (!await confirmAction("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
-      setButtonsBusy([rollback], true);
+      setButtonsBusy([choose, install, rollback], true);
       result.textContent = "正在切换到上一版本……";
       try {
         const payload = await requestUpdate({ action: "rollback" });
@@ -1620,12 +1670,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (error) {
         result.textContent = `无法回滚：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
       } finally {
-        setButtonsBusy([rollback], false);
+        setButtonsBusy([choose, install, rollback], false);
       }
     });
     const controls = actions();
-    controls.append(rollback);
-    panel.replaceChildren(heading, summary, controls, result);
+    controls.append(choose, install, rollback);
+    panel.replaceChildren(
+      heading,
+      summary,
+      selectedPatch,
+      digest.wrapper,
+      controls,
+      result
+    );
   };
 
   const loadDialogData = async (statusNode, panels, initialMode) => {

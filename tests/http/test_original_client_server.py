@@ -135,7 +135,7 @@ def test_successful_sign_in_authorizes_on_demand_capability_install(tmp_path: Pa
     asyncio.run(scenario())
 
 
-def test_successful_sign_in_still_cannot_apply_unsigned_local_component_update(
+def test_successful_sign_in_can_apply_verified_local_component_update(
     tmp_path: Path,
 ) -> None:
     async def signed_in(_request: web.Request) -> web.Response:
@@ -182,12 +182,9 @@ def test_successful_sign_in_still_cannot_apply_unsigned_local_component_update(
                     "manifest_sha256": "a" * 64,
                 },
             )
-            assert response.status == 503
-            assert await response.json() == {
-                "status": "FAILED",
-                "error_code": "UPDATE_ACTION_UNAVAILABLE",
-            }
-            assert updater.applied == []
+            assert response.status == 200
+            assert (await response.json())["status"] == "APPLIED"
+            assert updater.applied == [package.resolve()]
 
     asyncio.run(scenario())
 

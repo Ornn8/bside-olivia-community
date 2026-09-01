@@ -7,6 +7,7 @@ from pathlib import Path
 from .component_package import ComponentPackageBuildError, build_component_package
 from .component_update import (
     ComponentUpdateError,
+    apply_component_update,
     rollback_component_update,
 )
 from .full_patch import PatchInstallError, discover_steam_install, install_full_patch, load_manifest, uninstall_full_patch, validate_official_source
@@ -50,7 +51,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "uninstall":
             result = uninstall_full_patch(args.installation, apply=args.apply)
         elif args.command == "apply-update":
-            raise ComponentUpdateError("UPDATE_ACTION_UNAVAILABLE")
+            result = apply_component_update(
+                args.installation,
+                args.package,
+                expected_manifest_sha256=args.manifest_sha256,
+            )
         elif args.command == "build-update":
             result = build_component_package(
                 args.source,

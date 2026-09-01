@@ -38,6 +38,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "METHOD_NOT_ALLOWED": {"http_status": 405, "retryable": False},
     "IDEMPOTENCY_CONFLICT": {"http_status": 409, "retryable": False},
     "LETTER_IN_PROGRESS": {"http_status": 409, "retryable": True},
+    "LETTER_RESEND_NOT_ALLOWED": {"http_status": 409, "retryable": False},
     "VIDEO_REPLY_SETTING_REQUEST_ID_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_PAYLOAD_INVALID": {"http_status": 400, "retryable": False},
     "VIDEO_REPLY_SETTING_REQUEST_CONFLICT": {"http_status": 409, "retryable": False},
@@ -202,12 +203,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/letter/unread_count": _route(["GET"], "letters.unread", read_only=True),
     "/toy/letter/detail": _route(["GET"], "letters.read", read_only=True),
     "/toy/letter/send": _route(["POST"], "letters.send"),
-    "/toy/letter/resend": _route(
-        ["POST"],
-        "letters.resend",
-        state="not_implemented",
-        error_code="LETTER_RESEND_NOT_IMPLEMENTED",
-    ),
+    "/toy/letter/resend": _route(["POST"], "letters.resend"),
     "/toy/letter/share": _route(
         ["POST"],
         "letters.share",
@@ -354,9 +350,9 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "probe": "internal-events-only",
     },
     "letters.resend": {
-        "status": "unavailable",
-        "provider": "none",
-        "reason_code": "LETTER_RESEND_NOT_IMPLEMENTED",
+        "status": "degraded",
+        "provider": "configured-llm-adapter",
+        "probe": "not-run",
     },
     "letters.share": {
         "status": "unavailable",

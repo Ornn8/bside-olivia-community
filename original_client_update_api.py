@@ -1,12 +1,14 @@
-"""Loopback-only rollback with v0.1 manual patch actions fail-closed."""
+"""Loopback-only actions for user-downloaded local Olivia patches."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 import json
+import os
 import re
 from pathlib import Path
+import subprocess
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -23,10 +25,12 @@ ACTION_PATH = "/toy/updates/local/action"
 CONFIRM_HEADER = "X-Olivia-Update-Action"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_JSON_BYTES = 8_192
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 _LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _ORIGINS_KEY = web.AppKey("original_client_update_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_update_mounted", bool)
+_REPARSE_POINT = 0x0400
 
 
 class UpdateAPIError(RuntimeError):
@@ -43,6 +47,7 @@ class ComponentUpdater(Protocol):
 
 
 SessionAuthorizer = Callable[[str], None]
+PatchPicker = Callable[[], Path | None]
 
 
 class LocalComponentUpdater:
@@ -130,6 +135,59 @@ async def _json_body(request: web.Request) -> dict[str, object]:
     return payload
 
 
+def _package_path(value: object) -> Path:
+    if not isinstance(value, str) or not value or len(value) > 4_096:
+        raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+    path = Path(value).expanduser()
+    if not path.is_absolute() or path.suffix.casefold() != ".oliviapatch":
+        raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+    try:
+        metadata = path.lstat()
+        if path.is_symlink() or bool(
+            getattr(metadata, "st_file_attributes", 0) & _REPARSE_POINT
+        ) or not path.is_file():
+            raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400) from exc
+
+
+def _select_windows_patch() -> Path | None:
+    if os.name != "nt":
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503)
+    powershell = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "$dialog.Filter = 'Olivia patch (*.oliviapatch)|*.oliviapatch';"
+        "$dialog.CheckFileExists = $true;"
+        "$dialog.Multiselect = $false;"
+        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "{ [Console]::Out.Write($dialog.FileName) }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503) from exc
+    if completed.returncode != 0:
+        raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503)
+    selected = completed.stdout.strip()
+    return None if not selected else _package_path(selected)
+
+
 def _public_result(value: Mapping[str, object]) -> dict[str, object]:
     status = value.get("status")
     component = value.get("component")
@@ -155,6 +213,7 @@ def mount_original_client_update_api(
     *,
     trusted_origins: Sequence[str],
     authorize_session: SessionAuthorizer,
+    select_patch: PatchPicker | None = None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("UPDATE_API_ALREADY_MOUNTED")
@@ -163,6 +222,7 @@ def mount_original_client_update_api(
     app[_ORIGINS_KEY] = _normalize_origins(trusted_origins)
     app[_MOUNTED_KEY] = True
     control_lock = asyncio.Lock()
+    picker = select_patch or _select_windows_patch
 
     @web.middleware
     async def errors(request: web.Request, handler):
@@ -188,12 +248,32 @@ def mount_original_client_update_api(
         except Exception as exc:
             raise UpdateAPIError("UPDATE_LOGIN_REQUIRED", status=403) from exc
         payload = await _json_body(request)
-        action_value = payload.get("action")
-        if not isinstance(action_value, str):
-            raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
-        if action_value in {"select", "apply"}:
-            raise UpdateAPIError("UPDATE_ACTION_UNAVAILABLE", status=503)
-        if payload == {"action": "rollback"}:
+        if payload == {"action": "select"}:
+            try:
+                selected = await asyncio.to_thread(picker)
+                result = (
+                    {"status": "CANCELLED", "restart_required": False}
+                    if selected is None
+                    else {
+                        "status": "SELECTED",
+                        "package_path": str(_package_path(str(selected))),
+                        "restart_required": False,
+                    }
+                )
+            except UpdateAPIError:
+                raise
+            except Exception as exc:
+                raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503) from exc
+            return web.json_response(result, headers=_headers(origin))
+        if payload.get("action") == "apply" and set(payload) == {
+            "action", "package_path", "manifest_sha256"
+        }:
+            digest = payload.get("manifest_sha256")
+            if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+                raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+            call = updater.apply
+            args = (_package_path(payload.get("package_path")), digest)
+        elif payload == {"action": "rollback"}:
             call = updater.rollback
             args = ()
         else:
@@ -218,6 +298,7 @@ __all__ = [
     "ACTION_PATH",
     "CONFIRM_HEADER",
     "LocalComponentUpdater",
+    "PatchPicker",
     "SESSION_HEADER",
     "UpdateAPIError",
     "mount_original_client_update_api",

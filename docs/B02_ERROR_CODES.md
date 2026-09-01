@@ -15,7 +15,7 @@
 | 403 | `READ_ONLY_SCOPE` | FAILED | 否 | 对 legacy 只读视图尝试写入 |
 | 404 | `LETTER_NOT_FOUND` / `MIDI_JOB_NOT_FOUND` | FAILED | 否 | 资源不存在 |
 | 405 | `METHOD_NOT_ALLOWED` | FAILED | 否 | 方法不在 route contract 中 |
-| 501 | `LETTER_RESEND_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 回信重发未实现 |
+| 409 | `LETTER_RESEND_NOT_ALLOWED` | FAILED | 否 | 当前信件状态或失败类型不允许重发 |
 | 501 | `LETTER_SHARE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 分享未实现 |
 | 501 | `MUSIC_WRITE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 音乐写操作未实现 |
 | 501 | `MIDI_*_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | MIDI 上传/生成/导入未实现 |

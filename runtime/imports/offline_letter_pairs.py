@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Mapping, Sequence
 
 from runtime.memory.local_memory import LocalMemoryAdapter
 from runtime.memory.memory_port import LegacyLetter, MemoryPort
+from runtime.imports.historical_memory import HistoricalExchange
 
 
 _MAX_SOURCE_BYTES = 16 * 1024 * 1024
@@ -139,6 +141,27 @@ def _build_records(
     return tuple(records)
 
 
+def offline_letter_pair_exchanges(
+    source_path: str | Path,
+) -> tuple[HistoricalExchange, ...]:
+    """Project an ordered local backup into the canonical memory migration."""
+
+    raw, pairs = _parse_source(Path(source_path))
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    return tuple(
+        HistoricalExchange(
+            source_record_id=(
+                f"offline-letter-pairs:{source_sha256}:{index:06d}"
+            ),
+            occurred_at=epoch + timedelta(seconds=index - 1),
+            user_message=pair[0],
+            assistant_message=pair[1],
+        )
+        for index, pair in enumerate(pairs, start=1)
+    )
+
+
 def _parse_source(path: Path) -> tuple[bytes, tuple[tuple[str, str], ...]]:
     raw = path.read_bytes()
     if len(raw) > _MAX_SOURCE_BYTES:
@@ -167,7 +190,9 @@ def _parse_source(path: Path) -> tuple[bytes, tuple[tuple[str, str], ...]]:
     return raw, tuple(pairs)
 
 
-def _read_existing_state(database_path: Path) -> tuple[set[str], dict[str, str]]:
+def _read_existing_state(
+    database_path: Path,
+) -> tuple[set[str], dict[str, tuple[str, ...]]]:
     if not database_path.is_file():
         return set(), {}
     connection = sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True)
@@ -180,13 +205,13 @@ def _read_existing_state(database_path: Path) -> tuple[set[str], dict[str, str]]
             if "no such table" not in str(exc):
                 raise
             return set(), {}
+        grouped: dict[str, list[str]] = {}
+        for content_hash, source_record_id, source in rows:
+            if str(source) == "offline-letter-pairs":
+                grouped.setdefault(str(source_record_id), []).append(str(content_hash))
         return (
             {str(row[0]) for row in rows},
-            {
-                str(row[1]): str(row[0])
-                for row in rows
-                if str(row[2]) == "offline-letter-pairs"
-            },
+            {key: tuple(values) for key, values in grouped.items()},
         )
     finally:
         connection.close()
@@ -196,7 +221,7 @@ def _recovery_plan_from_hashes(
     raw: bytes,
     pairs: tuple[tuple[str, str], ...],
     existing: set[str],
-    existing_by_source: Mapping[str, str] | None = None,
+    existing_by_source: Mapping[str, str | Sequence[str]] | None = None,
 ) -> OfflineLetterPairRecoveryReport:
     batch: set[str] = set()
     duplicates = 0
@@ -207,9 +232,10 @@ def _recovery_plan_from_hashes(
     for index, pair in enumerate(pairs, start=1):
         digest = hashlib.sha256(_pair_archive_content(pair).encode()).hexdigest()
         source_record_id = f"offline-letter-pairs:{source_sha256}:{index:06d}"
-        old_digest = source_hashes.get(source_record_id)
-        if old_digest is not None:
-            if old_digest == digest:
+        stored = source_hashes.get(source_record_id)
+        if stored is not None:
+            old_digests = (stored,) if isinstance(stored, str) else tuple(stored)
+            if len(old_digests) == 1 and old_digests[0] == digest:
                 duplicates += 1
             else:
                 would_update += 1
@@ -260,11 +286,17 @@ def plan_offline_letter_pair_recovery_with_adapter(
     """Inspect a paired backup against the active Archive adapter."""
 
     raw, pairs = _parse_source(Path(source_path))
+    grouped = getattr(adapter, "legacy_source_hash_groups", None)
+    existing_by_source = (
+        grouped("offline-letter-pairs")
+        if callable(grouped)
+        else adapter.legacy_source_hashes("offline-letter-pairs")
+    )
     return _recovery_plan_from_hashes(
         raw,
         pairs,
         adapter.legacy_content_hashes(),
-        adapter.legacy_source_hashes("offline-letter-pairs"),
+        existing_by_source,
     )
 
 
@@ -303,11 +335,17 @@ def apply_offline_letter_pair_recovery_to_adapter(
     """Import a local paired backup through the active Archive adapter."""
 
     raw, pairs = _parse_source(Path(source_path))
+    grouped = getattr(adapter, "legacy_source_hash_groups", None)
+    existing_by_source = (
+        grouped("offline-letter-pairs")
+        if callable(grouped)
+        else adapter.legacy_source_hashes("offline-letter-pairs")
+    )
     plan = _recovery_plan_from_hashes(
         raw,
         pairs,
         adapter.legacy_content_hashes(),
-        adapter.legacy_source_hashes("offline-letter-pairs"),
+        existing_by_source,
     )
     result = adapter.import_legacy_records(
         _build_records(raw, pairs),

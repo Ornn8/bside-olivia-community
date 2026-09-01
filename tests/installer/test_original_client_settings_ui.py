@@ -214,18 +214,21 @@ def test_selected_settings_tab_keeps_a_distinct_visual_state() -> None:
     assert "tab.style.background =" not in source
 
 
-def test_original_settings_does_not_render_manual_patch_import_controls() -> None:
+def test_original_settings_can_apply_a_downloaded_patch_and_roll_back() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
     assert 'const UPDATE_ACTION_PATH = "/toy/updates/local/action";' in source
     assert "File.path" not in source
     assert "patch.files" not in source
+    assert 'action: "select"' in source
+    assert "选择已下载的补丁" in source
+    assert "payload.package_path" in source
+    assert "Manifest SHA-256" in source
+    assert 'action: "apply"' in source
     assert 'action: "rollback"' in source
-    assert "完整安装包" in source
+    assert "安装本地补丁" in source
     assert "回滚上一版本" in source
-    assert "controls.append(choose, install, rollback);" not in source
-    assert "controls.append(rollback);" in source
-    assert "panel.replaceChildren(heading, summary, controls, result);" in source
+    assert "controls.append(choose, install, rollback);" in source
     assert "关闭并重新打开 Olivia 后生效" in source
 
 

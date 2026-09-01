@@ -4,6 +4,9 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_IMPORT_KIND,
@@ -12,7 +15,9 @@ from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
     apply_offline_letter_pair_recovery_to_adapter,
     main,
+    offline_letter_pair_exchanges,
 )
+from runtime.imports.historical_memory import HistoricalMigrationResult
 from runtime.memory.local_memory import LocalMemoryAdapter
 from runtime.memory.memory_port import LegacyImportResult, LegacyLetter
 
@@ -120,6 +125,68 @@ def test_offline_recovery_updates_same_source_record_imported_by_old_decoder(tmp
             sort_keys=True,
         )
     ]
+
+
+def test_offline_recovery_consolidates_old_broken_and_correct_duplicate(tmp_path):
+    source = tmp_path / "letter-pairs.json"
+    raw, content, reply = _write_mojibake_pair(source)
+    digest = hashlib.sha256(raw).hexdigest()
+    source_record_id = f"offline-letter-pairs:{digest}:000001"
+    archive = LocalMemoryAdapter(tmp_path / "memory.sqlite3")
+    try:
+        for stored_content, stored_reply in (
+            (_latin1_mojibake(content), _latin1_mojibake(reply)),
+            (content, reply),
+        ):
+            result = archive.import_legacy_records([LegacyLetter(
+                content=json.dumps(
+                    {"content": stored_content, "reply": stored_reply},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                source_record_id=source_record_id,
+                source="offline-letter-pairs",
+                metadata={
+                    **_offline_metadata(digest),
+                    "user_content": stored_content,
+                    "reply_text": stored_reply,
+                },
+            )])
+            assert result.inserted == 1
+
+        report = apply_offline_letter_pair_recovery_to_adapter(source, adapter=archive)
+        stored = archive.list_legacy()
+        memory_id = archive.connection.execute(
+            "SELECT memory_id FROM legacy_letters"
+        ).fetchone()[0]
+
+        assert report.would_update == report.updated == 1
+        assert len(stored) == 1
+        assert stored[0]["content"] == content
+        assert stored[0]["reply_text"] == reply
+        with pytest.raises(sqlite3.DatabaseError):
+            archive.connection.execute(
+                "DELETE FROM legacy_letters WHERE memory_id = ?", (memory_id,)
+            )
+    finally:
+        archive.close()
+
+
+def test_offline_pairs_project_to_stable_ordered_historical_exchanges(tmp_path):
+    source = tmp_path / "letter-pairs.json"
+    raw = _write_pairs(source)
+
+    exchanges = offline_letter_pair_exchanges(source)
+
+    digest = hashlib.sha256(raw).hexdigest()
+    assert [item.source_record_id for item in exchanges] == [
+        f"offline-letter-pairs:{digest}:000001",
+        f"offline-letter-pairs:{digest}:000002",
+    ]
+    assert exchanges[0].occurred_at < exchanges[1].occurred_at
+    assert exchanges[0].user_message == "synthetic old letter one"
+    assert exchanges[0].assistant_message == "synthetic old reply one"
 
 
 def test_offline_letter_pair_cli_dry_run_is_content_free_and_side_effect_free(tmp_path, capsys):
@@ -312,6 +379,22 @@ def test_local_history_route_discovers_installed_official_backup_and_imports(
     archive = LocalMemoryAdapter(tmp_path / "memory.sqlite3")
     monkeypatch.setattr(local_server, "_local_data_root", lambda: data_root)
     monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: archive)
+    monkeypatch.setattr(local_server, "_official_history_preflight_error", lambda: None)
+    migrated: list[tuple[object, ...]] = []
+
+    async def migrate(exchanges):
+        migrated.append(exchanges)
+        return HistoricalMigrationResult(
+            status="completed",
+            total=len(exchanges),
+            processed=len(exchanges),
+            written=len(exchanges),
+            duplicates=0,
+            skipped=0,
+            private_world_status="initialized" if len(migrated) == 1 else "already_initialized",
+        )
+
+    monkeypatch.setattr(local_server, "_migrate_historical_history", migrate)
     try:
         ready = asyncio.run(local_server.route(
             "GET", "/toy/letter/legacy/local-import", {}, {}
@@ -336,6 +419,9 @@ def test_local_history_route_discovers_installed_official_backup_and_imports(
     assert unconfirmed["code"] == 403
     assert (applied["data"]["status"], applied["data"]["inserted"]) == ("APPLIED", 2)
     assert (repeated["data"]["inserted"], repeated["data"]["duplicates"]) == (0, 2)
+    assert len(migrated) == 2
+    assert applied["data"]["memory_migration"]["written"] == 2
+    assert applied["data"]["history_audit"] == "initialized"
 
 
 def test_local_history_route_prompts_when_backup_is_absent(tmp_path, monkeypatch):
