@@ -2,11 +2,59 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from installer import uninstall
 from installer.uninstall_safety import remove_owned_targets
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process ownership is required")
+def test_uninstall_process_filter_covers_versioned_backend_without_lookalikes(
+    tmp_path: Path,
+) -> None:
+    powershell = (
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    environment = dict(os.environ)
+    environment["OLIVIA_UNINSTALL_TARGET"] = os.fspath(
+        tmp_path / "Olivia Local" / "install"
+    )
+    script = uninstall._MANAGED_PROCESS_FILTER + r"""
+$versioned = Join-Path $root 'versions\local_backend\0.1.2\local_server.py'
+$legacy = Join-Path $root 'local_backend\local_server.py'
+$outside = Join-Path (Split-Path $root -Parent) 'outside\versions\local_backend\0.1.2\local_server.py'
+$sibling = Join-Path $root 'versions\local_backend-copy\0.1.2\local_server.py'
+$actual = @(
+    Test-IsManagedOliviaProcess ([PSCustomObject]@{ Name = 'pythonw.exe'; ExecutablePath = ''; CommandLine = $versioned })
+    Test-IsManagedOliviaProcess ([PSCustomObject]@{ Name = 'python.exe'; ExecutablePath = ''; CommandLine = $legacy })
+    Test-IsManagedOliviaProcess ([PSCustomObject]@{ Name = 'pythonw.exe'; ExecutablePath = ''; CommandLine = $outside })
+    Test-IsManagedOliviaProcess ([PSCustomObject]@{ Name = 'pythonw.exe'; ExecutablePath = ''; CommandLine = $sibling })
+    Test-IsManagedOliviaProcess ([PSCustomObject]@{ Name = 'node.exe'; ExecutablePath = ''; CommandLine = $versioned })
+)
+if (($actual -join ',') -eq 'True,True,False,False,False') { exit 0 }
+Write-Error ($actual -join ',')
+exit 1
+"""
+    result = subprocess.run(
+        [
+            os.fspath(powershell),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+    )
+    assert result.returncode == 0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process ownership is required")
@@ -42,7 +90,8 @@ def test_uninstall_stops_only_the_managed_process_tree_before_deleting(
     ]
     assert options["env"]["OLIVIA_UNINSTALL_TARGET"] == os.fspath(install)
     assert "Get-CimInstance Win32_Process" in command[4]
-    assert "local_backend" in command[4]
+    assert "versions\\local_backend" in command[4]
+    assert "/PID $target.ProcessId /T /F" in command[4]
     assert "Olivia.exe" not in command[4]
 
 

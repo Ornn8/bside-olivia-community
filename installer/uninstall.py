@@ -28,29 +28,45 @@ except ImportError:  # Support direct execution and the stable runpy launcher.
     )
 
 
-_STOP_MANAGED_PROCESSES = r"""
+_MANAGED_PROCESS_FILTER = r"""
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($env:OLIVIA_UNINSTALL_TARGET)
 $appPrefix = [IO.Path]::GetFullPath((Join-Path $root 'app')) + [IO.Path]::DirectorySeparatorChar
-$backendToken = [IO.Path]::GetFullPath((Join-Path $root 'local_backend'))
+$backendPrefixes = @(
+    [IO.Path]::GetFullPath((Join-Path $root 'local_backend')) + [IO.Path]::DirectorySeparatorChar
+    [IO.Path]::GetFullPath((Join-Path $root 'versions\local_backend')) + [IO.Path]::DirectorySeparatorChar
+)
+function Test-IsManagedOliviaProcess {
+    param([object]$Process)
+    $executable = [string]$Process.ExecutablePath
+    if ($executable -and $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    if ($Process.Name -notin @('python.exe', 'pythonw.exe')) {
+        return $false
+    }
+    $command = [string]$Process.CommandLine
+    foreach ($backendPrefix in $backendPrefixes) {
+        if ($command.IndexOf($backendPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+    return $false
+}
+"""
+
+
+_STOP_MANAGED_PROCESSES = _MANAGED_PROCESS_FILTER + r"""
 $taskkill = Join-Path $env:WINDIR 'System32\taskkill.exe'
 $targets = @(Get-CimInstance Win32_Process | Where-Object {
-    $executable = [string]$_.ExecutablePath
-    $command = [string]$_.CommandLine
-    ($executable -and $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
-    (($_.Name -in @('python.exe', 'pythonw.exe')) -and
-        $command.IndexOf($backendToken, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    Test-IsManagedOliviaProcess $_
 })
 foreach ($target in $targets) {
     & $taskkill /PID $target.ProcessId /T /F *> $null
 }
 for ($attempt = 0; $attempt -lt 50; $attempt += 1) {
     $remaining = @(Get-CimInstance Win32_Process | Where-Object {
-        $executable = [string]$_.ExecutablePath
-        $command = [string]$_.CommandLine
-        ($executable -and $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
-        (($_.Name -in @('python.exe', 'pythonw.exe')) -and
-            $command.IndexOf($backendToken, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        Test-IsManagedOliviaProcess $_
     })
     if ($remaining.Count -eq 0) { exit 0 }
     Start-Sleep -Milliseconds 100
