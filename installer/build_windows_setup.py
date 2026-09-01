@@ -1232,7 +1232,9 @@ def build_windows_setup(
             os.fspath(source / "installer" / "windows_setup.iss"),
         ]
         if video_runtime is not None:
-            command.insert(-1, "/DPrivatePayload=1")
+            command.insert(-1, "/DVideoRuntimePayload=1")
+        if video_offline_root is not None:
+            command.insert(-1, "/DVideoOfflinePayload=1")
         result = subprocess.run(command, check=False, timeout=900)
         if result.returncode != 0 or not setup.is_file():
             raise SetupBuildError("SETUP_COMPILE_FAILED")
