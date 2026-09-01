@@ -383,13 +383,13 @@ def _resolve_state_payload(
     return current
 
 
-def _refresh_existing_shortcuts(root: Path, active_version: Path) -> None:
+def _refresh_existing_shortcuts(root: Path, _active_version: Path) -> None:
     """Best-effort icon refresh for shortcuts that the user kept."""
 
     if os.name != "nt":
         return
     try:
-        script = active_version / "installer" / "Create-Shortcut.ps1"
+        script = root / "launcher" / "Create-Shortcut.ps1"
         powershell = (
             Path(os.environ.get("WINDIR", r"C:\Windows"))
             / "System32"
