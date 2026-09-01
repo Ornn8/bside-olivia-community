@@ -141,13 +141,14 @@ def _python_runtime_ready(
     cwd: Path | None,
     imports: tuple[str, ...],
     accepted_torch_versions: tuple[str, ...],
+    prepend_cwd: bool = True,
 ) -> bool:
     if executable is None or not executable.is_file() or cwd is None or not cwd.is_dir():
         return False
     script = (
         "import importlib, os, sys; "
         "assert sys.version_info[:2] >= (3, 10); "
-        "sys.path.insert(0, os.getcwd()); "
+        f"{'sys.path.insert(0, os.getcwd()); ' if prepend_cwd else ''}"
         f"[importlib.import_module(name) for name in {imports!r}]; "
         "import torch; "
         f"assert torch.__version__ in {accepted_torch_versions!r}; "
@@ -371,6 +372,7 @@ def video_reply_dependency_status(
                 cwd=Path(delivery.tts.runtime_root),
                 imports=("torch", "transformers", "soundfile", "whisper"),
                 accepted_torch_versions=("2.9.1+cu128",),
+                prepend_cwd=False,
             )
         except ReplyMediaError:
             pass
