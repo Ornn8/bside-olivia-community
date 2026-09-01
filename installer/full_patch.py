@@ -749,16 +749,16 @@ def install_full_patch(
 
         base_http = f"http://127.0.0.1:{port}"
         try:
-            endpoint_patch = patch_feapp(
-                feapp,
-                f"ws://127.0.0.1:{port}/ws",
-                work_root=resources,
-            )
             navigation_manifest = (
                 staging / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
             )
             if navigation_manifest.is_file():
                 patch_native_navigation(staging / "app" / version, work_root=staging)
+            endpoint_patch = patch_feapp(
+                feapp,
+                f"ws://127.0.0.1:{port}/ws",
+                work_root=resources,
+            )
             settings_patch = patch_companion_settings(
                 feapp,
                 base_http,
