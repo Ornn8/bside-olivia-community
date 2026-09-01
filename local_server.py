@@ -35,6 +35,7 @@ from asr.provider import NemotronProvider, create_provider
 from llm_gateway import (
     Gateway,
     GatewayConfig,
+    ManagedLLMConfig,
     GatewayDelta,
     GatewayError,
     GatewayRequestScope,
@@ -327,21 +328,24 @@ def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
     return config.timeout_seconds
 
 
-def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> None:
+def apply_runtime_llm_config(
+    managed: ManagedLLMConfig,
+    api_key: str | None,
+) -> None:
     """Atomically switch future reply requests to freshly saved local settings."""
 
     global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG, reply_pipeline
     key_env = "OLIVIA_LLM_RUNTIME_KEY_CONFIGURED"
     candidate = replace(
         LLM_CONFIG,
-        provider="openai_compatible",
-        base_url=base_url,
-        model=model,
+        provider=managed.provider,
+        base_url=managed.base_url,
+        model=managed.model,
         api_key_env=key_env,
         api_style="chat_completions",
         stream=True,
         timeout_seconds=180.0,
-        max_retries=2,
+        max_retries=managed.max_retries,
         requires_api_key=True,
     )
     try:

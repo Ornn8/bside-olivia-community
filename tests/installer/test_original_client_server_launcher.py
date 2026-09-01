@@ -172,6 +172,31 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
 
 
+def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example/v1",
+                "model": "vendor/not-deepseek",
+                "max_retries": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    environment = start_local._load_llm_environment({}, data_root)
+
+    assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://gateway.example/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "vendor/not-deepseek"
+    assert environment["OLIVIA_LLM_MAX_RETRIES"] == "4"
+
+
 @pytest.mark.parametrize(
     "inherited",
     [
@@ -1351,7 +1376,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
-        "OLIVIA_LLM_MAX_RETRIES": "0",
+        "OLIVIA_LLM_MAX_RETRIES": "2",
     }
     for name in defaults:
         monkeypatch.delenv(name, raising=False)

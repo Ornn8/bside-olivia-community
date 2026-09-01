@@ -44,7 +44,7 @@ from runtime.reply.reply_reviewer import (
 _REVIEW_MARKER = "P02_REPLY_REVIEW_JSON"
 _ADJUDICATION_MARKER = "P02_REPLY_EVIDENCE_ADJUDICATION_JSON"
 _REWRITE_MARKER = "P02_REPLY_REWRITE_TEXT"
-_REVIEW_MODEL = "deepseek-v4-flash"
+_REVIEW_MODEL_ENV = "OLIVIA_REPLY_REVIEW_MODEL"
 _GLOBAL_HEADINGS = (
     "零、使用方式",
     "一、使用目的",
@@ -593,6 +593,7 @@ class GatewayPersonaReviewer:
         persona_path: Path,
         timeout_seconds: float,
         reasoning_timeout_seconds: float | None = None,
+        model: str | None = None,
     ) -> None:
         self._transport = GatewayReviewTransport(
             gateway,
@@ -602,7 +603,11 @@ class GatewayPersonaReviewer:
         self.adapter = JsonReviewerAdapter(
             self._transport,
             ReviewerConfig(
-                model=_REVIEW_MODEL,
+                model=(
+                    str(model or getattr(getattr(gateway, "config", None), "model", ""))
+                    .strip()
+                    or "configured-provider"
+                ),
                 timeout_seconds=timeout_seconds,
                 enabled=True,
             ),
@@ -959,11 +964,14 @@ def create_model_quality_ports(
     ):
         return None, None
 
+    configured_model = str(getattr(config, "model", "")).strip()
+    explicit_review_model = os.environ.get(_REVIEW_MODEL_ENV, "").strip()
+    review_model = explicit_review_model or configured_model
     quality_gateway = gateway
     if isinstance(config, GatewayConfig):
         quality_config = replace(
             config,
-            model=_REVIEW_MODEL,
+            model=review_model,
             stream=False,
             max_input_chars=max(config.max_input_chars, 30_000),
             fallback_provider="none",
@@ -985,7 +993,7 @@ def create_model_quality_ports(
         isinstance(config, GatewayConfig)
         and config.provider == "openai_compatible"
         and config.api_style == "chat_completions"
-        and _REVIEW_MODEL.casefold() == "deepseek-v4-flash"
+        and review_model.casefold() == "deepseek-v4-flash"
     )
     timeout = _env_timeout(
         "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
@@ -1002,6 +1010,7 @@ def create_model_quality_ports(
         persona_path,
         timeout,
         reasoning_timeout,
+        review_model,
     )
     rewriter = (
         GatewayPersonaRewriter(

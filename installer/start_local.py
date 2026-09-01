@@ -16,8 +16,9 @@ import sys
 from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import urlopen
+
+from llm_gateway import ManagedLLMConfig
 
 from patch_companion_settings import (
     CompanionSettingsPatchError,
@@ -80,7 +81,6 @@ def _load_dpapi_key(path: Path) -> str:
         return ""
 
 
-_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 def _load_video_environment(
@@ -136,28 +136,20 @@ def _load_llm_environment(
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-flash"
     provider = "openai_compatible"
+    max_retries = 2
     key_path = data_root / "config" / "deepseek_api_key.dpapi"
     config_path = data_root / "config" / "llm.json"
     saved_key_binding = False
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
-        candidate_url = str(payload["base_url"]).strip().rstrip("/")
-        candidate_model = str(payload["model"]).strip()
-        parsed = urlsplit(candidate_url)
-        loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        if (
-            payload.get("schema_version") in {1, 2}
-            and parsed.hostname
-            and parsed.scheme in ({"http", "https"} if loopback else {"https"})
-            and not parsed.username
-            and not parsed.password
-            and not parsed.query
-            and not parsed.fragment
-            and _LLM_MODEL_RE.fullmatch(candidate_model)
-        ):
-            base_url = candidate_url
-            model = candidate_model
-            if payload.get("schema_version") == 2:
+        managed = ManagedLLMConfig.from_mapping(payload)
+        base_url = managed.base_url
+        model = managed.model
+        provider = managed.provider
+        max_retries = managed.max_retries
+        if payload.get("schema_version") in {2, 3}:
+            has_key_binding = "key_file" in payload or "key_sha256" in payload
+            if has_key_binding:
                 name = payload.get("key_file")
                 expected_hash = payload.get("key_sha256")
                 if (
@@ -173,11 +165,11 @@ def _load_llm_environment(
                 if hashlib.sha256(key_path.read_bytes()).hexdigest() != expected_hash:
                     raise ValueError("invalid key binding")
                 saved_key_binding = True
-        else:
-            raise ValueError("invalid LLM config")
+            else:
+                key_path = Path()
     except FileNotFoundError:
         pass
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         provider = "none"
         key_path = Path()
     for name, value in {
@@ -188,7 +180,7 @@ def _load_llm_environment(
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
-        "OLIVIA_LLM_MAX_RETRIES": "0",
+        "OLIVIA_LLM_MAX_RETRIES": str(max_retries),
     }.items():
         values.setdefault(name, value)
     if values.get("OLIVIA_LLM_API_KEY"):
