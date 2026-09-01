@@ -114,6 +114,38 @@ def test_launcher_rejects_missing_frontend_archive(tmp_path: Path) -> None:
     assert error.value.code == "COMPANION_ARCHIVE_NOT_FOUND"
 
 
+def test_launcher_applies_installed_native_navigation_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _installation(tmp_path, client_version="0.0.9.627")
+    manifest = (
+        root
+        / "local_backend"
+        / "installer"
+        / start_local.COMPATIBILITY_MANIFEST_NAME
+    )
+    manifest.write_text("{}", encoding="utf-8")
+    calls: list[tuple[Path, Path]] = []
+
+    monkeypatch.setattr(
+        start_local,
+        "patch_native_navigation",
+        lambda client, *, work_root: calls.append((client, work_root))
+        or {"status": "PATCHED"},
+    )
+
+    assert start_local._repair_native_navigation(root) == "PATCHED"
+    assert calls == [(root / "app" / "0.0.9.627", root)]
+
+
+def test_launcher_skips_native_navigation_without_private_manifest(
+    tmp_path: Path,
+) -> None:
+    root = _installation(tmp_path, client_version="0.0.9.627")
+
+    assert start_local._repair_native_navigation(root) == "NOT_CONFIGURED"
+
+
 def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     config_root = data_root / "config"
@@ -362,6 +394,7 @@ def test_launcher_starts_combined_server_before_original_client(
     client_commands: list[list[str]] = []
     client_working_directories: list[Path] = []
     frontend_repairs: list[tuple[Path, int]] = []
+    native_repairs: list[Path] = []
 
     class Process:
         @staticmethod
@@ -397,6 +430,11 @@ def test_launcher_starts_combined_server_before_original_client(
         lambda installation, port: frontend_repairs.append((installation, port))
         or "PATCHED",
     )
+    monkeypatch.setattr(
+        start_local,
+        "_repair_native_navigation",
+        lambda installation: native_repairs.append(installation) or "PATCHED",
+    )
 
     result = start_local.main(["--install-root", str(root), "--port", "8899"])
 
@@ -415,6 +453,7 @@ def test_launcher_starts_combined_server_before_original_client(
     ]
     assert not backend_command[-1].endswith("local_server.py")
     assert frontend_repairs == [(root.resolve(), 8899)]
+    assert native_repairs == [root.resolve()]
     launcher_log = (root / "data" / "logs" / "launcher.jsonl").read_text(
         encoding="utf-8"
     )

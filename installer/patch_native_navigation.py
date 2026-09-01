@@ -4,81 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
+import re
 import stat
 import uuid
 import zipfile
 
 
 CLIENT_VERSION = "0.0.9.627"
-MAIN_MEMBER = "assets/main-31595bd3.js"
-MAILBOX_DISABLED = "N3=!1,Ss=!1,wa=({onComplete"
-MAILBOX_ENABLED = "N3=!0,Ss=!1,wa=({onComplete"
-OFFLINE_WIDGETS_DISABLED = (
-    "e.isOfflineMode&&(l.value.mailWidget!==!1&&(l.value.mailWidget=!1),"
-    "l.value.musicWidget!==!1&&(l.value.musicWidget=!1))"
-)
-OFFLINE_WIDGETS_ENABLED = "l.value.mailWidget=!0,l.value.musicWidget=!0"
-OFFLINE_REQUEST_BLOCKED = "if(t.isOfflineMode)throw new Ol(e)"
-OFFLINE_REQUEST_ALLOWED = "if(!1)throw new Ol(e)"
-MAIL_FETCH_SKIPPED = "He(()=>{p.value||d.fetchMailList(!0)})"
-MAIL_FETCH_ALLOWED = "He(()=>{d.fetchMailList(!0)})"
-OFFLINE_POLL_SKIPPED = (
-    "s.isOfflineMode||(s.appMode===Se.PRO?Lt().proRestoreFromApi():"
-    "s.appMode===Se.LITE&&(Lt().liteStartPoll(),uo().startPolling()))"
-)
-OFFLINE_POLL_ALLOWED = (
-    "s.appMode===Se.PRO?Lt().proRestoreFromApi():"
-    "s.appMode===Se.LITE&&(s.isOfflineMode?uo().startPolling():"
-    "(Lt().liteStartPoll(),uo().startPolling()))"
-)
-OFFLINE_CALL_PATCH = bytes((0x33, 0xC0, 0x90, 0x90, 0x90, 0x90))
-STUDIO_SIGNATURES = (
-    bytes.fromhex("CB E8 D2 37 08 00 EB 1E FF 15 B2 EC 08 00 48 8D 8F A8"),
-    bytes.fromhex("CB E8 72 34 08 00 EB 1E FF 15 52 E9 08 00 48 8D 8F A8"),
-    bytes.fromhex("CB E8 B2 1F 08 00 EB 2B FF 15 92 D4 08 00 84 C0 75 14"),
-    bytes.fromhex("CB E8 FF 1D 08 00 EB 1C FF 15 DF D2 08 00 48 8D 4F 38"),
-)
-CONTAINER_SIGNATURE = bytes.fromhex(
-    "48 8B DA 48 8B F9 FF 15 61 A4 04 00 84 C0 0F 85"
-)
-
-# The only managed 0.0.9.627 inputs this patcher may mutate.  The frontend
-# "original" is the deterministic endpoint/settings-patched staging input;
-# the DLL originals are the byte-exact client copies.  Sizes reject truncation
-# before archive/signature inspection.  No private client bytes are distributed.
-_SUPPORTED_INPUT_FINGERPRINTS = {
-    "feapp": {
-        "original": (
-            27_769_992,
-            "2abf4bc1208d3f7f39fbd2b4556c980ce5d641c75cee8863c3ca69e6029f7dcf",
-        ),
-        "patched": (
-            27_769_978,
-            "71c30b40dbbbf9d6949828425d5b093ad32aaf2d7b3c53b3f1c5a4a42643cc42",
-        ),
-    },
-    "studio_ui": {
-        "original": (
-            1_297_376,
-            "3756767fc01c2a1c034a56c1ae2920651f13021a1b4cc0c3ed291fc92a9728e1",
-        ),
-        "patched": (
-            1_297_376,
-            "294dcfe023c84bc83bdd531d8431bf76b2b7a1fbc0941a250ae8f4cf2ed8fa99",
-        ),
-    },
-    "container_plugin": {
-        "original": (
-            498_144,
-            "53b61d8e9766c5b1cf2af29ed1a4ac7985052db65c37aa1829c71416050e31d1",
-        ),
-        "patched": (
-            498_144,
-            "d78112ca218f805d437d2b03fe4c772c7cb279848dccce16570cbd466fe66ab4",
-        ),
-    },
+COMPATIBILITY_MANIFEST_NAME = "native-navigation-compatibility.json"
+_MANIFEST_SCHEMA = "olivia.native-navigation-compatibility.v1"
+_MAX_MANIFEST_BYTES = 1024 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_EXPECTED_FILES = {
+    "feapp": "resources/feapp.dat",
+    "studio_ui": "plugins/Studio/NutStudioUI.dll",
+    "container_plugin": "plugins/Container/NutContainerPlugin.dll",
 }
 
 
@@ -102,21 +46,25 @@ def _read_bytes(path: Path, error_code: str) -> bytes:
 
 
 def _matches_registered_state(
-    values: dict[str, bytes], state: str
+    values: dict[str, bytes], specs: dict[str, dict[str, object]], state: str
 ) -> bool:
     return all(
-        _matches_registered_file(name, values[name], state)
+        _matches_registered_file(specs[name], values[name], state)
         for name in values
     )
 
 
-def _matches_registered_file(name: str, value: bytes, state: str) -> bool:
-    return _fingerprint(value) == _SUPPORTED_INPUT_FINGERPRINTS[name][state]
+def _matches_registered_file(
+    spec: dict[str, object], value: bytes, state: str
+) -> bool:
+    fingerprints = spec["fingerprints"]
+    assert isinstance(fingerprints, dict)
+    return _fingerprint(value) == fingerprints[state]
 
 
-def _registered_file_state(name: str, value: bytes) -> str | None:
+def _registered_file_state(spec: dict[str, object], value: bytes) -> str | None:
     for state in ("original", "patched"):
-        if _matches_registered_file(name, value, state):
+        if _matches_registered_file(spec, value, state):
             return state
     return None
 
@@ -152,6 +100,182 @@ def _validate_managed_paths(work: Path, candidates: tuple[Path, ...]) -> None:
         raise NativeNavigationPatchError("NATIVE_NAV_UNSAFE_PATH") from None
 
 
+def _object_keys(value: object, keys: set[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError
+    return value
+
+
+def _file_fingerprint(value: object) -> tuple[int, str]:
+    record = _object_keys(value, {"size_bytes", "sha256"})
+    size = record["size_bytes"]
+    digest = record["sha256"]
+    if (
+        type(size) is not int
+        or not 1 <= size <= 1024 * 1024 * 1024
+        or not isinstance(digest, str)
+        or _SHA256_RE.fullmatch(digest) is None
+    ):
+        raise ValueError
+    return size, digest
+
+
+def _replacement_id(value: object) -> str:
+    if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
+        raise ValueError
+    return value
+
+
+def _text_replacements(value: object) -> tuple[tuple[str, str, str], ...]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 16:
+        raise ValueError
+    result: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for raw in value:
+        item = _object_keys(raw, {"id", "before", "after"})
+        identifier = _replacement_id(item["id"])
+        before = item["before"]
+        after = item["after"]
+        if (
+            identifier in seen
+            or not isinstance(before, str)
+            or not isinstance(after, str)
+            or not before
+            or before == after
+            or len(before.encode("utf-8")) > 16 * 1024
+            or len(after.encode("utf-8")) > 16 * 1024
+        ):
+            raise ValueError
+        seen.add(identifier)
+        result.append((identifier, before, after))
+    return tuple(result)
+
+
+def _binary_replacements(
+    value: object,
+) -> tuple[tuple[str, bytes, int, bytes], ...]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 16:
+        raise ValueError
+    result: list[tuple[str, bytes, int, bytes]] = []
+    seen: set[str] = set()
+    for raw in value:
+        item = _object_keys(
+            raw,
+            {"id", "signature_hex", "patch_offset", "replacement_hex"},
+        )
+        identifier = _replacement_id(item["id"])
+        signature_hex = item["signature_hex"]
+        replacement_hex = item["replacement_hex"]
+        offset = item["patch_offset"]
+        if (
+            identifier in seen
+            or not isinstance(signature_hex, str)
+            or not isinstance(replacement_hex, str)
+            or type(offset) is not int
+            or offset < 0
+        ):
+            raise ValueError
+        signature = bytes.fromhex(signature_hex)
+        replacement = bytes.fromhex(replacement_hex)
+        if (
+            not signature
+            or not replacement
+            or len(signature) > 1024
+            or len(replacement) > 256
+            or offset + len(replacement) > len(signature)
+        ):
+            raise ValueError
+        seen.add(identifier)
+        result.append((identifier, signature, offset, replacement))
+    return tuple(result)
+
+
+def parse_compatibility_manifest(
+    value: object,
+) -> dict[str, dict[str, object]]:
+    """Validate private compatibility metadata without persisting its bytes."""
+
+    manifest = _object_keys(
+        value,
+        {"schema_version", "client_version", "files"},
+    )
+    if (
+        manifest["schema_version"] != _MANIFEST_SCHEMA
+        or manifest["client_version"] != CLIENT_VERSION
+        or not isinstance(manifest["files"], list)
+        or len(manifest["files"]) != len(_EXPECTED_FILES)
+    ):
+        raise ValueError
+    specs: dict[str, dict[str, object]] = {}
+    for raw in manifest["files"]:
+        if not isinstance(raw, dict):
+            raise ValueError
+        identifier = raw.get("id")
+        relative = raw.get("relative_path")
+        if (
+            not isinstance(identifier, str)
+            or identifier in specs
+            or _EXPECTED_FILES.get(identifier) != relative
+        ):
+            raise ValueError
+        common = {"id", "relative_path", "original", "patched"}
+        original = _file_fingerprint(raw.get("original"))
+        patched = _file_fingerprint(raw.get("patched"))
+        if original == patched:
+            raise ValueError
+        spec: dict[str, object] = {
+            "relative_path": relative,
+            "fingerprints": {
+                "original": original,
+                "patched": patched,
+            },
+        }
+        if identifier == "feapp":
+            if set(raw) != common | {"archive_member", "text_replacements"}:
+                raise ValueError
+            member = raw["archive_member"]
+            if (
+                not isinstance(member, str)
+                or not member
+                or "\\" in member
+                or member.startswith("/")
+                or any(part in {"", ".", ".."} for part in member.split("/"))
+                or len(member.encode("utf-8")) > 512
+            ):
+                raise ValueError
+            spec["archive_member"] = member
+            spec["text_replacements"] = _text_replacements(
+                raw["text_replacements"]
+            )
+        else:
+            if set(raw) != common | {"binary_replacements"}:
+                raise ValueError
+            spec["binary_replacements"] = _binary_replacements(
+                raw["binary_replacements"]
+            )
+        specs[identifier] = spec
+    if set(specs) != set(_EXPECTED_FILES):
+        raise ValueError
+    return specs
+
+
+def _load_compatibility_manifest(
+    work: Path,
+) -> dict[str, dict[str, object]]:
+    path = work / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
+    if not path.is_file():
+        raise NativeNavigationPatchError("NATIVE_NAV_MANIFEST_REQUIRED")
+    _validate_managed_paths(work, (path.parent.parent, path.parent, path))
+    try:
+        if path.stat().st_size > _MAX_MANIFEST_BYTES:
+            raise ValueError
+        return parse_compatibility_manifest(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        raise NativeNavigationPatchError("NATIVE_NAV_MANIFEST_INVALID") from None
+
+
 def _replace_unique(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
@@ -161,11 +285,15 @@ def _replace_unique(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def _patched_feapp(source: bytes) -> bytes:
+def _patched_feapp(source: bytes, spec: dict[str, object]) -> bytes:
+    member = spec["archive_member"]
+    replacements = spec["text_replacements"]
+    assert isinstance(member, str)
+    assert isinstance(replacements, tuple)
     try:
         with zipfile.ZipFile(io.BytesIO(source)) as archive:
             infos = archive.infolist()
-            if sum(info.filename == MAIN_MEMBER for info in infos) != 1:
+            if sum(info.filename == member for info in infos) != 1:
                 raise NativeNavigationPatchError(
                     "supported frontend bundle must occur exactly once"
                 )
@@ -178,60 +306,32 @@ def _patched_feapp(source: bytes) -> bytes:
     with zipfile.ZipFile(output, "w") as archive:
         archive.comment = comment
         for info, payload in members:
-            if info.filename == MAIN_MEMBER:
+            if info.filename == member:
                 try:
                     javascript = payload.decode("utf-8")
                 except UnicodeError as exc:
                     raise NativeNavigationPatchError(
                         "supported frontend bundle is not UTF-8"
                     ) from exc
-                javascript = _replace_unique(
-                    javascript,
-                    MAILBOX_DISABLED,
-                    MAILBOX_ENABLED,
-                    "mailbox entry",
-                )
-                javascript = _replace_unique(
-                    javascript,
-                    OFFLINE_WIDGETS_DISABLED,
-                    OFFLINE_WIDGETS_ENABLED,
-                    "offline widgets",
-                )
-                javascript = _replace_unique(
-                    javascript,
-                    OFFLINE_REQUEST_BLOCKED,
-                    OFFLINE_REQUEST_ALLOWED,
-                    "offline request",
-                )
-                javascript = _replace_unique(
-                    javascript,
-                    MAIL_FETCH_SKIPPED,
-                    MAIL_FETCH_ALLOWED,
-                    "offline mail fetch",
-                )
-                javascript = _replace_unique(
-                    javascript,
-                    OFFLINE_POLL_SKIPPED,
-                    OFFLINE_POLL_ALLOWED,
-                    "offline mail polling",
-                )
+                for identifier, before, after in replacements:
+                    javascript = _replace_unique(
+                        javascript,
+                        before,
+                        after,
+                        f"frontend {identifier}",
+                    )
                 payload = javascript.encode("utf-8")
             archive.writestr(info, payload)
 
     patched = output.getvalue()
     try:
         with zipfile.ZipFile(io.BytesIO(patched)) as archive:
-            javascript = archive.read(MAIN_MEMBER).decode("utf-8")
+            javascript = archive.read(member).decode("utf-8")
     except (OSError, UnicodeError, zipfile.BadZipFile, KeyError) as exc:
         raise NativeNavigationPatchError(
             "patched frontend archive verification failed"
         ) from exc
-    if (
-        MAILBOX_ENABLED not in javascript
-        or MAILBOX_DISABLED in javascript
-        or OFFLINE_WIDGETS_ENABLED not in javascript
-        or OFFLINE_WIDGETS_DISABLED in javascript
-    ):
+    if any(after not in javascript or before in javascript for _, before, after in replacements):
         raise NativeNavigationPatchError(
             "patched frontend archive verification failed"
         )
@@ -254,33 +354,30 @@ def _unique_offset(source: bytes, signature: bytes, label: str) -> int:
     return offsets[0]
 
 
-def _patched_dll(
+def _patched_binary(
     source: bytes,
-    signatures: tuple[bytes, ...],
-    call_offset: int,
+    replacements: tuple[tuple[str, bytes, int, bytes], ...],
     label: str,
 ) -> bytes:
-    offsets = [
-        _unique_offset(source, signature, f"{label} #{index}")
-        for index, signature in enumerate(signatures, start=1)
-    ]
+    offsets = {
+        identifier: _unique_offset(source, signature, f"{label} {identifier}")
+        for identifier, signature, _, _ in replacements
+    }
     patched = bytearray(source)
-    for offset in offsets:
-        start = offset + call_offset
-        patched[start : start + len(OFFLINE_CALL_PATCH)] = OFFLINE_CALL_PATCH
+    for identifier, _, offset, replacement in replacements:
+        start = offsets[identifier] + offset
+        patched[start : start + len(replacement)] = replacement
     value = bytes(patched)
-    for index, (signature, offset) in enumerate(
-        zip(signatures, offsets, strict=True),
-        start=1,
-    ):
+    for identifier, signature, patch_offset, replacement in replacements:
+        offset = offsets[identifier]
         expected = (
-            signature[:call_offset]
-            + OFFLINE_CALL_PATCH
-            + signature[call_offset + len(OFFLINE_CALL_PATCH) :]
+            signature[:patch_offset]
+            + replacement
+            + signature[patch_offset + len(replacement) :]
         )
         if signature in value or value[offset : offset + len(signature)] != expected:
             raise NativeNavigationPatchError(
-                f"{label} #{index} patch verification failed"
+                f"{label} {identifier} patch verification failed"
             )
     return value
 
@@ -293,6 +390,19 @@ def _unlink_paths(paths: list[Path] | tuple[Path, ...]) -> list[BaseException]:
         except BaseException as exc:
             failures.append(exc)
     return failures
+
+
+def _cleanup_orphan_staging(paths: tuple[Path, ...], work: Path) -> None:
+    orphans: list[Path] = []
+    try:
+        for path in paths:
+            orphans.extend(path.parent.glob(path.name + ".native-nav-*.tmp"))
+        for orphan in orphans:
+            _validate_managed_paths(work, (orphan.parent, orphan))
+    except (OSError, NativeNavigationPatchError):
+        raise NativeNavigationPatchError("NATIVE_NAV_CLEANUP_FAILED") from None
+    if _unlink_paths(orphans):
+        raise NativeNavigationPatchError("NATIVE_NAV_CLEANUP_FAILED")
 
 
 def _stage_write(path: Path, value: bytes, work: Path) -> Path:
@@ -375,10 +485,11 @@ def patch_native_navigation(
         or root.name != CLIENT_VERSION
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_UNMANAGED_ROOT")
-    feapp = root / "resources" / "feapp.dat"
-    studio = root / "plugins" / "Studio" / "NutStudioUI.dll"
-    container = (
-        root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    specs = _load_compatibility_manifest(work)
+    feapp = root.joinpath(*str(specs["feapp"]["relative_path"]).split("/"))
+    studio = root.joinpath(*str(specs["studio_ui"]["relative_path"]).split("/"))
+    container = root.joinpath(
+        *str(specs["container_plugin"]["relative_path"]).split("/")
     )
     paths = (
         ("feapp", feapp),
@@ -399,6 +510,10 @@ def patch_native_navigation(
         *backups.values(),
     )
     _validate_managed_paths(work, managed_paths)
+    _cleanup_orphan_staging(
+        tuple(path for _, path in paths) + tuple(backups.values()),
+        work,
+    )
     for _, path in paths:
         if not path.is_file():
             raise NativeNavigationPatchError("NATIVE_NAV_INPUT_MISSING")
@@ -411,7 +526,7 @@ def patch_native_navigation(
     }
     live_by_name = {name: live[path] for name, path in paths}
     live_states = {
-        name: _registered_file_state(name, value)
+        name: _registered_file_state(specs[name], value)
         for name, value in live_by_name.items()
     }
     live_is_original = all(state == "original" for state in live_states.values())
@@ -424,7 +539,7 @@ def patch_native_navigation(
     if has_any_backup and not has_all_backups:
         for name, path in paths:
             if backup_states[path] and not _matches_registered_file(
-                name,
+                specs[name],
                 _read_bytes(
                     backups[path], "NATIVE_NAV_BACKUP_READ_FAILED"
                 ),
@@ -444,28 +559,26 @@ def patch_native_navigation(
         else dict(live)
     )
     if has_all_backups and not _matches_registered_state(
-        {name: originals[path] for name, path in paths}, "original"
+        {name: originals[path] for name, path in paths}, specs, "original"
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_BACKUP_TAMPERED")
     if has_all_backups and any(state is None for state in live_states.values()):
         raise NativeNavigationPatchError("NATIVE_NAV_LIVE_TAMPERED")
     patched = {
-        feapp: _patched_feapp(originals[feapp]),
-        studio: _patched_dll(
+        feapp: _patched_feapp(originals[feapp], specs["feapp"]),
+        studio: _patched_binary(
             originals[studio],
-            STUDIO_SIGNATURES,
-            8,
+            specs["studio_ui"]["binary_replacements"],
             "NutStudioUI.dll offline call",
         ),
-        container: _patched_dll(
+        container: _patched_binary(
             originals[container],
-            (CONTAINER_SIGNATURE,),
-            6,
+            specs["container_plugin"]["binary_replacements"],
             "NutContainerPlugin.dll lite-bar call",
         ),
     }
     if not _matches_registered_state(
-        {name: patched[path] for name, path in paths}, "patched"
+        {name: patched[path] for name, path in paths}, specs, "patched"
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_PATCH_MISMATCH")
     if has_all_backups:
@@ -505,6 +618,7 @@ def patch_native_navigation(
                 name: _read_bytes(path, "NATIVE_NAV_PUBLISHED_READ_FAILED")
                 for name, path in paths
             },
+            specs,
             "patched",
         ) or not _matches_registered_state(
             {
@@ -513,6 +627,7 @@ def patch_native_navigation(
                 )
                 for name, path in paths
             },
+            specs,
             "original",
         ):
             raise NativeNavigationPatchError("NATIVE_NAV_PUBLISHED_TAMPERED")

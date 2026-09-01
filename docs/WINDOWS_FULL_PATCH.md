@@ -49,14 +49,15 @@ python installer/build_windows_setup.py `
   --voice-reference '<私有 WAV 的本机路径>' `
   --video-runtime '<Olivia-video-runtime-*.zip 的本机路径>' `
   --video-offline-root '<含 ordinary_video 与 music_video 的离线根目录>' `
+  --native-navigation-manifest '<私有兼容 manifest 的本机路径>' `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-私有构建器只接受三项显式输入：WAV、完整视频运行时 ZIP、完整视频离线根目录。它核对 PCM 帧、视频运行时根 manifest 与四个独立 Python 入口；再以 `installer/video-capability-manifest.json` 为唯一 BOM，要求离线根目录同时包含 `ordinary_video` 与 `music_video`，逐文件核对路径、大小和 SHA-256，并拒绝缺失、多余、重解析点或被修改的文件。随后把三项资产的固定名称和摘要写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`。输入的 `offline` 目录不得预先夹带私有字段或资产；公开模式传入任一私有资产、私有模式缺少任一资产都会拒绝构建。
+私有构建器只接受四项显式输入：WAV、完整视频运行时 ZIP、完整视频离线根目录和本机私有兼容 manifest。它核对 PCM 帧、视频运行时根 manifest、四个独立 Python 入口以及兼容 manifest 的固定 schema、客户端版本、文件集合与边界；再以 `installer/video-capability-manifest.json` 为唯一视频 BOM，要求离线根目录同时包含 `ordinary_video` 与 `music_video`，逐文件核对路径、大小和 SHA-256，并拒绝缺失、多余、重解析点或被修改的文件。随后把前三项资产的固定名称和摘要写入内嵌 `offline/offline-core-assets.json`，其中 `distribution` 固定为 `private`；兼容 manifest 只复制到私有核心 payload。输入的 `offline` 目录不得预先夹带私有字段或资产；公开模式传入任一私有资产、私有模式缺少任一资产都会拒绝构建。
 
 公开构建仍是单个 `Olivia-Setup-x64.exe`。私有产物是自包含目录：`Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `Olivia-Setup-x64.exe.sha256`。交付时必须把整个目录压成一个 ZIP，用户完整解压后再运行 EXE；Inno 只把小型核心 payload 解到 `{tmp}`，并把 `{src}` 下固定名称的 runtime ZIP 与 offline root 传给 `Install.ps1`。runtime 由既有事务原子复制到受管 `install/downloads`，ordinary/music 资产由既有视频能力导入链校验、组装与激活；两类大文件都不会进入 Inno `{tmp}`。缺少、改名或篡改任一 sidecar 都会在发布安装结果前失败。私有产物只保存在专用 `dist-private`，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。
 
-除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外，构建器只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。构建器先把两类大 sidecar 原子发布到输出目录并以这些最终字节生成内嵌 BOM；Inno 编译完成后再次复验，防止编译期间的替换进入交付。私有 receipt 记录 EXE、runtime ZIP 与 offline root 内每个文件的相对路径、大小和 SHA-256；`.sha256` 再覆盖这些文件及 receipt 本身，因而没有自引用。公开构建流程与原有输出保持不变，只校验并记录 EXE。
+除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外，构建器还只接受同模式显式传入的兼容 manifest；其余只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。构建器先把两类大 sidecar 原子发布到输出目录并以这些最终字节生成内嵌 BOM；Inno 编译完成后再次复验，防止编译期间的替换进入交付。私有 receipt 记录 EXE、runtime ZIP 与 offline root 内每个文件的相对路径、大小和 SHA-256；`.sha256` 再覆盖这些文件及 receipt 本身，因而没有自引用。公开构建流程与原有输出保持不变，只校验并记录 EXE。
 
 GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV 或视频运行时，也不会生成私有安装器。私有安装包只能由维护者在隔离环境手工构建。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 
@@ -79,7 +80,7 @@ webplayer.dat SHA-256：
 565b5e3e113c2a9dfb90d5fa4f2a0ccda9b0151c118ae3365e6ee0c8624a451d
 ```
 
-文件缺失时安装在写入目标目录前停止。自动发现多份 Steam 副本时，安装器优先选择上述双 SHA-256 精确匹配的第一份；仅发现一份非精确匹配副本时，由 Python 补丁器继续校验 ZIP 结构与补丁锚点。多份副本均不精确匹配时返回 `OFFICIAL_INSTALL_AMBIGUOUS`，用户必须返回上一步明确选择正版目录。
+文件缺失时安装在写入目标目录前停止。自动发现多份 Steam 副本时，安装器优先选择上述双 SHA-256 精确匹配的第一份；仅发现一份非精确匹配副本时，由 Python 补丁器继续校验 ZIP 结构。多份副本均不精确匹配时返回 `OFFICIAL_INSTALL_AMBIGUOUS`，用户必须返回上一步明确选择正版目录。
 
 安装器只在隔离副本中按顺序执行：
 
@@ -94,7 +95,7 @@ webplayer.dat
 5. 提供可选的显式 `uid` 本机回退，只为明确的 loopback `/toy/media/` 地址启用本机视频播放
 ```
 
-原版主包之外，设置界面只增加一个仓库自有 bootstrap；原版 `assets/main-31595bd3.js` 的业务代码除既有端点和 Collection 锚点外不做模糊替换。播放器的普通原版路径继续加载未修改的原模块。
+原版主包之外，设置界面只增加一个仓库自有 bootstrap。私有安装包在每次受管启动前读取安装器带入的兼容 manifest，会修改隔离副本中的业务 bundle 与两个原生 DLL，以恢复原位入口和离线信箱请求；修改只接受 manifest 固定的版本、结构、原始/目标哈希和唯一替换项。每个被修改文件都保留 `.native-nav.orig` 原始备份，发布失败会回滚。公开仓库不保存这些官方字节签名、压缩业务片段或 DLL 特征；它们只存在于授权分发者本机提供的私有兼容 manifest 中。manifest 缺失时公开安装保持未配置，manifest 无效或与隔离副本不匹配时私有启动关闭失败，不会猜测补丁位置。播放器的普通原版路径继续加载未修改的原模块。
 
 隔离副本保留：
 

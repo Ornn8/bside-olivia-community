@@ -23,6 +23,11 @@ from patch_companion_settings import (
     patch_companion_settings,
 )
 from installer.native_window_layout import LayoutStatus, guard_native_window_layout
+from installer.patch_native_navigation import (
+    COMPATIBILITY_MANIFEST_NAME,
+    NativeNavigationPatchError,
+    patch_native_navigation,
+)
 from video_capability_install import (
     VideoCapabilityError,
     load_video_runtime_environment,
@@ -465,6 +470,16 @@ def _repair_client_frontend(root: Path, port: int) -> str:
     return result["status"]
 
 
+def _repair_native_navigation(root: Path) -> str:
+    """Apply an installed private compatibility manifest to the managed copy."""
+
+    manifest = root / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
+    if not manifest.is_file():
+        return "NOT_CONFIGURED"
+    result = patch_native_navigation(_client_executable(root).parent, work_root=root)
+    return str(result["status"])
+
+
 def _client_command(client: Path, local: Path) -> list[str]:
     """Match the first-party launcher's only client argument."""
 
@@ -777,6 +792,11 @@ def main(argv: list[str] | None = None) -> int:
             _repair_client_frontend(root, args.port)
         except (CompanionSettingsPatchError, OSError):
             print("CLIENT_FRONTEND_REPAIR_FAILED")
+            return 2
+        try:
+            _repair_native_navigation(root)
+        except (NativeNavigationPatchError, OSError):
+            print("CLIENT_NATIVE_NAVIGATION_REPAIR_FAILED")
             return 2
         owned_ready = (
             server is not None

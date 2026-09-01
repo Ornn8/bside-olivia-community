@@ -21,6 +21,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from installer.component_update import ComponentUpdateError, _validate_relative_path
+from installer.patch_native_navigation import (
+    COMPATIBILITY_MANIFEST_NAME,
+    parse_compatibility_manifest,
+)
 
 
 MANIFEST_NAME = "offline-core-assets.json"
@@ -28,6 +32,7 @@ SETUP_NAME = "Olivia-Setup-x64.exe"
 VIDEO_RUNTIME_SIDECAR_NAME = "Olivia-video-runtime-private.zip"
 VIDEO_OFFLINE_SIDECAR_NAME = "Olivia-video-offline-private"
 PRIVATE_RECEIPT_NAME = "Olivia-Setup-x64.receipt.json"
+NATIVE_NAVIGATION_MANIFEST_NAME = COMPATIBILITY_MANIFEST_NAME
 VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
 FORBIDDEN_MEDIA_SUFFIXES = {
     ".aac",
@@ -162,6 +167,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
     "installer/activate_private_video.py",
+    "installer/patch_native_navigation.py",
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
@@ -632,6 +638,23 @@ def _absolute_sidecar_source(
         raise SetupBuildError(error_code) from exc
 
 
+def _native_navigation_manifest_source(path: Path) -> Path:
+    candidate = _absolute_sidecar_source(
+        path,
+        directory=False,
+        error_code="SETUP_NATIVE_NAVIGATION_MANIFEST_INVALID",
+    )
+    try:
+        if not 1 <= candidate.stat().st_size <= 1024 * 1024:
+            raise ValueError
+        parse_compatibility_manifest(
+            json.loads(candidate.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        raise SetupBuildError("SETUP_NATIVE_NAVIGATION_MANIFEST_INVALID") from None
+    return candidate
+
+
 def _assert_no_reparse_tree(root: Path, *, error_code: str) -> None:
     try:
         for current, directories, filenames in os.walk(root, followlinks=False):
@@ -988,6 +1011,7 @@ def prepare_setup_payload(
     voice_reference: Path | None = None,
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
+    native_navigation_manifest: Path | None = None,
     validate_schema: bool = True,
 ) -> None:
     source = source.expanduser().resolve()
@@ -1007,6 +1031,17 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
     if distribution == "private" and video_offline_root is None:
         raise SetupBuildError("SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED")
+    if native_navigation_manifest is not None and distribution != "private":
+        raise SetupBuildError("SETUP_NATIVE_NAVIGATION_MANIFEST_PRIVATE_ONLY")
+    if distribution == "private" and native_navigation_manifest is None:
+        assert voice_reference is not None
+        native_navigation_manifest = (
+            voice_reference.parent / NATIVE_NAVIGATION_MANIFEST_NAME
+        )
+        if not native_navigation_manifest.is_file():
+            raise SetupBuildError(
+                "SETUP_PRIVATE_NATIVE_NAVIGATION_MANIFEST_REQUIRED"
+            )
     if destination.exists():
         raise SetupBuildError("SETUP_PAYLOAD_EXISTS")
     _load_and_verify_manifest(source, offline, validate_schema=validate_schema)
@@ -1037,6 +1072,14 @@ def prepare_setup_payload(
             target = staging.joinpath(*PurePosixPath(relative).parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
+        if native_navigation_manifest is not None:
+            navigation_source = _native_navigation_manifest_source(
+                native_navigation_manifest
+            )
+            shutil.copy2(
+                navigation_source,
+                staging / "installer" / NATIVE_NAVIGATION_MANIFEST_NAME,
+            )
         shutil.copytree(offline, staging / "offline")
         if (
             voice_reference is not None
@@ -1127,6 +1170,7 @@ def build_windows_setup(
     voice_reference: Path | None = None,
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
+    native_navigation_manifest: Path | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -1178,6 +1222,7 @@ def build_windows_setup(
             video_offline_root=(
                 offline_sidecar if video_offline_root is not None else None
             ),
+            native_navigation_manifest=native_navigation_manifest,
         )
         command = [
             os.fspath(compiler),
@@ -1330,6 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--voice-reference", type=Path)
     parser.add_argument("--video-runtime", type=Path)
     parser.add_argument("--video-offline-root", type=Path)
+    parser.add_argument("--native-navigation-manifest", type=Path)
     args = parser.parse_args(argv)
     try:
         result = build_windows_setup(
@@ -1342,6 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
             voice_reference=args.voice_reference,
             video_runtime=args.video_runtime,
             video_offline_root=args.video_offline_root,
+            native_navigation_manifest=args.native_navigation_manifest,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

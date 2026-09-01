@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 from pathlib import Path
 import zipfile
 
@@ -14,49 +15,27 @@ from installer.patch_native_navigation import (
 )
 
 
-MAIN_MEMBER = "assets/main-31595bd3.js"
-HOME_ROUTE = (
-    '!z.isNew||$?(await t.replace({name:ve.Home}),' 
-    'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
-)
-MAILBOX_DISABLED = "N3=!1,Ss=!1,wa=({onComplete"
-MAILBOX_ENABLED = "N3=!0,Ss=!1,wa=({onComplete"
-OFFLINE_WIDGETS_DISABLED = (
-    "e.isOfflineMode&&(l.value.mailWidget!==!1&&(l.value.mailWidget=!1),"
-    "l.value.musicWidget!==!1&&(l.value.musicWidget=!1))"
-)
-OFFLINE_WIDGETS_ENABLED = "l.value.mailWidget=!0,l.value.musicWidget=!0"
-OFFLINE_REQUEST_BLOCKED = "if(t.isOfflineMode)throw new Ol(e)"
-OFFLINE_REQUEST_ALLOWED = "if(!1)throw new Ol(e)"
-MAIL_FETCH_SKIPPED = "He(()=>{p.value||d.fetchMailList(!0)})"
-MAIL_FETCH_ALLOWED = "He(()=>{d.fetchMailList(!0)})"
-OFFLINE_POLL_SKIPPED = (
-    "s.isOfflineMode||(s.appMode===Se.PRO?Lt().proRestoreFromApi():"
-    "s.appMode===Se.LITE&&(Lt().liteStartPoll(),uo().startPolling()))"
-)
-OFFLINE_POLL_ALLOWED = (
-    "s.appMode===Se.PRO?Lt().proRestoreFromApi():"
-    "s.appMode===Se.LITE&&(s.isOfflineMode?uo().startPolling():"
-    "(Lt().liteStartPoll(),uo().startPolling()))"
-)
-LOCAL_BRIDGE = (
-    'c.appConf.toyWsUrl="ws://127.0.0.1:8899/ws",'
-    'c.appConf.toyApiUrl="http://127.0.0.1:8899"'
-)
-OFFLINE_CALL_PATCH = bytes((0x33, 0xC0, 0x90, 0x90, 0x90, 0x90))
+MAIN_MEMBER = "assets/synthetic-main.js"
+HOME_ROUTE = "fixture-home-route;"
+MAILBOX_DISABLED = "fixture-mailbox-disabled;"
+MAILBOX_ENABLED = "fixture-mailbox-enabled;"
+OFFLINE_WIDGETS_DISABLED = "fixture-widgets-disabled;"
+OFFLINE_WIDGETS_ENABLED = "fixture-widgets-enabled;"
+OFFLINE_REQUEST_BLOCKED = "fixture-request-blocked;"
+OFFLINE_REQUEST_ALLOWED = "fixture-request-allowed;"
+MAIL_FETCH_SKIPPED = "fixture-fetch-skipped;"
+MAIL_FETCH_ALLOWED = "fixture-fetch-allowed;"
+OFFLINE_POLL_SKIPPED = "fixture-poll-skipped;"
+OFFLINE_POLL_ALLOWED = "fixture-poll-allowed;"
+LOCAL_BRIDGE = "fixture-local-bridge;"
+OFFLINE_CALL_PATCH = b"ALLOW!"
 STUDIO_SIGNATURES = (
-    bytes.fromhex("CB E8 D2 37 08 00 EB 1E FF 15 B2 EC 08 00 48 8D 8F A8"),
-    bytes.fromhex("CB E8 72 34 08 00 EB 1E FF 15 52 E9 08 00 48 8D 8F A8"),
-    bytes.fromhex("CB E8 B2 1F 08 00 EB 2B FF 15 92 D4 08 00 84 C0 75 14"),
-    bytes.fromhex("CB E8 FF 1D 08 00 EB 1C FF 15 DF D2 08 00 48 8D 4F 38"),
+    b"studio01BLOCKED-tail",
+    b"studio02BLOCKED-tail",
+    b"studio03BLOCKED-tail",
+    b"studio04BLOCKED-tail",
 )
-CONTAINER_SIGNATURE = bytes.fromhex(
-    "48 8B DA 48 8B F9 FF 15 61 A4 04 00 84 C0 0F 85"
-)
-_PRODUCTION_SUPPORTED_FINGERPRINTS = {
-    name: dict(states)
-    for name, states in native_navigation._SUPPORTED_INPUT_FINGERPRINTS.items()
-}
+CONTAINER_SIGNATURE = b"cont01BLOCKED-tail"
 
 
 def _write_feapp(path: Path, javascript: str) -> bytes:
@@ -99,6 +78,7 @@ def _write_supported_client(root: Path) -> dict[Path, bytes]:
     container.parent.mkdir(parents=True)
     container.write_bytes(b"container-prefix" + CONTAINER_SIGNATURE + b"container-suffix")
     originals[container] = container.read_bytes()
+    _write_compatibility_manifest(root, originals)
     return originals
 
 
@@ -110,52 +90,111 @@ def _managed_client_root(work_root: Path) -> Path:
     return work_root / "app" / "0.0.9.627"
 
 
-@pytest.fixture(autouse=True)
-def _trust_synthetic_supported_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    root = Path("synthetic") / "0.0.9.627"
-    feapp_buffer = io.BytesIO()
-    with zipfile.ZipFile(feapp_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in (
-            (
-                MAIN_MEMBER,
-                HOME_ROUTE
-                + MAILBOX_DISABLED
-                + OFFLINE_WIDGETS_DISABLED
-                + OFFLINE_REQUEST_BLOCKED
-                + MAIL_FETCH_SKIPPED
-                + OFFLINE_POLL_SKIPPED
-                + LOCAL_BRIDGE,
-            ),
-            ("assets/index.css", "body{display:block}"),
-        ):
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+def _patched_feapp_fixture(source: bytes) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        members = [(info, archive.read(info)) for info in archive.infolist()]
+        comment = archive.comment
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.comment = comment
+        for info, payload in members:
+            if info.filename == MAIN_MEMBER:
+                text = payload.decode("utf-8")
+                for before, after in (
+                    (MAILBOX_DISABLED, MAILBOX_ENABLED),
+                    (OFFLINE_WIDGETS_DISABLED, OFFLINE_WIDGETS_ENABLED),
+                    (OFFLINE_REQUEST_BLOCKED, OFFLINE_REQUEST_ALLOWED),
+                    (MAIL_FETCH_SKIPPED, MAIL_FETCH_ALLOWED),
+                    (OFFLINE_POLL_SKIPPED, OFFLINE_POLL_ALLOWED),
+                ):
+                    text = text.replace(before, after, 1)
+                payload = text.encode("utf-8")
             archive.writestr(info, payload)
-    originals = {
-        "feapp": feapp_buffer.getvalue(),
-        "studio_ui": b"studio-prefix" + b"gap".join(STUDIO_SIGNATURES) + b"studio-suffix",
-        "container_plugin": b"container-prefix" + CONTAINER_SIGNATURE + b"container-suffix",
-    }
+    return output.getvalue()
+
+
+def _patched_binary_fixture(
+    source: bytes, signatures: tuple[bytes, ...], offset: int
+) -> bytes:
+    patched = bytearray(source)
+    for signature in signatures:
+        start = source.index(signature) + offset
+        patched[start : start + len(OFFLINE_CALL_PATCH)] = OFFLINE_CALL_PATCH
+    return bytes(patched)
+
+
+def _file_state(value: bytes) -> dict[str, object]:
+    size, digest = _fingerprint(value)
+    return {"size_bytes": size, "sha256": digest}
+
+
+def _write_compatibility_manifest(
+    client_root: Path, originals: dict[Path, bytes]
+) -> Path:
+    feapp = client_root / "resources" / "feapp.dat"
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    container = client_root / "plugins" / "Container" / "NutContainerPlugin.dll"
     patched = {
-        "feapp": native_navigation._patched_feapp(originals["feapp"]),
-        "studio_ui": native_navigation._patched_dll(
-            originals["studio_ui"], STUDIO_SIGNATURES, 8, "studio"
-        ),
-        "container_plugin": native_navigation._patched_dll(
-            originals["container_plugin"], (CONTAINER_SIGNATURE,), 6, "container"
-        ),
+        feapp: _patched_feapp_fixture(originals[feapp]),
+        studio: _patched_binary_fixture(originals[studio], STUDIO_SIGNATURES, 8),
+        container: _patched_binary_fixture(originals[container], (CONTAINER_SIGNATURE,), 6),
     }
-    monkeypatch.setattr(
-        native_navigation,
-        "_SUPPORTED_INPUT_FINGERPRINTS",
-        {
-            name: {
-                "original": _fingerprint(originals[name]),
-                "patched": _fingerprint(patched[name]),
-            }
-            for name in originals
-        },
-    )
+    manifest = {
+        "schema_version": "olivia.native-navigation-compatibility.v1",
+        "client_version": "0.0.9.627",
+        "files": [
+            {
+                "id": "feapp",
+                "relative_path": "resources/feapp.dat",
+                "original": _file_state(originals[feapp]),
+                "patched": _file_state(patched[feapp]),
+                "archive_member": MAIN_MEMBER,
+                "text_replacements": [
+                    {"id": name, "before": before, "after": after}
+                    for name, before, after in (
+                        ("mailbox", MAILBOX_DISABLED, MAILBOX_ENABLED),
+                        ("widgets", OFFLINE_WIDGETS_DISABLED, OFFLINE_WIDGETS_ENABLED),
+                        ("request", OFFLINE_REQUEST_BLOCKED, OFFLINE_REQUEST_ALLOWED),
+                        ("fetch", MAIL_FETCH_SKIPPED, MAIL_FETCH_ALLOWED),
+                        ("poll", OFFLINE_POLL_SKIPPED, OFFLINE_POLL_ALLOWED),
+                    )
+                ],
+            },
+            {
+                "id": "studio_ui",
+                "relative_path": "plugins/Studio/NutStudioUI.dll",
+                "original": _file_state(originals[studio]),
+                "patched": _file_state(patched[studio]),
+                "binary_replacements": [
+                    {
+                        "id": f"studio-{index}",
+                        "signature_hex": signature.hex(),
+                        "patch_offset": 8,
+                        "replacement_hex": OFFLINE_CALL_PATCH.hex(),
+                    }
+                    for index, signature in enumerate(STUDIO_SIGNATURES, start=1)
+                ],
+            },
+            {
+                "id": "container_plugin",
+                "relative_path": "plugins/Container/NutContainerPlugin.dll",
+                "original": _file_state(originals[container]),
+                "patched": _file_state(patched[container]),
+                "binary_replacements": [
+                    {
+                        "id": "container-1",
+                        "signature_hex": CONTAINER_SIGNATURE.hex(),
+                        "patch_offset": 6,
+                        "replacement_hex": OFFLINE_CALL_PATCH.hex(),
+                    }
+                ],
+            },
+        ],
+    }
+    path = client_root.parents[1] / "local_backend" / "installer" / native_navigation.COMPATIBILITY_MANIFEST_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path
 
 
 def _patched_signature(signature: bytes, call_offset: int) -> bytes:
@@ -166,21 +205,49 @@ def _patched_signature(signature: bytes, call_offset: int) -> bytes:
     )
 
 
-@pytest.mark.parametrize(
-    ("name", "state", "expected"),
-    (
-        ("feapp", "original", (27_769_992, "2abf4bc1208d3f7f39fbd2b4556c980ce5d641c75cee8863c3ca69e6029f7dcf")),
-        ("feapp", "patched", (27_769_978, "71c30b40dbbbf9d6949828425d5b093ad32aaf2d7b3c53b3f1c5a4a42643cc42")),
-        ("studio_ui", "original", (1_297_376, "3756767fc01c2a1c034a56c1ae2920651f13021a1b4cc0c3ed291fc92a9728e1")),
-        ("studio_ui", "patched", (1_297_376, "294dcfe023c84bc83bdd531d8431bf76b2b7a1fbc0941a250ae8f4cf2ed8fa99")),
-        ("container_plugin", "original", (498_144, "53b61d8e9766c5b1cf2af29ed1a4ac7985052db65c37aa1829c71416050e31d1")),
-        ("container_plugin", "patched", (498_144, "d78112ca218f805d437d2b03fe4c772c7cb279848dccce16570cbd466fe66ab4")),
-    ),
-)
-def test_supported_build_fingerprints_are_frozen(
-    name: str, state: str, expected: tuple[int, str]
+def test_public_patcher_contains_no_private_build_signatures() -> None:
+    assert not hasattr(native_navigation, "_SUPPORTED_INPUT_FINGERPRINTS")
+    assert not hasattr(native_navigation, "STUDIO_SIGNATURES")
+    assert not hasattr(native_navigation, "CONTAINER_SIGNATURE")
+
+
+def test_patch_native_navigation_requires_install_private_manifest(
+    tmp_path: Path,
 ) -> None:
-    assert _PRODUCTION_SUPPORTED_FINGERPRINTS[name][state] == expected
+    client_root = _managed_client_root(tmp_path)
+    originals = _write_supported_client(client_root)
+    manifest = (
+        tmp_path
+        / "local_backend"
+        / "installer"
+        / native_navigation.COMPATIBILITY_MANIFEST_NAME
+    )
+    manifest.unlink()
+
+    with pytest.raises(
+        NativeNavigationPatchError,
+        match="NATIVE_NAV_MANIFEST_REQUIRED",
+    ):
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert {path: path.read_bytes() for path in originals} == originals
+
+
+def test_patch_native_navigation_removes_orphan_staging_files_before_recovery(
+    tmp_path: Path,
+) -> None:
+    client_root = _managed_client_root(tmp_path)
+    originals = _write_supported_client(client_root)
+    orphans = []
+    for path in originals:
+        orphan = path.with_name(path.name + ".native-nav-interrupted.tmp")
+        orphan.write_bytes(b"partial")
+        orphans.append(orphan)
+
+    result = patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert result["status"] == "PATCHED"
+    assert not any(path.exists() for path in orphans)
 
 
 def _assert_transaction_rolled_back(originals: dict[Path, bytes]) -> None:
@@ -852,21 +919,18 @@ def test_patch_native_navigation_rejects_tampered_live_files_with_backups(
 
 def test_patch_native_navigation_rejects_unregistered_patch_output_before_writes(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client_root = _managed_client_root(tmp_path)
     originals = _write_supported_client(client_root)
-    registered = {
-        name: dict(states)
-        for name, states in native_navigation._SUPPORTED_INPUT_FINGERPRINTS.items()
-    }
-    size, _ = registered["feapp"]["patched"]
-    registered["feapp"]["patched"] = (size, "0" * 64)
-    monkeypatch.setattr(
-        native_navigation,
-        "_SUPPORTED_INPUT_FINGERPRINTS",
-        registered,
+    manifest_path = (
+        tmp_path
+        / "local_backend"
+        / "installer"
+        / native_navigation.COMPATIBILITY_MANIFEST_NAME
     )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["patched"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(
         NativeNavigationPatchError,
