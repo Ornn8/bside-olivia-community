@@ -1918,9 +1918,11 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert "setlocal EnableDelayedExpansion" in uninstall
     assert "uninstall --apply" in uninstall
     assert "set EXIT_CODE=!ERRORLEVEL!" in uninstall
-    assert "start \"\" /b cmd.exe" in uninstall
+    assert "if not !EXIT_CODE! EQU 0 exit /b !EXIT_CODE!" in uninstall
+    assert 'start "" /b "%ComSpec%"' in uninstall
+    assert "ping.exe 127.0.0.1 -n 2 >nul & del /f /q" in uninstall
     assert "del /f /q" in uninstall
-    assert "exit /b !EXIT_CODE!" in uninstall
+    assert "exit /b 0" in uninstall
     for script in (
         installed / "START.cmd",
         installed / "CONFIGURE.cmd",
