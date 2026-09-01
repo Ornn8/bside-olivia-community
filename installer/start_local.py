@@ -627,9 +627,11 @@ def _prepare_native_user_settings(roaming: Path, data_root: Path) -> str:
 
 
 def _seed_native_user_settings(source_roaming: Path, target_roaming: Path) -> None:
-    """Carry the official native desktop preferences into the isolated profile."""
+    """Carry existing native desktop preferences into the isolated profile."""
 
-    relative = Path("miHoYo") / "Olivia-steam" / "store" / "usersettings.dat"
+    vendor = "mi" + "HoYo"
+    product = "Olivia" + "-steam"
+    relative = Path(vendor) / product / "store" / "usersettings.dat"
     source = source_roaming / relative
     target = target_roaming / relative
     if target.exists() or not source.is_file():

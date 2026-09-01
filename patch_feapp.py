@@ -289,7 +289,7 @@ def repair_web_player_event_ids(
     *,
     work_root: str | os.PathLike[str] | None = None,
 ) -> str:
-    """Repair the official 0.0.9.627 UUID/integer bridge mismatch in place."""
+    """Repair the 0.0.9.627 UUID/integer bridge mismatch in place."""
 
     feapp = Path(feapp_path).resolve()
     _validate_zip(feapp)
