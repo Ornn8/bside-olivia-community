@@ -296,6 +296,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           && Number.isInteger(payload.seen)
           && Number.isInteger(payload.would_insert)
           && Number.isInteger(payload.would_update)
+          && Number.isInteger(payload.would_remove)
           && Number.isInteger(payload.duplicates)
         : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
@@ -2081,7 +2082,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refreshLocalBackup = async () => {
       try {
         const payload = await requestJson(LOCAL_LETTER_IMPORT_PATH);
-        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，重复 ${payload.duplicates} 封。`;
+        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，清理旧乱码重复 ${payload.would_remove} 封，重复 ${payload.duplicates} 封。`;
         return payload;
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
@@ -2096,7 +2097,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (importPending) return;
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
-      const changeCount = preflight.would_insert + preflight.would_update;
+      const changeCount = preflight.would_insert + preflight.would_update + preflight.would_remove;
       if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件，并同步长期记忆与关系状态？`)) {
         return;
       }
@@ -2108,11 +2109,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
+        const removed = Number.isInteger(payload.removed) ? payload.removed : 0;
         const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
         const migration = payload.memory_migration || {};
         const memoryWritten = Number.isInteger(migration.written) ? migration.written : 0;
         const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
-        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封历史信件，长期记忆新增 ${memoryWritten} 条、复用 ${memoryDuplicates} 条；正在刷新信箱。`;
+        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封、清理旧乱码重复 ${removed} 封，长期记忆新增 ${memoryWritten} 条、复用 ${memoryDuplicates} 条；正在刷新信箱。`;
         importButton.textContent = "已完成";
         window.setTimeout(() => {
           try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }

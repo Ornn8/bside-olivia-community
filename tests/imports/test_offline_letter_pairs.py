@@ -173,6 +173,52 @@ def test_offline_recovery_consolidates_old_broken_and_correct_duplicate(tmp_path
         archive.close()
 
 
+def test_offline_recovery_removes_only_matching_obsolete_export_alias(tmp_path):
+    source = tmp_path / "letter-pairs.json"
+    _raw, content, reply = _write_mojibake_pair(source)
+    archive = LocalMemoryAdapter(tmp_path / "memory.sqlite3")
+    try:
+        obsolete = archive.import_legacy_records([
+            LegacyLetter(
+                content="obsolete alias",
+                source_record_id="official-offline-export:matching",
+                source="official-olivia-offline-export",
+                metadata={
+                    "import_kind": "official_text_reply_offline_export",
+                    "user_content": _latin1_mojibake(content),
+                    "reply_text": _latin1_mojibake(reply),
+                },
+            ),
+            LegacyLetter(
+                content="distinct archive record",
+                source_record_id="official-offline-export:distinct",
+                source="official-olivia-offline-export",
+                metadata={
+                    "import_kind": "official_text_reply_offline_export",
+                    "user_content": "distinct synthetic content",
+                    "reply_text": "distinct synthetic reply",
+                },
+            ),
+        ])
+
+        plan = apply_offline_letter_pair_recovery_to_adapter(source, adapter=archive)
+        stored = archive.list_legacy()
+        rerun = apply_offline_letter_pair_recovery_to_adapter(source, adapter=archive)
+    finally:
+        archive.close()
+
+    assert obsolete.inserted == 2
+    assert (plan.would_remove, plan.removed) == (1, 1)
+    assert len(stored) == 2
+    assert sum(row["source"] == "offline-letter-pairs" for row in stored) == 1
+    assert [
+        row["source_record_id"]
+        for row in stored
+        if row["source"] == "official-olivia-offline-export"
+    ] == ["official-offline-export:distinct"]
+    assert (rerun.would_remove, rerun.removed) == (0, 0)
+
+
 def test_offline_pairs_project_to_stable_ordered_historical_exchanges(tmp_path):
     source = tmp_path / "letter-pairs.json"
     raw = _write_pairs(source)

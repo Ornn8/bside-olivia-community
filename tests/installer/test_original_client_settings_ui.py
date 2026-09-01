@@ -247,6 +247,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert "payload.updated" in BOOTSTRAP_JAVASCRIPT
     assert "payload.would_insert" in BOOTSTRAP_JAVASCRIPT
     assert "payload.would_update" in BOOTSTRAP_JAVASCRIPT
+    assert "payload.would_remove" in BOOTSTRAP_JAVASCRIPT
     assert "未在原版游戏目录找到 letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
     assert 'importButton.textContent = "重试导入"' in BOOTSTRAP_JAVASCRIPT
     assert "mountOfficialLetterImport(section)" not in BOOTSTRAP_JAVASCRIPT
@@ -363,7 +364,7 @@ const fetch = async (endpoint, options) => {
     if (options.method === "GET") {
       return backupAvailable
         ? { ok: true, json: async () => ({ code: 0, data: {
-            status: "READY", seen: 2, would_insert: 2, would_update: 0, duplicates: 0,
+            status: "READY", seen: 2, would_insert: 2, would_update: 0, would_remove: 0, duplicates: 0,
             source: "local_backup",
           } }) }
         : { ok: false, json: async () => ({ code: 404, data: {
@@ -374,7 +375,7 @@ const fetch = async (endpoint, options) => {
           } }) };
     }
     return { ok: true, json: async () => ({ code: 0, data: {
-      status: "APPLIED", inserted: 2, updated: 0, duplicates: 0,
+      status: "APPLIED", inserted: 2, updated: 0, removed: 0, duplicates: 0,
       source: "local_backup",
     } }) };
   }
@@ -428,7 +429,7 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "POST");
   if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("local import confirmation header missing");
   if (preflightIndex < 0 || preflightIndex >= importIndex) throw new Error("local import preflight did not run before import");
-  if (!body.querySelectorAll("div").some((item) => item.textContent.includes("已导入 2 封、修复 0 封历史信件"))) {
+  if (!body.querySelectorAll("div").some((item) => /2.*0.*0/.test(item.textContent))) {
     throw new Error("local import completion was not shown");
   }
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");

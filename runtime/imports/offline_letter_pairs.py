@@ -25,6 +25,8 @@ OFFLINE_LETTER_PAIR_IMPORT_KIND = "offline_recovered_text_reply"
 OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY = "offline_mailbox_publish_status"
 OFFLINE_LETTER_PAIR_PUBLISH_STATUS = "validated_pair_v1"
 OFFLINE_LETTER_PAIR_PROVENANCE_KEY = "offline_letter_pair_provenance"
+_OBSOLETE_OFFLINE_EXPORT_SOURCE = "official-olivia-offline-export"
+_OBSOLETE_OFFLINE_EXPORT_KIND = "official_text_reply_offline_export"
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class OfflineLetterPairRecoveryReport:
     provider_calls: int = 0
     would_update: int = 0
     updated: int = 0
+    would_remove: int = 0
+    removed: int = 0
 
 
 def is_published_offline_letter_pair(metadata: object) -> bool:
@@ -112,6 +116,42 @@ def _repair_reversible_utf8_latin1_mojibake(value: str) -> str:
     if original_c1 and repaired_c1 < original_c1 and repaired_cjk > original_cjk:
         return repaired
     return value
+
+
+def _matching_obsolete_export_ids(
+    rows: Sequence[Mapping[str, object]],
+    pairs: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    canonical = {_pair_archive_content(pair) for pair in pairs}
+    matches: list[str] = []
+    for row in rows:
+        if row.get("source") != _OBSOLETE_OFFLINE_EXPORT_SOURCE:
+            continue
+        metadata = row.get("metadata")
+        if not isinstance(metadata, Mapping) or metadata.get("import_kind") != _OBSOLETE_OFFLINE_EXPORT_KIND:
+            continue
+        content = metadata.get("user_content")
+        reply = metadata.get("reply_text")
+        memory_id = row.get("letter_id") or row.get("memory_id")
+        if not all(isinstance(value, str) for value in (content, reply, memory_id)):
+            continue
+        repaired = (
+            _repair_reversible_utf8_latin1_mojibake(content),
+            _repair_reversible_utf8_latin1_mojibake(reply),
+        )
+        if _pair_archive_content(repaired) in canonical:
+            matches.append(memory_id)
+    return tuple(matches)
+
+
+def _adapter_obsolete_export_ids(
+    adapter: MemoryPort,
+    pairs: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    list_legacy = getattr(adapter, "list_legacy", None)
+    if not callable(list_legacy):
+        return ()
+    return _matching_obsolete_export_ids(list_legacy(), pairs)
 
 
 def _build_records(
@@ -292,12 +332,12 @@ def plan_offline_letter_pair_recovery_with_adapter(
         if callable(grouped)
         else adapter.legacy_source_hashes("offline-letter-pairs")
     )
-    return _recovery_plan_from_hashes(
+    return replace(_recovery_plan_from_hashes(
         raw,
         pairs,
         adapter.legacy_content_hashes(),
         existing_by_source,
-    )
+    ), would_remove=len(_adapter_obsolete_export_ids(adapter, pairs)))
 
 
 def apply_offline_letter_pair_recovery(
@@ -310,10 +350,16 @@ def apply_offline_letter_pair_recovery(
     plan = _recovery_plan(raw, pairs, database)
     archive = LocalMemoryAdapter(database)
     try:
+        obsolete_ids = _adapter_obsolete_export_ids(archive, pairs)
         result = archive.import_legacy_records(
             _build_records(raw, pairs),
             atomic=True,
             replace_matching_source_records=True,
+        )
+        removed = (
+            archive.remove_legacy_source_records(_OBSOLETE_OFFLINE_EXPORT_SOURCE, obsolete_ids)
+            if not result.rolled_back
+            else 0
         )
     finally:
         archive.close()
@@ -324,6 +370,8 @@ def apply_offline_letter_pair_recovery(
         updated=result.updated,
         duplicates=result.duplicates,
         rejected=result.rejected,
+        would_remove=len(obsolete_ids),
+        removed=removed,
     )
 
 
@@ -347,10 +395,18 @@ def apply_offline_letter_pair_recovery_to_adapter(
         adapter.legacy_content_hashes(),
         existing_by_source,
     )
+    obsolete_ids = _adapter_obsolete_export_ids(adapter, pairs)
+    plan = replace(plan, would_remove=len(obsolete_ids))
     result = adapter.import_legacy_records(
         _build_records(raw, pairs),
         atomic=True,
         replace_matching_source_records=True,
+    )
+    remove_records = getattr(adapter, "remove_legacy_source_records", None)
+    removed = (
+        remove_records(_OBSOLETE_OFFLINE_EXPORT_SOURCE, obsolete_ids)
+        if not result.rolled_back and callable(remove_records)
+        else 0
     )
     return replace(
         plan,
@@ -359,6 +415,7 @@ def apply_offline_letter_pair_recovery_to_adapter(
         updated=result.updated,
         duplicates=result.duplicates,
         rejected=result.rejected,
+        removed=removed,
     )
 
 

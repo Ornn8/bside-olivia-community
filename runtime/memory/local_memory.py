@@ -645,6 +645,54 @@ class LocalMemoryAdapter:
             grouped.setdefault(str(source_record_id), []).append(str(content_hash))
         return {key: tuple(values) for key, values in grouped.items()}
 
+    def remove_legacy_source_records(
+        self,
+        source: str,
+        memory_ids: Iterable[str],
+    ) -> int:
+        """Remove exact obsolete aliases from one source after a canonical import."""
+
+        self._require_writable()
+        source_name = _label(source, default="local-import")
+        requested = tuple(dict.fromkeys(_label(value, default="record") for value in memory_ids))
+        if not requested:
+            return 0
+        placeholders = ",".join("?" for _ in requested)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                f"SELECT memory_id FROM legacy_letters WHERE source = ? "
+                f"AND memory_id IN ({placeholders})",
+                (source_name, *requested),
+            ).fetchall()
+            selected = tuple(str(row[0]) for row in rows)
+            if not selected:
+                return 0
+            selected_placeholders = ",".join("?" for _ in selected)
+            conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_delete")
+            conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_update")
+            try:
+                if self._fts5:
+                    conn.execute(
+                        f"DELETE FROM legacy_letters_fts WHERE memory_id IN "
+                        f"({selected_placeholders})",
+                        selected,
+                    )
+                conn.execute(
+                    f"DELETE FROM legacy_letters WHERE source = ? AND memory_id IN "
+                    f"({selected_placeholders})",
+                    (source_name, *selected),
+                )
+            finally:
+                conn.execute(
+                    "CREATE TRIGGER legacy_letters_no_update BEFORE UPDATE ON legacy_letters "
+                    "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER legacy_letters_no_delete BEFORE DELETE ON legacy_letters "
+                    "BEGIN SELECT RAISE(ABORT, 'legacy_letters require whole-library unload'); END"
+                )
+            return len(selected)
+
     def _promote_legacy_duplicate(
         self,
         conn: sqlite3.Connection,
