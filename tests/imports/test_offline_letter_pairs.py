@@ -10,10 +10,11 @@ from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
+    apply_offline_letter_pair_recovery_to_adapter,
     main,
 )
 from runtime.memory.local_memory import LocalMemoryAdapter
-from runtime.memory.memory_port import LegacyImportResult
+from runtime.memory.memory_port import LegacyImportResult, LegacyLetter
 
 
 def _write_pairs(path: Path) -> bytes:
@@ -39,6 +40,86 @@ def _offline_metadata(digest: str) -> dict[str, object]:
         OFFLINE_LETTER_PAIR_PROVENANCE_KEY: dict(schema_version=1, source_index=1,
             source_sha256=digest, timestamp_status="unknown"),
     }
+
+
+def _latin1_mojibake(value: str) -> str:
+    return value.encode("utf-8").decode("latin-1")
+
+
+def _write_mojibake_pair(path: Path) -> tuple[bytes, str, str]:
+    content = "合成测试旧信"
+    reply = "合成测试回信"
+    raw = json.dumps([{
+        "content": _latin1_mojibake(content),
+        "reply": _latin1_mojibake(reply),
+    }], ensure_ascii=False).encode("utf-8")
+    path.write_bytes(raw)
+    return raw, content, reply
+
+
+def test_offline_recovery_repairs_reversible_utf8_latin1_mojibake(tmp_path, capsys):
+    source = tmp_path / "letter-pairs.json"
+    _raw, content, reply = _write_mojibake_pair(source)
+    memory_root = tmp_path / "memory"
+
+    exit_code, _output, report = _run_cli(source, memory_root, capsys, apply=True)
+
+    archive = LocalMemoryAdapter(memory_root / "memory.sqlite3")
+    try:
+        stored = archive.list_legacy()
+    finally:
+        archive.close()
+    assert exit_code == 0
+    assert report["inserted"] == 1
+    assert stored[0]["content"] == content
+    assert stored[0]["reply_text"] == reply
+
+
+def test_offline_recovery_updates_same_source_record_imported_by_old_decoder(tmp_path):
+    source = tmp_path / "letter-pairs.json"
+    raw, content, reply = _write_mojibake_pair(source)
+    digest = hashlib.sha256(raw).hexdigest()
+    source_record_id = f"offline-letter-pairs:{digest}:000001"
+    broken_content = _latin1_mojibake(content)
+    broken_reply = _latin1_mojibake(reply)
+    archive = LocalMemoryAdapter(tmp_path / "memory.sqlite3")
+    try:
+        seeded = archive.import_legacy_records([LegacyLetter(
+            content=json.dumps(
+                {"content": broken_content, "reply": broken_reply},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            source_record_id=source_record_id,
+            source="offline-letter-pairs",
+            metadata={
+                **_offline_metadata(digest),
+                "user_content": broken_content,
+                "reply_text": broken_reply,
+            },
+        )])
+        report = apply_offline_letter_pair_recovery_to_adapter(source, adapter=archive)
+        stored = archive.list_legacy()
+        search_matches = archive.search(content, domains=("legacy_letters",))
+    finally:
+        archive.close()
+
+    assert seeded.inserted == 1
+    assert (report.would_insert, report.would_update) == (0, 1)
+    assert (report.inserted, report.updated, report.duplicates) == (0, 1, 0)
+    assert len(stored) == 1
+    assert stored[0]["source_record_id"] == source_record_id
+    assert stored[0]["content"] == content
+    assert stored[0]["reply_text"] == reply
+    assert [match.text for match in search_matches] == [
+        json.dumps(
+            {"content": content, "reply": reply},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    ]
 
 
 def test_offline_letter_pair_cli_dry_run_is_content_free_and_side_effect_free(tmp_path, capsys):
