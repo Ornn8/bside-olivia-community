@@ -414,6 +414,9 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setattr(
+        music_reply, "_breeze_hardware_status", lambda: (True, None)
+    )
     monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda *_args, **_kwargs: 60.0)
     observed: dict[str, object] = {}
     output = tmp_path / "output.mp4"
@@ -960,6 +963,9 @@ def test_musical_renderer_rejects_relative_latentsync_paths_without_project_root
     transition = tmp_path / "transition.mp4"
     transition.write_bytes(b"synthetic")
     monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setattr(
+        music_reply, "_breeze_hardware_status", lambda: (True, None)
+    )
     monkeypatch.delenv("OLIVIA_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("OLIVIA_SPOKEN_SCENE_CANDIDATES", str(transition))
     monkeypatch.setenv("OLIVIA_MINIMAX_COMFY_PYTHON", str(tmp_path / "minimax.exe"))
@@ -1035,6 +1041,9 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
             path.write_bytes(b"synthetic")
 
     monkeypatch.chdir(unrelated_cwd)
+    monkeypatch.setattr(
+        music_reply, "_breeze_hardware_status", lambda: (True, None)
+    )
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(project_root))
     monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(ffmpeg))
     monkeypatch.setenv("OLIVIA_PROVIDER_CACHE_ROOT", "provider-cache")

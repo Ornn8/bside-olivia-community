@@ -185,6 +185,7 @@ local_server._persist_media_state = lambda: None
 local_server.letters_adapter.remember_conversation = lambda *args: None
 local_server._voice_plan_for_letter = fixed_voice_plan
 local_server.render_reply_video = render_reply
+local_server.require_breeze_hardware = lambda: None
 
 if os.environ.get('OLIVIA_TEST_PRIVATE_WORLD_SQLITE_FAILURE') == '1':
     def unavailable_snapshot():
