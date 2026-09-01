@@ -32,6 +32,7 @@ class WindowSnapshot:
     handle: int
     rect: Rect
     executable: Path
+    process_id: int = 0
     minimized: bool = False
     maximized: bool = False
 
@@ -52,10 +53,6 @@ class WindowApi(Protocol):
     def move_window(self, handle: int, target: Rect) -> bool: ...
 
 
-def _clamp(value: int, lower: int, upper: int) -> int:
-    return min(max(value, lower), upper)
-
-
 def plan_native_window_layout(
     *,
     main: Rect,
@@ -66,35 +63,35 @@ def plan_native_window_layout(
     """Return the main rectangle that keeps its right sidebar in the work area."""
 
     gap = sidebar.left - main.right
-    sidebar_top = sidebar.top - main.top
-    sidebar_bottom = sidebar.bottom - main.top
-    combined_top = min(0, sidebar_top)
-    combined_bottom = max(main.height, sidebar_bottom)
-    target_width = min(main.width, work_area.width - gap - sidebar.width)
     if (
         not 0 <= gap <= 32
         or sidebar.width <= 0
         or sidebar.height <= 0
-        or target_width < minimum_main_width
         or main.height <= 0
-        or combined_bottom - combined_top > work_area.height
     ):
         return None
-    target_left = _clamp(
-        main.left,
-        work_area.left,
-        work_area.right - target_width - gap - sidebar.width,
-    )
-    target_top = _clamp(
-        main.top,
-        work_area.top - combined_top,
-        work_area.bottom - combined_bottom,
-    )
+    if (
+        sidebar.left >= work_area.left
+        and sidebar.top >= work_area.top
+        and sidebar.right <= work_area.right
+        and sidebar.bottom <= work_area.bottom
+    ):
+        return main
+    if (
+        sidebar.left < work_area.left
+        or sidebar.top < work_area.top
+        or sidebar.bottom > work_area.bottom
+    ):
+        return None
+    target_right = work_area.right - gap - sidebar.width
+    target_width = target_right - main.left
+    if target_width < minimum_main_width or target_width >= main.width:
+        return None
     return Rect(
-        target_left,
-        target_top,
-        target_left + target_width,
-        target_top + main.height,
+        main.left,
+        main.top,
+        target_right,
+        main.bottom,
     )
 
 
@@ -117,6 +114,7 @@ def _window_pair(
             w
             for w in matching
             if w.handle != main.handle
+            and w.process_id == main.process_id
             and 40 <= w.rect.width <= 96
             and 72 <= w.rect.height <= 240
             and 0 <= w.rect.left - main.rect.right <= 32
@@ -222,6 +220,8 @@ def guard_native_window_layout(
     stable = 0
     while not stop.is_set():
         pair = _window_pair(api.visible_windows(), client_executable)
+        if stop.is_set():
+            return LayoutStatus.SKIPPED
         if pair is None:
             previous, stable = None, 0
         elif pair == previous:
@@ -229,11 +229,19 @@ def guard_native_window_layout(
         else:
             previous, stable = pair, 1
         if pair is not None and stable >= 2:
+            if stop.is_set() or time.monotonic() >= deadline:
+                return LayoutStatus.SKIPPED
             status = _adjust_pair(api, pair)
             if status is not LayoutStatus.ADJUSTED:
                 return status
-            time.sleep(max(0.0, poll_interval))
+            remaining = max(0.0, deadline - time.monotonic())
+            if stop.wait(min(max(0.0, poll_interval), remaining)):
+                return LayoutStatus.SKIPPED
+            if time.monotonic() >= deadline:
+                return LayoutStatus.SKIPPED
             verified = _window_pair(api.visible_windows(), client_executable)
+            if stop.is_set():
+                return LayoutStatus.SKIPPED
             if verified is None:
                 return LayoutStatus.SKIPPED
             return (
@@ -241,9 +249,11 @@ def guard_native_window_layout(
                 if _pair_target(api, verified)[0] is LayoutStatus.ALREADY_VISIBLE
                 else LayoutStatus.SKIPPED
             )
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return LayoutStatus.NOT_OBSERVED
-        time.sleep(max(0.0, poll_interval))
+        if stop.wait(min(max(0.0, poll_interval), remaining)):
+            return LayoutStatus.SKIPPED
     return LayoutStatus.SKIPPED
 
 
@@ -329,6 +339,7 @@ class _CtypesWindowApi:
                         handle,
                         self._rect(rect),
                         executable,
+                        process_id=int(process_id.value),
                         minimized=bool(self.user32.IsIconic(hwnd)),
                         maximized=bool(self.user32.IsZoomed(hwnd)),
                     )
