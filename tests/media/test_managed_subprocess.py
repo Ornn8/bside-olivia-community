@@ -186,7 +186,9 @@ def test_windows_resume_failure_terminates_assigned_job_once(monkeypatch) -> Non
     with pytest.raises(OSError, match="resume"):
         managed_subprocess.run_managed_process(["worker"], timeout_seconds=1)
 
-    assert observed == ["assign", "terminate", "reap:15.0", "close"]
+    assert observed[:2] == ["assign", "terminate"]
+    assert float(observed[2].removeprefix("reap:")) == pytest.approx(15.0)
+    assert observed[3:] == ["close"]
 
 
 def test_windows_cleanup_failures_do_not_swallow_resume_error(monkeypatch) -> None:
@@ -234,7 +236,8 @@ def test_windows_job_close_failure_warns_after_tree_exit(monkeypatch) -> None:
             ["worker"], timeout_seconds=1,
         )
     assert result.returncode == 0
-    assert observed == ["reap:1", "terminate", "reap:15.0"]
+    assert observed[:2] == ["reap:1", "terminate"]
+    assert float(observed[2].removeprefix("reap:")) == pytest.approx(15.0)
 
 
 def test_windows_terminate_failure_warns_after_tree_exit(monkeypatch) -> None:
@@ -351,10 +354,11 @@ def test_posix_success_terminates_process_group_and_reaps(monkeypatch) -> None:
     result = managed_subprocess.run_managed_process(["worker"], timeout_seconds=12)
 
     assert result.stdout == b"out"
-    assert observed == [
-        "reap:12", f"kill:4242:{managed_subprocess.signal.SIGKILL}", "reap:15.0",
-        "kill:4242:0", "kill:4242:0",
+    assert observed[:2] == [
+        "reap:12", f"kill:4242:{managed_subprocess.signal.SIGKILL}",
     ]
+    assert float(observed[2].removeprefix("reap:")) == pytest.approx(15.0)
+    assert observed[3:] == ["kill:4242:0", "kill:4242:0"]
 
 
 def test_posix_kill_failure_warns_after_group_exit(monkeypatch) -> None:
