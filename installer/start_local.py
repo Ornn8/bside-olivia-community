@@ -28,6 +28,16 @@ from installer.patch_native_navigation import (
     NativeNavigationPatchError,
     patch_native_navigation,
 )
+try:
+    from patch_native_user_settings import (
+        NativeUserSettingsPatchError,
+        patch_native_user_settings,
+    )
+except ModuleNotFoundError:  # Package import used by tests and development tools.
+    from installer.patch_native_user_settings import (
+        NativeUserSettingsPatchError,
+        patch_native_user_settings,
+    )
 from video_capability_install import (
     VideoCapabilityError,
     load_video_runtime_environment,
@@ -577,6 +587,34 @@ def _append_launcher_event(data_root: Path, event: str, **fields: object) -> Non
         pass
 
 
+def _prepare_native_user_settings(roaming: Path, data_root: Path) -> str:
+    """Best-effort enable the native mailbox without logging its local path."""
+
+    settings_path = (
+        roaming
+        / ("mi" + "HoYo")
+        / ("Olivia" + "-steam")
+        / "store"
+        / "usersettings.dat"
+    )
+    try:
+        result = patch_native_user_settings(settings_path)
+    except NativeUserSettingsPatchError as exc:
+        _append_launcher_event(
+            data_root,
+            "native_settings",
+            status="failed",
+            error_code=exc.code,
+        )
+        return "failed"
+    _append_launcher_event(
+        data_root,
+        "native_settings",
+        status=result.status,
+    )
+    return result.status
+
+
 def _active_backend() -> Path:
     """Resolve the complete backend tree that owns this launcher module."""
 
@@ -842,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
+        _prepare_native_user_settings(roaming, data_root)
         _append_launcher_event(data_root, "client_start", attempt=1)
         exit_code = _run_client_with_native_layout(
             client,
@@ -864,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                 attempt=2,
                 reason="known_fresh_profile_exit",
             )
+            _prepare_native_user_settings(roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)
             exit_code = _run_client_with_native_layout(
                 client,

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 import wave
 import zipfile
@@ -555,6 +556,61 @@ def test_fresh_profile_retries_known_first_exit_once(
         {"attempt": 2, "event": "client_layout", "status": "skipped"},
         {"attempt": 2, "event": "client_exit", "exit_code": 0},
     ]
+    assert str(root.resolve()) not in launcher_log
+
+
+def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[Path] = []
+
+    def patch(settings_path: Path):
+        calls.append(settings_path)
+        return SimpleNamespace(status="missing")
+
+    monkeypatch.setattr(start_local, "patch_native_user_settings", patch)
+
+    root, result, _runs, _events, launcher_log = _run_launcher_with_client_results(
+        tmp_path,
+        monkeypatch,
+        (0x0E000003, 0),
+    )
+
+    expected = (
+        root.resolve()
+        / "profile"
+        / "Roaming"
+        / "miHoYo"
+        / "Olivia-steam"
+        / "store"
+        / "usersettings.dat"
+    )
+    assert result == 0
+    assert calls == [expected, expected]
+    assert launcher_log.count('"event": "native_settings"') == 2
+    assert str(expected) not in launcher_log
+
+
+def test_native_settings_failure_is_path_free_and_does_not_block_client(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail(_settings_path: Path):
+        raise start_local.NativeUserSettingsPatchError("USER_SETTINGS_UNSAFE_PATH")
+
+    monkeypatch.setattr(start_local, "patch_native_user_settings", fail)
+
+    root, result, runs, _events, launcher_log = _run_launcher_with_client_results(
+        tmp_path,
+        monkeypatch,
+        (0,),
+        existing_profile=True,
+    )
+
+    assert result == 0
+    assert len(runs) == 1
+    assert '"error_code": "USER_SETTINGS_UNSAFE_PATH"' in launcher_log
     assert str(root.resolve()) not in launcher_log
 
 
