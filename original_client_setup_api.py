@@ -261,12 +261,12 @@ class LLMSetupService:
     def observe_login(self, *, success: bool) -> None:
         if success:
             self._login_observed = True
-            self._session_token = secrets.token_urlsafe(32)
+            if self._session_token is None:
+                self._session_token = secrets.token_urlsafe(32)
 
     def require_session(self, supplied: str) -> None:
         if (
-            not self._login_observed
-            or self._session_token is None
+            self._session_token is None
             or not secrets.compare_digest(self._session_token, supplied)
         ):
             raise LLMSetupError("LLM_SETUP_LOGIN_REQUIRED", status=403)
@@ -299,12 +299,14 @@ class LLMSetupService:
     def status(self) -> dict[str, object]:
         completed, skipped = self._completion()
         config = self._config()
+        if self._session_token is None:
+            self._session_token = secrets.token_urlsafe(32)
         result: dict[str, object] = {
             "schema_version": "olivia.initial-setup.v1",
             "status": "READY",
             "login_observed": self._login_observed,
             "setup_completed": completed,
-            "show_initial_setup": self._login_observed and not completed,
+            "show_initial_setup": not completed,
             "skipped": skipped,
             "llm": {
                 "base_url": config["base_url"],

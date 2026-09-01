@@ -37,7 +37,7 @@ from private_world_port import (
 TRUSTED_ORIGIN = "https://client.example"
 
 
-def test_successful_original_sign_in_unlocks_initial_setup(tmp_path: Path) -> None:
+def test_initial_setup_is_visible_before_original_sign_in(tmp_path: Path) -> None:
     async def signed_in(_request: web.Request) -> web.Response:
         return web.json_response({"code": 0, "message": "ok", "data": {}})
 
@@ -57,7 +57,9 @@ def test_successful_original_sign_in_unlocks_initial_setup(tmp_path: Path) -> No
             before = await client.get(
                 "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
             )
-            assert (await before.json())["show_initial_setup"] is False
+            before_payload = await before.json()
+            assert before_payload["show_initial_setup"] is True
+            assert isinstance(before_payload["session_token"], str)
 
             login = await client.post(
                 "/toy/signIn", headers={"Origin": TRUSTED_ORIGIN}
