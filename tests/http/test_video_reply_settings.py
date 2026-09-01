@@ -223,8 +223,9 @@ def test_video_reply_settings_requests_keep_http_responsive_during_probe(
     release = threading.Event()
     preflight_complete = threading.Event()
 
-    def slow_probe(_environment, *, performance_video_path):
+    def slow_probe(_environment, *, performance_video_path, probe_runtime=True):
         assert performance_video_path is None
+        assert probe_runtime is False
         started.set()
         assert release.wait(2)
         return {"ready": True, "dependencies": []}
@@ -368,7 +369,8 @@ def test_letter_send_does_not_wait_for_the_full_video_runtime_probe(
         raising=False,
     )
 
-    def slow_full_probe(_environment, *, performance_video_path):
+    def slow_full_probe(_environment, *, performance_video_path, probe_runtime=True):
+        assert probe_runtime is True
         time.sleep(0.3)
         return {"ready": False, "dependencies": []}
 
@@ -413,7 +415,7 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
     monkeypatch.setattr(
         local_server,
         "video_reply_dependency_status",
-        lambda _environment, *, performance_video_path: {
+        lambda _environment, *, performance_video_path, probe_runtime=True: {
             "ready": False,
             "dependencies": [
                 {

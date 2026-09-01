@@ -2660,6 +2660,7 @@ async def route(
                     video_reply_dependency_status,
                     environment,
                     performance_video_path=_current_music_performance(environment),
+                    probe_runtime=False,
                 )
             except Exception:
                 return ok({
@@ -2697,6 +2698,7 @@ async def route(
                     video_reply_dependency_status,
                     environment,
                     performance_video_path=_current_music_performance(environment),
+                    probe_runtime=False,
                 )
             except Exception:
                 return err(503, "VIDEO_REPLY_SETTING_UNAVAILABLE", {
