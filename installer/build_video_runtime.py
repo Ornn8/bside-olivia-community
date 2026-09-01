@@ -35,13 +35,13 @@ class VideoRuntimeBuildError(ValueError):
     """Stable fail-closed build error."""
 
 _COMPONENT_ENVIRONMENT = {
-    "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+    "breeze": "OLIVIA_BREEZE_TTS_PYTHON",
     "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
     "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
     "roformer": "OLIVIA_ROFORMER_PYTHON",
 }
 _COMPONENT_IMPORTS = {
-    "cosyvoice": ("torch", "torchaudio", "cosyvoice.cli.cosyvoice"),
+    "breeze": ("torch", "transformers", "soundfile", "whisper"),
     "latentsync": ("torch", "diffusers", "latentsync"),
     "minimax": ("torch", "comfy", "comfy_extras.nodes_minimax_music"),
     "roformer": ("torch", "mel_band_roformer.inference"),

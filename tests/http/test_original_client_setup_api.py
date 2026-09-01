@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from llm_gateway import ManagedLLMConfig
 
 from original_client_setup_api import (
     ERROR_HTTP_STATUSES,
@@ -140,7 +141,7 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
 ) -> None:
     async def scenario() -> None:
         probes: list[tuple[str, str, str]] = []
-        applied: list[tuple[str, str, str | None]] = []
+        applied: list[tuple[ManagedLLMConfig, str | None]] = []
         async def probe(base_url: str, model: str, api_key: str) -> None:
             probes.append((base_url, model, api_key))
 
@@ -149,9 +150,7 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             protect=lambda value: f"protected:{len(value)}",
             unprotect=lambda value: "x" * int(value.split(":", 1)[1]),
             probe=probe,
-            apply_runtime=lambda base_url, model, api_key: applied.append(
-                (base_url, model, api_key)
-            ),
+            apply_runtime=lambda config, api_key: applied.append((config, api_key)),
         )
         service.observe_login(success=True)
         app = web.Application()
@@ -197,8 +196,12 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             }
             assert applied == [
                 (
-                    "https://opencode.ai/zen/go/v1",
-                    "deepseek-v4-flash",
+                    ManagedLLMConfig(
+                        provider="openai_compatible",
+                        base_url="https://opencode.ai/zen/go/v1",
+                        model="deepseek-v4-flash",
+                        max_retries=2,
+                    ),
                     "fixture-private-key",
                 )
             ]
@@ -209,14 +212,18 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             assert status_payload["llm"] == {
                 "base_url": "https://opencode.ai/zen/go/v1",
                 "key_configured": True,
+                "max_retries": 2,
                 "model": "deepseek-v4-flash",
+                "provider": "openai_compatible",
             }
             assert "fixture-private-key" not in json.dumps(status_payload)
 
         config = json.loads((tmp_path / "config" / "llm.json").read_text(encoding="utf-8"))
         assert config["base_url"] == "https://opencode.ai/zen/go/v1"
         assert config["model"] == "deepseek-v4-flash"
-        assert config["schema_version"] == 2
+        assert config["schema_version"] == 3
+        assert config["provider"] == "openai_compatible"
+        assert config["max_retries"] == 2
         assert config["key_file"].startswith("deepseek_api_key.")
         assert config["key_file"].endswith(".dpapi")
         protected_path = tmp_path / "config" / config["key_file"]
@@ -587,7 +594,7 @@ def test_failed_rollback_keeps_the_new_key_referenced_by_config(
         service.save(body)
 
     config = json.loads((config_root / "llm.json").read_text(encoding="utf-8"))
-    assert config["schema_version"] == 2
+    assert config["schema_version"] == 3
     assert (config_root / config["key_file"]).is_file()
 
 

@@ -316,7 +316,7 @@ def activate_private_video(
     *,
     install_root: Path,
     offline_root: Path,
-    runtime_archive: Path,
+    runtime_archive: Path | None,
     manifest_path: Path,
     expected_manifest_version: str,
     expected_manifest_sha256: str,
@@ -346,15 +346,6 @@ def activate_private_video(
         expected_size_bytes=expected_size_bytes,
         progress=progress,
     )
-    runtime = _absolute_path(
-        runtime_archive, code="VIDEO_RUNTIME_ARCHIVE_INVALID"
-    )
-    if (
-        runtime.name != RUNTIME_ARCHIVE_NAME
-        or not runtime.is_file()
-        or _is_reparse_point(runtime)
-    ):
-        raise PrivateVideoActivationError("VIDEO_RUNTIME_ARCHIVE_INVALID")
     try:
         def report_runtime(state: str, current: int, total: int) -> None:
             phase = {
@@ -399,9 +390,26 @@ def activate_private_video(
                 )
             else:
                 _report_progress(progress, phase, 1, 1)
-        _report_progress(progress, "EXTRACT_VIDEO_RUNTIME", 0, 0)
-        installer.import_runtime_archive(runtime_archive=runtime)
         final = installer.status()
+        runtime_import = final.get("runtime_import")
+        if (
+            isinstance(runtime_import, Mapping)
+            and runtime_import.get("state") == "required"
+        ):
+            if runtime_archive is None:
+                raise PrivateVideoActivationError("VIDEO_RUNTIME_ARCHIVE_REQUIRED")
+            runtime = _absolute_path(
+                runtime_archive, code="VIDEO_RUNTIME_ARCHIVE_INVALID"
+            )
+            if (
+                runtime.name != RUNTIME_ARCHIVE_NAME
+                or not runtime.is_file()
+                or _is_reparse_point(runtime)
+            ):
+                raise PrivateVideoActivationError("VIDEO_RUNTIME_ARCHIVE_INVALID")
+            _report_progress(progress, "EXTRACT_VIDEO_RUNTIME", 0, 0)
+            installer.import_runtime_archive(runtime_archive=runtime)
+            final = installer.status()
     except PrivateVideoActivationError:
         raise
     except VideoCapabilityError as exc:
@@ -429,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="activate-private-video")
     parser.add_argument("--install-root", type=Path, required=True)
     parser.add_argument("--offline-root", type=Path, required=True)
-    parser.add_argument("--runtime-archive", type=Path, required=True)
+    parser.add_argument("--runtime-archive", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--manifest-version", required=True)
     parser.add_argument("--manifest-sha256", required=True)

@@ -11,11 +11,13 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -25,6 +27,8 @@ PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
+MANAGED_LLM_SCHEMA_VERSION = 3
+_MANAGED_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 class GatewayRequestScope(str, Enum):
@@ -202,6 +206,75 @@ class GatewayConfig:
         if self.model:
             result["model"] = self.model
         return result
+
+
+@dataclass(frozen=True)
+class ManagedLLMConfig:
+    """Public saved settings shared by setup, hot reload, and restart."""
+
+    provider: str
+    base_url: str
+    model: str
+    max_retries: int
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "ManagedLLMConfig":
+        if not isinstance(raw, Mapping):
+            raise ValueError("managed LLM config must be an object")
+        schema_version = raw.get("schema_version")
+        if (
+            type(schema_version) is not int
+            or schema_version not in {1, 2, MANAGED_LLM_SCHEMA_VERSION}
+        ):
+            raise ValueError("unsupported managed LLM config schema")
+        if schema_version == MANAGED_LLM_SCHEMA_VERSION:
+            missing = {"provider", "max_retries"}.difference(raw)
+            if missing:
+                raise ValueError("managed LLM config is missing required fields")
+        provider = raw.get("provider", "openai_compatible")
+        if provider != "openai_compatible":
+            raise ValueError("unsupported managed LLM provider")
+        base_url = raw.get("base_url")
+        if not isinstance(base_url, str) or len(base_url) > 512:
+            raise ValueError("invalid managed LLM base URL")
+        normalized_url = base_url.strip().rstrip("/")
+        try:
+            parsed = urlsplit(normalized_url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid managed LLM base URL") from exc
+        loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        if (
+            not parsed.hostname
+            or parsed.scheme not in ({"http", "https"} if loopback else {"https"})
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError("invalid managed LLM base URL")
+        model = raw.get("model")
+        if not isinstance(model, str) or not _MANAGED_LLM_MODEL_RE.fullmatch(model.strip()):
+            raise ValueError("invalid managed LLM model")
+        max_retries = raw.get("max_retries", 2)
+        if type(max_retries) is not int or not 0 <= max_retries <= 8:
+            raise ValueError("invalid managed LLM retry count")
+        return cls(
+            provider=provider,
+            base_url=normalized_url,
+            model=model.strip(),
+            max_retries=max_retries,
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": MANAGED_LLM_SCHEMA_VERSION,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "model": self.model,
+            "max_retries": self.max_retries,
+        }
 
 
 @dataclass(frozen=True)

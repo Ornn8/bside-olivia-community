@@ -79,7 +79,7 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     assert status["ready"] is False
     dependencies = {item["id"]: item for item in status["dependencies"]}
     assert list(dependencies) == [
-        "cosyvoice",
+        "breeze_tts2",
         "latentsync",
         "minimax_music3",
         "roformer",
@@ -89,14 +89,19 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "media_workspace",
     ]
     assert all(item["state"] == "missing" for item in dependencies.values())
-    assert "ModelScope" in dependencies["cosyvoice"]["source_summary"]
+    assert "HF-Mirror" in dependencies["breeze_tts2"]["source_summary"]
+    assert "非商业" in dependencies["breeze_tts2"]["source_summary"]
+    assert "NVIDIA 10GB" in dependencies["breeze_tts2"]["source_summary"]
     assert "ModelScope" in dependencies["latentsync"]["source_summary"]
     assert "ModelScope" in dependencies["minimax_music3"]["source_summary"]
-    assert [source["id"] for source in dependencies["cosyvoice"]["sources"]] == [
+    assert [source["id"] for source in dependencies["breeze_tts2"]["sources"]] == [
         "domestic",
         "official",
     ]
-    assert all("url" not in source for source in dependencies["cosyvoice"]["sources"])
+    assert all("url" not in source for source in dependencies["breeze_tts2"]["sources"])
+    assert music_reply.video_reply_source_url("breeze_tts2", "domestic") == (
+        "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui"
+    )
     assert [source["id"] for source in dependencies["roformer"]["sources"]] == [
         "domestic",
         "official",
@@ -299,6 +304,11 @@ def test_video_reply_readiness_does_not_require_livetalking(
     monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
     monkeypatch.setattr(music_reply, "musical_reply_configured", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(music_reply, "_python_runtime_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        music_reply,
+        "_breeze_hardware_status",
+        lambda: (True, None),
+    )
     monkeypatch.setattr(music_reply, "_executable_runtime_ready", lambda *_args, **_kwargs: True)
 
     status = music_reply.video_reply_dependency_status(
@@ -308,6 +318,43 @@ def test_video_reply_readiness_does_not_require_livetalking(
 
     assert "livetalking" not in dependencies
     assert status["ready"] is True
+
+
+def test_video_reply_readiness_rechecks_breeze_minimum_vram(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    external_python = _write(tmp_path / "breeze-python.exe")
+    scene = _write(tmp_path / "scene.mp4")
+    ffmpeg = _write(tmp_path / "ffmpeg.exe")
+    environment = {
+        "OLIVIA_TTS_CONFIG": str(_write(tmp_path / "tts.json")),
+        "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(scene),
+    }
+    monkeypatch.setattr(
+        music_reply,
+        "assemble_latentsync_video_delivery",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tts=SimpleNamespace(
+                provider_options={"external_python": str(external_python)},
+                runtime_root=str(tmp_path),
+            )
+        ),
+    )
+    monkeypatch.setattr(music_reply, "_python_runtime_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(music_reply, "_breeze_hardware_status", lambda: (False, "BREEZE_TTS_10GB_VRAM_REQUIRED"))
+    monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
+
+    status = music_reply.video_reply_dependency_status(
+        environment, performance_video_path=None
+    )
+    dependencies = {item["id"]: item for item in status["dependencies"]}
+
+    assert dependencies["breeze_tts2"]["state"] == "missing"
+    assert dependencies["breeze_tts2"]["reason_code"] == "BREEZE_TTS_10GB_VRAM_REQUIRED"
+    assert "breeze_tts2" in status["ordinary_missing_dependencies"]
 
 
 def test_musical_reply_accepts_portable_roformer_python(
@@ -334,7 +381,11 @@ def test_musical_reply_accepts_portable_roformer_python(
     performance = _write(tmp_path / "private" / "performance.mp4")
     ordinary_scene = _write(tmp_path / "private" / "spoken.mp4")
     tts_model = tmp_path / "tts-model"
-    _write(tts_model / "llm.pt")
+    _write(
+        tts_model
+        / "drbaph_Breeze-TTS-2-comfyui"
+        / "Breeze-TTS-2-int8-hybrid.safetensors"
+    )
     environment = {
         "OLIVIA_TTS_CONFIG": str(_write(tmp_path / "config" / "tts.json")),
         "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
@@ -353,7 +404,7 @@ def test_musical_reply_accepts_portable_roformer_python(
         music_reply,
         "assemble_latentsync_video_delivery",
         lambda *_args, **_kwargs: SimpleNamespace(
-            tts=SimpleNamespace(model_dir=str(tts_model))
+            tts=SimpleNamespace(provider="breeze_tts2", model_dir=str(tts_model))
         ),
     )
 
@@ -751,6 +802,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     stale_candidate = _write(tmp_path / "stale-candidate.mp4")
     order: list[str] = []
     observed: dict[str, object] = {}
+    active_gateway = object()
 
     monkeypatch.setenv("OLIVIA_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(_write(tmp_path / "ffmpeg.exe")))
@@ -765,9 +817,10 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     normal_error = True
     monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda path, **kwargs: None if audio_present and Path(path) == spoken_action_base and kwargs.get("forbidden_streams") else 60.0)
 
-    def fake_plan(content, reply_text, duration_seconds):
+    def fake_plan(content, reply_text, duration_seconds, *, gateway=None):
         order.append("plan")
         observed["plan_inputs"] = (content, reply_text, duration_seconds)
+        observed["plan_gateway"] = gateway
         return compatibility_plan
 
     def fake_normal(text, destination, **kwargs):
@@ -838,6 +891,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         performance_video_path=tmp_path / "base-performance.mp4",
         duration_seconds=40,
         spoken_action_base_path=spoken_action_base,
+        gateway=active_gateway,
     )
 
     with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_SPOKEN_REFERENCE_FAILED"):
@@ -860,6 +914,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         "concat",
     ]
     assert observed["minimax"][3]["lyrics"] == semantic.lyrics
+    assert observed["plan_gateway"] is active_gateway
     assert observed["minimax"][3]["caption"] == caption
     assert observed["spoken"][2]["adaptive_delivery"] is True
     assert observed["spoken"][2]["scene_path"] == spoken_action_base
@@ -968,7 +1023,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     def fake_normal(_text, destination, **_kwargs):
         calls["spoken"] += 1
         _write(Path(destination), b"spoken")
-        return {"spoken_stage": "completed"}
+        return {"spoken_stage": "completed", "audio_provider": "breeze_tts2"}
 
     def fake_generate(self, _content, _reply_text, destination, **_kwargs):
         del self
@@ -1031,6 +1086,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     assert output.read_bytes() == b"final"
     assert calls == {"spoken": 1, "minimax": 1, "separate": 2}
     assert result["spoken_stage"] == "reused"
+    assert result["audio_provider"] == "breeze_tts2"
     assert result["music_stage"] == "reused"
     assert (stage_root / "manifest.json").is_file()
 
@@ -1337,3 +1393,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     music_reply.render_musical_reply("letter", "reply", output, **kwargs)
 
     assert calls == {"minimax": 9, "separate": 9, "performance": 9}
+
+@pytest.fixture(autouse=True)
+def _eligible_breeze_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(music_reply, "_breeze_hardware_status", lambda: (True, None))

@@ -10,6 +10,7 @@ from llm_gateway import (
     GatewayConfig,
     GatewayRequestScope,
     InvalidGatewayInput,
+    ManagedLLMConfig,
     OfflineDeterministicAdapter,
     OpenAICompatibleAdapter,
     ProviderProtocolError,
@@ -82,6 +83,47 @@ def test_reasoning_timeout_is_an_explicit_bounded_public_config() -> None:
 def test_retry_backoff_default_matches_public_template() -> None:
     assert GatewayConfig().retry_backoff_seconds == 0.25
     assert GatewayConfig.from_mapping({}).retry_backoff_seconds == 0.25
+
+
+def test_managed_llm_config_uses_one_strict_schema_for_runtime_and_restart() -> None:
+    config = ManagedLLMConfig.from_mapping(
+        {
+            "schema_version": 3,
+            "provider": "openai_compatible",
+            "base_url": "https://gateway.example/v1/",
+            "model": "vendor/not-deepseek",
+            "max_retries": 4,
+        }
+    )
+
+    assert config == ManagedLLMConfig(
+        provider="openai_compatible",
+        base_url="https://gateway.example/v1",
+        model="vendor/not-deepseek",
+        max_retries=4,
+    )
+    assert config.to_mapping() == {
+        "schema_version": 3,
+        "provider": "openai_compatible",
+        "base_url": "https://gateway.example/v1",
+        "model": "vendor/not-deepseek",
+        "max_retries": 4,
+    }
+
+
+@pytest.mark.parametrize("missing", ["provider", "max_retries"])
+def test_managed_llm_schema_v3_requires_provider_and_retry_count(missing: str) -> None:
+    payload = {
+        "schema_version": 3,
+        "provider": "openai_compatible",
+        "base_url": "https://gateway.example/v1",
+        "model": "vendor/not-deepseek",
+        "max_retries": 2,
+    }
+    payload.pop(missing)
+
+    with pytest.raises(ValueError, match="managed LLM"):
+        ManagedLLMConfig.from_mapping(payload)
 
 
 def test_reasoning_timeout_environment_override_is_loaded(tmp_path) -> None:

@@ -1,0 +1,11 @@
+# Breeze TTS 2 INT8 hybrid runtime roots for Windows x86-64 CPython 3.12.
+accelerate==1.12.0
+huggingface-hub==0.36.2
+numpy==2.5.2
+openai-whisper==20250625
+safetensors==0.8.0
+soundfile==0.14.0
+torch==2.9.1
+torchaudio==2.9.1
+tqdm==4.70.0
+transformers==4.57.3

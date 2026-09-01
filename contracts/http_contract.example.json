@@ -116,7 +116,15 @@
     }
   },
   "letter_detail_media": {
-    "fields": ["media_status", "media_error_code", "media_retryable"],
+    "fields": [
+      "media_status",
+      "media_error_code",
+      "media_retryable",
+      "audio_provider",
+      "reply_structure",
+      "song_emotion",
+      "transition_seconds"
+    ],
     "statuses": [
       "NOT_REQUESTED",
       "PENDING",
@@ -126,6 +134,9 @@
       "UNAVAILABLE"
     ],
     "error_codes": {
+      "BREEZE_TTS_10GB_VRAM_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
+      "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"status": "UNAVAILABLE", "retryable": true},
+      "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
       "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
       "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",

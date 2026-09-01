@@ -15,6 +15,7 @@ from installer.activate_private_video import (
     activate_private_video,
     main as activate_private_video_main,
 )
+from video_capability_install import VideoCapabilityInstaller
 
 
 def test_setup_progress_writer_throttles_large_and_repeated_updates() -> None:
@@ -70,6 +71,17 @@ def _manifest_fixture(root: Path) -> tuple[Path, Path, str]:
                 "status": "FIXED",
                 "requires_gpu": True,
                 "dependencies": [],
+                "runtime_environment": (
+                    {
+                        "OLIVIA_BREEZE_TTS_PYTHON": relative,
+                        "OLIVIA_LATENTSYNC_PYTHON": relative,
+                    }
+                    if bundle_id == "ordinary_video"
+                    else {
+                        "OLIVIA_MINIMAX_COMFY_PYTHON": relative,
+                        "OLIVIA_ROFORMER_PYTHON": relative,
+                    }
+                ),
                 "files": [
                     {
                         "id": f"{bundle_id}-fixture",
@@ -103,7 +115,7 @@ class _FakeInstaller:
         self.calls = calls
         self.fail_bundle = fail_bundle
         self.states = {"ordinary_video": "missing", "music_video": "missing"}
-        self.runtime_state = "idle"
+        self.runtime_state = "required"
 
     def status(self) -> dict[str, object]:
         bundles = [
@@ -161,6 +173,99 @@ class _UnavailableHostInstaller(_FakeInstaller):
         ]
         return result
 
+
+class _SplitReadyInstaller(_FakeInstaller):
+    def import_offline(
+        self,
+        *,
+        bundle_id: str,
+        offline_root: Path,
+        source_mode: str,
+        accept_licenses: bool,
+    ) -> str:
+        result = super().import_offline(
+            bundle_id=bundle_id,
+            offline_root=offline_root,
+            source_mode=source_mode,
+            accept_licenses=accept_licenses,
+        )
+        self.states[bundle_id] = "ready"
+        if all(state == "ready" for state in self.states.values()):
+            self.runtime_state = "ready"
+        return result
+
+
+def test_private_activation_keeps_split_runtime_ready_without_legacy_archive(
+    tmp_path: Path,
+) -> None:
+    manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
+    calls: list[tuple[str, str]] = []
+    installer = _SplitReadyInstaller(calls)
+
+    result = activate_private_video(
+        install_root=tmp_path / "install",
+        offline_root=offline,
+        runtime_archive=None,
+        manifest_path=manifest,
+        expected_manifest_version="fixture-video",
+        expected_manifest_sha256=manifest_sha256,
+        expected_file_count=2,
+        expected_size_bytes=len(b"ordinary") + len(b"music"),
+        installer_factory=lambda **_kwargs: installer,
+        timeout_seconds=1,
+    )
+
+    assert calls == [
+        ("offline", "ordinary_video"),
+        ("offline", "music_video"),
+    ]
+    assert result["status"] == "READY"
+    assert result["runtime_import"]["state"] == "ready"
+
+
+def test_clean_private_activation_uses_real_split_installer_without_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
+    monkeypatch.setattr(
+        VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True
+    )
+    monkeypatch.setattr(
+        VideoCapabilityInstaller,
+        "_configure_embedded_python",
+        staticmethod(lambda path: path),
+    )
+
+    def installer_factory(**kwargs: object) -> VideoCapabilityInstaller:
+        install_root = Path(kwargs["install_root"])
+        return VideoCapabilityInstaller(
+            data_root=install_root / "data",
+            manifest=kwargs["manifest"],
+            readiness_probe=lambda _environment: {
+                "ordinary_missing_dependencies": [],
+                "music_ready": True,
+                },
+                runtime_progress=kwargs["runtime_progress"],
+                runtime_package_runner=lambda *_args: None,
+                runtime_package_verifier=lambda *_args: True,
+            )
+
+    result = activate_private_video(
+        install_root=tmp_path / "install",
+        offline_root=offline,
+        runtime_archive=None,
+        manifest_path=manifest,
+        expected_manifest_version="fixture-video",
+        expected_manifest_sha256=manifest_sha256,
+        expected_file_count=2,
+        expected_size_bytes=len(b"ordinary") + len(b"music"),
+        installer_factory=installer_factory,
+        timeout_seconds=5,
+    )
+
+    assert result["status"] == "READY"
+    assert result["runtime_import"]["state"] == "ready"
+    assert not list(tmp_path.rglob("Olivia-video-runtime-*.zip"))
 
 def test_private_activation_uses_existing_installer_in_strict_ready_order(
     tmp_path: Path,

@@ -86,12 +86,27 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "TTS_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "TTS_CONTENT_GATE_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "TTS_CONTENT_GATE_REJECTED": {"http_status": 200, "retryable": False},
+    "BREEZE_TTS_10GB_VRAM_REQUIRED": {"http_status": 200, "retryable": True},
+    "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"http_status": 200, "retryable": True},
+    "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"http_status": 200, "retryable": True},
     "MEDIA_PROVIDER_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "LIVE_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ROUTE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
 }
 
 LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "BREEZE_TTS_10GB_VRAM_REQUIRED": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
+    "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
+    "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+        "status": "UNAVAILABLE",
+        "retryable": True,
+    },
     "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
     "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",
@@ -104,7 +119,15 @@ LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
 }
 
 LETTER_DETAIL_MEDIA_CONTRACT: dict[str, Any] = {
-    "fields": ["media_status", "media_error_code", "media_retryable"],
+    "fields": [
+        "media_status",
+        "media_error_code",
+        "media_retryable",
+        "audio_provider",
+        "reply_structure",
+        "song_emotion",
+        "transition_seconds",
+    ],
     "statuses": [
         "NOT_REQUESTED",
         "PENDING",

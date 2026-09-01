@@ -39,6 +39,7 @@ def test_setup_builder_direct_entrypoint_reaches_argument_parser() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--video-runtime" in result.stdout
+    assert "--voice-reference-transcript" in result.stdout
 
 
 def _write_asset(root: Path, relative: str, content: bytes) -> dict[str, object]:
@@ -112,7 +113,7 @@ def _write_native_navigation_manifest(path: Path) -> None:
 def _write_video_runtime(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     environment = {
-        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
+        "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
         "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
@@ -138,7 +139,7 @@ def _write_video_runtime(path: Path) -> None:
 def _write_video_runtime_v2(
     path: Path,
     *,
-    cosyvoice_extra: dict[str, bytes] | None = None,
+    breeze_extra: dict[str, bytes] | None = None,
     dedicated_license: bool = True,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +147,7 @@ def _write_video_runtime_v2(
     runtime_files: dict[str, bytes] = {}
     components: dict[str, object] = {}
     environment_keys = {
-        "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+        "breeze": "OLIVIA_BREEZE_TTS_PYTHON",
         "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
         "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
         "roformer": "OLIVIA_ROFORMER_PYTHON",
@@ -162,8 +163,8 @@ def _write_video_runtime_v2(
             "NOTICE.txt": f"notice-{component}".encode(),
             license_path: f"license-{component}".encode(),
         }
-        if component == "cosyvoice" and cosyvoice_extra:
-            source_files.update(cosyvoice_extra)
+        if component == "breeze" and breeze_extra:
+            source_files.update(breeze_extra)
         file_records = [
             {
                 "path": relative,
@@ -322,6 +323,9 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
     (installer / "runtime-requirements.txt").write_bytes(requirements)
     reference = tmp_path / "distributor" / "olivia-reference.wav"
     _write_voice_reference(reference)
+    reference.with_suffix(".txt").write_text(
+        "synthetic exact reference transcript\n", encoding="utf-8"
+    )
     _write_native_navigation_manifest(
         reference.parent / "native-navigation-compatibility.json"
     )
@@ -353,6 +357,7 @@ def _prepare_private_runtime(
     prepare_setup_payload(
         source, offline, destination, distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=reference.parent / "Olivia-video-offline-fixture",
         validate_schema=False,
@@ -435,6 +440,7 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         destination,
         distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=reference.parent / "Olivia-video-offline-fixture",
         validate_schema=False,
@@ -448,9 +454,19 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         "path": "voice/olivia-reference.wav",
         "size_bytes": reference.stat().st_size,
         "sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+        "transcript": {
+            "path": "voice/olivia-reference.txt",
+            "size_bytes": reference.with_suffix(".txt").stat().st_size,
+            "sha256": hashlib.sha256(
+                reference.with_suffix(".txt").read_bytes()
+            ).hexdigest(),
+        },
         "wave": {"channels": 1, "sample_width_bytes": 2, "sample_rate_hz": 16000,
                  "frame_count": 160, "compression_type": "NONE"},
     }
+    assert (
+        destination / "offline" / "voice" / "olivia-reference.txt"
+    ).read_bytes() == reference.with_suffix(".txt").read_bytes()
     assert not (destination / "offline/video-runtime").exists()
     assert manifest["video_runtime"] == {
         "path": "Olivia-video-runtime-private.zip",
@@ -496,16 +512,56 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         prepare_setup_payload(
             source, offline, tmp_path / "public", voice_reference=reference, validate_schema=False
         )
-    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED"):
+    with pytest.raises(
+        SetupBuildError, match="SETUP_PRIVATE_VOICE_REFERENCE_TRANSCRIPT_REQUIRED"
+    ):
+        prepare_setup_payload(
+            source,
+            offline,
+            tmp_path / "private-without-transcript",
+            distribution="private",
+            voice_reference=reference,
+            validate_schema=False,
+        )
+    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED"):
         prepare_setup_payload(
             source, offline, tmp_path / "private", distribution="private",
-            voice_reference=reference, validate_schema=False
+            voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
+            validate_schema=False,
         )
     with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_PRIVATE_ONLY"):
         prepare_setup_payload(
             source, offline, tmp_path / "public-runtime", video_runtime=runtime,
             validate_schema=False,
         )
+
+
+def test_prepare_private_payload_accepts_complete_split_bom_without_runtime_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    destination = tmp_path / "payload"
+
+    prepare_setup_payload(
+        source,
+        offline,
+        destination,
+        distribution="private",
+        voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
+        video_offline_root=reference.parent / "Olivia-video-offline-fixture",
+        validate_schema=False,
+    )
+
+    manifest = json.loads(
+        (destination / "offline/offline-core-assets.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["distribution"] == "private"
+    assert "video_runtime" not in manifest
+    assert manifest["video_offline"]["path"] == "Olivia-video-offline-private"
 
 
 def test_prepare_private_payload_requires_video_activation_entrypoint(
@@ -606,6 +662,7 @@ def test_prepare_private_payload_pins_exact_shared_video_offline_root(
             tmp_path / "tampered-payload",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
             validate_schema=False,
@@ -657,7 +714,7 @@ def test_prepare_setup_payload_rejects_invalid_v2_build_inputs(
     def mutate(manifest: dict[str, object]) -> None:
         build_inputs = manifest["build_inputs"]
         components = build_inputs["components"]
-        cosyvoice = components["cosyvoice"]
+        breeze = components["breeze"]
         if case == "version":
             manifest["version"] = "not a builder version"
         elif case == "manifest-order":
@@ -667,20 +724,20 @@ def test_prepare_setup_payload_rejects_invalid_v2_build_inputs(
         elif case == "missing-component":
             components.pop("roformer")
         elif case == "upstream-malformed":
-            cosyvoice["upstream"] = "https://["
+            breeze["upstream"] = "https://["
         elif case == "revision":
-            cosyvoice["revision"] = "A" * 40
+            breeze["revision"] = "A" * 40
         elif case == "dependencies":
-            cosyvoice["dependencies"] = ["Torch==1", "torch==1"]
+            breeze["dependencies"] = ["Torch==1", "torch==1"]
         elif case == "tree-hash":
-            cosyvoice["tree_sha256"] = "0" * 64
+            breeze["tree_sha256"] = "0" * 64
         elif case == "legal-hash":
-            cosyvoice["license"]["sha256"] = "0" * 64
+            breeze["license"]["sha256"] = "0" * 64
         elif case == "source-hash":
-            cosyvoice["files"][0]["sha256"] = "0" * 64
+            breeze["files"][0]["sha256"] = "0" * 64
         elif case == "environment-not-python":
-            manifest["environment"]["OLIVIA_COSYVOICE_PYTHON"] = (
-                "cosyvoice/runtime/LICENSE.txt"
+            manifest["environment"]["OLIVIA_BREEZE_TTS_PYTHON"] = (
+                "breeze/runtime/LICENSE.txt"
             )
 
     _mutate_video_runtime_manifest(runtime, mutate)
@@ -712,7 +769,7 @@ def test_prepare_setup_payload_rejects_v2_builder_forbidden_content(
     runtime = tmp_path / "Olivia-video-runtime-v2.zip"
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra=None if relative is None else {relative: content},
+        breeze_extra=None if relative is None else {relative: content},
         dedicated_license=dedicated_license,
     )
 
@@ -754,14 +811,14 @@ def test_prepare_setup_payload_accepts_realistic_high_ratio_v2_entry(
     ballast = random.Random(23).randbytes(64 * 1024)
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra={
+        breeze_extra={
             "zz-large-data.txt": compressed_payload,
             "zz-ballast.txt": ballast,
         },
     )
 
     with zipfile.ZipFile(runtime) as archive:
-        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        entry = archive.getinfo("breeze/runtime/zz-large-data.txt")
         ratio = entry.file_size / entry.compress_size
         overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
     assert 320 < ratio < 322
@@ -778,14 +835,14 @@ def test_prepare_setup_payload_rejects_v2_entry_above_ratio_limit(
     ballast = random.Random(23).randbytes(64 * 1024)
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra={
+        breeze_extra={
             "zz-large-data.txt": b"0" * (1024 * 1024),
             "zz-ballast.txt": ballast,
         },
     )
 
     with zipfile.ZipFile(runtime) as archive:
-        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        entry = archive.getinfo("breeze/runtime/zz-large-data.txt")
         ratio = entry.file_size / entry.compress_size
         overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
     assert ratio > 512
@@ -823,7 +880,7 @@ def test_video_runtime_v2_fixture_matches_machine_contracts(tmp_path: Path) -> N
 
     jsonschema.validate(manifest["build_inputs"], build_inputs_schema)
     jsonschema.validate(manifest, runtime_schema)
-    assert set(build_inputs_schema["properties"]["components"]["required"]) == {"cosyvoice", "latentsync", "minimax", "roformer"}
+    assert set(build_inputs_schema["properties"]["components"]["required"]) == {"breeze", "latentsync", "minimax", "roformer"}
 
 
 def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, monkeypatch) -> None:
@@ -890,6 +947,7 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -943,6 +1001,7 @@ def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -971,7 +1030,7 @@ def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> Non
     assert "Olivia-Setup-x64.receipt.json" in documentation
     assert "不会进入 Inno `{tmp}`" in documentation
     assert "私有视频包：下载完整 ZIP" in documentation
-    assert "除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外" in documentation
+    assert "除私有模式显式传入的 WAV、准确转录 UTF-8 文本、视频运行时 ZIP 与视频离线根目录外" in documentation
     assert "ordinary_video" in documentation
     assert "music_video" in documentation
     assert "因而没有自引用" in documentation
@@ -993,6 +1052,7 @@ def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path,
             tmp_path / "payload",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=reference.parent / "Olivia-video-offline-fixture",
             validate_schema=False,
@@ -1098,6 +1158,63 @@ def test_private_build_publishes_hash_locked_video_runtime_sidecar(
     assert set(checksum_records) == {*receipt_paths, "Olivia-Setup-x64.receipt.json"}
     for relative, digest in checksum_records.items():
         assert hashlib.sha256((output / relative).read_bytes()).hexdigest() == digest
+
+
+def test_private_build_publishes_split_bom_without_runtime_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output"
+    observed: list[str] = []
+    video_offline = tmp_path / "video-offline"
+    (video_offline / "ordinary_video").mkdir(parents=True)
+    (video_offline / "music_video").mkdir()
+    (video_offline / "ordinary_video/ordinary.bin").write_bytes(b"ordinary")
+    (video_offline / "music_video/music.bin").write_bytes(b"music")
+
+    def compile_setup(command: list[str], **_: object) -> SimpleNamespace:
+        observed.extend(command)
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe"
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.prepare_setup_payload",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup._verify_pinned_private_sidecars",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.subprocess.run", compile_setup
+    )
+
+    result = build_windows_setup(
+        tmp_path / "source",
+        tmp_path / "offline",
+        output,
+        version="fixture",
+        distribution="private",
+        voice_reference=tmp_path / "voice.wav",
+        video_offline_root=video_offline,
+    )
+
+    assert "/DVideoRuntimePayload=1" not in observed
+    assert "/DVideoOfflinePayload=1" in observed
+    assert [Path(item["path"]).name for item in result["artifacts"]] == [
+        "Olivia-Setup-x64.exe",
+        "Olivia-video-offline-private",
+    ]
+    assert not (output / "Olivia-video-runtime-private.zip").exists()
+    receipt = json.loads(
+        (output / "Olivia-Setup-x64.receipt.json").read_text(encoding="utf-8")
+    )
+    assert all(
+        item["path"] != "Olivia-video-runtime-private.zip"
+        for item in receipt["files"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -1306,6 +1423,7 @@ def test_private_build_receipt_reuses_post_compile_verified_sidecar_records(
         version="fixture",
         distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=video_offline,
     )
@@ -1390,6 +1508,7 @@ def test_private_build_rejects_runtime_output_reparse_before_final_hash(
             version="fixture",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -1447,7 +1566,7 @@ def test_prepare_setup_payload_rejects_invalid_runtime_zip(
             manifest["environment"].pop("OLIVIA_ROFORMER_PYTHON")
         elif case == "duplicate-python":
             manifest["environment"] = dict.fromkeys(
-                manifest["environment"], "cosyvoice/python/python.exe"
+                manifest["environment"], "breeze/python/python.exe"
             )
         elif case in {"traversal", "backslash"}:
             fixture["path"] = "../escape.bin" if case == "traversal" else "dir\\escape.bin"
@@ -1467,7 +1586,9 @@ def test_prepare_setup_payload_rejects_invalid_runtime_zip(
     with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
         prepare_setup_payload(
             source, offline, tmp_path / "payload", distribution="private",
-            voice_reference=reference, video_runtime=runtime,
+            voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
+            video_runtime=runtime,
             video_offline_root=reference.parent / "Olivia-video-offline-fixture",
             validate_schema=False,
         )
@@ -1529,6 +1650,9 @@ def test_setup_rejects_git_selected_audio_and_video_payloads(
             tmp_path / "payload",
             distribution=distribution,
             voice_reference=reference if distribution == "private" else None,
+            voice_reference_transcript=(
+                reference.with_suffix(".txt") if distribution == "private" else None
+            ),
             video_runtime=runtime if distribution == "private" else None,
             video_offline_root=(
                 reference.parent / "Olivia-video-offline-fixture"

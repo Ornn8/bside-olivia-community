@@ -773,7 +773,7 @@ function Repair-ManagedVoiceTransaction {
     try { foreach ($next in @("$journal.next", "$publishMarker.next")) { [IO.File]::Delete($next) } } catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
     if ((@($publishMarker, $rollbackMarker, $cleanupMarker) | Where-Object { [IO.File]::Exists($_) }).Count -gt 1) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
     $marker = if ([IO.File]::Exists($cleanupMarker)) { $cleanupMarker } elseif ([IO.File]::Exists($rollbackMarker)) { $rollbackMarker } elseif ([IO.File]::Exists($publishMarker)) { $publishMarker } elseif ([IO.File]::Exists($journal)) { $journal } else {
-        try { foreach ($orphan in [IO.Directory]::EnumerateFiles($SharedRoot, '.linli-reference.*')) { if ([IO.Path]::GetFileName($orphan) -cmatch '^\.linli-reference\.[0-9a-f]{32}\.(wav|json)\.(tmp|bak)$') { [IO.File]::Delete($orphan) } } }
+        try { foreach ($orphan in [IO.Directory]::EnumerateFiles($SharedRoot, '.linli-reference.*')) { if ([IO.Path]::GetFileName($orphan) -cmatch '^\.linli-reference\.[0-9a-f]{32}\.(wav|txt|json)\.(tmp|bak)$') { [IO.File]::Delete($orphan) } } }
         catch { throw 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' }
         return
     }
@@ -781,13 +781,14 @@ function Repair-ManagedVoiceTransaction {
     $errorCode = if ($phase -ceq 'cleanup') { 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED' } else { 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
     try {
         $state = [IO.File]::ReadAllText($marker)
-        if ($state -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<target>[01])\|(?<manifest>[01])$') { throw 'invalid voice transaction' }
-        $id = $Matches.id; $hadTarget = $Matches.target -ceq '1'; $hadManifest = $Matches.manifest -ceq '1'
-        $target = Join-Path $SharedRoot 'linli-reference.wav'; $manifest = Join-Path $SharedRoot 'linli-reference.json'
-        $entries = @(
-            @{ Active = $target; Staged = Join-Path $SharedRoot ".linli-reference.$id.wav.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.wav.bak"; Had = $hadTarget },
-            @{ Active = $manifest; Staged = Join-Path $SharedRoot ".linli-reference.$id.json.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.json.bak"; Had = $hadManifest }
-        )
+        $parts = $state.Split('|')
+        if ($parts.Count -notin @(3, 4) -or $parts[0] -cnotmatch '^[0-9a-f]{32}$' -or @($parts[1..($parts.Count - 1)] | Where-Object { $_ -cnotin @('0', '1') }).Count -ne 0) { throw 'invalid voice transaction' }
+        $id = $parts[0]; $hadTarget = $parts[1] -ceq '1'; $hasTranscriptState = $parts.Count -eq 4
+        $hadTranscript = $hasTranscriptState -and $parts[2] -ceq '1'; $hadManifest = $parts[$parts.Count - 1] -ceq '1'
+        $target = Join-Path $SharedRoot 'linli-reference.wav'; $transcript = Join-Path $SharedRoot 'linli-reference.txt'; $manifest = Join-Path $SharedRoot 'linli-reference.json'
+        $entries = @(@{ Active = $target; Staged = Join-Path $SharedRoot ".linli-reference.$id.wav.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.wav.bak"; Had = $hadTarget })
+        if ($hasTranscriptState) { $entries += @(@{ Active = $transcript; Staged = Join-Path $SharedRoot ".linli-reference.$id.txt.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.txt.bak"; Had = $hadTranscript }) }
+        $entries += @(@{ Active = $manifest; Staged = Join-Path $SharedRoot ".linli-reference.$id.json.tmp"; Backup = Join-Path $SharedRoot ".linli-reference.$id.json.bak"; Had = $hadManifest })
         foreach ($entry in $entries) {
             foreach ($path in @($entry.Active, $entry.Staged, $entry.Backup, $marker)) { if ((Test-Path -LiteralPath $path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'unsafe voice transaction' } }
             if ($phase -ceq 'publish' -and -not [IO.File]::Exists($entry.Staged)) {
@@ -811,42 +812,54 @@ function Install-ManagedVoiceReference {
     if ($null -eq $VoiceReference) { return }
     $source = [string]$VoiceReference.path; $expectedHash = [string]$VoiceReference.sha256
     $expectedSize = [int64]$VoiceReference.size_bytes; $wave = $VoiceReference.wave
+    $transcriptSource = [string]$VoiceReference.transcript.path
+    $transcriptHash = [string]$VoiceReference.transcript.sha256
+    $transcriptSize = [int64]$VoiceReference.transcript.size_bytes
     if (-not [IO.File]::Exists($source)) { throw 'VOICE_REFERENCE_MISSING' }
+    if (-not [IO.File]::Exists($transcriptSource)) { throw 'VOICE_REFERENCE_TRANSCRIPT_MISSING' }
     foreach ($field in @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count')) { if ($wave.$field -isnot [int] -and $wave.$field -isnot [long]) { throw 'VOICE_REFERENCE_INVALID' } }
     if ($null -eq $wave -or [int]$wave.channels -ne 1 -or [int]$wave.sample_width_bytes -ne 2 -or
         [int]$wave.sample_rate_hz -ne 16000 -or [int64]$wave.frame_count -lt 1 -or
         $wave.compression_type -isnot [string] -or [string]$wave.compression_type -cne 'NONE') { throw 'VOICE_REFERENCE_INVALID' }
     if ($expectedSize -lt 1 -or [IO.FileInfo]::new($source).Length -ne $expectedSize -or (Get-Sha256 -LiteralPath $source) -cne $expectedHash) { throw 'VOICE_REFERENCE_HASH_MISMATCH' }
+    if ($transcriptSize -lt 1 -or $transcriptSize -gt 1MB -or [IO.FileInfo]::new($transcriptSource).Length -ne $transcriptSize -or (Get-Sha256 -LiteralPath $transcriptSource) -cne $transcriptHash) { throw 'VOICE_REFERENCE_TRANSCRIPT_HASH_MISMATCH' }
+    try { $transcriptText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($transcriptSource)).Trim() }
+    catch { throw 'VOICE_REFERENCE_TRANSCRIPT_INVALID' }
+    if (-not $transcriptText -or $transcriptText.Contains([char]0)) { throw 'VOICE_REFERENCE_TRANSCRIPT_INVALID' }
 
     New-Item -ItemType Directory -Force -Path $sharedRoot | Out-Null
-    $target = Join-Path $sharedRoot 'linli-reference.wav'; $manifestPath = Join-Path $sharedRoot 'linli-reference.json'
-    foreach ($leaf in @($target, $manifestPath)) { if ((Test-Path -LiteralPath $leaf) -and (([IO.File]::GetAttributes($leaf) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'VOICE_REFERENCE_INSTALL_PATH_INVALID' } }
+    $target = Join-Path $sharedRoot 'linli-reference.wav'; $transcriptTarget = Join-Path $sharedRoot 'linli-reference.txt'; $manifestPath = Join-Path $sharedRoot 'linli-reference.json'
+    foreach ($leaf in @($target, $transcriptTarget, $manifestPath)) { if ((Test-Path -LiteralPath $leaf) -and (([IO.File]::GetAttributes($leaf) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'VOICE_REFERENCE_INSTALL_PATH_INVALID' } }
     $transactionId = [guid]::NewGuid().ToString('N')
     $transactionRoot = Join-Path $sharedRoot ('.linli-reference.' + $transactionId)
-    $stagedTarget = "$transactionRoot.wav.tmp"; $stagedManifest = "$transactionRoot.json.tmp"
-    $targetBackup = "$transactionRoot.wav.bak"; $manifestBackup = "$transactionRoot.json.bak"
+    $stagedTarget = "$transactionRoot.wav.tmp"; $stagedTranscript = "$transactionRoot.txt.tmp"; $stagedManifest = "$transactionRoot.json.tmp"
+    $targetBackup = "$transactionRoot.wav.bak"; $transcriptBackup = "$transactionRoot.txt.bak"; $manifestBackup = "$transactionRoot.json.bak"
     $journal = Join-Path $sharedRoot '.linli-reference.transaction'; $cleanupMarker = "$journal.cleanup"
-    $utf8NoBom = [Text.UTF8Encoding]::new($false); $state = "$transactionId|$([int][IO.File]::Exists($target))|$([int][IO.File]::Exists($manifestPath))"
+    $utf8NoBom = [Text.UTF8Encoding]::new($false); $state = "$transactionId|$([int][IO.File]::Exists($target))|$([int][IO.File]::Exists($transcriptTarget))|$([int][IO.File]::Exists($manifestPath))"
     try {
         Set-DurableTransactionState -Path $journal -State $state
         [IO.File]::Copy($source, $stagedTarget, $false)
+        [IO.File]::Copy($transcriptSource, $stagedTranscript, $false)
         if ([IO.FileInfo]::new($stagedTarget).Length -ne $expectedSize -or (Get-Sha256 -LiteralPath $stagedTarget) -cne $expectedHash) { throw 'VOICE_REFERENCE_HASH_MISMATCH' }
+        if ([IO.FileInfo]::new($stagedTranscript).Length -ne $transcriptSize -or (Get-Sha256 -LiteralPath $stagedTranscript) -cne $transcriptHash) { throw 'VOICE_REFERENCE_TRANSCRIPT_HASH_MISMATCH' }
         $actualWave = Get-PcmWaveMetadata -Path $stagedTarget
         foreach ($field in @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')) { if ($actualWave.$field -cne $wave.$field) { throw 'VOICE_REFERENCE_INVALID' } }
-        $integrity = [ordered]@{ schema_version = 'olivia.managed-voice-reference.v1'; path = 'linli-reference.wav'; size_bytes = $expectedSize; sha256 = $expectedHash
+        $integrity = [ordered]@{ schema_version = 'olivia.managed-voice-reference.v2'; path = 'linli-reference.wav'; size_bytes = $expectedSize; sha256 = $expectedHash
+            transcript = [ordered]@{ path = 'linli-reference.txt'; size_bytes = $transcriptSize; sha256 = $transcriptHash }
             wave = [ordered]@{ channels = [int]$wave.channels; sample_width_bytes = [int]$wave.sample_width_bytes; sample_rate_hz = [int]$wave.sample_rate_hz; frame_count = [int64]$wave.frame_count; compression_type = [string]$wave.compression_type } }
         [IO.File]::WriteAllText($stagedManifest, ($integrity | ConvertTo-Json -Compress), $utf8NoBom)
         Set-DurableTransactionState -Path "$journal.publish" -State $state
         if ([IO.File]::Exists($target)) { [IO.File]::Replace($stagedTarget, $target, $targetBackup) } else { [IO.File]::Move($stagedTarget, $target) }
+        if ([IO.File]::Exists($transcriptTarget)) { [IO.File]::Replace($stagedTranscript, $transcriptTarget, $transcriptBackup) } else { [IO.File]::Move($stagedTranscript, $transcriptTarget) }
         if ([IO.File]::Exists($manifestPath)) { [IO.File]::Replace($stagedManifest, $manifestPath, $manifestBackup) } else { [IO.File]::Move($stagedManifest, $manifestPath) }
         [IO.File]::Move("$journal.publish", $cleanupMarker)
     } catch {
         $failure = $_.Exception.Message
         try {
             if ([IO.File]::Exists($journal) -or [IO.File]::Exists("$journal.publish") -or [IO.File]::Exists("$journal.rollback") -or [IO.File]::Exists($cleanupMarker)) { Repair-ManagedVoiceTransaction -SharedRoot $sharedRoot }
-            else { foreach ($cleanup in @($stagedTarget, $stagedManifest, $targetBackup, $manifestBackup)) { [IO.File]::Delete($cleanup) } }
+            else { foreach ($cleanup in @($stagedTarget, $stagedTranscript, $stagedManifest, $targetBackup, $transcriptBackup, $manifestBackup)) { [IO.File]::Delete($cleanup) } }
         } catch { throw $_.Exception.Message }
-        if ($failure -in @('VOICE_REFERENCE_HASH_MISMATCH', 'VOICE_REFERENCE_INSTALL_PATH_INVALID', 'VOICE_REFERENCE_INVALID', 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED')) { throw $failure }
+        if ($failure -in @('VOICE_REFERENCE_HASH_MISMATCH', 'VOICE_REFERENCE_TRANSCRIPT_MISSING', 'VOICE_REFERENCE_TRANSCRIPT_HASH_MISMATCH', 'VOICE_REFERENCE_TRANSCRIPT_INVALID', 'VOICE_REFERENCE_INSTALL_PATH_INVALID', 'VOICE_REFERENCE_INVALID', 'VOICE_REFERENCE_INSTALL_CLEANUP_FAILED')) { throw $failure }
         throw 'VOICE_REFERENCE_INSTALL_FAILED'
     }
 }
@@ -1079,7 +1092,7 @@ function Start-ManagedPrivateVideoTransaction {
         [Parameter(Mandatory)][string]$InstallRoot,
         [Parameter(Mandatory)][string]$TransactionId,
         [Parameter(Mandatory)][string]$PendingMarker,
-        [Parameter(Mandatory)][object]$VideoRuntime
+        [AllowNull()][object]$VideoRuntime
     )
 
     $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
@@ -1106,8 +1119,8 @@ function Start-ManagedPrivateVideoTransaction {
         ) {
             throw 'VIDEO_PRIVATE_TRANSACTION_FAILED'
         }
-        $runtimeMode = 0
-        if ($runtimeExisted) {
+        $runtimeMode = if ($null -eq $VideoRuntime) { 3 } else { 0 }
+        if ($null -ne $VideoRuntime -and $runtimeExisted) {
             $runtimeMode = if (
                 [IO.FileInfo]::new($paths.RuntimeTarget).Length -eq [int64]$VideoRuntime.size_bytes -and
                 (Get-Sha256 -LiteralPath $paths.RuntimeTarget) -ceq [string]$VideoRuntime.sha256
@@ -1214,7 +1227,7 @@ function Restore-ManagedPrivateRuntimeSidecarTransaction {
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
         [Parameter(Mandatory)][string]$TransactionId,
-        [Parameter(Mandatory)][ValidateSet(0, 1, 2)][int]$RuntimeMode
+        [Parameter(Mandatory)][ValidateSet(0, 1, 2, 3)][int]$RuntimeMode
     )
 
     $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
@@ -1231,7 +1244,11 @@ function Restore-ManagedPrivateRuntimeSidecarTransaction {
                 throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
             }
         }
-        if ($RuntimeMode -eq 2) {
+        if ($RuntimeMode -eq 3) {
+            if ($backupPresent -or $discardPresent) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
+            }
+        } elseif ($RuntimeMode -eq 2) {
             if (-not $targetPresent -or $backupPresent -or $discardPresent) {
                 throw 'VIDEO_PRIVATE_TRANSACTION_ROLLBACK_FAILED'
             }
@@ -1272,12 +1289,18 @@ function Complete-ManagedPrivateRuntimeSidecarTransaction {
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
         [Parameter(Mandatory)][string]$TransactionId,
-        [Parameter(Mandatory)][ValidateSet(0, 1, 2)][int]$RuntimeMode
+        [Parameter(Mandatory)][ValidateSet(0, 1, 2, 3)][int]$RuntimeMode
     )
 
     $paths = Get-ManagedPrivateVideoTransactionPaths -InstallRoot $InstallRoot -TransactionId $TransactionId
     try {
         Assert-NoReparsePointsInPath -LiteralPath $paths.DownloadRoot -ErrorCode 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+        if ($RuntimeMode -eq 3) {
+            if ((Test-Path -LiteralPath $paths.RuntimeBackup) -or (Test-Path -LiteralPath $paths.RuntimeDiscard)) {
+                throw 'VIDEO_PRIVATE_TRANSACTION_CLEANUP_FAILED'
+            }
+            return
+        }
         if (
             -not [IO.File]::Exists($paths.RuntimeTarget) -or
             (([IO.File]::GetAttributes($paths.RuntimeTarget) -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
@@ -1392,7 +1415,7 @@ function Repair-ManagedInstallTransaction {
         $privateVideoState = $null
         if ([IO.File]::Exists($privateVideoPending)) {
             $pendingState = [IO.File]::ReadAllText($privateVideoPending)
-            if ($pendingState -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<video>[01])\|(?<runtime>[012])$' -or $Matches.id -cne $id) {
+            if ($pendingState -cnotmatch '^(?<id>[0-9a-f]{32})\|(?<video>[01])\|(?<runtime>[0123])$' -or $Matches.id -cne $id) {
                 throw 'invalid private video transaction'
             }
             $privateVideoState = [pscustomobject]@{
@@ -1451,9 +1474,6 @@ function Get-OfflineCoreAssets {
     $hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'
     $hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'
     $hasDistribution = $manifest.PSObject.Properties.Name -ccontains 'distribution'
-    if ($hasVideoOffline -and -not $hasVideoRuntime) {
-        throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
-    }
     if ($hasVoiceReference -ne $hasDistribution) {
         throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
     }
@@ -1462,7 +1482,7 @@ function Get-OfflineCoreAssets {
             throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
         }
         if (
-            ($manifest.distribution -ceq 'private' -and (-not $hasVideoRuntime -or -not $hasVideoOffline)) -or
+            ($manifest.distribution -ceq 'private' -and -not $hasVideoOffline) -or
             ($manifest.distribution -ceq 'personal' -and $hasVideoOffline)
         ) {
             throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
@@ -1514,9 +1534,10 @@ function Get-OfflineCoreAssets {
     $videoRuntime = $null
     $videoOffline = $null
     if ($hasVoiceReference) {
-        Assert-OfflineObjectShape -Value $manifest.voice_reference -Names @('path', 'size_bytes', 'sha256', 'wave')
+        Assert-OfflineObjectShape -Value $manifest.voice_reference -Names @('path', 'size_bytes', 'sha256', 'transcript', 'wave')
+        Assert-OfflineObjectShape -Value $manifest.voice_reference.transcript -Names @('path', 'size_bytes', 'sha256')
         Assert-OfflineObjectShape -Value $manifest.voice_reference.wave -Names @('channels', 'sample_width_bytes', 'sample_rate_hz', 'frame_count', 'compression_type')
-        if ($manifest.voice_reference.path -cne 'voice/olivia-reference.wav') {
+        if ($manifest.voice_reference.path -cne 'voice/olivia-reference.wav' -or $manifest.voice_reference.transcript.path -cne 'voice/olivia-reference.txt') {
             throw 'OFFLINE_CORE_MANIFEST_INVALID'
         }
         try {
@@ -1532,6 +1553,14 @@ function Get-OfflineCoreAssets {
         }
         $voiceReference = $manifest.voice_reference
         $voiceReference.path = $voiceReferencePath
+        try {
+            $voiceTranscriptPath = Resolve-OfflineAsset -Root $Root -Asset $manifest.voice_reference.transcript
+        } catch {
+            if ($_.Exception.Message -eq 'OFFLINE_CORE_ASSET_MISSING') { throw 'VOICE_REFERENCE_TRANSCRIPT_MISSING' }
+            if ($_.Exception.Message -in @('OFFLINE_CORE_ASSET_SIZE_MISMATCH', 'OFFLINE_CORE_ASSET_HASH_MISMATCH')) { throw 'VOICE_REFERENCE_TRANSCRIPT_HASH_MISMATCH' }
+            throw 'VOICE_REFERENCE_TRANSCRIPT_INVALID'
+        }
+        $voiceReference.transcript.path = $voiceTranscriptPath
     }
     if ($hasVideoRuntime) {
         Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')
@@ -1878,7 +1907,6 @@ try {
         $privateVideoArguments = @(
             '--install-root', $Destination,
             '--offline-root', [string]$coreAssets.VideoOffline.path,
-            '--runtime-archive', $managedVideoRuntime,
             '--manifest', $videoManifest,
             '--manifest-version', [string]$coreAssets.VideoOffline.manifest_version,
             '--manifest-sha256', [string]$coreAssets.VideoOffline.manifest_sha256,
@@ -1886,6 +1914,9 @@ try {
             '--expected-size-bytes', [string]$coreAssets.VideoOffline.size_bytes,
             '--timeout-seconds', '14400'
         )
+        if ($null -ne $coreAssets.VideoRuntime) {
+            $privateVideoArguments += @('--runtime-archive', $managedVideoRuntime)
+        }
         $privateVideoOutput = [Collections.Generic.List[string]]::new()
         & $runner.File @($runner.Args + @($privateVideoActivator) + $privateVideoArguments) |
             ForEach-Object {

@@ -47,7 +47,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
   const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
     ["voice_reference", "受管林离音色"],
-    ["cosyvoice", "语音合成（CosyVoice 3）"],
     ["livetalking", "实时驱动（LiveTalking，可选）"],
     ["latentsync", "口型视频（LatentSync）"],
     ["minimax_music3", "音乐生成（MiniMax Music 3）"],
@@ -1368,6 +1367,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED: "运行环境已安装，但本次启用失败",
       VIDEO_RUNTIME_IMPORT_FAILED: "视频运行环境安装失败",
     };
+    const hardwareReasonLabels = {
+      BREEZE_TTS_NVIDIA_GPU_REQUIRED: "Breeze TTS 2 需要 NVIDIA 显卡；CPU 和其他显卡尚未验证",
+      BREEZE_TTS_10GB_VRAM_REQUIRED: "Breeze TTS 2 实测要求至少 10GB NVIDIA 显存；8GB 尚未验证",
+      BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED: "无法确认 NVIDIA 显卡与显存，暂不允许下载或启用",
+    };
+    const hardware = payload && payload.hardware && typeof payload.hardware === "object"
+      ? payload.hardware
+      : null;
+    const hardwareMessage = hardware && hardware.status !== "READY"
+      ? hardwareReasonLabels[hardware.reason_code] || "Breeze TTS 2 的显卡条件尚未满足"
+      : hardware && Number(hardware.detected_vram_mib) > 0
+      ? `Breeze TTS 2 显卡检查通过：NVIDIA ${Math.round(Number(hardware.detected_vram_mib) / 1024)}GB`
+      : "";
     const runtimeStepMessage = (progress) => {
       const checked = Math.max(0, Number(progress.checked_bytes) || 0);
       const total = Math.max(0, Number(progress.total_bytes) || 0);
@@ -1427,6 +1439,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       text("div", "语音、音乐、口型和媒体工具会自动准备，无需逐项选择。", "text-text-secondary text-caption-m font-regular"),
       progressText
     );
+    if (hardwareMessage) {
+      item.append(text("div", hardwareMessage, "text-text-secondary text-caption-m font-regular"));
+    }
     item.append(sourceControls);
     const runtimeStatusText = text(
       "div",

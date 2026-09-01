@@ -55,6 +55,18 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
 
 def test_directed_delivery_error_schema_is_stable() -> None:
     assert http_contract.LETTER_DETAIL_MEDIA_ERROR_CODES == {
+        "BREEZE_TTS_10GB_VRAM_REQUIRED": {
+            "status": "UNAVAILABLE",
+            "retryable": True,
+        },
+        "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {
+            "status": "UNAVAILABLE",
+            "retryable": True,
+        },
+        "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+            "status": "UNAVAILABLE",
+            "retryable": True,
+        },
         "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
         "TTS_CONTENT_GATE_UNAVAILABLE": {
             "status": "UNAVAILABLE",

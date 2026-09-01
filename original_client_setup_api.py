@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
+from llm_gateway import ManagedLLMConfig
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -26,14 +27,13 @@ CONFIRM_HEADER = "X-Olivia-Setup-Action"
 CONFIRM_VALUE = "confirmed"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_BODY_BYTES = 4_096
-_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _KEY_FILE_RE = re.compile(r"^deepseek_api_key\.[0-9a-f]{32}\.dpapi$")
 _SERVICE_KEY = web.AppKey("original_client_setup_service", object)
 _ORIGINS_KEY = web.AppKey("original_client_setup_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_setup_mounted", bool)
 Probe = Callable[[str, str, str], Awaitable[None]]
 Protector = Callable[[str], str]
-RuntimeApply = Callable[[str, str, str | None], None]
+RuntimeApply = Callable[[ManagedLLMConfig, str | None], None]
 
 PUBLIC_ROUTE_CONTRACT = {
     SETUP_STATUS_PATH: {
@@ -154,33 +154,19 @@ def _dpapi_unprotect(value: str) -> str:
     return secret
 
 
-def _base_url(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 512:
-        raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-    normalized = value.strip().rstrip("/")
+def _managed_config(base_url: object, model: object) -> ManagedLLMConfig:
     try:
-        parsed = urlsplit(normalized)
-        port = parsed.port
+        return ManagedLLMConfig.from_mapping(
+            {
+                "schema_version": 3,
+                "provider": "openai_compatible",
+                "base_url": base_url,
+                "model": model,
+                "max_retries": 2,
+            }
+        )
     except ValueError as exc:
         raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400) from exc
-    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-    if (
-        not parsed.hostname
-        or parsed.scheme not in ({"http", "https"} if loopback else {"https"})
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or (port is not None and not 1 <= port <= 65535)
-    ):
-        raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-    return normalized
-
-
-def _model(value: object) -> str:
-    if not isinstance(value, str) or not _MODEL_RE.fullmatch(value.strip()):
-        raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-    return value.strip()
 
 
 def _api_key(value: object, *, allow_empty: bool = False) -> str:
@@ -271,20 +257,15 @@ class LLMSetupService:
         ):
             raise LLMSetupError("LLM_SETUP_LOGIN_REQUIRED", status=403)
 
-    def _config(self) -> dict[str, object]:
-        fallback: dict[str, object] = {
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-v4-flash",
-        }
+    def _config(self) -> ManagedLLMConfig:
+        fallback = _managed_config(
+            "https://api.deepseek.com",
+            "deepseek-v4-flash",
+        )
         try:
             payload = json.loads(self._config_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("schema_version") not in {1, 2}:
-                return fallback
-            return {
-                "base_url": _base_url(payload.get("base_url")),
-                "model": _model(payload.get("model")),
-            }
-        except (OSError, UnicodeError, json.JSONDecodeError, LLMSetupError):
+            return ManagedLLMConfig.from_mapping(payload)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return fallback
 
     def _completion(self) -> tuple[bool, bool]:
@@ -309,8 +290,10 @@ class LLMSetupService:
             "show_initial_setup": not completed,
             "skipped": skipped,
             "llm": {
-                "base_url": config["base_url"],
-                "model": config["model"],
+                "provider": config.provider,
+                "base_url": config.base_url,
+                "model": config.model,
+                "max_retries": config.max_retries,
                 "key_configured": self._active_key_path() is not None,
             },
         }
@@ -336,7 +319,7 @@ class LLMSetupService:
         name = payload.get("key_file")
         digest = payload.get("key_sha256")
         if (
-            payload.get("schema_version") != 2
+            payload.get("schema_version") not in {2, 3}
             or not isinstance(name, str)
             or not _KEY_FILE_RE.fullmatch(name)
             or not isinstance(digest, str)
@@ -357,8 +340,8 @@ class LLMSetupService:
             return candidate
         configured = self._config()
         if (
-            configured["base_url"] != base_url
-            or configured["model"] != model
+            configured.base_url != base_url
+            or configured.model != model
         ):
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400)
         try:
@@ -375,23 +358,21 @@ class LLMSetupService:
     async def test(self, payload: dict[str, object]) -> None:
         if set(payload) != {"base_url", "model", "api_key"}:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-        base_url = _base_url(payload.get("base_url"))
-        model = _model(payload.get("model"))
+        config = _managed_config(payload.get("base_url"), payload.get("model"))
         api_key = self._secret(
-            payload.get("api_key", ""), base_url=base_url, model=model
+            payload.get("api_key", ""), base_url=config.base_url, model=config.model
         )
-        await self._probe(base_url, model, api_key)
-        self._tested_digest = self._digest(base_url, model, api_key)
+        await self._probe(config.base_url, config.model, api_key)
+        self._tested_digest = self._digest(config.base_url, config.model, api_key)
 
     def save(self, payload: dict[str, object]) -> bool:
         if set(payload) != {"base_url", "model", "api_key"}:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-        base_url = _base_url(payload.get("base_url"))
-        model = _model(payload.get("model"))
+        config = _managed_config(payload.get("base_url"), payload.get("model"))
         api_key = self._secret(
-            payload.get("api_key", ""), base_url=base_url, model=model
+            payload.get("api_key", ""), base_url=config.base_url, model=config.model
         )
-        if self._tested_digest != self._digest(base_url, model, api_key):
+        if self._tested_digest != self._digest(config.base_url, config.model, api_key):
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
         protected_bytes = (self._protect(api_key) + "\n").encode("utf-8")
         self._config_root.mkdir(parents=True, exist_ok=True)
@@ -410,9 +391,7 @@ class LLMSetupService:
             _atomic_json(
                 self._config_path,
                 {
-                    "schema_version": 2,
-                    "base_url": base_url,
-                    "model": model,
+                    **config.to_mapping(),
                     "key_file": key_path.name,
                     "key_sha256": hashlib.sha256(protected_bytes).hexdigest(),
                 },
@@ -423,7 +402,7 @@ class LLMSetupService:
             raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         if self._apply_runtime is not None:
             try:
-                self._apply_runtime(base_url, model, api_key)
+                self._apply_runtime(config, api_key)
             except Exception as exc:
                 rollback_succeeded = True
                 try:
@@ -464,20 +443,14 @@ class LLMSetupService:
             _atomic_json(
                 self._config_path,
                 {
-                    "schema_version": 1,
-                    "base_url": configured["base_url"],
-                    "model": configured["model"],
+                    **configured.to_mapping(),
                 },
             )
         except OSError as exc:
             raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         if self._apply_runtime is not None:
             try:
-                self._apply_runtime(
-                    str(configured["base_url"]),
-                    str(configured["model"]),
-                    None,
-                )
+                self._apply_runtime(configured, None)
             except Exception as exc:
                 try:
                     if previous_config is None:

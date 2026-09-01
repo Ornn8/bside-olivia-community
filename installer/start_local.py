@@ -16,8 +16,9 @@ import sys
 from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import urlopen
+
+from llm_gateway import ManagedLLMConfig
 
 from patch_companion_settings import (
     CompanionSettingsPatchError,
@@ -80,7 +81,6 @@ def _load_dpapi_key(path: Path) -> str:
         return ""
 
 
-_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 def _load_video_environment(
@@ -136,28 +136,23 @@ def _load_llm_environment(
     base_url = "https://api.deepseek.com"
     model = "deepseek-v4-flash"
     provider = "openai_compatible"
+    max_retries = 2
     key_path = data_root / "config" / "deepseek_api_key.dpapi"
     config_path = data_root / "config" / "llm.json"
     saved_key_binding = False
+    managed_key_absent = False
+    managed_key_authoritative = False
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
-        candidate_url = str(payload["base_url"]).strip().rstrip("/")
-        candidate_model = str(payload["model"]).strip()
-        parsed = urlsplit(candidate_url)
-        loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        if (
-            payload.get("schema_version") in {1, 2}
-            and parsed.hostname
-            and parsed.scheme in ({"http", "https"} if loopback else {"https"})
-            and not parsed.username
-            and not parsed.password
-            and not parsed.query
-            and not parsed.fragment
-            and _LLM_MODEL_RE.fullmatch(candidate_model)
-        ):
-            base_url = candidate_url
-            model = candidate_model
-            if payload.get("schema_version") == 2:
+        managed = ManagedLLMConfig.from_mapping(payload)
+        base_url = managed.base_url
+        model = managed.model
+        provider = managed.provider
+        max_retries = managed.max_retries
+        if payload.get("schema_version") in {2, 3}:
+            managed_key_authoritative = True
+            has_key_binding = "key_file" in payload or "key_sha256" in payload
+            if has_key_binding:
                 name = payload.get("key_file")
                 expected_hash = payload.get("key_sha256")
                 if (
@@ -173,36 +168,57 @@ def _load_llm_environment(
                 if hashlib.sha256(key_path.read_bytes()).hexdigest() != expected_hash:
                     raise ValueError("invalid key binding")
                 saved_key_binding = True
-        else:
-            raise ValueError("invalid LLM config")
+            elif payload.get("schema_version") == 3:
+                key_path = Path()
+                managed_key_absent = True
+            else:
+                raise ValueError("missing key binding")
     except FileNotFoundError:
         pass
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         provider = "none"
         key_path = Path()
+    if managed_key_authoritative:
+        values.pop("DEEPSEEK_API_KEY", None)
+        values.pop("OPENAI_API_KEY", None)
+    if (
+        saved_key_binding
+        and include_secret
+        and not values.get("OLIVIA_LLM_API_KEY")
+    ):
+        configured_key = _load_dpapi_key(key_path)
+        if configured_key:
+            values["OLIVIA_LLM_API_KEY"] = configured_key
+        else:
+            provider = "none"
+    elif managed_key_absent and not values.get("OLIVIA_LLM_API_KEY"):
+        provider = "none"
     for name, value in {
         "OLIVIA_LLM_PROVIDER": provider,
         "OLIVIA_LLM_BASE_URL": base_url,
         "OLIVIA_LLM_MODEL": model,
-        "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
+        "OLIVIA_LLM_API_KEY_ENV": (
+            "OLIVIA_LLM_API_KEY" if managed_key_authoritative else "DEEPSEEK_API_KEY"
+        ),
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
-        "OLIVIA_LLM_MAX_RETRIES": "0",
+        "OLIVIA_LLM_MAX_RETRIES": str(max_retries),
+        "OLIVIA_LLM_REQUIRES_API_KEY": "1",
     }.items():
         values.setdefault(name, value)
+    values["OLIVIA_LLM_REQUIRES_API_KEY"] = "1"
     if values.get("OLIVIA_LLM_API_KEY"):
         values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
     generic_key_present = any(
         values.get(name) for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
     )
-    # A schema-v2 binding is the user's explicit saved choice; inherited generic
-    # keys must not outrank it.  The Olivia-specific override remains explicit.
     if (
         include_secret
+        and not saved_key_binding
         and key_path != Path()
         and not values.get("OLIVIA_LLM_API_KEY")
-        and (saved_key_binding or not generic_key_present)
+        and not generic_key_present
     ):
         configured_key = _load_dpapi_key(key_path)
         if configured_key:
@@ -453,9 +469,11 @@ def _client_executable(root: Path) -> Path:
 def _load_fixed_video_assets_environment(
     environment: dict[str, str], root: Path
 ) -> dict[str, str]:
-    """Keep downloaded reply assets and fill only missing wallpaper fallbacks."""
+    """Keep managed reply assets and never use wallpaper as music performance."""
 
     values = environment.copy()
+    managed_performance = values.get("OLIVIA_MUSIC_PERFORMANCE_BASE", "").strip()
+    managed_action = values.get("OLIVIA_ORDINARY_ACTION_BASE", "").strip()
     assets = _client_executable(root).parent / "assets" / "Wallpaper_Presence"
     scene = assets / "A_R1_2000.mp4"
     transition = assets / "A_Transition_2000_1200.mp4"
@@ -463,7 +481,8 @@ def _load_fixed_video_assets_environment(
         return values
     values.setdefault("OLIVIA_ORDINARY_ACTION_BASE", str(scene.resolve()))
     values.setdefault("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(transition.resolve()))
-    values.setdefault("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene.resolve()))
+    if not managed_performance and managed_action and Path(managed_action).is_file():
+        values["OLIVIA_MUSIC_PERFORMANCE_BASE"] = str(Path(managed_action).resolve())
     return values
 
 

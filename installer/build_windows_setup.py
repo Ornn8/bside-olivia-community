@@ -34,6 +34,7 @@ VIDEO_OFFLINE_SIDECAR_NAME = "Olivia-video-offline-private"
 PRIVATE_RECEIPT_NAME = "Olivia-Setup-x64.receipt.json"
 NATIVE_NAVIGATION_MANIFEST_NAME = COMPATIBILITY_MANIFEST_NAME
 VOICE_REFERENCE_PATH = "voice/olivia-reference.wav"
+VOICE_REFERENCE_TRANSCRIPT_PATH = "voice/olivia-reference.txt"
 FORBIDDEN_MEDIA_SUFFIXES = {
     ".aac",
     ".avi",
@@ -51,13 +52,13 @@ FORBIDDEN_MEDIA_SUFFIXES = {
 }
 VIDEO_RUNTIME_PATH = VIDEO_RUNTIME_SIDECAR_NAME
 VIDEO_RUNTIME_ENVIRONMENT_KEYS = {
-    "OLIVIA_COSYVOICE_PYTHON",
+    "OLIVIA_BREEZE_TTS_PYTHON",
     "OLIVIA_LATENTSYNC_PYTHON",
     "OLIVIA_MINIMAX_COMFY_PYTHON",
     "OLIVIA_ROFORMER_PYTHON",
 }
 VIDEO_RUNTIME_COMPONENT_ENVIRONMENT = {
-    "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+    "breeze": "OLIVIA_BREEZE_TTS_PYTHON",
     "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
     "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
     "roformer": "OLIVIA_ROFORMER_PYTHON",
@@ -175,6 +176,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/provision_mem0_embedding.py",
     "installer/patch_native_user_settings.py",
     "installer/runtime-requirements.txt",
+    "installer/breeze-runtime-requirements.txt",
     "installer/start_local.py",
     "installer/start_hidden.vbs.txt",
     "installer/uninstall.py",
@@ -294,6 +296,21 @@ def _voice_reference_metadata(path: Path) -> dict[str, object]:
     ):
         raise SetupBuildError("SETUP_VOICE_REFERENCE_INVALID")
     return metadata
+
+
+def _voice_reference_transcript_metadata(path: Path) -> dict[str, object]:
+    try:
+        payload = path.read_bytes()
+        value = payload.decode("utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_TRANSCRIPT_INVALID") from exc
+    if not payload or len(payload) > 1024 * 1024 or not value or "\x00" in value:
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_TRANSCRIPT_INVALID")
+    return {
+        "path": VOICE_REFERENCE_TRANSCRIPT_PATH,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def _video_runtime_relative(value: object) -> str:
@@ -807,21 +824,23 @@ def _video_offline_metadata(
 
 
 def _verify_pinned_private_sidecars(
-    payload: Path, runtime: Path, video_offline_root: Path
-) -> tuple[dict[str, object], list[dict[str, object]]]:
+    payload: Path, runtime: Path | None, video_offline_root: Path
+) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     try:
         private_manifest = json.loads(
             (payload / "offline" / MANIFEST_NAME).read_text(encoding="utf-8")
         )
-        expected_runtime = private_manifest["video_runtime"]
+        expected_runtime = private_manifest.get("video_runtime")
         expected_offline = private_manifest["video_offline"]
-        if _is_reparse_point(runtime):
-            raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
-        actual_runtime = {
-            "path": VIDEO_RUNTIME_SIDECAR_NAME,
-            "size_bytes": runtime.stat().st_size,
-            "sha256": _sha256(runtime),
-        }
+        actual_runtime = None
+        if runtime is not None:
+            if _is_reparse_point(runtime):
+                raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
+            actual_runtime = {
+                "path": VIDEO_RUNTIME_SIDECAR_NAME,
+                "size_bytes": runtime.stat().st_size,
+                "sha256": _sha256(runtime),
+            }
         offline_file_records: list[dict[str, object]] = []
         actual_offline = {
             "path": VIDEO_OFFLINE_SIDECAR_NAME,
@@ -837,7 +856,7 @@ def _verify_pinned_private_sidecars(
             {
                 **actual_runtime,
                 "path": os.fspath(runtime),
-            },
+            } if actual_runtime is not None and runtime is not None else None,
             offline_file_records,
         )
     except SetupBuildError as exc:
@@ -1011,6 +1030,7 @@ def prepare_setup_payload(
     *,
     distribution: str = "public",
     voice_reference: Path | None = None,
+    voice_reference_transcript: Path | None = None,
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
     native_navigation_manifest: Path | None = None,
@@ -1024,12 +1044,16 @@ def prepare_setup_payload(
     private_distribution = distribution in {"personal", "private"}
     if voice_reference is not None and not private_distribution:
         raise SetupBuildError("SETUP_VOICE_REFERENCE_PRIVATE_ONLY")
+    if voice_reference_transcript is not None and not private_distribution:
+        raise SetupBuildError("SETUP_VOICE_REFERENCE_PRIVATE_ONLY")
     if private_distribution and voice_reference is None:
+        raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
+    if private_distribution and voice_reference_transcript is None:
+        raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_TRANSCRIPT_REQUIRED")
+    if voice_reference is None and voice_reference_transcript is not None:
         raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
     if video_runtime is not None and not private_distribution:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_PRIVATE_ONLY")
-    if distribution == "private" and video_runtime is None:
-        raise SetupBuildError("SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED")
     if video_offline_root is not None and distribution != "private":
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
     if distribution == "private" and video_offline_root is None:
@@ -1087,6 +1111,7 @@ def prepare_setup_payload(
             )
         shutil.copytree(offline, staging / "offline")
         if voice_reference is not None:
+            assert voice_reference_transcript is not None
             reference = _absolute_sidecar_source(
                 voice_reference,
                 directory=False,
@@ -1097,6 +1122,18 @@ def prepare_setup_payload(
             target = staging / "offline" / Path(*VOICE_REFERENCE_PATH.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(reference, target)
+            transcript = _absolute_sidecar_source(
+                voice_reference_transcript,
+                directory=False,
+                error_code="SETUP_VOICE_REFERENCE_TRANSCRIPT_INVALID",
+            )
+            transcript_target = staging / "offline" / Path(
+                *VOICE_REFERENCE_TRANSCRIPT_PATH.split("/")
+            )
+            transcript_metadata = _voice_reference_transcript_metadata(transcript)
+            shutil.copy2(transcript, transcript_target)
+            if _voice_reference_transcript_metadata(transcript_target) != transcript_metadata:
+                raise SetupBuildError("SETUP_VOICE_REFERENCE_TRANSCRIPT_INVALID")
             manifest_path = staging / "offline" / MANIFEST_NAME
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["distribution"] = distribution
@@ -1104,6 +1141,7 @@ def prepare_setup_payload(
                 "path": VOICE_REFERENCE_PATH,
                 "size_bytes": target.stat().st_size,
                 "sha256": _sha256(target),
+                "transcript": transcript_metadata,
                 "wave": _voice_reference_metadata(target),
             }
             if video_runtime is not None:
@@ -1169,6 +1207,7 @@ def build_windows_setup(
     iscc: Path | None = None,
     distribution: str = "public",
     voice_reference: Path | None = None,
+    voice_reference_transcript: Path | None = None,
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
     native_navigation_manifest: Path | None = None,
@@ -1219,6 +1258,7 @@ def build_windows_setup(
             payload,
             distribution=distribution,
             voice_reference=voice_reference,
+            voice_reference_transcript=voice_reference_transcript,
             video_runtime=sidecar if video_runtime is not None else None,
             video_offline_root=(
                 offline_sidecar if video_offline_root is not None else None
@@ -1246,9 +1286,9 @@ def build_windows_setup(
         if compiled_artifacts != [setup]:
             raise SetupBuildError("SETUP_COMPILE_FAILED")
         verified_sidecars = None
-        if video_runtime is not None and video_offline_root is not None:
+        if video_offline_root is not None:
             verified_sidecars = _verify_pinned_private_sidecars(
-                payload, sidecar, offline_sidecar
+                payload, sidecar if video_runtime is not None else None, offline_sidecar
             )
         artifacts = [setup]
         file_records = [
@@ -1378,6 +1418,7 @@ def main(argv: list[str] | None = None) -> int:
         "--distribution", choices=("public", "personal", "private"), default="public"
     )
     parser.add_argument("--voice-reference", type=Path)
+    parser.add_argument("--voice-reference-transcript", type=Path)
     parser.add_argument("--video-runtime", type=Path)
     parser.add_argument("--video-offline-root", type=Path)
     parser.add_argument("--native-navigation-manifest", type=Path)
@@ -1391,6 +1432,7 @@ def main(argv: list[str] | None = None) -> int:
             iscc=args.iscc,
             distribution=args.distribution,
             voice_reference=args.voice_reference,
+            voice_reference_transcript=args.voice_reference_transcript,
             video_runtime=args.video_runtime,
             video_offline_root=args.video_offline_root,
             native_navigation_manifest=args.native_navigation_manifest,
