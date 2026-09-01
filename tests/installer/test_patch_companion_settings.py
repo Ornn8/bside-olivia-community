@@ -94,7 +94,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "/toy/companion/memory/delete",
         "/toy/companion/memory/pause",
         "/toy/companion/memory/resume",
-        "/toy/letter/legacy/official-import",
+        "/toy/letter/legacy/local-import",
     ):
         assert path_value in bootstrap
     for visible_text in (
@@ -105,7 +105,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "导入官方文字信件",
+        "导入本地历史信件",
     ):
         assert visible_text in bootstrap
     for hidden_artifact in (

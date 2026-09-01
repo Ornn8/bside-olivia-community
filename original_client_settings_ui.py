@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v14"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v15"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -19,7 +19,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
   const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";
-  const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";
+  const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
   const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";
@@ -286,23 +286,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         signal: controller.signal,
       });
       const responseBody = await response.json();
-      const officialPreflight = path === OFFICIAL_LETTER_IMPORT_PATH
-        && params.preflight === "1";
-      const payload = (path === VIDEO_REPLY_SETTINGS_PATH || path === OFFICIAL_LETTER_IMPORT_PATH)
+      const payload = (path === VIDEO_REPLY_SETTINGS_PATH
+          || path === LOCAL_LETTER_IMPORT_PATH)
         && responseBody && responseBody.data
         ? responseBody.data
         : responseBody;
-      const valid = officialPreflight
+      const valid = path === LOCAL_LETTER_IMPORT_PATH
         ? payload && payload.status === "READY"
-          && typeof payload.llm_required === "boolean"
-        : path === OFFICIAL_LETTER_IMPORT_PATH
-        ? payload && ["IDLE", "RUNNING", "COMPLETED", "FAILED"].includes(payload.status)
-          && typeof payload.stage === "string"
-          && Number.isInteger(payload.total)
-          && Number.isInteger(payload.processed)
-          && Number.isInteger(payload.imported)
-          && Number.isInteger(payload.skipped)
-          && typeof payload.last_updated_at === "string"
+          && Number.isInteger(payload.seen)
+          && Number.isInteger(payload.would_insert)
+          && Number.isInteger(payload.duplicates)
         : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
           || payload.state === "unavailable" && typeof payload.reason_code === "string")
@@ -360,12 +353,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeoutMs = path === OFFICIAL_LETTER_IMPORT_PATH
-      ? null
-      : path === VIDEO_REPLY_SETTINGS_PATH
+    const timeoutMs = path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
       : 8000;
-    const timeout = timeoutMs === null ? null : window.setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -386,7 +377,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
-          || path === OFFICIAL_LETTER_IMPORT_PATH
+          || path === LOCAL_LETTER_IMPORT_PATH
           || path === MEMORY_RETRY_PATH)
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
@@ -403,7 +394,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       return payload;
     } finally {
-      if (timeout !== null) window.clearTimeout(timeout);
+      window.clearTimeout(timeout);
     }
   };
 
@@ -2012,7 +2003,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
   };
 
-  const mountOfficialLetterImport = (section) => {
+  const mountLocalLetterImport = (section) => {
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const importCopy = document.createElement("div");
@@ -2020,109 +2011,52 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const importState = text("div", "", "text-text-secondary text-caption-m font-regular");
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
-      text("div", "导入官方文字信件", "text-text-body text-label-l"),
-      text("div", "原信和林离的文字回信会按原时间进入信箱；双方内容会形成长期语义记忆，历史往来会初始化关系状态。不导入视频，重复信件自动跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "导入本地历史信件", "text-text-body text-label-l"),
+      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，不联网、不导入视频，重复记录自动跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     let importPending = false;
-    let progressTimer = null;
-    let lastProgressSignature = "";
-    let lastProgressAt = Date.now();
-    const officialProgressText = (payload) => {
-      const total = Math.max(0, payload.total || 0);
-      const processed = Math.max(0, payload.processed || 0);
-      if (payload.stage === "listing") return `正在获取信件列表：已发现 ${total} 封。`;
-      if (payload.stage === "reading") return `正在读取信件内容：${processed} / ${total} 封。`;
-      if (payload.stage === "memory") return `正在整理长期记忆：${processed} / ${total} 封。`;
-      if (payload.stage === "relationship") return "信件记忆已整理，正在恢复你和林离的关系状态……";
-      if (payload.stage === "importing") return `正在写入信箱：${processed} / ${total} 封。`;
-      if (payload.stage === "completed") return `已导入 ${payload.imported || 0} 封，跳过 ${payload.skipped || 0} 封重复信件。`;
-      if (payload.stage === "failed") return "导入中断，可点击重试导入。";
-      return "正在准备导入……";
-    };
-    const refreshOfficialImportProgress = async () => {
+    const missingBackupText = "未在原版游戏目录找到 letter_pairs.json。官方服务器已关闭，请先准备本地备份并放回该目录。";
+    const refreshLocalBackup = async () => {
       try {
-        const progress = await requestJson(OFFICIAL_LETTER_IMPORT_PATH);
-        const signature = `${progress.stage}:${progress.total}:${progress.processed}:${progress.imported}:${progress.skipped}:${progress.last_updated_at}`;
-        if (signature !== lastProgressSignature) {
-          lastProgressSignature = signature;
-          lastProgressAt = Date.now();
-        }
-        if (Date.now() - lastProgressAt >= 20000 && progress.status === "RUNNING") {
-          importState.textContent = "20 秒没有新进度，可能卡住了。可点击“重新检查进度”；如果导入失败，可直接重试导入。";
-          importButton.textContent = "重新检查进度";
-          setButtonsBusy([importButton], false);
-        } else {
-          importState.textContent = officialProgressText(progress);
-        }
-      } catch (_error) {
-        importState.textContent = "暂时读取不到导入进度，正在等待导入结果……";
-      }
-    };
-    const pollOfficialImport = async () => {
-      if (!importPending) return;
-      await refreshOfficialImportProgress();
-      if (importPending) {
-        progressTimer = window.setTimeout(pollOfficialImport, 1000);
-      }
-    };
-    const importButton = button("导入", async () => {
-      if (importPending) {
-        await refreshOfficialImportProgress();
-        return;
-      }
-      try {
-        await requestJson(OFFICIAL_LETTER_IMPORT_PATH, { preflight: "1" });
+        const payload = await requestJson(LOCAL_LETTER_IMPORT_PATH);
+        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可导入 ${payload.would_insert} 封，重复 ${payload.duplicates} 封。`;
+        return payload;
       } catch (error) {
-        importState.textContent = error && error.code === "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
-          ? "请先在“大模型”中完成连接测试并保存，再导入。"
-          : error && [
-            "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
-            "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
-          ].includes(error.code)
-            ? "请先安装并启用长期记忆组件，确认私人世界可用并重启客户端后再导入。"
-            : "无法确认导入条件，请重启客户端后再试。";
-        return;
+        importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
+          ? missingBackupText
+          : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
+            ? "本地 letter_pairs.json 格式无效，请更换完整备份后重试。"
+            : "暂时无法检查本地备份，请重启 Olivia 后重试。";
+        return null;
       }
-      if (!await confirmAction("确认从这台电脑上的官方 Olivia 账户导入文字信件？")) {
+    };
+    const importButton = button("导入本地备份", async () => {
+      if (importPending) return;
+      const preflight = await refreshLocalBackup();
+      if (!preflight) return;
+      if (!await confirmAction(`确认从本地 letter_pairs.json 导入 ${preflight.would_insert} 封只读历史信件？`)) {
         return;
       }
       setButtonsBusy([importButton], true);
       importButton.textContent = "正在导入";
       importPending = true;
-      lastProgressSignature = "";
-      lastProgressAt = Date.now();
-      importState.textContent = "正在读取官方文字信件……";
-      void pollOfficialImport();
+      importState.textContent = "正在读取本地备份并写入信箱……";
       try {
-        const payload = await requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {});
+        const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
-        const migration = payload.memory_migration;
-        const memoryText = migration && migration.status === "completed"
-          ? `记忆已按时间顺序处理 ${migration.processed || 0} 封。`
-          : "长期记忆写入未完成，历史信件未发布。";
-        const relationText = migration && migration.private_world_status === "initialized"
-          ? "已根据历史信件恢复初始关系状态。"
-          : migration && migration.private_world_status === "already_initialized"
-            ? "已有关系状态已保留，历史信件已加入长期记忆。"
-            : "关系状态未更新。";
-        importState.textContent = `已导入 ${inserted} 封，跳过 ${duplicates} 封重复信件。${memoryText}${relationText}`;
-        importButton.textContent = "再次导入";
+        importState.textContent = `已导入 ${inserted} 封只读历史信件，跳过 ${duplicates} 封重复记录。`;
+        importButton.textContent = "再次检查并导入";
       } catch (error) {
-        importState.textContent = error && error.code === "OFFICIAL_HISTORY_LLM_UNAVAILABLE"
-          ? "请先在“大模型”中完成连接测试并保存，再导入。"
-          : error && [
-            "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE",
-            "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED",
-            "PRIVATE_WORLD_HISTORY_UNAVAILABLE",
-          ].includes(error.code)
-            ? "长期记忆未就绪或写入失败，未发布任何历史信件。请检查记忆组件后重试。"
-            : "导入失败。请先启动官方客户端并登录，再重试。";
+        importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
+          ? missingBackupText
+          : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
+            ? "本地 letter_pairs.json 格式无效，请更换完整备份后重试。"
+            : "本地信件导入失败，请重启 Olivia 后重试。";
         importButton.textContent = "重试导入";
       } finally {
         importPending = false;
-        if (progressTimer !== null) window.clearTimeout(progressTimer);
         setButtonsBusy([importButton], false);
       }
     });
@@ -2131,8 +2065,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       text("div", "历史信件", "text-text-body text-title-m"),
       importRow
     );
-    return;
-
   };
 
   const mountShell = () => {
@@ -2171,7 +2103,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.append(title, row);
     mountDiagnosticExport(section);
     mountVideoReplySetting(section);
-    mountOfficialLetterImport(section);
+    mountLocalLetterImport(section);
     container.append(section);
   };
 

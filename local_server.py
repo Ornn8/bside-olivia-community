@@ -20,7 +20,7 @@ import inspect
 import threading
 import tempfile as _tempfile
 import webbrowser as _webbrowser
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -127,7 +127,9 @@ from runtime.imports.official_letters import collect_default_official_text_repli
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
+    apply_offline_letter_pair_recovery_to_adapter,
     is_published_offline_letter_pair,
+    plan_offline_letter_pair_recovery_with_adapter,
 )
 from runtime.imports.historical_memory import (
     HistoricalMigrationResult,
@@ -817,6 +819,29 @@ def _local_data_root(environment: Mapping[str, str] | None = None) -> Path | Non
         "OLIVIA_LOCAL_DATA_ROOT",
     )
     return configured.resolve(strict=False) if configured is not None else None
+
+
+def _default_offline_letter_pair_source() -> Path | None:
+    """Find the local backup beside the original client selected at install time."""
+
+    data_root = _local_data_root()
+    if data_root is None:
+        return None
+    marker_path = data_root.parent / ".olivia-full-patch.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        official_source = marker.get("official_source")
+        if not isinstance(official_source, str) or not official_source.strip():
+            return None
+        official_root = Path(official_source).expanduser()
+        if not official_root.is_absolute():
+            return None
+        official_root = official_root.resolve(strict=True)
+        source = (official_root / "letter_pairs.json").resolve(strict=True)
+        source.relative_to(official_root)
+        return source if source.is_file() else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def _conversation_state_root() -> Path | None:
@@ -2521,6 +2546,73 @@ async def route(
         })
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
+
+    if p == "/toy/letter/legacy/local-import":
+        source = _default_offline_letter_pair_source()
+        if source is None:
+            return err(404, "OFFLINE_LETTER_BACKUP_REQUIRED", {
+                "status": "UNAVAILABLE",
+                "error_code": "OFFLINE_LETTER_BACKUP_REQUIRED",
+                "retryable": True,
+                "source": "local_backup",
+            })
+        adapter = _legacy_import_adapter()
+        if not getattr(adapter, "enabled", False):
+            return err(503, "MEMORY_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "MEMORY_UNAVAILABLE",
+                "retryable": True,
+                "source": "local_backup",
+            })
+        try:
+            if method == "GET":
+                report = await asyncio.to_thread(
+                    plan_offline_letter_pair_recovery_with_adapter,
+                    source,
+                    adapter=adapter,
+                )
+                return ok({
+                    **asdict(report),
+                    "status": "READY",
+                    "source": "local_backup",
+                })
+            if companion_confirmed is not True:
+                return err(403, "COMPANION_CONFIRMATION_REQUIRED", {
+                    "status": "FAILED",
+                    "error_code": "COMPANION_CONFIRMATION_REQUIRED",
+                    "retryable": False,
+                })
+            report = await asyncio.to_thread(
+                apply_offline_letter_pair_recovery_to_adapter,
+                source,
+                adapter=adapter,
+            )
+        except ValueError:
+            return err(400, "OFFLINE_LETTER_BACKUP_INVALID", {
+                "status": "FAILED",
+                "error_code": "OFFLINE_LETTER_BACKUP_INVALID",
+                "retryable": True,
+                "source": "local_backup",
+            })
+        except (OSError, sqlite3.Error):
+            return err(503, "MEMORY_UNAVAILABLE", {
+                "status": "UNAVAILABLE",
+                "error_code": "MEMORY_UNAVAILABLE",
+                "retryable": True,
+                "source": "local_backup",
+            })
+        if report.status != "committed" or report.rejected:
+            return err(503, "MEMORY_UNAVAILABLE", {
+                "status": "FAILED",
+                "error_code": "MEMORY_UNAVAILABLE",
+                "retryable": True,
+                "source": "local_backup",
+            })
+        return ok({
+            **asdict(report),
+            "status": "APPLIED",
+            "source": "local_backup",
+        })
 
     if p == "/toy/letter/legacy/official-import":
         if method == "GET":
