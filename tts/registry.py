@@ -59,8 +59,10 @@ class TTSProviderRegistry:
 
 
 def default_registry() -> TTSProviderRegistry:
+    from .breeze import BREEZE_LICENSE_ID, BreezeTTS2Provider
     from .providers import CosyVoice3Provider
 
     registry = TTSProviderRegistry()
+    registry.register("breeze_tts2", BreezeTTS2Provider, license_id=BREEZE_LICENSE_ID)
     registry.register("cosyvoice3", CosyVoice3Provider, license_id="Apache-2.0")
     return registry
