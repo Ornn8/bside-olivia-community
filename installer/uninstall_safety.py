@@ -121,15 +121,23 @@ def _remove_managed_python_path_registration(root: Path) -> None:
                 temporary.unlink(missing_ok=True)
 
 
-def remove_owned_targets(root: Path) -> None:
+def remove_owned_targets(
+    root: Path, *, deferred_paths: tuple[str, ...] = ()
+) -> None:
     """Remove only validated compiled targets; marker contents are untrusted."""
 
+    deferred = set(deferred_paths)
+    if not deferred.issubset(OWNED_PATHS):
+        raise ValueError("PATCH_MARKER_INVALID")
     targets = safe_owned_targets(root)
     _remove_managed_python_path_registration(root.resolve())
     for target in targets:
+        relative = target.relative_to(root.resolve()).as_posix()
+        if relative in deferred:
+            continue
         # Re-check each target immediately before deletion to avoid following a
         # path component that was replaced after the initial validation.
-        _safe_target(root.resolve(), target.relative_to(root.resolve()).as_posix())
+        _safe_target(root.resolve(), relative)
         if target.is_dir():
             shutil.rmtree(target)
         elif target.is_file():
