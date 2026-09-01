@@ -406,6 +406,7 @@ def _run_runtime_publish_fixture(
     product_root: Path | None = None, existing_voice_pair: bool = False,
     interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False,
     existing_runtime: bool = True, seed_existing_install: bool = True,
+    seed_preserved_only_root: bool = False,
     bootstrap_preserved_paths: bool = False,
     private_video_exit_code: int = 0,
     private_video_status: str | None = None,
@@ -592,6 +593,11 @@ def _run_runtime_publish_fixture(
     test_script = tmp_path / "Install.ps1"
     test_script.write_text(script, encoding="utf-8-sig")
     product = product_root or tmp_path / "product"
+    if seed_preserved_only_root:
+        for name in ("data", "logs", "third-party", "downloads", "profile"):
+            preserved = product / "install" / name
+            preserved.mkdir(parents=True, exist_ok=True)
+            (preserved / "preserve.txt").write_text(name, encoding="utf-8")
     old_runtime = product / "runtime" / "python-3.12.10-embed-amd64"
     if existing_runtime and not old_runtime.exists():
         old_runtime.mkdir(parents=True)
@@ -848,6 +854,30 @@ def test_private_video_activation_failure_rolls_back_install_and_runtime_archive
     assert not (old_video / "music_video/partial.txt").exists()
     assert not (old_video / "runtime/partial.txt").exists()
     assert not list(old_video.parent.glob(".video.private-*"))
+
+
+def test_private_video_activation_failure_after_uninstall_removes_new_managed_app(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        bootstrap_preserved_paths=True,
+        voice_reference=_voice_reference_bytes(),
+        private_video_exit_code=2,
+        existing_runtime=False,
+        seed_existing_install=False,
+        seed_preserved_only_root=True,
+    )
+
+    assert result.returncode != 0
+    assert "VIDEO_PRIVATE_ACTIVATION_FAILED" in result.stdout + result.stderr
+    assert not (product / "install/app").exists()
+    assert not (product / "runtime/python-3.12.10-embed-amd64").exists()
+    for name in ("data", "logs", "third-party", "downloads", "profile"):
+        assert (product / "install" / name / "preserve.txt").read_text(
+            encoding="utf-8"
+        ) == name
 
 
 def test_private_video_host_unavailable_commits_verified_assets(
