@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -21,6 +22,7 @@ from patch_companion_settings import (
     CompanionSettingsPatchError,
     patch_companion_settings,
 )
+from installer.native_window_layout import LayoutStatus, guard_native_window_layout
 from video_capability_install import (
     VideoCapabilityError,
     load_video_runtime_environment,
@@ -484,6 +486,56 @@ def _client_environment(environment: dict[str, str], roaming: Path, local: Path)
     return client_environment
 
 
+def _run_client_with_native_layout(
+    client: Path,
+    local: Path,
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    data_root: Path,
+    attempt: int,
+) -> int:
+    """Run the copied client while a bounded guard preserves its native layout."""
+
+    stop = Event()
+    outcome: list[LayoutStatus] = []
+
+    def protect_layout() -> None:
+        try:
+            outcome.append(
+                guard_native_window_layout(client, stop_event=stop)
+            )
+        except Exception:
+            outcome.append(LayoutStatus.FAILED)
+
+    worker = Thread(
+        target=protect_layout,
+        name="olivia-native-window-layout",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        return subprocess.call(
+            _client_command(client, local),
+            cwd=cwd,
+            env=environment,
+        )
+    finally:
+        stop.set()
+        worker.join(timeout=1.0)
+        status = (
+            outcome[0]
+            if outcome and not worker.is_alive()
+            else LayoutStatus.FAILED
+        )
+        _append_launcher_event(
+            data_root,
+            "client_layout",
+            attempt=attempt,
+            status=status.value,
+        )
+
+
 def _backend_executable() -> Path:
     """Prefer the windowless interpreter used by the known-good launcher."""
 
@@ -771,10 +823,13 @@ def main(argv: list[str] | None = None) -> int:
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
         _append_launcher_event(data_root, "client_start", attempt=1)
-        exit_code = subprocess.call(
-            _client_command(client, local),
+        exit_code = _run_client_with_native_layout(
+            client,
+            local,
             cwd=root / "app",
-            env=_client_environment(client_environment, roaming, local),
+            environment=_client_environment(client_environment, roaming, local),
+            data_root=data_root,
+            attempt=1,
         )
         _append_launcher_event(
             data_root,
@@ -790,10 +845,13 @@ def main(argv: list[str] | None = None) -> int:
                 reason="known_fresh_profile_exit",
             )
             _append_launcher_event(data_root, "client_start", attempt=2)
-            exit_code = subprocess.call(
-                _client_command(client, local),
+            exit_code = _run_client_with_native_layout(
+                client,
+                local,
                 cwd=root / "app",
-                env=_client_environment(client_environment, roaming, local),
+                environment=_client_environment(client_environment, roaming, local),
+                data_root=data_root,
+                attempt=2,
             )
             _append_launcher_event(
                 data_root,

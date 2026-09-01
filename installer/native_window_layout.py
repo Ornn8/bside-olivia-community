@@ -40,6 +40,7 @@ class WindowSnapshot:
 class LayoutStatus(str, Enum):
     ADJUSTED = "adjusted"
     ALREADY_VISIBLE = "already_visible"
+    FAILED = "failed"
     NOT_OBSERVED = "not_observed"
     SKIPPED = "skipped"
     UNSUPPORTED = "unsupported"
@@ -47,6 +48,8 @@ class LayoutStatus(str, Enum):
 
 class WindowApi(Protocol):
     def visible_windows(self) -> tuple[WindowSnapshot, ...]: ...
+
+    def window_snapshot(self, handle: int) -> WindowSnapshot | None: ...
 
     def monitor_geometry(self, handle: int) -> tuple[Rect, Rect] | None: ...
 
@@ -190,8 +193,37 @@ def _adjust_pair(
         return status, target
     if cancelled is not None and cancelled():
         return LayoutStatus.SKIPPED, target
+    if not _same_main_window(api, pair[0]):
+        return LayoutStatus.SKIPPED, target
     moved = api.move_window(pair[0].handle, target)
     return (LayoutStatus.ADJUSTED if moved else LayoutStatus.SKIPPED), target
+
+
+def _same_main_window(api: WindowApi, expected: WindowSnapshot) -> bool:
+    current = api.window_snapshot(expected.handle)
+    return bool(
+        current is not None
+        and expected.process_id > 0
+        and current.process_id == expected.process_id
+        and _normalized_path(current.executable)
+        == _normalized_path(expected.executable)
+        and current.rect.width >= 600
+        and current.rect.height >= 400
+        and not current.minimized
+        and not current.maximized
+    )
+
+
+def _rollback_main_window(
+    api: WindowApi, original: WindowSnapshot
+) -> LayoutStatus:
+    if not _same_main_window(api, original):
+        return LayoutStatus.FAILED
+    return (
+        LayoutStatus.SKIPPED
+        if api.move_window(original.handle, original.rect)
+        else LayoutStatus.FAILED
+    )
 
 
 def create_window_api() -> WindowApi | None:
@@ -260,12 +292,12 @@ def guard_native_window_layout(
                 return status
             remaining = max(0.0, deadline - time.monotonic())
             if stop.wait(min(max(0.0, poll_interval), remaining)):
-                return LayoutStatus.SKIPPED
+                return _rollback_main_window(api, pair[0])
             if time.monotonic() >= deadline:
-                return LayoutStatus.SKIPPED
+                return _rollback_main_window(api, pair[0])
             observed = api.visible_windows()
             if stop.is_set() or time.monotonic() >= deadline:
-                return LayoutStatus.SKIPPED
+                return _rollback_main_window(api, pair[0])
             verified_main = next(
                 (
                     window
@@ -285,7 +317,7 @@ def guard_native_window_layout(
                 None,
             )
             if verified_main is None or verified_sidebar is None:
-                return LayoutStatus.SKIPPED
+                return _rollback_main_window(api, pair[0])
             verified = verified_main, verified_sidebar
             sidebar_dx = target.right - pair[0].rect.right
             sidebar_dy = target.top - pair[0].rect.top
@@ -299,15 +331,13 @@ def guard_native_window_layout(
                 verified[0].rect != target
                 or verified[1].rect != expected_sidebar
             ):
-                return LayoutStatus.SKIPPED
+                return _rollback_main_window(api, pair[0])
             verified_status = _pair_target(api, verified)[0]
             if stop.is_set() or time.monotonic() >= deadline:
-                return LayoutStatus.SKIPPED
-            return (
-                LayoutStatus.ADJUSTED
-                if verified_status is LayoutStatus.ALREADY_VISIBLE
-                else LayoutStatus.SKIPPED
-            )
+                return _rollback_main_window(api, pair[0])
+            if verified_status is LayoutStatus.ALREADY_VISIBLE:
+                return LayoutStatus.ADJUSTED
+            return _rollback_main_window(api, pair[0])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return LayoutStatus.NOT_OBSERVED
@@ -338,6 +368,7 @@ class _CtypesWindowApi:
         )
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.user32.GetAncestor.restype = wintypes.HWND
         self.user32.MonitorFromWindow.restype = wintypes.HANDLE
         self.kernel32.OpenProcess.restype = wintypes.HANDLE
 
@@ -404,6 +435,36 @@ class _CtypesWindowApi:
                     )
                 )
         return tuple(windows)
+
+    def window_snapshot(self, handle: int) -> WindowSnapshot | None:
+        hwnd = self.w.HWND(handle)
+        ancestor = self.user32.GetAncestor(hwnd, self.w.UINT(2))
+        ancestor_handle = int(getattr(ancestor, "value", ancestor) or 0)
+        if (
+            not self.user32.IsWindow(hwnd)
+            or not self.user32.IsWindowVisible(hwnd)
+            or ancestor_handle != handle
+        ):
+            return None
+        rect, process_id = self.w.RECT(), self.w.DWORD()
+        if not self.user32.GetWindowRect(hwnd, self.c.byref(rect)):
+            return None
+        self.user32.GetWindowThreadProcessId(hwnd, self.c.byref(process_id))
+        executable = self._executable(int(process_id.value)) if process_id.value else None
+        if (
+            executable is None
+            or rect.right <= rect.left
+            or rect.bottom <= rect.top
+        ):
+            return None
+        return WindowSnapshot(
+            handle,
+            self._rect(rect),
+            executable,
+            process_id=int(process_id.value),
+            minimized=bool(self.user32.IsIconic(hwnd)),
+            maximized=bool(self.user32.IsZoomed(hwnd)),
+        )
 
     def monitor_geometry(self, handle: int) -> tuple[Rect, Rect] | None:
         monitor = self.user32.MonitorFromWindow(self.w.HWND(handle), self.w.DWORD(2))
