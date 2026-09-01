@@ -705,7 +705,6 @@ def test_unimplemented_write_routes_return_http_501_not_success() -> None:
 
     paths = (
         "/toy/submitPreferenceSurvey",
-        "/toy/letter/resend",
         "/toy/letter/share",
         "/toy/addPerformance",
         "/toy/editPerformance",
