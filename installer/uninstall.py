@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 try:
     from .uninstall_safety import (
@@ -14,7 +15,8 @@ try:
         remove_owned_targets,
         safe_owned_targets,
     )
-except ImportError:  # pragma: no cover - direct ``python uninstall.py`` entrypoint
+except ImportError:  # Support direct execution and the stable runpy launcher.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from uninstall_safety import (
         MARKER_NAME,
         OWNED_PATHS,
