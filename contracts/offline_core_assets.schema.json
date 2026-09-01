@@ -54,11 +54,21 @@
     "voice_reference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "size_bytes", "sha256", "wave"],
+      "required": ["path", "size_bytes", "sha256", "transcript", "wave"],
       "properties": {
         "path": {"const": "voice/olivia-reference.wav"},
         "size_bytes": {"type": "integer", "minimum": 45},
         "sha256": {"$ref": "#/$defs/digest"},
+        "transcript": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "size_bytes", "sha256"],
+          "properties": {
+            "path": {"const": "voice/olivia-reference.txt"},
+            "size_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+            "sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
         "wave": {
           "type": "object",
           "additionalProperties": false,

@@ -11,6 +11,9 @@ import wave
 MANAGED_VOICE_REFERENCE_RELATIVE_PATH = Path(
     "capabilities/video/shared/linli-reference.wav"
 )
+MANAGED_VOICE_TRANSCRIPT_RELATIVE_PATH = Path(
+    "capabilities/video/shared/linli-reference.txt"
+)
 MANAGED_VOICE_REFERENCE_SHA256 = (
     "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf"
 )
@@ -21,7 +24,8 @@ MANAGED_VOICE_REFERENCE_WAVE = {
     "frame_count": 77_600,
     "compression_type": "NONE",
 }
-_METADATA_SCHEMA = "olivia.managed-voice-reference.v1"
+_METADATA_SCHEMA_V1 = "olivia.managed-voice-reference.v1"
+_METADATA_SCHEMA_V2 = "olivia.managed-voice-reference.v2"
 
 
 class ManagedVoiceReferenceError(RuntimeError):
@@ -46,7 +50,12 @@ def _reject_reparse_points(root: Path, reference: Path) -> None:
         candidate /= part
     if any(
         _is_reparse_point(path)
-        for path in (candidate, reference, reference.with_suffix(".json"))
+        for path in (
+            candidate,
+            reference,
+            reference.with_suffix(".json"),
+            reference.with_suffix(".txt"),
+        )
     ):
         raise ManagedVoiceReferenceError("VOICE_REFERENCE_INVALID")
 
@@ -115,10 +124,14 @@ def resolve_managed_voice_reference(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ManagedVoiceReferenceError("VOICE_REFERENCE_INVALID") from exc
     digest = hashlib.sha256(payload).hexdigest()
+    schema_version = metadata.get("schema_version") if isinstance(metadata, dict) else None
+    expected_keys = {"schema_version", "path", "size_bytes", "sha256", "wave"}
+    if schema_version == _METADATA_SCHEMA_V2:
+        expected_keys.add("transcript")
     if (
         not isinstance(metadata, dict)
-        or set(metadata) != {"schema_version", "path", "size_bytes", "sha256", "wave"}
-        or metadata.get("schema_version") != _METADATA_SCHEMA
+        or set(metadata) != expected_keys
+        or schema_version not in {_METADATA_SCHEMA_V1, _METADATA_SCHEMA_V2}
         or metadata.get("path") != reference.name
         or metadata.get("size_bytes") != len(payload)
         or metadata.get("sha256") != digest
@@ -131,12 +144,49 @@ def resolve_managed_voice_reference(
     return reference
 
 
+def resolve_managed_voice_reference_transcript(data_root: Path) -> str:
+    """Return the installed exact transcript only when its managed digest agrees."""
+
+    root = Path(data_root).absolute()
+    reference = root / MANAGED_VOICE_REFERENCE_RELATIVE_PATH
+    transcript = root / MANAGED_VOICE_TRANSCRIPT_RELATIVE_PATH
+    _reject_reparse_points(root, reference)
+    try:
+        metadata = json.loads(reference.with_suffix(".json").read_text(encoding="utf-8"))
+        payload = transcript.read_bytes()
+        value = payload.decode("utf-8").strip()
+    except FileNotFoundError as exc:
+        raise ManagedVoiceReferenceError(
+            "VOICE_REFERENCE_TRANSCRIPT_UNAVAILABLE"
+        ) from exc
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ManagedVoiceReferenceError("VOICE_REFERENCE_TRANSCRIPT_INVALID") from exc
+    transcript_metadata = metadata.get("transcript") if isinstance(metadata, dict) else None
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("schema_version") != _METADATA_SCHEMA_V2
+        or not isinstance(transcript_metadata, dict)
+        or set(transcript_metadata) != {"path", "size_bytes", "sha256"}
+        or transcript_metadata.get("path") != transcript.name
+        or transcript_metadata.get("size_bytes") != len(payload)
+        or transcript_metadata.get("sha256") != hashlib.sha256(payload).hexdigest()
+        or not payload
+        or len(payload) > 1024 * 1024
+        or not value
+        or "\x00" in value
+    ):
+        raise ManagedVoiceReferenceError("VOICE_REFERENCE_TRANSCRIPT_INVALID")
+    return value
+
+
 __all__ = [
     "MANAGED_VOICE_REFERENCE_RELATIVE_PATH",
     "MANAGED_VOICE_REFERENCE_SHA256",
+    "MANAGED_VOICE_TRANSCRIPT_RELATIVE_PATH",
     "MANAGED_VOICE_REFERENCE_WAVE",
     "ManagedVoiceReferenceError",
     "managed_voice_reference_declared",
     "resolve_managed_voice_reference",
+    "resolve_managed_voice_reference_transcript",
     "validate_voice_reference",
 ]

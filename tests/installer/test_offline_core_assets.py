@@ -32,6 +32,10 @@ def _managed_reference(product: Path) -> Path:
     return product / "install/data/capabilities/video/shared/linli-reference.wav"
 
 
+def _managed_reference_transcript(product: Path) -> Path:
+    return product / "install/data/capabilities/video/shared/linli-reference.txt"
+
+
 def _wave_metadata(**changes: object) -> dict[str, object]:
     value: dict[str, object] = {"channels": 1, "sample_width_bytes": 2, "sample_rate_hz": 16000, "frame_count": 160, "compression_type": "NONE"}
     value.update(changes)
@@ -167,7 +171,17 @@ def test_public_schema_accepts_only_complete_hash_locked_private_assets() -> Non
     example = json.loads((ROOT / "contracts/offline_core_assets.example.json").read_text())
     validator = Draft202012Validator(schema)
     example["distribution"] = "private"
-    example["voice_reference"] = {"path": "voice/olivia-reference.wav", "size_bytes": 155278, "sha256": "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf", "wave": _wave_metadata(frame_count=77600)}
+    example["voice_reference"] = {
+        "path": "voice/olivia-reference.wav",
+        "size_bytes": 155278,
+        "sha256": "7bd846a55265d5ceb4dcf0ef164dc954066b8b056ac1e40d554b1e41d844a5bf",
+        "transcript": {
+            "path": "voice/olivia-reference.txt",
+            "size_bytes": 1,
+            "sha256": "2" * 64,
+        },
+        "wave": _wave_metadata(frame_count=77600),
+    }
     example["video_runtime"] = {
         "path": "Olivia-video-runtime-private.zip",
         "size_bytes": 1,
@@ -398,7 +412,10 @@ def _run_runtime_publish_fixture(
     bootstrap_exit_code: int, bootstrap_replaces_managed_app: bool = False,
     bootstrap_retires_update_state: bool = False,
     seed_update_state: bool = False,
-    voice_reference: bytes | None = None, voice_reference_sha256: str | None = None,
+    voice_reference: bytes | None = None,
+    voice_reference_transcript: bytes = b"synthetic exact transcript\n",
+    voice_reference_transcript_sha256: str | None = None,
+    voice_reference_sha256: str | None = None,
     voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
     video_runtime: bytes | None = None, video_runtime_sha256: str | None = None,
     video_runtime_missing: bool = False,
@@ -526,7 +543,7 @@ def _run_runtime_publish_fixture(
     original = "$coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot"
     replacement = (
         "$voiceManifest = if ($env:BSIDE_TEST_PRIVATE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_PRIVATE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
-        "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference } else { $null }\n"
+        "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference.transcript.path = $env:BSIDE_TEST_VOICE_TRANSCRIPT; $voiceManifest.voice_reference } else { $null }\n"
         "$videoRuntime = if ($voiceManifest) { $resolvedVideoRuntime = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $voiceManifest.video_runtime; $voiceManifest.video_runtime.path = $resolvedVideoRuntime; $voiceManifest.video_runtime } else { $null }\n"
         "$videoOffline = if ($voiceManifest) { $resolvedVideoOffline = Resolve-VideoOfflineSidecar -LiteralPath $VideoOfflineRoot -Asset $voiceManifest.video_offline; $voiceManifest.video_offline.path = $resolvedVideoOffline; $voiceManifest.video_offline } else { $null }\n"
         "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime; VideoOffline = $videoOffline }"
@@ -644,8 +661,10 @@ def _run_runtime_publish_fixture(
         if video_runtime is None:
             video_runtime = b"video-runtime-fixture"
         reference = tmp_path / "distributor-reference.wav"
+        transcript = tmp_path / "distributor-reference.txt"
         if not voice_reference_missing:
             reference.write_bytes(voice_reference)
+            transcript.write_bytes(voice_reference_transcript)
         runtime_archive = tmp_path / video_runtime_name
         video_offline_root = tmp_path / "Olivia-video-offline-private"
         video_offline_root.mkdir()
@@ -653,6 +672,9 @@ def _run_runtime_publish_fixture(
             runtime_archive.write_bytes(video_runtime)
         manifest = {"voice_reference": {"path": "voice/olivia-reference.wav", "size_bytes": len(voice_reference),
                     "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
+                    "transcript": {"path": "voice/olivia-reference.txt",
+                                   "size_bytes": len(voice_reference_transcript),
+                                   "sha256": voice_reference_transcript_sha256 or hashlib.sha256(voice_reference_transcript).hexdigest()},
                     "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()},
                     "video_runtime": {"path": "Olivia-video-runtime-private.zip",
                                        "size_bytes": len(video_runtime),
@@ -668,6 +690,7 @@ def _run_runtime_publish_fixture(
         manifest_path = tmp_path / "offline-core-assets.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
+        environment["BSIDE_TEST_VOICE_TRANSCRIPT"] = str(transcript)
         environment["BSIDE_TEST_VIDEO_RUNTIME"] = str(runtime_archive)
         environment["BSIDE_TEST_PRIVATE_MANIFEST"] = str(manifest_path)
     command = [
@@ -719,10 +742,16 @@ def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path
     installed = _managed_reference(product)
     assert result.returncode == 0, result.stderr or result.stdout
     assert installed.read_bytes() == _voice_reference_bytes()
+    assert _managed_reference_transcript(product).read_bytes() == (
+        b"synthetic exact transcript\n"
+    )
     assert _managed_video_runtime(product).read_bytes() == b"video-runtime-fixture"
     integrity = json.loads(installed.with_suffix(".json").read_text(encoding="utf-8"))
-    assert integrity == {"schema_version": "olivia.managed-voice-reference.v1", "path": "linli-reference.wav",
+    assert integrity == {"schema_version": "olivia.managed-voice-reference.v2", "path": "linli-reference.wav",
         "size_bytes": installed.stat().st_size, "sha256": hashlib.sha256(installed.read_bytes()).hexdigest(),
+        "transcript": {"path": "linli-reference.txt",
+                       "size_bytes": _managed_reference_transcript(product).stat().st_size,
+                       "sha256": hashlib.sha256(_managed_reference_transcript(product).read_bytes()).hexdigest()},
         "wave": _wave_metadata()}
     schema = json.loads((ROOT / "contracts/managed_voice_reference.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
@@ -997,6 +1026,22 @@ def test_voice_reference_fails_closed_before_publish(
     assert result.returncode != 0
     assert code in result.stdout + result.stderr
     assert not _managed_reference(product).exists()
+
+
+def test_voice_reference_transcript_hash_fails_closed_before_publish(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        voice_reference_transcript_sha256="0" * 64,
+    )
+
+    assert result.returncode != 0
+    assert "VOICE_REFERENCE_TRANSCRIPT_HASH_MISMATCH" in result.stdout + result.stderr
+    assert not _managed_reference(product).exists()
+    assert not _managed_reference_transcript(product).exists()
 
 
 def test_interrupted_voice_staging_has_marker_and_is_recovered(tmp_path: Path) -> None:

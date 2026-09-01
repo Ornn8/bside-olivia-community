@@ -39,6 +39,7 @@ def test_setup_builder_direct_entrypoint_reaches_argument_parser() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--video-runtime" in result.stdout
+    assert "--voice-reference-transcript" in result.stdout
 
 
 def _write_asset(root: Path, relative: str, content: bytes) -> dict[str, object]:
@@ -322,6 +323,9 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
     (installer / "runtime-requirements.txt").write_bytes(requirements)
     reference = tmp_path / "distributor" / "olivia-reference.wav"
     _write_voice_reference(reference)
+    reference.with_suffix(".txt").write_text(
+        "synthetic exact reference transcript\n", encoding="utf-8"
+    )
     _write_native_navigation_manifest(
         reference.parent / "native-navigation-compatibility.json"
     )
@@ -353,6 +357,7 @@ def _prepare_private_runtime(
     prepare_setup_payload(
         source, offline, destination, distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=reference.parent / "Olivia-video-offline-fixture",
         validate_schema=False,
@@ -435,6 +440,7 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         destination,
         distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=reference.parent / "Olivia-video-offline-fixture",
         validate_schema=False,
@@ -448,9 +454,19 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         "path": "voice/olivia-reference.wav",
         "size_bytes": reference.stat().st_size,
         "sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+        "transcript": {
+            "path": "voice/olivia-reference.txt",
+            "size_bytes": reference.with_suffix(".txt").stat().st_size,
+            "sha256": hashlib.sha256(
+                reference.with_suffix(".txt").read_bytes()
+            ).hexdigest(),
+        },
         "wave": {"channels": 1, "sample_width_bytes": 2, "sample_rate_hz": 16000,
                  "frame_count": 160, "compression_type": "NONE"},
     }
+    assert (
+        destination / "offline" / "voice" / "olivia-reference.txt"
+    ).read_bytes() == reference.with_suffix(".txt").read_bytes()
     assert not (destination / "offline/video-runtime").exists()
     assert manifest["video_runtime"] == {
         "path": "Olivia-video-runtime-private.zip",
@@ -496,10 +512,23 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         prepare_setup_payload(
             source, offline, tmp_path / "public", voice_reference=reference, validate_schema=False
         )
+    with pytest.raises(
+        SetupBuildError, match="SETUP_PRIVATE_VOICE_REFERENCE_TRANSCRIPT_REQUIRED"
+    ):
+        prepare_setup_payload(
+            source,
+            offline,
+            tmp_path / "private-without-transcript",
+            distribution="private",
+            voice_reference=reference,
+            validate_schema=False,
+        )
     with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED"):
         prepare_setup_payload(
             source, offline, tmp_path / "private", distribution="private",
-            voice_reference=reference, validate_schema=False
+            voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
+            validate_schema=False,
         )
     with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_PRIVATE_ONLY"):
         prepare_setup_payload(
@@ -606,6 +635,7 @@ def test_prepare_private_payload_pins_exact_shared_video_offline_root(
             tmp_path / "tampered-payload",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
             validate_schema=False,
@@ -890,6 +920,7 @@ def test_failed_private_setup_compile_removes_partial_final_artifacts(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -943,6 +974,7 @@ def test_failed_private_setup_checksum_removes_setup_and_partial_checksum(
             iscc=compiler,
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -971,7 +1003,7 @@ def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> Non
     assert "Olivia-Setup-x64.receipt.json" in documentation
     assert "不会进入 Inno `{tmp}`" in documentation
     assert "私有视频包：下载完整 ZIP" in documentation
-    assert "除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外" in documentation
+    assert "除私有模式显式传入的 WAV、准确转录 UTF-8 文本、视频运行时 ZIP 与视频离线根目录外" in documentation
     assert "ordinary_video" in documentation
     assert "music_video" in documentation
     assert "因而没有自引用" in documentation
@@ -993,6 +1025,7 @@ def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path,
             tmp_path / "payload",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=reference.parent / "Olivia-video-offline-fixture",
             validate_schema=False,
@@ -1306,6 +1339,7 @@ def test_private_build_receipt_reuses_post_compile_verified_sidecar_records(
         version="fixture",
         distribution="private",
         voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
         video_runtime=runtime,
         video_offline_root=video_offline,
     )
@@ -1390,6 +1424,7 @@ def test_private_build_rejects_runtime_output_reparse_before_final_hash(
             version="fixture",
             distribution="private",
             voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
             video_runtime=runtime,
             video_offline_root=video_offline,
         )
@@ -1467,7 +1502,9 @@ def test_prepare_setup_payload_rejects_invalid_runtime_zip(
     with pytest.raises(SetupBuildError, match="SETUP_VIDEO_RUNTIME_INVALID"):
         prepare_setup_payload(
             source, offline, tmp_path / "payload", distribution="private",
-            voice_reference=reference, video_runtime=runtime,
+            voice_reference=reference,
+            voice_reference_transcript=reference.with_suffix(".txt"),
+            video_runtime=runtime,
             video_offline_root=reference.parent / "Olivia-video-offline-fixture",
             validate_schema=False,
         )
@@ -1529,6 +1566,9 @@ def test_setup_rejects_git_selected_audio_and_video_payloads(
             tmp_path / "payload",
             distribution=distribution,
             voice_reference=reference if distribution == "private" else None,
+            voice_reference_transcript=(
+                reference.with_suffix(".txt") if distribution == "private" else None
+            ),
             video_runtime=runtime if distribution == "private" else None,
             video_offline_root=(
                 reference.parent / "Olivia-video-offline-fixture"

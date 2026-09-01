@@ -7,7 +7,7 @@
 1. 公开包：下载 EXE 和 `.sha256`。私有视频包：下载完整 ZIP并完整解压，保持 `Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `.sha256` 的同目录结构。运行前按 `.sha256` 逐项核对 EXE、runtime ZIP、receipt 和 offline root 内每个文件。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。两个快捷方式都由 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动，不会显示可被误关的命令行窗口；工作目录固定为安装目录。点击后会立即显示“Olivia 正在启动，请稍候”的短暂提示，实际启动同时开始，不会等待提示关闭。只有隐藏启动器最终返回非零退出码时才显示中文失败对话框；正常关闭返回 `0` 时不会弹出错误。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
-4. 首次启动原版客户端时完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频或视频运行时；私有视频包已包含，无需用户再选离线包。
+4. 首次启动原版客户端时完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频、准确转录或视频运行时；私有视频包已包含，无需用户再选离线包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`、`downloads` 与 `profile`；之后可直接重装并继续使用这些本地数据。
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
@@ -38,7 +38,7 @@ python installer/build_windows_setup.py `
   --iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ```
 
-上面的默认构建是公开产物：不得传入参考音频、视频运行时或视频离线根目录，内嵌 offline manifest 也不含 `distribution`、`voice_reference`、`video_runtime` 或 `video_offline`。需要经授权在私有渠道交付完整视频回信能力时，维护者必须使用隔离输出目录并同时显式提供私有分发、音色、运行时和与生产视频 BOM 完全匹配的离线根目录：
+上面的默认构建是公开产物：不得传入参考音频、参考音频转录、视频运行时或视频离线根目录，内嵌 offline manifest 也不含 `distribution`、`voice_reference`、`video_runtime` 或 `video_offline`。需要经授权在私有渠道交付完整视频回信能力时，维护者必须使用隔离输出目录并同时显式提供私有分发、音色及其准确转录、运行时和与生产视频 BOM 完全匹配的离线根目录：
 
 ```powershell
 python installer/build_windows_setup.py `
@@ -47,6 +47,7 @@ python installer/build_windows_setup.py `
   --version 0.1.0 `
   --distribution private `
   --voice-reference '<私有 WAV 的本机路径>' `
+  --voice-reference-transcript '<私有 WAV 准确转录 UTF-8 文本的本机路径>' `
   --video-runtime '<Olivia-video-runtime-*.zip 的本机路径>' `
   --video-offline-root '<含 ordinary_video 与 music_video 的离线根目录>' `
   --native-navigation-manifest '<私有兼容 manifest 的本机路径>' `
@@ -57,7 +58,7 @@ python installer/build_windows_setup.py `
 
 公开构建仍是单个 `Olivia-Setup-x64.exe`。私有产物是自包含目录：`Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `Olivia-Setup-x64.exe.sha256`。交付时必须把整个目录压成一个 ZIP，用户完整解压后再运行 EXE；Inno 只把小型核心 payload 解到 `{tmp}`，并把 `{src}` 下固定名称的 runtime ZIP 与 offline root 传给 `Install.ps1`。runtime 由既有事务原子复制到受管 `install/downloads`，ordinary/music 资产由既有视频能力导入链校验、组装与激活；两类大文件都不会进入 Inno `{tmp}`。缺少、改名或篡改任一 sidecar 都会在发布安装结果前失败。私有产物只保存在专用 `dist-private`，不得与公开 `dist` artifact 共置、替换或上传到公开 Release。
 
-除私有模式显式传入的 WAV、视频运行时 ZIP 与视频离线根目录外，构建器还只接受同模式显式传入的兼容 manifest；其余只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。构建器先把两类大 sidecar 原子发布到输出目录并以这些最终字节生成内嵌 BOM；Inno 编译完成后再次复验，防止编译期间的替换进入交付。私有 receipt 记录 EXE、runtime ZIP 与 offline root 内每个文件的相对路径、大小和 SHA-256；`.sha256` 再覆盖这些文件及 receipt 本身，因而没有自引用。公开构建流程与原有输出保持不变，只校验并记录 EXE。
+除私有模式显式传入的 WAV、准确转录 UTF-8 文本、视频运行时 ZIP 与视频离线根目录外，构建器还只接受同模式显式传入的兼容 manifest；其余只复制 Git 已跟踪且相对 `HEAD` 未修改的发布文件，排除 `.github`、`docs`、测试和构建/CI 元数据，并在编译前复验离线 manifest、requirements 哈希、每个资产的大小与 SHA-256，以及实际资产集合。构建器先把两类大 sidecar 原子发布到输出目录并以这些最终字节生成内嵌 BOM；Inno 编译完成后再次复验，防止编译期间的替换进入交付。私有 receipt 记录 EXE、runtime ZIP 与 offline root 内每个文件的相对路径、大小和 SHA-256；`.sha256` 再覆盖这些文件及 receipt 本身，因而没有自引用。公开构建流程与原有输出保持不变，只校验并记录 EXE。
 
 GitHub Actions 只生成公开安装器 artifact；它会在 PR 和 `main` 更新时执行默认公开构建，不接受私有 WAV 或视频运行时，也不会生成私有安装器。私有安装包只能由维护者在隔离环境手工构建。当前产物未做商业代码签名；正式面向普通用户发布前应增加受信任的 Authenticode 签名，但签名不替代随包 SHA-256 校验。
 

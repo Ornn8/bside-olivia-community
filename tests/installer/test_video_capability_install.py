@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+import wave
 import zipfile
 
 import pytest
@@ -42,7 +43,7 @@ from video_capability_install import (
 import original_client_video_capability_api as video_capability_api
 import original_client_server
 from original_client_video_capability_api import mount_original_client_video_capability_api
-from runtime.media.music_reply import video_reply_source_url
+from runtime.media.music_reply import video_reply_dependency_status, video_reply_source_url
 
 
 def test_repository_bom_freezes_accepted_latentsync_15_256_profile() -> None:
@@ -1574,6 +1575,162 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
     )
     assert isolated.returncode == 0, isolated.stderr
     assert installer.status()["status"] == "READY", installer.status()
+
+
+def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = load_video_manifest(Path("installer/video-capability-manifest.json"))
+    data_root = (tmp_path / "empty-data").resolve()
+    assert not data_root.exists()
+    provider_cache = data_root / "provider-cache"
+
+    def readiness(environment: Mapping[str, str]) -> Mapping[str, object]:
+        values = dict(environment)
+        values["OLIVIA_PROVIDER_CACHE_ROOT"] = str(provider_cache)
+        return video_reply_dependency_status(
+            values,
+            performance_video_path=Path(values["OLIVIA_MUSIC_PERFORMANCE_BASE"]),
+            probe_runtime=False,
+        )
+
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=readiness,
+        hardware_probe=lambda: {
+            "status": "READY",
+            "vendor": "NVIDIA",
+            "minimum_vram_mib": 10240,
+            "detected_vram_mib": 10240,
+            "reason_code": None,
+        },
+    )
+    install_root = installer.install_root
+    ordinary = install_root / ".staging/ordinary-fixture"
+    music = install_root / ".staging/music-fixture"
+    for root, bundle_id in (
+        (ordinary, "ordinary_video"),
+        (music, "music_video"),
+    ):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".ready.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.video-bundle.v1",
+                    "bundle": bundle_id,
+                    "version": manifest.version,
+                }
+            ),
+            encoding="utf-8",
+        )
+    directories = (
+        ordinary / "breeze/runtime",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer",
+        ordinary / "quality/whisper",
+        ordinary / "latentsync/runtime/configs/unet",
+        ordinary / "latentsync/runtime/checkpoints",
+        ordinary / "latentsync/runtime/scripts",
+        music / "minimax/runtime/comfy_extras",
+        music / "minimax/runtime/models/diffusion_models",
+        music / "minimax/runtime/models/text_encoders",
+        music / "minimax/runtime/models/vae",
+        music / "roformer/runtime/src/mel_band_roformer/configs",
+        music / "roformer/models",
+    )
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+    files = (
+        ordinary / "breeze/python/python.exe",
+        ordinary / "breeze/runtime/__init__.py",
+        ordinary / "breeze/runtime/loader.py",
+        ordinary / "breeze/runtime/nodes.py",
+        ordinary / "breeze/runtime/int8.py",
+        ordinary / "breeze/runtime/LICENSE",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/config.json",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/tokenizer.json",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/Breeze-TTS-2-int8-hybrid.safetensors",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/config.json",
+        ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/model.safetensors",
+        ordinary / "ffmpeg/runtime/bin/ffmpeg.exe",
+        ordinary / "latentsync/runtime/python/python.exe",
+        ordinary / "latentsync/runtime/scripts/inference.py",
+        ordinary / "latentsync/runtime/configs/unet/stage2_efficient.yaml",
+        ordinary / "latentsync/runtime/checkpoints/latentsync_unet.pt",
+        ordinary / "scenes/official-reply-action-base-v1.mp4",
+        ordinary / "scenes/official-reply-reference-000-043s-v1.mp4",
+        music / "minimax/runtime/python/python.exe",
+        music / "minimax/runtime/main.py",
+        music / "minimax/runtime/comfy_extras/nodes_minimax_music.py",
+        music / "minimax/runtime/models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+        music / "minimax/runtime/models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        music / "minimax/runtime/models/vae/minimax_music3_dav.safetensors",
+        music / "roformer/runtime/python/python.exe",
+        music / "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
+        music / "roformer/models/MelBandRoformer.ckpt",
+    )
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+    (ordinary / "breeze/model/LICENSE").write_text(
+        "BREEZEBLUE RESEARCH AND NON-COMMERCIAL LICENSE AGREEMENT\nVersion 1.0\n",
+        encoding="utf-8",
+    )
+    reference = install_root / "shared/linli-reference.wav"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0" * 1_600)
+    transcript = reference.with_suffix(".txt")
+    transcript.write_text("synthetic exact transcript\n", encoding="utf-8")
+    reference.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.managed-voice-reference.v2",
+                "path": reference.name,
+                "size_bytes": reference.stat().st_size,
+                "sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+                "transcript": {
+                    "path": transcript.name,
+                    "size_bytes": transcript.stat().st_size,
+                    "sha256": hashlib.sha256(transcript.read_bytes()).hexdigest(),
+                },
+                "wave": {
+                    "channels": 1,
+                    "sample_width_bytes": 2,
+                    "sample_rate_hz": 16_000,
+                    "frame_count": 1_600,
+                    "compression_type": "NONE",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(video_capability_install, "_ready_marker_matches", lambda *_: True)
+    monkeypatch.setattr(video_capability_install, "_size_matches", lambda *_: True)
+    monkeypatch.setattr(VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True)
+    monkeypatch.setattr(VideoCapabilityInstaller, "_breeze_runtime_marker_ready", lambda *_: True)
+
+    installer._promote_directory(
+        ordinary,
+        install_root / "ordinary_video",
+        refresh_environment=True,
+    )
+    installer._promote_directory(
+        music,
+        install_root / "music_video",
+        refresh_environment=True,
+    )
+    status = installer.status()
+
+    assert status["status"] == "READY", status
+    assert status["runtime_import"]["state"] == "ready"
+    assert not list(tmp_path.rglob("Olivia-video-runtime-*.zip"))
+    environment = load_video_runtime_environment(data_root)
+    config = Path(environment["OLIVIA_TTS_CONFIG"])
+    assert config.is_file() and config.is_relative_to(install_root)
+    worker = Path(environment["OLIVIA_MINIMAX_WORKER"])
+    assert worker.is_file() and worker.is_relative_to(install_root)
 
 
 def _managed_worker_import_fixture(

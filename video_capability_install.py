@@ -29,6 +29,10 @@ from installer.component_update import (
     _validate_relative_path,
     _verify_staged_tree,
 )
+from runtime.media.managed_voice_reference import (
+    ManagedVoiceReferenceError,
+    resolve_managed_voice_reference_transcript,
+)
 
 
 _SHA256 = 64
@@ -193,7 +197,9 @@ def _validated_breeze_hardware(value: object) -> dict[str, object]:
     return dict(value)
 
 
-def _breeze_reference_text(environment: Mapping[str, str]) -> str | None:
+def _breeze_reference_text(
+    environment: Mapping[str, str], data_root: Path
+) -> str | None:
     """Recover the private exact transcript without logging or redistributing it."""
 
     configured = environment.get("OLIVIA_TTS_CONFIG")
@@ -208,6 +214,10 @@ def _breeze_reference_text(environment: Mapping[str, str]) -> str | None:
                     return value.strip()
         except (OSError, UnicodeError, json.JSONDecodeError):
             pass
+    try:
+        return resolve_managed_voice_reference_transcript(data_root)
+    except ManagedVoiceReferenceError:
+        pass
     value = os.environ.get("OLIVIA_TTS_REFERENCE_TEXT")
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -1407,16 +1417,153 @@ class VideoCapabilityInstaller:
     def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None) -> None:
         self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason)
 
+    def _managed_runtime_path(
+        self, environment: Mapping[str, str], key: str, *, directory: bool
+    ) -> Path:
+        raw = environment.get(key)
+        if not isinstance(raw, str) or not raw:
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+        try:
+            candidate = _inside(self.install_root, Path(raw))
+        except (OSError, VideoCapabilityError):
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
+        if (candidate.is_dir() if directory else candidate.is_file()):
+            return candidate
+        raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+
+    def _generate_managed_tts_config(
+        self,
+        environment: dict[str, str],
+        *,
+        reference_environment: Mapping[str, str] | None = None,
+    ) -> None:
+        """Publish the Breeze profile from installed, managed paths only."""
+
+        if not self._requires_breeze_hardware:
+            if "OLIVIA_TTS_CONFIG" not in environment:
+                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+            return
+        breeze_root = self._managed_runtime_path(
+            environment, "OLIVIA_BREEZE_TTS_ROOT", directory=True
+        )
+        model_root = self._managed_runtime_path(
+            environment, "OLIVIA_BREEZE_TTS_MODEL_ROOT", directory=True
+        )
+        model_license = self._managed_runtime_path(
+            environment, "OLIVIA_BREEZE_TTS_MODEL_LICENSE", directory=False
+        )
+        reference = self._managed_runtime_path(
+            environment, "OLIVIA_REPLY_VOICE_REFERENCE", directory=False
+        )
+        external_python = self._managed_runtime_path(
+            environment, "OLIVIA_BREEZE_TTS_PYTHON", directory=False
+        )
+        reference_text = _breeze_reference_text(
+            reference_environment or environment, self.data_root
+        )
+        if reference_text is None:
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_REFERENCE_TEXT_UNAVAILABLE")
+        generated_root = self.install_root / "generated"
+        generated_root.mkdir(parents=True, exist_ok=True)
+        generated_config = generated_root / "tts_local.json"
+        generated_temporary = generated_config.with_name(
+            f"{generated_config.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            generated_temporary.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "b10b.module-config.v1",
+                        "module_id": "tts-local",
+                        "profile": "breeze-tts2-int8-hybrid",
+                        "settings": {
+                            "provider": "breeze_tts2",
+                            "runtime_root": str(breeze_root),
+                            "model_dir": str(model_root),
+                            "reference_audio": str(reference),
+                            "reference_text": reference_text,
+                            "language": "zh",
+                            "license_id": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                            "fallback": "text",
+                            "fp16": True,
+                            "provider_options": {
+                                "external_python": str(external_python),
+                                "model_variant": "int8_hybrid",
+                                "model_license_path": str(model_license),
+                                "quality_gate_python": str(external_python),
+                                "quality_gate_cache_root": str(
+                                    self.data_root
+                                    / "provider-cache"
+                                    / "breeze-quality-gate"
+                                ),
+                                "dtype": "bf16",
+                                "device": "cuda",
+                                "attention": "eager",
+                                "decode_mode": "eager",
+                                "cfg_scale": 4.0,
+                                "seed": 200717,
+                                "max_new_tokens": 650,
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(generated_temporary, generated_config)
+        except OSError as exc:
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from exc
+        finally:
+            generated_temporary.unlink(missing_ok=True)
+        environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
+
     def _write_runtime_environment(self) -> None:
+        try:
+            previous = _load_video_runtime_environment(
+                self.data_root, restore_backups=False
+            )
+        except (OSError, VideoCapabilityError):
+            previous = {}
+        music_bundle = next(
+            (bundle for bundle in self.manifest.bundles if bundle.identifier == "music_video"),
+            None,
+        )
+        music = self._final_root(music_bundle) if music_bundle is not None else None
+        if music is not None and (music / ".ready.json").is_file():
+            self._install_managed_minimax_worker()
         environment: dict[str, str] = {}
-        for bundle in self.manifest.bundles:
-            root = self._final_root(bundle)
-            if not (root / ".ready.json").is_file():
+        for key, value in previous.items():
+            try:
+                candidate = _inside(self.install_root, Path(value))
+            except (OSError, VideoCapabilityError):
                 continue
-            for key, relative in (bundle.runtime_environment or {}).items():
-                candidate = _inside(root, root / relative)
-                if candidate.exists():
-                    environment[key] = str(candidate)
+            if candidate.exists():
+                environment[key] = str(candidate)
+        environment.update(self._installed_bundle_environment())
+        ordinary_bundle = next(
+            (bundle for bundle in self.manifest.bundles if bundle.identifier == "ordinary_video"),
+            None,
+        )
+        ordinary = (
+            self._final_root(ordinary_bundle) if ordinary_bundle is not None else None
+        )
+        managed_tts_keys = {
+            "OLIVIA_BREEZE_TTS_ROOT",
+            "OLIVIA_BREEZE_TTS_PYTHON",
+            "OLIVIA_BREEZE_TTS_MODEL_ROOT",
+            "OLIVIA_BREEZE_TTS_MODEL_LICENSE",
+        }
+        if (
+            ordinary is not None
+            and (ordinary / ".ready.json").is_file()
+            and managed_tts_keys
+            <= set((ordinary_bundle.runtime_environment or {}).keys())
+        ):
+            self._generate_managed_tts_config(
+                environment,
+                reference_environment={**previous, **environment},
+            )
         self.install_root.mkdir(parents=True, exist_ok=True)
         target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
         temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
@@ -1785,19 +1932,62 @@ class VideoCapabilityInstaller:
             )
             if not isinstance(profile, dict) or "external_environment" in profile:
                 return False
+            self._write_runtime_environment()
             environment = load_video_runtime_environment(self.data_root)
-        except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
+        except VideoCapabilityError as exc:
+            self._set_runtime_import_state("failed", reason_code=str(exc))
+            return True
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return False
         if not all(
             key in environment and Path(environment[key]).is_file()
             for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
         ):
             return False
-        try:
-            self._install_managed_minimax_worker()
-        except VideoCapabilityError:
+        if self._readiness_probe is None:
             self._set_runtime_import_state(
-                "failed", reason_code="VIDEO_RUNTIME_WORKER_UNAVAILABLE"
+                "failed", reason_code="VIDEO_RUNTIME_PROBE_UNAVAILABLE"
+            )
+            return True
+        probe_environment = dict(os.environ)
+        probe_environment.update(environment)
+        probe_environment["OLIVIA_LOCAL_DATA_ROOT"] = str(self.data_root)
+        try:
+            readiness = self._readiness_probe(probe_environment)
+        except Exception:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_PROBE_FAILED"
+            )
+            return True
+        if not isinstance(readiness, Mapping):
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_PROBE_FAILED"
+            )
+            return True
+        ordinary_missing = readiness.get("ordinary_missing_dependencies")
+        ready = (
+            isinstance(ordinary_missing, (list, tuple))
+            and not ordinary_missing
+            and readiness.get("music_ready") is True
+        )
+        if not ready:
+            dependencies = readiness.get("dependencies")
+            if not isinstance(dependencies, list):
+                self._set_runtime_import_state(
+                    "failed", reason_code="VIDEO_RUNTIME_PROBE_FAILED"
+                )
+                return True
+            missing_ids = {
+                str(item["id"])
+                for item in dependencies
+                if isinstance(item, Mapping)
+                and isinstance(item.get("id"), str)
+                and item.get("state") == "missing"
+            }
+            if missing_ids and missing_ids <= _RUNTIME_HOST_DEPENDENCIES:
+                return False
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_DEPENDENCIES_MISSING"
             )
             return True
         try:
@@ -2050,77 +2240,7 @@ class VideoCapabilityInstaller:
         for key, value in self._installed_bundle_environment().items():
             environment.setdefault(key, value)
         environment.update(external_environment)
-        if self._requires_breeze_hardware:
-            breeze_root = Path(environment.get("OLIVIA_BREEZE_TTS_ROOT", ""))
-            model_root = Path(environment.get("OLIVIA_BREEZE_TTS_MODEL_ROOT", ""))
-            model_license = Path(environment.get("OLIVIA_BREEZE_TTS_MODEL_LICENSE", ""))
-            reference = Path(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", ""))
-            reference_text = _breeze_reference_text(environment)
-            external_python = Path(environment.get("OLIVIA_BREEZE_TTS_PYTHON", ""))
-            if (
-                not breeze_root.is_dir()
-                or not model_root.is_dir()
-                or not model_license.is_file()
-                or not reference.is_file()
-                or not external_python.is_file()
-            ):
-                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
-            if reference_text is None:
-                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_REFERENCE_TEXT_UNAVAILABLE")
-            generated_root = self.install_root / "generated"
-            generated_root.mkdir(parents=True, exist_ok=True)
-            generated_config = generated_root / "tts_local.json"
-            generated_temporary = generated_config.with_name(
-                f"{generated_config.name}.{uuid.uuid4().hex}.tmp"
-            )
-            try:
-                generated_temporary.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": "b10b.module-config.v1",
-                            "module_id": "tts-local",
-                            "profile": "breeze-tts2-int8-hybrid",
-                            "settings": {
-                                "provider": "breeze_tts2",
-                                "runtime_root": str(breeze_root),
-                                "model_dir": str(model_root),
-                                "reference_audio": str(reference),
-                                "reference_text": reference_text,
-                                "language": "zh",
-                                "license_id": "BreezeBlue-Research-and-Non-Commercial-1.0",
-                                "fallback": "text",
-                                "fp16": True,
-                                "provider_options": {
-                                    "external_python": str(external_python),
-                                    "model_variant": "int8_hybrid",
-                                    "model_license_path": str(model_license),
-                                    "quality_gate_python": str(external_python),
-                                    "quality_gate_cache_root": str(
-                                        self.data_root / "provider-cache" / "breeze-quality-gate"
-                                    ),
-                                    "dtype": "bf16",
-                                    "device": "cuda",
-                                    "attention": "eager",
-                                    "decode_mode": "eager",
-                                    "cfg_scale": 4.0,
-                                    "seed": 200717,
-                                    "max_new_tokens": 650,
-                                },
-                            },
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
-                    encoding="utf-8",
-                )
-                os.replace(generated_temporary, generated_config)
-            except OSError as exc:
-                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from exc
-            finally:
-                generated_temporary.unlink(missing_ok=True)
-            environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
-        elif "OLIVIA_TTS_CONFIG" not in environment:
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+        self._generate_managed_tts_config(environment)
         ready = False
         probe_exception = False
         if not host_unavailable:
