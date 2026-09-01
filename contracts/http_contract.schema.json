@@ -76,7 +76,15 @@
       "required": ["fields", "statuses", "error_codes"],
       "properties": {
         "fields": {
-          "const": ["media_status", "media_error_code", "media_retryable"]
+          "const": [
+            "media_status",
+            "media_error_code",
+            "media_retryable",
+            "audio_provider",
+            "reply_structure",
+            "song_emotion",
+            "transition_seconds"
+          ]
         },
         "statuses": {
           "type": "array",
@@ -88,8 +96,11 @@
         "error_codes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["MEDIA_PROVIDER_UNAVAILABLE", "TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
+          "required": ["BREEZE_TTS_10GB_VRAM_REQUIRED", "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED", "BREEZE_TTS_NVIDIA_GPU_REQUIRED", "MEDIA_PROVIDER_UNAVAILABLE", "TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
           "properties": {
+            "BREEZE_TTS_10GB_VRAM_REQUIRED": {"$ref": "#/$defs/media_error"},
+            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"$ref": "#/$defs/media_error"},
+            "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"$ref": "#/$defs/media_error"},
             "MEDIA_PROVIDER_UNAVAILABLE": {"$ref": "#/$defs/media_error"},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
               "$ref": "#/$defs/media_error"

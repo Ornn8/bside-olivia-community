@@ -68,6 +68,36 @@ def test_media_output_directory_failure_is_normalized(tmp_path: Path, monkeypatc
     )
 
 
+def test_generation_rechecks_breeze_gpu_before_invoking_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    letter = {"letter_id": "gpu-preflight", "media_status": "PENDING"}
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+    monkeypatch.setattr(
+        local_server,
+        "require_breeze_hardware",
+        lambda: (_ for _ in ()).throw(
+            local_server.MusicReplyError("BREEZE_TTS_10GB_VRAM_REQUIRED")
+        ),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "render_reply_video",
+        lambda *_args, **_kwargs: pytest.fail("renderer must not run"),
+    )
+
+    asyncio.run(
+        local_server._render_media_job(
+            "gpu-preflight", "letter", "reply", ReplyMode.SPOKEN_VIDEO.value
+        )
+    )
+
+    assert letter["media_status"] == "UNAVAILABLE"
+    assert letter["media_error_code"] == "BREEZE_TTS_10GB_VRAM_REQUIRED"
+
+
 def test_successful_media_retry_clears_the_previous_failure_code(
     tmp_path: Path,
     monkeypatch,
@@ -125,6 +155,7 @@ def test_successful_media_retry_clears_the_previous_failure_code(
     assert observed["official_reply_reference_path"] == official_reference
     assert observed["spoken_action_base_path"] == scene
     assert observed["performance_video_path"] == scene
+    assert observed["gateway"] is local_server.letters_adapter.gateway
     assert "normal_scene_path" not in observed
     assert observed["normal_video_path"].name.endswith("-official-spoken-v1.mp4")
     assert observed["song_video_path"].name.endswith("-song-v2-60s.mp4")
@@ -509,9 +540,14 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
         )
         Path(output).write_bytes(b"spoken-transition-music")
         return {
+            "audio_provider": "breeze_tts2",
             "reply_structure": (
                 "normal_video_then_official_transition_then_song_video"
-            )
+            ),
+            "song_emotion": "gentle_reassurance",
+            "transition_duration_seconds": 8.0,
+            "lyrics": "private generated lyric",
+            "instruction": "private voice direction",
         }
 
     monkeypatch.setattr(local_server, "direct_voice_performance", direct_frozen_reply)
@@ -539,6 +575,37 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
     assert letters[1]["voice_performance_plan"] == plan.to_dict()
+    assert {
+        key: letters[1].get(key)
+        for key in (
+            "audio_provider",
+            "reply_structure",
+            "song_emotion",
+            "transition_seconds",
+        )
+    } == {
+        "audio_provider": "breeze_tts2",
+        "reply_structure": "normal_video_then_official_transition_then_song_video",
+        "song_emotion": "gentle_reassurance",
+        "transition_seconds": 8.0,
+    }
+    assert "lyrics" not in letters[1]
+    assert "instruction" not in letters[1]
+
+    detail = asyncio.run(
+        local_server.route(
+            "GET",
+            "/toy/letter/detail",
+            {},
+            {"letter_id": "musical-entry"},
+        )
+    )["data"]
+    assert detail["audio_provider"] == "breeze_tts2"
+    assert detail["reply_structure"] == "normal_video_then_official_transition_then_song_video"
+    assert detail["song_emotion"] == "gentle_reassurance"
+    assert detail["transition_seconds"] == 8.0
+    assert "lyrics" not in detail
+    assert "instruction" not in detail
 
 
 def test_corrupt_persisted_voice_plan_fails_closed_without_redirection(monkeypatch):
@@ -1035,3 +1102,7 @@ def test_generate_reply_does_not_repair_hard_memory_video_failure(
     ]
     assert scheduled == []
     assert letter["media_status"] == "NOT_REQUESTED"
+
+@pytest.fixture(autouse=True)
+def _eligible_breeze_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(local_server, "require_breeze_hardware", lambda: None)

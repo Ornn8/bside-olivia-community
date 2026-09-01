@@ -453,9 +453,11 @@ def _client_executable(root: Path) -> Path:
 def _load_fixed_video_assets_environment(
     environment: dict[str, str], root: Path
 ) -> dict[str, str]:
-    """Keep downloaded reply assets and fill only missing wallpaper fallbacks."""
+    """Keep managed reply assets and never use wallpaper as music performance."""
 
     values = environment.copy()
+    managed_performance = values.get("OLIVIA_MUSIC_PERFORMANCE_BASE", "").strip()
+    managed_action = values.get("OLIVIA_ORDINARY_ACTION_BASE", "").strip()
     assets = _client_executable(root).parent / "assets" / "Wallpaper_Presence"
     scene = assets / "A_R1_2000.mp4"
     transition = assets / "A_Transition_2000_1200.mp4"
@@ -463,7 +465,8 @@ def _load_fixed_video_assets_environment(
         return values
     values.setdefault("OLIVIA_ORDINARY_ACTION_BASE", str(scene.resolve()))
     values.setdefault("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(transition.resolve()))
-    values.setdefault("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene.resolve()))
+    if not managed_performance and managed_action and Path(managed_action).is_file():
+        values["OLIVIA_MUSIC_PERFORMANCE_BASE"] = str(Path(managed_action).resolve())
     return values
 
 

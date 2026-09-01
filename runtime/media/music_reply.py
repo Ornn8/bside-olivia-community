@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
+from llm_gateway import Gateway
 from runtime.media.latentsync_reply import (
     LatentSyncReplyError,
     render_latentsync_video,
@@ -53,6 +54,7 @@ _RUNTIME_PROBE_REMOVED_ENVIRONMENT = (
 )
 _PROVIDER_DIAGNOSTIC_LIMIT = 512
 _MEDIA_VALIDATION_TIMEOUT_SECONDS = 180.0
+_BREEZE_MINIMUM_VRAM_MIB = 10 * 1024
 
 
 class MusicReplyError(RuntimeError):
@@ -154,6 +156,46 @@ def _python_runtime_ready(
         "torch.ones(1, device='cuda')"
     )
     return _run_runtime_probe([str(executable), "-I", "-B", "-c", script], cwd=cwd)
+
+
+def _breeze_hardware_status() -> tuple[bool, str | None]:
+    """Recheck the GPU on this host; copied runtime state is never trusted."""
+
+    executable = shutil.which("nvidia-smi")
+    if executable is None:
+        return False, "BREEZE_TTS_NVIDIA_GPU_REQUIRED"
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "--query-gpu=memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10.0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        values = [
+            int(line.strip())
+            for line in completed.stdout.splitlines()
+            if line.strip().isdigit()
+        ]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False, "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED"
+    if completed.returncode != 0 or not values:
+        return False, "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED"
+    if values[0] < _BREEZE_MINIMUM_VRAM_MIB:
+        return False, "BREEZE_TTS_10GB_VRAM_REQUIRED"
+    return True, None
+
+
+def require_breeze_hardware() -> None:
+    ready, reason_code = _breeze_hardware_status()
+    if not ready:
+        raise MusicReplyError(reason_code or "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED")
 
 
 def _executable_runtime_ready(executable: Path | None) -> bool:
@@ -258,7 +300,13 @@ def musical_reply_configured(
         performance_video_path is not None
         and performance_video_path.is_file()
         and ordinary_scene.is_file()
-        and (Path(delivery.tts.model_dir) / "llm.pt").is_file()
+        and str(getattr(delivery.tts, "provider", "")).casefold()
+        == "breeze_tts2"
+        and (
+            Path(delivery.tts.model_dir)
+            / "drbaph_Breeze-TTS-2-comfyui"
+            / "Breeze-TTS-2-int8-hybrid.safetensors"
+        ).is_file()
         and minimax_root.is_dir()
         and latentsync_root.is_dir()
         and all(path.is_file() for path in required)
@@ -266,8 +314,8 @@ def musical_reply_configured(
 
 
 _VIDEO_REPLY_SOURCE_URLS = {
-    ("cosyvoice", "domestic"): "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    ("cosyvoice", "official"): "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+    ("breeze_tts2", "domestic"): "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui",
+    ("breeze_tts2", "official"): "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui",
     ("livetalking", "official"): "https://github.com/lipku/LiveTalking/tree/a97f01ba366e55eeed94e88d6bae38ed77b3a1b9",
     ("latentsync", "domestic"): "https://modelscope.cn/models/chenmingyu/latentsync",
     ("latentsync", "official"): "https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746",
@@ -303,7 +351,10 @@ def video_reply_dependency_status(
     tts_config = configured("OLIVIA_TTS_CONFIG")
     local_data_root = configured("OLIVIA_LOCAL_DATA_ROOT")
     delivery_ready = False
-    cosyvoice_runtime_ready = False
+    breeze_runtime_ready = False
+    breeze_hardware_ready, breeze_hardware_reason = (
+        _breeze_hardware_status() if probe_runtime else (True, None)
+    )
     if all(path is not None for path in (tts_config, local_data_root)):
         try:
             delivery = assemble_latentsync_video_delivery(
@@ -315,10 +366,10 @@ def video_reply_dependency_status(
             external_python = Path(
                 str(delivery.tts.provider_options.get("external_python", ""))
             )
-            cosyvoice_runtime_ready = not probe_runtime or _python_runtime_ready(
+            breeze_runtime_ready = not probe_runtime or _python_runtime_ready(
                 external_python,
                 cwd=Path(delivery.tts.runtime_root),
-                imports=("torch", "torchaudio", "cosyvoice.cli.cosyvoice"),
+                imports=("torch", "transformers", "soundfile", "whisper"),
                 accepted_torch_versions=("2.9.1+cu128",),
             )
         except ReplyMediaError:
@@ -471,25 +522,27 @@ def video_reply_dependency_status(
 
     dependencies = [
         item(
-            "cosyvoice",
-            "语音合成（CosyVoice 3）",
+            "breeze_tts2",
+            "语音合成（Breeze TTS 2）",
             delivery_ready
-            and cosyvoice_runtime_ready
+            and breeze_runtime_ready
+            and breeze_hardware_ready
             and bool(tts_config and tts_config.is_file()),
-            "manual",
-            "国内：ModelScope；备用：GitHub / Hugging Face",
+            "automatic",
+            "国内：HF-Mirror；备用：Hugging Face。模型限研究与非商业用途，实测要求 NVIDIA 10GB 及以上显存",
             (
                 (
                     "domestic",
-                    "国内源（ModelScope）",
-                    "https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                    "国内源（HF-Mirror）",
+                    "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui",
                 ),
                 (
                     "official",
                     "官方源（Hugging Face）",
-                    "https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                    "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui",
                 ),
             ),
+            reason_code=breeze_hardware_reason,
         ),
         item(
             "latentsync",
@@ -597,7 +650,7 @@ def video_reply_dependency_status(
             ),
         )
     ordinary_ids = {
-        "cosyvoice",
+        "breeze_tts2",
         "latentsync",
         "official_video_assets",
         "ffmpeg",
@@ -1465,9 +1518,18 @@ def _stage_reusable(
 ) -> bool:
     artifacts = manifest.get("artifacts")
     expected = artifacts.get(artifact_name) if isinstance(artifacts, dict) else None
-    return _completed_stage(path, required_streams=required_streams, ffmpeg_path=ffmpeg_path,
-                            minimum_duration_seconds=minimum_duration_seconds,
-                            forbidden_streams=forbidden_streams) and expected == _stage_record(path, upstream)
+    current = _stage_record(path, upstream)
+    return (
+        _completed_stage(
+            path,
+            required_streams=required_streams,
+            ffmpeg_path=ffmpeg_path,
+            minimum_duration_seconds=minimum_duration_seconds,
+            forbidden_streams=forbidden_streams,
+        )
+        and isinstance(expected, dict)
+        and all(expected.get(key) == value for key, value in current.items())
+    )
 
 
 def _stage_record(
@@ -1541,10 +1603,12 @@ def render_musical_reply(
     duration_seconds: int,
     spoken_action_base_path: Path | None = None,
     voice_performance_plan: VoicePerformancePlan | None = None,
+    gateway: Gateway | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Render the ordinary reply, append an original-view song performance."""
 
+    require_breeze_hardware()
     duration_seconds = normalize_music_duration(duration_seconds)
     provider_paths = _music_provider_path_snapshot(environment)
     transition_reference = Path(official_reply_reference_path)
@@ -1566,7 +1630,13 @@ def render_musical_reply(
     if provider_cache_root is None or not provider_cache_root.is_absolute():
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     try:
-        song_plan = plan_song_content(content, reply_text, duration_seconds)
+        planner_options = {"gateway": gateway} if gateway is not None else {}
+        song_plan = plan_song_content(
+            content,
+            reply_text,
+            duration_seconds,
+            **planner_options,
+        )
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     stage_root = output_path.parent / (
@@ -1625,6 +1695,12 @@ def render_musical_reply(
         **normal_gate,
     ):
         normal_metadata = {"spoken_stage": "reused"}
+        normal_record = manifest.get("artifacts", {}).get("normal_video", {})
+        if (
+            isinstance(normal_record, dict)
+            and normal_record.get("audio_provider") == "breeze_tts2"
+        ):
+            normal_metadata["audio_provider"] = "breeze_tts2"
     else:
         if (
             spoken_action_base_path is None
@@ -1671,6 +1747,11 @@ def render_musical_reply(
             upstream={"spoken_base": spoken_base},
             **normal_gate,
         )
+        if normal_metadata.get("audio_provider") == "breeze_tts2":
+            normal_record = manifest.get("artifacts", {}).get("normal_video")
+            if isinstance(normal_record, dict):
+                normal_record["audio_provider"] = "breeze_tts2"
+                _write_stage_manifest(manifest_path, manifest)
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"

@@ -23,7 +23,7 @@ import webbrowser as _webbrowser
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Callable, Mapping
 
 from aiohttp import web
@@ -64,6 +64,7 @@ from letter_triage import (
 from runtime.media.media_paths import configured_media_path
 from music_reply import (
     MusicReplyError,
+    require_breeze_hardware,
     render_musical_reply,
     video_reply_dependency_status,
     video_reply_source_url,
@@ -123,6 +124,7 @@ from runtime.memory.private_world_runtime import (
     create_private_world_runtime,
     resolve_private_world_database,
 )
+
 from runtime.imports.official_letters import collect_default_official_text_replies
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
@@ -149,7 +151,41 @@ from runtime.reply.reply_context import (
     WorldFactKind,
 )
 from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_model_quality import create_model_quality_ports
 from runtime.reply.reply_reviewer import NullReviewer
+
+
+_PUBLIC_MUSIC_REPLY_STRUCTURE = (
+    "normal_video_then_official_transition_then_song_video"
+)
+_PUBLIC_SONG_EMOTIONS = frozenset(
+    {
+        "quiet_longing",
+        "gentle_reassurance",
+        "restrained_sadness",
+        "warm_gratitude",
+        "soft_reconciliation",
+        "calm_affection",
+    }
+)
+
+
+def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    if value.get("audio_provider") == "breeze_tts2":
+        result["audio_provider"] = "breeze_tts2"
+    if value.get("reply_structure") == _PUBLIC_MUSIC_REPLY_STRUCTURE:
+        result["reply_structure"] = _PUBLIC_MUSIC_REPLY_STRUCTURE
+    emotion = value.get("song_emotion")
+    if isinstance(emotion, str) and emotion in _PUBLIC_SONG_EMOTIONS:
+        result["song_emotion"] = emotion
+    transition = value.get("transition_duration_seconds")
+    if type(transition) in {int, float} and float(transition) == 8.0:
+        result["transition_seconds"] = 8.0
+    return result
+
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
 VIDEO_REPLY_MUSIC_DURATION_SECONDS = 60
@@ -294,7 +330,7 @@ def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
 def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> None:
     """Atomically switch future reply requests to freshly saved local settings."""
 
-    global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG
+    global LLM_CONFIG, LLM_TIMEOUT_SECONDS, LLM_CFG, reply_pipeline
     key_env = "OLIVIA_LLM_RUNTIME_KEY_CONFIGURED"
     candidate = replace(
         LLM_CONFIG,
@@ -305,13 +341,34 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         api_style="chat_completions",
         stream=True,
         timeout_seconds=180.0,
-        max_retries=0,
+        max_retries=2,
         requires_api_key=True,
     )
     try:
         gateway = create_gateway(
             candidate,
             key_resolver=lambda key=api_key: key,
+        )
+        quality_adapter = SimpleNamespace(
+            config=candidate,
+            gateway=gateway,
+            persona_v2_path=letters_adapter.persona_v2_path,
+        )
+        quality_orchestrator = SimpleNamespace(
+            gateway=SimpleNamespace(adapter=quality_adapter)
+        )
+        reviewer, rewriter = create_model_quality_ports(
+            quality_orchestrator,
+            gateway_factory=lambda config, key=api_key: create_gateway(
+                config,
+                key_resolver=lambda: key,
+            ),
+        )
+        replacement_pipeline = ReplyPipeline(
+            reply_engine,
+            reviewer=reviewer or NullReviewer(),
+            rewriter=rewriter or UnavailableRewriter(),
+            discover_runtime_ports=False,
         )
     except Exception:
         raise
@@ -324,6 +381,7 @@ def apply_runtime_llm_config(base_url: str, model: str, api_key: str | None) -> 
         private_world_candidate_analyzer.timeout_seconds = candidate.timeout_seconds
     emotion_triage.gateway = gateway
     reply_engine.timeout_seconds = candidate.timeout_seconds
+    reply_pipeline = replacement_pipeline
     LLM_CONFIG = candidate
     LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
     LLM_CFG = candidate.public_dict()
@@ -2949,6 +3007,10 @@ async def route(
             "media_status": media_detail["status"],
             "media_error_code": media_detail["error_code"],
             "media_retryable": media_detail["retryable"],
+            "audio_provider": l.get("audio_provider"),
+            "reply_structure": l.get("reply_structure"),
+            "song_emotion": l.get("song_emotion"),
+            "transition_seconds": l.get("transition_seconds"),
             "is_read": 1 if l.get("is_read") else 0,
             "replied_at": l.get("replied_at"),
             "created_at": l.get("created_at", int(time.time())),
@@ -3370,6 +3432,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         output_path = output_dir / f"{letter_id}.mp4"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
+            require_breeze_hardware()
             def runtime_path(name: str) -> Path:
                 configured = configured_media_path(environment, name)
                 if configured is None and environment.get(name, "").strip():
@@ -3416,7 +3479,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     or not official_reply_reference.is_file()
                 ):
                     raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
-                await asyncio.to_thread(render_musical_reply,
+                render_metadata = await asyncio.to_thread(render_musical_reply,
                     content,
                     reply_text,
                     output_path,
@@ -3432,8 +3495,10 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     duration_seconds=music_duration_seconds,
                     spoken_action_base_path=spoken_action_base,
                     voice_performance_plan=voice_plan,
+                    gateway=letters_adapter.gateway,
                     environment=environment,
                 )
+                letter.update(_sanitized_music_render_metadata(render_metadata))
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None

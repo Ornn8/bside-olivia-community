@@ -556,7 +556,12 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     (tts_runtime / "venv/Scripts/python.exe").write_bytes(b"synthetic")
     tts_model = tmp_path / "tts-model"
     tts_model.mkdir()
-    tts_llm = tts_model / "llm.pt"
+    tts_llm = (
+        tts_model
+        / "drbaph_Breeze-TTS-2-comfyui"
+        / "Breeze-TTS-2-int8-hybrid.safetensors"
+    )
+    tts_llm.parent.mkdir(parents=True)
     tts_llm.write_bytes(b"synthetic")
     quality_cache = tmp_path / "whisper"
     quality_cache.mkdir()
@@ -565,9 +570,15 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     required.append(tts_llm)
     tts_reference = write("tts/reference.wav")
     Path(env["OLIVIA_TTS_CONFIG"]).write_text(json.dumps({"settings": {
+        "provider": "breeze_tts2",
         "runtime_root": str(tts_runtime), "model_dir": str(tts_model),
-        "reference_audio": tts_reference,
-        "provider_options": {"quality_gate_cache_root": str(quality_cache)},
+        "reference_audio": tts_reference, "reference_text": "合成测试参考转写。",
+        "license_id": "BreezeBlue-Research-and-Non-Commercial-1.0",
+        "provider_options": {
+            "external_python": str(tts_runtime / "venv/Scripts/python.exe"),
+            "model_variant": "int8_hybrid",
+            "quality_gate_cache_root": str(quality_cache),
+        },
     }}), encoding="utf-8")
     visual_runtime = tmp_path / "visual-runtime"
     visual_runtime.mkdir()
@@ -596,6 +607,11 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         tts_delivery,
         "_quality_runtime_available",
         lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        tts_delivery.BreezeTTS2Provider,
+        "health",
+        lambda _self: {"status": "available"},
     )
 
     assert routing_context_from_environment(env) == RoutingContext(True)

@@ -13,7 +13,7 @@ import re
 from threading import Lock
 import uuid
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from llm_gateway import (
     Gateway,
@@ -902,6 +902,8 @@ def _confirmed_violation_evidence_payload(
 
 def create_model_quality_ports(
     orchestrator: object,
+    *,
+    gateway_factory: Callable[[GatewayConfig], Gateway] | None = None,
 ) -> tuple[
     GatewayPersonaReviewer | None,
     GatewayPersonaRewriter | None,
@@ -959,14 +961,17 @@ def create_model_quality_ports(
 
     quality_gateway = gateway
     if isinstance(config, GatewayConfig):
-        quality_gateway = create_gateway(
-            replace(
-                config,
-                model=_REVIEW_MODEL,
-                stream=False,
-                max_input_chars=max(config.max_input_chars, 30_000),
-                fallback_provider="none",
-            )
+        quality_config = replace(
+            config,
+            model=_REVIEW_MODEL,
+            stream=False,
+            max_input_chars=max(config.max_input_chars, 30_000),
+            fallback_provider="none",
+        )
+        quality_gateway = (
+            gateway_factory(quality_config)
+            if gateway_factory is not None
+            else create_gateway(quality_config)
         )
 
     configured_timeout = float(

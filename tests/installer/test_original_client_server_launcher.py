@@ -335,13 +335,15 @@ def test_launcher_auto_uses_private_voice_but_keeps_public_absence_valid(
     assert "OLIVIA_REPLY_VOICE_REFERENCE" not in public
 
 
-def test_launcher_uses_accepted_reply_motion_with_wallpaper_performance(tmp_path: Path) -> None:
+def test_launcher_uses_registered_reply_motion_for_music_performance(tmp_path: Path) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
     assets = root / "app" / "0.0.9.627" / "assets" / "Wallpaper_Presence"
     assets.mkdir(parents=True)
     scene = assets / "A_R1_2000.mp4"
+    performance = assets / "B_R1_2000.mp4"
     transition = assets / "A_Transition_2000_1200.mp4"
     scene.write_bytes(b"scene")
+    performance.write_bytes(b"performance")
     transition.write_bytes(b"transition")
     accepted_scene = tmp_path / "managed" / "official-reply-action-base-v1.mp4"
     accepted_reference = tmp_path / "managed" / "official-reply-reference-000-043s-v1.mp4"
@@ -360,8 +362,20 @@ def test_launcher_uses_accepted_reply_motion_with_wallpaper_performance(tmp_path
     assert environment == {
         "OLIVIA_ORDINARY_ACTION_BASE": str(accepted_scene.resolve()),
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(accepted_reference.resolve()),
-        "OLIVIA_MUSIC_PERFORMANCE_BASE": str(scene.resolve()),
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": str(accepted_scene.resolve()),
     }
+
+
+def test_launcher_never_falls_back_music_performance_to_wallpaper(tmp_path: Path) -> None:
+    root = _installation(tmp_path, client_version="0.0.9.627")
+    assets = root / "app" / "0.0.9.627" / "assets" / "Wallpaper_Presence"
+    assets.mkdir(parents=True)
+    (assets / "A_R1_2000.mp4").write_bytes(b"wallpaper")
+    (assets / "A_Transition_2000_1200.mp4").write_bytes(b"transition")
+
+    environment = start_local._load_fixed_video_assets_environment({}, root)
+
+    assert "OLIVIA_MUSIC_PERFORMANCE_BASE" not in environment
 
 
 def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> None:

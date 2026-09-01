@@ -9,7 +9,7 @@ import zipfile
 import pytest
 import installer.build_video_runtime as builder
 
-_COMPONENTS = ("cosyvoice", "latentsync", "minimax", "roformer")
+_COMPONENTS = ("breeze", "latentsync", "minimax", "roformer")
 
 def _roots(tmp_path: Path) -> dict[str, Path]:
     result = {}
@@ -37,7 +37,7 @@ def _bom(tmp_path: Path, roots: dict[str, Path]) -> Path:
         files = [{"path": path.relative_to(root).as_posix(), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(paths)]
         indexed = {item["path"]: item for item in files}
         components[component] = {
-            "upstream": f"{'http' if component == 'cosyvoice' else 'https'}://example.invalid/{component}", "revision": "1" * 40,
+            "upstream": f"{'http' if component == 'breeze' else 'https'}://example.invalid/{component}", "revision": "1" * 40,
             "tree_sha256": hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "dependencies": [f"{component}==1.0"], "files": files,
             "license": {key: next(item for path, item in indexed.items() if path.startswith("site-packages/olivia_upstream/") and path.endswith("/LICENSE"))[key] for key in ("path", "sha256")},
@@ -74,7 +74,7 @@ def test_builds_verified_v2_archive_and_confines_four_role_probes(tmp_path: Path
     assert all(command[1:3] == ["-I", "-B"] and Path(command[0]).is_relative_to(Path(command[-1])) for command in commands)
     assert all(r"C:\host-only-poison" not in environment["PATH"] and str(Path(command[0]).parent) in environment["PATH"] for command, environment in zip(commands, environments, strict=True))
     assert all(call[1]["timeout"] == 120 and environment["PYTHONDONTWRITEBYTECODE"] == "1" for call, environment in zip(calls, environments, strict=True))
-    assert all(name in scripts for name in ("cosyvoice.cli.cosyvoice", "latentsync", "comfy_extras.nodes_minimax_music", "mel_band_roformer.inference", "device='cuda'"))
+    assert all(name in scripts for name in ("transformers", "soundfile", "whisper", "latentsync", "comfy_extras.nodes_minimax_music", "mel_band_roformer.inference", "device='cuda'"))
     assert all(any(name.startswith(f"{component}/runtime/") for name in names) for component in roots)
 
 def test_rejects_bare_python_without_locked_bom(tmp_path: Path) -> None:
@@ -86,13 +86,13 @@ def test_bom_provenance_and_inventory_fail_closed(tmp_path: Path, monkeypatch: p
     roots = _roots(tmp_path); bom = _bom(tmp_path, roots)
     expected = "VIDEO_RUNTIME_BUILD_BOM_MISMATCH"
     if fault == "source-drift":
-        (roots["cosyvoice"] / "site-packages/cosyvoice.py").write_text("drift\n")
+        (roots["breeze"] / "site-packages/breeze.py").write_text("drift\n")
     else:
         payload = json.loads(bom.read_text(encoding="utf-8"))
-        if fault == "missing-license-hash": payload["components"]["cosyvoice"]["license"].pop("sha256")
-        elif fault == "foreign-license": payload["components"]["cosyvoice"]["license"] = next({key: item[key] for key in ("path", "sha256")} for item in payload["components"]["cosyvoice"]["files"] if item["path"] == "python/LICENSE.txt")
-        elif fault in {"main", "latest"}: payload["components"]["cosyvoice"]["revision"] = fault
-        else: payload["components"]["cosyvoice"]["upstream"] = {"userinfo": "https://secret-token@example.invalid/cosyvoice", "query": "https://example.invalid/cosyvoice?token=private", "fragment": "https://example.invalid/cosyvoice#private", "ftp": "ftp://example.invalid/cosyvoice", "empty-host": "https:///cosyvoice"}[fault]
+        if fault == "missing-license-hash": payload["components"]["breeze"]["license"].pop("sha256")
+        elif fault == "foreign-license": payload["components"]["breeze"]["license"] = next({key: item[key] for key in ("path", "sha256")} for item in payload["components"]["breeze"]["files"] if item["path"] == "python/LICENSE.txt")
+        elif fault in {"main", "latest"}: payload["components"]["breeze"]["revision"] = fault
+        else: payload["components"]["breeze"]["upstream"] = {"userinfo": "https://secret-token@example.invalid/breeze", "query": "https://example.invalid/breeze?token=private", "fragment": "https://example.invalid/breeze#private", "ftp": "ftp://example.invalid/breeze", "empty-host": "https:///breeze"}[fault]
         bom.write_text(json.dumps(payload), encoding="utf-8")
         expected = "VIDEO_RUNTIME_BUILD_BOM_INVALID"
     monkeypatch.setattr(builder, "_probe_environments", lambda *_args: pytest.fail("BOM validation must precede probe"))
@@ -166,7 +166,7 @@ def test_build_lock_is_deleted_if_owner_process_exits(tmp_path: Path) -> None:
 def test_output_inside_input_and_oversize_fail_before_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     roots = _roots(tmp_path); bom = _bom(tmp_path, roots)
     with pytest.raises(builder.VideoRuntimeBuildError, match="VIDEO_RUNTIME_BUILD_OUTPUT_INVALID"):
-        builder.build_video_runtime_archive(version="nested", output_directory=(roots["cosyvoice"] / "out").resolve(), component_roots=roots, build_input_bom=bom)
+        builder.build_video_runtime_archive(version="nested", output_directory=(roots["breeze"] / "out").resolve(), component_roots=roots, build_input_bom=bom)
     monkeypatch.setattr(builder, "_MAX_EXPANDED_BYTES", 1)
     with pytest.raises(builder.VideoRuntimeBuildError, match="VIDEO_RUNTIME_BUILD_TOO_LARGE"):
         _build(tmp_path, roots, bom, "large")

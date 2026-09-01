@@ -51,13 +51,13 @@ FORBIDDEN_MEDIA_SUFFIXES = {
 }
 VIDEO_RUNTIME_PATH = VIDEO_RUNTIME_SIDECAR_NAME
 VIDEO_RUNTIME_ENVIRONMENT_KEYS = {
-    "OLIVIA_COSYVOICE_PYTHON",
+    "OLIVIA_BREEZE_TTS_PYTHON",
     "OLIVIA_LATENTSYNC_PYTHON",
     "OLIVIA_MINIMAX_COMFY_PYTHON",
     "OLIVIA_ROFORMER_PYTHON",
 }
 VIDEO_RUNTIME_COMPONENT_ENVIRONMENT = {
-    "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+    "breeze": "OLIVIA_BREEZE_TTS_PYTHON",
     "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
     "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
     "roformer": "OLIVIA_ROFORMER_PYTHON",
@@ -175,6 +175,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/provision_mem0_embedding.py",
     "installer/patch_native_user_settings.py",
     "installer/runtime-requirements.txt",
+    "installer/breeze-runtime-requirements.txt",
     "installer/start_local.py",
     "installer/start_hidden.vbs.txt",
     "installer/uninstall.py",

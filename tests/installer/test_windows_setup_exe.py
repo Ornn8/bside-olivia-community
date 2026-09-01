@@ -112,7 +112,7 @@ def _write_native_navigation_manifest(path: Path) -> None:
 def _write_video_runtime(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     environment = {
-        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
+        "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
         "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
@@ -138,7 +138,7 @@ def _write_video_runtime(path: Path) -> None:
 def _write_video_runtime_v2(
     path: Path,
     *,
-    cosyvoice_extra: dict[str, bytes] | None = None,
+    breeze_extra: dict[str, bytes] | None = None,
     dedicated_license: bool = True,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +146,7 @@ def _write_video_runtime_v2(
     runtime_files: dict[str, bytes] = {}
     components: dict[str, object] = {}
     environment_keys = {
-        "cosyvoice": "OLIVIA_COSYVOICE_PYTHON",
+        "breeze": "OLIVIA_BREEZE_TTS_PYTHON",
         "latentsync": "OLIVIA_LATENTSYNC_PYTHON",
         "minimax": "OLIVIA_MINIMAX_COMFY_PYTHON",
         "roformer": "OLIVIA_ROFORMER_PYTHON",
@@ -162,8 +162,8 @@ def _write_video_runtime_v2(
             "NOTICE.txt": f"notice-{component}".encode(),
             license_path: f"license-{component}".encode(),
         }
-        if component == "cosyvoice" and cosyvoice_extra:
-            source_files.update(cosyvoice_extra)
+        if component == "breeze" and breeze_extra:
+            source_files.update(breeze_extra)
         file_records = [
             {
                 "path": relative,
@@ -657,7 +657,7 @@ def test_prepare_setup_payload_rejects_invalid_v2_build_inputs(
     def mutate(manifest: dict[str, object]) -> None:
         build_inputs = manifest["build_inputs"]
         components = build_inputs["components"]
-        cosyvoice = components["cosyvoice"]
+        breeze = components["breeze"]
         if case == "version":
             manifest["version"] = "not a builder version"
         elif case == "manifest-order":
@@ -667,20 +667,20 @@ def test_prepare_setup_payload_rejects_invalid_v2_build_inputs(
         elif case == "missing-component":
             components.pop("roformer")
         elif case == "upstream-malformed":
-            cosyvoice["upstream"] = "https://["
+            breeze["upstream"] = "https://["
         elif case == "revision":
-            cosyvoice["revision"] = "A" * 40
+            breeze["revision"] = "A" * 40
         elif case == "dependencies":
-            cosyvoice["dependencies"] = ["Torch==1", "torch==1"]
+            breeze["dependencies"] = ["Torch==1", "torch==1"]
         elif case == "tree-hash":
-            cosyvoice["tree_sha256"] = "0" * 64
+            breeze["tree_sha256"] = "0" * 64
         elif case == "legal-hash":
-            cosyvoice["license"]["sha256"] = "0" * 64
+            breeze["license"]["sha256"] = "0" * 64
         elif case == "source-hash":
-            cosyvoice["files"][0]["sha256"] = "0" * 64
+            breeze["files"][0]["sha256"] = "0" * 64
         elif case == "environment-not-python":
-            manifest["environment"]["OLIVIA_COSYVOICE_PYTHON"] = (
-                "cosyvoice/runtime/LICENSE.txt"
+            manifest["environment"]["OLIVIA_BREEZE_TTS_PYTHON"] = (
+                "breeze/runtime/LICENSE.txt"
             )
 
     _mutate_video_runtime_manifest(runtime, mutate)
@@ -712,7 +712,7 @@ def test_prepare_setup_payload_rejects_v2_builder_forbidden_content(
     runtime = tmp_path / "Olivia-video-runtime-v2.zip"
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra=None if relative is None else {relative: content},
+        breeze_extra=None if relative is None else {relative: content},
         dedicated_license=dedicated_license,
     )
 
@@ -754,14 +754,14 @@ def test_prepare_setup_payload_accepts_realistic_high_ratio_v2_entry(
     ballast = random.Random(23).randbytes(64 * 1024)
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra={
+        breeze_extra={
             "zz-large-data.txt": compressed_payload,
             "zz-ballast.txt": ballast,
         },
     )
 
     with zipfile.ZipFile(runtime) as archive:
-        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        entry = archive.getinfo("breeze/runtime/zz-large-data.txt")
         ratio = entry.file_size / entry.compress_size
         overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
     assert 320 < ratio < 322
@@ -778,14 +778,14 @@ def test_prepare_setup_payload_rejects_v2_entry_above_ratio_limit(
     ballast = random.Random(23).randbytes(64 * 1024)
     _write_video_runtime_v2(
         runtime,
-        cosyvoice_extra={
+        breeze_extra={
             "zz-large-data.txt": b"0" * (1024 * 1024),
             "zz-ballast.txt": ballast,
         },
     )
 
     with zipfile.ZipFile(runtime) as archive:
-        entry = archive.getinfo("cosyvoice/runtime/zz-large-data.txt")
+        entry = archive.getinfo("breeze/runtime/zz-large-data.txt")
         ratio = entry.file_size / entry.compress_size
         overall_ratio = sum(item.file_size for item in archive.infolist()) / runtime.stat().st_size
     assert ratio > 512
@@ -823,7 +823,7 @@ def test_video_runtime_v2_fixture_matches_machine_contracts(tmp_path: Path) -> N
 
     jsonschema.validate(manifest["build_inputs"], build_inputs_schema)
     jsonschema.validate(manifest, runtime_schema)
-    assert set(build_inputs_schema["properties"]["components"]["required"]) == {"cosyvoice", "latentsync", "minimax", "roformer"}
+    assert set(build_inputs_schema["properties"]["components"]["required"]) == {"breeze", "latentsync", "minimax", "roformer"}
 
 
 def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, monkeypatch) -> None:
@@ -1447,7 +1447,7 @@ def test_prepare_setup_payload_rejects_invalid_runtime_zip(
             manifest["environment"].pop("OLIVIA_ROFORMER_PYTHON")
         elif case == "duplicate-python":
             manifest["environment"] = dict.fromkeys(
-                manifest["environment"], "cosyvoice/python/python.exe"
+                manifest["environment"], "breeze/python/python.exe"
             )
         elif case in {"traversal", "backslash"}:
             fixture["path"] = "../escape.bin" if case == "traversal" else "dir\\escape.bin"

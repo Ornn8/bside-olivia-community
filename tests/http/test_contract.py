@@ -2180,7 +2180,15 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
         "retryable": False,
     }
     assert document["letter_detail_media"] == {
-        "fields": ["media_status", "media_error_code", "media_retryable"],
+        "fields": [
+            "media_status",
+            "media_error_code",
+            "media_retryable",
+            "audio_provider",
+            "reply_structure",
+            "song_emotion",
+            "transition_seconds",
+        ],
         "statuses": [
             "NOT_REQUESTED",
             "PENDING",
@@ -2190,6 +2198,18 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "UNAVAILABLE",
         ],
         "error_codes": {
+            "BREEZE_TTS_10GB_VRAM_REQUIRED": {
+                "status": "UNAVAILABLE",
+                "retryable": True,
+            },
+            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {
+                "status": "UNAVAILABLE",
+                "retryable": True,
+            },
+            "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+                "status": "UNAVAILABLE",
+                "retryable": True,
+            },
             "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
                 "status": "UNAVAILABLE",

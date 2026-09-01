@@ -1,76 +1,612 @@
 {
-  "schema_version": "olivia.video-capability-bom.v1",
-  "version": "2026.09.02",
-  "provenance": {
-    "policy": "assembly-only; private Olivia assets are never downloaded or redistributed",
-    "cosyvoice_code": {"repo": "FunAudioLLM/CosyVoice", "revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", "license": "Apache-2.0"},
-    "cosyvoice_model": {"repo": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "modelscope_revision": "9f9c56f2514700ef79d64fd0afb693e0d672373b", "huggingface_revision": "29e01c4e8d000f4bcd70751be16fa94bf3d85a18", "file_count": 20, "size_bytes": 9747516745, "license": "Apache-2.0"},
-    "latentsync_code": {"repo": "ByteDance/LatentSync", "revision": "a229c3948406bc2cf6eaf4873e662e70c6a04746", "license": "Apache-2.0", "license_url": "https://github.com/bytedance/LatentSync/blob/a229c3948406bc2cf6eaf4873e662e70c6a04746/LICENSE"},
-    "latentsync_model": {"repo": "ByteDance/LatentSync-1.5", "revision": "32a20d29aead0498e3e885e90dbbe8027da1b61b", "unet_sha256": "6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51", "tiny_sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9", "buffalo_l_sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f", "config_path": "configs/unet/stage2_efficient.yaml", "config_resolution": 256, "config_sha256": "72e263b0adb072935a08d5cc3ce304ce5c471fab9f7e233b7304e5902bba24ce", "license": "OpenRAIL++"},
-    "minimax_music3": {"repo": "Comfy-Org/MiniMax-Music-3", "revision": "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6", "license": "Apache-2.0", "license_url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/blob/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/README.md"},
-    "minimax_comfyui_code": {"repo": "Comfy-Org/ComfyUI", "revision": "a7365071e47175fb06572d0a56d1bf4116c2f581", "license": "GPL-3.0"},
-    "roformer": {"repo": "openmirlab/melband-roformer-infer", "revision": "a21cb300e7637b878f46c500a68737aeb5aa2226", "model_revision": "ac9b0614ab3cd7f77219e18ba494dfd93956c348", "license": "MIT + CC-BY-NC-SA-4.0 checkpoint", "source_archive_size_bytes": 132436, "source_archive_sha256": "410c48245212667f63359c3cc915d4aaa334f52bddb3738e5cb125c3dac94f5b", "checkpoint_sha256": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e", "config_sha256": "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"},
-    "ffmpeg": {"version": "9.0.1-essentials", "size_bytes": 111253802, "sha256": "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9", "source": "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"}
-  },
-  "bundles": [
-    {
-      "id": "ordinary_video",
-      "label": "说话与口型基础组件",
-      "status": "FIXED",
-      "requires_gpu": true,
-      "dependencies": ["cosyvoice", "latentsync", "ffmpeg"],
-      "runtime_environment": {"OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe", "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime", "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json", "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4", "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4"},
-      "runtime_patches": [
-        {"id":"cosyvoice-windows-audio","path":"installer/cosyvoice-windows-audio.patch.json","target":"cosyvoice/runtime/cosyvoice/utils/file_utils.py","sha256":"019a0f163e397186c0a6d26c5eeaed1c56ba88462200662950c276ceb50c2d27"},
-        {"id":"latentsync-windows-memmap","path":"installer/latentsync-windows-memmap.patch.json","target":"latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py","sha256":"a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1"},
-        {"id":"latentsync-windows-mp4-writer","path":"installer/latentsync-windows-mp4-writer.patch.json","target":"latentsync/runtime/latentsync/utils/util.py","sha256":"bbeea2d143e756c0ba419b5299cd4b62731e619b155d3e308aa66920868ca516"}
-      ],
-      "files": [
-        {"id":"cosyvoice-code","path":"sources/CosyVoice-074ca6dc.zip","size_bytes":1633232,"sha256":"4e7b1ce909f97abcc8afa0a890f92ccf2839ff435c698d4f04a1ba7aa71a022f","license":"Apache-2.0","sources":{"domestic":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc","official":"https://codeload.github.com/FunAudioLLM/CosyVoice/zip/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"},"install":{"kind":"zip","destination":"cosyvoice/runtime","strip_components":1}},
-        {"id":"latentsync-code","path":"sources/LatentSync-a229c394.zip","size_bytes":8562500,"sha256":"3a1eddcd604eebc4d3b104f3f649101dbe58bb2e1c52e80cf0845c335aebcb69","license":"Apache-2.0","sources":{"official":"https://codeload.github.com/bytedance/LatentSync/zip/a229c3948406bc2cf6eaf4873e662e70c6a04746"},"install":{"kind":"zip","destination":"latentsync/runtime","strip_components":1}},
-        {"id":"cosy-attributes","path":"cosyvoice/model/.gitattributes","size_bytes":1574,"sha256":"42828f8bf9e62763376589790ddf6eccc6bde9b761acd2700dc4a383ade92c33","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/.gitattributes","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/.gitattributes"}},
-        {"id":"cosy-blank-config","path":"cosyvoice/model/CosyVoice-BlankEN/config.json","size_bytes":659,"sha256":"168aa1bd401abc3bc262ba15ba4e499627a8b4e006e9d050b47c22de20660185","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/config.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/config.json"}},
-        {"id":"cosy-blank-generation","path":"cosyvoice/model/CosyVoice-BlankEN/generation_config.json","size_bytes":242,"sha256":"e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/generation_config.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/generation_config.json"}},
-        {"id":"cosy-blank-merges","path":"cosyvoice/model/CosyVoice-BlankEN/merges.txt","size_bytes":1402109,"sha256":"ac8ff86a72bee70828fbc1119bc4398c6f3a9a6e490d7b0dbe917be025478bd0","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/merges.txt","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/merges.txt"}},
-        {"id":"cosy-blank-model","path":"cosyvoice/model/CosyVoice-BlankEN/model.safetensors","size_bytes":988097824,"sha256":"130282af0dfa9fe5840737cc49a0d339d06075f83c5a315c3372c9a0740d0b96","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/model.safetensors","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/model.safetensors"}},
-        {"id":"cosy-blank-tokenizer","path":"cosyvoice/model/CosyVoice-BlankEN/tokenizer_config.json","size_bytes":1287,"sha256":"482bd979881423375ca5414e4e0d94cd7c5349dbb17fffd46b4d36d71e62a1bc","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/tokenizer_config.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/tokenizer_config.json"}},
-        {"id":"cosy-blank-vocab","path":"cosyvoice/model/CosyVoice-BlankEN/vocab.json","size_bytes":2776833,"sha256":"ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/CosyVoice-BlankEN/vocab.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/CosyVoice-BlankEN/vocab.json"}},
-        {"id":"cosy-readme","path":"cosyvoice/model/README.md","size_bytes":11982,"sha256":"d4ec0fe1342b60a424ce1cd8971c670d26be38068a96148bcb6a1b8a334c3088","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/README.md","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/README.md"}},
-        {"id":"cosy-asset","path":"cosyvoice/model/asset/dingding.png","size_bytes":122824,"sha256":"7f04815e2e676d31b089af6fa270135f3214f2193d5e0ad98b491d007d48f1c6","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/asset/dingding.png","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/asset/dingding.png"}},
-        {"id":"cosy-campplus","path":"cosyvoice/model/campplus.onnx","size_bytes":28303423,"sha256":"a6ac6a63997761ae2997373e2ee1c47040854b4b759ea41ec48e4e42df0f4d73","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/campplus.onnx","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/campplus.onnx"}},
-        {"id":"cosy-config","path":"cosyvoice/model/config.json","size_bytes":2,"sha256":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/config.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/config.json"}},
-        {"id":"cosy-configuration","path":"cosyvoice/model/configuration.json","size_bytes":47,"sha256":"c502b6328c67638b401df8dd05de89e9e8d1cff9cd0ada10dfbdbe13556c20de","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/configuration.json","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/configuration.json"}},
-        {"id":"cosy-yaml","path":"cosyvoice/model/cosyvoice3.yaml","size_bytes":6934,"sha256":"f5a6b2c6f05139d0f18861a1fe506f751e787026b77c05f7e8fef9f8a4405965","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/cosyvoice3.yaml","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/cosyvoice3.yaml"}},
-        {"id":"cosy-flow-decoder","path":"cosyvoice/model/flow.decoder.estimator.fp32.onnx","size_bytes":1326216933,"sha256":"9b51b9533a55937762b262bf2cf9c6220ce40760f76d6532cb16a6a6d84059a8","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/flow.decoder.estimator.fp32.onnx","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/flow.decoder.estimator.fp32.onnx"}},
-        {"id":"cosy-flow","path":"cosyvoice/model/flow.pt","size_bytes":1329116148,"sha256":"a6fab32a7825e5b0bc855ddd948f8db9370b0a786fbc249caa4595e95b608e4b","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/flow.pt","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/flow.pt"}},
-        {"id":"cosy-hift","path":"cosyvoice/model/hift.pt","size_bytes":83202622,"sha256":"b279d7641eb97ae55b3b540cfba4f953c26492a2df758328a89a4d007ab87a65","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/hift.pt","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/hift.pt"}},
-        {"id":"cosy-llm","path":"cosyvoice/model/llm.pt","size_bytes":2024669519,"sha256":"69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/llm.pt","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/llm.pt"}},
-        {"id":"cosy-llm-rl","path":"cosyvoice/model/llm.rl.pt","size_bytes":2024682701,"sha256":"74d34b01a80c7154670ae75ac372d1b1712c78bceae9f467eb9f1f6f61ec764f","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/llm.rl.pt","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/llm.rl.pt"}},
-        {"id":"cosy-tokenizer-batch","path":"cosyvoice/model/speech_tokenizer_v3.batch.onnx","size_bytes":969451579,"sha256":"b156b8a7bbff436585e153f4637b9a368009005ac66efa108a6c8bfb34e5ee43","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/speech_tokenizer_v3.batch.onnx","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/speech_tokenizer_v3.batch.onnx"}},
-        {"id":"cosy-tokenizer","path":"cosyvoice/model/speech_tokenizer_v3.onnx","size_bytes":969451503,"sha256":"23236a74175dbdda47afc66dbadd5bcb41303c467a57c261cb8539ad9db9208d","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/9f9c56f2514700ef79d64fd0afb693e0d672373b/speech_tokenizer_v3.onnx","official":"https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/resolve/29e01c4e8d000f4bcd70751be16fa94bf3d85a18/speech_tokenizer_v3.onnx"}},
-        {"id":"latentsync-unet","path":"latentsync/runtime/checkpoints/latentsync_unet.pt","size_bytes":5072348184,"sha256":"6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51","license":"OpenRAIL++","sources":{"domestic":"https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/latentsync_unet.pt","official":"https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt"}},
-        {"id":"latentsync-tiny","path":"latentsync/runtime/checkpoints/whisper/tiny.pt","size_bytes":75572083,"sha256":"65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9","license":"OpenRAIL++","sources":{"domestic":"https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/whisper/tiny.pt","official":"https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/whisper/tiny.pt"}},
-        {"id":"latentsync-buffalo-l","path":"latentsync/face_detection/buffalo_l.zip","size_bytes":288621354,"sha256":"80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f","license":"MIT","sources":{"official":"https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"},"install":{"kind":"zip","destination":"latentsync/runtime/face_detection/models/buffalo_l","strip_components":0}},
-        {"id":"ffmpeg","path":"ffmpeg/ffmpeg-9.0.1-essentials_build.zip","size_bytes":111253802,"sha256":"fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9","license":"GPL-3.0-or-later","sources":{"official":"https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"},"install":{"kind":"zip","destination":"ffmpeg/runtime","strip_components":1}},
-        {"id":"official-reply-action-base","path":"scenes/official-reply-action-base-v1.mp4","size_bytes":7199459,"sha256":"6d92eee187e1661a49733e053bc5996c641533c58bb164ca3e2a48e8abea5b08","license":"Olivia original media preservation","sources":{"official":"https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-action-base-v1.mp4"}},
-        {"id":"official-reply-reference","path":"scenes/official-reply-reference-000-043s-v1.mp4","size_bytes":4722774,"sha256":"0a56785e84308de4d4b8ea87e338bae7699f5812bbbc14cb956f82c6964ac80d","license":"Olivia original media preservation","sources":{"official":"https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-reference-000-043s-v1.mp4"}}
-      ]
+    "schema_version": "olivia.video-capability-bom.v1",
+    "version": "2026.09.02",
+    "provenance": {
+        "policy": "assembly-only; private Olivia assets are never downloaded or redistributed",
+        "breeze_code": {
+            "repo": "Saganaki22/ComfyUI-Breeze-TTS-2",
+            "revision": "0aaa6fd8a4694a9b504970ade4078be2d4620a0a",
+            "license": "Apache-2.0"
+        },
+        "breeze_model": {
+            "repo": "drbaph/Breeze-TTS-2-comfyui",
+            "revision": "a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4",
+            "official_base_repo": "BreezeBlue/Breeze-TTS-2",
+            "official_base_revision": "c1c8ca18b70b30822735633991d9ebf4898e47d4",
+            "variant": "int8_hybrid",
+            "size_bytes": 5580779297,
+            "license": "BreezeBlue-Research-and-Non-Commercial-1.0"
+        },
+        "breeze_runtime": {
+            "python": "CPython 3.12.10 embeddable amd64",
+            "python_source": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+            "python_sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+            "requirements": "installer/breeze-runtime-requirements.txt",
+            "requirements_sha256": "efc8292ae94e7ec7d7eb3c2d3430c9bd666638c7bacec75d595145c78f08a4cd",
+            "torch_index": "https://download.pytorch.org/whl/cu128",
+            "license": "PSF-2.0 plus locked dependency licenses"
+        },
+        "latentsync_code": {
+            "repo": "ByteDance/LatentSync",
+            "revision": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+            "license": "Apache-2.0",
+            "license_url": "https://github.com/bytedance/LatentSync/blob/a229c3948406bc2cf6eaf4873e662e70c6a04746/LICENSE"
+        },
+        "latentsync_model": {
+            "repo": "ByteDance/LatentSync-1.5",
+            "revision": "32a20d29aead0498e3e885e90dbbe8027da1b61b",
+            "unet_sha256": "6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51",
+            "tiny_sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+            "buffalo_l_sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+            "config_path": "configs/unet/stage2_efficient.yaml",
+            "config_resolution": 256,
+            "config_sha256": "72e263b0adb072935a08d5cc3ce304ce5c471fab9f7e233b7304e5902bba24ce",
+            "license": "OpenRAIL++"
+        },
+        "latentsync_runtime": {
+            "archive": "olivia-video-runtime-latentsync-20260831.zip",
+            "archive_size_bytes": 3345491860,
+            "archive_sha256": "0410df7ad4e383214c532bb6f9f1e3dc779b79087a5b40b1500fe61b85ea3dcb",
+            "source": "bside-olivia-community v0.1.2 release",
+            "cosyvoice_included": false
+        },
+        "minimax_music3": {
+            "repo": "Comfy-Org/MiniMax-Music-3",
+            "revision": "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6",
+            "license": "Apache-2.0",
+            "license_url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/blob/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/README.md"
+        },
+        "minimax_comfyui_code": {
+            "repo": "Comfy-Org/ComfyUI",
+            "revision": "a7365071e47175fb06572d0a56d1bf4116c2f581",
+            "license": "GPL-3.0"
+        },
+        "minimax_runtime": {
+            "archive": "olivia-video-runtime-minimax-20260831.zip",
+            "archive_size_bytes": 2714245618,
+            "archive_sha256": "59cc7dd47086ac0ec5a27adeebd9098c050a3fb0a21fb3aba50978a0ba562a04",
+            "source": "bside-olivia-community v0.1.2 release",
+            "cosyvoice_included": false
+        },
+        "roformer": {
+            "repo": "openmirlab/melband-roformer-infer",
+            "revision": "a21cb300e7637b878f46c500a68737aeb5aa2226",
+            "model_revision": "ac9b0614ab3cd7f77219e18ba494dfd93956c348",
+            "license": "MIT + CC-BY-NC-SA-4.0 checkpoint",
+            "source_archive_size_bytes": 132436,
+            "source_archive_sha256": "410c48245212667f63359c3cc915d4aaa334f52bddb3738e5cb125c3dac94f5b",
+            "checkpoint_sha256": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e",
+            "config_sha256": "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"
+        },
+        "roformer_runtime": {
+            "archive": "olivia-video-runtime-roformer-20260831.zip",
+            "archive_size_bytes": 2889933971,
+            "archive_sha256": "205562052ec4232ad37f162c2b832c4130abe506065b7f2f77f8739bf8650adb",
+            "source": "bside-olivia-community v0.1.2 release",
+            "cosyvoice_included": false
+        },
+        "ffmpeg": {
+            "version": "9.0.1-essentials",
+            "size_bytes": 111253802,
+            "sha256": "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
+            "source": "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"
+        }
     },
-    {
-      "id": "music_video",
-      "label": "视频回信（说话 + 60 秒音乐）",
-      "status": "FIXED",
-      "requires_gpu": true,
-      "dependencies": ["ordinary_video", "minimax_music3", "roformer"],
-      "runtime_environment": {"OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe", "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime", "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py", "OLIVIA_ROFORMER_PYTHON": "roformer/runtime/python/python.exe", "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt", "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml"},
-      "files": [
-        {"id":"comfyui-code","path":"sources/ComfyUI-a7365071.zip","size_bytes":12390092,"sha256":"cf8936fbf1f526dafdec12d030c99e2133f598e5649cace6f1ef296ed836f838","license":"GPL-3.0","sources":{"domestic":"https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581","official":"https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581"},"install":{"kind":"zip","destination":"minimax/runtime","strip_components":1}},
-        {"id":"roformer-code","path":"sources/melband-roformer-a21cb300.zip","size_bytes":132436,"sha256":"410c48245212667f63359c3cc915d4aaa334f52bddb3738e5cb125c3dac94f5b","license":"MIT","sources":{"domestic":"https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226","official":"https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226"},"install":{"kind":"zip","destination":"roformer/runtime","strip_components":1}},
-        {"id":"roformer-checkpoint","path":"roformer/models/MelBandRoformer.ckpt","size_bytes":913106900,"sha256":"87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e","license":"CC-BY-NC-SA-4.0","sources":{"domestic":"https://hf-mirror.com/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt","official":"https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt"}},
-        {"id":"minimax-diffusion","path":"minimax/runtime/models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors","size_bytes":2502161682,"sha256":"d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/diffusion_models/minimax_music3_dit_int8_convrot.safetensors","official":"https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/diffusion_models/minimax_music3_dit_int8_convrot.safetensors"}},
-        {"id":"minimax-text","path":"minimax/runtime/models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors","size_bytes":9196611886,"sha256":"010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors","official":"https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors"}},
-        {"id":"minimax-vae","path":"minimax/runtime/models/vae/minimax_music3_dav.safetensors","size_bytes":216696128,"sha256":"2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c","license":"Apache-2.0","sources":{"domestic":"https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/vae/minimax_music3_dav.safetensors","official":"https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/vae/minimax_music3_dav.safetensors"}}
-      ]
-    }
-  ]
+    "bundles": [
+        {
+            "id": "ordinary_video",
+            "label": "\u8bf4\u8bdd\u4e0e\u53e3\u578b\u57fa\u7840\u7ec4\u4ef6",
+            "status": "FIXED",
+            "requires_gpu": true,
+            "dependencies": [
+                "breeze_tts2",
+                "latentsync",
+                "ffmpeg"
+            ],
+            "runtime_environment": {
+                "OLIVIA_BREEZE_TTS_ROOT": "breeze/runtime",
+                "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
+                "OLIVIA_BREEZE_TTS_MODEL_ROOT": "breeze/model",
+                "OLIVIA_BREEZE_TTS_MODEL_LICENSE": "breeze/model/LICENSE",
+                "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": "quality/whisper",
+                "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
+                "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
+                "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
+                "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4",
+                "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-reply-action-base-v1.mp4",
+                "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4"
+            },
+            "runtime_patches": [
+                {
+                    "id": "latentsync-windows-memmap",
+                    "path": "installer/latentsync-windows-memmap.patch.json",
+                    "target": "latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py",
+                    "sha256": "a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1"
+                },
+                {
+                    "id": "latentsync-windows-mp4-writer",
+                    "path": "installer/latentsync-windows-mp4-writer.patch.json",
+                    "target": "latentsync/runtime/latentsync/utils/util.py",
+                    "sha256": "bbeea2d143e756c0ba419b5299cd4b62731e619b155d3e308aa66920868ca516"
+                }
+            ],
+            "files": [
+                {
+                    "id": "breeze-python-runtime",
+                    "path": "runtime/python-3.12.10-embed-amd64.zip",
+                    "size_bytes": 11133606,
+                    "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+                    "license": "PSF-2.0",
+                    "sources": {
+                        "official": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "breeze/python",
+                        "strip_components": 0
+                    }
+                },
+                {
+                    "id": "breeze-runtime-whisper-wheel",
+                    "path": "breeze/wheels/openai_whisper-20250625-py3-none-any.whl",
+                    "size_bytes": 804013,
+                    "sha256": "114c5ff4fbb62065a98823b678ffbd6570aba323ed934edd18dfc62b7c292c20",
+                    "license": "MIT",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/openai_whisper-20250625-py3-none-any.whl"
+                    }
+                },
+                {
+                    "id": "breeze-runtime-code",
+                    "path": "sources/ComfyUI-Breeze-TTS-2-0aaa6fd8.zip",
+                    "size_bytes": 6983902,
+                    "sha256": "780580e69ee6c2b56e862cf734023afd5659f478ec6878b515f501614d30f734",
+                    "license": "Apache-2.0",
+                    "sources": {
+                        "domestic": "https://codeload.github.com/Saganaki22/ComfyUI-Breeze-TTS-2/zip/0aaa6fd8a4694a9b504970ade4078be2d4620a0a",
+                        "official": "https://codeload.github.com/Saganaki22/ComfyUI-Breeze-TTS-2/zip/0aaa6fd8a4694a9b504970ade4078be2d4620a0a"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "breeze/runtime",
+                        "strip_components": 1
+                    }
+                },
+                {
+                    "id": "latentsync-code",
+                    "path": "sources/LatentSync-a229c394.zip",
+                    "size_bytes": 8562500,
+                    "sha256": "3a1eddcd604eebc4d3b104f3f649101dbe58bb2e1c52e80cf0845c335aebcb69",
+                    "license": "Apache-2.0",
+                    "sources": {
+                        "official": "https://codeload.github.com/bytedance/LatentSync/zip/a229c3948406bc2cf6eaf4873e662e70c6a04746"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "latentsync/runtime",
+                        "strip_components": 1
+                    }
+                },
+                {
+                    "id": "breeze-model-license",
+                    "path": "breeze/model/LICENSE",
+                    "size_bytes": 18857,
+                    "sha256": "8b826c0957648ea1df2b870ba2627a93b502930c3ba40fa1af696cdfc2d2f0a3",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/BreezeBlue/Breeze-TTS-2/resolve/c1c8ca18b70b30822735633991d9ebf4898e47d4/LICENSE",
+                        "official": "https://huggingface.co/BreezeBlue/Breeze-TTS-2/resolve/c1c8ca18b70b30822735633991d9ebf4898e47d4/LICENSE"
+                    }
+                },
+                {
+                    "id": "breeze-config",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/config.json",
+                    "size_bytes": 10161,
+                    "sha256": "57849eb756ca1602efe89afcc5c70379dd127f8deeb9f655204d4340190ea929",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/config.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/config.json"
+                    }
+                },
+                {
+                    "id": "breeze-generation-config",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/generation_config.json",
+                    "size_bytes": 251,
+                    "sha256": "2ef3f2c0ab8d9ad241059138a795433c5410fd9954efb9625674ecd2a9529434",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/generation_config.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/generation_config.json"
+                    }
+                },
+                {
+                    "id": "breeze-quantization-report",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/quantization_report_int8_hybrid.json",
+                    "size_bytes": 125672,
+                    "sha256": "7068c06f29fac8409b65fcf63f6606c1b0ba4f5b4d6b23fd5f1aebaf8ba47ed3",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/quantization_report_int8_hybrid.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/quantization_report_int8_hybrid.json"
+                    }
+                },
+                {
+                    "id": "breeze-readme",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/README.md",
+                    "size_bytes": 3195,
+                    "sha256": "6bd1b918678e0f8cf3479532d4f51c9979c70d73bb8476544d97b6285082189e",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/README.md",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/README.md"
+                    }
+                },
+                {
+                    "id": "breeze-special-tokens",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/special_tokens_map.json",
+                    "size_bytes": 886,
+                    "sha256": "194f265bb588d142a16f27d9576104eb3dab3d7ba9961541d2d6e3d5e77e6470",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/special_tokens_map.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/special_tokens_map.json"
+                    }
+                },
+                {
+                    "id": "breeze-tokenizer-config",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/tokenizer_config.json",
+                    "size_bytes": 1157960,
+                    "sha256": "2c084fd6725c2284e8aa6da095a8d036d48fe79665595bfcd50371821b620e44",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/tokenizer_config.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/tokenizer_config.json"
+                    }
+                },
+                {
+                    "id": "breeze-tokenizer",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/tokenizer.json",
+                    "size_bytes": 33386945,
+                    "sha256": "d3ec9ac3eb2392389b9f5112e85d8b43316494addb587ba7b7a9d61eac23af96",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/tokenizer.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/tokenizer.json"
+                    }
+                },
+                {
+                    "id": "breeze-int8-hybrid",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/Breeze-TTS-2-int8-hybrid.safetensors",
+                    "size_bytes": 4863779632,
+                    "sha256": "e9f80ab9976caa3b5905e3d87e71d053aad8fae6b0e75caecbca9efdcf1cb2c8",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/Breeze-TTS-2-int8-hybrid.safetensors",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/Breeze-TTS-2-int8-hybrid.safetensors"
+                    }
+                },
+                {
+                    "id": "breeze-audio-config",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/config.json",
+                    "size_bytes": 2336,
+                    "sha256": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/config.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/config.json"
+                    }
+                },
+                {
+                    "id": "breeze-audio-configuration",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/configuration.json",
+                    "size_bytes": 76,
+                    "sha256": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/configuration.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/configuration.json"
+                    }
+                },
+                {
+                    "id": "breeze-audio-model",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/model.safetensors",
+                    "size_bytes": 682293092,
+                    "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/model.safetensors",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/model.safetensors"
+                    }
+                },
+                {
+                    "id": "breeze-audio-preprocessor",
+                    "path": "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer/preprocessor_config.json",
+                    "size_bytes": 234,
+                    "sha256": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+                    "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/preprocessor_config.json",
+                        "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/preprocessor_config.json"
+                    }
+                },
+                {
+                    "id": "latentsync-unet",
+                    "path": "latentsync/runtime/checkpoints/latentsync_unet.pt",
+                    "size_bytes": 5072348184,
+                    "sha256": "6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51",
+                    "license": "OpenRAIL++",
+                    "sources": {
+                        "domestic": "https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/latentsync_unet.pt",
+                        "official": "https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt"
+                    }
+                },
+                {
+                    "id": "latentsync-tiny",
+                    "path": "latentsync/runtime/checkpoints/whisper/tiny.pt",
+                    "size_bytes": 75572083,
+                    "sha256": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+                    "license": "OpenRAIL++",
+                    "sources": {
+                        "domestic": "https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/whisper/tiny.pt",
+                        "official": "https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/whisper/tiny.pt"
+                    }
+                },
+                {
+                    "id": "latentsync-buffalo-l",
+                    "path": "latentsync/face_detection/buffalo_l.zip",
+                    "size_bytes": 288621354,
+                    "sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+                    "license": "MIT",
+                    "sources": {
+                        "official": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "latentsync/runtime/face_detection/models/buffalo_l",
+                        "strip_components": 0
+                    }
+                },
+                {
+                    "id": "breeze-quality-gate-whisper-base",
+                    "path": "quality/whisper/base.pt",
+                    "size_bytes": 145262807,
+                    "sha256": "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+                    "license": "MIT",
+                    "sources": {
+                        "official": "https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt"
+                    }
+                },
+                {
+                    "id": "ffmpeg",
+                    "path": "ffmpeg/ffmpeg-9.0.1-essentials_build.zip",
+                    "size_bytes": 111253802,
+                    "sha256": "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
+                    "license": "GPL-3.0-or-later",
+                    "sources": {
+                        "official": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "ffmpeg/runtime",
+                        "strip_components": 1
+                    }
+                },
+                {
+                    "id": "official-reply-action-base",
+                    "path": "scenes/official-reply-action-base-v1.mp4",
+                    "size_bytes": 7199459,
+                    "sha256": "6d92eee187e1661a49733e053bc5996c641533c58bb164ca3e2a48e8abea5b08",
+                    "license": "Olivia original media preservation",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-action-base-v1.mp4"
+                    }
+                },
+                {
+                    "id": "official-reply-reference",
+                    "path": "scenes/official-reply-reference-000-043s-v1.mp4",
+                    "size_bytes": 4722774,
+                    "sha256": "0a56785e84308de4d4b8ea87e338bae7699f5812bbbc14cb956f82c6964ac80d",
+                    "license": "Olivia original media preservation",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-reference-000-043s-v1.mp4"
+                    }
+                },
+                {
+                    "id": "latentsync-runtime-part-01",
+                    "path": "runtime/olivia-video-runtime-latentsync-20260831.zip.part01",
+                    "size_bytes": 1900000000,
+                    "sha256": "e8937106da9f935a673c6e70b1862ffab8fc0fdd561053800cc101d7d812112a",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-latentsync-20260831.zip.part01"
+                    }
+                },
+                {
+                    "id": "latentsync-runtime-part-02",
+                    "path": "runtime/olivia-video-runtime-latentsync-20260831.zip.part02",
+                    "size_bytes": 1445491860,
+                    "sha256": "7b8175437ce89c0e2724c18555812946ce38ee2423a8acfc29317436073a36b5",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-latentsync-20260831.zip.part02"
+                    }
+                }
+            ],
+            "runtime_artifacts": [
+                {
+                    "id": "latentsync-runtime",
+                    "part_ids": [
+                        "latentsync-runtime-part-01",
+                        "latentsync-runtime-part-02"
+                    ],
+                    "archive_size_bytes": 3345491860,
+                    "archive_sha256": "0410df7ad4e383214c532bb6f9f1e3dc779b79087a5b40b1500fe61b85ea3dcb",
+                    "destination": "latentsync",
+                    "strip_components": 1
+                }
+            ]
+        },
+        {
+            "id": "music_video",
+            "label": "\u89c6\u9891\u56de\u4fe1\uff08\u8bf4\u8bdd + 60 \u79d2\u97f3\u4e50\uff09",
+            "status": "FIXED",
+            "requires_gpu": true,
+            "dependencies": [
+                "ordinary_video",
+                "minimax_music3",
+                "roformer"
+            ],
+            "runtime_environment": {
+                "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe",
+                "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
+                "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
+                "OLIVIA_ROFORMER_PYTHON": "roformer/runtime/python/python.exe",
+                "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
+                "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml"
+            },
+            "files": [
+                {
+                    "id": "comfyui-code",
+                    "path": "sources/ComfyUI-a7365071.zip",
+                    "size_bytes": 12390092,
+                    "sha256": "cf8936fbf1f526dafdec12d030c99e2133f598e5649cace6f1ef296ed836f838",
+                    "license": "GPL-3.0",
+                    "sources": {
+                        "domestic": "https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581",
+                        "official": "https://codeload.github.com/Comfy-Org/ComfyUI/zip/a7365071e47175fb06572d0a56d1bf4116c2f581"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "minimax/runtime",
+                        "strip_components": 1
+                    }
+                },
+                {
+                    "id": "roformer-code",
+                    "path": "sources/melband-roformer-a21cb300.zip",
+                    "size_bytes": 132436,
+                    "sha256": "410c48245212667f63359c3cc915d4aaa334f52bddb3738e5cb125c3dac94f5b",
+                    "license": "MIT",
+                    "sources": {
+                        "domestic": "https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226",
+                        "official": "https://codeload.github.com/openmirlab/melband-roformer-infer/zip/a21cb300e7637b878f46c500a68737aeb5aa2226"
+                    },
+                    "install": {
+                        "kind": "zip",
+                        "destination": "roformer/runtime",
+                        "strip_components": 1
+                    }
+                },
+                {
+                    "id": "roformer-checkpoint",
+                    "path": "roformer/models/MelBandRoformer.ckpt",
+                    "size_bytes": 913106900,
+                    "sha256": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e",
+                    "license": "CC-BY-NC-SA-4.0",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt",
+                        "official": "https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt"
+                    }
+                },
+                {
+                    "id": "roformer-runtime-part-01",
+                    "path": "runtime/olivia-video-runtime-roformer-20260831.zip.part01",
+                    "size_bytes": 1900000000,
+                    "sha256": "aead3c1bfdb09a3a63097aba03b7a6a5947e57b91da140b7da4c4d4c0fc4197a",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-roformer-20260831.zip.part01"
+                    }
+                },
+                {
+                    "id": "roformer-runtime-part-02",
+                    "path": "runtime/olivia-video-runtime-roformer-20260831.zip.part02",
+                    "size_bytes": 989933971,
+                    "sha256": "5c1e710839cdeccb3327214cd7ece8c6e82e2053626311f313925f43a0accc85",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-roformer-20260831.zip.part02"
+                    }
+                },
+                {
+                    "id": "minimax-diffusion",
+                    "path": "minimax/runtime/models/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+                    "size_bytes": 2502161682,
+                    "sha256": "d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f",
+                    "license": "Apache-2.0",
+                    "sources": {
+                        "domestic": "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+                        "official": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/diffusion_models/minimax_music3_dit_int8_convrot.safetensors"
+                    }
+                },
+                {
+                    "id": "minimax-text",
+                    "path": "minimax/runtime/models/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+                    "size_bytes": 9196611886,
+                    "sha256": "010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014",
+                    "license": "Apache-2.0",
+                    "sources": {
+                        "domestic": "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+                        "official": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
+                    }
+                },
+                {
+                    "id": "minimax-vae",
+                    "path": "minimax/runtime/models/vae/minimax_music3_dav.safetensors",
+                    "size_bytes": 216696128,
+                    "sha256": "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c",
+                    "license": "Apache-2.0",
+                    "sources": {
+                        "domestic": "https://modelscope.cn/models/Comfy-Org/MiniMax-Music-3/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/vae/minimax_music3_dav.safetensors",
+                        "official": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6/vae/minimax_music3_dav.safetensors"
+                    }
+                },
+                {
+                    "id": "minimax-runtime-part-01",
+                    "path": "runtime/olivia-video-runtime-minimax-20260831.zip.part01",
+                    "size_bytes": 1900000000,
+                    "sha256": "81a9b3f6a1048f758d44b048438d7c43186981039d8a7e2d023336d6c9a0a3d8",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-minimax-20260831.zip.part01"
+                    }
+                },
+                {
+                    "id": "minimax-runtime-part-02",
+                    "path": "runtime/olivia-video-runtime-minimax-20260831.zip.part02",
+                    "size_bytes": 814245618,
+                    "sha256": "97379aa6b3faa09d20df8d0ea3e474358e7fb9788ae87a096fe283b76df480dd",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-minimax-20260831.zip.part02"
+                    }
+                }
+            ],
+            "runtime_artifacts": [
+                {
+                    "id": "minimax-runtime",
+                    "part_ids": [
+                        "minimax-runtime-part-01",
+                        "minimax-runtime-part-02"
+                    ],
+                    "archive_size_bytes": 2714245618,
+                    "archive_sha256": "59cc7dd47086ac0ec5a27adeebd9098c050a3fb0a21fb3aba50978a0ba562a04",
+                    "destination": "minimax",
+                    "strip_components": 1
+                },
+                {
+                    "id": "roformer-runtime",
+                    "part_ids": [
+                        "roformer-runtime-part-01",
+                        "roformer-runtime-part-02"
+                    ],
+                    "archive_size_bytes": 2889933971,
+                    "archive_sha256": "205562052ec4232ad37f162c2b832c4130abe506065b7f2f77f8739bf8650adb",
+                    "destination": "roformer",
+                    "strip_components": 1
+                }
+            ]
+        }
+    ]
 }

@@ -37,6 +37,7 @@ from video_capability_install import (
     VideoFile,
     VideoFileInstall,
     VideoManifest,
+    VideoRuntimeArtifact,
 )
 import original_client_video_capability_api as video_capability_api
 import original_client_server
@@ -71,15 +72,52 @@ def test_repository_bom_freezes_accepted_latentsync_15_256_profile() -> None:
     }
 
 
-def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
+def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundaries() -> None:
     manifest_path = Path("installer/video-capability-manifest.json")
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest = load_video_manifest(manifest_path)
     ordinary, music = manifest.bundles
     assert ordinary.label == "说话与口型基础组件"
     assert music.label == "视频回信（说话 + 60 秒音乐）"
-    assert len([item for item in ordinary.files if item.identifier.startswith("cosy-")]) == 20
-    assert sum(item.size_bytes for item in ordinary.files if item.identifier.startswith("cosy-")) == 9747516745
+    breeze_files = [
+        item for item in ordinary.files if item.identifier.startswith("breeze-")
+    ]
+    assert len(breeze_files) == 17
+    assert sum(item.size_bytes for item in breeze_files) == 5_744_963_625
+    assert ordinary.dependencies == ("breeze_tts2", "latentsync", "ffmpeg")
+    assert not any(item.identifier.startswith("cosy-") for item in ordinary.files)
+    assert all(
+        item.license == "BreezeBlue-Research-and-Non-Commercial-1.0"
+        for item in breeze_files
+        if item.identifier
+        not in {
+            "breeze-python-runtime",
+            "breeze-runtime-whisper-wheel",
+            "breeze-runtime-code",
+            "breeze-quality-gate-whisper-base",
+        }
+    )
+    assert next(
+        item for item in breeze_files if item.identifier == "breeze-int8-hybrid"
+    ).sha256 == "e9f80ab9976caa3b5905e3d87e71d053aad8fae6b0e75caecbca9efdcf1cb2c8"
+    quality_gate = next(
+        item
+        for item in ordinary.files
+        if item.identifier == "breeze-quality-gate-whisper-base"
+    )
+    assert quality_gate.size_bytes == 145_262_807
+    assert quality_gate.sha256 == (
+        "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
+    )
+    assert payload["provenance"]["breeze_model"] == {
+        "repo": "drbaph/Breeze-TTS-2-comfyui",
+        "revision": "a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4",
+        "official_base_repo": "BreezeBlue/Breeze-TTS-2",
+        "official_base_revision": "c1c8ca18b70b30822735633991d9ebf4898e47d4",
+        "variant": "int8_hybrid",
+        "size_bytes": 5580779297,
+        "license": "BreezeBlue-Research-and-Non-Commercial-1.0",
+    }
     assert music.license_review_required is False
     assert "official_video_assets" not in ordinary.dependencies
     assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
@@ -96,22 +134,32 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.1"
     )
     assert ordinary.runtime_environment == {
-        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe",
+        "OLIVIA_BREEZE_TTS_ROOT": "breeze/runtime",
+        "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
+        "OLIVIA_BREEZE_TTS_MODEL_ROOT": "breeze/model",
+        "OLIVIA_BREEZE_TTS_MODEL_LICENSE": "breeze/model/LICENSE",
+        "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": "quality/whisper",
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4",
         "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4",
-        "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json",
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-reply-action-base-v1.mp4",
     }
+    assert ordinary.runtime_artifacts == (
+        VideoRuntimeArtifact(
+            "latentsync-runtime",
+            ("latentsync-runtime-part-01", "latentsync-runtime-part-02"),
+            3_345_491_860,
+            "0410df7ad4e383214c532bb6f9f1e3dc779b79087a5b40b1500fe61b85ea3dcb",
+            "latentsync",
+            1,
+        ),
+    )
     assert {
         patch.identifier: (patch.target_path, patch.sha256)
         for patch in ordinary.runtime_patches
     } == {
-        "cosyvoice-windows-audio": (
-            "cosyvoice/runtime/cosyvoice/utils/file_utils.py",
-            "019a0f163e397186c0a6d26c5eeaed1c56ba88462200662950c276ceb50c2d27",
-        ),
         "latentsync-windows-memmap": (
             "latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py",
             "a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1",
@@ -133,6 +181,24 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
         "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
     }
+    assert music.runtime_artifacts == (
+        VideoRuntimeArtifact(
+            "minimax-runtime",
+            ("minimax-runtime-part-01", "minimax-runtime-part-02"),
+            2_714_245_618,
+            "59cc7dd47086ac0ec5a27adeebd9098c050a3fb0a21fb3aba50978a0ba562a04",
+            "minimax",
+            1,
+        ),
+        VideoRuntimeArtifact(
+            "roformer-runtime",
+            ("roformer-runtime-part-01", "roformer-runtime-part-02"),
+            2_889_933_971,
+            "205562052ec4232ad37f162c2b832c4130abe506065b7f2f77f8739bf8650adb",
+            "roformer",
+            1,
+        ),
+    )
     provenance = payload["provenance"]
     latentsync_unet = next(item for item in ordinary.files if item.identifier == "latentsync-unet")
     assert latentsync_unet.size_bytes == 5072348184
@@ -143,7 +209,12 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     assert latentsync_tiny.license == "OpenRAIL++"
     assert provenance["roformer"]["license"] == "MIT + CC-BY-NC-SA-4.0 checkpoint"
     assert provenance["roformer"]["config_sha256"] == "5e380dfa5d5757ac4c2b7f6ef607b93d5058ecff805e7b05ed730a47b90d103c"
-    minimax_files = [item for item in music.files if item.identifier.startswith("minimax-")]
+    minimax_files = [
+        item
+        for item in music.files
+        if item.identifier.startswith("minimax-")
+        and not item.identifier.startswith("minimax-runtime-part-")
+    ]
     assert minimax_files
     assert all(
         "/resolve/fbc3502b5d2ca0049348ee28b632f270b35e193a/"
@@ -154,6 +225,352 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("hardware", "reason"),
+    (
+        (
+            {
+                "status": "UNAVAILABLE",
+                "vendor": "unknown",
+                "minimum_vram_mib": 10240,
+                "detected_vram_mib": None,
+                "reason_code": "BREEZE_TTS_NVIDIA_GPU_REQUIRED",
+            },
+            "BREEZE_TTS_NVIDIA_GPU_REQUIRED",
+        ),
+        (
+            {
+                "status": "UNAVAILABLE",
+                "vendor": "NVIDIA",
+                "minimum_vram_mib": 10240,
+                "detected_vram_mib": 8192,
+                "reason_code": "BREEZE_TTS_10GB_VRAM_REQUIRED",
+            },
+            "BREEZE_TTS_10GB_VRAM_REQUIRED",
+        ),
+    ),
+)
+def test_breeze_hardware_gate_blocks_before_any_download_and_is_retryable(
+    tmp_path: Path,
+    hardware: dict[str, object],
+    reason: str,
+) -> None:
+    opened: list[str] = []
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=load_video_manifest(Path("installer/video-capability-manifest.json")),
+        opener=lambda *_args, **_kwargs: opened.append("network") or pytest.fail(
+            "hardware rejection must happen before download"
+        ),
+        hardware_probe=lambda: hardware,
+    )
+
+    status = installer.status()
+    assert status["hardware"] == hardware
+    assert status["bundles"][0]["state"] == "prerequisites_required"
+    assert status["bundles"][0]["reason_code"] == reason
+    with pytest.raises(VideoCapabilityError, match=reason):
+        installer.start(bundle_id="ordinary_video")
+    assert opened == []
+
+
+def test_breeze_hardware_gate_retries_after_gpu_becomes_eligible(tmp_path: Path) -> None:
+    hardware = {
+        "status": "UNAVAILABLE",
+        "vendor": "NVIDIA",
+        "minimum_vram_mib": 10240,
+        "detected_vram_mib": 8192,
+        "reason_code": "BREEZE_TTS_10GB_VRAM_REQUIRED",
+    }
+    manifest = VideoManifest(
+        version="fixture",
+        bundles=(
+            VideoBundle(
+                "ordinary_video",
+                "ordinary",
+                "FIXED",
+                True,
+                ("breeze_tts2",),
+                (),
+            ),
+        ),
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=manifest,
+        hardware_probe=lambda: hardware,
+    )
+
+    with pytest.raises(VideoCapabilityError, match="BREEZE_TTS_10GB_VRAM_REQUIRED"):
+        installer.start(bundle_id="ordinary_video")
+    hardware.update(
+        status="READY",
+        detected_vram_mib=12288,
+        reason_code=None,
+    )
+
+    assert installer.retry(bundle_id="ordinary_video") == "APPLIED"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if installer.status()["bundles"][0]["state"] == "ready":
+            break
+        time.sleep(0.01)
+    assert installer.status()["bundles"][0]["state"] == "ready"
+
+
+def test_breeze_hardware_status_rechecks_gpu_zero_instead_of_using_cached_result(
+    tmp_path: Path,
+) -> None:
+    samples = iter(
+        (
+            {
+                "status": "READY",
+                "vendor": "NVIDIA",
+                "minimum_vram_mib": 10240,
+                "detected_vram_mib": 10240,
+                "reason_code": None,
+            },
+            {
+                "status": "UNAVAILABLE",
+                "vendor": "NVIDIA",
+                "minimum_vram_mib": 10240,
+                "detected_vram_mib": 8192,
+                "reason_code": "BREEZE_TTS_10GB_VRAM_REQUIRED",
+            },
+        )
+    )
+    manifest = VideoManifest(
+        version="fixture",
+        bundles=(
+            VideoBundle(
+                "ordinary_video",
+                "ordinary",
+                "FIXED",
+                True,
+                ("breeze_tts2",),
+                (),
+            ),
+        ),
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=manifest,
+        hardware_probe=lambda: next(samples),
+    )
+
+    status = installer.status()
+
+    assert status["hardware"]["detected_vram_mib"] == 8192
+    assert status["bundles"][0]["reason_code"] == "BREEZE_TTS_10GB_VRAM_REQUIRED"
+
+
+def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    archive = artifacts / "runtime" / "python-fixture.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("python.exe", b"synthetic-python")
+        payload.writestr("python312.zip", b"synthetic-stdlib")
+        payload.writestr("python312._pth", "python312.zip\n.\n")
+    runtime_file = artifacts / "breeze" / "runtime" / "__init__.py"
+    runtime_file.parent.mkdir(parents=True)
+    runtime_file.write_text("# synthetic Breeze runtime\n", encoding="utf-8")
+    files = (
+        VideoFile(
+            "breeze-python-runtime",
+            "runtime/python-fixture.zip",
+            archive.stat().st_size,
+            hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "PSF-2.0",
+            {"official": "https://example.invalid/python.zip"},
+            install=VideoFileInstall("zip", "breeze/python", 0),
+        ),
+        VideoFile(
+            "breeze-runtime-code",
+            "breeze/runtime/__init__.py",
+            runtime_file.stat().st_size,
+            hashlib.sha256(runtime_file.read_bytes()).hexdigest(),
+            "Apache-2.0",
+            {"official": "https://example.invalid/runtime.py"},
+        ),
+    )
+    runner_calls: list[tuple[Path, Path, Path]] = []
+
+    def install_packages(python: Path, site_packages: Path, requirements: Path) -> None:
+        runner_calls.append((python, site_packages, requirements))
+        (site_packages / "torch").mkdir()
+        (site_packages / "torch" / "__init__.py").write_text(
+            "__version__ = '2.9.1+cu128'\n", encoding="utf-8"
+        )
+
+    data_root = (tmp_path / "empty-data").resolve()
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest(
+            "fixture",
+            (
+                VideoBundle(
+                    "ordinary_video",
+                    "ordinary",
+                    "FIXED",
+                    True,
+                    ("breeze_tts2",),
+                    files,
+                    runtime_environment={
+                        "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
+                        "OLIVIA_BREEZE_TTS_ROOT": "breeze/runtime",
+                    },
+                ),
+            ),
+        ),
+        artifact_roots=(artifacts.resolve(),),
+        readiness_probe=lambda _environment: {"ordinary_missing_dependencies": []},
+        hardware_probe=lambda: {
+            "status": "READY",
+            "vendor": "NVIDIA",
+            "minimum_vram_mib": 10240,
+            "detected_vram_mib": 10240,
+            "reason_code": None,
+        },
+        runtime_package_runner=install_packages,
+        runtime_package_verifier=lambda python, runtime: (
+            python.is_file()
+            and (runtime / "__init__.py").is_file()
+            and (python.parent / "Lib" / "site-packages" / "torch" / "__init__.py").is_file()
+        ),
+    )
+
+    assert installer.start(bundle_id="ordinary_video", source_mode="official") == "APPLIED"
+    state = _wait(installer, 0, "ready", "failed")
+    assert state == "ready", installer.status()
+
+    installed = installer.install_root / "ordinary_video"
+    assert len(runner_calls) == 1
+    assert runner_calls[0][0].name == "python.exe"
+    assert runner_calls[0][1].as_posix().endswith("breeze/python/Lib/site-packages")
+    assert "Lib/site-packages" in (
+        installed / "breeze" / "python" / "python312._pth"
+    ).read_text(encoding="utf-8")
+    marker = json.loads(
+        (installed / ".olivia-breeze-runtime.json").read_text(encoding="utf-8")
+    )
+    assert marker["requirements_sha256"] == (
+        "efc8292ae94e7ec7d7eb3c2d3430c9bd666638c7bacec75d595145c78f08a4cd"
+    )
+    assert load_video_runtime_environment(data_root)["OLIVIA_BREEZE_TTS_PYTHON"] == str(
+        installed / "breeze" / "python" / "python.exe"
+    )
+
+
+def test_breeze_runtime_bootstrap_is_hash_locked_and_wheel_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    python = tmp_path / "breeze" / "python" / "python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"fixture")
+    site_packages = python.parent / "Lib" / "site-packages"
+    requirements = Path("installer/breeze-runtime-requirements.txt").resolve()
+    observed: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        observed.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(video_capability_install.subprocess, "run", run)
+
+    VideoCapabilityInstaller._install_breeze_runtime_packages(
+        python, site_packages, requirements
+    )
+
+    command = observed[0]
+    assert "--require-hashes" in command
+    assert "--no-deps" in command
+    assert "--only-binary=:all:" in command
+    assert "--find-links" in command
+    assert str(tmp_path / "breeze" / "wheels") in command
+    assert "--no-binary" not in command
+    assert "--no-build-isolation" not in command
+
+
+def test_runtime_artifact_parts_are_verified_reassembled_and_removed_after_install(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    archive = tmp_path / "latentsync.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("python/python.exe", b"portable-latentsync-python")
+    archive_bytes = archive.read_bytes()
+    split = len(archive_bytes) // 2
+    parts = (archive_bytes[:split], archive_bytes[split:])
+    files: list[VideoFile] = []
+    for index, content in enumerate(parts, start=1):
+        relative = f"runtime/latentsync.zip.part{index:02d}"
+        target = artifacts / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        files.append(
+            VideoFile(
+                f"latentsync-runtime-part-{index:02d}",
+                relative,
+                len(content),
+                hashlib.sha256(content).hexdigest(),
+                "runtime dependency licenses",
+                {"official": f"https://example.invalid/{target.name}"},
+            )
+        )
+    runtime_artifact = VideoRuntimeArtifact(
+        "latentsync-runtime",
+        tuple(item.identifier for item in files),
+        len(archive_bytes),
+        hashlib.sha256(archive_bytes).hexdigest(),
+        "latentsync/runtime",
+        0,
+    )
+    manifest = VideoManifest(
+        "fixture",
+        (
+            VideoBundle(
+                "ordinary_video",
+                "ordinary",
+                "FIXED",
+                False,
+                ("latentsync",),
+                tuple(files),
+                runtime_environment={
+                    "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe"
+                },
+                runtime_artifacts=(runtime_artifact,),
+            ),
+        ),
+    )
+    data_root = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        artifact_roots=(artifacts.resolve(),),
+    )
+
+    assert installer.start(bundle_id="ordinary_video") == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+
+    installed = installer.install_root / "ordinary_video"
+    assert (installed / "latentsync/runtime/python/python.exe").read_bytes() == (
+        b"portable-latentsync-python"
+    )
+    assert not any((installed / item.relative_path).exists() for item in files)
+    assert not any(
+        (installer._download_root(manifest.bundles[0]) / item.relative_path).exists()
+        for item in files
+    )
+    assert (
+        installed / ".runtime-artifacts" / "latentsync-runtime.json"
+    ).is_file()
+    restarted = VideoCapabilityInstaller(data_root=data_root, manifest=manifest)
+    assert restarted.status()["bundles"][0]["state"] == "ready"
 
 
 def test_runtime_text_patch_is_hash_checked_and_fails_on_source_drift(
@@ -238,7 +655,7 @@ def _wait(installer: VideoCapabilityInstaller, index: int, *states: str) -> str:
 def _runtime_archive(tmp_path: Path) -> Path:
     runtime_root = tmp_path / "runtime-source"
     environment = {
-        "OLIVIA_COSYVOICE_PYTHON": "cosyvoice/python/python.exe",
+        "OLIVIA_BREEZE_TTS_PYTHON": "breeze/python/python.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/python/python.exe",
         "OLIVIA_ROFORMER_PYTHON": "roformer/python/python.exe",
@@ -266,7 +683,7 @@ def _runtime_ready_manifest() -> VideoManifest:
     return VideoManifest(
         "1.0", (
             VideoBundle("ordinary_video", "video", "FIXED", False, (), (), runtime_environment={
-                "OLIVIA_COSYVOICE_ROOT": "cosyvoice/runtime", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"}),
+                "OLIVIA_TTS_CONFIG": "config/tts.json", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime"}),
             VideoBundle("music_video", "music", "FIXED", False, (), (), runtime_environment={
                 "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
                 "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py"}),
@@ -279,6 +696,9 @@ def _prepare_runtime_dependencies(data_root: Path, manifest: VideoManifest) -> N
     for relative in ("ordinary_video/cosyvoice/runtime", "ordinary_video/cosyvoice/model",
                      "ordinary_video/latentsync/runtime", "music_video/minimax/runtime"):
         (install_root / relative).mkdir(parents=True, exist_ok=True)
+    config = install_root / "ordinary_video/config/tts.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('{"settings":{}}', encoding="utf-8")
     reference = install_root / "shared/linli-reference.wav"
     reference.parent.mkdir(parents=True, exist_ok=True)
     reference.write_bytes(b"managed-voice")
@@ -567,7 +987,7 @@ def test_runtime_host_unavailable_keeps_verified_artifact_and_degrades_bundles(
             "ordinary_missing_dependencies": ["loader"],
             "music_ready": False,
             "dependencies": [
-                {"id": "cosyvoice", "state": "missing"},
+                {"id": "breeze_tts2", "state": "missing"},
                 {"id": "minimax_music3", "state": "missing"},
             ],
         },
@@ -1087,8 +1507,8 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
     data_root = (tmp_path / "data").resolve()
     install_root = _mark_bundle_payloads_ready(data_root, manifest)
     for relative in (
-        "ordinary_video/cosyvoice/runtime/cosyvoice/cli/cosyvoice.py",
-        "ordinary_video/cosyvoice/runtime/LICENSE", "ordinary_video/ffmpeg/runtime/bin/ffmpeg.exe",
+        "ordinary_video/breeze/runtime/nodes.py",
+        "ordinary_video/breeze/model/LICENSE", "ordinary_video/ffmpeg/runtime/bin/ffmpeg.exe",
         "ordinary_video/scenes/official-reply-action-base-v1.mp4",
         "ordinary_video/scenes/official-reply-reference-000-043s-v1.mp4",
         "music_video/roformer/models/MelBandRoformer.ckpt",
@@ -1097,20 +1517,47 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
         target = install_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"fixture")
-    for relative in ("ordinary_video/cosyvoice/model", "ordinary_video/latentsync/runtime",
+    for relative in ("ordinary_video/breeze/model/drbaph_Breeze-TTS-2-comfyui", "ordinary_video/quality/whisper", "ordinary_video/latentsync/runtime",
                      "music_video/minimax/runtime"):
         (install_root / relative).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("OLIVIA_TTS_REFERENCE_TEXT", "合成测试参考音频的精确转写。")
     monkeypatch.setattr(video_capability_install, "_ready_marker_matches", lambda *_: True)
     monkeypatch.setattr(video_capability_install, "_size_matches", lambda *_: True)
+    monkeypatch.setattr(
+        VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True
+    )
     monkeypatch.setattr(video_capability_install, "_runtime_environment_is_portable", lambda *_: True)
 
     def readiness(environment: Mapping[str, str]) -> dict[str, object]:
         settings = json.loads(Path(environment["OLIVIA_TTS_CONFIG"]).read_text(encoding="utf-8"))
-        ready = Path(settings["settings"]["runtime_root"]) == (install_root / "ordinary_video/cosyvoice/runtime").resolve()
-        return {"ordinary_missing_dependencies": [] if ready else ["cosyvoice"], "music_ready": ready}
+        values = settings["settings"]
+        ready = (
+            values["provider"] == "breeze_tts2"
+            and values["reference_text"] == "合成测试参考音频的精确转写。"
+            and values["license_id"] == "BreezeBlue-Research-and-Non-Commercial-1.0"
+            and Path(values["runtime_root"])
+            == (install_root / "ordinary_video/breeze/runtime").resolve()
+            and Path(values["model_dir"])
+            == (install_root / "ordinary_video/breeze/model").resolve()
+            and values["provider_options"]["model_variant"] == "int8_hybrid"
+            and values["provider_options"]["device"] == "cuda"
+            and values["provider_options"]["attention"] == "eager"
+            and values["provider_options"]["decode_mode"] == "eager"
+        )
+        return {"ordinary_missing_dependencies": [] if ready else ["breeze_tts2"], "music_ready": ready}
 
     installer = VideoCapabilityInstaller(
-        data_root=data_root, manifest=manifest, readiness_probe=readiness)
+        data_root=data_root,
+        manifest=manifest,
+        readiness_probe=readiness,
+        hardware_probe=lambda: {
+            "status": "READY",
+            "vendor": "NVIDIA",
+            "minimum_vram_mib": 10240,
+            "detected_vram_mib": 10240,
+            "reason_code": None,
+        },
+    )
     assert installer.import_runtime_archive(runtime_archive=_runtime_archive(tmp_path)) == "APPLIED"
     worker = Path(load_video_runtime_environment(data_root)["OLIVIA_MINIMAX_WORKER"])
     assert worker.is_file() and worker.is_relative_to(install_root)
@@ -1126,7 +1573,7 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
         check=False,
     )
     assert isolated.returncode == 0, isolated.stderr
-    assert installer.status()["status"] == "READY"
+    assert installer.status()["status"] == "READY", installer.status()
 
 
 def _managed_worker_import_fixture(

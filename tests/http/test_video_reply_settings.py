@@ -89,8 +89,8 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
     validator = Draft202012Validator(schema)
     assert list(validator.iter_errors({"state": "available", "enabled": True}))
     dependency = {
-        "id": "cosyvoice",
-        "label": "语音合成（CosyVoice 3）",
+        "id": "breeze_tts2",
+        "label": "语音合成（Breeze TTS 2）",
         "state": "missing",
         "install_mode": "manual",
         "source_summary": "国内：ModelScope；备用：GitHub / Hugging Face",
@@ -119,15 +119,15 @@ def test_schema_rejects_mixed_variant_and_accepts_both_closed_variants():
             "status": "FAILED",
             "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
             "retryable": False,
-            "missing_dependencies": ["cosyvoice"],
+            "missing_dependencies": ["breeze_tts2"],
         },
     }))
     assert not list(validator.iter_errors({"state": "unavailable", "reason_code": "SETTING_UNAVAILABLE"}))
     assert list(validator.iter_errors({"state": "available", "enabled": True, "reason_code": "X"}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "enabled": False}))
     assert not list(validator.iter_errors({"request_id": "video_reply_setting:x", "status": "DUPLICATE", "enabled": False}))
-    assert not list(validator.iter_errors({"capability": "cosyvoice", "source": "domestic"}))
-    assert not list(validator.iter_errors({"status": "OPENED", "capability": "cosyvoice", "source": "domestic"}))
+    assert not list(validator.iter_errors({"capability": "breeze_tts2", "source": "domestic"}))
+    assert not list(validator.iter_errors({"status": "OPENED", "capability": "breeze_tts2", "source": "domestic"}))
     for value in ({"request_id": "letter:x", "enabled": False}, {"request_id": "video_reply_setting:x", "enabled": False, "extra": 1}, {"request_id": "video_reply_setting:x", "status": "FAILED", "enabled": False}, {"code": 400, "message": "conflict", "data": {"status": "FAILED", "error_code": "VIDEO_REPLY_SETTING_REQUEST_CONFLICT", "retryable": False}}, {"code": 503, "message": "unavailable", "data": {"status": "UNAVAILABLE", "error_code": "VIDEO_REPLY_SETTING_UNAVAILABLE", "retryable": False}}):
         assert list(validator.iter_errors(value))
 
@@ -462,8 +462,8 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
             "ready": False,
             "dependencies": [
                 {
-                    "id": "cosyvoice",
-                    "label": "语音合成（CosyVoice 3）",
+                    "id": "breeze_tts2",
+                    "label": "语音合成（Breeze TTS 2）",
                     "state": "missing",
                     "install_mode": "manual",
                 },
@@ -511,8 +511,8 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
             "ready": False,
             "dependencies": [
                 {
-                    "id": "cosyvoice",
-                    "label": "语音合成（CosyVoice 3）",
+                    "id": "breeze_tts2",
+                    "label": "语音合成（Breeze TTS 2）",
                     "state": "missing",
                     "install_mode": "manual",
                 },
@@ -529,7 +529,7 @@ def test_video_reply_enable_is_blocked_and_receive_fails_closed_when_dependencie
             "status": "FAILED",
             "error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING",
             "retryable": False,
-            "missing_dependencies": ["cosyvoice"],
+            "missing_dependencies": ["breeze_tts2"],
         }
         assert disabled["data"]["enabled"] is False
         assert settings.snapshot().enabled is False
@@ -552,7 +552,7 @@ def test_video_reply_source_page_is_opened_only_through_the_server_allowlist(mon
         success = await local_server.route(
             "POST",
             "/toy/capabilities/video/source",
-            {"capability": "cosyvoice", "source": "domestic"},
+            {"capability": "breeze_tts2", "source": "domestic"},
             {},
         )
         roformer = await local_server.route(
@@ -566,7 +566,7 @@ def test_video_reply_source_page_is_opened_only_through_the_server_allowlist(mon
     success, roformer = asyncio.run(route_check())
     assert success["data"] == {
         "status": "OPENED",
-        "capability": "cosyvoice",
+        "capability": "breeze_tts2",
         "source": "domestic",
     }
     assert roformer["data"] == {
@@ -574,7 +574,7 @@ def test_video_reply_source_page_is_opened_only_through_the_server_allowlist(mon
         "capability": "roformer",
         "source": "domestic",
     }
-    assert opened == [("cosyvoice", "domestic"), ("roformer", "domestic")]
+    assert opened == [("breeze_tts2", "domestic"), ("roformer", "domestic")]
 def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch):
     import local_server
     off = {"letter_id": "off", "content": "x", "reply_text": "r", "letter_status": "COMPLETED", "reply_mode": "spoken_video", "media_status": "QUEUED", "video_reply_enabled": False}

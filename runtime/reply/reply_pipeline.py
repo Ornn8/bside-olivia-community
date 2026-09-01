@@ -84,10 +84,13 @@ class ReplyPipeline:
         *,
         reviewer: ReviewerPort,
         rewriter: RewriterPort,
+        discover_runtime_ports: bool = True,
     ) -> None:
         self.orchestrator = orchestrator
-        runtime_reviewer, runtime_rewriter = create_model_quality_ports(
-            orchestrator
+        runtime_reviewer, runtime_rewriter = (
+            create_model_quality_ports(orchestrator)
+            if discover_runtime_ports
+            else (None, None)
         )
         self.reviewer = (
             runtime_reviewer

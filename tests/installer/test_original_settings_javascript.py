@@ -369,6 +369,20 @@ def test_video_capability_offers_direct_offline_zip_import() -> None:
     assert "选择解压后的离线包" not in video_panel
 
 
+def test_video_capability_explains_breeze_hardware_gate_before_download() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
+
+    assert "BREEZE_TTS_NVIDIA_GPU_REQUIRED" in video_panel
+    assert "BREEZE_TTS_10GB_VRAM_REQUIRED" in video_panel
+    assert "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED" in video_panel
+    assert "Breeze TTS 2 需要 NVIDIA 显卡；CPU 和其他显卡尚未验证" in video_panel
+    assert "Breeze TTS 2 实测要求至少 10GB NVIDIA 显存；8GB 尚未验证" in video_panel
+    assert "无法确认 NVIDIA 显卡与显存，暂不允许下载或启用" in video_panel
+
+
 def test_partial_video_install_still_offers_missing_bundle_download() -> None:
     node = shutil.which("node")
     if node is None:

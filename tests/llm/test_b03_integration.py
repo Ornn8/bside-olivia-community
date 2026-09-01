@@ -13,6 +13,7 @@ from llm_gateway import (
 
 
 def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
+    tmp_path,
     monkeypatch,
 ) -> None:
     import local_server
@@ -25,6 +26,8 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
         requires_api_key=True,
     )
     marker = object()
+    reviewer = object()
+    rewriter = object()
     monkeypatch.setattr(local_server, "LLM_CONFIG", previous)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", previous.timeout_seconds)
     monkeypatch.setattr(local_server, "LLM_CFG", previous.public_dict())
@@ -54,6 +57,17 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     )
     previous_triage_gateway = object()
     monkeypatch.setattr(local_server.emotion_triage, "gateway", previous_triage_gateway)
+    previous_pipeline = local_server.reply_pipeline
+    monkeypatch.setattr(local_server, "reply_pipeline", previous_pipeline)
+    quality_calls = []
+
+    def create_quality(orchestrator, *, gateway_factory=None):
+        quality_calls.append((orchestrator.gateway.adapter.config, orchestrator.gateway.adapter.gateway))
+        assert gateway_factory is not None
+        assert gateway_factory(orchestrator.gateway.adapter.config) is marker
+        return reviewer, rewriter
+
+    monkeypatch.setattr(local_server, "create_model_quality_ports", create_quality)
     monkeypatch.delenv("OLIVIA_LLM_RUNTIME_KEY_CONFIGURED", raising=False)
 
     local_server.apply_runtime_llm_config(
@@ -75,9 +89,57 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     assert local_server._os.environ["OLIVIA_LLM_RUNTIME_KEY_CONFIGURED"] == "1"
     assert resolvers[0]() == "synthetic-runtime-key"
     assert local_server.LLM_CONFIG is local_server.letters_adapter.config
+    assert local_server.LLM_CONFIG.max_retries == 2
+    assert local_server.LLM_CONFIG.retry_backoff_seconds == 0.25
     assert local_server.reply_engine.timeout_seconds == 180.0
+    assert local_server.reply_pipeline is not previous_pipeline
+    assert local_server.reply_pipeline.reviewer is reviewer
+    assert local_server.reply_pipeline.rewriter is rewriter
+    assert quality_calls == [(local_server.LLM_CONFIG, marker)]
     assert local_server.LLM_CFG["model"] == "new-model"
     assert "synthetic-runtime-key" not in repr(local_server.LLM_CFG)
+
+    scene = tmp_path / "scene.mp4"
+    transition = tmp_path / "transition.mp4"
+    tts_config = tmp_path / "tts.json"
+    for path in (scene, transition, tts_config):
+        path.write_bytes(b"fixture")
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("OLIVIA_MUSIC_PERFORMANCE_BASE", str(scene))
+    monkeypatch.setenv("OLIVIA_ORDINARY_ACTION_BASE", str(scene))
+    monkeypatch.setenv("OLIVIA_OFFICIAL_REPLY_REFERENCE", str(transition))
+    monkeypatch.setenv("OLIVIA_TTS_CONFIG", str(tts_config))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+    monkeypatch.setattr(
+        local_server,
+        "_music_voice_plan_for_letter",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=object()),
+    )
+    observed = []
+
+    def render(_content, _reply, output, **kwargs):
+        observed.append(kwargs["gateway"])
+        output.write_bytes(b"video")
+        return {}
+
+    monkeypatch.setattr(local_server, "render_musical_reply", render)
+    letter = {
+        "letter_id": "first-save-music",
+        "content": "letter",
+        "reply_text": "reply",
+        "reply_mode": "musical_video",
+        "music_duration_seconds": 40,
+    }
+    local_server.store.letters[:] = [letter]
+
+    asyncio.run(
+        local_server._render_media_job(
+            "first-save-music", "letter", "reply", "musical_video"
+        )
+    )
+
+    assert observed == [marker]
+    assert letter["media_status"] == "COMPLETED"
 
 
 def test_deepseek_flash_runtime_keeps_generic_engine_timeout_for_non_scoped_calls(
@@ -220,9 +282,15 @@ def test_mock_provider_reaches_b02_send_and_keeps_legacy_out_of_prompt(monkeypat
         }
     ]
     adapter = OfflineDeterministicAdapter(
-        GatewayConfig(provider="mock", model="offline", max_input_chars=10000)
+        GatewayConfig(provider="mock", model="offline", max_input_chars=100000)
     )
     monkeypatch.setattr(local_server.letters_adapter, "gateway", adapter)
+    monkeypatch.setattr(local_server.reply_pipeline, "reviewer", local_server.NullReviewer())
+    monkeypatch.setattr(
+        local_server.reply_pipeline,
+        "rewriter",
+        local_server.UnavailableRewriter(),
+    )
     result = asyncio.run(
         local_server.route(
             "POST",

@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -40,6 +41,10 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_COSYVOICE_ROOT",
     "OLIVIA_COSYVOICE_PYTHON",
     "OLIVIA_COSYVOICE_MODEL_ROOT",
+    "OLIVIA_BREEZE_TTS_ROOT",
+    "OLIVIA_BREEZE_TTS_PYTHON",
+    "OLIVIA_BREEZE_TTS_MODEL_ROOT",
+    "OLIVIA_BREEZE_TTS_MODEL_LICENSE",
     "OLIVIA_LATENTSYNC_PYTHON",
     "OLIVIA_LATENTSYNC_ROOT",
     "OLIVIA_MINIMAX_COMFY_PYTHON",
@@ -51,13 +56,14 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_ROFORMER_CONFIG_PATH",
     "OLIVIA_SEED_VC_ROOT",
     "OLIVIA_TTS_CONFIG",
+    "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT",
     "OLIVIA_ORDINARY_ACTION_BASE",
     "OLIVIA_OFFICIAL_REPLY_REFERENCE",
     "OLIVIA_MUSIC_PERFORMANCE_BASE",
     "OLIVIA_REPLY_VOICE_REFERENCE",
     "OLIVIA_PROVIDER_CACHE_ROOT",
 }
-_PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_COSYVOICE_PYTHON", "OLIVIA_LATENTSYNC_PYTHON", "OLIVIA_MINIMAX_COMFY_PYTHON", "OLIVIA_ROFORMER_PYTHON"))
+_PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_BREEZE_TTS_PYTHON", "OLIVIA_LATENTSYNC_PYTHON", "OLIVIA_MINIMAX_COMFY_PYTHON", "OLIVIA_ROFORMER_PYTHON"))
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
@@ -67,9 +73,15 @@ _RUNTIME_HOST_UNAVAILABLE = "VIDEO_RUNTIME_HOST_UNAVAILABLE"
 _RUNTIME_IMPORT_CACHE = ".video-runtime-import-cache"
 _RUNTIME_IMPORT_CHECKPOINT = ".runtime-import-checkpoint.json"
 _RUNTIME_HOST_DEPENDENCIES = frozenset(
-    {"cosyvoice", "latentsync", "minimax_music3", "roformer"}
+    {"breeze_tts2", "latentsync", "minimax_music3", "roformer"}
 )
 _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
+_BREEZE_MINIMUM_VRAM_MIB = 10 * 1024
+_BREEZE_RUNTIME_REQUIREMENTS = "installer/breeze-runtime-requirements.txt"
+_BREEZE_RUNTIME_REQUIREMENTS_SHA256 = (
+    "efc8292ae94e7ec7d7eb3c2d3430c9bd666638c7bacec75d595145c78f08a4cd"
+)
+_BREEZE_RUNTIME_MARKER = ".olivia-breeze-runtime.json"
 _PROMOTION_LOCK = threading.RLock()
 
 
@@ -79,6 +91,127 @@ class VideoCapabilityError(ValueError):
 
 class _RuntimeHostUnavailable(RuntimeError):
     """The portable runtime process could not start on this host."""
+
+
+def _unavailable_breeze_hardware(
+    reason_code: str,
+    *,
+    vendor: str = "unknown",
+    detected_vram_mib: int | None = None,
+) -> dict[str, object]:
+    return {
+        "status": "UNAVAILABLE",
+        "vendor": vendor,
+        "minimum_vram_mib": _BREEZE_MINIMUM_VRAM_MIB,
+        "detected_vram_mib": detected_vram_mib,
+        "reason_code": reason_code,
+    }
+
+
+def _probe_breeze_hardware() -> dict[str, object]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return _unavailable_breeze_hardware("BREEZE_TTS_NVIDIA_GPU_REQUIRED")
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "--query-gpu=memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10.0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        values = [
+            int(line.strip())
+            for line in completed.stdout.splitlines()
+            if line.strip().isdigit()
+        ]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        values = []
+        completed = None
+    if completed is None or completed.returncode != 0 or not values:
+        return _unavailable_breeze_hardware(
+            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED", vendor="NVIDIA"
+        )
+    # Product inference uses CUDA's default device, so eligibility must be
+    # based on GPU 0 rather than a larger secondary adapter.
+    detected = values[0]
+    if detected < _BREEZE_MINIMUM_VRAM_MIB:
+        return _unavailable_breeze_hardware(
+            "BREEZE_TTS_10GB_VRAM_REQUIRED",
+            vendor="NVIDIA",
+            detected_vram_mib=detected,
+        )
+    return {
+        "status": "READY",
+        "vendor": "NVIDIA",
+        "minimum_vram_mib": _BREEZE_MINIMUM_VRAM_MIB,
+        "detected_vram_mib": detected,
+        "reason_code": None,
+    }
+
+
+def _validated_breeze_hardware(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return _unavailable_breeze_hardware("BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED")
+    expected = {
+        "status",
+        "vendor",
+        "minimum_vram_mib",
+        "detected_vram_mib",
+        "reason_code",
+    }
+    if (
+        set(value) != expected
+        or value.get("status") not in {"READY", "UNAVAILABLE"}
+        or value.get("vendor") not in {"NVIDIA", "unknown"}
+        or value.get("minimum_vram_mib") != _BREEZE_MINIMUM_VRAM_MIB
+        or (
+            value.get("detected_vram_mib") is not None
+            and type(value.get("detected_vram_mib")) is not int
+        )
+        or (
+            value.get("status") == "READY"
+            and (
+                value.get("vendor") != "NVIDIA"
+                or int(value.get("detected_vram_mib") or 0)
+                < _BREEZE_MINIMUM_VRAM_MIB
+                or value.get("reason_code") is not None
+            )
+        )
+        or (
+            value.get("status") == "UNAVAILABLE"
+            and not isinstance(value.get("reason_code"), str)
+        )
+    ):
+        return _unavailable_breeze_hardware("BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED")
+    return dict(value)
+
+
+def _breeze_reference_text(environment: Mapping[str, str]) -> str | None:
+    """Recover the private exact transcript without logging or redistributing it."""
+
+    configured = environment.get("OLIVIA_TTS_CONFIG")
+    if configured:
+        try:
+            path = Path(configured)
+            if path.is_file() and path.stat().st_size <= 1024 * 1024:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                settings = payload.get("settings") if isinstance(payload, dict) else None
+                value = settings.get("reference_text") if isinstance(settings, dict) else None
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+    value = os.environ.get("OLIVIA_TTS_REFERENCE_TEXT")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 class VideoCapabilityState(StrEnum):
@@ -109,6 +242,16 @@ class VideoRuntimePatch:
 
 
 @dataclass(frozen=True)
+class VideoRuntimeArtifact:
+    identifier: str
+    part_ids: tuple[str, ...]
+    archive_size_bytes: int
+    archive_sha256: str
+    destination: str
+    strip_components: int = 0
+
+
+@dataclass(frozen=True)
 class VideoFile:
     identifier: str
     relative_path: str
@@ -135,6 +278,7 @@ class VideoBundle:
     license_review_required: bool = False
     runtime_environment: Mapping[str, str] | None = None
     runtime_patches: tuple[VideoRuntimePatch, ...] = ()
+    runtime_artifacts: tuple[VideoRuntimeArtifact, ...] = ()
 
     @property
     def id(self) -> str:
@@ -268,6 +412,46 @@ def _load_runtime_patch(raw: object) -> VideoRuntimePatch:
     )
 
 
+def _load_runtime_artifact(raw: object) -> VideoRuntimeArtifact:
+    required = {
+        "id",
+        "part_ids",
+        "archive_size_bytes",
+        "archive_sha256",
+        "destination",
+        "strip_components",
+    }
+    if not isinstance(raw, dict) or set(raw) != required:
+        raise VideoCapabilityError("VIDEO_MANIFEST_RUNTIME_ARTIFACT_INVALID")
+    identifier = raw.get("id")
+    part_ids = raw.get("part_ids")
+    size = raw.get("archive_size_bytes")
+    strip_components = raw.get("strip_components")
+    if (
+        not isinstance(identifier, str)
+        or not identifier
+        or "/" in identifier
+        or "\\" in identifier
+        or not isinstance(part_ids, list)
+        or not part_ids
+        or not all(isinstance(item, str) and item for item in part_ids)
+        or len(set(part_ids)) != len(part_ids)
+        or type(size) is not int
+        or size <= 0
+        or type(strip_components) is not int
+        or not 0 <= strip_components <= 4
+    ):
+        raise VideoCapabilityError("VIDEO_MANIFEST_RUNTIME_ARTIFACT_INVALID")
+    return VideoRuntimeArtifact(
+        identifier=identifier,
+        part_ids=tuple(part_ids),
+        archive_size_bytes=size,
+        archive_sha256=_safe_sha(raw.get("archive_sha256")),
+        destination=_safe_relative(raw.get("destination")),
+        strip_components=strip_components,
+    )
+
+
 def load_video_manifest(path: Path) -> VideoManifest:
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
@@ -284,7 +468,7 @@ def load_video_manifest(path: Path) -> VideoManifest:
         if not isinstance(raw, dict):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         required = {"id", "label", "status", "requires_gpu", "dependencies", "files"}
-        if set(raw) - required - {"license_review_required", "runtime_environment", "runtime_patches"} or not required.issubset(raw):
+        if set(raw) - required - {"license_review_required", "runtime_environment", "runtime_patches", "runtime_artifacts"} or not required.issubset(raw):
             raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
         identifier = raw.get("id")
         if identifier not in _PUBLIC_BUNDLES or identifier in seen:
@@ -316,8 +500,37 @@ def load_video_manifest(path: Path) -> VideoManifest:
             != len(parsed_patches)
         ):
             raise VideoCapabilityError("VIDEO_MANIFEST_PATCH_INVALID")
+        runtime_artifacts = raw.get("runtime_artifacts", [])
+        if not isinstance(runtime_artifacts, list):
+            raise VideoCapabilityError("VIDEO_MANIFEST_RUNTIME_ARTIFACT_INVALID")
+        parsed_runtime_artifacts = tuple(
+            _load_runtime_artifact(item) for item in runtime_artifacts
+        )
+        file_by_id = {item.identifier: item for item in parsed_files}
+        runtime_part_ids = tuple(
+            part_id
+            for artifact in parsed_runtime_artifacts
+            for part_id in artifact.part_ids
+        )
+        if (
+            len({item.identifier for item in parsed_runtime_artifacts})
+            != len(parsed_runtime_artifacts)
+            or len(set(runtime_part_ids)) != len(runtime_part_ids)
+            or any(
+                part_id not in file_by_id
+                or file_by_id[part_id].install is not None
+                for artifact in parsed_runtime_artifacts
+                for part_id in artifact.part_ids
+            )
+            or any(
+                artifact.archive_size_bytes
+                != sum(file_by_id[part_id].size_bytes for part_id in artifact.part_ids)
+                for artifact in parsed_runtime_artifacts
+            )
+        ):
+            raise VideoCapabilityError("VIDEO_MANIFEST_RUNTIME_ARTIFACT_INVALID")
         seen.add(identifier)
-        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime, parsed_patches))
+        result.append(VideoBundle(identifier, raw["label"], raw["status"], raw["requires_gpu"], tuple(dependencies), parsed_files, raw.get("license_review_required", False) is True, normalized_runtime, parsed_patches, parsed_runtime_artifacts))
     if seen != _PUBLIC_BUNDLES:
         raise VideoCapabilityError("VIDEO_MANIFEST_BUNDLE_INVALID")
     return VideoManifest(payload["version"], tuple(result))
@@ -624,7 +837,7 @@ def _load_runtime_root_manifest(
             or set(payload["build_inputs"]) != {"schema_version", "components"}
             or payload["build_inputs"].get("schema_version") != "olivia.video-runtime-build-inputs.v1"
             or not isinstance(payload["build_inputs"].get("components"), dict)
-            or set(payload["build_inputs"]["components"]) != {"cosyvoice", "latentsync", "minimax", "roformer"}
+            or set(payload["build_inputs"]["components"]) != {"breeze", "latentsync", "minimax", "roformer"}
         ))
         or not isinstance(payload.get("version"), str)
         or not 1 <= len(payload["version"]) <= 64
@@ -731,7 +944,7 @@ def write_runtime_root_manifest(
         or not 1 <= len(version) <= 64
         or not environment
         or set(environment) - _RUNTIME_ENVIRONMENT_KEYS
-        or (build_inputs is not None and (not isinstance(build_inputs, Mapping) or set(build_inputs) != {"schema_version", "components"} or build_inputs.get("schema_version") != "olivia.video-runtime-build-inputs.v1" or not isinstance(build_inputs.get("components"), dict) or set(build_inputs["components"]) != {"cosyvoice", "latentsync", "minimax", "roformer"}))
+        or (build_inputs is not None and (not isinstance(build_inputs, Mapping) or set(build_inputs) != {"schema_version", "components"} or build_inputs.get("schema_version") != "olivia.video-runtime-build-inputs.v1" or not isinstance(build_inputs.get("components"), dict) or set(build_inputs["components"]) != {"breeze", "latentsync", "minimax", "roformer"}))
     ):
         raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID")
     root = runtime_root.resolve(strict=True)
@@ -854,6 +1067,9 @@ class VideoCapabilityInstaller:
         runtime_archive_roots: tuple[Path, ...] = (),
         runtime_environment_applier: Callable[[Mapping[str, str]], object] | None = None,
         runtime_progress: Callable[[str, int, int], object] | None = None,
+        hardware_probe: Callable[[], Mapping[str, object]] | None = None,
+        runtime_package_runner: Callable[[Path, Path, Path], object] | None = None,
+        runtime_package_verifier: Callable[[Path, Path], bool] | None = None,
     ) -> None:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
@@ -879,6 +1095,17 @@ class VideoCapabilityInstaller:
         self._runtime_archive_roots = tuple(root.resolve() for root in runtime_archive_roots)
         self._runtime_environment_applier = runtime_environment_applier
         self._runtime_progress = runtime_progress
+        self._hardware_probe = hardware_probe or _probe_breeze_hardware
+        self._runtime_package_runner = (
+            runtime_package_runner or self._install_breeze_runtime_packages
+        )
+        self._runtime_package_verifier = (
+            runtime_package_verifier or self._verify_breeze_runtime_process
+        )
+        self._requires_breeze_hardware = any(
+            "breeze_tts2" in bundle.dependencies for bundle in manifest.bundles
+        )
+        self._hardware = self._refresh_hardware()
         self._lock = threading.RLock()
         self._commit_lock = _PROMOTION_LOCK
         self._pause = threading.Event()
@@ -895,6 +1122,16 @@ class VideoCapabilityInstaller:
         _restore_interrupted_promotions(self.install_root)
         self._load_status()
         self._maybe_start_runtime_prepare()
+
+    def _refresh_hardware(self) -> dict[str, object] | None:
+        if not self._requires_breeze_hardware:
+            return None
+        try:
+            value = self._hardware_probe()
+        except Exception:
+            value = None
+        self._hardware = _validated_breeze_hardware(value)
+        return self._hardware
 
     def _bundle(self, bundle_id: str) -> VideoBundle:
         for bundle in self.manifest.bundles:
@@ -988,6 +1225,15 @@ class VideoCapabilityInstaller:
         *,
         probe_cache: dict[str, Mapping[str, object]] | None = None,
     ) -> tuple[VideoCapabilityState, str | None]:
+        if (
+            "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {})
+            and not self._breeze_runtime_marker_ready(root)
+            and not self._external_breeze_runtime_ready()
+        ):
+            return (
+                VideoCapabilityState.PREREQUISITES_REQUIRED,
+                "BREEZE_TTS_RUNTIME_UNAVAILABLE",
+            )
         if not self._runtime_wiring_ready(root, bundle):
             return (
                 VideoCapabilityState.PREREQUISITES_REQUIRED,
@@ -1021,6 +1267,25 @@ class VideoCapabilityInstaller:
             pass
         return self._runtime_dependency_state(bundle, probe_cache=probe_cache)
 
+    def _external_breeze_runtime_ready(self) -> bool:
+        try:
+            profile = json.loads(
+                (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(
+                    encoding="utf-8"
+                )
+            )
+            external = profile.get("external_environment")
+            candidate = Path(external["OLIVIA_BREEZE_TTS_PYTHON"])
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ):
+            return False
+        return candidate.is_file()
+
     def _load_status(self) -> None:
         probe_cache: dict[str, Mapping[str, object]] = {}
         for bundle in self.manifest.bundles:
@@ -1034,12 +1299,19 @@ class VideoCapabilityInstaller:
                 continue
             root = self._final_root(bundle)
             try:
+                runtime_part_ids = {
+                    part_id
+                    for artifact in bundle.runtime_artifacts
+                    for part_id in artifact.part_ids
+                }
                 content_ready = (
                     _ready_marker_matches(root, bundle, self.manifest.version)
                     and all(
                         _size_matches(root, root / item.relative_path, item)
                         for item in bundle.files
+                        if item.identifier not in runtime_part_ids
                     )
+                    and self._runtime_artifacts_ready(root, bundle)
                 )
             except (OSError, ComponentUpdateError, VideoCapabilityError):
                 content_ready = False
@@ -1055,6 +1327,7 @@ class VideoCapabilityInstaller:
 
     def status(self) -> dict[str, object]:
         with self._lock:
+            self._refresh_hardware()
             if self._runtime_import["state"] not in {
                 "queued",
                 "extracting",
@@ -1064,6 +1337,15 @@ class VideoCapabilityInstaller:
                 self._load_status()
             self._maybe_start_runtime_prepare()
             bundles = [self._status[item.identifier].to_dict() for item in self.manifest.bundles]
+            if self._hardware is not None and self._hardware["status"] != "READY":
+                for item, bundle in zip(bundles, self.manifest.bundles, strict=True):
+                    if bundle.requires_gpu and item["state"] not in {
+                        "queued",
+                        "downloading",
+                        "verifying",
+                    }:
+                        item["state"] = "prerequisites_required"
+                        item["reason_code"] = str(self._hardware["reason_code"])
             if self._runtime_import["state"] == "failed":
                 for item in bundles:
                     if item["state"] == "ready":
@@ -1073,7 +1355,7 @@ class VideoCapabilityInstaller:
                                 "reason_code", "VIDEO_RUNTIME_IMPORT_FAILED"
                             )
                         )
-            return {
+            result = {
                 "schema_version": "olivia.video-capability-status.v2",
                 "status": "READY" if all(item["state"] == "ready" for item in bundles) else "UNAVAILABLE",
                 "capability": "video",
@@ -1081,6 +1363,9 @@ class VideoCapabilityInstaller:
                 "bundles": bundles,
                 "runtime_import": dict(self._runtime_import),
             }
+            if self._hardware is not None:
+                result["hardware"] = dict(self._hardware)
+            return result
 
     def _set_runtime_import_state(
         self, state: str, *, reason_code: str | None = None
@@ -1204,15 +1489,36 @@ class VideoCapabilityInstaller:
             raise VideoCapabilityError("VIDEO_SOURCE_MODE_INVALID")
         if bundle.license_review_required and accept_licenses is not True:
             raise VideoCapabilityError("VIDEO_LICENSE_REVIEW_REQUIRED")
+        hardware = self._refresh_hardware()
+        if bundle.requires_gpu and hardware is not None and hardware["status"] != "READY":
+            reason = str(hardware["reason_code"])
+            with self._lock:
+                current = self._status.get(
+                    bundle_id,
+                    VideoBundleStatus(bundle_id, VideoCapabilityState.MISSING, 0, 0),
+                )
+                self._set(
+                    bundle,
+                    VideoCapabilityState.PREREQUISITES_REQUIRED,
+                    current.downloaded_bytes,
+                    reason=reason,
+                )
+            raise VideoCapabilityError(reason)
         with self._lock:
             thread = self._threads.get(bundle_id)
             if thread is not None and thread.is_alive():
                 return "NOOP"
-            if self._status.get(bundle_id, VideoBundleStatus(bundle_id, VideoCapabilityState.MISSING, 0, 0)).state in {
+            current_status = self._status.get(
+                bundle_id,
+                VideoBundleStatus(bundle_id, VideoCapabilityState.MISSING, 0, 0),
+            )
+            if current_status.state in {
                 VideoCapabilityState.READY,
                 VideoCapabilityState.LICENSE_REVIEW_REQUIRED,
-                VideoCapabilityState.PREREQUISITES_REQUIRED,
-            }:
+            } or (
+                current_status.state == VideoCapabilityState.PREREQUISITES_REQUIRED
+                and current_status.downloaded_bytes >= current_status.total_bytes > 0
+            ):
                 return "NOOP"
             self._pause.clear()
             self._set(bundle, VideoCapabilityState.QUEUED, 0, source=source_mode)
@@ -1470,6 +1776,45 @@ class VideoCapabilityInstaller:
             self._runtime_import["reason_code"] = _RUNTIME_HOST_UNAVAILABLE
         return True
 
+    def _resume_bundled_runtime(self) -> bool:
+        try:
+            profile = json.loads(
+                (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(
+                    encoding="utf-8"
+                )
+            )
+            if not isinstance(profile, dict) or "external_environment" in profile:
+                return False
+            environment = load_video_runtime_environment(self.data_root)
+        except (OSError, UnicodeError, json.JSONDecodeError, VideoCapabilityError):
+            return False
+        if not all(
+            key in environment and Path(environment[key]).is_file()
+            for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+        ):
+            return False
+        try:
+            self._install_managed_minimax_worker()
+        except VideoCapabilityError:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_WORKER_UNAVAILABLE"
+            )
+            return True
+        try:
+            if self._runtime_environment_applier is not None:
+                self._runtime_environment_applier(environment)
+        except Exception:
+            self._set_runtime_import_state(
+                "failed", reason_code="VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED"
+            )
+            return True
+        self._runtime_import = {
+            "state": "ready",
+            "checked_bytes": 0,
+            "total_bytes": 0,
+        }
+        return True
+
     def _maybe_start_runtime_prepare(self) -> None:
         state = self._runtime_import["state"]
         if state not in {"idle", "required", "failed"}:
@@ -1478,7 +1823,7 @@ class VideoCapabilityInstaller:
             return
         if state == "failed" and not self._runtime_archives and not self._runtime_archive_roots:
             return
-        if self._resume_persisted_runtime():
+        if self._resume_bundled_runtime() or self._resume_persisted_runtime():
             return
         if any(
             self._status.get(bundle.identifier) is None
@@ -1537,6 +1882,9 @@ class VideoCapabilityInstaller:
     def _installed_bundle_environment(self) -> dict[str, str]:
         ordinary = self._final_root(self._bundle("ordinary_video"))
         candidates = {
+            "OLIVIA_BREEZE_TTS_ROOT": ordinary / "breeze" / "runtime",
+            "OLIVIA_BREEZE_TTS_MODEL_ROOT": ordinary / "breeze" / "model",
+            "OLIVIA_BREEZE_TTS_MODEL_LICENSE": ordinary / "breeze" / "model" / "LICENSE",
             "OLIVIA_COSYVOICE_ROOT": ordinary / "cosyvoice" / "runtime",
             "OLIVIA_COSYVOICE_MODEL_ROOT": ordinary / "cosyvoice" / "model",
             "OLIVIA_REPLY_VOICE_REFERENCE": self.install_root
@@ -1702,24 +2050,23 @@ class VideoCapabilityInstaller:
         for key, value in self._installed_bundle_environment().items():
             environment.setdefault(key, value)
         environment.update(external_environment)
-        if "OLIVIA_TTS_CONFIG" not in environment:
-            cosy_root = (
-                Path(environment["OLIVIA_COSYVOICE_ROOT"])
-                if environment.get("OLIVIA_COSYVOICE_ROOT") else None
-            )
-            model_root = Path(
-                environment.get(
-                    "OLIVIA_COSYVOICE_MODEL_ROOT",
-                    str(
-                        self._final_root(self._bundle("ordinary_video"))
-                        / "cosyvoice"
-                        / "model"
-                    ),
-                )
-            )
+        if self._requires_breeze_hardware:
+            breeze_root = Path(environment.get("OLIVIA_BREEZE_TTS_ROOT", ""))
+            model_root = Path(environment.get("OLIVIA_BREEZE_TTS_MODEL_ROOT", ""))
+            model_license = Path(environment.get("OLIVIA_BREEZE_TTS_MODEL_LICENSE", ""))
             reference = Path(environment.get("OLIVIA_REPLY_VOICE_REFERENCE", ""))
-            if cosy_root is None or not cosy_root.is_dir() or not model_root.is_dir() or not reference.is_file():
+            reference_text = _breeze_reference_text(environment)
+            external_python = Path(environment.get("OLIVIA_BREEZE_TTS_PYTHON", ""))
+            if (
+                not breeze_root.is_dir()
+                or not model_root.is_dir()
+                or not model_license.is_file()
+                or not reference.is_file()
+                or not external_python.is_file()
+            ):
                 raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+            if reference_text is None:
+                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_REFERENCE_TEXT_UNAVAILABLE")
             generated_root = self.install_root / "generated"
             generated_root.mkdir(parents=True, exist_ok=True)
             generated_config = generated_root / "tts_local.json"
@@ -1732,14 +2079,33 @@ class VideoCapabilityInstaller:
                         {
                             "schema_version": "b10b.module-config.v1",
                             "module_id": "tts-local",
-                            "profile": "verified-offline-runtime",
+                            "profile": "breeze-tts2-int8-hybrid",
                             "settings": {
-                                "provider": "cosyvoice3",
-                                "runtime_root": str(cosy_root),
+                                "provider": "breeze_tts2",
+                                "runtime_root": str(breeze_root),
                                 "model_dir": str(model_root),
                                 "reference_audio": str(reference),
+                                "reference_text": reference_text,
+                                "language": "zh",
+                                "license_id": "BreezeBlue-Research-and-Non-Commercial-1.0",
                                 "fallback": "text",
                                 "fp16": True,
+                                "provider_options": {
+                                    "external_python": str(external_python),
+                                    "model_variant": "int8_hybrid",
+                                    "model_license_path": str(model_license),
+                                    "quality_gate_python": str(external_python),
+                                    "quality_gate_cache_root": str(
+                                        self.data_root / "provider-cache" / "breeze-quality-gate"
+                                    ),
+                                    "dtype": "bf16",
+                                    "device": "cuda",
+                                    "attention": "eager",
+                                    "decode_mode": "eager",
+                                    "cfg_scale": 4.0,
+                                    "seed": 200717,
+                                    "max_new_tokens": 650,
+                                },
                             },
                         },
                         ensure_ascii=False,
@@ -1753,6 +2119,8 @@ class VideoCapabilityInstaller:
             finally:
                 generated_temporary.unlink(missing_ok=True)
             environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
+        elif "OLIVIA_TTS_CONFIG" not in environment:
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
         ready = False
         probe_exception = False
         if not host_unavailable:
@@ -1901,6 +2269,10 @@ class VideoCapabilityInstaller:
             expected = [
                 {"path": item.relative_path, "size_bytes": item.size_bytes, "sha256": item.sha256}
                 for item in bundle.files
+                if not any(
+                    item.identifier in artifact.part_ids
+                    for artifact in bundle.runtime_artifacts
+                )
             ]
             expected.extend(self._assemble_archives(root, bundle))
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded, source=source_used)
@@ -1910,6 +2282,7 @@ class VideoCapabilityInstaller:
             if _is_reparse_point(root):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             _verify_staged_tree(root, expected)
+            self._bootstrap_breeze_runtime(root, bundle)
             (root / ".ready.json").write_text(
                 json.dumps(
                     {
@@ -1921,6 +2294,16 @@ class VideoCapabilityInstaller:
                 encoding="utf-8",
             )
             self._promote_directory(root, final, refresh_environment=True)
+            for artifact in bundle.runtime_artifacts:
+                for part_id in artifact.part_ids:
+                    cached_part = _inside(
+                        download_root, download_root / next(
+                            item.relative_path
+                            for item in bundle.files
+                            if item.identifier == part_id
+                        )
+                    )
+                    cached_part.unlink(missing_ok=True)
             with self._lock:
                 state, reason = self._installed_state(final, bundle)
                 self._set(
@@ -1934,9 +2317,14 @@ class VideoCapabilityInstaller:
         except InterruptedError:
             with self._lock:
                 self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_mode)
-        except Exception:
+        except Exception as exc:
             with self._lock:
-                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_mode, reason="VIDEO_BUNDLE_INSTALL_FAILED")
+                reason = (
+                    str(exc)
+                    if isinstance(exc, VideoCapabilityError)
+                    else "VIDEO_BUNDLE_INSTALL_FAILED"
+                )
+                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_mode, reason=reason)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -1964,7 +2352,17 @@ class VideoCapabilityInstaller:
             return False
         missing: list[VideoFile] = []
         existing_bytes = 0
+        runtime_part_ids = {
+            part_id
+            for artifact in bundle.runtime_artifacts
+            for part_id in artifact.part_ids
+        }
+        if not self._runtime_artifacts_ready(root, bundle):
+            return False
         for item in bundle.files:
+            if item.identifier in runtime_part_ids:
+                existing_bytes += item.size_bytes
+                continue
             target = _inside(root, root / item.relative_path)
             if target.exists():
                 if not _verify_and_true(target, item):
@@ -2080,6 +2478,60 @@ class VideoCapabilityInstaller:
                 strip_components=item.install.strip_components,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
+        file_by_id = {item.identifier: item for item in bundle.files}
+        for artifact in bundle.runtime_artifacts:
+            temporary_archive = root / f".{artifact.identifier}.{uuid.uuid4().hex}.zip"
+            digest = hashlib.sha256()
+            written_bytes = 0
+            try:
+                with temporary_archive.open("xb") as output:
+                    for part_id in artifact.part_ids:
+                        part = file_by_id[part_id]
+                        part_path = _inside(root, root / part.relative_path)
+                        with part_path.open("rb") as source:
+                            while chunk := source.read(8 * 1024 * 1024):
+                                output.write(chunk)
+                                digest.update(chunk)
+                                written_bytes += len(chunk)
+                if (
+                    written_bytes != artifact.archive_size_bytes
+                    or digest.hexdigest() != artifact.archive_sha256
+                ):
+                    raise VideoCapabilityError("VIDEO_RUNTIME_ARTIFACT_INVALID")
+                destination = _inside(root, root / artifact.destination)
+                extracted = _extract_zip_safely(
+                    temporary_archive,
+                    destination,
+                    strip_components=artifact.strip_components,
+                    maximum_expanded_bytes=_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES,
+                )
+                expected.extend(
+                    {
+                        **entry,
+                        "path": f"{artifact.destination}/{entry['path']}",
+                    }
+                    for entry in extracted
+                )
+                marker = root / ".runtime-artifacts" / f"{artifact.identifier}.json"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "olivia.video-runtime-artifact.v1",
+                            "id": artifact.identifier,
+                            "archive_size_bytes": artifact.archive_size_bytes,
+                            "archive_sha256": artifact.archive_sha256,
+                            "destination": artifact.destination,
+                        },
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                expected.append(_tree_entry(root, marker.relative_to(root).as_posix()))
+            finally:
+                temporary_archive.unlink(missing_ok=True)
+            for part_id in artifact.part_ids:
+                _inside(root, root / file_by_id[part_id].relative_path).unlink(missing_ok=True)
         for runtime_patch in bundle.runtime_patches:
             apply_runtime_text_patch(
                 bundle_root=root,
@@ -2112,6 +2564,180 @@ class VideoCapabilityInstaller:
                 expected = [entry for entry in expected if entry["path"] != relative]
                 expected.append(_tree_entry(root, relative))
         return expected
+
+    @staticmethod
+    def _runtime_artifacts_ready(root: Path, bundle: VideoBundle) -> bool:
+        for artifact in bundle.runtime_artifacts:
+            try:
+                marker = json.loads(
+                    (
+                        root / ".runtime-artifacts" / f"{artifact.identifier}.json"
+                    ).read_text(encoding="utf-8")
+                )
+                destination = _inside(root, root / artifact.destination)
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                VideoCapabilityError,
+            ):
+                return False
+            if marker != {
+                "schema_version": "olivia.video-runtime-artifact.v1",
+                "id": artifact.identifier,
+                "archive_size_bytes": artifact.archive_size_bytes,
+                "archive_sha256": artifact.archive_sha256,
+                "destination": artifact.destination,
+            } or not destination.is_dir():
+                return False
+        return True
+
+    @staticmethod
+    def _breeze_requirements_path() -> Path:
+        return Path(__file__).resolve().parent / _BREEZE_RUNTIME_REQUIREMENTS
+
+    @staticmethod
+    def _configure_embedded_python(python_path: Path) -> Path:
+        candidates = sorted(python_path.parent.glob("python*._pth"))
+        if len(candidates) != 1:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_PTH_INVALID")
+        pth = candidates[0]
+        python_zip = next(
+            (path.name for path in python_path.parent.glob("python*.zip") if path.is_file()),
+            None,
+        )
+        if python_zip is None:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_STDLIB_MISSING")
+        (python_path.parent / "Lib" / "site-packages").mkdir(
+            parents=True, exist_ok=True
+        )
+        pth.write_text(
+            f"{python_zip}\n.\nLib/site-packages\nimport site\n",
+            encoding="utf-8",
+        )
+        return python_path.parent / "Lib" / "site-packages"
+
+    @staticmethod
+    def _install_breeze_runtime_packages(
+        python_path: Path, site_packages: Path, requirements: Path
+    ) -> None:
+        environment = dict(os.environ)
+        for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"):
+            environment.pop(key, None)
+        environment.update(
+            PIP_DISABLE_PIP_VERSION_CHECK="1",
+            PIP_NO_INPUT="1",
+            PYTHONNOUSERSITE="1",
+            PYTHONSAFEPATH="1",
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--require-hashes",
+                "--no-deps",
+                "--only-binary=:all:",
+                "--find-links",
+                str(python_path.parent.parent / "wheels"),
+                "--extra-index-url",
+                "https://download.pytorch.org/whl/cu128",
+                "--target",
+                str(site_packages),
+                "--requirement",
+                str(requirements),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=7200.0,
+            env=environment,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_INSTALL_FAILED")
+
+    @staticmethod
+    def _verify_breeze_runtime_process(python_path: Path, runtime_root: Path) -> bool:
+        script = (
+            "import _distutils_hack, soundfile, torch, transformers, whisper; "
+            "assert torch.__version__ == '2.9.1+cu128'; "
+            "assert torch.version.cuda == '12.8'; "
+            "assert torch.cuda.is_available(); "
+            "torch.ones(1, device='cuda')"
+        )
+        environment = dict(os.environ)
+        for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"):
+            environment.pop(key, None)
+        environment.update(PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1")
+        try:
+            completed = subprocess.run(
+                [str(python_path), "-I", "-B", "-c", script],
+                cwd=runtime_root,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                timeout=180.0,
+                env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
+
+    def _bootstrap_breeze_runtime(self, root: Path, bundle: VideoBundle) -> None:
+        if "OLIVIA_BREEZE_TTS_PYTHON" not in (bundle.runtime_environment or {}):
+            return
+        relative_python = (bundle.runtime_environment or {}).get(
+            "OLIVIA_BREEZE_TTS_PYTHON"
+        )
+        if relative_python is None:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_PYTHON_PATH_MISSING")
+        python_path = _inside(root, root / relative_python)
+        if not python_path.is_file():
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_PYTHON_EXE_MISSING")
+        requirements = self._breeze_requirements_path()
+        try:
+            requirements_sha256 = hashlib.sha256(requirements.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_LOCK_UNAVAILABLE") from exc
+        if requirements_sha256 != _BREEZE_RUNTIME_REQUIREMENTS_SHA256:
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_LOCK_INVALID")
+        site_packages = self._configure_embedded_python(python_path)
+        self._runtime_package_runner(python_path, site_packages, requirements)
+        if not self._runtime_package_verifier(python_path, root / "breeze" / "runtime"):
+            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_START_FAILED")
+        (root / _BREEZE_RUNTIME_MARKER).write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.breeze-runtime.v1",
+                    "requirements_sha256": requirements_sha256,
+                    "python": relative_python,
+                    "torch": "2.9.1+cu128",
+                    "cuda": "12.8",
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _breeze_runtime_marker_ready(root: Path) -> bool:
+        try:
+            marker = json.loads((root / _BREEZE_RUNTIME_MARKER).read_text(encoding="utf-8"))
+            python_path = _inside(root, root / str(marker["python"]))
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, VideoCapabilityError):
+            return False
+        return (
+            marker.get("schema_version") == "olivia.breeze-runtime.v1"
+            and marker.get("requirements_sha256")
+            == _BREEZE_RUNTIME_REQUIREMENTS_SHA256
+            and marker.get("torch") == "2.9.1+cu128"
+            and marker.get("cuda") == "12.8"
+            and python_path.is_file()
+        )
 
     def _copy_offline(self, offline_root: Path, item: VideoFile, target: Path) -> None:
         if offline_root.is_file() and zipfile.is_zipfile(offline_root):
@@ -2252,7 +2878,10 @@ def _extract_zip_safely(
     destination: Path,
     *,
     strip_components: int,
+    maximum_expanded_bytes: int | None = None,
 ) -> list[dict[str, object]]:
+    if maximum_expanded_bytes is None:
+        maximum_expanded_bytes = _MAX_ARCHIVE_EXPANDED_BYTES
     destination.mkdir(parents=True, exist_ok=True)
     written: set[str] = set()
     expected: list[dict[str, object]] = []
@@ -2283,7 +2912,7 @@ def _extract_zip_safely(
                     raise VideoCapabilityError("VIDEO_ARCHIVE_DUPLICATE_PATH")
                 written.add(collision_key)
                 expanded += member.file_size
-                if expanded > _MAX_ARCHIVE_EXPANDED_BYTES:
+                if expanded > maximum_expanded_bytes:
                     raise VideoCapabilityError("VIDEO_ARCHIVE_TOO_LARGE")
                 target = _inside(destination, destination / relative)
                 if member.is_dir():
