@@ -171,6 +171,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
+    "installer/native_window_layout.py",
     "installer/provision_mem0_embedding.py",
     "installer/patch_native_user_settings.py",
     "installer/runtime-requirements.txt",
