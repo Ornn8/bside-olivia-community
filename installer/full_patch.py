@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -544,6 +545,20 @@ def _write_start_scripts(root: Path, port: int) -> None:
     )
 
 
+def _managed_entry_metadata(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _managed_entry_is_reparse(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
 def _refresh_existing_install(
     target: Path,
     payload: Path,
@@ -584,7 +599,10 @@ def _refresh_existing_install(
         for name in retired_names:
             active = target / name
             backup = rollback / name
-            if active.exists() or active.is_symlink():
+            metadata = _managed_entry_metadata(active)
+            if metadata is not None:
+                if _managed_entry_is_reparse(metadata):
+                    raise OSError("managed update state is a reparse point")
                 os.replace(active, backup)
                 backed_up.append((active, backup))
         for name in names:
@@ -604,7 +622,7 @@ def _refresh_existing_install(
             else:
                 active.unlink(missing_ok=True)
         for active, backup in reversed(backed_up):
-            if backup.exists():
+            if _managed_entry_metadata(backup) is not None:
                 os.replace(backup, active)
         raise PatchInstallError("PATCH_PAYLOAD_REFRESH_FAILED") from exc
     finally:

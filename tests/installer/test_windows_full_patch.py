@@ -2090,6 +2090,47 @@ def test_repeat_install_rolls_back_the_active_payload_when_publish_fails(
     assert old_version.read_text(encoding="utf-8") == "old version"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics are required")
+def test_repeat_install_rejects_a_broken_versions_junction_without_mutation(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    outside = tmp_path / "retired-versions-target"
+    outside.mkdir()
+    versions = target / "versions"
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(versions), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    shutil.rmtree(outside)
+    marker = target / ".olivia-full-patch.json"
+    marker_before = marker.read_bytes()
+
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_REFRESH_FAILED"):
+        install_full_patch(official, target, payload, manifest)
+
+    assert os.path.lexists(versions)
+    assert marker.read_bytes() == marker_before
+
+
+def test_windows_patch_docs_define_full_refresh_update_state_retirement() -> None:
+    documentation = (
+        Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"
+    ).read_text(encoding="utf-8")
+
+    assert "完整安装器刷新会退役" in documentation
+    assert "`.olivia-update-state.json`" in documentation
+    assert "`versions/`" in documentation
+    assert "刷新失败会恢复" in documentation
+
+
 def test_incomplete_old_marker_is_not_treated_as_current_install(
     fixture_inputs,
     tmp_path: Path,

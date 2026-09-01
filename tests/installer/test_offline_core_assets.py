@@ -1150,6 +1150,30 @@ def test_asset_failure_restores_preinstall_component_state_and_versions(
     ) == "preserve"
 
 
+def test_successful_full_refresh_retires_component_state_and_preserves_user_data(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    letters = product / "install/data/letters.json"
+    letters.parent.mkdir(parents=True)
+    letters.write_text("private-user-data", encoding="utf-8")
+
+    result, _ = _run_runtime_publish_fixture(
+        tmp_path,
+        product_root=product,
+        bootstrap_exit_code=0,
+        bootstrap_retires_update_state=True,
+        seed_update_state=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not (product / "install/.olivia-update-state.json").exists()
+    assert not (product / "install/versions").exists()
+    assert letters.read_text(encoding="utf-8") == "private-user-data"
+    assert not list(product.glob(".install.transaction*"))
+    assert not list(product.glob(".install.rollback.*"))
+
+
 def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Path) -> None:
     product = tmp_path / "product"
     interrupted, _ = _run_runtime_publish_fixture(tmp_path / "first", product_root=product, bootstrap_exit_code=0, bootstrap_replaces_managed_app=True, interrupt_after_bootstrap=True)
