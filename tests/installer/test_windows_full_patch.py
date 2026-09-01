@@ -1916,7 +1916,11 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert "launcher\\version_launcher.py" in uninstall
     assert "installer_main" not in uninstall
     assert "setlocal EnableDelayedExpansion" in uninstall
-    assert "uninstall --apply & exit /b !ERRORLEVEL!" in uninstall
+    assert "uninstall --apply" in uninstall
+    assert "set EXIT_CODE=!ERRORLEVEL!" in uninstall
+    assert "start \"\" /b cmd.exe" in uninstall
+    assert "del /f /q" in uninstall
+    assert "exit /b !EXIT_CODE!" in uninstall
     for script in (
         installed / "START.cmd",
         installed / "CONFIGURE.cmd",

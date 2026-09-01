@@ -28,6 +28,73 @@ except ImportError:  # Support direct execution and the stable runpy launcher.
     )
 
 
+_STOP_MANAGED_PROCESSES = r"""
+$ErrorActionPreference = 'Stop'
+$root = [IO.Path]::GetFullPath($env:OLIVIA_UNINSTALL_TARGET)
+$appPrefix = [IO.Path]::GetFullPath((Join-Path $root 'app')) + [IO.Path]::DirectorySeparatorChar
+$backendToken = [IO.Path]::GetFullPath((Join-Path $root 'local_backend'))
+$taskkill = Join-Path $env:WINDIR 'System32\taskkill.exe'
+$targets = @(Get-CimInstance Win32_Process | Where-Object {
+    $executable = [string]$_.ExecutablePath
+    $command = [string]$_.CommandLine
+    ($executable -and $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+    (($_.Name -in @('python.exe', 'pythonw.exe')) -and
+        $command.IndexOf($backendToken, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+})
+foreach ($target in $targets) {
+    & $taskkill /PID $target.ProcessId /T /F *> $null
+}
+for ($attempt = 0; $attempt -lt 50; $attempt += 1) {
+    $remaining = @(Get-CimInstance Win32_Process | Where-Object {
+        $executable = [string]$_.ExecutablePath
+        $command = [string]$_.CommandLine
+        ($executable -and $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+        (($_.Name -in @('python.exe', 'pythonw.exe')) -and
+            $command.IndexOf($backendToken, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })
+    if ($remaining.Count -eq 0) { exit 0 }
+    Start-Sleep -Milliseconds 100
+}
+exit 1
+"""
+
+
+def _stop_managed_processes(root: Path) -> None:
+    if os.name != "nt":
+        return
+    powershell = (
+        Path(os.environ["WINDIR"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    if not powershell.is_file():
+        raise OSError("MANAGED_PROCESS_STOP_FAILED")
+    environment = dict(os.environ)
+    environment["OLIVIA_UNINSTALL_TARGET"] = os.fspath(root)
+    command = [
+        os.fspath(powershell),
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        _STOP_MANAGED_PROCESSES,
+    ]
+    for _attempt in range(2):
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=environment,
+        )
+        if result.returncode == 0:
+            return
+    raise OSError("MANAGED_PROCESS_STOP_FAILED")
+
+
 def _remove_launch_shortcuts(root: Path) -> None:
     if os.name != "nt":
         return
@@ -86,9 +153,14 @@ def main() -> int:
         return 2
     print(json.dumps({"status": "UNINSTALLED" if args.apply else "DRY_RUN", "owned_paths": list(OWNED_PATHS), "preserved_paths": list(PRESERVED_PATHS)}, ensure_ascii=False))
     if args.apply:
+        try:
+            _stop_managed_processes(root)
+        except (KeyError, OSError, subprocess.SubprocessError):
+            print("MANAGED_PROCESS_STOP_FAILED")
+            return 2
         _remove_launch_shortcuts(root)
         try:
-            remove_owned_targets(root)
+            remove_owned_targets(root, deferred_paths=("UNINSTALL.cmd",))
         except ValueError:
             print("PATCH_MARKER_INVALID")
             return 2
