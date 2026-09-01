@@ -59,6 +59,56 @@ def _write_voice_reference(path: Path) -> None:
         target.writeframes(b"\x00\x00" * 160)
 
 
+def _write_native_navigation_manifest(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_state = {"size_bytes": 1, "sha256": "0" * 64}
+    patched_state = {"size_bytes": 2, "sha256": "1" * 64}
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.native-navigation-compatibility.v1",
+                "client_version": "0.0.9.627",
+                "files": [
+                    {
+                        "id": "feapp",
+                        "relative_path": "resources/feapp.dat",
+                        "original": original_state,
+                        "patched": patched_state,
+                        "archive_member": "assets/synthetic-main.js",
+                        "text_replacements": [
+                            {"id": "fixture", "before": "old", "after": "new"}
+                        ],
+                    },
+                    *[
+                        {
+                            "id": file_id,
+                            "relative_path": relative,
+                            "original": original_state,
+                            "patched": patched_state,
+                            "binary_replacements": [
+                                {
+                                    "id": "fixture",
+                                    "signature_hex": "00112233445566",
+                                    "patch_offset": 1,
+                                    "replacement_hex": "aabb",
+                                }
+                            ],
+                        }
+                        for file_id, relative in (
+                            ("studio_ui", "plugins/Studio/NutStudioUI.dll"),
+                            (
+                                "container_plugin",
+                                "plugins/Container/NutContainerPlugin.dll",
+                            ),
+                        )
+                    ],
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_video_runtime(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     environment = {
@@ -272,6 +322,9 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
     (installer / "runtime-requirements.txt").write_bytes(requirements)
     reference = tmp_path / "distributor" / "olivia-reference.wav"
     _write_voice_reference(reference)
+    _write_native_navigation_manifest(
+        reference.parent / "native-navigation-compatibility.json"
+    )
     _video_offline_fixture(
         source, tmp_path / "distributor" / "Olivia-video-offline-fixture"
     )
@@ -407,6 +460,11 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
     assert (
         destination / "installer/activate_private_video.py"
     ).read_text(encoding="utf-8") == "# private video activation entrypoint\n"
+    assert (
+        destination / "installer/native-navigation-compatibility.json"
+    ).read_text(encoding="utf-8") == (
+        reference.parent / "native-navigation-compatibility.json"
+    ).read_text(encoding="utf-8")
     input_manifest_path = offline / "offline-core-assets.json"
     input_manifest = json.loads(input_manifest_path.read_text())
     input_manifest.update(
@@ -469,6 +527,27 @@ def test_prepare_private_payload_requires_video_activation_entrypoint(
     with pytest.raises(SetupBuildError, match="SETUP_REQUIRED_PAYLOAD_MISSING"):
         _prepare_private_runtime(
             source, offline, reference, runtime, tmp_path / "missing-activation"
+        )
+
+
+def test_prepare_private_payload_requires_native_navigation_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    runtime = tmp_path / "distributor/Olivia-video-runtime-fixture.zip"
+    _write_video_runtime(runtime)
+    (reference.parent / "native-navigation-compatibility.json").unlink()
+
+    with pytest.raises(
+        SetupBuildError,
+        match="SETUP_PRIVATE_NATIVE_NAVIGATION_MANIFEST_REQUIRED",
+    ):
+        _prepare_private_runtime(
+            source,
+            offline,
+            reference,
+            runtime,
+            tmp_path / "missing-native-navigation",
         )
 
 
@@ -753,6 +832,7 @@ def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, mo
     runtime = tmp_path / "Olivia-video-runtime-fixture.zip"
     runtime.write_bytes(b"runtime")
     video_offline = tmp_path / "Olivia-video-offline-private"
+    native_navigation = tmp_path / "native-navigation-compatibility.json"
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "installer.build_windows_setup.build_windows_setup",
@@ -763,6 +843,7 @@ def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, mo
         "--offline", str(tmp_path / "offline"), "--output", str(tmp_path / "output"),
         "--version", "0.1.test", "--distribution", "private", "--voice-reference", str(reference),
         "--video-runtime", str(runtime), "--video-offline-root", str(video_offline),
+        "--native-navigation-manifest", str(native_navigation),
     ])
 
     assert result == 0
@@ -770,6 +851,7 @@ def test_setup_build_cli_forwards_distributor_voice_reference(tmp_path: Path, mo
     assert captured["voice_reference"] == reference
     assert captured["video_runtime"] == runtime
     assert captured["video_offline_root"] == video_offline
+    assert captured["native_navigation_manifest"] == native_navigation
 
 
 def test_failed_private_setup_compile_removes_partial_final_artifacts(
@@ -882,6 +964,7 @@ def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> Non
     assert "--voice-reference" in documentation
     assert "--video-runtime" in documentation
     assert "--video-offline-root" in documentation
+    assert "--native-navigation-manifest" in documentation
     assert "dist-private" in documentation
     assert "Olivia-video-runtime-private.zip" in documentation
     assert "Olivia-video-offline-private" in documentation
@@ -893,6 +976,8 @@ def test_windows_setup_docs_separate_public_and_private_voice_artifacts() -> Non
     assert "music_video" in documentation
     assert "因而没有自引用" in documentation
     assert "GitHub Actions 只生成公开安装器 artifact" in documentation
+    assert "会修改隔离副本中的业务 bundle 与两个原生 DLL" in documentation
+    assert "公开仓库不保存这些官方字节签名" in documentation
 
 
 def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path, monkeypatch) -> None:
