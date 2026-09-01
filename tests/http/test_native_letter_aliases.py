@@ -352,6 +352,33 @@ def test_unknown_native_letter_path_is_not_prefix_mapped() -> None:
     }
 
 
+def test_assembled_runtime_rejects_trailing_slash_native_alias() -> None:
+    import local_server
+    from aiohttp.test_utils import TestClient, TestServer
+    from original_client_server import create_original_client_server_runtime
+
+    async def scenario() -> tuple[int, dict[str, object]]:
+        runtime = create_original_client_server_runtime(
+            local_server.handler,
+            letter_collection=local_server._letter_collection,
+        )
+        async with TestClient(TestServer(runtime.app, access_log=None)) as client:
+            response = await client.get("/letter/list/")
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(scenario())
+
+    assert status == 501
+    assert payload == {
+        "code": 501,
+        "message": "NOT_IMPLEMENTED",
+        "data": {
+            "status": "NOT_IMPLEMENTED",
+            "error_code": "ROUTE_NOT_IMPLEMENTED",
+        },
+    }
+
+
 def test_assembled_runtime_applies_cors_to_native_letter_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

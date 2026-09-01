@@ -11,7 +11,7 @@
 | 400 | `INVALID_CONTENT` | FAILED | 否 | 内容为空 |
 | 400 | `CONTENT_TOO_LONG` | FAILED | 否 | 超出 10000 字符边界 |
 | 400 | `INVALID_SCOPE` / `INVALID_PROFILE` | FAILED | 否 | 未知只读 scope 或 health profile |
-| 403 | `CORS_ORIGIN_DENIED` | FAILED | 否 | 非 localhost/127.0.0.1 Origin |
+| 403 | `CORS_ORIGIN_DENIED` | FAILED | 否 | Origin 既不是 loopback，也未精确命中固定信任源 `https://olivia.local` / `https://toy-cnbeta01.olivia.miyoushe.com`；相似后缀和子域同样拒绝 |
 | 403 | `READ_ONLY_SCOPE` | FAILED | 否 | 对 legacy 只读视图尝试写入 |
 | 404 | `LETTER_NOT_FOUND` / `MIDI_JOB_NOT_FOUND` | FAILED | 否 | 资源不存在 |
 | 405 | `METHOD_NOT_ALLOWED` | FAILED | 否 | 方法不在 route contract 中 |

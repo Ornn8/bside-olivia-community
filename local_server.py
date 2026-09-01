@@ -1523,7 +1523,9 @@ async def handler(request: web.Request):
     if request.path.startswith("/toy/media/"):
         return await _media_handler(request)
     path = request.path  # /toy/xxx
-    canonical_path = contract.canonical_route_path(path.rstrip("/"))
+    canonical_path = contract.canonical_route_path(path)
+    if canonical_path.startswith("/toy/"):
+        canonical_path = canonical_path.rstrip("/")
     method = request.method
     origin = request.headers.get('Origin', '')
     if origin and not origin_allowed(origin):
@@ -2451,7 +2453,12 @@ async def route(
     defer_reply: bool = False,
     companion_confirmed: bool = False,
 ):
-    p = contract.canonical_route_path(path.rstrip("/"))
+    canonical_path = contract.canonical_route_path(path)
+    p = (
+        canonical_path.rstrip("/")
+        if canonical_path.startswith("/toy/")
+        else canonical_path
+    )
     official_import = False
 
     spec = contract.route_spec(p)

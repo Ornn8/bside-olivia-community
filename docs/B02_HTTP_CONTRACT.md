@@ -44,6 +44,10 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
 | 诊断包导出 | `/toy/diagnostics/export` | available | 设置页显式触发，只在本机生成并下载严格白名单 ZIP；不上传，不包含密钥、正文、记忆、真实 ID、绝对路径、完整 URL 或原始日志 |
 
+CORS 仅允许 loopback Origin，或精确命中原生客户端固定信任源
+`https://olivia.local`、`https://toy-cnbeta01.olivia.miyoushe.com`。匹配是完整字符串匹配；
+相似后缀、子域和其他 HTTPS Origin 均返回 `403 CORS_ORIGIN_DENIED`。
+
 原生 WebSocket、ASR、TTS、Live 没有假 route；`/health` 的 capability registry 明确为 `unavailable`，错误码分别为 `WEBSOCKET_UNAVAILABLE`、`ASR_UNAVAILABLE`、`TTS_UNAVAILABLE`、`LIVE_UNAVAILABLE`。
 
 ## 输入、空数据和重试

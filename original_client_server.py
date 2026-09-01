@@ -296,9 +296,9 @@ def mount_original_mailbox_wire_adapter(
         raise RuntimeError("ORIGINAL_CLIENT_MAILBOX_ALREADY_MOUNTED")
 
     async def adapted(request: web.Request) -> web.StreamResponse:
-        canonical_path = contract.canonical_route_path(request.path.rstrip("/"))
+        canonical_path = contract.canonical_route_path(request.path)
         canonical_request = request
-        if canonical_path != request.path.rstrip("/"):
+        if canonical_path != request.path:
             canonical_url = request.rel_url.with_path(canonical_path).with_query(
                 request.rel_url.query
             )
