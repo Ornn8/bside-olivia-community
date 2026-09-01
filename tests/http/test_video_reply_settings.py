@@ -537,10 +537,18 @@ def test_recovery_reads_letter_snapshot_and_legacy_defaults_enabled(monkeypatch)
     enabled = {**legacy, "letter_id": "enabled", "video_reply_enabled": True}
     malformed = {**legacy, "letter_id": "malformed", "video_reply_enabled": "true"}
     scheduled = []
-    monkeypatch.setattr(local_server, "_schedule_media_job", lambda lid, *_a: scheduled.append(lid))
+    monkeypatch.setattr(
+        local_server,
+        "_schedule_media_job",
+        lambda lid, _content, _reply, mode: scheduled.append((lid, mode)),
+    )
     original = local_server.store.letters[:]
     local_server.store.letters[:] = [off, legacy, enabled, malformed]
     try:
-        assert local_server._schedule_pending_media_jobs() == 2 and scheduled == ["legacy", "enabled"]
+        assert local_server._schedule_pending_media_jobs() == 2
+        assert scheduled == [
+            ("legacy", "musical_video"),
+            ("enabled", "musical_video"),
+        ]
     finally:
         local_server.store.letters[:] = original

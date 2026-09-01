@@ -208,7 +208,6 @@ class RouterGateway(Protocol):
 class RoutingContext:
     """Trusted, bounded facts available to the expression planner."""
 
-    spoken_video_available: bool = False
     musical_video_available: bool = False
     current_music_work: tuple[str, ...] = ()
     def to_model_dict(self) -> dict[str, object]:
@@ -218,7 +217,6 @@ class RoutingContext:
             if cleaned:
                 current_work.append(cleaned)
         return {
-            "spoken_video_available": bool(self.spoken_video_available),
             "musical_video_available": bool(self.musical_video_available),
             "current_music_work": current_work,
         }
@@ -464,7 +462,6 @@ def routing_context_from_environment(
     except Exception:
         video_ready = False
     return RoutingContext(
-        spoken_video_available=video_ready,
         musical_video_available=video_ready,
         current_music_work=_context_items(env.get("OLIVIA_CURRENT_MUSIC_WORK", "")),
     )

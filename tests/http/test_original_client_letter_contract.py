@@ -89,7 +89,7 @@ def test_video_modes_fall_back_to_durable_text_until_media_is_complete() -> None
         assert detail["replyVideoUrl"] == ""
 
 
-def test_completed_spoken_video_uses_original_speech_type() -> None:
+def test_completed_legacy_spoken_video_is_projected_as_the_musical_video() -> None:
     detail = serialize_letter_detail(
         _letter(
             reply_mode="spoken_video",
@@ -100,7 +100,7 @@ def test_completed_spoken_video_uses_original_speech_type() -> None:
     )
 
     assert detail["letterStatus"] == 4
-    assert detail["replyType"] == 2
+    assert detail["replyType"] == 4
     assert detail["replyVideoUrl"] == (
         "http://127.0.0.1:8899/toy/media/letter-fixture-001.mp4"
     )
@@ -221,11 +221,11 @@ def test_detail_legacy_aliases_do_not_change_original_fields() -> None:
     assert detail["letterId"] == detail["letter_id"]
     assert detail["letterStatus"] == detail["letter_status"] == 4
     assert detail["auditStatus"] == detail["audit_status"] == 2
-    assert detail["replyType"] == detail["reply_type"] == 2
+    assert detail["replyType"] == detail["reply_type"] == 4
     assert detail["replyText"] == detail["reply_text"] == detail["reply_content"]
     assert detail["replyVideoUrl"] == detail["reply_video_url"]
     assert detail["reply_mode"] == "video"
-    assert detail["reply_mode_exact"] == "spoken_video"
+    assert detail["reply_mode_exact"] == "musical_video"
 
 
 def test_contract_rejects_invalid_ids_and_negative_counts() -> None:
