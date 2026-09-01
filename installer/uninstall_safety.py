@@ -25,6 +25,7 @@ OWNED_PATHS = (
     MARKER_NAME,
 )
 PRESERVED_PATHS = ("data", "logs", "third-party", "downloads", "profile")
+EMPTY_OWNED_PARENT_PATHS = ("runtime",)
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
@@ -142,9 +143,19 @@ def remove_owned_targets(
             shutil.rmtree(target)
         elif target.is_file():
             target.unlink()
+    for relative in EMPTY_OWNED_PARENT_PATHS:
+        target = safe_managed_target(root, relative)
+        try:
+            target.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Unknown or non-empty parents are outside the ownership list.
+            pass
 
 
 __all__ = [
+    "EMPTY_OWNED_PARENT_PATHS",
     "MARKER_NAME",
     "OWNED_PATHS",
     "PRESERVED_PATHS",

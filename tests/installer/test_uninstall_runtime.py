@@ -134,3 +134,27 @@ def test_standalone_uninstall_defers_only_its_running_batch_file(
 
     assert not app.exists()
     assert command.read_text(encoding="utf-8") == "managed"
+
+
+def test_uninstall_removes_empty_runtime_parent_but_preserves_unknown_content(
+    tmp_path: Path,
+) -> None:
+    clean = tmp_path / "clean"
+    managed = clean / "runtime" / "mem0-site-packages"
+    managed.mkdir(parents=True)
+    (managed / "managed.txt").write_text("managed", encoding="utf-8")
+
+    remove_owned_targets(clean)
+
+    assert not (clean / "runtime").exists()
+
+    mixed = tmp_path / "mixed"
+    managed = mixed / "runtime" / "mem0-site-packages"
+    managed.mkdir(parents=True)
+    (managed / "managed.txt").write_text("managed", encoding="utf-8")
+    unknown = mixed / "runtime" / "user-owned.txt"
+    unknown.write_text("keep", encoding="utf-8")
+
+    remove_owned_targets(mixed)
+
+    assert unknown.read_text(encoding="utf-8") == "keep"
