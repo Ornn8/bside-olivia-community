@@ -81,6 +81,18 @@ class TTSProfileManager:
             if not all(health.values()):
                 missing = [key for key, present in health.items() if not present]
                 raise TTSValidationError("TTS_EXTERNAL_ASSET_MISSING", ",".join(missing))
+        elif config.provider == "breeze_tts2":
+            provider = self.registry.create(config)
+            try:
+                health = provider.health()
+            finally:
+                provider.close()
+            if health.get("status") != "available":
+                missing = health.get("missing", [health.get("reason_code", "TTS_UNAVAILABLE")])
+                raise TTSValidationError(
+                    "TTS_EXTERNAL_ASSET_MISSING",
+                    ",".join(str(item) for item in missing),
+                )
         existing = path.is_file()
         payload = {
             "schema_version": self.schema_version,

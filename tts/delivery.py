@@ -1,4 +1,4 @@
-"""One-process CosyVoice rendering for a non-spoken reply delivery plan."""
+"""One-process TTS rendering for a non-spoken reply delivery plan."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from runtime.reply.reply_delivery import ReplyDeliveryPlan
 from voice_direction import VoiceDirectionError, validate_short_instruction
 
 from .contracts import TTSConfig
+from .breeze import BreezeTTS2Provider
 from .external_audio_quality_worker import assess_transcript
 
 
@@ -41,6 +42,7 @@ class DeliveryAudioResult:
     sample_rate: int
     segment_count: int
     quality_report: dict[str, object] | None = None
+    provider: str = ""
 
 
 def _validated_quality_report(
@@ -108,6 +110,9 @@ def build_external_delivery_request(
     plan: ReplyDeliveryPlan | object,
 ) -> dict[str, object]:
     """Render the frozen reply in one inference so the voice never resets."""
+
+    if str(getattr(config, "provider", "cosyvoice3")) == "breeze_tts2":
+        return BreezeTTS2Provider(config).performance_request(plan)
 
     units = tuple(plan.speech_units())
     spoken_text = str(getattr(plan, "spoken_text", "") or "".join(unit.text for unit in units))
@@ -323,6 +328,33 @@ def delivery_configured(
 
     options = config.provider_options or {}
     executable = Path(str(options.get("external_python", "") or ""))
+    if config.provider == "breeze_tts2":
+        provider = BreezeTTS2Provider(config)
+        base_checks = all((
+            provider.health().get("status") == "available",
+            Path(__file__).with_name("external_breeze_worker.py").is_file(),
+        ))
+        if not base_checks or not require_quality_gate:
+            return base_checks
+        cache_value = str(options.get("quality_gate_cache_root", "") or "").strip()
+        quality_python = Path(
+            str(options.get("quality_gate_python", executable) or executable)
+        )
+        checkpoint = Path(cache_value) / "base.pt"
+        try:
+            executable_stat = quality_python.stat()
+        except OSError:
+            return False
+        return all((
+            bool(cache_value),
+            Path(__file__).with_name("external_audio_quality_worker.py").is_file(),
+            _verified_file(checkpoint, _WHISPER_BASE_SHA256),
+            _quality_runtime_available(
+                str(quality_python.resolve()),
+                executable_stat.st_size,
+                executable_stat.st_mtime_ns,
+            ),
+        ))
     model_checkpoint = Path(config.model_dir) / "llm.pt"
     base_checks = all((
         executable.is_file(),
@@ -367,19 +399,40 @@ def render_delivery_wav(
     if not plan.cues:
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     request = build_external_delivery_request(config, plan)
-    require_quality_gate = bool(
-        enforce_content_gate
-        and request.get("voice_condition_mode") == "instruct2_single_pass"
+
+    def gate_required(payload: dict[str, object]) -> bool:
+        return bool(
+            enforce_content_gate
+            and (
+                payload.get("quality_gate_required") is True
+                or payload.get("voice_condition_mode") == "instruct2_single_pass"
+            )
+        )
+
+    require_quality_gate = gate_required(request)
+
+    if not delivery_configured(config, require_quality_gate=require_quality_gate):
+        code = (
+            "TTS_CONTENT_GATE_UNAVAILABLE"
+            if require_quality_gate
+            else "TTS_DELIVERY_UNAVAILABLE"
+        )
+        raise DeliveryAudioError(code)
+
+    request["verify_accepted_base_model"] = bool(
+        require_quality_gate and config.provider == "cosyvoice3"
     )
-    if not delivery_configured(config):
-        raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
-    if require_quality_gate and not delivery_configured(
-        config, require_quality_gate=True
-    ):
-        raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-    request["verify_accepted_base_model"] = require_quality_gate
-    executable = Path(str(config.provider_options.get("external_python", "") or ""))
-    worker = Path(__file__).with_name("external_cosyvoice_worker.py")
+    executable = Path(
+        str(config.provider_options.get("external_python", "") or "")
+    )
+    quality_executable = Path(
+        str(config.provider_options.get("quality_gate_python", executable) or executable)
+    )
+    worker = Path(__file__).with_name(
+        "external_breeze_worker.py"
+        if config.provider == "breeze_tts2"
+        else "external_cosyvoice_worker.py"
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_parent = str(config.provider_options.get("temp_root", "") or "").strip()
@@ -390,6 +443,7 @@ def render_delivery_wav(
     request_path = work / "request.json"
     quality_request_path = work / "quality-request.json"
     quality_output_path = work / "quality-result.json"
+    worker_status_path = work / "worker-status.json"
     temporary_output = work / "speech.wav"
     try:
         environment = dict(os.environ)
@@ -402,10 +456,21 @@ def render_delivery_wav(
         )
         def run_worker(payload: dict[str, object]) -> None:
             temporary_output.unlink(missing_ok=True)
+            worker_status_path.unlink(missing_ok=True)
             request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            command = [
+                str(executable),
+                str(worker),
+                "--request",
+                str(request_path),
+                "--output",
+                str(temporary_output),
+            ]
+            if config.provider == "breeze_tts2":
+                command.extend(("--status", str(worker_status_path)))
             try:
                 completed = subprocess.run(
-                    [str(executable), str(worker), "--request", str(request_path), "--output", str(temporary_output)],
+                    command,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -442,7 +507,7 @@ def render_delivery_wav(
                 raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
             try:
                 completed = subprocess.run(
-                    [str(executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
+                    [str(quality_executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -510,6 +575,7 @@ def render_delivery_wav(
             sample_rate=sample_rate,
             segment_count=len(plan.speech_units()),
             quality_report=quality_report,
+            provider=config.provider,
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)

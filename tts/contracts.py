@@ -75,7 +75,9 @@ def _public_provider_options(options: Mapping[str, Any]) -> dict[str, Any]:
     """Expose provider switches without echoing private cache/model paths."""
 
     path_keys = {
+        "model_license_path",
         "numba_cache_dir",
+        "quality_gate_python",
         "quality_gate_cache_root",
         "temp_root",
         "wetext_fst_root",
