@@ -565,6 +565,7 @@ def _refresh_existing_install(
         "UNINSTALL.cmd",
         MARKER_NAME,
     )
+    retired_names = (".olivia-update-state.json", "versions")
     try:
         copied = copy_project_payload(payload, staging / "local_backend")
         _write_start_scripts(staging, port)
@@ -580,6 +581,12 @@ def _refresh_existing_install(
             encoding="utf-8",
         )
         rollback.mkdir()
+        for name in retired_names:
+            active = target / name
+            backup = rollback / name
+            if active.exists() or active.is_symlink():
+                os.replace(active, backup)
+                backed_up.append((active, backup))
         for name in names:
             active = target / name
             staged = staging / name

@@ -1301,7 +1301,7 @@ function Complete-ManagedPrivateRuntimeSidecarTransaction {
 }
 
 function Get-ManagedInstallTransactionNames {
-    return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json')
+    return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json', '.olivia-update-state.json', 'versions')
 }
 
 function Get-FreshInstallTransactionNames {
