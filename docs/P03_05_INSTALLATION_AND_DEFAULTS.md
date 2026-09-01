@@ -2,15 +2,14 @@
 
 ## 1. 目标
 
-让普通用户在一台干净 Windows 机器上完成安装和配置后，不需要打开 CMD、PowerShell、Python 或手工拼接环境变量，就能启动稳定的文字书信陪伴系统；已安装本机媒体组件时，可继续使用说话视频和音乐视频。
+让普通用户在一台干净 Windows 机器上完成安装和配置后，不需要打开 CMD、PowerShell、Python 或手工拼接环境变量，就能启动稳定的文字书信陪伴系统；已安装完整本机媒体组件时，可继续使用包含自然说话段和约 60 秒音乐段的视频回信。
 
 安装器必须区分：
 
 - 核心必需能力；
 - 默认本地持久化；
 - 可选长期记忆；
-- 可选说话视频；
-- 可选音乐视频；
+- 可选完整视频回信；
 - 本地 Companion Control Center；
 - 实验模块。
 
@@ -172,7 +171,7 @@ Setup Wizard 必须：
 - 下载失败时保持 Core 可用；
 - 不在服务首次启动时隐式联网下载。
 
-### 7.3 Spoken Video
+### 7.3 说话与口型基础组件
 
 检测：
 
@@ -184,11 +183,11 @@ Setup Wizard 必须：
 - morning/day/dusk/night 场景视频；
 - FFmpeg。
 
-只有全部满足才报告 `spoken_video=available`。
+这只是完整视频回信的内部基础阶段，不是用户可选或可独立投递的回复模式。
 
-### 7.4 Musical Video
+### 7.4 完整视频回信
 
-在 Spoken Video 基础上额外检测：
+在说话与口型基础组件上额外检测：
 
 - MiniMax Music 3 ComfyUI runtime；
 - MiniMax worker；
@@ -202,7 +201,7 @@ Setup Wizard 必须：
 完整能力定义为：
 
 ```text
-说话视频
+自然说话段
   + MiniMax 音频
   + RoFormer vocals
   + 演唱视频 LatentSync
@@ -210,7 +209,7 @@ Setup Wizard 必须：
   + FFmpeg 顺序拼接
 ```
 
-只有完整链可运行才报告 `musical_video=available`。
+只有完整链可运行才报告 `musical_video=available`；缺少音乐段必需组件时不退化为纯说话视频。
 
 ## 8. 图形化 Setup Wizard
 
@@ -452,7 +451,7 @@ PrivateWorld
 - 无 Mem0；
 - Mem0 已安装但 embedding 缺失；
 - 无媒体；
-- 只有说话视频；
+- 只有说话与口型基础组件、完整视频链未就绪；
 - 完整音乐视频拼接；
 - 旧目录迁移；
 - 损坏 config 和 state；

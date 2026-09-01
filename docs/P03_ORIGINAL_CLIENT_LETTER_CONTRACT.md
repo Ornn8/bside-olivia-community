@@ -94,17 +94,18 @@ unreadCount
 
 旧的 snake_case 字段只作为本仓库现有测试或内部调用者的兼容别名保留，不作为原版客户端契约。
 
-## 4. 本地三模式映射
+## 4. 本地回复映射
 
 | 本地模式 | 媒体状态 | 原版 replyType | 原版表现 |
 | --- | --- | ---: | --- |
 | `text_letter` | 任意 | `TEXT` | 文字回复 |
-| `spoken_video` | `COMPLETED` 且有合法本机 MP4 | `SPEECH` | 视频回复 |
-| `spoken_video` | 等待、处理中或失败 | `TEXT` | 先保留文字正文 |
 | `musical_video` | `COMPLETED` 且有合法本机 MP4 | `MIX_SVS` | 视频回复 |
 | `musical_video` | 等待、处理中或失败 | `TEXT` | 先保留文字正文 |
 
-`musical_video -> MIX_SVS` 是本项目的语义映射决定：该模式包含生成演唱；`MIX_PLAY` 保留给纯演奏语义。
+`video` 与历史 `spoken_video` 只作为输入兼容值，序列化前统一升级为
+`musical_video`。`musical_video -> MIX_SVS` 是本项目的语义映射决定：
+每个视频回信都包含生成演唱；`SPEECH` 不再由本项目的新回复产出，
+`MIX_PLAY` 保留给纯演奏语义。
 
 ## 5. 正文耐久性
 
@@ -157,11 +158,11 @@ http://localhost:<port>/toy/media/<safe-name>.mp4
 - 将列表、详情、未读和发送响应接入纯序列化模块；
 - 同时保留必要的 snake_case 兼容别名；
 - 设置 canonical `repliedAt`；
-- 验证媒体完成前后 `TEXT -> SPEECH/MIX_SVS`。
+- 验证媒体完成前后 `TEXT -> MIX_SVS`。
 
 ### CLIENT-CONTRACT-03
 
-- 使用原版客户端真实打开文字、说话视频和音乐视频回复；
+- 使用原版客户端真实打开文字回复和完整视频回信；
 - 验证轮询、详情切换、播放、失败降级和重启恢复。
 
 ## 9. 完成条件

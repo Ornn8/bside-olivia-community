@@ -23,6 +23,12 @@ def test_public_docs_define_one_spoken_plus_sixty_second_music_video() -> None:
     acceptance = (root / "docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
         encoding="utf-8"
     )
+    client_contract = (root / "docs/P03_ORIGINAL_CLIENT_LETTER_CONTRACT.md").read_text(
+        encoding="utf-8"
+    )
+    installation = (root / "docs/P03_05_INSTALLATION_AND_DEFAULTS.md").read_text(
+        encoding="utf-8"
+    )
     setup = (root / "installer/windows_setup.iss").read_text(encoding="utf-8-sig")
 
     assert "`spoken_video` 交付" not in readme
@@ -39,6 +45,11 @@ def test_public_docs_define_one_spoken_plus_sixty_second_music_video() -> None:
     assert "音频时长符合 40/60 秒配置" not in acceptance
     assert "正式产品固定 60 秒" in stabilization
     assert "音乐段时长约 60 秒" in acceptance
+    assert "`spoken_video` | `COMPLETED`" not in client_contract
+    assert "TEXT -> SPEECH/MIX_SVS" not in client_contract
+    assert "可选说话视频" not in installation
+    assert "可选音乐视频" not in installation
+    assert "只有说话视频" not in installation
 
 from runtime.media import latentsync_reply
 import music_reply
