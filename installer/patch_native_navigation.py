@@ -97,18 +97,28 @@ def _fingerprint(value: bytes) -> tuple[int, str]:
 def _read_bytes(path: Path, error_code: str) -> bytes:
     try:
         return path.read_bytes()
-    except OSError as exc:
-        raise NativeNavigationPatchError(error_code) from exc
+    except OSError:
+        raise NativeNavigationPatchError(error_code) from None
 
 
 def _matches_registered_state(
     values: dict[str, bytes], state: str
 ) -> bool:
     return all(
-        _fingerprint(values[name])
-        == _SUPPORTED_INPUT_FINGERPRINTS[name][state]
+        _matches_registered_file(name, values[name], state)
         for name in values
     )
+
+
+def _matches_registered_file(name: str, value: bytes, state: str) -> bool:
+    return _fingerprint(value) == _SUPPORTED_INPUT_FINGERPRINTS[name][state]
+
+
+def _registered_file_state(name: str, value: bytes) -> str | None:
+    for state in ("original", "patched"):
+        if _matches_registered_file(name, value, state):
+            return state
+    return None
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:
@@ -138,8 +148,8 @@ def _validate_managed_paths(work: Path, candidates: tuple[Path, ...]) -> None:
                 current = current / part
                 if _is_reparse_point(current):
                     raise NativeNavigationPatchError("NATIVE_NAV_UNSAFE_PATH")
-    except (OSError, ValueError) as exc:
-        raise NativeNavigationPatchError("NATIVE_NAV_UNSAFE_PATH") from exc
+    except (OSError, ValueError):
+        raise NativeNavigationPatchError("NATIVE_NAV_UNSAFE_PATH") from None
 
 
 def _replace_unique(text: str, old: str, new: str, label: str) -> str:
@@ -275,6 +285,16 @@ def _patched_dll(
     return value
 
 
+def _unlink_paths(paths: list[Path] | tuple[Path, ...]) -> list[BaseException]:
+    failures: list[BaseException] = []
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except BaseException as exc:
+            failures.append(exc)
+    return failures
+
+
 def _stage_write(path: Path, value: bytes, work: Path) -> Path:
     _validate_managed_paths(work, (path.parent, path))
     temporary = path.with_name(
@@ -288,9 +308,12 @@ def _stage_write(path: Path, value: bytes, work: Path) -> Path:
         if temporary.read_bytes() != value:
             raise NativeNavigationPatchError("staged file verification failed")
         return temporary
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+    except BaseException as exc:
+        if _unlink_paths((temporary,)):
+            raise NativeNavigationPatchError("NATIVE_NAV_CLEANUP_FAILED") from None
+        if isinstance(exc, NativeNavigationPatchError):
+            raise
+        raise NativeNavigationPatchError("NATIVE_NAV_STAGE_FAILED") from None
 
 
 def _restore_published(
@@ -308,7 +331,7 @@ def _restore_published(
             failures.append(exc)
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                failures.extend(_unlink_paths((temporary,)))
     return failures
 
 
@@ -379,18 +402,37 @@ def patch_native_navigation(
     for _, path in paths:
         if not path.is_file():
             raise NativeNavigationPatchError("NATIVE_NAV_INPUT_MISSING")
-    backup_states = [backup.is_file() for backup in backups.values()]
-    if any(backup_states) and not all(backup_states):
-        raise NativeNavigationPatchError("NATIVE_NAV_BACKUPS_INCOMPLETE")
+    backup_states = {path: backups[path].is_file() for _, path in paths}
+    has_any_backup = any(backup_states.values())
+    has_all_backups = all(backup_states.values())
     live = {
         path: _read_bytes(path, "NATIVE_NAV_INPUT_READ_FAILED")
         for _, path in paths
     }
     live_by_name = {name: live[path] for name, path in paths}
-    live_is_original = _matches_registered_state(live_by_name, "original")
-    live_is_patched = _matches_registered_state(live_by_name, "patched")
-    if not all(backup_states) and not live_is_original:
+    live_states = {
+        name: _registered_file_state(name, value)
+        for name, value in live_by_name.items()
+    }
+    live_is_original = all(state == "original" for state in live_states.values())
+    live_is_patched = all(state == "patched" for state in live_states.values())
+    if not has_any_backup and not live_is_original:
         raise NativeNavigationPatchError("NATIVE_NAV_UNSUPPORTED_INPUT")
+    # Recovery invariant: every backup is published before the first target.
+    # A partial backup set is therefore safe only with all-original live files;
+    # complete trusted backups can resume any original/patched live-file mix.
+    if has_any_backup and not has_all_backups:
+        for name, path in paths:
+            if backup_states[path] and not _matches_registered_file(
+                name,
+                _read_bytes(
+                    backups[path], "NATIVE_NAV_BACKUP_READ_FAILED"
+                ),
+                "original",
+            ):
+                raise NativeNavigationPatchError("NATIVE_NAV_BACKUP_TAMPERED")
+        if not live_is_original:
+            raise NativeNavigationPatchError("NATIVE_NAV_RECOVERY_UNSAFE")
     originals = (
         {
             path: _read_bytes(
@@ -398,14 +440,14 @@ def patch_native_navigation(
             )
             for _, path in paths
         }
-        if all(backup_states)
+        if has_all_backups
         else dict(live)
     )
-    if all(backup_states) and not _matches_registered_state(
+    if has_all_backups and not _matches_registered_state(
         {name: originals[path] for name, path in paths}, "original"
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_BACKUP_TAMPERED")
-    if all(backup_states) and not (live_is_original or live_is_patched):
+    if has_all_backups and any(state is None for state in live_states.values()):
         raise NativeNavigationPatchError("NATIVE_NAV_LIVE_TAMPERED")
     patched = {
         feapp: _patched_feapp(originals[feapp]),
@@ -426,7 +468,7 @@ def patch_native_navigation(
         {name: patched[path] for name, path in paths}, "patched"
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_PATCH_MISMATCH")
-    if all(backup_states):
+    if has_all_backups:
         if live_is_patched:
             return _result(paths, originals, patched, "ALREADY_PATCHED")
 
@@ -437,15 +479,17 @@ def patch_native_navigation(
     published: list[tuple[Path, bytes]] = []
     created_backups: list[Path] = []
     try:
-        if not all(backup_states):
+        if not has_all_backups:
             for _, path in paths:
-                temporary = _stage_write(backups[path], originals[path], work)
+                if not backup_states[path]:
+                    temporary = _stage_write(backups[path], originals[path], work)
+                    staged.append(temporary)
+                    staged_backups.append((temporary, backups[path]))
+        for name, path in paths:
+            if live_states[name] != "patched":
+                temporary = _stage_write(path, patched[path], work)
                 staged.append(temporary)
-                staged_backups.append((temporary, backups[path]))
-        for _, path in paths:
-            temporary = _stage_write(path, patched[path], work)
-            staged.append(temporary)
-            staged_targets.append((temporary, path))
+                staged_targets.append((temporary, path))
 
         for temporary, backup in staged_backups:
             _validate_managed_paths(work, (temporary, backup.parent, backup))
@@ -472,18 +516,23 @@ def patch_native_navigation(
             "original",
         ):
             raise NativeNavigationPatchError("NATIVE_NAV_PUBLISHED_TAMPERED")
-    except Exception as exc:
+    except BaseException as exc:
         rollback_failures = _restore_published(published, work)
+        cleanup_failures: list[BaseException] = []
         if not rollback_failures:
-            for backup in created_backups:
-                backup.unlink(missing_ok=True)
+            cleanup_failures.extend(_unlink_paths(created_backups))
+        cleanup_failures.extend(_unlink_paths(staged))
         if rollback_failures:
-            raise NativeNavigationPatchError("NATIVE_NAV_ROLLBACK_FAILED") from exc
+            raise NativeNavigationPatchError("NATIVE_NAV_ROLLBACK_FAILED") from None
+        if cleanup_failures:
+            raise NativeNavigationPatchError("NATIVE_NAV_CLEANUP_FAILED") from None
         if isinstance(exc, NativeNavigationPatchError):
             raise
-        raise NativeNavigationPatchError("NATIVE_NAV_PUBLICATION_FAILED") from exc
-    finally:
-        for temporary in staged:
-            temporary.unlink(missing_ok=True)
+        if not isinstance(exc, Exception):
+            raise
+        raise NativeNavigationPatchError("NATIVE_NAV_PUBLICATION_FAILED") from None
+
+    if _unlink_paths(staged):
+        raise NativeNavigationPatchError("NATIVE_NAV_CLEANUP_FAILED")
 
     return _result(paths, originals, patched, "PATCHED")

@@ -384,6 +384,7 @@ def test_patch_native_navigation_reports_input_read_failure_without_a_path(
 
     assert str(raised.value) == "NATIVE_NAV_INPUT_READ_FAILED"
     assert str(tmp_path) not in str(raised.value)
+    assert raised.value.__cause__ is None
     for path in originals:
         assert not path.with_name(path.name + ".native-nav.orig").exists()
 
@@ -669,6 +670,88 @@ def test_patch_native_navigation_rolls_back_a_tampered_published_target(
     _assert_transaction_rolled_back(originals)
 
 
+def test_patch_native_navigation_aggregates_cleanup_failure_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_root = _managed_client_root(tmp_path)
+    originals = _write_supported_client(client_root)
+    feapp = client_root / "resources" / "feapp.dat"
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    failed_backup = feapp.with_name(feapp.name + ".native-nav.orig")
+    real_replace = native_navigation.os.replace
+    real_unlink = Path.unlink
+    publish_failed = False
+    cleanup_attempts: list[Path] = []
+
+    def fail_publication_once(source: Path, destination: Path) -> None:
+        nonlocal publish_failed
+        if Path(destination) == studio and not publish_failed:
+            publish_failed = True
+            raise OSError("synthetic publication failure")
+        real_replace(source, destination)
+
+    def fail_one_backup_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        if path.name.endswith(".native-nav.orig"):
+            cleanup_attempts.append(path)
+        if path == failed_backup:
+            raise OSError(f"synthetic cleanup failure: {path}")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(native_navigation.os, "replace", fail_publication_once)
+    monkeypatch.setattr(Path, "unlink", fail_one_backup_cleanup)
+
+    with pytest.raises(NativeNavigationPatchError) as raised:
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert str(raised.value) == "NATIVE_NAV_CLEANUP_FAILED"
+    assert str(tmp_path) not in str(raised.value)
+    assert len(cleanup_attempts) == 3
+    assert patch_native_navigation(client_root, work_root=tmp_path)["status"] == "PATCHED"
+
+
+def test_patch_native_navigation_attempts_every_rollback_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_root = _managed_client_root(tmp_path)
+    originals = _write_supported_client(client_root)
+    targets = set(originals)
+    real_replace = native_navigation.os.replace
+    real_read = native_navigation._read_bytes
+    target_replaces = {path: 0 for path in targets}
+    rollback_attempts: list[Path] = []
+    verification_failed = False
+
+    def fail_one_rollback(source: Path, destination: Path) -> None:
+        destination = Path(destination)
+        if destination in targets:
+            target_replaces[destination] += 1
+            if target_replaces[destination] == 2:
+                rollback_attempts.append(destination)
+                if destination.name == "NutContainerPlugin.dll":
+                    raise OSError(f"synthetic rollback failure: {destination}")
+        real_replace(source, destination)
+
+    def fail_first_verification(path: Path, error_code: str) -> bytes:
+        nonlocal verification_failed
+        if error_code == "NATIVE_NAV_PUBLISHED_READ_FAILED" and not verification_failed:
+            verification_failed = True
+            raise NativeNavigationPatchError(error_code)
+        return real_read(path, error_code)
+
+    monkeypatch.setattr(native_navigation.os, "replace", fail_one_rollback)
+    monkeypatch.setattr(native_navigation, "_read_bytes", fail_first_verification)
+
+    with pytest.raises(NativeNavigationPatchError) as raised:
+        patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert str(raised.value) == "NATIVE_NAV_ROLLBACK_FAILED"
+    assert str(tmp_path) not in str(raised.value)
+    assert set(rollback_attempts) == targets
+    assert patch_native_navigation(client_root, work_root=tmp_path)["status"] == "PATCHED"
+
+
 def test_patch_native_navigation_is_idempotent_with_complete_backups(
     tmp_path: Path,
 ) -> None:
@@ -685,6 +768,24 @@ def test_patch_native_navigation_is_idempotent_with_complete_backups(
     for path, original in originals.items():
         assert path.read_bytes() == first_patched[path]
         assert path.with_name(path.name + ".native-nav.orig").read_bytes() == original
+
+
+def test_patch_native_navigation_recovers_partial_live_publication(
+    tmp_path: Path,
+) -> None:
+    client_root = _managed_client_root(tmp_path)
+    originals = _write_supported_client(client_root)
+    patch_native_navigation(client_root, work_root=tmp_path)
+    studio = client_root / "plugins" / "Studio" / "NutStudioUI.dll"
+    container = client_root / "plugins" / "Container" / "NutContainerPlugin.dll"
+    studio.write_bytes(originals[studio])
+    container.write_bytes(originals[container])
+
+    recovered = patch_native_navigation(client_root, work_root=tmp_path)
+    repeated = patch_native_navigation(client_root, work_root=tmp_path)
+
+    assert recovered["status"] == "PATCHED"
+    assert repeated["status"] == "ALREADY_PATCHED"
 
 
 def test_patch_native_navigation_rejects_tampered_complete_backups(
@@ -707,7 +808,7 @@ def test_patch_native_navigation_rejects_tampered_complete_backups(
     assert {path: path.read_bytes() for path in originals} == live_before
 
 
-def test_patch_native_navigation_rejects_partial_backups_with_stable_error(
+def test_patch_native_navigation_recovers_partial_backup_publication(
     tmp_path: Path,
 ) -> None:
     client_root = _managed_client_root(tmp_path)
@@ -715,11 +816,13 @@ def test_patch_native_navigation_rejects_partial_backups_with_stable_error(
     feapp = client_root / "resources" / "feapp.dat"
     feapp.with_name(feapp.name + ".native-nav.orig").write_bytes(originals[feapp])
 
-    with pytest.raises(NativeNavigationPatchError) as raised:
-        patch_native_navigation(client_root, work_root=tmp_path)
+    recovered = patch_native_navigation(client_root, work_root=tmp_path)
+    repeated = patch_native_navigation(client_root, work_root=tmp_path)
 
-    assert str(raised.value) == "NATIVE_NAV_BACKUPS_INCOMPLETE"
-    assert str(tmp_path) not in str(raised.value)
+    assert recovered["status"] == "PATCHED"
+    assert repeated["status"] == "ALREADY_PATCHED"
+    for path, original in originals.items():
+        assert path.with_name(path.name + ".native-nav.orig").read_bytes() == original
 
 
 def test_patch_native_navigation_rejects_tampered_live_files_with_backups(
