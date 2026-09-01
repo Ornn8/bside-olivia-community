@@ -1001,7 +1001,8 @@ def test_prepare_setup_payload_rejects_truncated_voice_reference(tmp_path: Path,
 
 def test_private_inno_payload_reads_large_runtime_beside_setup_without_tmp_extract() -> None:
     script = (ROOT / "installer/windows_setup.iss").read_text(encoding="utf-8")
-    assert "#ifdef PrivatePayload" in script
+    assert "#ifdef VideoRuntimePayload" in script
+    assert "#ifdef VideoOfflinePayload" in script
     assert "DiskSpanning=yes" not in script
     assert "DiskSliceSize=" not in script
     assert 'Source: "{#PayloadRoot}\\offline\\video-runtime\\*"' not in script
@@ -1048,7 +1049,8 @@ def test_private_build_publishes_hash_locked_video_runtime_sidecar(
         video_offline_root=video_offline,
     )
 
-    assert "/DPrivatePayload=1" in observed
+    assert "/DVideoRuntimePayload=1" in observed
+    assert "/DVideoOfflinePayload=1" in observed
     assert [Path(item["path"]).name for item in result["artifacts"]] == [
         "Olivia-Setup-x64.exe",
         "Olivia-video-runtime-private.zip",
