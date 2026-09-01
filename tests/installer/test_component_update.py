@@ -229,6 +229,40 @@ def test_component_update_stays_applied_when_shortcut_refresh_raises(
     assert (installation / ".olivia-update-state.json").is_file()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows shortcut refresh is required")
+def test_shortcut_refresh_executes_only_the_stable_installed_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = tmp_path / "installation"
+    stable_script = installation / "launcher" / "Create-Shortcut.ps1"
+    stable_script.parent.mkdir(parents=True)
+    stable_script.write_text("# trusted stable fixture", encoding="utf-8")
+    active_version = installation / "versions" / "local_backend" / "untrusted"
+    payload_script = active_version / "installer" / "Create-Shortcut.ps1"
+    payload_script.parent.mkdir(parents=True)
+    payload_script.write_text("throw 'must not execute'", encoding="utf-8")
+    windows = tmp_path / "Windows"
+    powershell = windows / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    powershell.parent.mkdir(parents=True)
+    powershell.write_bytes(b"fixture")
+    monkeypatch.setenv("WINDIR", str(windows))
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        component_update.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command)
+        or subprocess.CompletedProcess(command, 0),
+    )
+
+    component_update._refresh_existing_shortcuts(installation, active_version)
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[command.index("-File") + 1] == str(stable_script)
+    assert str(payload_script) not in command
+
+
 @pytest.mark.parametrize("failure", ["probe", "timeout", "nonzero"])
 def test_shortcut_refresh_ignores_probe_timeout_and_nonzero_exit(
     tmp_path: Path,
@@ -236,7 +270,7 @@ def test_shortcut_refresh_ignores_probe_timeout_and_nonzero_exit(
     failure: str,
 ) -> None:
     active_version = tmp_path / "active"
-    script = active_version / "installer" / "Create-Shortcut.ps1"
+    script = tmp_path / "launcher" / "Create-Shortcut.ps1"
     script.parent.mkdir(parents=True)
     script.write_text("# fixture", encoding="utf-8")
 
@@ -280,6 +314,8 @@ def test_windows_patch_docs_define_shortcut_refresh_as_best_effort() -> None:
     assert "正常关闭返回 `0` 时不会弹出错误" in documentation
     assert "其他安装或无关的 wscript 快捷方式不会被改写" in documentation
     assert "不会撤销已经完成的补丁激活" in documentation
+    assert "`launcher/Create-Shortcut.ps1` 的稳定副本" in documentation
+    assert "不会执行刚激活补丁载荷里的脚本" in documentation
 
 
 def test_stable_launcher_resolves_the_atomically_selected_backend(

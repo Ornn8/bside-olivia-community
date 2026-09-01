@@ -515,6 +515,14 @@ def _write_start_scripts(root: Path, port: int) -> None:
     launcher = root / "launcher" / "version_launcher.py"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     _copy_file(root / "local_backend" / "installer" / "version_launcher.py", launcher)
+    _copy_file(
+        root / "local_backend" / "installer" / "Create-Shortcut.ps1",
+        launcher.parent / "Create-Shortcut.ps1",
+    )
+    _copy_file(
+        root / "local_backend" / "installer" / "start_hidden.vbs.txt",
+        launcher.parent / "start_hidden.vbs.txt",
+    )
     (root / "START.cmd").write_text(
         f"@echo off\nsetlocal\nset ROOT=%~dp0\nset OLIVIA_PORT={port}\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" start --port %OLIVIA_PORT%\nexit /b %ERRORLEVEL%\n",
         encoding="utf-8",

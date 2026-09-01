@@ -1988,6 +1988,12 @@ def test_install_scripts_dispatch_through_the_stable_version_launcher(
     assert stable_launcher.read_bytes() == (
         payload / "installer" / "version_launcher.py"
     ).read_bytes()
+    assert (target / "launcher" / "Create-Shortcut.ps1").read_bytes() == (
+        payload / "installer" / "Create-Shortcut.ps1"
+    ).read_bytes()
+    assert (target / "launcher" / "start_hidden.vbs.txt").read_bytes() == (
+        payload / "installer" / "start_hidden.vbs.txt"
+    ).read_bytes()
     actions = {
         "START.cmd": "start",
         "CONFIGURE.cmd": "configure",

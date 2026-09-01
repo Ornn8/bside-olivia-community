@@ -135,7 +135,7 @@ webplayer.dat.orig
 
 普通用户在客户端 Settings 的“补丁更新”中选择已下载的 `.oliviapatch`，粘贴发布页提供的 Manifest SHA-256 后安装；成功后关闭并重新打开 Olivia。该页面也提供回滚到上一版本的入口。命令行入口继续保留用于维护和故障排查。
 
-状态指针成功切换后，更新器会以 best-effort 方式发现桌面和开始菜单中仍然存在的快捷方式，并把图标刷新到当前激活版本。属于当前安装、仍指向旧 `START.cmd` 的快捷方式会同时迁移为 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动；已经采用该隐藏入口的当前安装快捷方式只刷新图标。其他安装或无关的 wscript 快捷方式不会被改写。路径发现失败、PowerShell 不可用或启动失败、执行超时、非零退出以及单个快捷方式保存失败，都不会撤销已经完成的补丁激活，也不会把成功更新改报为失败。
+状态指针成功切换后，更新器只会调用完整安装包写入 `launcher/Create-Shortcut.ps1` 的稳定副本，以 best-effort 方式发现桌面和开始菜单中仍然存在的快捷方式并刷新图标；不会执行刚激活补丁载荷里的脚本。属于当前安装、仍指向旧 `START.cmd` 的快捷方式会同时迁移为 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动；已经采用该隐藏入口的当前安装快捷方式只刷新图标。其他安装或无关的 wscript 快捷方式不会被改写。路径发现失败、PowerShell 不可用或启动失败、执行超时、非零退出以及单个快捷方式保存失败，都不会撤销已经完成的补丁激活，也不会把成功更新改报为失败。
 
 客户端补丁入口的鉴权、请求、响应、重启语义和稳定错误码见 `contracts/local_update_api_contract.json` 及其 schema。
 
