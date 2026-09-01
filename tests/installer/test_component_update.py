@@ -673,6 +673,29 @@ def test_stable_configure_cli_does_not_create_start_job(
     assert record.read_text(encoding="utf-8") == "configured"
 
 
+def test_stable_uninstall_cli_runs_packaged_uninstaller_and_preserves_data(
+    tmp_path: Path,
+) -> None:
+    installation, active = _managed_installation(tmp_path)
+    packaged_installer = active / "installer"
+    packaged_installer.mkdir()
+    source_installer = Path(version_launcher.__file__).parent
+    shutil.copy2(source_installer / "uninstall.py", packaged_installer / "uninstall.py")
+    shutil.copy2(
+        source_installer / "uninstall_safety.py",
+        packaged_installer / "uninstall_safety.py",
+    )
+    preserved = installation / "data" / "sentinel.db"
+    preserved.parent.mkdir()
+    preserved.write_bytes(b"preserved-user-data")
+
+    assert version_launcher._cli(
+        ["--install-root", str(installation), "uninstall", "--apply"]
+    ) == 0
+    assert preserved.read_bytes() == b"preserved-user-data"
+    assert not active.exists()
+
+
 def test_stable_start_single_instance_is_documented() -> None:
     documentation = (
         Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"

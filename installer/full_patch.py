@@ -537,7 +537,7 @@ def _write_start_scripts(root: Path, port: int) -> None:
         encoding="utf-16",
     )
     (root / "UNINSTALL.cmd").write_text(
-        "@echo off\nsetlocal\nset ROOT=%~dp0\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" uninstall --apply\nexit /b %ERRORLEVEL%\n",
+        "@echo off\nsetlocal EnableDelayedExpansion\nset ROOT=%~dp0\nset PYTHON_EXE=%ROOT%..\\runtime\\python-3.12.10-embed-amd64\\python.exe\nif not exist \"%PYTHON_EXE%\" (echo PYTHON_UNAVAILABLE & exit /b 2)\n\"%PYTHON_EXE%\" \"%ROOT%launcher\\version_launcher.py\" --install-root \"%ROOT%.\" uninstall --apply & exit /b !ERRORLEVEL!\n",
         encoding="utf-8",
     )
     (root / "CONFIGURE.cmd").write_text(
