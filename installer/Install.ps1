@@ -1451,16 +1451,28 @@ function Get-OfflineCoreAssets {
     $hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'
     $hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'
     $hasDistribution = $manifest.PSObject.Properties.Name -ccontains 'distribution'
-    if (
-        $hasVideoRuntime -ne $hasVoiceReference -or $hasVideoOffline -ne $hasVoiceReference -or
-        $hasVoiceReference -ne $hasDistribution -or
-        ($hasDistribution -and $manifest.distribution -cne 'private')
-    ) {
+    if ($hasVideoOffline -and -not $hasVideoRuntime) {
         throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
+    }
+    if ($hasVoiceReference -ne $hasDistribution) {
+        throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
+    }
+    if ($hasDistribution) {
+        if ($manifest.distribution -cnotin @('personal', 'private')) {
+            throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
+        }
+        if (
+            ($manifest.distribution -ceq 'private' -and (-not $hasVideoRuntime -or -not $hasVideoOffline)) -or
+            ($manifest.distribution -ceq 'personal' -and $hasVideoOffline)
+        ) {
+            throw 'VOICE_REFERENCE_PRIVATE_MANIFEST_REQUIRED'
+        }
     }
     if (-not $hasVideoRuntime -and $VideoRuntimePath) { throw 'VIDEO_RUNTIME_INVALID' }
     if (-not $hasVideoOffline -and $VideoOfflineRoot) { throw 'VIDEO_PRIVATE_OFFLINE_INVALID' }
-    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference', 'video_runtime', 'video_offline') }
+    if ($hasVoiceReference) { $manifestNames += @('distribution', 'voice_reference') }
+    if ($hasVideoRuntime) { $manifestNames += @('video_runtime') }
+    if ($hasVideoOffline) { $manifestNames += @('video_offline') }
     Assert-OfflineObjectShape -Value $manifest -Names $manifestNames
     Assert-OfflineObjectShape -Value $manifest.python_runtime -Names @('path', 'size_bytes', 'sha256', 'source_url')
     Assert-OfflineObjectShape -Value $manifest.pip_bootstrap -Names @('path', 'size_bytes', 'sha256', 'package', 'version')
@@ -1520,6 +1532,8 @@ function Get-OfflineCoreAssets {
         }
         $voiceReference = $manifest.voice_reference
         $voiceReference.path = $voiceReferencePath
+    }
+    if ($hasVideoRuntime) {
         Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')
         if ($manifest.video_runtime.path -cne 'Olivia-video-runtime-private.zip') {
             throw 'OFFLINE_CORE_MANIFEST_INVALID'
@@ -1541,6 +1555,8 @@ function Get-OfflineCoreAssets {
             sha256 = [string]$manifest.video_runtime.sha256
             verified = [bool]$true
         }
+    }
+    if ($hasVideoOffline) {
         Assert-OfflineObjectShape -Value $manifest.video_offline -Names @('path', 'manifest_version', 'manifest_sha256', 'file_count', 'size_bytes')
         if (
             $manifest.video_offline.path -cne 'Olivia-video-offline-private' -or
