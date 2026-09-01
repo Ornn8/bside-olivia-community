@@ -289,6 +289,7 @@ def video_reply_dependency_status(
     env: Mapping[str, str],
     *,
     performance_video_path: Path | None,
+    probe_runtime: bool = True,
 ) -> dict[str, object]:
     """Describe the complete speech-plus-music closure without exposing local paths."""
 
@@ -314,7 +315,7 @@ def video_reply_dependency_status(
             external_python = Path(
                 str(delivery.tts.provider_options.get("external_python", ""))
             )
-            cosyvoice_runtime_ready = _python_runtime_ready(
+            cosyvoice_runtime_ready = not probe_runtime or _python_runtime_ready(
                 external_python,
                 cwd=Path(delivery.tts.runtime_root),
                 imports=("torch", "torchaudio", "cosyvoice.cli.cosyvoice"),
@@ -338,11 +339,14 @@ def video_reply_dependency_status(
                 minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
             )
         )
-        and _python_runtime_ready(
-            configured("OLIVIA_MINIMAX_COMFY_PYTHON"),
-            cwd=minimax_root,
-            imports=("torch", "comfy", "comfy_extras.nodes_minimax_music"),
-            accepted_torch_versions=("2.13.0+cu130",),
+        and (
+            not probe_runtime
+            or _python_runtime_ready(
+                configured("OLIVIA_MINIMAX_COMFY_PYTHON"),
+                cwd=minimax_root,
+                imports=("torch", "comfy", "comfy_extras.nodes_minimax_music"),
+                accepted_torch_versions=("2.13.0+cu130",),
+            )
         )
     )
     latentsync_root = configured("OLIVIA_LATENTSYNC_ROOT")
@@ -358,11 +362,14 @@ def video_reply_dependency_status(
                 latentsync_root / "checkpoints" / "latentsync_unet.pt",
             )
         )
-        and _python_runtime_ready(
-            configured("OLIVIA_LATENTSYNC_PYTHON"),
-            cwd=latentsync_root,
-            imports=("torch", "diffusers", "latentsync"),
-            accepted_torch_versions=("2.5.1+cu121", "2.9.1+cu128"),
+        and (
+            not probe_runtime
+            or _python_runtime_ready(
+                configured("OLIVIA_LATENTSYNC_PYTHON"),
+                cwd=latentsync_root,
+                imports=("torch", "diffusers", "latentsync"),
+                accepted_torch_versions=("2.5.1+cu121", "2.9.1+cu128"),
+            )
         )
     )
     roformer_python = configured("OLIVIA_ROFORMER_PYTHON")
@@ -373,14 +380,17 @@ def video_reply_dependency_status(
         and file("OLIVIA_ROFORMER_MODEL_PATH")
         and file("OLIVIA_ROFORMER_CONFIG_PATH")
         and (
-            _python_runtime_ready(
-                roformer_python,
-                cwd=roformer_python.parent if roformer_python else None,
-                imports=("torch", "mel_band_roformer.inference"),
-                accepted_torch_versions=("2.11.0+cu128", "2.13.0+cu130"),
+            not probe_runtime
+            or (
+                _python_runtime_ready(
+                    roformer_python,
+                    cwd=roformer_python.parent if roformer_python else None,
+                    imports=("torch", "mel_band_roformer.inference"),
+                    accepted_torch_versions=("2.11.0+cu128", "2.13.0+cu130"),
+                )
+                if roformer_python is not None
+                else _executable_runtime_ready(roformer_executable)
             )
-            if roformer_python is not None
-            else _executable_runtime_ready(roformer_executable)
         )
     )
     ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
