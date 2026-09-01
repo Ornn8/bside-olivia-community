@@ -1974,9 +1974,6 @@ class VideoCapabilityInstaller:
             if item.install is not None:
                 return False
             missing.append(item)
-        if not missing:
-            return False
-
         download_root = self._download_root(bundle)
         download_root.mkdir(parents=True, exist_ok=True)
         source_used = source_mode

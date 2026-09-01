@@ -1677,6 +1677,18 @@ def test_manifest_append_downloads_only_new_direct_files(
         ),
         encoding="utf-8",
     )
+    music_root = root.parent / "music_video"
+    music_root.mkdir()
+    (music_root / ".ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": "music_video",
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
     runtime_profile = root.parent / "runtime-environment.json"
     runtime_profile.write_text(
         json.dumps(
@@ -1752,6 +1764,12 @@ def test_manifest_append_downloads_only_new_direct_files(
     assert environment["OLIVIA_ORDINARY_ACTION_BASE"] == str(
         (root / new_spec.relative_path).resolve()
     )
+    assert installer.start(bundle_id="music_video", source_mode="official") == "APPLIED"
+    assert _wait(installer, 1, "ready", "failed") == "ready"
+    assert requested == ["https://example.invalid/new.mp4"]
+    assert json.loads((music_root / ".ready.json").read_text(encoding="utf-8"))[
+        "version"
+    ] == "2.0"
 
 
 def test_install_fully_verifies_staged_payload_before_writing_ready_marker(
