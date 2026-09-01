@@ -1308,6 +1308,27 @@ function Get-FreshInstallTransactionNames {
     return @((Get-ManagedInstallTransactionNames) + @('app'))
 }
 
+function Test-PreservedOnlyInstallRoot {
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    if (-not [IO.Directory]::Exists($InstallRoot)) { return $false }
+    try {
+        if (([IO.File]::GetAttributes($InstallRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        $allowed = @('data', 'logs', 'third-party', 'downloads', 'profile')
+        foreach ($entry in [IO.Directory]::GetFileSystemEntries($InstallRoot)) {
+            if (
+                [IO.Path]::GetFileName($entry) -cnotin $allowed -or
+                -not [IO.Directory]::Exists($entry) -or
+                (([IO.File]::GetAttributes($entry) -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            ) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function New-ManagedInstallRollbackSnapshot {
     param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$Snapshot)
     if (-not (Test-Path -LiteralPath $InstallRoot)) { return }
@@ -1729,7 +1750,7 @@ Write-SetupProgress -Phase 'VERIFY_CORE' -CurrentBytes 0 -TotalBytes 0
 $coreAssets = Get-OfflineCoreAssets -Root $offlineRoot -ManifestPath $offlineManifestPath -RequirementsPath $requirements -VideoRuntimePath $VideoRuntimePath -VideoOfflineRoot $VideoOfflineRoot
 Write-SetupProgress -Phase 'VERIFY_CORE' -CurrentBytes 1 -TotalBytes 1
 New-Item -ItemType Directory -Force -Path $productRoot | Out-Null
-$installRootExisted = [IO.Directory]::Exists($Destination); $runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot
+$installRootExisted = [IO.Directory]::Exists($Destination) -and -not (Test-PreservedOnlyInstallRoot -InstallRoot $Destination); $runtimeRootExisted = Test-Path -LiteralPath $runtimeRoot
 $installTransactionId = [guid]::NewGuid().ToString('N')
 $installTransaction = Join-Path $productRoot '.install.transaction'; $installRollbackSnapshot = Join-Path $productRoot ".install.rollback.$installTransactionId"
 $runtimeStaging = "$runtimeRoot.staging.$installTransactionId"
