@@ -114,12 +114,34 @@ _CONTROL_INSTRUCTION_RE = re.compile(
 
 def _explicit_user_memory_fact(value: str) -> str | None:
     match = _EXPLICIT_MEMORY_FACT_RE.search(value)
-    if match is None:
-        return None
-    fact = f"{match.group(1)}：{match.group(2).strip()}"
-    if _CONTROL_INSTRUCTION_RE.search(fact):
-        return None
-    return fact
+    if match is not None:
+        fact = f"{match.group(1)}：{match.group(2).strip()}"
+        return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    sentences = tuple(
+        sentence.strip()
+        for sentence in re.split(r"[。.!！?？\n]+", value)
+        if sentence.strip()
+    )
+    if "请记住这个关系" in value:
+        relationship = tuple(
+            sentence
+            for sentence in sentences
+            if re.search(r"名字|叫作|称呼|认识|关系|笔友|朋友|家人|伴侣", sentence)
+            and "请记住" not in sentence
+        )
+        if relationship:
+            fact = "关系：" + "；".join(relationship[-2:])
+            return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    if re.search(r"这件事.{0,8}重要", value):
+        experience = tuple(
+            sentence
+            for sentence in sentences
+            if not re.search(r"这件事.{0,8}重要", sentence)
+        )
+        if experience:
+            fact = "重要经历：" + experience[-1]
+            return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    return None
 
 
 class Mem0AdapterError(RuntimeError):

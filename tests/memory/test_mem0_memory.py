@@ -484,6 +484,49 @@ def test_explicit_fallback_rejects_control_instruction_inside_fact(
     ]
 
 
+@pytest.mark.parametrize(
+    ("content", "stored"),
+    (
+        (
+            "我的名字是岑夏。我们认识三年，我把你当作最信任的笔友。请记住这个关系。",
+            "关系：我的名字是岑夏；我们认识三年，我把你当作最信任的笔友",
+        ),
+        (
+            "我在栖月码头找回了祖母送的指南针。这件事对我很重要。",
+            "重要经历：我在栖月码头找回了祖母送的指南针",
+        ),
+    ),
+)
+def test_explicit_relationship_and_experience_fallback_store_only_relevant_sentences(
+    tmp_path: Path,
+    content: str,
+    stored: str,
+) -> None:
+    class EmptyInferenceMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs.get("infer") is not False:
+                self.calls.append(("add", {"messages": messages, **kwargs}))
+                return {"results": []}
+            return super().add(messages, **kwargs)
+
+    backend = EmptyInferenceMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message=content,
+        assistant_message="收到。",
+        occurred_at=NOW,
+        source_id="letter:fixture:explicit-fact",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    add_calls = [value for name, value in backend.calls if name == "add"]
+    assert len(add_calls) == 2
+    assert add_calls[1]["messages"] == stored
+    assert add_calls[1]["infer"] is False
+    assert "请记住" not in stored
+    assert "这件事" not in stored
+
+
 def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) -> None:
     backend = FakeMem0()
     backend.fail.add("add")
