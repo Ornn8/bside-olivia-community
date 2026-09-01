@@ -500,9 +500,10 @@ PROFILES: dict[str, dict[str, Any]] = {
 
 
 def route_spec(path: str) -> dict[str, Any] | None:
-    """Return a defensive copy of the normalized route metadata."""
+    """Return a defensive copy of the route metadata for the requested path."""
 
-    return deepcopy(ROUTES.get(path.rstrip("/") or "/"))
+    normalized_path = path.rstrip("/") if path.startswith("/toy/") else path
+    return deepcopy(ROUTES.get(normalized_path or "/"))
 
 
 def contract_document() -> dict[str, Any]:

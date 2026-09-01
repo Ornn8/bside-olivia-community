@@ -44,6 +44,8 @@ def test_versioned_contract_registers_exact_native_letter_aliases() -> None:
         expected = dict(routes[canonical_path])
         expected["evidence"] = "local"
         assert routes[native_path] == expected
+        assert http_contract.route_spec(f"{native_path}/") is None
+        assert http_contract.route_spec(f"{canonical_path}/") == routes[canonical_path]
 
 
 def test_native_letter_aliases_are_documented() -> None:
@@ -352,31 +354,50 @@ def test_unknown_native_letter_path_is_not_prefix_mapped() -> None:
     }
 
 
-def test_assembled_runtime_rejects_trailing_slash_native_alias() -> None:
+@pytest.mark.parametrize(
+    ("native_path", "supported_method", "wrong_method"),
+    (
+        ("/letter/list", "GET", "POST"),
+        ("/letter/unread_count", "GET", "POST"),
+        ("/letter/detail", "GET", "POST"),
+        ("/letter/send", "POST", "GET"),
+        ("/letter/resend", "POST", "GET"),
+        ("/letter/share", "POST", "GET"),
+    ),
+)
+def test_assembled_runtime_rejects_trailing_slash_native_alias(
+    native_path: str,
+    supported_method: str,
+    wrong_method: str,
+) -> None:
     import local_server
     from aiohttp.test_utils import TestClient, TestServer
     from original_client_server import create_original_client_server_runtime
 
-    async def scenario() -> tuple[int, dict[str, object]]:
+    async def scenario() -> list[tuple[int, dict[str, object]]]:
         runtime = create_original_client_server_runtime(
             local_server.handler,
             letter_collection=local_server._letter_collection,
         )
         async with TestClient(TestServer(runtime.app, access_log=None)) as client:
-            response = await client.get("/letter/list/")
-            return response.status, await response.json()
+            responses: list[tuple[int, dict[str, object]]] = []
+            for method in (supported_method, wrong_method):
+                response = await client.request(method, f"{native_path}/", json={})
+                responses.append((response.status, await response.json()))
+            return responses
 
-    status, payload = asyncio.run(scenario())
+    responses = asyncio.run(scenario())
 
-    assert status == 501
-    assert payload == {
-        "code": 501,
-        "message": "NOT_IMPLEMENTED",
-        "data": {
-            "status": "NOT_IMPLEMENTED",
-            "error_code": "ROUTE_NOT_IMPLEMENTED",
-        },
-    }
+    for status, payload in responses:
+        assert status == 501
+        assert payload == {
+            "code": 501,
+            "message": "NOT_IMPLEMENTED",
+            "data": {
+                "status": "NOT_IMPLEMENTED",
+                "error_code": "ROUTE_NOT_IMPLEMENTED",
+            },
+        }
 
 
 def test_assembled_runtime_applies_cors_to_native_letter_routes(
