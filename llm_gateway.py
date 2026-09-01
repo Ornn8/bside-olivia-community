@@ -227,6 +227,10 @@ class ManagedLLMConfig:
             or schema_version not in {1, 2, MANAGED_LLM_SCHEMA_VERSION}
         ):
             raise ValueError("unsupported managed LLM config schema")
+        if schema_version == MANAGED_LLM_SCHEMA_VERSION:
+            missing = {"provider", "max_retries"}.difference(raw)
+            if missing:
+                raise ValueError("managed LLM config is missing required fields")
         provider = raw.get("provider", "openai_compatible")
         if provider != "openai_compatible":
             raise ValueError("unsupported managed LLM provider")

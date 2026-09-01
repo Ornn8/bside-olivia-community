@@ -111,6 +111,21 @@ def test_managed_llm_config_uses_one_strict_schema_for_runtime_and_restart() -> 
     }
 
 
+@pytest.mark.parametrize("missing", ["provider", "max_retries"])
+def test_managed_llm_schema_v3_requires_provider_and_retry_count(missing: str) -> None:
+    payload = {
+        "schema_version": 3,
+        "provider": "openai_compatible",
+        "base_url": "https://gateway.example/v1",
+        "model": "vendor/not-deepseek",
+        "max_retries": 2,
+    }
+    payload.pop(missing)
+
+    with pytest.raises(ValueError, match="managed LLM"):
+        ManagedLLMConfig.from_mapping(payload)
+
+
 def test_reasoning_timeout_environment_override_is_loaded(tmp_path) -> None:
     config = load_gateway_config(
         tmp_path / "missing.json",

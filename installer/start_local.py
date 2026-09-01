@@ -140,6 +140,8 @@ def _load_llm_environment(
     key_path = data_root / "config" / "deepseek_api_key.dpapi"
     config_path = data_root / "config" / "llm.json"
     saved_key_binding = False
+    managed_key_absent = False
+    managed_key_authoritative = False
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         managed = ManagedLLMConfig.from_mapping(payload)
@@ -148,6 +150,7 @@ def _load_llm_environment(
         provider = managed.provider
         max_retries = managed.max_retries
         if payload.get("schema_version") in {2, 3}:
+            managed_key_authoritative = True
             has_key_binding = "key_file" in payload or "key_sha256" in payload
             if has_key_binding:
                 name = payload.get("key_file")
@@ -165,36 +168,57 @@ def _load_llm_environment(
                 if hashlib.sha256(key_path.read_bytes()).hexdigest() != expected_hash:
                     raise ValueError("invalid key binding")
                 saved_key_binding = True
-            else:
+            elif payload.get("schema_version") == 3:
                 key_path = Path()
+                managed_key_absent = True
+            else:
+                raise ValueError("missing key binding")
     except FileNotFoundError:
         pass
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         provider = "none"
         key_path = Path()
+    if managed_key_authoritative:
+        values.pop("DEEPSEEK_API_KEY", None)
+        values.pop("OPENAI_API_KEY", None)
+    if (
+        saved_key_binding
+        and include_secret
+        and not values.get("OLIVIA_LLM_API_KEY")
+    ):
+        configured_key = _load_dpapi_key(key_path)
+        if configured_key:
+            values["OLIVIA_LLM_API_KEY"] = configured_key
+        else:
+            provider = "none"
+    elif managed_key_absent and not values.get("OLIVIA_LLM_API_KEY"):
+        provider = "none"
     for name, value in {
         "OLIVIA_LLM_PROVIDER": provider,
         "OLIVIA_LLM_BASE_URL": base_url,
         "OLIVIA_LLM_MODEL": model,
-        "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
+        "OLIVIA_LLM_API_KEY_ENV": (
+            "OLIVIA_LLM_API_KEY" if managed_key_authoritative else "DEEPSEEK_API_KEY"
+        ),
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
         "OLIVIA_LLM_MAX_RETRIES": str(max_retries),
+        "OLIVIA_LLM_REQUIRES_API_KEY": "1",
     }.items():
         values.setdefault(name, value)
+    values["OLIVIA_LLM_REQUIRES_API_KEY"] = "1"
     if values.get("OLIVIA_LLM_API_KEY"):
         values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
     generic_key_present = any(
         values.get(name) for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
     )
-    # A schema-v2 binding is the user's explicit saved choice; inherited generic
-    # keys must not outrank it.  The Olivia-specific override remains explicit.
     if (
         include_secret
+        and not saved_key_binding
         and key_path != Path()
         and not values.get("OLIVIA_LLM_API_KEY")
-        and (saved_key_binding or not generic_key_present)
+        and not generic_key_present
     ):
         configured_key = _load_dpapi_key(key_path)
         if configured_key:

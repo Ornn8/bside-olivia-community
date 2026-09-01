@@ -18,7 +18,7 @@ import pytest
 from installer import configure
 import installer.start_local as start_local
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, SETTINGS_UI_VERSION
-from original_client_setup_api import _dpapi_protect
+from original_client_setup_api import LLMSetupService, _dpapi_protect
 from patch_companion_settings import CompanionSettingsPatchError
 
 
@@ -172,10 +172,16 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
 
 
-def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(tmp_path: Path) -> None:
+def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     data_root = tmp_path / "data"
     config_root = data_root / "config"
     config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'e' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_bytes(b"synthetic-protected-key")
     (config_root / "llm.json").write_text(
         json.dumps(
             {
@@ -184,17 +190,27 @@ def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(tmp_path:
                 "base_url": "https://gateway.example/v1",
                 "model": "vendor/not-deepseek",
                 "max_retries": 4,
+                "key_file": key_name,
+                "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
             }
         ),
         encoding="utf-8",
     )
 
-    environment = start_local._load_llm_environment({}, data_root)
+    monkeypatch.setattr(
+        start_local,
+        "_load_dpapi_key",
+        lambda path: "saved-key-for-test" if path == key_path else "",
+    )
+    environment = start_local._load_llm_environment(
+        {}, data_root, include_secret=True
+    )
 
     assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://gateway.example/v1"
     assert environment["OLIVIA_LLM_MODEL"] == "vendor/not-deepseek"
     assert environment["OLIVIA_LLM_MAX_RETRIES"] == "4"
+    assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -208,7 +224,7 @@ def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(tmp_path:
         },
     ],
 )
-def test_launcher_prefers_valid_saved_key_to_inherited_generic_keys(
+def test_launcher_isolates_valid_saved_key_from_inherited_generic_keys(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     inherited: dict[str, str],
@@ -238,11 +254,112 @@ def test_launcher_prefers_valid_saved_key_to_inherited_generic_keys(
     )
 
     environment = start_local._load_llm_environment(
-        inherited, data_root, include_secret=True
+        {**inherited, "OLIVIA_LLM_REQUIRES_API_KEY": "0"},
+        data_root,
+        include_secret=True,
     )
 
-    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
-    assert environment["DEEPSEEK_API_KEY"] == "saved-key-for-test"
+    assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+    assert environment["OLIVIA_LLM_API_KEY"] == "saved-key-for-test"
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
+
+
+def test_launcher_disables_saved_provider_when_dpapi_unprotect_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'c' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_bytes(b"synthetic-protected-key")
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example/v1",
+                "model": "vendor/not-deepseek",
+                "max_retries": 2,
+                "key_file": key_name,
+                "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    attempts: list[Path] = []
+    monkeypatch.setattr(
+        start_local,
+        "_load_dpapi_key",
+        lambda path: attempts.append(path) or "",
+    )
+
+    environment = start_local._load_llm_environment(
+        {
+            "DEEPSEEK_API_KEY": "inherited-deepseek-key",
+            "OPENAI_API_KEY": "inherited-openai-key",
+        },
+        data_root,
+        include_secret=True,
+    )
+
+    assert attempts == [key_path]
+    assert environment["OLIVIA_LLM_PROVIDER"] == "none"
+    assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+    assert "OLIVIA_LLM_API_KEY" not in environment
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
+
+
+def test_launcher_keeps_deleted_managed_key_disabled_after_restart(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'d' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_bytes(b"synthetic-protected-key")
+    (config_root / "llm.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example/v1",
+                "model": "vendor/not-deepseek",
+                "max_retries": 2,
+                "key_file": key_name,
+                "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = LLMSetupService(
+        data_root,
+        protect=lambda value: value,
+        unprotect=lambda value: value,
+        probe=lambda *_args: None,
+    )
+
+    assert service.delete() is False
+    environment = start_local._load_llm_environment(
+        {
+            "DEEPSEEK_API_KEY": "inherited-deepseek-key",
+            "OPENAI_API_KEY": "inherited-openai-key",
+        },
+        data_root,
+        include_secret=True,
+    )
+
+    assert not key_path.exists()
+    assert environment["OLIVIA_LLM_PROVIDER"] == "none"
+    assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+    assert "OLIVIA_LLM_API_KEY" not in environment
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
 
 
 def test_launcher_prefers_explicit_olivia_key_to_valid_saved_key(
@@ -284,8 +401,8 @@ def test_launcher_prefers_explicit_olivia_key_to_valid_saved_key(
 
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
     assert environment["OLIVIA_LLM_API_KEY"] == inherited["OLIVIA_LLM_API_KEY"]
-    assert environment["DEEPSEEK_API_KEY"] == inherited["DEEPSEEK_API_KEY"]
-    assert environment["OPENAI_API_KEY"] == inherited["OPENAI_API_KEY"]
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
 
 
 def test_launcher_loads_persisted_video_runtime_environment(tmp_path: Path) -> None:

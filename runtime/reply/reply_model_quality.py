@@ -163,6 +163,44 @@ _LAYER_SPECS = {
         ),
     },
 }
+
+
+@dataclass(frozen=True)
+class ResolvedModelQualityConfig:
+    model: str
+    timeout_seconds: float
+    reasoning_timeout_seconds: float | None
+
+
+def resolve_model_quality_config(
+    config: object,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> ResolvedModelQualityConfig:
+    environment = os.environ if environ is None else environ
+    configured_model = str(getattr(config, "model", "")).strip()
+    review_model = environment.get(_REVIEW_MODEL_ENV, "").strip() or configured_model
+    configured_timeout = float(getattr(config, "timeout_seconds", 30.0))
+    max_reasoning = (
+        isinstance(config, GatewayConfig)
+        and config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and review_model.casefold() == "deepseek-v4-flash"
+    )
+    return ResolvedModelQualityConfig(
+        model=review_model,
+        timeout_seconds=_env_timeout(
+            "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
+            min(configured_timeout, 60.0),
+            maximum=120.0,
+            environ=environment,
+        ),
+        reasoning_timeout_seconds=(
+            config.reasoning_timeout_seconds if max_reasoning else None
+        ),
+    )
+
+
 _MEMORY_EVIDENCE_LAYERS = frozenset({"continuity_memory"})
 _EVIDENCE_BOUND_LAYERS = frozenset(
     {"identity_boundary", "voice_style", "continuity_memory"}
@@ -964,14 +1002,12 @@ def create_model_quality_ports(
     ):
         return None, None
 
-    configured_model = str(getattr(config, "model", "")).strip()
-    explicit_review_model = os.environ.get(_REVIEW_MODEL_ENV, "").strip()
-    review_model = explicit_review_model or configured_model
+    resolved = resolve_model_quality_config(config)
     quality_gateway = gateway
     if isinstance(config, GatewayConfig):
         quality_config = replace(
             config,
-            model=review_model,
+            model=resolved.model,
             stream=False,
             max_input_chars=max(config.max_input_chars, 30_000),
             fallback_provider="none",
@@ -982,42 +1018,19 @@ def create_model_quality_ports(
             else create_gateway(quality_config)
         )
 
-    configured_timeout = float(
-        getattr(
-            config,
-            "timeout_seconds",
-            30.0,
-        )
-    )
-    max_reasoning = (
-        isinstance(config, GatewayConfig)
-        and config.provider == "openai_compatible"
-        and config.api_style == "chat_completions"
-        and review_model.casefold() == "deepseek-v4-flash"
-    )
-    timeout = _env_timeout(
-        "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
-        min(configured_timeout, 60.0),
-        maximum=120.0,
-    )
-    reasoning_timeout = (
-        config.reasoning_timeout_seconds
-        if max_reasoning and isinstance(config, GatewayConfig)
-        else None
-    )
     reviewer = GatewayPersonaReviewer(
         quality_gateway,
         persona_path,
-        timeout,
-        reasoning_timeout,
-        review_model,
+        resolved.timeout_seconds,
+        resolved.reasoning_timeout_seconds,
+        resolved.model,
     )
     rewriter = (
         GatewayPersonaRewriter(
             quality_gateway,
             persona_path,
-            timeout,
-            reasoning_timeout,
+            resolved.timeout_seconds,
+            resolved.reasoning_timeout_seconds,
         )
         if _env_bool(
             "OLIVIA_REPLY_REWRITE_ENABLED",
@@ -2208,10 +2221,12 @@ def _env_timeout(
     default: float,
     *,
     maximum: float,
+    environ: Mapping[str, str] | None = None,
 ) -> float:
+    environment = os.environ if environ is None else environ
     try:
         value = float(
-            os.environ.get(
+            environment.get(
                 name,
                 default,
             )
@@ -2231,5 +2246,7 @@ __all__ = [
     "GatewayPersonaReviewer",
     "GatewayPersonaRewriter",
     "GatewayReviewTransport",
+    "ResolvedModelQualityConfig",
     "create_model_quality_ports",
+    "resolve_model_quality_config",
 ]

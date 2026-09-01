@@ -152,7 +152,10 @@ from runtime.reply.reply_context import (
     WorldFactKind,
 )
 from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
-from runtime.reply.reply_model_quality import create_model_quality_ports
+from runtime.reply.reply_model_quality import (
+    create_model_quality_ports,
+    resolve_model_quality_config,
+)
 from runtime.reply.reply_reviewer import NullReviewer
 
 
@@ -2422,29 +2425,15 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
         if max_reasoning
         else float(LLM_TIMEOUT_SECONDS)
     )
-    default_quality_timeout = (
-        LLM_CONFIG.reasoning_timeout_seconds
-        if max_reasoning
-        else min(float(LLM_TIMEOUT_SECONDS), 60.0)
+    quality_config = resolve_model_quality_config(
+        LLM_CONFIG,
+        environ=_os.environ,
     )
-    if max_reasoning:
-        quality_timeout = default_quality_timeout
-    else:
-        try:
-            quality_timeout = float(
-                _os.environ.get(
-                    "OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS",
-                    str(default_quality_timeout),
-                )
-            )
-        except (TypeError, ValueError):
-            quality_timeout = default_quality_timeout
-    quality_timeout = max(
-        1.0,
-        min(
-            quality_timeout,
-            LLM_CONFIG.reasoning_timeout_seconds if max_reasoning else 300.0,
-        ),
+    quality_timeout = (
+        quality_config.reasoning_timeout_seconds
+        if exact_mode == ReplyMode.TEXT_LETTER.value
+        and quality_config.reasoning_timeout_seconds is not None
+        else quality_config.timeout_seconds
     )
     quality_stages = 7.0 if exact_mode == ReplyMode.TEXT_LETTER.value else 3.0
     return generation_timeout + quality_stages * quality_timeout + 5.0
