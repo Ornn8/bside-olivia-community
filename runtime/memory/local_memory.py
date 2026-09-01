@@ -257,14 +257,19 @@ class UnavailableMemoryPort(NullMemoryPort):
     def legacy_content_hashes(self) -> set[str]:
         raise MemoryUnavailable(self.reason)
 
+    def legacy_source_hashes(self, source: str) -> Mapping[str, str]:
+        del source
+        raise MemoryUnavailable(self.reason)
+
     def import_legacy_records(
         self,
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
         promote_duplicate_metadata: bool = False,
+        replace_matching_source_records: bool = False,
     ) -> LegacyImportResult:
-        del promote_duplicate_metadata
+        del promote_duplicate_metadata, replace_matching_source_records
         raise MemoryUnavailable(self.reason)
 
 
@@ -616,6 +621,15 @@ class LocalMemoryAdapter:
             rows = self.connection.execute("SELECT content_hash FROM legacy_letters").fetchall()
             return {str(row[0]) for row in rows}
 
+    def legacy_source_hashes(self, source: str) -> Mapping[str, str]:
+        source_name = _label(source, default="local-import")
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT source_record_id, content_hash FROM legacy_letters WHERE source = ?",
+                (source_name,),
+            ).fetchall()
+        return {str(row[0]): str(row[1]) for row in rows}
+
     def _promote_legacy_duplicate(
         self,
         conn: sqlite3.Connection,
@@ -654,12 +668,61 @@ class LocalMemoryAdapter:
                 "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
             )
 
+    def _replace_legacy_source_record(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        content: str,
+        source_record_id: str,
+        source: str,
+        occurred_at: str | None,
+        digest: str,
+        metadata: str,
+    ) -> str | None:
+        rows = conn.execute(
+            "SELECT memory_id, content_hash FROM legacy_letters "
+            "WHERE source_record_id = ? AND source = ?",
+            (source_record_id, source),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise sqlite3.IntegrityError("legacy source record is ambiguous")
+        memory_id, old_digest = str(rows[0][0]), str(rows[0][1])
+        if old_digest == digest:
+            return old_digest
+        collision = conn.execute(
+            "SELECT 1 FROM legacy_letters WHERE content_hash = ? AND memory_id <> ?",
+            (digest, memory_id),
+        ).fetchone()
+        if collision is not None:
+            raise sqlite3.IntegrityError("legacy replacement content already exists")
+        conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_update")
+        try:
+            conn.execute(
+                "UPDATE legacy_letters SET content = ?, content_hash = ?, occurred_at = ?, "
+                "metadata_json = ? WHERE memory_id = ?",
+                (content, digest, occurred_at, metadata, memory_id),
+            )
+            if self._fts5:
+                conn.execute(
+                    "UPDATE legacy_letters_fts SET content = ?, source = ? WHERE memory_id = ?",
+                    (content, source, memory_id),
+                )
+        finally:
+            conn.execute(
+                "CREATE TRIGGER legacy_letters_no_update BEFORE UPDATE ON legacy_letters "
+                "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
+            )
+        return old_digest
+
     def import_legacy_records(
         self,
         records: Iterable[LegacyLetter],
         *,
         atomic: bool = True,
         promote_duplicate_metadata: bool = False,
+        replace_matching_source_records: bool = False,
     ) -> LegacyImportResult:
         self._require_writable()
         materialized = list(records)
@@ -677,6 +740,7 @@ class LocalMemoryAdapter:
                 rolled_back=True,
             )
         inserted = 0
+        updated = 0
         duplicates = 0
         try:
             with self._transaction() as conn:
@@ -686,6 +750,25 @@ class LocalMemoryAdapter:
                 }
                 batch: set[str] = set()
                 for content, source_record_id, source, occurred_at, digest, metadata in normalized:
+                    if replace_matching_source_records:
+                        old_digest = self._replace_legacy_source_record(
+                            conn,
+                            content=content,
+                            source_record_id=source_record_id,
+                            source=source,
+                            occurred_at=occurred_at,
+                            digest=digest,
+                            metadata=metadata,
+                        )
+                        if old_digest is not None:
+                            if old_digest == digest:
+                                duplicates += 1
+                            else:
+                                existing.discard(old_digest)
+                                existing.add(digest)
+                                updated += 1
+                            batch.add(digest)
+                            continue
                     if digest in existing or digest in batch:
                         if promote_duplicate_metadata and digest in existing:
                             self._promote_legacy_duplicate(
@@ -715,6 +798,7 @@ class LocalMemoryAdapter:
             return LegacyImportResult(
                 seen=len(materialized),
                 inserted=0,
+                updated=0,
                 duplicates=duplicates,
                 rejected=rejected,
                 rolled_back=True,
@@ -722,6 +806,7 @@ class LocalMemoryAdapter:
         return LegacyImportResult(
             seen=len(materialized),
             inserted=inserted,
+            updated=updated,
             duplicates=duplicates,
             rejected=rejected,
         )

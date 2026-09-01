@@ -63,6 +63,8 @@ class OfflineLetterPairRecoveryReport:
     read_only: bool = True
     history_audit: str = "not_written"
     provider_calls: int = 0
+    would_update: int = 0
+    updated: int = 0
 
 
 def is_published_offline_letter_pair(metadata: object) -> bool:
@@ -90,6 +92,24 @@ def _pair_archive_content(pair: tuple[str, str]) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _repair_reversible_utf8_latin1_mojibake(value: str) -> str:
+    """Undo the legacy backup's lossless UTF-8-as-Latin-1 decode mistake."""
+
+    if any(ord(character) > 0xFF for character in value):
+        return value
+    try:
+        repaired = value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
+    original_c1 = sum(0x80 <= ord(character) <= 0x9F for character in value)
+    repaired_c1 = sum(0x80 <= ord(character) <= 0x9F for character in repaired)
+    original_cjk = sum("\u3400" <= character <= "\u9fff" for character in value)
+    repaired_cjk = sum("\u3400" <= character <= "\u9fff" for character in repaired)
+    if original_c1 and repaired_c1 < original_c1 and repaired_cjk > original_cjk:
+        return repaired
+    return value
 
 
 def _build_records(
@@ -137,25 +157,37 @@ def _parse_source(path: Path) -> tuple[bytes, tuple[tuple[str, str], ...]]:
         reply = value.get("reply")
         if not all(isinstance(item, str) and item.strip() for item in (content, reply)):
             raise ValueError("OFFLINE_LETTER_PAIR_INVALID")
-        pair = (content, reply)
+        pair = (
+            _repair_reversible_utf8_latin1_mojibake(content),
+            _repair_reversible_utf8_latin1_mojibake(reply),
+        )
         if len(_pair_archive_content(pair)) > _MAX_PAIR_CHARS:
             raise ValueError("OFFLINE_LETTER_PAIR_TOO_LARGE")
         pairs.append(pair)
     return raw, tuple(pairs)
 
 
-def _read_existing_hashes(database_path: Path) -> set[str]:
+def _read_existing_state(database_path: Path) -> tuple[set[str], dict[str, str]]:
     if not database_path.is_file():
-        return set()
+        return set(), {}
     connection = sqlite3.connect(f"file:{database_path.as_posix()}?mode=ro", uri=True)
     try:
         try:
-            rows = connection.execute("SELECT content_hash FROM legacy_letters").fetchall()
+            rows = connection.execute(
+                "SELECT content_hash, source_record_id, source FROM legacy_letters"
+            ).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc):
                 raise
-            return set()
-        return {str(row[0]) for row in rows}
+            return set(), {}
+        return (
+            {str(row[0]) for row in rows},
+            {
+                str(row[1]): str(row[0])
+                for row in rows
+                if str(row[2]) == "offline-letter-pairs"
+            },
+        )
     finally:
         connection.close()
 
@@ -164,20 +196,35 @@ def _recovery_plan_from_hashes(
     raw: bytes,
     pairs: tuple[tuple[str, str], ...],
     existing: set[str],
+    existing_by_source: Mapping[str, str] | None = None,
 ) -> OfflineLetterPairRecoveryReport:
     batch: set[str] = set()
     duplicates = 0
-    for pair in pairs:
+    would_insert = 0
+    would_update = 0
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    source_hashes = existing_by_source or {}
+    for index, pair in enumerate(pairs, start=1):
         digest = hashlib.sha256(_pair_archive_content(pair).encode()).hexdigest()
-        if digest in existing or digest in batch:
+        source_record_id = f"offline-letter-pairs:{source_sha256}:{index:06d}"
+        old_digest = source_hashes.get(source_record_id)
+        if old_digest is not None:
+            if old_digest == digest:
+                duplicates += 1
+            else:
+                would_update += 1
+        elif digest in existing or digest in batch:
             duplicates += 1
+        else:
+            would_insert += 1
         batch.add(digest)
     return OfflineLetterPairRecoveryReport(
         status="dry_run",
-        source_sha256=hashlib.sha256(raw).hexdigest(),
+        source_sha256=source_sha256,
         seen=len(pairs),
         accepted=len(pairs),
-        would_insert=len(pairs) - duplicates,
+        would_insert=would_insert,
+        would_update=would_update,
         duplicates=duplicates,
     )
 
@@ -187,10 +234,12 @@ def _recovery_plan(
     pairs: tuple[tuple[str, str], ...],
     database_path: Path,
 ) -> OfflineLetterPairRecoveryReport:
+    existing, existing_by_source = _read_existing_state(database_path)
     return _recovery_plan_from_hashes(
         raw,
         pairs,
-        _read_existing_hashes(database_path),
+        existing,
+        existing_by_source,
     )
 
 
@@ -215,6 +264,7 @@ def plan_offline_letter_pair_recovery_with_adapter(
         raw,
         pairs,
         adapter.legacy_content_hashes(),
+        adapter.legacy_source_hashes("offline-letter-pairs"),
     )
 
 
@@ -231,6 +281,7 @@ def apply_offline_letter_pair_recovery(
         result = archive.import_legacy_records(
             _build_records(raw, pairs),
             atomic=True,
+            replace_matching_source_records=True,
         )
     finally:
         archive.close()
@@ -238,6 +289,7 @@ def apply_offline_letter_pair_recovery(
         plan,
         status="rolled_back" if result.rolled_back else "committed",
         inserted=result.inserted,
+        updated=result.updated,
         duplicates=result.duplicates,
         rejected=result.rejected,
     )
@@ -255,15 +307,18 @@ def apply_offline_letter_pair_recovery_to_adapter(
         raw,
         pairs,
         adapter.legacy_content_hashes(),
+        adapter.legacy_source_hashes("offline-letter-pairs"),
     )
     result = adapter.import_legacy_records(
         _build_records(raw, pairs),
         atomic=True,
+        replace_matching_source_records=True,
     )
     return replace(
         plan,
         status="rolled_back" if result.rolled_back else "committed",
         inserted=result.inserted,
+        updated=result.updated,
         duplicates=result.duplicates,
         rejected=result.rejected,
     )

@@ -68,11 +68,13 @@ class LegacyImportResult:
     duplicates: int = 0
     rejected: int = 0
     rolled_back: bool = False
+    updated: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "seen": self.seen,
             "inserted": self.inserted,
+            "updated": self.updated,
             "duplicates": self.duplicates,
             "rejected": self.rejected,
             "rolled_back": self.rolled_back,
@@ -111,9 +113,12 @@ class MemoryPort(Protocol):
         *,
         atomic: bool = True,
         promote_duplicate_metadata: bool = False,
+        replace_matching_source_records: bool = False,
     ) -> LegacyImportResult: ...
 
     def legacy_content_hashes(self) -> set[str]: ...
+
+    def legacy_source_hashes(self, source: str) -> Mapping[str, str]: ...
 
     def unload_legacy(self) -> int: ...
 
@@ -177,8 +182,9 @@ class NullMemoryPort:
         *,
         atomic: bool = True,
         promote_duplicate_metadata: bool = False,
+        replace_matching_source_records: bool = False,
     ) -> LegacyImportResult:
-        del promote_duplicate_metadata
+        del promote_duplicate_metadata, replace_matching_source_records
         materialized = list(records)
         return LegacyImportResult(
             seen=len(materialized),
@@ -188,6 +194,10 @@ class NullMemoryPort:
 
     def legacy_content_hashes(self) -> set[str]:
         return set()
+
+    def legacy_source_hashes(self, source: str) -> Mapping[str, str]:
+        del source
+        return {}
 
     def unload_legacy(self) -> int:
         return 0

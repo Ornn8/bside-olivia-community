@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v15"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v16"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -295,6 +295,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ? payload && payload.status === "READY"
           && Number.isInteger(payload.seen)
           && Number.isInteger(payload.would_insert)
+          && Number.isInteger(payload.would_update)
           && Number.isInteger(payload.duplicates)
         : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
@@ -2020,7 +2021,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refreshLocalBackup = async () => {
       try {
         const payload = await requestJson(LOCAL_LETTER_IMPORT_PATH);
-        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可导入 ${payload.would_insert} 封，重复 ${payload.duplicates} 封。`;
+        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，重复 ${payload.duplicates} 封。`;
         return payload;
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
@@ -2035,7 +2036,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (importPending) return;
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
-      if (!await confirmAction(`确认从本地 letter_pairs.json 导入 ${preflight.would_insert} 封只读历史信件？`)) {
+      const changeCount = preflight.would_insert + preflight.would_update;
+      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？`)) {
         return;
       }
       setButtonsBusy([importButton], true);
@@ -2045,8 +2047,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
+        const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
         const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
-        importState.textContent = `已导入 ${inserted} 封只读历史信件，跳过 ${duplicates} 封重复记录。`;
+        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封只读历史信件，跳过 ${duplicates} 封重复记录。`;
         importButton.textContent = "再次检查并导入";
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
