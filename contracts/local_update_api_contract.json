@@ -1,7 +1,7 @@
 {
   "schema_version": "olivia.local-update-api-contract.v1",
   "status_schema_version": "olivia.local-update.v1",
-  "execution": "serialized-apply-rollback-off-event-loop",
+  "execution": "manual-apply-disabled-rollback-off-event-loop",
   "authorization": {
     "origins": "explicit-trusted-https-or-loopback-only",
     "login_required": true,
@@ -16,16 +16,14 @@
       "methods": ["POST", "OPTIONS"],
       "actions": {
         "select": {
-          "request_fields": ["action"],
-          "response_fields": ["status", "package_path", "restart_required"],
-          "status_values": ["SELECTED", "CANCELLED"],
-          "restart_required": false
+          "available": false,
+          "error_code": "UPDATE_ACTION_UNAVAILABLE",
+          "http_status": 503
         },
         "apply": {
-          "request_fields": ["action", "package_path", "manifest_sha256"],
-          "response_fields": ["status", "component", "version", "restart_required"],
-          "status_values": ["APPLIED"],
-          "restart_required": true
+          "available": false,
+          "error_code": "UPDATE_ACTION_UNAVAILABLE",
+          "http_status": 503
         },
         "rollback": {
           "request_fields": ["action"],
@@ -46,7 +44,6 @@
     "UPDATE_REQUEST_TOO_LARGE": 413,
     "UPDATE_CONTENT_TYPE_INVALID": 415,
     "UPDATE_ACTION_UNAVAILABLE": 503,
-    "UPDATE_PICKER_UNAVAILABLE": 503,
     "UPDATE_RESULT_INVALID": 503
   },
   "component_error_pattern": "UPDATE_[A-Z0-9_]{3,90}",

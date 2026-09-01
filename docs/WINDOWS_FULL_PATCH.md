@@ -133,9 +133,9 @@ webplayer.dat.orig
 
 安装后的 `START.cmd`、`CONFIGURE.cmd` 和 `UNINSTALL.cmd` 只调用安装根目录中的稳定启动器 `launcher/version_launcher.py`。稳定启动器读取一次 `.olivia-update-state.json` 原子指针，从 `versions/local_backend/<version>-<manifest-sha256>` 选择完整后端；没有更新状态时继续使用初装的 `local_backend`。因此更新期间不会把正在使用的后端目录临时移走，也不会要求用户重新运行完整安装器。
 
-当前版本只提供经过外部渠道取得的本地 `.oliviapatch` 文件安装，不联网检查或下载更新。包必须是 ZIP，并且只能包含一个 `manifest.json` 和清单声明的 `payload/...` 普通文件。`local_backend` 包必须包含 `installer/start_local.py`、`installer/configure.py` 和 `installer/uninstall.py` 三个普通文件入口，否则不会激活。公开契约及示例见：
+v0.1 不接受用户手动导入或应用 `.oliviapatch`。客户端选择与应用动作、以及 `apply-update` 命令都稳定返回 `UPDATE_ACTION_UNAVAILABLE`；升级只能使用维护者发布的完整安装包。内部补丁格式与构建器暂时保留用于后续签名机制开发，但不构成 v0.1 的用户发布面。公开契约及示例见：
 
-普通用户在客户端 Settings 的“补丁更新”中选择已下载的 `.oliviapatch`，粘贴发布页提供的 Manifest SHA-256 后安装；成功后关闭并重新打开 Olivia。该页面也提供回滚到上一版本的入口。命令行入口继续保留用于维护和故障排查。
+客户端 Settings 的“补丁更新”只保留已安装版本的回滚入口，并明确提示使用完整安装包更新；不显示文件选择、Manifest SHA-256 或本地补丁安装控件。
 
 状态指针成功切换后，更新器只会调用完整安装包写入 `launcher/Create-Shortcut.ps1` 的稳定副本，以 best-effort 方式发现桌面和开始菜单中仍然存在的快捷方式并刷新图标；不会执行刚激活补丁载荷里的脚本。属于当前安装、仍指向旧 `START.cmd` 的快捷方式会同时迁移为 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动；已经采用该隐藏入口的当前安装快捷方式只刷新图标。其他安装或无关的 wscript 快捷方式不会被改写。路径发现失败、PowerShell 不可用或启动失败、执行超时、非零退出以及单个快捷方式保存失败，都不会撤销已经完成的补丁激活，也不会把成功更新改报为失败。
 
@@ -154,13 +154,7 @@ python -m installer build-update --source <源码目录> --output <发布目录>
 
 命令拒绝 tracked 文件有改动或 HEAD 与 `--source-commit` 不一致的源码，并生成 `.manifest.sha256`（供客户端安装页粘贴）和 `.sha256`（用于核对整个补丁文件）。相同源码提交和版本会生成字节一致的包。
 
-安装命令：
-
-```powershell
-python -m installer apply-update --installation <安装目录> --package <补丁.oliviapatch> --manifest-sha256 <64位小写SHA-256>
-```
-
-`--manifest-sha256` 是包外信任锚，必须来自经过认证的发布元数据或用户已验证的官方发布页面，不能从同一个补丁包内自行读取后当作可信值。当前实现不包含签名验证或在线发布元数据获取；自动下载器接入前必须保持这条边界。
+后续若重新开放补丁应用，必须先把签名公钥固化到稳定安装面，并在激活前验证签名。单独提供同渠道可替换的 Manifest SHA-256 不能作为 QQ 转发场景的信任锚。
 
 每个 payload 文件还会按清单校验大小和 SHA-256。路径会按 Windows 规则拒绝目录穿越、大小写别名、尾随点/空格、ADS、设备名、符号链接和 reparse point；解包完成后会重新枚举暂存目录并逐文件复验。校验成功后先发布不可变版本目录，最后仅用一次原子替换切换状态指针。指针替换失败时，旧指针或初装后端仍可启动，新目录只是未激活版本。
 
