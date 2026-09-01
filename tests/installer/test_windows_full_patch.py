@@ -1978,6 +1978,50 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     ).read_text(encoding="utf-8") == "keep"
 
 
+def test_reinstall_after_uninstall_reuses_only_preserved_directories(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    preserved = ("data", "logs", "third-party", "downloads", "profile")
+    for name in preserved:
+        directory = target / name
+        directory.mkdir(exist_ok=True)
+        (directory / "preserve.txt").write_text(name, encoding="utf-8")
+
+    uninstall_full_patch(target, apply=True)
+    reinstalled = install_full_patch(official, target, payload, manifest)
+
+    assert reinstalled["status"] == "INSTALLED"
+    for name in preserved:
+        assert (target / name / "preserve.txt").read_text(encoding="utf-8") == name
+
+
+def test_failed_reinstall_keeps_preserved_data(
+    fixture_inputs,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    sentinel = target / "data" / "letter-state.db"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_bytes(b"preserved-user-data")
+    monkeypatch.setattr(
+        full_patch,
+        "patch_feapp",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("fixture")),
+    )
+
+    with pytest.raises(PatchInstallError, match="UNSUPPORTED_OFFICIAL_VERSION"):
+        install_full_patch(official, target, payload, manifest)
+
+    assert sentinel.read_bytes() == b"preserved-user-data"
+    assert {entry.name for entry in target.iterdir()} == {"data"}
+
+
 def test_repeat_install_retires_unsigned_component_state_to_stable_backend(
     fixture_inputs,
     tmp_path: Path,

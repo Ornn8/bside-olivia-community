@@ -24,7 +24,7 @@ OWNED_PATHS = (
     ".olivia-update-state.json",
     MARKER_NAME,
 )
-PRESERVED_PATHS = ("data", "logs", "third-party")
+PRESERVED_PATHS = ("data", "logs", "third-party", "downloads", "profile")
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 

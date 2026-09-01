@@ -560,6 +560,33 @@ def _managed_entry_is_reparse(metadata: os.stat_result) -> bool:
     )
 
 
+def _preserved_only_install_root(target: Path) -> bool:
+    """Accept an uninstalled root only when every entry is preserved user state."""
+
+    metadata = _managed_entry_metadata(target)
+    if (
+        metadata is None
+        or not stat.S_ISDIR(metadata.st_mode)
+        or _managed_entry_is_reparse(metadata)
+    ):
+        return False
+    allowed = set(PRESERVED_PATHS)
+    try:
+        entries = tuple(target.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        entry_metadata = _managed_entry_metadata(entry)
+        if (
+            entry.name not in allowed
+            or entry_metadata is None
+            or not stat.S_ISDIR(entry_metadata.st_mode)
+            or _managed_entry_is_reparse(entry_metadata)
+        ):
+            return False
+    return True
+
+
 def _refresh_existing_install(
     target: Path,
     payload: Path,
@@ -677,6 +704,7 @@ def install_full_patch(
     if target == source or target in source.parents or source in target.parents:
         raise PatchInstallError("INSTALL_ROOT_OVERLAPS_OFFICIAL")
     marker_path = target / MARKER_NAME
+    reusing_preserved_root = False
     if target.exists():
         if marker_path.is_file():
             marker = _read_marker(marker_path)
@@ -687,8 +715,12 @@ def install_full_patch(
             ):
                 refreshed = _refresh_existing_install(target, payload, marker, port)
                 return {"status": "ALREADY_INSTALLED", **refreshed}
-        raise PatchInstallError("INSTALL_ROOT_ALREADY_EXISTS")
-    target.parent.mkdir(parents=True, exist_ok=True)
+        if not marker_path.exists() and _preserved_only_install_root(target):
+            reusing_preserved_root = True
+        else:
+            raise PatchInstallError("INSTALL_ROOT_ALREADY_EXISTS")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
     staging = target
     try:
         copied_runtime = copy_official_runtime(
@@ -734,7 +766,7 @@ def install_full_patch(
             raise PatchInstallError("UNSUPPORTED_OFFICIAL_VERSION") from exc
 
         _write_start_scripts(staging, port)
-        (staging / "data").mkdir()
+        (staging / "data").mkdir(exist_ok=True)
         marker = {
             "schema_version": "olivia.full-patch.install.v2",
             "steam_app_id": APP_ID,
@@ -775,7 +807,13 @@ def install_full_patch(
         )
     except Exception:
         if staging.exists():
-            shutil.rmtree(staging)
+            if reusing_preserved_root:
+                try:
+                    remove_owned_targets(staging)
+                except ValueError as rollback_exc:
+                    raise PatchInstallError("PATCH_ROLLBACK_FAILED") from rollback_exc
+            else:
+                shutil.rmtree(staging)
         raise
     return {"status": "INSTALLED", **marker}
 
