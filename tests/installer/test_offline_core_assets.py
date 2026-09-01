@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import wave
 import zipfile
 
@@ -117,6 +118,28 @@ def test_private_video_activation_must_finish_before_install_transaction_commit(
     assert script.index(activation) < script.index(
         '[IO.File]::Move("$installTransaction.active", "$installTransaction.cleanup")'
     )
+
+
+def test_installer_holds_product_lock_through_shortcut_writeback() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+
+    shortcut_writeback = (
+        "& (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination"
+    )
+    assert script.index(shortcut_writeback) < script.rindex("Exit-ManagedInstallLock")
+
+
+def test_installer_lock_rejects_reparse_paths_without_delete_on_close() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+    enter = script[script.index("function Enter-ManagedInstallLock") :]
+    enter = enter[: enter.index("function Exit-ManagedInstallLock")]
+
+    assert enter.index(
+        "Assert-NoReparsePointsInPath -LiteralPath $ProductRoot"
+    ) < enter.index("[void][IO.Directory]::CreateDirectory($ProductRoot)")
+    assert "Assert-ManagedInstallLockPath -LiteralPath $lockPath" in enter
+    assert "[IO.FileOptions]::DeleteOnClose" not in enter
+    assert "[IO.File]::Delete($lockPath)" not in script
 
 
 def test_offline_core_asset_example_matches_its_public_schema() -> None:
@@ -247,6 +270,12 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
     assert "$lockedWheelHashes.SetEquals($manifestWheelHashes)" in script
     assert "[IO.Directory]::Move($runtimeRoot, $runtimeBackup)" in script
     assert "[IO.Directory]::Move($runtimeBackup, $runtimeRoot)" in script
+    assert script.index(
+        "$script:InstallInstanceLock = Enter-ManagedInstallLock"
+    ) < script.index(
+        "Repair-ManagedInstallTransaction -ProductRoot $productRoot"
+    )
+    assert "Remove-Item -LiteralPath $InstallRoot -Recurse -Force" not in script
     assert script.rindex(
         "$selectedOfficial = Resolve-OfficialInstall"
     ) < script.index("$coreAssets = Get-OfflineCoreAssets")
@@ -285,6 +314,80 @@ def _run_install_preflight(
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows file sharing is required")
+def test_second_installer_fails_before_touching_the_active_transaction(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    product.mkdir()
+    transaction = product / ".install.transaction"
+    transaction.write_text("active-owner-sentinel", encoding="utf-8")
+    lock_path = product / ".install.lock"
+    ready = tmp_path / "lock-ready"
+    release = tmp_path / "lock-release"
+
+    def ps_literal(path: Path) -> str:
+        return "'" + str(path).replace("'", "''") + "'"
+
+    holder = subprocess.Popen(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "$stream = [IO.File]::Open("
+                f"{ps_literal(lock_path)}, 'OpenOrCreate', 'ReadWrite', 'None'); "
+                f"[IO.File]::WriteAllText({ps_literal(ready)}, 'ready'); "
+                f"while (-not (Test-Path -LiteralPath {ps_literal(release)})) "
+                "{ Start-Sleep -Milliseconds 25 }; $stream.Dispose()"
+            ),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(200):
+            if ready.is_file():
+                break
+            if holder.poll() is not None:
+                pytest.fail("synthetic installer lock holder exited early")
+            time.sleep(0.025)
+        assert ready.is_file()
+
+        result = _run_install_preflight(product, tmp_path)
+
+        assert result.returncode == 2
+        assert "INSTALL_ALREADY_RUNNING" in result.stdout + result.stderr
+        assert transaction.read_text(encoding="utf-8") == "active-owner-sentinel"
+    finally:
+        release.touch()
+        holder.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_installer_rejects_a_reparse_point_at_the_lock_file(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    product.mkdir()
+    outside = tmp_path / "outside-lock-target"
+    outside.write_text("do-not-touch", encoding="utf-8")
+    lock_path = product / ".install.lock"
+    try:
+        lock_path.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symbolic-link creation is unavailable")
+    try:
+        result = _run_install_preflight(product, tmp_path)
+
+        assert result.returncode == 2
+        assert "INSTALL_LOCK_UNAVAILABLE" in result.stdout + result.stderr
+        assert outside.read_text(encoding="utf-8") == "do-not-touch"
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
 def _run_runtime_publish_fixture(
     tmp_path: Path,
     *,
@@ -299,7 +402,9 @@ def _run_runtime_publish_fixture(
     block_video_cleanup: bool = False,
     block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
     product_root: Path | None = None, existing_voice_pair: bool = False,
-    interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False, existing_runtime: bool = True, seed_existing_install: bool = True,
+    interrupt_voice_staging: bool = False, interrupt_after_bootstrap: bool = False,
+    existing_runtime: bool = True, seed_existing_install: bool = True,
+    bootstrap_preserved_paths: bool = False,
     private_video_exit_code: int = 0,
     private_video_status: str | None = None,
     private_video_progress_lines: tuple[str, ...] = (),
@@ -322,6 +427,16 @@ def _run_runtime_publish_fixture(
     if bootstrap_exit_code == 0 or bootstrap_replaces_managed_app:
         bootstrap_actions = "destination = pathlib.Path(sys.argv[sys.argv.index('--destination') + 1])\n" \
                             "(destination / 'data').mkdir(parents=True, exist_ok=True)\n"
+        if bootstrap_preserved_paths:
+            bootstrap_actions += (
+                "(destination / 'app').mkdir(parents=True, exist_ok=True)\n"
+                "(destination / 'app/partial-client.exe').write_text('partial')\n"
+                "(destination / 'data/letters.json').write_text('keep')\n"
+                "(destination / 'logs').mkdir(parents=True, exist_ok=True)\n"
+                "(destination / 'logs/launcher.jsonl').write_text('keep')\n"
+                "(destination / 'third-party').mkdir(parents=True, exist_ok=True)\n"
+                "(destination / 'third-party/user.bin').write_text('keep')\n"
+            )
         if bootstrap_replaces_managed_app:
             bootstrap_actions += "shutil.rmtree(destination / 'local_backend', ignore_errors=True)\n" \
                 "(destination / 'local_backend').mkdir()\n" \
@@ -982,8 +1097,21 @@ def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(
     assert not (runtime / "python.exe").exists()
     assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.backup.*"))
     assert not list(runtime_parent.glob("python-3.12.10-embed-amd64.staging.*"))
-    fresh, fresh_product = _run_runtime_publish_fixture(tmp_path / "fresh", bootstrap_exit_code=23, bootstrap_replaces_managed_app=True, existing_runtime=False, seed_existing_install=False)
-    assert fresh.returncode == 23 and not (fresh_product / "install").exists() and not (fresh_product / "runtime/python-3.12.10-embed-amd64").exists()
+    fresh, fresh_product = _run_runtime_publish_fixture(
+        tmp_path / "fresh",
+        bootstrap_exit_code=23,
+        bootstrap_replaces_managed_app=True,
+        existing_runtime=False,
+        seed_existing_install=False,
+        bootstrap_preserved_paths=True,
+    )
+    assert fresh.returncode == 23
+    assert (fresh_product / "install/data/letters.json").read_text() == "keep"
+    assert (fresh_product / "install/logs/launcher.jsonl").read_text() == "keep"
+    assert (fresh_product / "install/third-party/user.bin").read_text() == "keep"
+    assert not (fresh_product / "install/app").exists()
+    assert not (fresh_product / "install/local_backend").exists()
+    assert not (fresh_product / "runtime/python-3.12.10-embed-amd64").exists()
 
 
 def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Path) -> None:
@@ -994,7 +1122,8 @@ def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Pa
     backend = product / "install/local_backend"
     assert retried.returncode == 23
     assert (backend / "old-backend.txt").is_file() and not (backend / "new-backend.txt").exists()
-    assert not list(product.glob(".install.*"))
+    assert (product / ".install.lock").is_file()
+    assert not [path for path in product.glob(".install.*") if path.name != ".install.lock"]
 
 
 def test_patch_success_discards_runtime_backup_after_install(

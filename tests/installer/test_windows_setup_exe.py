@@ -1617,6 +1617,7 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     script = (ROOT / "installer" / "windows_setup.iss").read_text(encoding="utf-8")
 
     assert "PrivilegesRequired=lowest" in script
+    assert "SetupMutex=BSideOliviaLocalInstaller" in script
     assert "CreateAppDir=no" in script
     assert "Uninstallable=no" in script
     assert "LicenseFile=" in script
@@ -1723,6 +1724,19 @@ def test_windows_installer_documents_ambiguous_source_diagnostic_contract() -> N
     assert "selected_official_id" in documentation
     assert "observed_feapp_sha256" in documentation
     assert "observed_webplayer_sha256" in documentation
+
+
+def test_windows_installer_documents_single_instance_and_fresh_rollback_contract() -> None:
+    documentation = (ROOT / "docs" / "WINDOWS_FULL_PATCH.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SetupMutex" in documentation
+    assert "INSTALL_ALREADY_RUNNING" in documentation
+    assert "INSTALL_LOCK_UNAVAILABLE" in documentation
+    assert "整个安装生命周期" in documentation
+    assert "data`、`logs`、`third-party" in documentation
+    assert "只清理安装器创建的受管项" in documentation
 
 
 def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
