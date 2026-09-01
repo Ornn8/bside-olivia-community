@@ -1379,36 +1379,22 @@ async def _music_voice_plan_for_letter(
     letter: dict,
     reply_text: str,
 ) -> VoicePerformancePlan:
-    """Keep the musical prelude on its pre-A director and persistence lane."""
+    """Use the same LLM-directed, persisted performance plan for musical replies."""
 
     stored = letter.get("voice_performance_plan")
     if stored is not None:
         try:
             if not isinstance(stored, dict):
                 raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-            plan = VoicePerformancePlan.from_music_dict(stored)
+            legacy_plan = VoicePerformancePlan.from_music_dict(stored)
         except VoiceDirectionError:
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
-        if plan.reply_text != reply_text:
+            legacy_plan = None
+        if legacy_plan is not None and legacy_plan.reply_text != reply_text:
             raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        return plan
-
-    letter_id = str(letter.get("letter_id", "")).strip()
-    if not letter_id:
-        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    plan = VoicePerformancePlan(
-        reply_text=reply_text,
-        overall_emotion="自然、温柔、真诚地说完这封回信",
-        global_speed=1.03,
-        energy=0.45,
-        breath_before_sentences=(),
-        emphasize_sentences=(),
-        short_instruction="",
-        profile="legacy_music_global_direction_v1",
-    )
-    letter["voice_performance_plan"] = plan.to_dict()
-    _persist_media_state()
-    return plan
+        if legacy_plan is not None:
+            letter.pop("voice_performance_plan", None)
+            _persist_media_state()
+    return await _voice_plan_for_letter(letter, reply_text)
 
 
 music_adapter = MusicAdapter()

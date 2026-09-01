@@ -100,6 +100,8 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
         "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe",
         "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4",
+        "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4",
         "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json",
     }
     assert {
@@ -1087,6 +1089,8 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
     for relative in (
         "ordinary_video/cosyvoice/runtime/cosyvoice/cli/cosyvoice.py",
         "ordinary_video/cosyvoice/runtime/LICENSE", "ordinary_video/ffmpeg/runtime/bin/ffmpeg.exe",
+        "ordinary_video/scenes/official-reply-action-base-v1.mp4",
+        "ordinary_video/scenes/official-reply-reference-000-043s-v1.mp4",
         "music_video/roformer/models/MelBandRoformer.ckpt",
         "music_video/roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
         "shared/linli-reference.wav"):

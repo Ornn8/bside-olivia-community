@@ -1,6 +1,6 @@
 {
   "schema_version": "olivia.video-capability-bom.v1",
-  "version": "2026.08.28",
+  "version": "2026.09.02",
   "provenance": {
     "policy": "assembly-only; private Olivia assets are never downloaded or redistributed",
     "cosyvoice_code": {"repo": "FunAudioLLM/CosyVoice", "revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", "license": "Apache-2.0"},
@@ -19,7 +19,7 @@
       "status": "FIXED",
       "requires_gpu": true,
       "dependencies": ["cosyvoice", "latentsync", "ffmpeg"],
-      "runtime_environment": {"OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe", "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime", "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json"},
+      "runtime_environment": {"OLIVIA_COSYVOICE_PYTHON": "cosyvoice/runtime/python/python.exe", "OLIVIA_FFMPEG_EXE": "ffmpeg/runtime/bin/ffmpeg.exe", "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe", "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime", "OLIVIA_TTS_CONFIG": "cosyvoice/config/tts_local.json", "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4", "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4"},
       "runtime_patches": [
         {"id":"cosyvoice-windows-audio","path":"installer/cosyvoice-windows-audio.patch.json","target":"cosyvoice/runtime/cosyvoice/utils/file_utils.py","sha256":"019a0f163e397186c0a6d26c5eeaed1c56ba88462200662950c276ceb50c2d27"},
         {"id":"latentsync-windows-memmap","path":"installer/latentsync-windows-memmap.patch.json","target":"latentsync/runtime/latentsync/pipelines/lipsync_pipeline.py","sha256":"a627cc639bd400c00466f683517afaf7adbac8b42088f128bd42e04d52b8e5b1"},
@@ -51,7 +51,9 @@
         {"id":"latentsync-unet","path":"latentsync/runtime/checkpoints/latentsync_unet.pt","size_bytes":5072348184,"sha256":"6440b49a7ccceff56cdc001f5f17605216337f5bbd66fa360139768926e23f51","license":"OpenRAIL++","sources":{"domestic":"https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/latentsync_unet.pt","official":"https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/latentsync_unet.pt"}},
         {"id":"latentsync-tiny","path":"latentsync/runtime/checkpoints/whisper/tiny.pt","size_bytes":75572083,"sha256":"65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9","license":"OpenRAIL++","sources":{"domestic":"https://modelscope.cn/models/chenmingyu/latentsync/resolve/582973d4f016e94f8c08a85ee111814f8c623828/whisper/tiny.pt","official":"https://huggingface.co/ByteDance/LatentSync-1.5/resolve/32a20d29aead0498e3e885e90dbbe8027da1b61b/whisper/tiny.pt"}},
         {"id":"latentsync-buffalo-l","path":"latentsync/face_detection/buffalo_l.zip","size_bytes":288621354,"sha256":"80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f","license":"MIT","sources":{"official":"https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"},"install":{"kind":"zip","destination":"latentsync/runtime/face_detection/models/buffalo_l","strip_components":0}},
-        {"id":"ffmpeg","path":"ffmpeg/ffmpeg-9.0.1-essentials_build.zip","size_bytes":111253802,"sha256":"fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9","license":"GPL-3.0-or-later","sources":{"official":"https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"},"install":{"kind":"zip","destination":"ffmpeg/runtime","strip_components":1}}
+        {"id":"ffmpeg","path":"ffmpeg/ffmpeg-9.0.1-essentials_build.zip","size_bytes":111253802,"sha256":"fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9","license":"GPL-3.0-or-later","sources":{"official":"https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip"},"install":{"kind":"zip","destination":"ffmpeg/runtime","strip_components":1}},
+        {"id":"official-reply-action-base","path":"scenes/official-reply-action-base-v1.mp4","size_bytes":7199459,"sha256":"6d92eee187e1661a49733e053bc5996c641533c58bb164ca3e2a48e8abea5b08","license":"Olivia original media preservation","sources":{"official":"https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-action-base-v1.mp4"}},
+        {"id":"official-reply-reference","path":"scenes/official-reply-reference-000-043s-v1.mp4","size_bytes":4722774,"sha256":"0a56785e84308de4d4b8ea87e338bae7699f5812bbbc14cb956f82c6964ac80d","license":"Olivia original media preservation","sources":{"official":"https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-reference-000-043s-v1.mp4"}}
       ]
     },
     {

@@ -644,6 +644,48 @@ def test_historical_actor_split_rebuilds_a_partial_source(tmp_path: Path) -> Non
     } == {"user", "linli"}
 
 
+def test_historical_exchange_rebuilds_records_from_an_older_extractor(
+    tmp_path: Path,
+) -> None:
+    backend = FakeMem0()
+    for actor, text in (
+        ("user", "用户喜欢画画。"),
+        ("linli", "我会继续鼓励用户画画。"),
+    ):
+        backend.rows.append(
+            {
+                "id": f"memory.old.{actor}",
+                "memory": text,
+                "user_id": "local-user",
+                "agent_id": "linli",
+                "metadata": {
+                    "source_id": "history:old-extractor",
+                    "domain": "conversation_memory",
+                    "canonical": True,
+                    "history_actor": actor,
+                },
+                "created_at": NOW.isoformat(),
+            }
+        )
+
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我喜欢画画。",
+        assistant_message="我会继续鼓励你画画。",
+        occurred_at=NOW,
+        source_id="history:old-extractor",
+        user_id="local-user",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert {value for name, value in backend.calls if name == "delete"} >= {
+        "memory.old.user",
+        "memory.old.linli",
+    }
+    assert {
+        row["metadata"]["history_extraction_version"] for row in backend.rows
+    } == {"relationship-v2"}
+
+
 def test_historical_identity_rejection_reports_rollback_failure(tmp_path: Path) -> None:
     class NonFirstPersonMem0(FakeMem0):
         def add(self, messages, **kwargs):
