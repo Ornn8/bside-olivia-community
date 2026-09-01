@@ -76,6 +76,8 @@ def test_repository_bom_keeps_fixed_cosyvoice_and_license_boundaries() -> None:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest = load_video_manifest(manifest_path)
     ordinary, music = manifest.bundles
+    assert ordinary.label == "说话与口型基础组件"
+    assert music.label == "视频回信（说话 + 60 秒音乐）"
     assert len([item for item in ordinary.files if item.identifier.startswith("cosy-")]) == 20
     assert sum(item.size_bytes for item in ordinary.files if item.identifier.startswith("cosy-")) == 9747516745
     assert music.license_review_required is False

@@ -179,7 +179,7 @@ complete, quiet piano cadence.
 
 ### 4.4 歌词结构
 
-正式产品只保留 40 秒和 60 秒短歌时长：
+正式产品固定 60 秒短歌时长：
 
 ```text
 [Intro]
@@ -193,7 +193,7 @@ complete, quiet piano cadence.
 约束：
 
 - Intro、Outro 不含歌词行；
-- 40 秒为主歌 6 行加副歌 6 行，60 秒为主歌 8 行加副歌 8 行；
+- 60 秒为主歌 8 行加副歌 8 行，保证一段主歌和一段副歌完整唱完；
 - 不生成第二主歌或中间奏，最终音视频同步渐暗收尾；
 - 每行以自然可唱的中文短句为主；
 - 不复制用户原文或现有歌曲；
@@ -205,7 +205,7 @@ complete, quiet piano cadence.
 
 ### 4.5 校准 provenance
 
-40/60 秒主歌加副歌契约是独立于旧长歌证据的 v2 校准批次。每次盲听运行的
+60 秒主歌加副歌契约是独立于旧长歌证据的 v2 校准批次。每次盲听运行的
 `manifest.json` 必须记录 `caseset_version: p03.music-cases.v2` 和
 `caption_version: p03.minimax-caption.v2`；私有映射文件重复这两个版本，方便在
 脱敏评分与私有音频之间核对。缺少这两个版本，或仍标记为 v1 的运行，不得与新
