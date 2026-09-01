@@ -19,6 +19,11 @@ from patch_companion_settings import (
 )
 from patch_feapp import patch_feapp
 from patch_webplayer import WebPlayerPatchError, patch_webplayer
+from installer.patch_native_navigation import (
+    COMPATIBILITY_MANIFEST_NAME,
+    NativeNavigationPatchError,
+    patch_native_navigation,
+)
 from installer.uninstall_safety import (
     MARKER_NAME,
     OWNED_PATHS,
@@ -749,6 +754,11 @@ def install_full_patch(
                 f"ws://127.0.0.1:{port}/ws",
                 work_root=resources,
             )
+            navigation_manifest = (
+                staging / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
+            )
+            if navigation_manifest.is_file():
+                patch_native_navigation(staging / "app" / version, work_root=staging)
             settings_patch = patch_companion_settings(
                 feapp,
                 base_http,
@@ -761,6 +771,7 @@ def install_full_patch(
         except (
             ValueError,
             CompanionSettingsPatchError,
+            NativeNavigationPatchError,
             WebPlayerPatchError,
         ) as exc:
             raise PatchInstallError("UNSUPPORTED_OFFICIAL_VERSION") from exc
