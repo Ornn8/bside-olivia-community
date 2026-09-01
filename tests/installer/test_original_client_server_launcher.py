@@ -92,7 +92,10 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
         archive.writestr("index.html", index)
         archive.writestr(
             "assets/main-31595bd3.js",
-            b'prefix"hide-write":o(p)||!o(N3)suffix',
+            (
+                'prefix"hide-write":o(p)||!o(N3)'
+                'Gn=e=>We({action:"checkLocalSongs",data:{songs:e}})suffix'
+            ).encode(),
         )
         archive.writestr("assets/olivia-companion-settings.js", old_bootstrap)
 
@@ -559,7 +562,7 @@ def test_fresh_profile_retries_known_first_exit_once(
     assert str(root.resolve()) not in launcher_log
 
 
-def test_launcher_patches_the_host_settings_before_each_client_attempt(
+def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -580,7 +583,9 @@ def test_launcher_patches_the_host_settings_before_each_client_attempt(
     )
 
     expected = (
-        host_roaming
+        root
+        / "profile"
+        / "Roaming"
         / "miHoYo"
         / "Olivia-steam"
         / "store"

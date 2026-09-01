@@ -1117,7 +1117,7 @@ def test_patch_feapp_uses_backup_hash_and_atomic_replacement(tmp_path: Path) -> 
     assert 'personaStatus="DRAFT"' not in patched
 
 
-def test_patch_feapp_routes_fresh_lite_login_to_existing_mailbox_collection(
+def test_patch_feapp_keeps_fresh_lite_login_on_original_home(
     tmp_path: Path,
 ) -> None:
     import zipfile
@@ -1142,8 +1142,8 @@ def test_patch_feapp_routes_fresh_lite_login_to_existing_mailbox_collection(
         patched = archive.read("assets/main-917d29fc.js").decode("utf-8")
 
     assert 'localStorage.setItem("appMode","lite")' in patched
-    assert "await t.replace({name:ye.Collection})" in patched
-    assert "await t.replace({name:ye.Home})" not in patched
+    assert "await t.replace({name:ye.Home})" in patched
+    assert "await t.replace({name:ye.Collection})" not in patched
 
 
 def test_patch_feapp_supports_original_client_0_0_9_627(
@@ -1158,9 +1158,12 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     javascript = (
         'We=e=>new Promise((t,s)=>{try{,'
         '"query.response":io(a)}}),t(c)},onFailure:'
-        '!z.isNew||$?(await t.replace({name:ve.Home}),'
+        '!z.isNew||$?(await t.replace({name:ve.Home}),' 
         'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
         '"hide-write":o(p)||!o(N3)'
+        'const W=K?"":Nt();if(t.value===Se.PRO)'
+        'ye=qt(t.value,B),Ee=Nt();f.value='
+        'Gn=e=>We({action:"checkLocalSongs",data:{songs:e}})'
     )
     with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(main_member, javascript)
@@ -1177,10 +1180,13 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert 'toyApiUrl="http://127.0.0.1:8899"' in patched
     assert 'toyWsUrl="ws://127.0.0.1:8899/ws"' in patched
     assert 'localStorage.setItem("appMode","lite")' in patched
-    assert "await t.replace({name:ve.Collection})" in patched
-    assert "await t.replace({name:ve.Home})" not in patched
+    assert "await t.replace({name:ve.Home})" in patched
+    assert "await t.replace({name:ve.Collection})" not in patched
     assert '"hide-write":!1' in patched
     assert '"hide-write":o(p)||!o(N3)' not in patched
+    assert 'const W=K?"":Nt()' in patched
+    assert 'Ee=Nt();f.value=' in patched
+    assert 'eventId:String(t.eventId??s+1)' in patched
 
 
 def test_patch_feapp_requires_explicit_local_ws_and_rolls_back_on_failure(tmp_path: Path) -> None:
