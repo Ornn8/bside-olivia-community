@@ -7,7 +7,7 @@
 1. 公开包：下载 EXE 和 `.sha256`。私有视频包：下载完整 ZIP并完整解压，保持 `Olivia-Setup-x64.exe`、`Olivia-video-runtime-private.zip`、`Olivia-video-offline-private/`、`Olivia-Setup-x64.receipt.json` 和 `.sha256` 的同目录结构。运行前按 `.sha256` 逐项核对 EXE、runtime ZIP、receipt 和 offline root 内每个文件。
 2. 双击 EXE，选择产品目录和正版 Steam 游戏目录。安装器按当前用户运行，不要求管理员权限；它在产品目录内分别创建 `install` 与 `runtime`，从 EXE 内置的离线资产安装受管 Python 3.12 runtime 和固定 wheel，不联网下载。正版目录可留空并按 Steam AppID `4532590` 自动发现。
 3. 安装成功后可从开始菜单的“Olivia 本地版”快捷方式启动；安装时勾选“创建桌面快捷方式”后也可从桌面启动。两个快捷方式都由 `%WINDIR%\System32\wscript.exe //B //Nologo "<安装目录>\START.vbs"` 隐藏启动，不会显示可被误关的命令行窗口；工作目录固定为安装目录。点击后会立即显示“Olivia 正在启动，请稍候”的短暂提示，实际启动同时开始，不会等待提示关闭。只有隐藏启动器最终返回非零退出码时才显示中文失败对话框；正常关闭返回 `0` 时不会弹出错误。`START.cmd` 仍保留为兼容入口。它只启动一个监听 `127.0.0.1` 的本机服务，再直接启动隔离副本的 `0.0.9.627\Olivia.exe`，并使用安装目录下的独立 profile。
-4. 首次登录后在原版客户端内完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频或视频运行时；私有视频包已包含，无需用户再选离线包。
+4. 首次启动原版客户端时完成 LLM key 与按需能力设置；后续在 Settings 的“本地陪伴”中管理。公开安装器不包含参考音频或视频运行时；私有视频包已包含，无需用户再选离线包。
 5. 卸载双击 `UNINSTALL.cmd`。受控卸载只删除安装器自己写入的 `app`、`local_backend`、启动脚本和 marker，保留 `data`、`logs`、`third-party`。
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
@@ -122,9 +122,9 @@ webplayer.dat.orig
 - 视频回信：只有“自然说话段 + 约 60 秒音乐段”的完整成片格式。内部先渲染说话段，再串接固定转场、音乐演唱与收尾；不存在用户可选或自动投递的纯说话视频。实际 TTS、口型、视觉、分离和音乐模型均为外部依赖，任一必需依赖缺失时明确返回 `UNAVAILABLE`，不会退化为纯说话视频或伪造媒体 URL。完成的本机 MP4 默认通过 Collection 内的 `BaseVideo` 展示；`webplayer` 仅保留为可选的显式 `uid` 本机回退，不替代书信编排路线。
 - Live：暂停，manifest 标记为 `UNAVAILABLE_PAUSED`，不会注入 Live 入口。
 - 核心 Python/runtime：随发布包离线分发并在安装前完整校验，不在用户安装时访问外网。
-- 可选模型与扩展依赖：不随核心安装器分发。长期记忆的 Mem0 runtime 和 BGE 模型已从首装移除，后续由登录后的初始设置按需安装，并可在客户端 Settings 中管理。当前版本缺失时明确降级为 `UNAVAILABLE`。
+- 可选模型与扩展依赖：不随核心安装器分发。长期记忆的 Mem0 runtime 和 BGE 模型已从首装移除，后续由首次启动时的初始设置按需安装，并可在客户端 Settings 中管理。当前版本缺失时明确降级为 `UNAVAILABLE`。
 
-离线核心包含本地服务启动所需的 `aiohttp`、`jsonschema` 及其锁定依赖；TTS、视觉、音频分离、音乐和长期记忆模型仍需按第三方下载清单单独准备。缺失时 `START.cmd` / 本地 health 会报告不可用原因；不会自动下载未固定来源、许可证或 SHA-256 的内容。用户 API key 只从启动进程环境或登录后的初始设置生成的当前用户 DPAPI 文件读取，不写入安装包或日志；DPAPI 解密值只存在于后端子进程环境中。初始设置 API 仅接受原版客户端明确配置的 HTTPS Origin，所有写操作还要求本次成功登录生成的随机 session token；任意本机端口网页不能调用。留空 key 只可复用当前已保存地址和模型的密钥，修改目标地址时必须重新输入。每次保存先写入新的版本化 DPAPI 文件，再用一次原子替换发布同时绑定 provider、模型、密钥文件名和密文 SHA-256 的 `llm.json`；配置损坏或绑定不匹配时启动器关闭 provider，不把旧 key 发送到默认服务。
+离线核心包含本地服务启动所需的 `aiohttp`、`jsonschema` 及其锁定依赖；TTS、视觉、音频分离、音乐和长期记忆模型仍需按第三方下载清单单独准备。缺失时 `START.cmd` / 本地 health 会报告不可用原因；不会自动下载未固定来源、许可证或 SHA-256 的内容。用户 API key 只从启动进程环境或首次启动设置生成的当前用户 DPAPI 文件读取，不写入安装包或日志；DPAPI 解密值只存在于后端子进程环境中。初始设置 API 仅接受原版客户端明确配置的 HTTPS Origin，所有写操作还要求由该受信页面状态请求生成的随机 session token；任意其他网页不能通过浏览器跨域调用。留空 key 只可复用当前已保存地址和模型的密钥，修改目标地址时必须重新输入。每次保存先写入新的版本化 DPAPI 文件，再用一次原子替换发布同时绑定 provider、模型、密钥文件名和密文 SHA-256 的 `llm.json`；配置损坏或绑定不匹配时启动器关闭 provider，不把旧 key 发送到默认服务。
 
 保存或删除 LLM 设置后，当前版本会明确返回 `restart_required: true`。原因是回复、情绪分流和私人世界分析在进程启动时共同捕获同一 provider graph；进程内热替换会让并发任务跨两个 provider 状态运行。关闭并重新打开 Olivia 后，稳定启动器会加载新的公开配置与 DPAPI 密钥。公开路由、状态及错误码契约见 `contracts/initial_setup_api_contract.json` 和对应 schema。
 

@@ -118,6 +118,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/private_world_candidate_ui.py",
     "control_center/runtime.py",
     "installer/version_launcher.py",
+    "installer/patch_native_user_settings.py",
     "installer/start_hidden.vbs.txt",
     "installer/assets/olivia.ico",
     "installer/mem0-capability-manifest.json",

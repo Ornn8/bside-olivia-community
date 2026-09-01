@@ -3,7 +3,7 @@
   "status_schema_version": "olivia.initial-setup.v1",
   "authorization": {
     "origins": "explicit-trusted-https-only",
-    "login_required_for_mutations": true,
+    "trusted_origin_session_required_for_mutations": true,
     "session_header": "X-Olivia-Setup-Session",
     "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
   },

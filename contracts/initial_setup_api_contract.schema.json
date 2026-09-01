@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "initial_setup_api_contract.schema.json",
-  "title": "Post-login LLM setup API contract",
+  "title": "Local first-run LLM setup API contract",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "status_schema_version", "authorization", "routes", "error_codes"],
@@ -11,7 +11,7 @@
     "authorization": {
       "const": {
         "origins": "explicit-trusted-https-only",
-        "login_required_for_mutations": true,
+        "trusted_origin_session_required_for_mutations": true,
         "session_header": "X-Olivia-Setup-Session",
         "confirmation_header": {"name": "X-Olivia-Setup-Action", "value": "confirmed"}
       }

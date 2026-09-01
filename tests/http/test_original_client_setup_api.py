@@ -83,7 +83,7 @@ def _service(tmp_path: Path, probes: list[tuple[str, str, str]]) -> LLMSetupServ
     )
 
 
-def test_setup_requires_successful_login_and_never_returns_secret(tmp_path: Path) -> None:
+def test_setup_opens_before_sign_in_and_never_returns_secret(tmp_path: Path) -> None:
     async def scenario() -> None:
         service = _service(tmp_path, [])
         app = web.Application()
@@ -100,8 +100,10 @@ def test_setup_requires_successful_login_and_never_returns_secret(tmp_path: Path
             assert before.status == 200
             before_payload = await before.json()
             assert before_payload["login_observed"] is False
-            assert before_payload["show_initial_setup"] is False
+            assert before_payload["show_initial_setup"] is True
             assert before_payload["llm"]["key_configured"] is False
+            assert isinstance(before_payload["session_token"], str)
+            assert len(before_payload["session_token"]) >= 32
 
             blocked = await client.post(
                 "/toy/setup/complete",
@@ -118,7 +120,7 @@ def test_setup_requires_successful_login_and_never_returns_secret(tmp_path: Path
             service.observe_login(success=False)
             assert (await (await client.get(
                 "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
-            )).json())["show_initial_setup"] is False
+            )).json())["show_initial_setup"] is True
 
             service.observe_login(success=True)
             after_payload = await (await client.get(
