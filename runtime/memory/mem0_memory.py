@@ -66,15 +66,24 @@ _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE = re.compile(
 )
 _HISTORY_FIRST_PERSON_RE = re.compile(r"我")
 _HISTORY_ACTOR_KEY = "history_actor"
+_HISTORY_EXTRACTION_VERSION_KEY = "history_extraction_version"
+_HISTORY_EXTRACTION_VERSION = "relationship-v2"
 _HISTORY_USER_ACTOR = "user"
 _HISTORY_LINLI_ACTOR = "linli"
 _HISTORY_USER_FACT_PROMPT = (
-    "只从这封用户来信提取用户本人的长期事实；保留用户姓名、称呼和原意；"
+    "只从这封用户来信提取用户本人值得在未来回信中继续记住的长期事实。优先保留："
+    "用户与林离或其他重要人物的关系和称呼、重要经历及其影响、稳定偏好和边界、"
+    "已经作出的约定或未来计划、反复出现的情绪需要。每条只写一个完整事实，"
+    "保留人物、地点、时间和承诺对象；不要只概括为用户写信、用户表达情绪或用户想聊天。"
+    "保留用户姓名、称呼和原意；"
     "不要把用户提到的 AI、助手或林离改写成角色自述；"
     "必须使用与输入相同的语言，中文原文的每条记忆必须为中文，不得翻译为英文。"
 )
 _HISTORY_LINLI_FACT_PROMPT = (
-    "只从林离的这封回信提取林离自身的长期事实。每条事实必须包含第一人称‘我’；"
+    "只从林离的这封回信提取未来必须履行或保持一致的长期事实。优先保留："
+    "我对用户作出的承诺、约定、后续行动、关系定位、明确记住的偏好与边界；"
+    "不要保存通用安慰、寒暄、一次性的措辞或没有具体对象的陪伴表达。"
+    "每条事实必须包含第一人称‘我’，并保留承诺对象、条件和时间；"
     "不得称为助手、AI、assistant 或第三人称林离；"
     "必须使用与输入相同的语言，中文原文的每条记忆必须为中文，不得翻译为英文。"
 )
@@ -84,6 +93,10 @@ _HISTORY_LINLI_INPUT_PREFIX = (
 _MEMORY_LANGUAGE_INSTRUCTIONS = (
     "使用与输入消息相同的语言和文字提取长期记忆；"
     "不得把中文内容翻译成英文；保留原文中的人名、专有名词和称呼；"
+    "优先提取用户与重要人物的关系、重要经历及其长期影响、稳定偏好和边界、"
+    "未来计划，以及用户或林离作出的明确约定和承诺；保留人物、地点、时间、条件和对象；"
+    "一条记忆只表达一个完整事实，不要把多个重点压缩成一句，也不要只写用户发来信件、"
+    "用户表达情绪、林离完成回信这类无信息量概括；忽略普通寒暄和一次性措辞；"
     "这些记忆属于角色林离：涉及林离自身的经历、想法、言行与回信时，"
     "必须用林离的第一人称‘我’来记录，不得称为助手、AI、assistant 或第三人称林离；"
     "涉及来信用户时保留其姓名或称呼；用简洁、自然、适合普通用户阅读的句子记录事实。"
@@ -684,6 +697,7 @@ def _row_to_record(
             "manual",
             "actor",
             _HISTORY_ACTOR_KEY,
+            _HISTORY_EXTRACTION_VERSION_KEY,
         }
         and (value is None or isinstance(value, (bool, int, float, str)))
     }
@@ -700,6 +714,26 @@ def _row_to_record(
         )
     except ValueError:
         return None
+
+
+def _record_timestamp(record: ConversationMemoryRecord) -> float:
+    value = record.occurred_at or record.created_at
+    return value.timestamp() if value is not None else 0.0
+
+
+def _record_recency_key(record: ConversationMemoryRecord) -> tuple[float, str, str]:
+    return (-_record_timestamp(record), record.source_id, record.memory_id)
+
+
+def _record_search_key(
+    record: ConversationMemoryRecord,
+) -> tuple[float, float, str, str]:
+    return (
+        -float(record.score or 0.0),
+        -_record_timestamp(record),
+        record.source_id,
+        record.memory_id,
+    )
 
 
 class Mem0ConversationMemoryAdapter:
@@ -803,7 +837,9 @@ class Mem0ConversationMemoryAdapter:
                 return None
             records_by_id.update({record.memory_id: record for record in records})
         self._last_error_code = None
-        return tuple(records_by_id.values())[:limit]
+        return tuple(
+            sorted(records_by_id.values(), key=_record_recency_key)
+        )[:limit]
 
     def search_context(
         self,
@@ -833,7 +869,9 @@ class Mem0ConversationMemoryAdapter:
                 return ()
             records_by_id.update({record.memory_id: record for record in records})
         self._last_error_code = None
-        return tuple(records_by_id.values())[:limit]
+        return tuple(
+            sorted(records_by_id.values(), key=_record_search_key)
+        )[:limit]
 
     def _read_with_timeout(
         self,
@@ -993,6 +1031,12 @@ class Mem0ConversationMemoryAdapter:
                 )
                 history_is_current = (
                     actors == {_HISTORY_USER_ACTOR, _HISTORY_LINLI_ACTOR}
+                    and all(
+                        isinstance(row.get("metadata"), Mapping)
+                        and row["metadata"].get(_HISTORY_EXTRACTION_VERSION_KEY)
+                        == _HISTORY_EXTRACTION_VERSION
+                        for row in exact_rows or ()
+                    )
                     and bool(linli_facts)
                     and all(
                         _HISTORY_FIRST_PERSON_RE.search(fact)
@@ -1057,7 +1101,12 @@ class Mem0ConversationMemoryAdapter:
                         [{"role": role, "name": actor, "content": str(content)}],
                         user_id=user_id,
                         agent_id=self.config.agent_id,
-                        metadata={**metadata, _HISTORY_ACTOR_KEY: actor},
+                        metadata={
+                            **metadata,
+                            _HISTORY_ACTOR_KEY: actor,
+                            _HISTORY_EXTRACTION_VERSION_KEY:
+                                _HISTORY_EXTRACTION_VERSION,
+                        },
                         prompt=prompt,
                     )
                     values.append(value)

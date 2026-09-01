@@ -1,4 +1,4 @@
-"""Canonical CosyVoice -> pinned LiveTalking reply video assembly."""
+"""Canonical directed TTS -> pinned reply video assembly."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Mapping
 
 from runtime.media.latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from runtime.media.media_paths import resolve_media_path
-from runtime.reply.reply_delivery import ReplyDeliveryPlan, plan_reply_delivery
+from runtime.reply.reply_delivery import ReplyDeliveryPlan
 from voice_direction import VoicePerformancePlan
 try:
     from runtime.visual.livetalking import LiveTalkingConfig, capture_candidate_frames
@@ -107,7 +107,20 @@ def _tts_config(
     runtime_root = configured_path(settings.get("runtime_root", ""))
     model_dir = configured_path(settings.get("model_dir", ""))
     reference_audio = configured_path(settings.get("reference_audio", ""))
-    configured_python = environment.get("OLIVIA_COSYVOICE_PYTHON")
+    provider_options = settings.get("provider_options")
+    if not isinstance(provider_options, dict):
+        provider_options = {}
+    else:
+        provider_options = dict(provider_options)
+    provider = str(settings.get("provider", "cosyvoice3")).strip().casefold()
+    python_env = (
+        "OLIVIA_BREEZE_TTS_PYTHON"
+        if provider == "breeze_tts2"
+        else "OLIVIA_COSYVOICE_PYTHON"
+    )
+    configured_python = environment.get(python_env) or provider_options.get(
+        "external_python"
+    )
     external_python = (
         configured_path(configured_python)
         if configured_python is not None and str(configured_python).strip()
@@ -120,12 +133,13 @@ def _tts_config(
             "reference_audio": str(reference_audio),
         }
     )
-    provider_options = settings.get("provider_options")
-    if not isinstance(provider_options, dict):
-        provider_options = {}
-    else:
-        provider_options = dict(provider_options)
-    for key in ("numba_cache_dir", "quality_gate_cache_root", "wetext_fst_root"):
+    for key in (
+        "model_license_path",
+        "numba_cache_dir",
+        "quality_gate_cache_root",
+        "quality_gate_python",
+        "wetext_fst_root",
+    ):
         if key in provider_options and str(provider_options[key]).strip():
             provider_options[key] = str(configured_path(provider_options[key]))
     if ordinary_video:
@@ -338,8 +352,11 @@ def render_reply_video(
         audio_path = root / "reply.wav"
         frames = root / "frames"
         delivery_plan: ReplyDeliveryPlan | VoicePerformancePlan | None = None
+        audio_provider = delivery.tts.provider
         if adaptive_delivery:
-            delivery_plan = voice_performance_plan or plan_reply_delivery(text)
+            if voice_performance_plan is None:
+                raise ReplyMediaError("VOICE_PERFORMANCE_PLAN_REQUIRED")
+            delivery_plan = voice_performance_plan
             if delivery_plan.spoken_text != text:
                 raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
             try:
@@ -352,6 +369,9 @@ def render_reply_video(
             except DeliveryAudioError as exc:
                 raise ReplyMediaError(str(exc)) from exc
             duration = float(delivery_result.duration_seconds)
+            audio_provider = str(
+                getattr(delivery_result, "provider", delivery.tts.provider)
+            )
         else:
             service = TTSService(delivery.tts)
             try:
@@ -404,7 +424,7 @@ def render_reply_video(
             return {
                 "duration_seconds": round(duration, 3),
                 "frame_count": frame_count,
-                "audio_provider": "cosyvoice3",
+                "audio_provider": audio_provider,
                 **delivery_metadata,
                 **visual_metadata,
             }
@@ -421,7 +441,7 @@ def render_reply_video(
     return {
         "duration_seconds": round(duration, 3),
         "frame_count": frame_count,
-        "audio_provider": "cosyvoice3",
+        "audio_provider": audio_provider,
         "visual_provider": "LiveTalking",
         **delivery_metadata,
     }

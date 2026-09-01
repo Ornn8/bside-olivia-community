@@ -296,6 +296,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           && Number.isInteger(payload.seen)
           && Number.isInteger(payload.would_insert)
           && Number.isInteger(payload.would_update)
+          && Number.isInteger(payload.would_remove)
           && Number.isInteger(payload.duplicates)
         : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
@@ -354,7 +355,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeoutMs = path === VIDEO_REPLY_SETTINGS_PATH
+    const timeoutMs = (
+      path === VIDEO_REPLY_SETTINGS_PATH
+      || path === LOCAL_LETTER_IMPORT_PATH
+    )
       ? 300000
       : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1605,14 +1609,64 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "v0.1 暂停手动补丁导入；请使用我们发布的完整安装包更新。",
+      "下载我们发布的 .oliviapatch 后，可在这里增量更新，无需重装完整运行包。",
       "text-text-secondary text-body-m font-regular"
     );
+    let packagePath = "";
+    const selectedPatch = text(
+      "p",
+      "尚未选择补丁文件。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const digest = setupInput("发布说明提供的 Manifest SHA-256");
+    digest.input.maxLength = 64;
+    digest.input.autocomplete = "off";
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
+    const choose = button("选择已下载的补丁", async () => {
+      setButtonsBusy([choose], true);
+      try {
+        const payload = await requestUpdate({ action: "select" });
+        if (payload.status === "SELECTED" && typeof payload.package_path === "string") {
+          packagePath = payload.package_path;
+          selectedPatch.textContent = `已选择：${packagePath.split(/[\\/]/).pop()}`;
+          result.textContent = "";
+        }
+      } catch (error) {
+        result.textContent = `无法选择补丁：${error && error.code ? error.code : "UPDATE_PICKER_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([choose], false);
+      }
+    });
+    const install = button("安装本地补丁", async () => {
+      const manifestSha256 = digest.input.value.trim().toLowerCase();
+      if (!packagePath) {
+        result.textContent = "请选择已下载的 .oliviapatch 文件。";
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/.test(manifestSha256)) {
+        result.textContent = "请输入发布说明提供的 64 位 Manifest SHA-256。";
+        return;
+      }
+      if (!await confirmAction("确认校验并安装这个本地补丁？")) return;
+      setButtonsBusy([choose, install, rollback], true);
+      result.textContent = "正在校验并安装补丁……";
+      try {
+        const payload = await requestUpdate({
+          action: "apply",
+          package_path: packagePath,
+          manifest_sha256: manifestSha256,
+        });
+        result.textContent = `版本 ${payload.version} 已安装，关闭并重新打开 Olivia 后生效。`;
+      } catch (error) {
+        result.textContent = `补丁安装失败：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+      } finally {
+        setButtonsBusy([choose, install, rollback], false);
+      }
+    });
     const rollback = button("回滚上一版本", async () => {
       if (!await confirmAction("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
-      setButtonsBusy([rollback], true);
+      setButtonsBusy([choose, install, rollback], true);
       result.textContent = "正在切换到上一版本……";
       try {
         const payload = await requestUpdate({ action: "rollback" });
@@ -1620,12 +1674,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (error) {
         result.textContent = `无法回滚：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
       } finally {
-        setButtonsBusy([rollback], false);
+        setButtonsBusy([choose, install, rollback], false);
       }
     });
     const controls = actions();
-    controls.append(rollback);
-    panel.replaceChildren(heading, summary, controls, result);
+    controls.append(choose, install, rollback);
+    panel.replaceChildren(
+      heading,
+      summary,
+      selectedPatch,
+      digest.wrapper,
+      controls,
+      result
+    );
   };
 
   const loadDialogData = async (statusNode, panels, initialMode) => {
@@ -2013,7 +2074,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入本地历史信件", "text-text-body text-label-l"),
-      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，不联网、不导入视频，重复记录自动跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，并同步长期记忆与关系状态；不联网读取官方服务器、不导入视频，重复记录自动修复或跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     let importPending = false;
@@ -2021,7 +2082,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refreshLocalBackup = async () => {
       try {
         const payload = await requestJson(LOCAL_LETTER_IMPORT_PATH);
-        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，重复 ${payload.duplicates} 封。`;
+        importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，清理旧乱码重复 ${payload.would_remove} 封，重复 ${payload.duplicates} 封。`;
         return payload;
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
@@ -2036,21 +2097,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (importPending) return;
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
-      const changeCount = preflight.would_insert + preflight.would_update;
-      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？`)) {
+      const changeCount = preflight.would_insert + preflight.would_update + preflight.would_remove;
+      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件，并同步长期记忆与关系状态？`)) {
         return;
       }
       setButtonsBusy([importButton], true);
-      importButton.textContent = "正在导入";
+      importButton.textContent = "正在导入并整理记忆";
       importPending = true;
       importState.textContent = "正在读取本地备份并写入信箱……";
       try {
         const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
+        const removed = Number.isInteger(payload.removed) ? payload.removed : 0;
         const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
-        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封只读历史信件，跳过 ${duplicates} 封重复记录。`;
-        importButton.textContent = "再次检查并导入";
+        const migration = payload.memory_migration || {};
+        const memoryWritten = Number.isInteger(migration.written) ? migration.written : 0;
+        const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
+        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封、清理旧乱码重复 ${removed} 封，长期记忆新增 ${memoryWritten} 条、复用 ${memoryDuplicates} 条；正在刷新信箱。`;
+        importButton.textContent = "已完成";
+        window.setTimeout(() => {
+          try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }
+        }, 800);
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
           ? missingBackupText

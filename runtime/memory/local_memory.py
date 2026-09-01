@@ -630,6 +630,69 @@ class LocalMemoryAdapter:
             ).fetchall()
         return {str(row[0]): str(row[1]) for row in rows}
 
+    def legacy_source_hash_groups(self, source: str) -> Mapping[str, tuple[str, ...]]:
+        """Return every stored digest so repair imports can detect old duplicates."""
+
+        source_name = _label(source, default="local-import")
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT source_record_id, content_hash FROM legacy_letters "
+                "WHERE source = ? ORDER BY imported_at, memory_id",
+                (source_name,),
+            ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for source_record_id, content_hash in rows:
+            grouped.setdefault(str(source_record_id), []).append(str(content_hash))
+        return {key: tuple(values) for key, values in grouped.items()}
+
+    def remove_legacy_source_records(
+        self,
+        source: str,
+        memory_ids: Iterable[str],
+    ) -> int:
+        """Remove exact obsolete aliases from one source after a canonical import."""
+
+        self._require_writable()
+        source_name = _label(source, default="local-import")
+        requested = tuple(dict.fromkeys(_label(value, default="record") for value in memory_ids))
+        if not requested:
+            return 0
+        placeholders = ",".join("?" for _ in requested)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                f"SELECT memory_id FROM legacy_letters WHERE source = ? "
+                f"AND memory_id IN ({placeholders})",
+                (source_name, *requested),
+            ).fetchall()
+            selected = tuple(str(row[0]) for row in rows)
+            if not selected:
+                return 0
+            selected_placeholders = ",".join("?" for _ in selected)
+            conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_delete")
+            conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_update")
+            try:
+                if self._fts5:
+                    conn.execute(
+                        f"DELETE FROM legacy_letters_fts WHERE memory_id IN "
+                        f"({selected_placeholders})",
+                        selected,
+                    )
+                conn.execute(
+                    f"DELETE FROM legacy_letters WHERE source = ? AND memory_id IN "
+                    f"({selected_placeholders})",
+                    (source_name, *selected),
+                )
+            finally:
+                conn.execute(
+                    "CREATE TRIGGER legacy_letters_no_update BEFORE UPDATE ON legacy_letters "
+                    "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER legacy_letters_no_delete BEFORE DELETE ON legacy_letters "
+                    "BEGIN SELECT RAISE(ABORT, 'legacy_letters require whole-library unload'); END"
+                )
+            return len(selected)
+
     def _promote_legacy_duplicate(
         self,
         conn: sqlite3.Connection,
@@ -678,43 +741,70 @@ class LocalMemoryAdapter:
         occurred_at: str | None,
         digest: str,
         metadata: str,
-    ) -> str | None:
+    ) -> tuple[frozenset[str], bool] | None:
         rows = conn.execute(
             "SELECT memory_id, content_hash FROM legacy_letters "
-            "WHERE source_record_id = ? AND source = ?",
+            "WHERE source_record_id = ? AND source = ? "
+            "ORDER BY imported_at, memory_id",
             (source_record_id, source),
         ).fetchall()
         if not rows:
             return None
-        if len(rows) != 1:
-            raise sqlite3.IntegrityError("legacy source record is ambiguous")
-        memory_id, old_digest = str(rows[0][0]), str(rows[0][1])
-        if old_digest == digest:
-            return old_digest
+        normalized_rows = tuple((str(row[0]), str(row[1])) for row in rows)
+        canonical = next(
+            (row for row in normalized_rows if row[1] == digest),
+            normalized_rows[0],
+        )
+        memory_id, canonical_digest = canonical
+        removed = tuple(row for row in normalized_rows if row[0] != memory_id)
         collision = conn.execute(
-            "SELECT 1 FROM legacy_letters WHERE content_hash = ? AND memory_id <> ?",
-            (digest, memory_id),
+            "SELECT 1 FROM legacy_letters WHERE content_hash = ? "
+            "AND memory_id NOT IN ("
+            "SELECT memory_id FROM legacy_letters WHERE source_record_id = ? AND source = ?"
+            ")",
+            (digest, source_record_id, source),
         ).fetchone()
         if collision is not None:
             raise sqlite3.IntegrityError("legacy replacement content already exists")
         conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_update")
+        conn.execute("DROP TRIGGER IF EXISTS legacy_letters_no_delete")
         try:
-            conn.execute(
-                "UPDATE legacy_letters SET content = ?, content_hash = ?, occurred_at = ?, "
-                "metadata_json = ? WHERE memory_id = ?",
-                (content, digest, occurred_at, metadata, memory_id),
-            )
-            if self._fts5:
+            if canonical_digest != digest:
                 conn.execute(
-                    "UPDATE legacy_letters_fts SET content = ?, source = ? WHERE memory_id = ?",
-                    (content, source, memory_id),
+                    "UPDATE legacy_letters SET content = ?, content_hash = ?, occurred_at = ?, "
+                    "metadata_json = ? WHERE memory_id = ?",
+                    (content, digest, occurred_at, metadata, memory_id),
+                )
+                if self._fts5:
+                    conn.execute(
+                        "UPDATE legacy_letters_fts SET content = ?, source = ? WHERE memory_id = ?",
+                        (content, source, memory_id),
+                    )
+            if removed:
+                removed_ids = tuple(row[0] for row in removed)
+                placeholders = ",".join("?" for _ in removed_ids)
+                if self._fts5:
+                    conn.execute(
+                        f"DELETE FROM legacy_letters_fts WHERE memory_id IN ({placeholders})",
+                        removed_ids,
+                    )
+                conn.execute(
+                    f"DELETE FROM legacy_letters WHERE memory_id IN ({placeholders})",
+                    removed_ids,
                 )
         finally:
             conn.execute(
                 "CREATE TRIGGER legacy_letters_no_update BEFORE UPDATE ON legacy_letters "
                 "BEGIN SELECT RAISE(ABORT, 'legacy_letters are read-only'); END"
             )
-        return old_digest
+            conn.execute(
+                "CREATE TRIGGER legacy_letters_no_delete BEFORE DELETE ON legacy_letters "
+                "BEGIN SELECT RAISE(ABORT, 'legacy_letters require whole-library unload'); END"
+            )
+        return (
+            frozenset(row[1] for row in normalized_rows),
+            canonical_digest != digest or bool(removed),
+        )
 
     def import_legacy_records(
         self,
@@ -751,7 +841,7 @@ class LocalMemoryAdapter:
                 batch: set[str] = set()
                 for content, source_record_id, source, occurred_at, digest, metadata in normalized:
                     if replace_matching_source_records:
-                        old_digest = self._replace_legacy_source_record(
+                        replacement = self._replace_legacy_source_record(
                             conn,
                             content=content,
                             source_record_id=source_record_id,
@@ -760,13 +850,15 @@ class LocalMemoryAdapter:
                             digest=digest,
                             metadata=metadata,
                         )
-                        if old_digest is not None:
-                            if old_digest == digest:
-                                duplicates += 1
-                            else:
+                        if replacement is not None:
+                            old_digests, changed = replacement
+                            for old_digest in old_digests:
                                 existing.discard(old_digest)
-                                existing.add(digest)
+                            existing.add(digest)
+                            if changed:
                                 updated += 1
+                            else:
+                                duplicates += 1
                             batch.add(digest)
                             continue
                     if digest in existing or digest in batch:

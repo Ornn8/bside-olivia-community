@@ -453,7 +453,7 @@ def _client_executable(root: Path) -> Path:
 def _load_fixed_video_assets_environment(
     environment: dict[str, str], root: Path
 ) -> dict[str, str]:
-    """Use the one fixed scene already shipped with the isolated Olivia client."""
+    """Keep downloaded reply assets and fill only missing wallpaper fallbacks."""
 
     values = environment.copy()
     assets = _client_executable(root).parent / "assets" / "Wallpaper_Presence"

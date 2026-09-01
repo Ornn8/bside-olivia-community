@@ -335,7 +335,7 @@ def test_launcher_auto_uses_private_voice_but_keeps_public_absence_valid(
     assert "OLIVIA_REPLY_VOICE_REFERENCE" not in public
 
 
-def test_launcher_uses_fixed_scene_assets_from_the_installed_client(tmp_path: Path) -> None:
+def test_launcher_uses_accepted_reply_motion_with_wallpaper_performance(tmp_path: Path) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
     assets = root / "app" / "0.0.9.627" / "assets" / "Wallpaper_Presence"
     assets.mkdir(parents=True)
@@ -343,12 +343,23 @@ def test_launcher_uses_fixed_scene_assets_from_the_installed_client(tmp_path: Pa
     transition = assets / "A_Transition_2000_1200.mp4"
     scene.write_bytes(b"scene")
     transition.write_bytes(b"transition")
+    accepted_scene = tmp_path / "managed" / "official-reply-action-base-v1.mp4"
+    accepted_reference = tmp_path / "managed" / "official-reply-reference-000-043s-v1.mp4"
+    accepted_scene.parent.mkdir(parents=True)
+    accepted_scene.write_bytes(b"accepted-scene")
+    accepted_reference.write_bytes(b"accepted-reference")
 
-    environment = start_local._load_fixed_video_assets_environment({}, root)
+    environment = start_local._load_fixed_video_assets_environment(
+        {
+            "OLIVIA_ORDINARY_ACTION_BASE": str(accepted_scene.resolve()),
+            "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(accepted_reference.resolve()),
+        },
+        root,
+    )
 
     assert environment == {
-        "OLIVIA_ORDINARY_ACTION_BASE": str(scene.resolve()),
-        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(transition.resolve()),
+        "OLIVIA_ORDINARY_ACTION_BASE": str(accepted_scene.resolve()),
+        "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(accepted_reference.resolve()),
         "OLIVIA_MUSIC_PERFORMANCE_BASE": str(scene.resolve()),
     }
 

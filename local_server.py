@@ -129,9 +129,11 @@ from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
     apply_offline_letter_pair_recovery_to_adapter,
     is_published_offline_letter_pair,
+    offline_letter_pair_exchanges,
     plan_offline_letter_pair_recovery_with_adapter,
 )
 from runtime.imports.historical_memory import (
+    HistoricalExchange,
     HistoricalMigrationResult,
     apply_historical_private_world,
     assess_historical_relationship,
@@ -1224,12 +1226,11 @@ def _official_history_preflight_error() -> str | None:
     return None
 
 
-async def _migrate_official_history(
-    payload: Mapping[str, object],
+async def _migrate_historical_history(
+    full_exchanges: tuple[HistoricalExchange, ...],
     *,
     skip_source_record_ids: frozenset[str] = frozenset(),
 ) -> HistoricalMigrationResult:
-    full_exchanges = exchanges_from_legacy_payload(payload)
     pending_memory_exchanges = tuple(
         exchange
         for exchange in full_exchanges
@@ -1301,6 +1302,17 @@ async def _migrate_official_history(
             error_code="PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED",
         )
     return replace(result, private_world_status=private_world_status)
+
+
+async def _migrate_official_history(
+    payload: Mapping[str, object],
+    *,
+    skip_source_record_ids: frozenset[str] = frozenset(),
+) -> HistoricalMigrationResult:
+    return await _migrate_historical_history(
+        exchanges_from_legacy_payload(payload),
+        skip_source_record_ids=skip_source_record_ids,
+    )
 # A file-only Mem0 profile owns the same canonical state root on restart; load
 # only after the validated conversation adapter has selected that root.
 _load_store_state()
@@ -1367,36 +1379,22 @@ async def _music_voice_plan_for_letter(
     letter: dict,
     reply_text: str,
 ) -> VoicePerformancePlan:
-    """Keep the musical prelude on its pre-A director and persistence lane."""
+    """Use the same LLM-directed, persisted performance plan for musical replies."""
 
     stored = letter.get("voice_performance_plan")
     if stored is not None:
         try:
             if not isinstance(stored, dict):
                 raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-            plan = VoicePerformancePlan.from_music_dict(stored)
+            legacy_plan = VoicePerformancePlan.from_music_dict(stored)
         except VoiceDirectionError:
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
-        if plan.reply_text != reply_text:
+            legacy_plan = None
+        if legacy_plan is not None and legacy_plan.reply_text != reply_text:
             raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        return plan
-
-    letter_id = str(letter.get("letter_id", "")).strip()
-    if not letter_id:
-        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    plan = VoicePerformancePlan(
-        reply_text=reply_text,
-        overall_emotion="自然、温柔、真诚地说完这封回信",
-        global_speed=1.03,
-        energy=0.45,
-        breath_before_sentences=(),
-        emphasize_sentences=(),
-        short_instruction="",
-        profile="legacy_music_global_direction_v1",
-    )
-    letter["voice_performance_plan"] = plan.to_dict()
-    _persist_media_state()
-    return plan
+        if legacy_plan is not None:
+            letter.pop("voice_performance_plan", None)
+            _persist_media_state()
+    return await _voice_plan_for_letter(letter, reply_text)
 
 
 music_adapter = MusicAdapter()
@@ -2582,6 +2580,32 @@ async def route(
                     "error_code": "COMPANION_CONFIRMATION_REQUIRED",
                     "retryable": False,
                 })
+            preflight_error = _official_history_preflight_error()
+            if preflight_error is not None:
+                return err(503, preflight_error, {
+                    "status": "UNAVAILABLE",
+                    "error_code": preflight_error,
+                    "retryable": True,
+                    "source": "local_backup",
+                })
+            exchanges = await asyncio.to_thread(
+                offline_letter_pair_exchanges,
+                source,
+            )
+            migration = await _migrate_historical_history(exchanges)
+            if migration.status != "completed":
+                error_code = (
+                    "PRIVATE_WORLD_HISTORY_UNAVAILABLE"
+                    if str(migration.error_code or "").startswith("PRIVATE_WORLD_")
+                    else "OFFLINE_HISTORY_MEMORY_WRITE_FAILED"
+                )
+                return err(503, error_code, {
+                    "status": "UNAVAILABLE",
+                    "error_code": error_code,
+                    "retryable": True,
+                    "source": "local_backup",
+                    "memory_migration": migration.to_dict(),
+                })
             report = await asyncio.to_thread(
                 apply_offline_letter_pair_recovery_to_adapter,
                 source,
@@ -2608,10 +2632,16 @@ async def route(
                 "retryable": True,
                 "source": "local_backup",
             })
+        report = replace(
+            report,
+            history_audit=migration.private_world_status or "completed",
+            provider_calls=(1 if migration.private_world_status == "initialized" else 0),
+        )
         return ok({
             **asdict(report),
             "status": "APPLIED",
             "source": "local_backup",
+            "memory_migration": migration.to_dict(),
         })
 
     if p == "/toy/letter/legacy/official-import":
@@ -3163,7 +3193,48 @@ async def route(
             return _send_result_for_letter(letter)
         return _send_result_for_letter(letter)
     if p == "/toy/letter/resend":
-        return not_implemented("LETTER_RESEND_NOT_IMPLEMENTED")
+        lid = _request_value(body, query, "letter_id", "letterId")
+        if lid is None:
+            return _missing_field("letter_id")
+        original = next(
+            (item for item in store.letters if item.get("letter_id") == lid),
+            None,
+        )
+        if original is None:
+            return err(404, "LETTER_NOT_FOUND", {
+                "status": "FAILED",
+                "error_code": "LETTER_NOT_FOUND",
+                "retryable": False,
+            })
+        if original.get("superseded_by"):
+            return err(410, "LETTER_SUPERSEDED", {
+                "status": "SUPERSEDED",
+                "error_code": "LETTER_SUPERSEDED",
+                "replacement_letter_id": original["superseded_by"],
+            })
+        _public_code, retryable = _public_llm_error(original.get("error_code"))
+        if original.get("letter_status") != "FAILED" or not retryable:
+            return err(409, "LETTER_RESEND_NOT_ALLOWED", {
+                "status": "FAILED",
+                "error_code": "LETTER_RESEND_NOT_ALLOWED",
+                "retryable": False,
+            })
+        retried = await route(
+            "POST",
+            "/toy/letter/send",
+            {
+                "content": original.get("content", ""),
+                "material": original.get("material", {}),
+            },
+            {"scope": "current"},
+            defer_reply=defer_reply,
+            companion_confirmed=companion_confirmed,
+        )
+        replacement_id = retried.get("data", {}).get("letter_id")
+        if isinstance(replacement_id, str) and replacement_id != lid:
+            original["superseded_by"] = replacement_id
+            _persist_store_state()
+        return retried
     if p == "/toy/letter/share":
         return not_implemented("LETTER_SHARE_NOT_IMPLEMENTED")
 
@@ -3818,7 +3889,18 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     receive_eligibility = receive_eligibility_from_letter(letter)
     if receive_eligibility.enabled:
-        decision = await emotion_triage.classify(content)
+        try:
+            decision = await emotion_triage.classify(content)
+        except (GatewayError, asyncio.TimeoutError, ValueError, RuntimeError):
+            _safe_log("triage_degraded", error_code="VIDEO_TRIAGE_UNAVAILABLE")
+            decision = TriageResult(
+                "unknown",
+                ReplyMode.TEXT_LETTER.value,
+                "video_triage_unavailable",
+                "unavailable",
+                False,
+                character_willing=True,
+            )
     else:
         decision = TriageResult(
             "unknown",

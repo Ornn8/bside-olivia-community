@@ -1144,6 +1144,37 @@ class VideoCapabilityInstaller:
         )
         os.replace(temporary, target)
 
+    def _merge_runtime_environment(self) -> None:
+        """Add newly installed paths without dropping an imported runtime profile."""
+
+        target = self.install_root / _RUNTIME_ENVIRONMENT_FILE
+        try:
+            _load_video_runtime_environment(self.data_root, restore_backups=False)
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            environment = payload["environment"]
+            if (
+                payload.get("schema_version")
+                != "olivia.video-runtime-environment.v1"
+                or not isinstance(environment, dict)
+            ):
+                raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID")
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, VideoCapabilityError):
+            self._write_runtime_environment()
+            return
+        for bundle in self.manifest.bundles:
+            root = self._final_root(bundle)
+            if not (root / ".ready.json").is_file():
+                continue
+            for key, relative in (bundle.runtime_environment or {}).items():
+                candidate = _inside(root, root / relative)
+                if candidate.exists():
+                    environment[key] = str(candidate)
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+        os.replace(temporary, target)
+
     def _promote_directory(
         self, staging: Path, final: Path, *, refresh_environment: bool = False
     ) -> None:
@@ -1831,6 +1862,8 @@ class VideoCapabilityInstaller:
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         root = self._staging_root(bundle)
         try:
+            if self._run_append_only_upgrade(bundle, source_mode, offline_root):
+                return
             root.mkdir(parents=True, exist_ok=True)
             download_root = self._download_root(bundle)
             download_root.mkdir(parents=True, exist_ok=True)
@@ -1907,6 +1940,115 @@ class VideoCapabilityInstaller:
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
+
+    def _run_append_only_upgrade(
+        self,
+        bundle: VideoBundle,
+        source_mode: str,
+        offline_root: Path | None,
+    ) -> bool:
+        """Add new direct files without restaging an already-ready large bundle."""
+
+        root = self._final_root(bundle)
+        marker_path = root / ".ready.json"
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        if (
+            marker.get("schema_version") != "olivia.video-bundle.v1"
+            or marker.get("bundle") != bundle.identifier
+            or not isinstance(marker.get("version"), str)
+            or marker.get("version") == self.manifest.version
+        ):
+            return False
+        missing: list[VideoFile] = []
+        existing_bytes = 0
+        for item in bundle.files:
+            target = _inside(root, root / item.relative_path)
+            if target.exists():
+                if not _verify_and_true(target, item):
+                    return False
+                existing_bytes += item.size_bytes
+                continue
+            if item.install is not None:
+                return False
+            missing.append(item)
+        download_root = self._download_root(bundle)
+        download_root.mkdir(parents=True, exist_ok=True)
+        source_used = source_mode
+        downloaded = existing_bytes
+        for item in missing:
+            if self._pause.is_set():
+                raise InterruptedError
+            self._set(
+                bundle,
+                VideoCapabilityState.DOWNLOADING,
+                downloaded,
+                current=item.relative_path,
+                source=source_used,
+            )
+            cached = _inside(download_root, download_root / item.relative_path)
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            if offline_root is not None:
+                self._copy_offline(offline_root, item, cached)
+            elif self._reuse_local_artifact(item, cached):
+                source_used = "local"
+            else:
+                source_used = self._download(
+                    item,
+                    cached,
+                    source_mode,
+                    progress=lambda current, source: self._update_download_progress(
+                        bundle,
+                        downloaded + current,
+                        current=item.relative_path,
+                        source=source,
+                    ),
+                )
+            _verify(cached, item)
+            target = _inside(root, root / item.relative_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                shutil.copy2(cached, temporary)
+                _verify(temporary, item)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            downloaded += item.size_bytes
+
+        self._set(
+            bundle,
+            VideoCapabilityState.VERIFYING,
+            downloaded,
+            source=source_used,
+        )
+        temporary_marker = marker_path.with_name(
+            f"{marker_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        temporary_marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": "olivia.video-bundle.v1",
+                    "bundle": bundle.identifier,
+                    "version": self.manifest.version,
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary_marker, marker_path)
+        self._merge_runtime_environment()
+        with self._lock:
+            state, reason = self._installed_state(root, bundle)
+            self._set(
+                bundle,
+                state,
+                downloaded,
+                source=source_used,
+                reason=reason,
+            )
+        return True
 
     def _reuse_local_artifact(self, item: VideoFile, target: Path) -> bool:
         if _verify_and_true(target, item):

@@ -285,6 +285,65 @@ def test_complete_delivery_resolves_tts_internal_paths_from_project_root(
     )
 
 
+def test_complete_delivery_resolves_breeze_runtime_and_gate_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_path = project_root / "config" / "tts.json"
+    reference = project_root / "voice" / "reference.wav"
+    worker = project_root / "workers" / "visual.py"
+    worker.parent.mkdir(parents=True)
+    worker.write_bytes(b"synthetic")
+    reference.parent.mkdir(parents=True)
+    with wave.open(str(reference), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16_000)
+        target.writeframes(b"\0\0" * 16_000)
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps({"settings": {
+        "provider": "breeze_tts2",
+        "runtime_root": "providers/breeze",
+        "model_dir": "providers/breeze-model",
+        "reference_audio": "voice/reference.wav",
+        "provider_options": {
+            "model_license_path": "providers/breeze-model/LICENSE",
+            "quality_gate_python": "quality/python.exe",
+        },
+    }}), encoding="utf-8")
+    environment = {
+        "OLIVIA_PROJECT_ROOT": str(project_root),
+        "OLIVIA_BREEZE_TTS_PYTHON": "providers/breeze/python.exe",
+    }
+    monkeypatch.setattr(
+        reply_media,
+        "_visual_config",
+        lambda _path: SimpleNamespace(validate=lambda: None),
+    )
+    monkeypatch.setattr(reply_media, "media_runtime_available", lambda _env: True)
+    monkeypatch.setattr(reply_media, "delivery_configured", lambda _tts: True)
+
+    delivery = assemble_complete_video_delivery(
+        config_path,
+        tmp_path / "unused-visual.json",
+        worker,
+        tmp_path / "temporary",
+        environment,
+    )
+
+    assert delivery.tts.provider == "breeze_tts2"
+    assert delivery.tts.provider_options["external_python"] == str(
+        project_root / "providers" / "breeze" / "python.exe"
+    )
+    assert delivery.tts.provider_options["model_license_path"] == str(
+        project_root / "providers" / "breeze-model" / "LICENSE"
+    )
+    assert delivery.tts.provider_options["quality_gate_python"] == str(
+        project_root / "quality" / "python.exe"
+    )
+
+
 def test_complete_delivery_rejects_relative_tts_paths_without_absolute_project_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

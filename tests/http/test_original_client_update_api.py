@@ -34,7 +34,7 @@ class _Updater:
         return {"status": "ROLLED_BACK", "component": "local_backend", "version": "1.2.2"}
 
 
-def test_update_api_disables_manual_patch_selection_and_apply_but_keeps_rollback(
+def test_update_api_selects_applies_and_rolls_back_local_patch(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -51,6 +51,7 @@ def test_update_api_disables_manual_patch_selection_and_apply_but_keeps_rollback
                 if value == "signed-in-session"
                 else (_ for _ in ()).throw(PermissionError())
             ),
+            select_patch=lambda: package,
         )
         async with TestClient(TestServer(app)) as client:
             body = {
@@ -76,18 +77,16 @@ def test_update_api_disables_manual_patch_selection_and_apply_but_keeps_rollback
                 headers=headers,
                 json={"action": "select"},
             )
-            assert selected.status == 503
+            assert selected.status == 200
             assert await selected.json() == {
-                "status": "FAILED",
-                "error_code": "UPDATE_ACTION_UNAVAILABLE",
+                "status": "SELECTED",
+                "package_path": str(package.resolve()),
+                "restart_required": False,
             }
             applied = await client.post(ACTION_PATH, headers=headers, json=body)
-            assert applied.status == 503
-            assert await applied.json() == {
-                "status": "FAILED",
-                "error_code": "UPDATE_ACTION_UNAVAILABLE",
-            }
-            assert updater.applied == []
+            assert applied.status == 200
+            assert (await applied.json())["status"] == "APPLIED"
+            assert updater.applied == [(package.resolve(), "a" * 64)]
 
             rolled_back = await client.post(
                 ACTION_PATH,
@@ -146,24 +145,18 @@ def test_update_api_contract_matches_its_schema() -> None:
         )
     )
     assert not list(Draft202012Validator(schema).iter_errors(contract))
-    assert contract["execution"] == "manual-apply-disabled-rollback-off-event-loop"
+    assert contract["execution"] == "serialized-apply-rollback-off-event-loop"
     route = contract["routes"][ACTION_PATH]
-    unavailable = {
-        "available": False,
-        "error_code": "UPDATE_ACTION_UNAVAILABLE",
-        "http_status": 503,
-    }
-    assert route["actions"]["select"] == unavailable
-    assert route["actions"]["apply"] == unavailable
+    assert route["actions"]["select"]["status_values"] == ["SELECTED", "CANCELLED"]
+    assert route["actions"]["apply"]["status_values"] == ["APPLIED"]
     assert route["actions"]["rollback"]["restart_required"] is True
 
 
-def test_v01_release_docs_require_full_installer_updates() -> None:
+def test_release_docs_describe_local_patch_updates() -> None:
     documentation = (ROOT / "docs" / "WINDOWS_FULL_PATCH.md").read_text(
         encoding="utf-8"
     )
 
-    assert "v0.1 不接受用户手动导入或应用 `.oliviapatch`" in documentation
-    assert "稳定返回 `UPDATE_ACTION_UNAVAILABLE`" in documentation
-    assert "python -m installer apply-update" not in documentation
-    assert "QQ 转发场景" in documentation
+    assert "手动下载 `.oliviapatch`" in documentation
+    assert "python -m installer apply-update" in documentation
+    assert "Manifest SHA-256" in documentation

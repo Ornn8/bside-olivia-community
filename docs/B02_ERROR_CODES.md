@@ -15,7 +15,7 @@
 | 403 | `READ_ONLY_SCOPE` | FAILED | 否 | 对 legacy 只读视图尝试写入 |
 | 404 | `LETTER_NOT_FOUND` / `MIDI_JOB_NOT_FOUND` | FAILED | 否 | 资源不存在 |
 | 405 | `METHOD_NOT_ALLOWED` | FAILED | 否 | 方法不在 route contract 中 |
-| 501 | `LETTER_RESEND_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 回信重发未实现 |
+| 409 | `LETTER_RESEND_NOT_ALLOWED` | FAILED | 否 | 当前信件状态或失败类型不允许重发 |
 | 501 | `LETTER_SHARE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 分享未实现 |
 | 501 | `MUSIC_WRITE_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | 音乐写操作未实现 |
 | 501 | `MIDI_*_NOT_IMPLEMENTED` | NOT_IMPLEMENTED | 否 | MIDI 上传/生成/导入未实现 |
@@ -29,6 +29,7 @@
 | 503 | `OFFICIAL_HISTORY_MEMORY_UNAVAILABLE` | UNAVAILABLE | 是 | Mem0 未安装、未启用或状态不可用；在采集官方历史前拒绝导入 |
 | 503 | `OFFICIAL_HISTORY_LLM_UNAVAILABLE` | UNAVAILABLE | 是 | 预检无法在采集前识别 corpus；大模型未配置时保守拒绝读取或写入官方历史 |
 | 503 | `OFFICIAL_HISTORY_MEMORY_WRITE_FAILED` | UNAVAILABLE | 是 | 官方历史无法严格写入 Mem0；本批历史信件不会发布到信箱，重试使用稳定 source id 判重 |
+| 503 | `OFFLINE_HISTORY_MEMORY_WRITE_FAILED` | UNAVAILABLE | 是 | 本地备份历史无法严格写入 Mem0；本批历史信件不会发布到信箱，修复后可用稳定 source id 重试 |
 | 409 | `OFFICIAL_ACCOUNT_CONFLICT` | FAILED | 否 | 当前本地档案已绑定另一个官方账户；拒绝把两个账户写入同一记忆空间 |
 | 503 | `PRIVATE_WORLD_HISTORY_UNAVAILABLE` | UNAVAILABLE | 是 | PrivateWorld 在采集前不可用，或历史基线初始化失败；本批历史信件不会发布到信箱 |
 | 400 | `INVALID_IDEMPOTENCY_KEY` | FAILED | 否 | 幂等键为空、类型错误或超过长度边界 |

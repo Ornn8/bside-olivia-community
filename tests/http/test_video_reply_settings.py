@@ -352,6 +352,49 @@ def test_route_and_receive_snapshot_off_are_server_enforced(tmp_path, monkeypatc
         local_server.store.letters.remove(letter)
 
 
+def test_video_triage_failure_falls_back_to_text_reply(monkeypatch):
+    import local_server
+    from reply_orchestrator import ReplyState
+    from runtime.reply.reply_pipeline import PipelineResult
+
+    letter = {
+        "letter_id": "video-triage-fallback",
+        "content": "synthetic video request",
+        "letter_status": "PENDING",
+        "reply_text": "",
+        "reply_mode": "text_letter",
+        "video_reply_enabled": True,
+    }
+
+    class Router:
+        async def classify(self, *_args):
+            raise RuntimeError("synthetic routing outage")
+
+    class Pipeline:
+        async def run(self, _request, context):
+            assert context.mode.value == "text_letter"
+            return PipelineResult(
+                letter["letter_id"],
+                ReplyState.COMPLETED,
+                text="synthetic fallback reply",
+            )
+
+    local_server.store.letters.insert(0, letter)
+    monkeypatch.setattr(local_server, "emotion_triage", Router())
+    monkeypatch.setattr(local_server, "reply_pipeline", Pipeline())
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_commit_private_world_letter", lambda _letter: False)
+    monkeypatch.setattr(local_server.letters_adapter, "remember_conversation", lambda *_args: None)
+    try:
+        assert asyncio.run(local_server.generate_reply(letter["letter_id"], letter["content"]))
+        assert letter["letter_status"] == "COMPLETED"
+        assert letter["reply_mode"] == "text_letter"
+        assert letter["triage"]["reason_code"] == "video_triage_unavailable"
+        assert letter.get("media_status") is None
+    finally:
+        local_server.store.letters.remove(letter)
+
+
 def test_letter_send_does_not_wait_for_the_full_video_runtime_probe(
     tmp_path, monkeypatch
 ):
