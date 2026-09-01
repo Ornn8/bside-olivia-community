@@ -188,7 +188,10 @@ def mount_original_client_update_api(
         except Exception as exc:
             raise UpdateAPIError("UPDATE_LOGIN_REQUIRED", status=403) from exc
         payload = await _json_body(request)
-        if payload.get("action") in {"select", "apply"}:
+        action_value = payload.get("action")
+        if not isinstance(action_value, str):
+            raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+        if action_value in {"select", "apply"}:
             raise UpdateAPIError("UPDATE_ACTION_UNAVAILABLE", status=503)
         if payload == {"action": "rollback"}:
             call = updater.rollback

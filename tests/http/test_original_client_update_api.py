@@ -101,6 +101,39 @@ def test_update_api_disables_manual_patch_selection_and_apply_but_keeps_rollback
     asyncio.run(scenario())
 
 
+def test_update_api_rejects_non_string_action_values_with_the_public_contract() -> None:
+    async def scenario() -> None:
+        updater = _Updater()
+        app = web.Application()
+        mount_original_client_update_api(
+            app,
+            updater,
+            trusted_origins=(TRUSTED_ORIGIN,),
+            authorize_session=lambda _value: None,
+        )
+        headers = {
+            "Origin": TRUSTED_ORIGIN,
+            CONFIRM_HEADER: "confirmed",
+            SESSION_HEADER: "signed-in-session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            for invalid_action in (["apply"], {"name": "apply"}):
+                response = await client.post(
+                    ACTION_PATH,
+                    headers=headers,
+                    json={"action": invalid_action},
+                )
+                assert response.status == 400
+                assert await response.json() == {
+                    "status": "FAILED",
+                    "error_code": "UPDATE_FIELDS_INVALID",
+                }
+        assert updater.applied == []
+        assert updater.rollbacks == 0
+
+    asyncio.run(scenario())
+
+
 def test_update_api_contract_matches_its_schema() -> None:
     contract = json.loads(
         (ROOT / "contracts" / "local_update_api_contract.json").read_text(
