@@ -559,11 +559,13 @@ def test_fresh_profile_retries_known_first_exit_once(
     assert str(root.resolve()) not in launcher_log
 
 
-def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
+def test_launcher_patches_the_host_settings_before_each_client_attempt(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     calls: list[Path] = []
+    host_roaming = tmp_path / "host-roaming"
+    monkeypatch.setenv("APPDATA", str(host_roaming))
 
     def patch(settings_path: Path):
         calls.append(settings_path)
@@ -578,9 +580,7 @@ def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
     )
 
     expected = (
-        root.resolve()
-        / "profile"
-        / "Roaming"
+        host_roaming
         / "miHoYo"
         / "Olivia-steam"
         / "store"

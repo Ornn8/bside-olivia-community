@@ -880,7 +880,10 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
-        _prepare_native_user_settings(roaming, data_root)
+        native_settings_roaming = Path(
+            client_environment.get("APPDATA") or str(roaming)
+        ).expanduser()
+        _prepare_native_user_settings(native_settings_roaming, data_root)
         _append_launcher_event(data_root, "client_start", attempt=1)
         exit_code = _run_client_with_native_layout(
             client,
@@ -903,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
                 attempt=2,
                 reason="known_fresh_profile_exit",
             )
-            _prepare_native_user_settings(roaming, data_root)
+            _prepare_native_user_settings(native_settings_roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)
             exit_code = _run_client_with_native_layout(
                 client,
