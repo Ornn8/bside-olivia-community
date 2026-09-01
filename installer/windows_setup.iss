@@ -17,6 +17,7 @@ DefaultDirName={localappdata}\BSideOliviaLocal
 CreateAppDir=no
 Uninstallable=no
 PrivilegesRequired=lowest
+SetupMutex=BSideOliviaLocalInstaller
 ArchitecturesAllowed=x64compatible
 OutputDir={#OutputDir}
 OutputBaseFilename=Olivia-Setup-x64

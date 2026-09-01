@@ -20,6 +20,8 @@ $offlineManifestPath = if ($OfflineAssetsRoot) { Join-Path $OfflineAssetsRoot 'o
 $requirements = Join-Path $PayloadRoot 'installer\runtime-requirements.txt'
 $setupDiagnosticPath = if ($SetupResultPath) { $SetupResultPath + '.diagnostic.json' } else { '' }
 $script:OfficialSourceDiagnostic = $null
+$script:InstallInstanceLock = $null
+$script:InstallInstanceLockPath = $null
 
 function Get-SafeSetupErrorCode {
     param([string]$Code)
@@ -143,10 +145,56 @@ function Forward-SetupProgressLine {
     }
 }
 
+function Enter-ManagedInstallLock {
+    param([Parameter(Mandatory)][string]$ProductRoot)
+
+    try {
+        [void][IO.Directory]::CreateDirectory($ProductRoot)
+        Assert-NoReparsePointsInPath -LiteralPath $ProductRoot -ErrorCode 'INSTALL_LOCK_UNAVAILABLE'
+    } catch {
+        throw 'INSTALL_LOCK_UNAVAILABLE'
+    }
+    $lockPath = Join-Path $ProductRoot '.install.lock'
+    try {
+        $lock = [IO.FileStream]::new(
+            $lockPath,
+            [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::DeleteOnClose
+        )
+        $script:InstallInstanceLockPath = $lockPath
+        return $lock
+    } catch [IO.IOException] {
+        throw 'INSTALL_ALREADY_RUNNING'
+    } catch {
+        throw 'INSTALL_LOCK_UNAVAILABLE'
+    }
+}
+
+function Exit-ManagedInstallLock {
+    if ($null -eq $script:InstallInstanceLock) { return }
+    $lockPath = $script:InstallInstanceLockPath
+    try {
+        $script:InstallInstanceLock.Dispose()
+    } catch {
+        # Process exit releases the handle even if disposal reports an error.
+    }
+    $script:InstallInstanceLock = $null
+    $script:InstallInstanceLockPath = $null
+    try {
+        if ($lockPath) { [IO.File]::Delete($lockPath) }
+    } catch {
+        # A racing installer owns the path now; never delete its active lock.
+    }
+}
+
 trap {
     $safeCode = Get-SafeSetupErrorCode -Code ([string]$_.Exception.Message)
     Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
     Write-SetupErrorResult -Code $safeCode
+    Exit-ManagedInstallLock
     if (-not $SetupResultPath) { Write-Output $safeCode }
     exit 2
 }
@@ -1268,14 +1316,11 @@ function New-ManagedInstallRollbackSnapshot {
 
 function Restore-ManagedInstallRollbackSnapshot {
     param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][bool]$InstallRootExisted, [string]$Snapshot = '')
-    if (-not $InstallRootExisted) {
-        if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
-        return
-    }
-    if (-not $Snapshot -or -not [IO.Directory]::Exists($Snapshot)) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
+    if ($InstallRootExisted -and (-not $Snapshot -or -not [IO.Directory]::Exists($Snapshot))) { throw 'VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED' }
     foreach ($name in Get-ManagedInstallTransactionNames) {
         $active = Join-Path $InstallRoot $name
         if (Test-Path -LiteralPath $active) { Remove-Item -LiteralPath $active -Recurse -Force }
+        if (-not $InstallRootExisted) { continue }
         $backup = Join-Path $Snapshot $name
         if ([IO.Directory]::Exists($backup)) { Copy-Item -LiteralPath $backup -Destination $active -Recurse -Force }
         elseif ([IO.File]::Exists($backup)) { [IO.File]::Copy($backup, $active, $true) }
@@ -1647,6 +1692,7 @@ function Test-ManagedServerDependencies {
 
 Write-SetupProgress -Phase 'PREPARE' -CurrentBytes 0 -TotalBytes 0
 Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
+$script:InstallInstanceLock = Enter-ManagedInstallLock -ProductRoot $productRoot
 Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
 Write-SetupProgress -Phase 'VERIFY_OFFICIAL' -CurrentBytes 0 -TotalBytes 0
 $selectedOfficial = $OfficialRoot
@@ -1853,6 +1899,7 @@ Write-SetupProgress -Phase 'FINALIZE' -CurrentBytes 1 -TotalBytes 1
 if (-not $SetupResultPath) { $installOutput | Write-Output }
 
 $LASTEXITCODE = 0
+Exit-ManagedInstallLock
 
 if (-not $SkipShortcut) {
     & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination

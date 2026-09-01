@@ -1617,6 +1617,7 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     script = (ROOT / "installer" / "windows_setup.iss").read_text(encoding="utf-8")
 
     assert "PrivilegesRequired=lowest" in script
+    assert "SetupMutex=BSideOliviaLocalInstaller" in script
     assert "CreateAppDir=no" in script
     assert "Uninstallable=no" in script
     assert "LicenseFile=" in script
