@@ -1117,7 +1117,7 @@ def test_patch_feapp_uses_backup_hash_and_atomic_replacement(tmp_path: Path) -> 
     assert 'personaStatus="DRAFT"' not in patched
 
 
-def test_patch_feapp_routes_fresh_lite_login_to_existing_mailbox_collection(
+def test_patch_feapp_keeps_fresh_lite_login_on_original_home(
     tmp_path: Path,
 ) -> None:
     import zipfile
@@ -1142,8 +1142,8 @@ def test_patch_feapp_routes_fresh_lite_login_to_existing_mailbox_collection(
         patched = archive.read("assets/main-917d29fc.js").decode("utf-8")
 
     assert 'localStorage.setItem("appMode","lite")' in patched
-    assert "await t.replace({name:ye.Collection})" in patched
-    assert "await t.replace({name:ye.Home})" not in patched
+    assert "await t.replace({name:ye.Home})" in patched
+    assert "await t.replace({name:ye.Collection})" not in patched
 
 
 def test_patch_feapp_supports_original_client_0_0_9_627(
@@ -1177,8 +1177,8 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert 'toyApiUrl="http://127.0.0.1:8899"' in patched
     assert 'toyWsUrl="ws://127.0.0.1:8899/ws"' in patched
     assert 'localStorage.setItem("appMode","lite")' in patched
-    assert "await t.replace({name:ve.Collection})" in patched
-    assert "await t.replace({name:ve.Home})" not in patched
+    assert "await t.replace({name:ve.Home})" in patched
+    assert "await t.replace({name:ve.Collection})" not in patched
     assert '"hide-write":!1' in patched
     assert '"hide-write":o(p)||!o(N3)' not in patched
 

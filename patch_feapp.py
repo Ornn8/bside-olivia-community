@@ -28,7 +28,7 @@ MAILBOX_LOGIN_ANCHOR = (
 )
 MAILBOX_LOGIN_REPLACEMENT = (
     '!z.isNew||N?(localStorage.setItem("appMode","lite"),'
-    'await t.replace({name:ye.Collection}),'
+    'await t.replace({name:ye.Home}),'
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
 )
 
@@ -41,7 +41,7 @@ MAILBOX_LOGIN_ANCHOR_0627 = (
 )
 MAILBOX_LOGIN_REPLACEMENT_0627 = (
     '!z.isNew||$?(localStorage.setItem("appMode","lite"),'
-    'await t.replace({name:ve.Collection}),'
+    'await t.replace({name:ve.Home}),'
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
 )
 MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
@@ -56,7 +56,7 @@ class _PatchProfile:
     inject_prefix: str
     mailbox_anchor: str
     mailbox_replacement: str
-    collection_route: str
+    home_route: str
     mailbox_write_anchor: str | None
     mailbox_write_replacement: str | None
 
@@ -69,7 +69,7 @@ _PATCH_PROFILES = (
         ',"query.response":no(a)}}),',
         MAILBOX_LOGIN_ANCHOR,
         MAILBOX_LOGIN_REPLACEMENT,
-        "await t.replace({name:ye.Collection})",
+        "await t.replace({name:ye.Home})",
         None,
         None,
     ),
@@ -80,7 +80,7 @@ _PATCH_PROFILES = (
         ',"query.response":io(a)}}),',
         MAILBOX_LOGIN_ANCHOR_0627,
         MAILBOX_LOGIN_REPLACEMENT_0627,
-        "await t.replace({name:ve.Collection})",
+        "await t.replace({name:ve.Home})",
         MAILBOX_WRITE_ANCHOR_0627,
         MAILBOX_WRITE_REPLACEMENT_0627,
     ),
@@ -281,7 +281,7 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 or "toyWsUrl" not in patched_js
                 or new_ws not in patched_js
                 or 'localStorage.setItem("appMode","lite")' not in patched_js
-                or profile.collection_route not in patched_js
+                or profile.home_route not in patched_js
                 or (
                     profile.mailbox_write_replacement is not None
                     and profile.mailbox_write_replacement not in patched_js

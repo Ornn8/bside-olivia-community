@@ -1864,7 +1864,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert (installed / "local_backend" / "original_client_update_api.py").is_file()
     assert (installed / "local_backend/runtime/imports/offline_letter_pairs.py").is_file()
     assert "toyApiUrl" in main
-    assert "await t.replace({name:ye.Collection})" in main
+    assert "await t.replace({name:ye.Home})" in main
 
     with zipfile.ZipFile(patched_webplayer) as archive:
         names = set(archive.namelist())
