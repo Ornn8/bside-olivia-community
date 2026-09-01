@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$InstallRoot,
     [string]$ShortcutPath,
-    [switch]$RefreshExisting
+    [switch]$RefreshExisting,
+    [switch]$RemoveExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,50 @@ $startHidden = Join-Path $root 'START.vbs'
 $startHiddenTemplate = Join-Path $PSScriptRoot 'start_hidden.vbs.txt'
 $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
 $hiddenArguments = '//B //Nologo "' + $startHidden + '"'
+
+if ($RemoveExisting) {
+    $shortcutPaths = if ($ShortcutPath) { @($ShortcutPath) } else {
+        @(foreach ($folderName in @('Desktop', 'Programs')) {
+            try {
+                $folder = [Environment]::GetFolderPath($folderName)
+                if ($folder) {
+                    $candidate = Join-Path $folder 'Olivia 本地版.lnk'
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                        $candidate
+                    }
+                }
+            }
+            catch {
+                # One unavailable shell folder must not suppress the other.
+            }
+        })
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($path in $shortcutPaths) {
+        try {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $shortcut = $shell.CreateShortcut($path)
+            $target = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+            $isLegacyShortcut = [string]::Equals(
+                $target, [IO.Path]::GetFullPath($start), [StringComparison]::OrdinalIgnoreCase
+            )
+            $isHiddenShortcut = [string]::Equals(
+                $target, [IO.Path]::GetFullPath($wscript), [StringComparison]::OrdinalIgnoreCase
+            ) -and [string]::Equals(
+                [string]$shortcut.Arguments, $hiddenArguments, [StringComparison]::OrdinalIgnoreCase
+            )
+            if ($isLegacyShortcut -or $isHiddenShortcut) {
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
+        catch {
+            # Shortcut cleanup is best-effort and must not block safe uninstall.
+        }
+    }
+    [pscustomobject]@{ status = 'SHORTCUTS_REMOVED' }
+    return
+}
+
 $markerPath = Join-Path $root '.olivia-full-patch.json'
 if (-not (Test-Path -LiteralPath $start -PathType Leaf)) {
     throw 'LOCAL_START_ENTRYPOINT_NOT_FOUND'

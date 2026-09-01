@@ -292,11 +292,14 @@ begin
       ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
       ' -NonInteractive' +
       ' -SkipShortcut';
-#ifdef PrivatePayload
+#ifdef VideoRuntimePayload
     Params := Params +
       ' -VideoRuntimePath ' + AddQuotes(
         ExpandConstant('{src}\Olivia-video-runtime-private.zip')
-      ) +
+      );
+#endif
+#ifdef VideoOfflinePayload
+    Params := Params +
       ' -VideoOfflineRoot ' + AddQuotes(
         ExpandConstant('{src}\Olivia-video-offline-private')
       );

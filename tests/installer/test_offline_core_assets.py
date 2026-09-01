@@ -88,8 +88,12 @@ def test_installer_accepts_only_complete_private_video_runtime_manifest() -> Non
     assert "[string]$VideoOfflineRoot = ''" in script
     assert "$hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'" in script
     assert "$hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'" in script
-    assert "$hasVideoRuntime -ne $hasVoiceReference -or $hasVideoOffline -ne $hasVoiceReference" in script
-    assert "$manifestNames += @('distribution', 'voice_reference', 'video_runtime', 'video_offline')" in script
+    assert "$hasVideoOffline -and -not $hasVideoRuntime" in script
+    assert "$manifest.distribution -ceq 'private' -and (-not $hasVideoRuntime -or -not $hasVideoOffline)" in script
+    assert "$manifest.distribution -ceq 'personal' -and $hasVideoOffline" in script
+    assert "$manifestNames += @('distribution', 'voice_reference')" in script
+    assert "$manifestNames += @('video_runtime')" in script
+    assert "$manifestNames += @('video_offline')" in script
     assert "Assert-OfflineObjectShape -Value $manifest.video_runtime -Names @('path', 'size_bytes', 'sha256')" in script
     assert "Assert-OfflineObjectShape -Value $manifest.video_offline -Names @('path', 'manifest_version', 'manifest_sha256', 'file_count', 'size_bytes')" in script
     assert "$manifest.video_runtime.path -cne 'Olivia-video-runtime-private.zip'" in script

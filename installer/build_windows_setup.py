@@ -171,6 +171,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
+    "installer/native_window_layout.py",
     "installer/provision_mem0_embedding.py",
     "installer/patch_native_user_settings.py",
     "installer/runtime-requirements.txt",
@@ -1018,13 +1019,14 @@ def prepare_setup_payload(
     source = source.expanduser().resolve()
     offline = offline.expanduser().resolve()
     destination = destination.expanduser().resolve()
-    if distribution not in {"public", "private"}:
+    if distribution not in {"public", "personal", "private"}:
         raise SetupBuildError("SETUP_DISTRIBUTION_INVALID")
-    if voice_reference is not None and distribution != "private":
+    private_distribution = distribution in {"personal", "private"}
+    if voice_reference is not None and not private_distribution:
         raise SetupBuildError("SETUP_VOICE_REFERENCE_PRIVATE_ONLY")
-    if distribution == "private" and voice_reference is None:
+    if private_distribution and voice_reference is None:
         raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
-    if video_runtime is not None and distribution != "private":
+    if video_runtime is not None and not private_distribution:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_PRIVATE_ONLY")
     if distribution == "private" and video_runtime is None:
         raise SetupBuildError("SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED")
@@ -1032,9 +1034,11 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
     if distribution == "private" and video_offline_root is None:
         raise SetupBuildError("SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED")
-    if native_navigation_manifest is not None and distribution != "private":
+    if distribution == "personal" and video_offline_root is not None:
+        raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
+    if native_navigation_manifest is not None and not private_distribution:
         raise SetupBuildError("SETUP_NATIVE_NAVIGATION_MANIFEST_PRIVATE_ONLY")
-    if distribution == "private" and native_navigation_manifest is None:
+    if private_distribution and native_navigation_manifest is None:
         assert voice_reference is not None
         native_navigation_manifest = (
             voice_reference.parent / NATIVE_NAVIGATION_MANIFEST_NAME
@@ -1050,7 +1054,7 @@ def prepare_setup_payload(
     if not REQUIRED_PAYLOAD_FILES.issubset(tracked):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
     if (
-        distribution == "private"
+        private_distribution
         and not PRIVATE_REQUIRED_PAYLOAD_FILES.issubset(tracked)
     ):
         raise SetupBuildError("SETUP_REQUIRED_PAYLOAD_MISSING")
@@ -1082,11 +1086,7 @@ def prepare_setup_payload(
                 staging / "installer" / NATIVE_NAVIGATION_MANIFEST_NAME,
             )
         shutil.copytree(offline, staging / "offline")
-        if (
-            voice_reference is not None
-            and video_runtime is not None
-            and video_offline_root is not None
-        ):
+        if voice_reference is not None:
             reference = _absolute_sidecar_source(
                 voice_reference,
                 directory=False,
@@ -1097,35 +1097,35 @@ def prepare_setup_payload(
             target = staging / "offline" / Path(*VOICE_REFERENCE_PATH.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(reference, target)
-            runtime_source = _absolute_sidecar_source(
-                video_runtime,
-                directory=False,
-                error_code="SETUP_VIDEO_RUNTIME_INVALID",
-            )
-            if runtime_source.stat().st_size < 1:
-                raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
-            runtime_metadata = _video_runtime_metadata(runtime_source)
-            video_offline_metadata = _video_offline_metadata(
-                staging / "installer" / "video-capability-manifest.json",
-                video_offline_root,
-            )
             manifest_path = staging / "offline" / MANIFEST_NAME
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["distribution"] = "private"
+            manifest["distribution"] = distribution
             manifest["voice_reference"] = {
                 "path": VOICE_REFERENCE_PATH,
                 "size_bytes": target.stat().st_size,
                 "sha256": _sha256(target),
                 "wave": _voice_reference_metadata(target),
             }
-            manifest["video_runtime"] = {
-                "path": VIDEO_RUNTIME_PATH,
-                **runtime_metadata,
-            }
-            manifest["video_offline"] = {
-                "path": VIDEO_OFFLINE_SIDECAR_NAME,
-                **video_offline_metadata,
-            }
+            if video_runtime is not None:
+                runtime_source = _absolute_sidecar_source(
+                    video_runtime,
+                    directory=False,
+                    error_code="SETUP_VIDEO_RUNTIME_INVALID",
+                )
+                if runtime_source.stat().st_size < 1:
+                    raise SetupBuildError("SETUP_VIDEO_RUNTIME_INVALID")
+                manifest["video_runtime"] = {
+                    "path": VIDEO_RUNTIME_PATH,
+                    **_video_runtime_metadata(runtime_source),
+                }
+            if video_offline_root is not None:
+                manifest["video_offline"] = {
+                    "path": VIDEO_OFFLINE_SIDECAR_NAME,
+                    **_video_offline_metadata(
+                        staging / "installer" / "video-capability-manifest.json",
+                        video_offline_root,
+                    ),
+                }
             manifest_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n",
@@ -1233,7 +1233,9 @@ def build_windows_setup(
             os.fspath(source / "installer" / "windows_setup.iss"),
         ]
         if video_runtime is not None:
-            command.insert(-1, "/DPrivatePayload=1")
+            command.insert(-1, "/DVideoRuntimePayload=1")
+        if video_offline_root is not None:
+            command.insert(-1, "/DVideoOfflinePayload=1")
         result = subprocess.run(command, check=False, timeout=900)
         if result.returncode != 0 or not setup.is_file():
             raise SetupBuildError("SETUP_COMPILE_FAILED")
@@ -1372,7 +1374,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--iscc", type=Path)
-    parser.add_argument("--distribution", choices=("public", "private"), default="public")
+    parser.add_argument(
+        "--distribution", choices=("public", "personal", "private"), default="public"
+    )
     parser.add_argument("--voice-reference", type=Path)
     parser.add_argument("--video-runtime", type=Path)
     parser.add_argument("--video-offline-root", type=Path)
