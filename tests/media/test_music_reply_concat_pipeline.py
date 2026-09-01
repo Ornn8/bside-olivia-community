@@ -343,7 +343,13 @@ def test_video_reply_readiness_rechecks_breeze_minimum_vram(
             )
         ),
     )
-    monkeypatch.setattr(music_reply, "_python_runtime_ready", lambda *_a, **_k: True)
+    runtime_probe_options: list[dict[str, object]] = []
+
+    def runtime_ready(*_args, **kwargs) -> bool:
+        runtime_probe_options.append(kwargs)
+        return True
+
+    monkeypatch.setattr(music_reply, "_python_runtime_ready", runtime_ready)
     monkeypatch.setattr(music_reply, "_breeze_hardware_status", lambda: (False, "BREEZE_TTS_10GB_VRAM_REQUIRED"))
     monkeypatch.setattr(music_reply, "resolve_ffmpeg_executable", lambda _env: ffmpeg)
 
@@ -355,6 +361,14 @@ def test_video_reply_readiness_rechecks_breeze_minimum_vram(
     assert dependencies["breeze_tts2"]["state"] == "missing"
     assert dependencies["breeze_tts2"]["reason_code"] == "BREEZE_TTS_10GB_VRAM_REQUIRED"
     assert "breeze_tts2" in status["ordinary_missing_dependencies"]
+    assert runtime_probe_options == [
+        {
+            "cwd": tmp_path,
+            "imports": ("torch", "transformers", "soundfile", "whisper"),
+            "accepted_torch_versions": ("2.9.1+cu128",),
+            "prepend_cwd": False,
+        }
+    ]
 
 
 def test_musical_reply_accepts_portable_roformer_python(
@@ -484,10 +498,20 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
     script = observed["command"][-1]
     assert "sys.version_info[:2]" in script
     assert "import_module" in script
+    assert "sys.path.insert(0, os.getcwd())" in script
     assert "torch.cuda.is_available()" in script
     assert "2.9.1+cu128" in script
     assert observed["timeout"] == music_reply._RUNTIME_PROBE_TIMEOUT_SECONDS
     assert observed["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    assert music_reply._python_runtime_ready(
+        python,
+        cwd=tmp_path,
+        imports=("torch", "transformers", "soundfile", "whisper"),
+        accepted_torch_versions=("2.9.1+cu128",),
+        prepend_cwd=False,
+    )
+    assert "sys.path.insert(0, os.getcwd())" not in observed["command"][-1]
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("python", 1)
@@ -499,6 +523,35 @@ def test_python_runtime_probe_checks_version_imports_cuda_and_has_hard_timeout(
         imports=("torch",),
         accepted_torch_versions=("2.9.1+cu128",),
     )
+
+
+def test_breeze_runtime_probe_does_not_prepend_provider_root_that_shadows_whisper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    python = _write(tmp_path / "python.exe")
+    _write(tmp_path / "whisper.py", b"raise ImportError('provider-local shadow')\n")
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        script = command[-1]
+        return subprocess.CompletedProcess(
+            command,
+            1 if "sys.path.insert(0, os.getcwd())" in script else 0,
+        )
+
+    monkeypatch.setattr(music_reply.subprocess, "run", fake_run)
+
+    assert music_reply._python_runtime_ready(
+        python,
+        cwd=tmp_path,
+        imports=("torch", "transformers", "soundfile", "whisper"),
+        accepted_torch_versions=("2.9.1+cu128",),
+        prepend_cwd=False,
+    )
+    assert (tmp_path / "whisper.py").is_file()
+    assert "sys.path.insert(0, os.getcwd())" not in observed["command"][-1]
 
 
 def test_runtime_probe_retries_transient_failures_once_with_sanitized_environment(
