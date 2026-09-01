@@ -39,7 +39,14 @@ def _source() -> dict[str, object]:
 def test_diagnostics_export_is_loopback_safe_and_downloadable() -> None:
     async def scenario() -> None:
         app = web.Application()
-        mount_original_client_diagnostics_api(app, lambda: _source())
+        source = _source()
+        source["launcher_tail"] = [
+            {"event": "native_settings", "status": "already_enabled"}
+        ]
+        source["runtime_tail"] = [
+            {"event": "health_probe", "health": "HEALTHY"}
+        ]
+        mount_original_client_diagnostics_api(app, lambda: source)
         client = await _client(app)
         try:
             response = await client.get(
@@ -54,6 +61,10 @@ def test_diagnostics_export_is_loopback_safe_and_downloadable() -> None:
             bundle = await response.read()
             with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
                 manifest = json.loads(archive.read("manifest.json"))
+                launcher_tail = archive.read("launcher-tail.jsonl")
+                runtime_tail = archive.read("runtime-tail.jsonl")
+            assert b'"status":"already_enabled"' in launcher_tail
+            assert b'"health":"healthy"' in runtime_tail
             manifest_schema = json.loads(
                 Path("contracts/diagnostic_bundle_manifest.schema.json").read_text(
                     encoding="utf-8"

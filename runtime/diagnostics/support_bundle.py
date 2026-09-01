@@ -186,9 +186,14 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
             if type(exit_code) is not int or not -(1 << 31) <= exit_code <= 0xFFFFFFFF:
                 raise _invalid()
             record["exit_code"] = exit_code
-    for name in ("status", "error_code", "health"):
+    for name in ("status", "health"):
         if name in source:
-            record[name] = _code(source[name])
+            value = source[name]
+            if not isinstance(value, str):
+                raise _invalid()
+            record[name] = _status(value.strip().lower())
+    if "error_code" in source:
+        record["error_code"] = _code(source["error_code"])
     if runtime:
         if "reply_mode" in source:
             reply_mode = source["reply_mode"]
