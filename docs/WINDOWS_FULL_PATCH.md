@@ -12,6 +12,8 @@
 
 兼容旧流程：源码/调试场景仍可解压发布内容后双击 `INSTALL.cmd`。EXE 只是图形化外壳，最终仍调用同一份 `installer/Install.ps1`，不会形成第二套安装逻辑。安装阶段不填写 API key，也不会下载 Mem0、BGE 或其他可选模型。
 
+安装器使用 Inno `SetupMutex` 阻止同一用户重复启动图形安装，并在产品目录持有独占文件锁覆盖整个安装生命周期（包括事务恢复、载荷写入和快捷方式写回）。同时运行第二个脚本安装实例会在接触活动事务前以 `INSTALL_ALREADY_RUNNING` 失败；锁路径不安全或无法建立时以 `INSTALL_LOCK_UNAVAILABLE` 失败。锁句柄只在安装成功或统一失败出口释放，锁文件本身作为受管协调文件保留。全新安装失败时只清理安装器创建的受管项，不递归删除整个安装目录；`data`、`logs`、`third-party` 始终保留，避免用户在安装期间已产生的信件、日志或外部组件随回滚丢失。
+
 ## 离线核心资产
 
 发布包的 `offline/offline-core-assets.json` 固定 Python 3.12.10、pip 25.2 和 `installer/runtime-requirements.txt` 的 14 个 Windows x64 / CPython 3.12 wheel。安装前逐项校验路径、大小和 SHA-256，并要求 wheelhouse 与清单完全一致；缺失、多余或被修改的 wheel 都会使安装失败。pip 只使用 `--no-index --find-links` 读取本地 wheelhouse。

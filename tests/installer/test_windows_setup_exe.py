@@ -1726,6 +1726,19 @@ def test_windows_installer_documents_ambiguous_source_diagnostic_contract() -> N
     assert "observed_webplayer_sha256" in documentation
 
 
+def test_windows_installer_documents_single_instance_and_fresh_rollback_contract() -> None:
+    documentation = (ROOT / "docs" / "WINDOWS_FULL_PATCH.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SetupMutex" in documentation
+    assert "INSTALL_ALREADY_RUNNING" in documentation
+    assert "INSTALL_LOCK_UNAVAILABLE" in documentation
+    assert "整个安装生命周期" in documentation
+    assert "data`、`logs`、`third-party" in documentation
+    assert "只清理安装器创建的受管项" in documentation
+
+
 def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     workflow = (ROOT / ".github" / "workflows" / "windows-setup.yml").read_text(
         encoding="utf-8"
