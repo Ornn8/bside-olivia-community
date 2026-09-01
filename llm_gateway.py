@@ -987,6 +987,7 @@ class OpenAICompatibleAdapter(Gateway):
                             raise ProviderRejected(status)
                         saw_delta = False
                         index = 0
+                        terminal_finish_reason: str | None = None
                         async for raw_line in response.content:
                             line = raw_line.decode("utf-8", errors="replace").strip()
                             if not line or not line.startswith("data:"):
@@ -1006,11 +1007,25 @@ class OpenAICompatibleAdapter(Gateway):
                                 yield GatewayDelta(text, request, index=index)
                                 index += 1
                             if finish_reason:
-                                yield GatewayDelta("", request, index=index, finish_reason=finish_reason)
+                                terminal_finish_reason = finish_reason
                                 break
                         if not saw_delta:
                             raise ProviderProtocolError()
+                        if terminal_finish_reason:
+                            yield GatewayDelta(
+                                "",
+                                request,
+                                index=index,
+                                finish_reason=terminal_finish_reason,
+                            )
                         return
+            except ProviderProtocolError:
+                if emitted:
+                    raise
+                if attempt < self.config.max_retries:
+                    await self._retry_wait(attempt)
+                    continue
+                raise
             except asyncio.TimeoutError:
                 if emitted:
                     raise ProviderTimeout() from None

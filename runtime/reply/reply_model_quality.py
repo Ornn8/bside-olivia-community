@@ -1474,19 +1474,27 @@ def _complete_layer_reviews(
             tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
         ],
     ) -> tuple[_LayerResult, ...]:
+        max_parallel = (
+            1
+            if gateway_scope is GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+            else max(1, len(requests))
+        )
+        layer_slots = asyncio.Semaphore(max_parallel)
+
         async def run_one(
             layer: _LayerAuthority,
             messages: tuple[dict[str, str], dict[str, str]],
         ) -> _LayerResult:
             for attempt in range(2):
                 try:
-                    text = await _complete_layer_text(
-                        gateway,
-                        messages,
-                        timeout_seconds,
-                        f"quality-{uuid.uuid4().hex}:{layer.name}",
-                        gateway_scope,
-                    )
+                    async with layer_slots:
+                        text = await _complete_layer_text(
+                            gateway,
+                            messages,
+                            timeout_seconds,
+                            f"quality-{uuid.uuid4().hex}:{layer.name}",
+                            gateway_scope,
+                        )
                 except _GatewayInvocationFailure as exc:
                     if (
                         attempt == 0
