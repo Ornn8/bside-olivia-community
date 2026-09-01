@@ -824,21 +824,23 @@ def _video_offline_metadata(
 
 
 def _verify_pinned_private_sidecars(
-    payload: Path, runtime: Path, video_offline_root: Path
-) -> tuple[dict[str, object], list[dict[str, object]]]:
+    payload: Path, runtime: Path | None, video_offline_root: Path
+) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     try:
         private_manifest = json.loads(
             (payload / "offline" / MANIFEST_NAME).read_text(encoding="utf-8")
         )
-        expected_runtime = private_manifest["video_runtime"]
+        expected_runtime = private_manifest.get("video_runtime")
         expected_offline = private_manifest["video_offline"]
-        if _is_reparse_point(runtime):
-            raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
-        actual_runtime = {
-            "path": VIDEO_RUNTIME_SIDECAR_NAME,
-            "size_bytes": runtime.stat().st_size,
-            "sha256": _sha256(runtime),
-        }
+        actual_runtime = None
+        if runtime is not None:
+            if _is_reparse_point(runtime):
+                raise SetupBuildError("SETUP_PRIVATE_SIDECAR_CHANGED")
+            actual_runtime = {
+                "path": VIDEO_RUNTIME_SIDECAR_NAME,
+                "size_bytes": runtime.stat().st_size,
+                "sha256": _sha256(runtime),
+            }
         offline_file_records: list[dict[str, object]] = []
         actual_offline = {
             "path": VIDEO_OFFLINE_SIDECAR_NAME,
@@ -854,7 +856,7 @@ def _verify_pinned_private_sidecars(
             {
                 **actual_runtime,
                 "path": os.fspath(runtime),
-            },
+            } if actual_runtime is not None and runtime is not None else None,
             offline_file_records,
         )
     except SetupBuildError as exc:
@@ -1052,8 +1054,6 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_PRIVATE_VOICE_REFERENCE_REQUIRED")
     if video_runtime is not None and not private_distribution:
         raise SetupBuildError("SETUP_VIDEO_RUNTIME_PRIVATE_ONLY")
-    if distribution == "private" and video_runtime is None:
-        raise SetupBuildError("SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED")
     if video_offline_root is not None and distribution != "private":
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
     if distribution == "private" and video_offline_root is None:
@@ -1286,9 +1286,9 @@ def build_windows_setup(
         if compiled_artifacts != [setup]:
             raise SetupBuildError("SETUP_COMPILE_FAILED")
         verified_sidecars = None
-        if video_runtime is not None and video_offline_root is not None:
+        if video_offline_root is not None:
             verified_sidecars = _verify_pinned_private_sidecars(
-                payload, sidecar, offline_sidecar
+                payload, sidecar if video_runtime is not None else None, offline_sidecar
             )
         artifacts = [setup]
         file_records = [

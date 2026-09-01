@@ -85,15 +85,15 @@ def test_first_install_consumes_only_bundled_core_assets() -> None:
     assert "Install-ManagedVideoRuntime -VideoRuntime $coreAssets.VideoRuntime" in script
 
 
-def test_installer_accepts_only_complete_private_video_runtime_manifest() -> None:
+def test_installer_accepts_complete_split_private_manifest_without_runtime_archive() -> None:
     script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
 
     assert "[string]$VideoRuntimePath = ''" in script
     assert "[string]$VideoOfflineRoot = ''" in script
     assert "$hasVideoRuntime = $manifest.PSObject.Properties.Name -ccontains 'video_runtime'" in script
     assert "$hasVideoOffline = $manifest.PSObject.Properties.Name -ccontains 'video_offline'" in script
-    assert "$hasVideoOffline -and -not $hasVideoRuntime" in script
-    assert "$manifest.distribution -ceq 'private' -and (-not $hasVideoRuntime -or -not $hasVideoOffline)" in script
+    assert "$hasVideoOffline -and -not $hasVideoRuntime" not in script
+    assert "$manifest.distribution -ceq 'private' -and -not $hasVideoOffline" in script
     assert "$manifest.distribution -ceq 'personal' -and $hasVideoOffline" in script
     assert "$manifestNames += @('distribution', 'voice_reference')" in script
     assert "$manifestNames += @('video_runtime')" in script
@@ -108,6 +108,7 @@ def test_installer_accepts_only_complete_private_video_runtime_manifest() -> Non
     assert "verified = [bool]$true" in script
     assert "VideoRuntime = $videoRuntime" in script
     assert "VideoOffline = $videoOffline" in script
+    assert "if ($null -ne $coreAssets.VideoRuntime)" in script
 
 
 def test_private_video_activation_must_finish_before_install_transaction_commit() -> None:
@@ -197,7 +198,7 @@ def test_public_schema_accepts_only_complete_hash_locked_private_assets() -> Non
     assert not list(validator.iter_errors(example))
     missing_runtime = deepcopy(example)
     del missing_runtime["video_runtime"]
-    assert list(validator.iter_errors(missing_runtime))
+    assert not list(validator.iter_errors(missing_runtime))
     missing_offline = deepcopy(example)
     del missing_offline["video_offline"]
     assert list(validator.iter_errors(missing_offline))
@@ -421,6 +422,7 @@ def _run_runtime_publish_fixture(
     video_runtime_missing: bool = False,
     video_runtime_name: str = "Olivia-video-runtime-private.zip",
     video_runtime_verified: bool = True, preinstalled_video_runtime: bytes | None = None,
+    omit_video_runtime_archive: bool = False,
     stale_video_backup: bytes | None = None, reject_video_source_rehash: bool = False,
     block_video_cleanup: bool = False,
     block_voice_sidecar: bool = False, cleanup_obstruction: str | None = None,
@@ -544,7 +546,7 @@ def _run_runtime_publish_fixture(
     replacement = (
         "$voiceManifest = if ($env:BSIDE_TEST_PRIVATE_MANIFEST) { [IO.File]::ReadAllText($env:BSIDE_TEST_PRIVATE_MANIFEST) | ConvertFrom-Json } else { $null }\n"
         "$voiceReference = if ($voiceManifest) { $voiceManifest.voice_reference.path = $env:BSIDE_TEST_VOICE_REFERENCE; $voiceManifest.voice_reference.transcript.path = $env:BSIDE_TEST_VOICE_TRANSCRIPT; $voiceManifest.voice_reference } else { $null }\n"
-        "$videoRuntime = if ($voiceManifest) { $resolvedVideoRuntime = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $voiceManifest.video_runtime; $voiceManifest.video_runtime.path = $resolvedVideoRuntime; $voiceManifest.video_runtime } else { $null }\n"
+        "$videoRuntime = if ($voiceManifest -and $voiceManifest.PSObject.Properties.Name -ccontains 'video_runtime') { $resolvedVideoRuntime = Resolve-VideoRuntimeSidecar -LiteralPath $VideoRuntimePath -Asset $voiceManifest.video_runtime; $voiceManifest.video_runtime.path = $resolvedVideoRuntime; $voiceManifest.video_runtime } else { $null }\n"
         "$videoOffline = if ($voiceManifest) { $resolvedVideoOffline = Resolve-VideoOfflineSidecar -LiteralPath $VideoOfflineRoot -Asset $voiceManifest.video_offline; $voiceManifest.video_offline.path = $resolvedVideoOffline; $voiceManifest.video_offline } else { $null }\n"
         "$coreAssets = @{ Runtime = $env:BSIDE_TEST_RUNTIME_ZIP; PipBootstrap = ''; Wheelhouse = ''; VoiceReference = $voiceReference; VideoRuntime = $videoRuntime; VideoOffline = $videoOffline }"
     )
@@ -658,7 +660,7 @@ def _run_runtime_publish_fixture(
     environment = os.environ.copy()
     environment["BSIDE_TEST_RUNTIME_ZIP"] = str(runtime_zip)
     if voice_reference is not None:
-        if video_runtime is None:
+        if video_runtime is None and not omit_video_runtime_archive:
             video_runtime = b"video-runtime-fixture"
         reference = tmp_path / "distributor-reference.wav"
         transcript = tmp_path / "distributor-reference.txt"
@@ -668,7 +670,7 @@ def _run_runtime_publish_fixture(
         runtime_archive = tmp_path / video_runtime_name
         video_offline_root = tmp_path / "Olivia-video-offline-private"
         video_offline_root.mkdir()
-        if not video_runtime_missing:
+        if video_runtime is not None and not video_runtime_missing:
             runtime_archive.write_bytes(video_runtime)
         manifest = {"voice_reference": {"path": "voice/olivia-reference.wav", "size_bytes": len(voice_reference),
                     "sha256": voice_reference_sha256 or hashlib.sha256(voice_reference).hexdigest(),
@@ -676,10 +678,6 @@ def _run_runtime_publish_fixture(
                                    "size_bytes": len(voice_reference_transcript),
                                    "sha256": voice_reference_transcript_sha256 or hashlib.sha256(voice_reference_transcript).hexdigest()},
                     "wave": voice_reference_wave if voice_reference_wave is not None else _wave_metadata()},
-                    "video_runtime": {"path": "Olivia-video-runtime-private.zip",
-                                       "size_bytes": len(video_runtime),
-                                       "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest(),
-                                       "verified": video_runtime_verified},
                     "video_offline": {"path": "Olivia-video-offline-private",
                                       "manifest_version": "2026.08.28",
                                       "manifest_sha256": hashlib.sha256(
@@ -687,6 +685,13 @@ def _run_runtime_publish_fixture(
                                       ).hexdigest(),
                                       "file_count": 32,
                                       "size_bytes": 28_146_607_024}}
+        if video_runtime is not None:
+            manifest["video_runtime"] = {
+                "path": "Olivia-video-runtime-private.zip",
+                "size_bytes": len(video_runtime),
+                "sha256": video_runtime_sha256 or hashlib.sha256(video_runtime).hexdigest(),
+                "verified": video_runtime_verified,
+            }
         manifest_path = tmp_path / "offline-core-assets.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         environment["BSIDE_TEST_VOICE_REFERENCE"] = str(reference)
@@ -711,14 +716,9 @@ def _run_runtime_publish_fixture(
             "-SkipShortcut",
         ]
     if voice_reference is not None:
-        command.extend(
-            (
-                "-VideoRuntimePath",
-                str(runtime_archive),
-                "-VideoOfflineRoot",
-                str(video_offline_root),
-            )
-        )
+        if video_runtime is not None:
+            command.extend(("-VideoRuntimePath", str(runtime_archive)))
+        command.extend(("-VideoOfflineRoot", str(video_offline_root)))
     result = subprocess.run(
         command,
         env=environment,
@@ -756,6 +756,25 @@ def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path
     schema = json.loads((ROOT / "contracts/managed_voice_reference.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
     assert not list(Draft202012Validator(schema).iter_errors(integrity))
+
+
+def test_clean_private_setup_activates_split_bom_without_runtime_archive(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        voice_reference=_voice_reference_bytes(),
+        omit_video_runtime_archive=True,
+        existing_runtime=False,
+        seed_existing_install=False,
+        private_video_mutates_tree=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not _managed_video_runtime(product).exists()
+    assert (product / "install/data/capabilities/video/ordinary_video").is_dir()
+    assert (product / "install/data/capabilities/video/music_video").is_dir()
 
 
 def test_first_install_emits_setup_progress_contract(tmp_path: Path) -> None:

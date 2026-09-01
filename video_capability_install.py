@@ -31,6 +31,7 @@ from installer.component_update import (
 )
 from runtime.media.managed_voice_reference import (
     ManagedVoiceReferenceError,
+    resolve_managed_voice_reference,
     resolve_managed_voice_reference_transcript,
 )
 
@@ -1452,9 +1453,18 @@ class VideoCapabilityInstaller:
         model_license = self._managed_runtime_path(
             environment, "OLIVIA_BREEZE_TTS_MODEL_LICENSE", directory=False
         )
-        reference = self._managed_runtime_path(
+        configured_reference = self._managed_runtime_path(
             environment, "OLIVIA_REPLY_VOICE_REFERENCE", directory=False
         )
+        try:
+            reference = resolve_managed_voice_reference(self.data_root)
+        except (ManagedVoiceReferenceError, OSError):
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
+        try:
+            if reference.resolve() != configured_reference.resolve():
+                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+        except OSError:
+            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
         external_python = self._managed_runtime_path(
             environment, "OLIVIA_BREEZE_TTS_PYTHON", directory=False
         )
@@ -1463,13 +1473,36 @@ class VideoCapabilityInstaller:
         )
         if reference_text is None:
             raise VideoCapabilityError("VIDEO_RUNTIME_TTS_REFERENCE_TEXT_UNAVAILABLE")
-        generated_root = self.install_root / "generated"
-        generated_root.mkdir(parents=True, exist_ok=True)
-        generated_config = generated_root / "tts_local.json"
-        generated_temporary = generated_config.with_name(
-            f"{generated_config.name}.{uuid.uuid4().hex}.tmp"
-        )
+        generated_temporary: Path | None = None
         try:
+            generated_root = _inside(
+                self.install_root, self.install_root / "generated"
+            )
+            if generated_root.exists():
+                if not generated_root.is_dir() or _is_reparse_point(generated_root):
+                    raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+                _reject_reparse_tree(generated_root)
+            else:
+                generated_root.mkdir(parents=True)
+            generated_root = _inside(
+                self.install_root, self.install_root / "generated"
+            )
+            if not generated_root.is_dir() or _is_reparse_point(generated_root):
+                raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+            generated_config = _inside(
+                generated_root, generated_root / "tts_local.json"
+            )
+            generated_temporary = _inside(
+                generated_root,
+                generated_root
+                / f"{generated_config.name}.{uuid.uuid4().hex}.tmp",
+            )
+            for candidate in (generated_config, generated_temporary):
+                if candidate.exists() and (
+                    not candidate.is_file() or _is_reparse_point(candidate)
+                ):
+                    raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+            _reject_reparse_tree(generated_root)
             generated_temporary.write_text(
                 json.dumps(
                     {
@@ -1511,11 +1544,68 @@ class VideoCapabilityInstaller:
                 ),
                 encoding="utf-8",
             )
+            checked_root = _inside(
+                self.install_root, self.install_root / "generated"
+            )
+            if (
+                checked_root != generated_root
+                or _is_reparse_point(checked_root)
+                or not checked_root.is_dir()
+            ):
+                raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+            generated_config = _inside(
+                checked_root, checked_root / generated_config.name
+            )
+            generated_temporary = _inside(
+                checked_root, checked_root / generated_temporary.name
+            )
+            _reject_reparse_tree(checked_root)
+            if (
+                not generated_temporary.is_file()
+                or _is_reparse_point(generated_temporary)
+                or (
+                    generated_config.exists()
+                    and (
+                        not generated_config.is_file()
+                        or _is_reparse_point(generated_config)
+                    )
+                )
+            ):
+                raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
             os.replace(generated_temporary, generated_config)
-        except OSError as exc:
+            checked_root = _inside(
+                self.install_root, self.install_root / "generated"
+            )
+            checked_config = _inside(
+                checked_root, checked_root / generated_config.name
+            )
+            if (
+                checked_root != generated_root
+                or _is_reparse_point(checked_root)
+                or not checked_config.is_file()
+                or _is_reparse_point(checked_config)
+            ):
+                raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+        except (OSError, VideoCapabilityError) as exc:
             raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from exc
         finally:
-            generated_temporary.unlink(missing_ok=True)
+            if generated_temporary is not None:
+                try:
+                    safe_temporary = _inside(
+                        self.install_root, generated_temporary
+                    )
+                    safe_generated_root = _inside(
+                        self.install_root, self.install_root / "generated"
+                    )
+                    if (
+                        safe_temporary.parent == safe_generated_root
+                        and not _is_reparse_point(safe_generated_root)
+                        and safe_temporary.is_file()
+                        and not _is_reparse_point(safe_temporary)
+                    ):
+                        safe_temporary.unlink(missing_ok=True)
+                except (OSError, VideoCapabilityError):
+                    pass
         environment["OLIVIA_TTS_CONFIG"] = str(generated_config)
 
     def _write_runtime_environment(self) -> None:

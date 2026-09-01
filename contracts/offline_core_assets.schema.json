@@ -6,11 +6,17 @@
   "additionalProperties": false,
   "required": ["schema_version", "python_runtime", "pip_bootstrap", "requirements_sha256", "wheels"],
   "dependentRequired": {
-    "distribution": ["voice_reference", "video_runtime", "video_offline"],
-    "voice_reference": ["distribution", "video_runtime", "video_offline"],
-    "video_runtime": ["distribution", "voice_reference", "video_offline"],
-    "video_offline": ["distribution", "voice_reference", "video_runtime"]
+    "distribution": ["voice_reference"],
+    "voice_reference": ["distribution"],
+    "video_runtime": ["distribution", "voice_reference"],
+    "video_offline": ["distribution", "voice_reference"]
   },
+  "allOf": [
+    {
+      "if": {"required": ["distribution"]},
+      "then": {"required": ["video_offline"]}
+    }
+  ],
   "$defs": {
     "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "local_asset": {

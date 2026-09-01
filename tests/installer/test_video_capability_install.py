@@ -1521,6 +1521,11 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
     for relative in ("ordinary_video/breeze/model/drbaph_Breeze-TTS-2-comfyui", "ordinary_video/quality/whisper", "ordinary_video/latentsync/runtime",
                      "music_video/minimax/runtime"):
         (install_root / relative).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        video_capability_install,
+        "resolve_managed_voice_reference",
+        lambda _data_root: (install_root / "shared/linli-reference.wav").resolve(),
+    )
     monkeypatch.setenv("OLIVIA_TTS_REFERENCE_TEXT", "合成测试参考音频的精确转写。")
     monkeypatch.setattr(video_capability_install, "_ready_marker_matches", lambda *_: True)
     monkeypatch.setattr(video_capability_install, "_size_matches", lambda *_: True)
@@ -1706,6 +1711,13 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
         ),
         encoding="utf-8",
     )
+    reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
+    real_voice_resolver = video_capability_install.resolve_managed_voice_reference
+    monkeypatch.setattr(
+        video_capability_install,
+        "resolve_managed_voice_reference",
+        lambda root: real_voice_resolver(root, expected_sha256=reference_sha256),
+    )
     monkeypatch.setattr(video_capability_install, "_ready_marker_matches", lambda *_: True)
     monkeypatch.setattr(video_capability_install, "_size_matches", lambda *_: True)
     monkeypatch.setattr(VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True)
@@ -1731,6 +1743,181 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
     assert config.is_file() and config.is_relative_to(install_root)
     worker = Path(environment["OLIVIA_MINIMAX_WORKER"])
     assert worker.is_file() and worker.is_relative_to(install_root)
+
+    previous_config = config.read_bytes()
+    reference.write_bytes(reference.read_bytes() + b"tampered")
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE$"
+    ):
+        installer._write_runtime_environment()
+    assert config.read_bytes() == previous_config
+
+
+def _managed_tts_config_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[VideoCapabilityInstaller, dict[str, str]]:
+    installer = object.__new__(VideoCapabilityInstaller)
+    installer.data_root = (tmp_path / "data").resolve()
+    installer.install_root = installer.data_root / "capabilities/video"
+    installer.install_root.mkdir(parents=True)
+    installer._requires_breeze_hardware = True
+
+    directories = {
+        "OLIVIA_BREEZE_TTS_ROOT": installer.install_root / "ordinary/breeze/runtime",
+        "OLIVIA_BREEZE_TTS_MODEL_ROOT": installer.install_root / "ordinary/breeze/model",
+    }
+    files = {
+        "OLIVIA_BREEZE_TTS_MODEL_LICENSE": installer.install_root / "ordinary/breeze/model/LICENSE",
+        "OLIVIA_BREEZE_TTS_PYTHON": installer.install_root / "ordinary/breeze/python/python.exe",
+        "OLIVIA_REPLY_VOICE_REFERENCE": installer.install_root / "shared/linli-reference.wav",
+    }
+    for directory in directories.values():
+        directory.mkdir(parents=True, exist_ok=True)
+    for path in files.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    reference = files["OLIVIA_REPLY_VOICE_REFERENCE"]
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0")
+    transcript = reference.with_suffix(".txt")
+    transcript.write_text("synthetic exact transcript\n", encoding="utf-8")
+    reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
+    reference.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.managed-voice-reference.v2",
+                "path": reference.name,
+                "size_bytes": reference.stat().st_size,
+                "sha256": reference_sha256,
+                "transcript": {
+                    "path": transcript.name,
+                    "size_bytes": transcript.stat().st_size,
+                    "sha256": hashlib.sha256(transcript.read_bytes()).hexdigest(),
+                },
+                "wave": {
+                    "channels": 1,
+                    "sample_width_bytes": 2,
+                    "sample_rate_hz": 16_000,
+                    "frame_count": 1,
+                    "compression_type": "NONE",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_resolver = video_capability_install.resolve_managed_voice_reference
+    monkeypatch.setattr(
+        video_capability_install,
+        "resolve_managed_voice_reference",
+        lambda root: real_resolver(root, expected_sha256=reference_sha256),
+    )
+    return installer, {
+        **{key: str(value) for key, value in directories.items()},
+        **{key: str(value) for key, value in files.items()},
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_managed_tts_config_rejects_generated_directory_junction_without_external_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    generated = installer.install_root / "generated"
+    linked = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(generated), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("directory junction unavailable")
+
+    with pytest.raises(
+        VideoCapabilityError,
+        match="^VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE$",
+    ):
+        installer._generate_managed_tts_config(environment)
+
+    assert not (outside / "tts_local.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+@pytest.mark.parametrize("leaf", ("tts_local.json", "tts_local.json.fixed.tmp"))
+def test_managed_tts_config_rejects_target_and_temp_reparse_points(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leaf: str
+) -> None:
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    generated = installer.install_root / "generated"
+    generated.mkdir()
+    outside = tmp_path / "outside-leaf"
+    outside.mkdir()
+    monkeypatch.setattr(
+        video_capability_install.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="fixed"),
+    )
+    linked = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(generated / leaf), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("leaf junction unavailable")
+
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE$"
+    ):
+        installer._generate_managed_tts_config(environment)
+
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_managed_tts_config_rechecks_generated_directory_after_temp_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    generated = installer.install_root / "generated"
+    outside = tmp_path / "outside-after-write"
+    outside.mkdir()
+    outside_temp = outside / "tts_local.json.fixed.tmp"
+    outside_temp.write_bytes(b"do-not-touch")
+    parked = installer.install_root / "generated-parked"
+    original_write_text = Path.write_text
+    monkeypatch.setattr(
+        video_capability_install.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="fixed"),
+    )
+
+    def write_then_swap(path: Path, *args: object, **kwargs: object) -> int:
+        written = original_write_text(path, *args, **kwargs)
+        if path.parent == generated and path.name.endswith(".tmp"):
+            generated.rename(parked)
+            linked = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(generated), str(outside)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if linked.returncode != 0:
+                pytest.skip("directory junction unavailable")
+        return written
+
+    monkeypatch.setattr(Path, "write_text", write_then_swap)
+
+    with pytest.raises(
+        VideoCapabilityError, match="^VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE$"
+    ):
+        installer._generate_managed_tts_config(environment)
+
+    assert not (outside / "tts_local.json").exists()
+    assert outside_temp.read_bytes() == b"do-not-touch"
 
 
 def _managed_worker_import_fixture(

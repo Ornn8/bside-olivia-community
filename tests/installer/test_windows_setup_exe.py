@@ -523,7 +523,7 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
             voice_reference=reference,
             validate_schema=False,
         )
-    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_RUNTIME_REQUIRED"):
+    with pytest.raises(SetupBuildError, match="SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED"):
         prepare_setup_payload(
             source, offline, tmp_path / "private", distribution="private",
             voice_reference=reference,
@@ -535,6 +535,33 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
             source, offline, tmp_path / "public-runtime", video_runtime=runtime,
             validate_schema=False,
         )
+
+
+def test_prepare_private_payload_accepts_complete_split_bom_without_runtime_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    destination = tmp_path / "payload"
+
+    prepare_setup_payload(
+        source,
+        offline,
+        destination,
+        distribution="private",
+        voice_reference=reference,
+        voice_reference_transcript=reference.with_suffix(".txt"),
+        video_offline_root=reference.parent / "Olivia-video-offline-fixture",
+        validate_schema=False,
+    )
+
+    manifest = json.loads(
+        (destination / "offline/offline-core-assets.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["distribution"] == "private"
+    assert "video_runtime" not in manifest
+    assert manifest["video_offline"]["path"] == "Olivia-video-offline-private"
 
 
 def test_prepare_private_payload_requires_video_activation_entrypoint(
@@ -1131,6 +1158,63 @@ def test_private_build_publishes_hash_locked_video_runtime_sidecar(
     assert set(checksum_records) == {*receipt_paths, "Olivia-Setup-x64.receipt.json"}
     for relative, digest in checksum_records.items():
         assert hashlib.sha256((output / relative).read_bytes()).hexdigest() == digest
+
+
+def test_private_build_publishes_split_bom_without_runtime_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output"
+    observed: list[str] = []
+    video_offline = tmp_path / "video-offline"
+    (video_offline / "ordinary_video").mkdir(parents=True)
+    (video_offline / "music_video").mkdir()
+    (video_offline / "ordinary_video/ordinary.bin").write_bytes(b"ordinary")
+    (video_offline / "music_video/music.bin").write_bytes(b"music")
+
+    def compile_setup(command: list[str], **_: object) -> SimpleNamespace:
+        observed.extend(command)
+        (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(
+        "installer.build_windows_setup._find_iscc", lambda _: tmp_path / "ISCC.exe"
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.prepare_setup_payload",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup._verify_pinned_private_sidecars",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "installer.build_windows_setup.subprocess.run", compile_setup
+    )
+
+    result = build_windows_setup(
+        tmp_path / "source",
+        tmp_path / "offline",
+        output,
+        version="fixture",
+        distribution="private",
+        voice_reference=tmp_path / "voice.wav",
+        video_offline_root=video_offline,
+    )
+
+    assert "/DVideoRuntimePayload=1" not in observed
+    assert "/DVideoOfflinePayload=1" in observed
+    assert [Path(item["path"]).name for item in result["artifacts"]] == [
+        "Olivia-Setup-x64.exe",
+        "Olivia-video-offline-private",
+    ]
+    assert not (output / "Olivia-video-runtime-private.zip").exists()
+    receipt = json.loads(
+        (output / "Olivia-Setup-x64.receipt.json").read_text(encoding="utf-8")
+    )
+    assert all(
+        item["path"] != "Olivia-video-runtime-private.zip"
+        for item in receipt["files"]
+    )
 
 
 @pytest.mark.parametrize(
