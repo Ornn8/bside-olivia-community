@@ -486,7 +486,15 @@ def _repair_native_navigation(root: Path) -> str:
     manifest = root / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
     if not manifest.is_file():
         return "NOT_CONFIGURED"
-    result = patch_native_navigation(_client_executable(root).parent, work_root=root)
+    client_root = _client_executable(root).parent
+    managed = (
+        client_root / "resources" / "feapp.dat",
+        client_root / "plugins" / "Studio" / "NutStudioUI.dll",
+        client_root / "plugins" / "Container" / "NutContainerPlugin.dll",
+    )
+    if all(path.with_name(path.name + ".native-nav.orig").is_file() for path in managed):
+        return "ALREADY_PATCHED"
+    result = patch_native_navigation(client_root, work_root=root)
     return str(result["status"])
 
 
@@ -827,14 +835,14 @@ def main(argv: list[str] | None = None) -> int:
             print("ISOLATED_CLIENT_NOT_FOUND")
             return 2
         try:
-            _repair_client_frontend(root, args.port)
-        except (CompanionSettingsPatchError, OSError):
-            print("CLIENT_FRONTEND_REPAIR_FAILED")
-            return 2
-        try:
             _repair_native_navigation(root)
         except (NativeNavigationPatchError, OSError):
             print("CLIENT_NATIVE_NAVIGATION_REPAIR_FAILED")
+            return 2
+        try:
+            _repair_client_frontend(root, args.port)
+        except (CompanionSettingsPatchError, OSError):
+            print("CLIENT_FRONTEND_REPAIR_FAILED")
             return 2
         owned_ready = (
             server is not None
