@@ -113,7 +113,9 @@ def _repair_reversible_utf8_latin1_mojibake(value: str) -> str:
     repaired_c1 = sum(0x80 <= ord(character) <= 0x9F for character in repaired)
     original_cjk = sum("\u3400" <= character <= "\u9fff" for character in value)
     repaired_cjk = sum("\u3400" <= character <= "\u9fff" for character in repaired)
-    if original_c1 and repaired_c1 < original_c1 and repaired_cjk > original_cjk:
+    if repaired_cjk > original_cjk and (
+        not original_c1 or repaired_c1 < original_c1
+    ):
         return repaired
     return value
 

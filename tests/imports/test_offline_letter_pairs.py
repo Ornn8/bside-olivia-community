@@ -80,6 +80,30 @@ def test_offline_recovery_repairs_reversible_utf8_latin1_mojibake(tmp_path, caps
     assert stored[0]["reply_text"] == reply
 
 
+def test_offline_recovery_repairs_cjk_mojibake_without_c1_bytes(tmp_path, capsys):
+    source = tmp_path / "letter-pairs.json"
+    content = "你好"
+    reply = "好呀"
+    source.write_text(json.dumps([{
+        "content": _latin1_mojibake(content),
+        "reply": _latin1_mojibake(reply),
+    }], ensure_ascii=False), encoding="utf-8")
+    memory_root = tmp_path / "memory"
+
+    exit_code, _output, _report = _run_cli(
+        source, memory_root, capsys, apply=True
+    )
+
+    archive = LocalMemoryAdapter(memory_root / "memory.sqlite3")
+    try:
+        stored = archive.list_legacy()
+    finally:
+        archive.close()
+    assert exit_code == 0
+    assert stored[0]["content"] == content
+    assert stored[0]["reply_text"] == reply
+
+
 def test_offline_recovery_updates_same_source_record_imported_by_old_decoder(tmp_path):
     source = tmp_path / "letter-pairs.json"
     raw, content, reply = _write_mojibake_pair(source)
