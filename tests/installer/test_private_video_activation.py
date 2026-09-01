@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -226,7 +227,32 @@ def test_private_activation_keeps_split_runtime_ready_without_legacy_archive(
 def test_clean_private_activation_uses_real_split_installer_without_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    class InlineThread:
+        def __init__(
+            self,
+            *,
+            target: Callable[..., object],
+            args: tuple[object, ...] = (),
+            kwargs: dict[str, object] | None = None,
+            **_ignored: object,
+        ) -> None:
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self._alive = False
+
+        def start(self) -> None:
+            self._alive = True
+            try:
+                self._target(*self._args, **self._kwargs)
+            finally:
+                self._alive = False
+
+        def is_alive(self) -> bool:
+            return self._alive
+
     manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
+    monkeypatch.setattr("video_capability_install.threading.Thread", InlineThread)
     monkeypatch.setattr(
         VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True
     )
@@ -244,11 +270,11 @@ def test_clean_private_activation_uses_real_split_installer_without_archive(
             readiness_probe=lambda _environment: {
                 "ordinary_missing_dependencies": [],
                 "music_ready": True,
-                },
-                runtime_progress=kwargs["runtime_progress"],
-                runtime_package_runner=lambda *_args: None,
-                runtime_package_verifier=lambda *_args: True,
-            )
+            },
+            runtime_progress=kwargs["runtime_progress"],
+            runtime_package_runner=lambda *_args: None,
+            runtime_package_verifier=lambda *_args: True,
+        )
 
     result = activate_private_video(
         install_root=tmp_path / "install",

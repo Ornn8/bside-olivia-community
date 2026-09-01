@@ -101,6 +101,47 @@ _MEMORY_LANGUAGE_INSTRUCTIONS = (
     "必须用林离的第一人称‘我’来记录，不得称为助手、AI、assistant 或第三人称林离；"
     "涉及来信用户时保留其姓名或称呼；用简洁、自然、适合普通用户阅读的句子记录事实。"
 )
+_EXPLICIT_MEMORY_FACT_RE = re.compile(
+    r"(?:^|[。.!！?？\n])\s*(稳定偏好|边界|承诺|计划有变|计划)\s*[：:]\s*"
+    r"([^。.!！?？\n]{1,500})"
+)
+_CONTROL_INSTRUCTION_RE = re.compile(
+    r"忽略|无视|越狱|system|assistant|prompt|提示词|指令|命令|执行|"
+    r"覆盖.{0,12}(?:规则|约束|设定)",
+    re.IGNORECASE,
+)
+
+
+def _explicit_user_memory_fact(value: str) -> str | None:
+    match = _EXPLICIT_MEMORY_FACT_RE.search(value)
+    if match is not None:
+        fact = f"{match.group(1)}：{match.group(2).strip()}"
+        return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    sentences = tuple(
+        sentence.strip()
+        for sentence in re.split(r"[。.!！?？\n]+", value)
+        if sentence.strip()
+    )
+    if "请记住这个关系" in value:
+        relationship = tuple(
+            sentence
+            for sentence in sentences
+            if re.search(r"名字|叫作|称呼|认识|关系|笔友|朋友|家人|伴侣", sentence)
+            and "请记住" not in sentence
+        )
+        if relationship:
+            fact = "关系：" + "；".join(relationship[-2:])
+            return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    if re.search(r"这件事.{0,8}重要", value):
+        experience = tuple(
+            sentence
+            for sentence in sentences
+            if not re.search(r"这件事.{0,8}重要", sentence)
+        )
+        if experience:
+            fact = "重要经历：" + experience[-1]
+            return None if _CONTROL_INSTRUCTION_RE.search(fact) else fact
+    return None
 
 
 class Mem0AdapterError(RuntimeError):
@@ -1116,17 +1157,29 @@ class Mem0ConversationMemoryAdapter:
                             memory_id for memory_id, _memory in acknowledgements
                         )
             else:
-                values.append(
-                    self.backend.add(
-                        [
-                            {"role": "user", "content": str(user_message)},
-                            {"role": "assistant", "content": str(assistant_message)},
-                        ],
-                        user_id=user_id,
-                        agent_id=self.config.agent_id,
-                        metadata=metadata,
-                    )
+                user_value = self.backend.add(
+                    [{"role": "user", "content": str(user_message)}],
+                    user_id=user_id,
+                    agent_id=self.config.agent_id,
+                    metadata={**metadata, "actor": "local_user"},
+                    prompt=_HISTORY_USER_FACT_PROMPT,
                 )
+                values.append(user_value)
+                explicit_fact = _explicit_user_memory_fact(user_message)
+                if _add_acknowledgements(user_value) == () and explicit_fact is not None:
+                    values.append(
+                        self.backend.add(
+                            explicit_fact,
+                            user_id=user_id,
+                            agent_id=self.config.agent_id,
+                            metadata={
+                                **metadata,
+                                "actor": "local_user",
+                                "category": "explicit_user_memory",
+                            },
+                            infer=False,
+                        )
+                    )
         except Exception:
             pending_ids = self._delete_provider_memories(tuple(created_ids))
             return MemoryWriteResult(

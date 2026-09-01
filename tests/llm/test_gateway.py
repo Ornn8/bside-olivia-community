@@ -688,6 +688,135 @@ def test_deepseek_v4_flash_release_stream_hides_reasoning_content(
     assert "private stream chain" not in captured.err
 
 
+def test_stream_retries_protocol_failure_before_visible_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise():
+        calls = 0
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            nonlocal calls
+            calls += 1
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            if calls == 1:
+                await response.write(
+                    b'data: {"choices":[{"delta":{"reasoning_content":"private chain"}}]}\n\n'
+                )
+                await response.write(
+                    b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+                )
+            else:
+                await response.write(
+                    b'data: {"choices":[{"delta":{"content":"recovered reply"}}]}\n\n'
+                )
+                await response.write(
+                    b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                )
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(
+                    str(client.make_url("/v1")),
+                    model="deepseek-v4-flash",
+                    stream=True,
+                    max_retries=1,
+                )
+            )
+            deltas = [
+                delta
+                async for delta in adapter.stream_scoped(
+                    ROOT_MESSAGES,
+                    request_id="stream-protocol-retry",
+                    scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+                )
+            ]
+        return calls, deltas
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    calls, deltas = run(exercise())
+
+    assert calls == 2
+    assert "".join(delta.text for delta in deltas) == "recovered reply"
+    assert deltas[-1].finish_reason == "stop"
+
+
+def test_stream_visible_text_then_length_is_terminal_without_delivery_or_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise():
+        calls = 0
+        delivered = []
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            nonlocal calls
+            calls += 1
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(
+                b'data: {"choices":[{"delta":{"content":"partial reply"}}]}\n\n'
+            )
+            await response.write(
+                b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+            )
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(str(client.make_url("/v1")), stream=True, max_retries=2)
+            )
+            with pytest.raises(ProviderProtocolError) as caught:
+                async for delta in adapter.stream(ROOT_MESSAGES):
+                    delivered.append(delta)
+        return calls, delivered, caught.value
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    calls, delivered, error = run(exercise())
+
+    assert calls == 1
+    assert delivered == []
+    assert error.retryable is False
+
+
+def test_stream_non_retryable_protocol_error_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise():
+        calls = 0
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            nonlocal calls
+            calls += 1
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(b"data: not-json\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(
+                make_config(str(client.make_url("/v1")), stream=True, max_retries=2)
+            )
+            with pytest.raises(ProviderProtocolError) as caught:
+                _ = [delta async for delta in adapter.stream(ROOT_MESSAGES)]
+        return calls, caught.value
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    calls, error = run(exercise())
+
+    assert calls == 1
+    assert error.retryable is False
+
+
 @pytest.mark.parametrize("status", [429, 503])
 def test_retryable_http_status_retries_before_success(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
     async def exercise():

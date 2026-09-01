@@ -120,6 +120,64 @@ def _run_diagnostic_review(
     return reviewer.review(candidate, context or _intimacy_context()), reviewer
 
 
+class ConcurrencyObservedQualityGateway(Gateway):
+    stream_enabled = False
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.scopes: list[GatewayRequestScope] = []
+
+    async def complete_scoped(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+        scope: GatewayRequestScope,
+    ) -> GatewayResponse:
+        self.scopes.append(scope)
+        return await self.complete(messages, request_id=request_id)
+
+    async def complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> GatewayResponse:
+        request = json.loads(str(messages[-1]["content"]))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            text = _layer_payload(str(request["layer"]))
+        finally:
+            self.active -= 1
+        return GatewayResponse(
+            text=text,
+            request_id=request_id or "synthetic",
+            provider="synthetic",
+            model="synthetic",
+        )
+
+
+def test_max_reasoning_reviewer_bounds_parallel_layer_calls() -> None:
+    gateway = ConcurrencyObservedQualityGateway()
+    reviewer = GatewayPersonaReviewer(
+        gateway,
+        ROOT / "linli_character" / "persona_release_v2.json",
+        2.0,
+        reasoning_timeout_seconds=2.0,
+    )
+
+    result = reviewer.review("Synthetic candidate.", _intimacy_context())
+
+    assert result.verdict is ReviewVerdict.PASS
+    assert gateway.max_active == 1
+    assert gateway.scopes == [
+        GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+    ] * len(_REVIEW_LAYERS)
+
+
 def test_layer_contract_failure_retries_only_the_failed_layer_once() -> None:
     candidate = "Synthetic candidate."
     layer_reviews = {

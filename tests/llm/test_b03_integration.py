@@ -380,14 +380,14 @@ def test_mock_provider_reaches_b02_send_and_keeps_legacy_out_of_prompt(monkeypat
     import local_server
 
     local_server.store.letters.clear()
-    local_server.store.legacy_letters[:] = [
+    monkeypatch.setattr(local_server.store, "legacy_letters", [
         {
             "letter_id": "legacy-only",
             "content": "legacy private source text",
             "reply_text": "legacy reply",
             "is_read": 0,
         }
-    ]
+    ])
     adapter = OfflineDeterministicAdapter(
         GatewayConfig(provider="mock", model="offline", max_input_chars=100000)
     )
