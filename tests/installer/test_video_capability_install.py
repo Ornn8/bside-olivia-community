@@ -1641,6 +1641,119 @@ def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missi
     assert load_video_runtime_environment(installer.data_root) == {}
 
 
+def test_manifest_append_downloads_only_new_direct_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_payload = b"large existing model"
+    new_payload = b"small new scene"
+    old_spec = VideoFile(
+        "existing-model",
+        "models/existing.bin",
+        len(old_payload),
+        hashlib.sha256(old_payload).hexdigest(),
+        "fixture",
+        {"official": "https://example.invalid/existing.bin"},
+    )
+    new_spec = VideoFile(
+        "new-scene",
+        "scenes/new.mp4",
+        len(new_payload),
+        hashlib.sha256(new_payload).hexdigest(),
+        "fixture",
+        {"official": "https://example.invalid/new.mp4"},
+    )
+    data_root = (tmp_path / "data").resolve()
+    root = data_root / "capabilities" / "video" / "ordinary_video"
+    existing = root / old_spec.relative_path
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(old_payload)
+    (root / ".ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-bundle.v1",
+                "bundle": "ordinary_video",
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_profile = root.parent / "runtime-environment.json"
+    runtime_profile.write_text(
+        json.dumps(
+            {
+                "schema_version": "olivia.video-runtime-environment.v1",
+                "environment": {"OLIVIA_FFMPEG_EXE": str(existing.resolve())},
+            }
+        ),
+        encoding="utf-8",
+    )
+    requested: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self) -> None:
+            self.sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size: int) -> bytes:
+            if self.sent:
+                return b""
+            self.sent = True
+            return new_payload
+
+    def opener(request, **_kwargs):
+        requested.append(request.full_url)
+        assert request.full_url.endswith("/new.mp4")
+        return Response()
+
+    ordinary = VideoBundle(
+        "ordinary_video",
+        "ordinary",
+        "FIXED",
+        False,
+        (),
+        (old_spec, new_spec),
+        False,
+        {"OLIVIA_ORDINARY_ACTION_BASE": new_spec.relative_path},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=VideoManifest(
+            "2.0",
+            (
+                ordinary,
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+        opener=opener,
+    )
+    monkeypatch.setattr(
+        installer,
+        "_promote_directory",
+        lambda *_args, **_kwargs: pytest.fail("append-only update must not restage"),
+    )
+
+    assert installer.start(bundle_id="ordinary_video", source_mode="official") == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+    assert requested == ["https://example.invalid/new.mp4"]
+    assert existing.read_bytes() == old_payload
+    assert (root / new_spec.relative_path).read_bytes() == new_payload
+    assert json.loads((root / ".ready.json").read_text(encoding="utf-8"))[
+        "version"
+    ] == "2.0"
+    environment = load_video_runtime_environment(data_root)
+    assert environment["OLIVIA_FFMPEG_EXE"] == str(existing.resolve())
+    assert environment["OLIVIA_ORDINARY_ACTION_BASE"] == str(
+        (root / new_spec.relative_path).resolve()
+    )
+
+
 def test_install_fully_verifies_staged_payload_before_writing_ready_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
