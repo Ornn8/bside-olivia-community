@@ -78,6 +78,11 @@ class ProviderProtocolError(GatewayError):
         super().__init__("PROVIDER_PROTOCOL", retryable=False)
 
 
+class _RetryableProviderProtocolError(ProviderProtocolError):
+    def __init__(self) -> None:
+        GatewayError.__init__(self, "PROVIDER_PROTOCOL", retryable=True)
+
+
 class InvalidGatewayInput(GatewayError):
     def __init__(self, code: str = "INVALID_INPUT") -> None:
         super().__init__(code, retryable=False)
@@ -967,7 +972,6 @@ class OpenAICompatibleAdapter(Gateway):
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning)
         )
-        emitted = False
         for attempt in range(self.config.max_retries + 1):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -986,7 +990,10 @@ class OpenAICompatibleAdapter(Gateway):
                         if status >= 400:
                             raise ProviderRejected(status)
                         saw_delta = False
+                        saw_reasoning = False
                         index = 0
+                        buffered: list[str] = []
+                        buffered_chars = 0
                         terminal_finish_reason: str | None = None
                         async for raw_line in response.content:
                             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1000,17 +1007,26 @@ class OpenAICompatibleAdapter(Gateway):
                             except (UnicodeError, json.JSONDecodeError):
                                 raise ProviderProtocolError() from None
                             text = _extract_stream_text(data)
+                            saw_reasoning = saw_reasoning or _has_stream_reasoning(data)
                             finish_reason = _extract_finish_reason(data)
                             if text:
                                 saw_delta = True
-                                emitted = True
-                                yield GatewayDelta(text, request, index=index)
-                                index += 1
+                                buffered_chars += len(text)
+                                if buffered_chars > self.config.max_output_chars:
+                                    raise InvalidGatewayInput("OUTPUT_TOO_LONG")
+                                buffered.append(text)
                             if finish_reason:
                                 terminal_finish_reason = finish_reason
                                 break
+                        if terminal_finish_reason == "length":
+                            if not saw_delta and saw_reasoning:
+                                raise _RetryableProviderProtocolError()
+                            raise ProviderProtocolError()
                         if not saw_delta:
                             raise ProviderProtocolError()
+                        for text in buffered:
+                            yield GatewayDelta(text, request, index=index)
+                            index += 1
                         if terminal_finish_reason:
                             yield GatewayDelta(
                                 "",
@@ -1019,23 +1035,19 @@ class OpenAICompatibleAdapter(Gateway):
                                 finish_reason=terminal_finish_reason,
                             )
                         return
-            except ProviderProtocolError:
-                if emitted:
+            except ProviderProtocolError as exc:
+                if not exc.retryable:
                     raise
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise
             except asyncio.TimeoutError:
-                if emitted:
-                    raise ProviderTimeout() from None
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise ProviderTimeout() from None
             except aiohttp.ClientError:
-                if emitted:
-                    raise ProviderUnavailable() from None
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
@@ -1140,6 +1152,21 @@ def _extract_stream_text(data: Mapping[str, Any]) -> str:
     if data.get("type") in {"response.output_text.delta", "response.content_part.added"}:
         return _content_to_text(data.get("delta", data.get("text", "")))
     return ""
+
+
+def _has_stream_reasoning(data: Mapping[str, Any]) -> bool:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    choice = choices[0]
+    if not isinstance(choice, Mapping):
+        return False
+    delta = choice.get("delta")
+    return (
+        isinstance(delta, Mapping)
+        and isinstance(delta.get("reasoning_content"), str)
+        and bool(delta["reasoning_content"].strip())
+    )
 
 
 def _extract_finish_reason(data: Mapping[str, Any]) -> str | None:
