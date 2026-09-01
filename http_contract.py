@@ -72,6 +72,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "OFFICIAL_HISTORY_LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "OFFICIAL_HISTORY_MEMORY_WRITE_FAILED": {"http_status": 503, "retryable": True},
+    "OFFLINE_HISTORY_MEMORY_WRITE_FAILED": {"http_status": 503, "retryable": True},
     "OFFICIAL_ACCOUNT_CONFLICT": {"http_status": 409, "retryable": False},
     "PRIVATE_WORLD_HISTORY_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "WEBSOCKET_UNAVAILABLE": {"http_status": 501, "retryable": False},

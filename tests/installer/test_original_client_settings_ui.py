@@ -428,7 +428,7 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "POST");
   if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("local import confirmation header missing");
   if (preflightIndex < 0 || preflightIndex >= importIndex) throw new Error("local import preflight did not run before import");
-  if (!body.querySelectorAll("div").some((item) => item.textContent.includes("已导入 2 封、修复 0 封只读历史信件"))) {
+  if (!body.querySelectorAll("div").some((item) => item.textContent.includes("已导入 2 封、修复 0 封历史信件"))) {
     throw new Error("local import completion was not shown");
   }
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");

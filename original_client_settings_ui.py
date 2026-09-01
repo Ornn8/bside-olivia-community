@@ -354,7 +354,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeoutMs = path === VIDEO_REPLY_SETTINGS_PATH
+    const timeoutMs = (
+      path === VIDEO_REPLY_SETTINGS_PATH
+      || path === LOCAL_LETTER_IMPORT_PATH
+    )
       ? 300000
       : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -2070,7 +2073,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入本地历史信件", "text-text-body text-label-l"),
-      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，不联网、不导入视频，重复记录自动跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，并同步长期记忆与关系状态；不联网读取官方服务器、不导入视频，重复记录自动修复或跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     let importPending = false;
@@ -2094,11 +2097,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
       const changeCount = preflight.would_insert + preflight.would_update;
-      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？`)) {
+      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件，并同步长期记忆与关系状态？`)) {
         return;
       }
       setButtonsBusy([importButton], true);
-      importButton.textContent = "正在导入";
+      importButton.textContent = "正在导入并整理记忆";
       importPending = true;
       importState.textContent = "正在读取本地备份并写入信箱……";
       try {
@@ -2106,8 +2109,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
         const duplicates = Number.isInteger(payload.duplicates) ? payload.duplicates : 0;
-        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封只读历史信件，跳过 ${duplicates} 封重复记录。`;
-        importButton.textContent = "再次检查并导入";
+        const migration = payload.memory_migration || {};
+        const memoryWritten = Number.isInteger(migration.written) ? migration.written : 0;
+        const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
+        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封历史信件，长期记忆新增 ${memoryWritten} 条、复用 ${memoryDuplicates} 条；正在刷新信箱。`;
+        importButton.textContent = "已完成";
+        window.setTimeout(() => {
+          try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }
+        }, 800);
       } catch (error) {
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
           ? missingBackupText

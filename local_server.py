@@ -3903,7 +3903,18 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     receive_eligibility = receive_eligibility_from_letter(letter)
     if receive_eligibility.enabled:
-        decision = await emotion_triage.classify(content)
+        try:
+            decision = await emotion_triage.classify(content)
+        except (GatewayError, asyncio.TimeoutError, ValueError, RuntimeError):
+            _safe_log("triage_degraded", error_code="VIDEO_TRIAGE_UNAVAILABLE")
+            decision = TriageResult(
+                "unknown",
+                ReplyMode.TEXT_LETTER.value,
+                "video_triage_unavailable",
+                "unavailable",
+                False,
+                character_willing=True,
+            )
     else:
         decision = TriageResult(
             "unknown",
