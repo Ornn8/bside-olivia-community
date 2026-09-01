@@ -46,6 +46,27 @@ MAILBOX_LOGIN_REPLACEMENT_0627 = (
 )
 MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
 MAILBOX_WRITE_REPLACEMENT_0627 = '"hide-write":!1'
+WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627 = 'const W=K?"":Nt();if(t.value===Se.PRO)'
+WEB_PLAYER_PLAYLIST_EVENT_BROKEN_INTEGER_0627 = (
+    'const W=K?0:Date.now()%2147483647;if(t.value===Se.PRO)'
+)
+WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627 = 'ye=qt(t.value,B),Ee=Nt();f.value='
+WEB_PLAYER_SONGLIST_EVENT_BROKEN_INTEGER_0627 = (
+    'ye=qt(t.value,B),Ee=Date.now()%2147483647;f.value='
+)
+WEB_PLAYER_LOCAL_CHECK_ANCHOR_0627 = (
+    'Gn=e=>We({action:"checkLocalSongs",data:{songs:e}})'
+)
+WEB_PLAYER_LOCAL_CHECK_BROKEN_INTEGER_0627 = (
+    'Gn=e=>We({action:"checkLocalSongs",data:{songs:e.map((t,s)=>({...t,'
+    'eventId:Number.isSafeInteger(t.eventId)?t.eventId:s+1,'
+    'videoByTodView:Array.isArray(t.videoByTodView)?t.videoByTodView:[]}))}})'
+)
+WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627 = (
+    'Gn=e=>We({action:"checkLocalSongs",data:{songs:e.map((t,s)=>({...t,'
+    'eventId:String(t.eventId??s+1),'
+    'videoByTodView:Array.isArray(t.videoByTodView)?t.videoByTodView:[]}))}})'
+)
 
 
 @dataclass(frozen=True)
@@ -198,6 +219,49 @@ def _patch_mailbox_write_access(
     )
 
 
+def _patch_web_player_event_ids(javascript: str, profile: _PatchProfile) -> str:
+    """Keep the 0.0.9.627 web-player payload compatible with native strings."""
+
+    if profile.main_js != MAIN_JS_0627:
+        return javascript
+    rollback_replacements = (
+        (
+            WEB_PLAYER_PLAYLIST_EVENT_BROKEN_INTEGER_0627,
+            WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627,
+        ),
+        (
+            WEB_PLAYER_SONGLIST_EVENT_BROKEN_INTEGER_0627,
+            WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627,
+        ),
+    )
+    for incorrect, correct in rollback_replacements:
+        if javascript.count(incorrect) == 1 and javascript.count(correct) == 0:
+            javascript = javascript.replace(incorrect, correct, 1)
+    if (
+        javascript.count(WEB_PLAYER_LOCAL_CHECK_BROKEN_INTEGER_0627) == 1
+        and javascript.count(WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627) == 0
+    ):
+        javascript = javascript.replace(
+            WEB_PLAYER_LOCAL_CHECK_BROKEN_INTEGER_0627,
+            WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627,
+            1,
+        )
+    replacements = (
+        (
+            WEB_PLAYER_LOCAL_CHECK_ANCHOR_0627,
+            WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627,
+        ),
+    )
+    for before, after in replacements:
+        before_count = javascript.count(before)
+        after_count = javascript.count(after)
+        if before_count == 1 and after_count == 0:
+            javascript = javascript.replace(before, after, 1)
+        elif before_count != 0 or after_count != 1:
+            raise ValueError("web-player event-id anchor is missing or ambiguous")
+    return javascript
+
+
 def _ensure_backup(feapp: Path) -> Path:
     backup = Path(str(feapp) + ".orig")
     if backup.exists():
@@ -218,6 +282,37 @@ def _repack(source_root: Path, destination: Path) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def repair_web_player_event_ids(
+    feapp_path: str | os.PathLike[str],
+    *,
+    work_root: str | os.PathLike[str] | None = None,
+) -> str:
+    """Repair the official 0.0.9.627 UUID/integer bridge mismatch in place."""
+
+    feapp = Path(feapp_path).resolve()
+    _validate_zip(feapp)
+    sandbox = Path(work_root or feapp.parent).resolve()
+    if not sandbox.is_dir():
+        raise FileNotFoundError(sandbox)
+    with tempfile.TemporaryDirectory(prefix=".repair-web-player-", dir=sandbox) as temp_name:
+        temporary_root = Path(temp_name)
+        with zipfile.ZipFile(feapp) as archive:
+            _safe_extract(archive, temporary_root / "unpacked")
+        root = temporary_root / "unpacked"
+        profile = _select_profile(root)
+        main_path = root / Path(*profile.main_js.split("/"))
+        javascript = main_path.read_text(encoding="utf-8")
+        patched = _patch_web_player_event_ids(javascript, profile)
+        if patched == javascript:
+            return "ALREADY_PATCHED"
+        main_path.write_text(patched, encoding="utf-8")
+        output_archive = temporary_root / "patched.dat"
+        _repack(root, output_archive)
+        _validate_zip(output_archive)
+        os.replace(output_archive, feapp)
+    return "PATCHED"
 
 
 def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
@@ -265,8 +360,12 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 patched_javascript,
                 profile,
             )
+            final_javascript = _patch_mailbox_write_access(
+                mailbox_javascript,
+                profile,
+            )
             main_path.write_text(
-                _patch_mailbox_write_access(mailbox_javascript, profile),
+                _patch_web_player_event_ids(final_javascript, profile),
                 encoding="utf-8",
             )
             output_archive = temporary_root / "patched.dat"
@@ -285,6 +384,14 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 or (
                     profile.mailbox_write_replacement is not None
                     and profile.mailbox_write_replacement not in patched_js
+                )
+                or (
+                    profile.main_js == MAIN_JS_0627
+                    and (
+                        WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627 not in patched_js
+                        or WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627 not in patched_js
+                        or WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627 not in patched_js
+                    )
                 )
             ):
                 raise ValueError("patched archive verification failed")

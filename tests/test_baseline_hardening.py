@@ -1158,9 +1158,12 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     javascript = (
         'We=e=>new Promise((t,s)=>{try{,'
         '"query.response":io(a)}}),t(c)},onFailure:'
-        '!z.isNew||$?(await t.replace({name:ve.Home}),'
+        '!z.isNew||$?(await t.replace({name:ve.Home}),' 
         'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
         '"hide-write":o(p)||!o(N3)'
+        'const W=K?"":Nt();if(t.value===Se.PRO)'
+        'ye=qt(t.value,B),Ee=Nt();f.value='
+        'Gn=e=>We({action:"checkLocalSongs",data:{songs:e}})'
     )
     with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(main_member, javascript)
@@ -1181,6 +1184,9 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert "await t.replace({name:ve.Collection})" not in patched
     assert '"hide-write":!1' in patched
     assert '"hide-write":o(p)||!o(N3)' not in patched
+    assert 'const W=K?"":Nt()' in patched
+    assert 'Ee=Nt();f.value=' in patched
+    assert 'eventId:String(t.eventId??s+1)' in patched
 
 
 def test_patch_feapp_requires_explicit_local_ws_and_rolls_back_on_failure(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from patch_companion_settings import (
     CompanionSettingsPatchError,
     patch_companion_settings,
 )
+from patch_feapp import repair_web_player_event_ids
 from installer.native_window_layout import LayoutStatus, guard_native_window_layout
 from installer.patch_native_navigation import (
     COMPATIBILITY_MANIFEST_NAME,
@@ -472,6 +474,7 @@ def _repair_client_frontend(root: Path, port: int) -> str:
     feapp = client.parent / "resources" / "feapp.dat"
     if not feapp.is_file():
         raise CompanionSettingsPatchError("COMPANION_ARCHIVE_NOT_FOUND")
+    repair_web_player_event_ids(feapp, work_root=feapp.parent)
     result = patch_companion_settings(
         feapp,
         f"http://127.0.0.1:{port}/",
@@ -621,6 +624,18 @@ def _prepare_native_user_settings(roaming: Path, data_root: Path) -> str:
         status=result.status,
     )
     return result.status
+
+
+def _seed_native_user_settings(source_roaming: Path, target_roaming: Path) -> None:
+    """Carry the official native desktop preferences into the isolated profile."""
+
+    relative = Path("miHoYo") / "Olivia-steam" / "store" / "usersettings.dat"
+    source = source_roaming / relative
+    target = target_roaming / relative
+    if target.exists() or not source.is_file():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
 
 
 def _active_backend() -> Path:
@@ -841,7 +856,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         try:
             _repair_client_frontend(root, args.port)
-        except (CompanionSettingsPatchError, OSError):
+        except (CompanionSettingsPatchError, OSError, ValueError):
             print("CLIENT_FRONTEND_REPAIR_FAILED")
             return 2
         owned_ready = (
@@ -888,10 +903,11 @@ def main(argv: list[str] | None = None) -> int:
         local = profile / "Local"
         roaming.mkdir(parents=True, exist_ok=True)
         local.mkdir(parents=True, exist_ok=True)
-        native_settings_roaming = Path(
+        source_settings_roaming = Path(
             client_environment.get("APPDATA") or str(roaming)
         ).expanduser()
-        _prepare_native_user_settings(native_settings_roaming, data_root)
+        _seed_native_user_settings(source_settings_roaming, roaming)
+        _prepare_native_user_settings(roaming, data_root)
         _append_launcher_event(data_root, "client_start", attempt=1)
         exit_code = _run_client_with_native_layout(
             client,
@@ -914,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
                 attempt=2,
                 reason="known_fresh_profile_exit",
             )
-            _prepare_native_user_settings(native_settings_roaming, data_root)
+            _prepare_native_user_settings(roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)
             exit_code = _run_client_with_native_layout(
                 client,

@@ -31,7 +31,8 @@ If launchErrorNumber <> 0 Then
     exitCode = 2
 End If
 If exitCode <> 0 Then
-    errorCommand = Chr(34) & wscriptExe & Chr(34) & " //Nologo " & Chr(34) & WScript.ScriptFullName & Chr(34) & " /error:" & CStr(exitCode)
-    shell.Run errorCommand, 0, False
+    If exitCode <> -1 And CStr(exitCode) <> "4294967295" Then
+    MsgBox "Olivia 启动失败（错误码 " & CStr(exitCode) & "）。" & vbCrLf & "请重新打开；如果仍然失败，请在设置中打开“客户端日志”查看原因。", 16, "Olivia 本地版"
+End If
 End If
 WScript.Quit exitCode

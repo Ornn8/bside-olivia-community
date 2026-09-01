@@ -86,16 +86,19 @@ def test_hidden_start_uses_visible_error_branch_only_for_failures(
     )
     error_record = tmp_path / "visible-error.txt"
     escaped_record = str(error_record).replace('"', '""')
+    launch_failure_line = [
+        line for line in template.splitlines() if "CStr(exitCode)" in line and "MsgBox" in line
+    ][-1]
     instrumented = template.replace(
         "shell.Run noticeCommand, 0, False",
         "' startup notice intercepted",
     ).replace(
-        "shell.Run errorCommand, 0, False",
+        launch_failure_line,
         f'Set testLog = fso.CreateTextFile("{escaped_record}", True, True)\n'
         "testLog.Write CStr(exitCode)\ntestLog.Close",
     )
     assert "shell.Run noticeCommand, 0, False" not in instrumented
-    assert "shell.Run errorCommand, 0, False" not in instrumented
+    assert launch_failure_line not in instrumented
     script = tmp_path / "START.vbs"
     script.write_text(instrumented, encoding="utf-16")
     if start_exit is not None:
@@ -1889,6 +1892,9 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert 'WScript.Arguments.Named.Exists("error")' in start_hidden
     assert "Olivia 正在启动，请稍候" in start_hidden
     assert 'WScript.ScriptFullName & Chr(34) & " /notice"' in start_hidden
+    assert 'exitCode <> -1' in start_hidden
+    assert 'CStr(exitCode) <> "4294967295"' in start_hidden
+    assert 'shell.Run errorCommand' not in start_hidden
     assert "shell.Run noticeCommand, 0, False" in start_hidden
     assert "On Error Resume Next" in start_hidden
     assert "exitCode = shell.Run" in start_hidden
@@ -1897,10 +1903,8 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert "MsgBox launchErrorDescription" not in start_hidden
     assert ", 0, True)" in start_hidden
     assert "If exitCode <> 0 Then" in start_hidden
-    assert '" /error:" & CStr(exitCode)' in start_hidden
-    assert "shell.Run errorCommand, 0, False" in start_hidden
     assert "Olivia 启动失败（错误码" in start_hidden
-    assert start_hidden.count("MsgBox") == 1
+    assert start_hidden.count("MsgBox") == 2
     assert start_hidden.index("shell.Run noticeCommand, 0, False") < start_hidden.index(
         "exitCode = shell.Run"
     )

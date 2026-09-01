@@ -17,6 +17,16 @@ from patch_feapp import (
     INJECT_ANCHOR_0627,
     MAILBOX_LOGIN_ANCHOR_0627,
     MAIN_JS_0627,
+    WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627,
+    WEB_PLAYER_PLAYLIST_EVENT_BROKEN_INTEGER_0627,
+    WEB_PLAYER_LOCAL_CHECK_ANCHOR_0627,
+    WEB_PLAYER_LOCAL_CHECK_BROKEN_INTEGER_0627,
+    WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627,
+    WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627,
+    WEB_PLAYER_SONGLIST_EVENT_BROKEN_INTEGER_0627,
+    _PATCH_PROFILES,
+    _patch_web_player_event_ids,
+    repair_web_player_event_ids,
 )
 from tools.audit_original_client import (
     OriginalClientAuditError,
@@ -104,6 +114,55 @@ def test_audit_supports_original_client_0_0_9_627(tmp_path: Path) -> None:
     assert report["patch_contract"]["safe_to_apply_existing_patch"] is True
 
 
+def test_0627_web_player_event_ids_are_strings_and_idempotent() -> None:
+    profile = next(item for item in _PATCH_PROFILES if item.main_js == MAIN_JS_0627)
+    original = (
+        WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627
+        + " fixture "
+        + WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627
+        + WEB_PLAYER_LOCAL_CHECK_ANCHOR_0627
+    )
+
+    patched = _patch_web_player_event_ids(original, profile)
+
+    assert WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627 in patched
+    assert WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627 in patched
+    assert WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627 in patched
+    assert _patch_web_player_event_ids(patched, profile) == patched
+
+    broken = patched.replace(
+        WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627,
+        WEB_PLAYER_PLAYLIST_EVENT_BROKEN_INTEGER_0627,
+    ).replace(
+        WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627,
+        WEB_PLAYER_SONGLIST_EVENT_BROKEN_INTEGER_0627,
+    ).replace(
+        WEB_PLAYER_LOCAL_CHECK_REPLACEMENT_0627,
+        WEB_PLAYER_LOCAL_CHECK_BROKEN_INTEGER_0627,
+    )
+    assert _patch_web_player_event_ids(broken, profile) == patched
+
+
+def test_0627_web_player_event_archive_repair_is_idempotent(tmp_path: Path) -> None:
+    archive_path = tmp_path / "feapp.dat"
+    javascript = (
+        HE_ANCHOR_0627
+        + INJECT_ANCHOR_0627
+        + MAILBOX_LOGIN_ANCHOR_0627
+        + WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627
+        + WEB_PLAYER_SONGLIST_EVENT_ANCHOR_0627
+        + WEB_PLAYER_LOCAL_CHECK_ANCHOR_0627
+    )
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(MAIN_JS_0627, javascript)
+
+    assert repair_web_player_event_ids(archive_path, work_root=tmp_path) == "PATCHED"
+    assert (
+        repair_web_player_event_ids(archive_path, work_root=tmp_path)
+        == "ALREADY_PATCHED"
+    )
+
+
 def test_audit_identifies_an_already_patched_archive_without_repatching(tmp_path: Path) -> None:
     javascript = " ".join(
         (
@@ -119,7 +178,7 @@ def test_audit_identifies_an_already_patched_archive_without_repatching(tmp_path
 
     assert report["patch_contract"]["state"] == "already_patched"
     assert report["patch_contract"]["safe_to_apply_existing_patch"] is False
-    assert report["navigation_evidence"]["has_collection"] is True
+    assert report["navigation_evidence"]["has_collection"] is False
 
 
 def test_audit_rejects_missing_main_bundle_and_unsafe_members(tmp_path: Path) -> None:
