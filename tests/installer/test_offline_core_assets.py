@@ -120,6 +120,28 @@ def test_private_video_activation_must_finish_before_install_transaction_commit(
     )
 
 
+def test_installer_holds_product_lock_through_shortcut_writeback() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+
+    shortcut_writeback = (
+        "& (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination"
+    )
+    assert script.index(shortcut_writeback) < script.rindex("Exit-ManagedInstallLock")
+
+
+def test_installer_lock_rejects_reparse_paths_without_delete_on_close() -> None:
+    script = (ROOT / "installer" / "Install.ps1").read_text(encoding="utf-8-sig")
+    enter = script[script.index("function Enter-ManagedInstallLock") :]
+    enter = enter[: enter.index("function Exit-ManagedInstallLock")]
+
+    assert enter.index(
+        "Assert-NoReparsePointsInPath -LiteralPath $ProductRoot"
+    ) < enter.index("[void][IO.Directory]::CreateDirectory($ProductRoot)")
+    assert "Assert-ManagedInstallLockPath -LiteralPath $lockPath" in enter
+    assert "[IO.FileOptions]::DeleteOnClose" not in enter
+    assert "[IO.File]::Delete($lockPath)" not in script
+
+
 def test_offline_core_asset_example_matches_its_public_schema() -> None:
     schema = json.loads(
         (ROOT / "contracts" / "offline_core_assets.schema.json").read_text(
@@ -343,6 +365,29 @@ def test_second_installer_fails_before_touching_the_active_transaction(
         holder.wait(timeout=5)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_installer_rejects_a_reparse_point_at_the_lock_file(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    product.mkdir()
+    outside = tmp_path / "outside-lock-target"
+    outside.write_text("do-not-touch", encoding="utf-8")
+    lock_path = product / ".install.lock"
+    try:
+        lock_path.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symbolic-link creation is unavailable")
+    try:
+        result = _run_install_preflight(product, tmp_path)
+
+        assert result.returncode == 2
+        assert "INSTALL_LOCK_UNAVAILABLE" in result.stdout + result.stderr
+        assert outside.read_text(encoding="utf-8") == "do-not-touch"
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
 def _run_runtime_publish_fixture(
     tmp_path: Path,
     *,
@@ -384,6 +429,8 @@ def _run_runtime_publish_fixture(
                             "(destination / 'data').mkdir(parents=True, exist_ok=True)\n"
         if bootstrap_preserved_paths:
             bootstrap_actions += (
+                "(destination / 'app').mkdir(parents=True, exist_ok=True)\n"
+                "(destination / 'app/partial-client.exe').write_text('partial')\n"
                 "(destination / 'data/letters.json').write_text('keep')\n"
                 "(destination / 'logs').mkdir(parents=True, exist_ok=True)\n"
                 "(destination / 'logs/launcher.jsonl').write_text('keep')\n"
@@ -1062,6 +1109,7 @@ def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(
     assert (fresh_product / "install/data/letters.json").read_text() == "keep"
     assert (fresh_product / "install/logs/launcher.jsonl").read_text() == "keep"
     assert (fresh_product / "install/third-party/user.bin").read_text() == "keep"
+    assert not (fresh_product / "install/app").exists()
     assert not (fresh_product / "install/local_backend").exists()
     assert not (fresh_product / "runtime/python-3.12.10-embed-amd64").exists()
 
@@ -1074,7 +1122,8 @@ def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Pa
     backend = product / "install/local_backend"
     assert retried.returncode == 23
     assert (backend / "old-backend.txt").is_file() and not (backend / "new-backend.txt").exists()
-    assert not list(product.glob(".install.*"))
+    assert (product / ".install.lock").is_file()
+    assert not [path for path in product.glob(".install.*") if path.name != ".install.lock"]
 
 
 def test_patch_success_discards_runtime_backup_after_install(
