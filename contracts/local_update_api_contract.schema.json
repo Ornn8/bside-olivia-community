@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": {"const": "olivia.local-update-api-contract.v1"},
     "status_schema_version": {"const": "olivia.local-update.v1"},
-    "execution": {"const": "serialized-apply-rollback-off-event-loop"},
+    "execution": {"const": "manual-apply-disabled-rollback-off-event-loop"},
     "authorization": {
       "const": {
         "origins": "explicit-trusted-https-or-loopback-only",
@@ -45,8 +45,8 @@
               "additionalProperties": false,
               "required": ["select", "apply", "rollback"],
               "properties": {
-                "select": {"$ref": "#/$defs/action"},
-                "apply": {"$ref": "#/$defs/action"},
+                "select": {"$ref": "#/$defs/unavailableAction"},
+                "apply": {"$ref": "#/$defs/unavailableAction"},
                 "rollback": {"$ref": "#/$defs/action"}
               }
             }
@@ -63,6 +63,16 @@
     "component_error_http_status": {"const": 409}
   },
   "$defs": {
+    "unavailableAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "error_code", "http_status"],
+      "properties": {
+        "available": {"const": false},
+        "error_code": {"const": "UPDATE_ACTION_UNAVAILABLE"},
+        "http_status": {"const": 503}
+      }
+    },
     "action": {
       "type": "object",
       "additionalProperties": false,

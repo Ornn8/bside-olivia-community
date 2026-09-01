@@ -1217,7 +1217,7 @@ def test_component_update_rejects_untrusted_manifest_before_activation(
     assert not (installation / ".olivia-update-state.json").exists()
 
 
-def test_installer_cli_applies_a_verified_local_component_package(
+def test_installer_cli_rejects_manual_component_package_apply(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1241,12 +1241,12 @@ def test_installer_cli_applies_a_verified_local_component_package(
         ]
     )
 
-    assert exit_code == 0
+    assert exit_code == 2
     assert json.loads(capsys.readouterr().out) == {
-        "status": "APPLIED",
-        "component": "local_backend",
-        "version": "1.1.0",
+        "status": "ERROR",
+        "code": "UPDATE_ACTION_UNAVAILABLE",
     }
+    assert not (installation / ".olivia-update-state.json").exists()
 
 
 def test_uninstall_removes_update_state_and_abandoned_update_staging(
