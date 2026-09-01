@@ -131,6 +131,8 @@ webplayer.dat.orig
 
 ## 本地组件补丁与回滚
 
+完整安装器刷新会退役旧的无签名组件更新状态：成功刷新后删除 `.olivia-update-state.json` 与整个 `versions/`，稳定启动器重新使用本次完整安装写入的 `local_backend`。这不是保留旧补丁或旧回滚点的升级方式；如需保留旧版本，应在运行完整安装器前另行备份。刷新失败会恢复原有更新状态和版本目录，同时保留 `data/`、`logs/` 与 `third-party/` 用户数据。
+
 安装后的 `START.cmd`、`CONFIGURE.cmd` 和 `UNINSTALL.cmd` 只调用安装根目录中的稳定启动器 `launcher/version_launcher.py`。稳定启动器读取一次 `.olivia-update-state.json` 原子指针，从 `versions/local_backend/<version>-<manifest-sha256>` 选择完整后端；没有更新状态时继续使用初装的 `local_backend`。因此更新期间不会把正在使用的后端目录临时移走，也不会要求用户重新运行完整安装器。
 
 v0.1 不接受用户手动导入或应用 `.oliviapatch`。客户端选择与应用动作、以及 `apply-update` 命令都稳定返回 `UPDATE_ACTION_UNAVAILABLE`；升级只能使用维护者发布的完整安装包。内部补丁格式与构建器暂时保留用于后续签名机制开发，但不构成 v0.1 的用户发布面。公开契约及示例见：

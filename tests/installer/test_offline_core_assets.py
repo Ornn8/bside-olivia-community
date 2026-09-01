@@ -392,6 +392,8 @@ def _run_runtime_publish_fixture(
     tmp_path: Path,
     *,
     bootstrap_exit_code: int, bootstrap_replaces_managed_app: bool = False,
+    bootstrap_retires_update_state: bool = False,
+    seed_update_state: bool = False,
     voice_reference: bytes | None = None, voice_reference_sha256: str | None = None,
     voice_reference_wave: dict[str, object] | None = None, voice_reference_missing: bool = False,
     video_runtime: bytes | None = None, video_runtime_sha256: str | None = None,
@@ -424,7 +426,7 @@ def _run_runtime_publish_fixture(
     ):
         shutil.copy2(ROOT / "installer" / name, payload_installer / name)
     bootstrap_actions = ""
-    if bootstrap_exit_code == 0 or bootstrap_replaces_managed_app:
+    if bootstrap_exit_code == 0 or bootstrap_replaces_managed_app or bootstrap_retires_update_state:
         bootstrap_actions = "destination = pathlib.Path(sys.argv[sys.argv.index('--destination') + 1])\n" \
                             "(destination / 'data').mkdir(parents=True, exist_ok=True)\n"
         if bootstrap_preserved_paths:
@@ -441,6 +443,11 @@ def _run_runtime_publish_fixture(
             bootstrap_actions += "shutil.rmtree(destination / 'local_backend', ignore_errors=True)\n" \
                 "(destination / 'local_backend').mkdir()\n" \
                 "(destination / 'local_backend/new-backend.txt').write_text('new')\n"
+        if bootstrap_retires_update_state:
+            bootstrap_actions += (
+                "(destination / '.olivia-update-state.json').unlink(missing_ok=True)\n"
+                "shutil.rmtree(destination / 'versions', ignore_errors=True)\n"
+            )
     (payload_installer / "bootstrap_install.py").write_text(
         "import json, pathlib, shutil, sys\n"
         + bootstrap_actions
@@ -604,6 +611,13 @@ def _run_runtime_publish_fixture(
         old_video_runtime = _managed_video_runtime(product)
         old_video_runtime.parent.mkdir(parents=True)
         old_video_runtime.write_bytes(b"old-video-runtime")
+    if seed_update_state:
+        versioned = product / "install/versions/local_backend/unsigned"
+        versioned.mkdir(parents=True)
+        (versioned / "old-version.txt").write_text("preserve", encoding="utf-8")
+        (product / "install/.olivia-update-state.json").write_text(
+            '{"synthetic":"old-state"}', encoding="utf-8"
+        )
     if block_voice_sidecar:
         installed = _managed_reference(product)
         installed.parent.mkdir(parents=True)
@@ -1112,6 +1126,52 @@ def test_patch_failure_restores_existing_runtime_and_cleans_transaction_paths(
     assert not (fresh_product / "install/app").exists()
     assert not (fresh_product / "install/local_backend").exists()
     assert not (fresh_product / "runtime/python-3.12.10-embed-amd64").exists()
+
+
+def test_asset_failure_restores_preinstall_component_state_and_versions(
+    tmp_path: Path,
+) -> None:
+    result, product = _run_runtime_publish_fixture(
+        tmp_path,
+        bootstrap_exit_code=0,
+        bootstrap_replaces_managed_app=True,
+        bootstrap_retires_update_state=True,
+        seed_update_state=True,
+        voice_reference=_voice_reference_bytes(),
+        voice_reference_sha256="0" * 64,
+    )
+
+    assert result.returncode != 0
+    assert (product / "install/.olivia-update-state.json").read_text(
+        encoding="utf-8"
+    ) == '{"synthetic":"old-state"}'
+    assert (product / "install/versions/local_backend/unsigned/old-version.txt").read_text(
+        encoding="utf-8"
+    ) == "preserve"
+
+
+def test_successful_full_refresh_retires_component_state_and_preserves_user_data(
+    tmp_path: Path,
+) -> None:
+    product = tmp_path / "product"
+    letters = product / "install/data/letters.json"
+    letters.parent.mkdir(parents=True)
+    letters.write_text("private-user-data", encoding="utf-8")
+
+    result, _ = _run_runtime_publish_fixture(
+        tmp_path,
+        product_root=product,
+        bootstrap_exit_code=0,
+        bootstrap_retires_update_state=True,
+        seed_update_state=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not (product / "install/.olivia-update-state.json").exists()
+    assert not (product / "install/versions").exists()
+    assert letters.read_text(encoding="utf-8") == "private-user-data"
+    assert not list(product.glob(".install.transaction*"))
+    assert not list(product.glob(".install.rollback.*"))
 
 
 def test_interrupted_bootstrap_recovers_original_install_on_reentry(tmp_path: Path) -> None:

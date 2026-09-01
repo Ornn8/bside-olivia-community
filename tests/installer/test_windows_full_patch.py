@@ -27,6 +27,7 @@ from installer.start_local import (
     _client_environment,
     _client_executable,
 )
+from installer.version_launcher import resolve_active_backend
 
 
 CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
@@ -1975,6 +1976,41 @@ def test_install_is_idempotent_and_unknown_target_is_not_overwritten(
     ).read_text(encoding="utf-8") == "keep"
 
 
+def test_repeat_install_retires_unsigned_component_state_to_stable_backend(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    digest = "a" * 64
+    active = target / "versions" / "local_backend" / f"1.1.0-{digest}"
+    active.mkdir(parents=True)
+    (active / "unsigned.py").write_text("old unsigned payload", encoding="utf-8")
+    state = {
+        "schema_version": "olivia.update-state.v1",
+        "active_components": {
+            "local_backend": {
+                "version": "1.1.0",
+                "manifest_sha256": digest,
+                "payload_path": active.relative_to(target).as_posix(),
+            }
+        },
+        "previous_components": {},
+    }
+    (target / ".olivia-update-state.json").write_text(
+        json.dumps(state), encoding="utf-8"
+    )
+    assert resolve_active_backend(target) == active
+
+    repeated = install_full_patch(official, target, payload, manifest)
+
+    assert repeated["status"] == "ALREADY_INSTALLED"
+    assert not (target / ".olivia-update-state.json").exists()
+    assert not (target / "versions").exists()
+    assert resolve_active_backend(target) == target / "local_backend"
+
+
 def test_install_scripts_dispatch_through_the_stable_version_launcher(
     fixture_inputs,
     tmp_path: Path,
@@ -2032,6 +2068,11 @@ def test_repeat_install_rolls_back_the_active_payload_when_publish_fails(
     install_full_patch(official, target, payload, manifest)
     launcher = target / "local_backend" / "installer" / "start_local.py"
     launcher.write_text("old launcher", encoding="utf-8")
+    update_state = target / ".olivia-update-state.json"
+    update_state.write_text('{"synthetic":"old-state"}', encoding="utf-8")
+    old_version = target / "versions/local_backend/old/old-version.txt"
+    old_version.parent.mkdir(parents=True)
+    old_version.write_text("old version", encoding="utf-8")
     original_replace = full_patch.os.replace
 
     def fail_staged_start(source: str | Path, destination: str | Path) -> None:
@@ -2045,6 +2086,49 @@ def test_repeat_install_rolls_back_the_active_payload_when_publish_fails(
         install_full_patch(official, target, payload, manifest)
 
     assert launcher.read_text(encoding="utf-8") == "old launcher"
+    assert update_state.read_text(encoding="utf-8") == '{"synthetic":"old-state"}'
+    assert old_version.read_text(encoding="utf-8") == "old version"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics are required")
+def test_repeat_install_rejects_a_broken_versions_junction_without_mutation(
+    fixture_inputs,
+    tmp_path: Path,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    outside = tmp_path / "retired-versions-target"
+    outside.mkdir()
+    versions = target / "versions"
+    linked = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(versions), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if linked.returncode != 0:
+        pytest.skip("junction creation is unavailable")
+    shutil.rmtree(outside)
+    marker = target / ".olivia-full-patch.json"
+    marker_before = marker.read_bytes()
+
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_REFRESH_FAILED"):
+        install_full_patch(official, target, payload, manifest)
+
+    assert os.path.lexists(versions)
+    assert marker.read_bytes() == marker_before
+
+
+def test_windows_patch_docs_define_full_refresh_update_state_retirement() -> None:
+    documentation = (
+        Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"
+    ).read_text(encoding="utf-8")
+
+    assert "完整安装器刷新会退役" in documentation
+    assert "`.olivia-update-state.json`" in documentation
+    assert "`versions/`" in documentation
+    assert "刷新失败会恢复" in documentation
 
 
 def test_incomplete_old_marker_is_not_treated_as_current_install(
