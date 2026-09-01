@@ -210,3 +210,75 @@ def test_generic_legacy_http_import_cannot_forge_offline_mailbox_publication(mon
     assert OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY not in metadata
     assert OFFLINE_LETTER_PAIR_PROVENANCE_KEY not in metadata
     assert metadata["reply_text"] == "synthetic reply"
+
+
+def test_local_history_route_discovers_installed_official_backup_and_imports(
+    tmp_path, monkeypatch
+):
+    import local_server
+
+    install_root = tmp_path / "installed"
+    data_root = install_root / "data"
+    official_root = tmp_path / "official-client"
+    data_root.mkdir(parents=True)
+    official_root.mkdir()
+    source = official_root / "letter_pairs.json"
+    _write_pairs(source)
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"official_source": str(official_root)}),
+        encoding="utf-8",
+    )
+    archive = LocalMemoryAdapter(tmp_path / "memory.sqlite3")
+    monkeypatch.setattr(local_server, "_local_data_root", lambda: data_root)
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: archive)
+    try:
+        ready = asyncio.run(local_server.route(
+            "GET", "/toy/letter/legacy/local-import", {}, {}
+        ))
+        unconfirmed = asyncio.run(local_server.route(
+            "POST", "/toy/letter/legacy/local-import", {}, {}
+        ))
+        applied = asyncio.run(local_server.route(
+            "POST", "/toy/letter/legacy/local-import", {}, {},
+            companion_confirmed=True,
+        ))
+        repeated = asyncio.run(local_server.route(
+            "POST", "/toy/letter/legacy/local-import", {}, {},
+            companion_confirmed=True,
+        ))
+    finally:
+        archive.close()
+
+    assert ready["data"]["source"] == "local_backup"
+    assert (ready["data"]["status"], ready["data"]["seen"]) == ("READY", 2)
+    assert (ready["data"]["would_insert"], ready["data"]["duplicates"]) == (2, 0)
+    assert unconfirmed["code"] == 403
+    assert (applied["data"]["status"], applied["data"]["inserted"]) == ("APPLIED", 2)
+    assert (repeated["data"]["inserted"], repeated["data"]["duplicates"]) == (0, 2)
+
+
+def test_local_history_route_prompts_when_backup_is_absent(tmp_path, monkeypatch):
+    import local_server
+
+    install_root = tmp_path / "installed"
+    data_root = install_root / "data"
+    official_root = tmp_path / "official-client"
+    data_root.mkdir(parents=True)
+    official_root.mkdir()
+    (install_root / ".olivia-full-patch.json").write_text(
+        json.dumps({"official_source": str(official_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(local_server, "_local_data_root", lambda: data_root)
+
+    result = asyncio.run(local_server.route(
+        "GET", "/toy/letter/legacy/local-import", {}, {}
+    ))
+
+    assert result["code"] == 404
+    assert result["data"] == {
+        "status": "UNAVAILABLE",
+        "error_code": "OFFLINE_LETTER_BACKUP_REQUIRED",
+        "retryable": True,
+        "source": "local_backup",
+    }

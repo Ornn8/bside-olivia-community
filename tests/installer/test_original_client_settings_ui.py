@@ -152,7 +152,7 @@ const run = async () => { const [id, fn] = timers.entries().next().value; timers
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v14"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v15"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -229,38 +229,25 @@ def test_original_settings_does_not_render_manual_patch_import_controls() -> Non
     assert "关闭并重新打开 Olivia 后生效" in source
 
 
-def test_original_settings_can_import_official_text_reply_history() -> None:
+def test_original_settings_imports_local_history_without_official_server() -> None:
     assert BOOTSTRAP_JAVASCRIPT.count(
-        'const OFFICIAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/official-import";'
+        'const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";'
     ) == 1
-    assert "导入官方文字信件" in BOOTSTRAP_JAVASCRIPT
-    assert "原信和林离的文字回信会按原时间进入信箱" in BOOTSTRAP_JAVASCRIPT
-    assert "双方内容会形成长期语义记忆" in BOOTSTRAP_JAVASCRIPT
-    assert "历史往来会初始化关系状态" in BOOTSTRAP_JAVASCRIPT
-    assert "requestMutation(OFFICIAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
-    assert "path === OFFICIAL_LETTER_IMPORT_PATH\n      ? null" in BOOTSTRAP_JAVASCRIPT
-    assert "timeoutMs === null ? null" in BOOTSTRAP_JAVASCRIPT
-    assert ": 8000;" in BOOTSTRAP_JAVASCRIPT
+    assert "导入本地历史信件" in BOOTSTRAP_JAVASCRIPT
+    assert "官方服务器已关闭" in BOOTSTRAP_JAVASCRIPT
+    assert "letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
+    assert "作为只读历史进入信箱" in BOOTSTRAP_JAVASCRIPT
+    assert "不联网" in BOOTSTRAP_JAVASCRIPT
+    assert "requestMutation(LOCAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
+    assert "requestJson(LOCAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
-    assert "payload.memory_migration" in BOOTSTRAP_JAVASCRIPT
-    assert "记忆已按时间顺序处理" in BOOTSTRAP_JAVASCRIPT
-    assert "requestJson(OFFICIAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
-    assert (
-        'requestJson(OFFICIAL_LETTER_IMPORT_PATH, { preflight: "1" })'
-        in BOOTSTRAP_JAVASCRIPT
-    )
-    assert "请先在“大模型”中完成连接测试并保存，再导入。" in BOOTSTRAP_JAVASCRIPT
-    assert "正在获取信件列表" in BOOTSTRAP_JAVASCRIPT
-    assert "正在读取信件内容" in BOOTSTRAP_JAVASCRIPT
-    assert "正在整理长期记忆" in BOOTSTRAP_JAVASCRIPT
-    assert "正在写入信箱" in BOOTSTRAP_JAVASCRIPT
-    assert "20 秒没有新进度，可能卡住了" in BOOTSTRAP_JAVASCRIPT
-    assert 'importButton.textContent = "重新检查进度"' in BOOTSTRAP_JAVASCRIPT
+    assert "payload.would_insert" in BOOTSTRAP_JAVASCRIPT
+    assert "未在原版游戏目录找到 letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
     assert 'importButton.textContent = "重试导入"' in BOOTSTRAP_JAVASCRIPT
-    assert "已导入历史信件（只读）" not in BOOTSTRAP_JAVASCRIPT
+    assert "mountOfficialLetterImport(section)" not in BOOTSTRAP_JAVASCRIPT
 
 
-def test_official_import_uses_visible_confirmation_without_settings_history_list() -> None:
+def test_local_import_prompts_for_missing_backup_and_uses_visible_confirmation() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is not installed")
@@ -341,7 +328,7 @@ const document = {
   querySelector: (selector) => body.querySelector(selector),
 };
 let nativeConfirmCalls = 0;
-let memoryAvailable = false;
+let backupAvailable = false;
 const calls = [];
 const fetch = async (endpoint, options) => {
   calls.push({ path: endpoint.pathname, method: options.method, headers: options.headers });
@@ -355,7 +342,7 @@ const fetch = async (endpoint, options) => {
     return { ok: true, json: async () => ({
       status: "READY",
       capabilities: {
-        memory: { state: memoryAvailable ? "available" : "missing" },
+        memory: { state: "available" },
         private_world: { state: "available" },
         candidates: { state: "available" },
       },
@@ -367,29 +354,23 @@ const fetch = async (endpoint, options) => {
       total: 1, scope: "legacy", read_only: true,
     } }) };
   }
-  if (endpoint.pathname === "/toy/letter/legacy/official-import") {
+  if (endpoint.pathname === "/toy/letter/legacy/local-import") {
     if (options.method === "GET") {
-      if (endpoint.searchParams.get("preflight") === "1") {
-        return memoryAvailable
-          ? { ok: true, json: async () => ({ code: 0, data: {
-              status: "READY", llm_required: true,
-            } }) }
-          : { ok: false, json: async () => ({ code: 503, data: {
-              status: "UNAVAILABLE",
-              error_code: "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
-              retryable: true,
-            } }) };
-      }
-      return { ok: true, json: async () => ({ code: 0, data: {
-        status: "RUNNING", stage: "reading", total: 2, processed: 1,
-        imported: 0, skipped: 0, last_updated_at: "2026-08-29T00:00:00+00:00",
-        retryable: false,
-      } }) };
+      return backupAvailable
+        ? { ok: true, json: async () => ({ code: 0, data: {
+            status: "READY", seen: 2, would_insert: 2, duplicates: 0,
+            source: "local_backup",
+          } }) }
+        : { ok: false, json: async () => ({ code: 404, data: {
+            status: "UNAVAILABLE",
+            error_code: "OFFLINE_LETTER_BACKUP_REQUIRED",
+            retryable: true,
+            source: "local_backup",
+          } }) };
     }
-    return { ok: false, json: async () => ({ code: 503, data: {
-      status: "UNAVAILABLE",
-      error_code: "OFFICIAL_HISTORY_LLM_UNAVAILABLE",
-      retryable: true,
+    return { ok: true, json: async () => ({ code: 0, data: {
+      status: "APPLIED", inserted: 2, duplicates: 0,
+      source: "local_backup",
     } }) };
   }
   throw new Error(`unexpected request: ${endpoint.pathname}`);
@@ -412,43 +393,45 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
   await flush();
   const buttons = body.querySelectorAll("button");
   const importButton = buttons[buttons.length - 1];
-  if (!importButton) throw new Error("official import button missing");
+  if (!importButton) throw new Error("local import button missing");
   if (body.querySelectorAll("span").some((item) => item.textContent === "legacy-summary")) {
     throw new Error("history must be rendered in the mailbox, not settings");
   }
   await importButton.click();
   await flush();
   if (body.querySelector("[data-olivia-companion-official-import-confirm]")) {
-    throw new Error("confirmation opened while memory was unavailable");
+    throw new Error("confirmation opened while backup was unavailable");
   }
-  if (calls.some((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST")) {
-    throw new Error("official import wrote while LLM was unavailable");
+  if (calls.some((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "POST")) {
+    throw new Error("local import wrote while backup was unavailable");
   }
-  memoryAvailable = true;
+  if (!body.querySelectorAll("div").some((item) => item.textContent.includes("官方服务器已关闭，请先准备本地备份"))) {
+    throw new Error("missing backup prompt was not shown");
+  }
+  backupAvailable = true;
   const importPending = importButton.click();
   await flush();
   const confirmDialog = body.querySelector("[data-olivia-companion-official-import-confirm]");
-  if (!confirmDialog) throw new Error("visible official import confirmation missing");
+  if (!confirmDialog) throw new Error("visible local import confirmation missing");
   const confirmButton = confirmDialog.querySelectorAll("button")[1];
   if (!confirmButton || confirmButton.style.pointerEvents !== "auto") throw new Error("confirmation button is not actionable");
   await confirmButton.click();
   await importPending;
   await flush();
-  const importCall = calls.find((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
-  const preflightIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "GET");
-  const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "POST");
-  if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("official import confirmation header missing");
-  if (!calls.some((item) => item.path === "/toy/letter/legacy/official-import" && item.method === "GET")) throw new Error("official import progress was not polled");
-  if (preflightIndex < 0 || preflightIndex >= importIndex) throw new Error("import preflight did not run before official import");
-  if (!body.querySelectorAll("div").some((item) => item.textContent === "请先在“大模型”中完成连接测试并保存，再导入。")) {
-    throw new Error("LLM mutation failure did not show the actionable model setup message");
+  const importCall = calls.find((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "POST");
+  const preflightIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "GET");
+  const importIndex = calls.findIndex((item) => item.path === "/toy/letter/legacy/local-import" && item.method === "POST");
+  if (!importCall || importCall.headers["X-Olivia-Companion-Action"] !== "confirmed") throw new Error("local import confirmation header missing");
+  if (preflightIndex < 0 || preflightIndex >= importIndex) throw new Error("local import preflight did not run before import");
+  if (!body.querySelectorAll("div").some((item) => item.textContent.includes("已导入 2 封只读历史信件"))) {
+    throw new Error("local import completion was not shown");
   }
   if (nativeConfirmCalls !== 0) throw new Error("native confirmation was used");
   process.stdout.write(JSON.stringify({
     legacyListRequests: calls.filter((item) => item.path === "/toy/letter/list").length,
-    llmBlocked: true,
+    missingBackupPrompt: true,
     importPreflight: true,
-    llmMutationMapped: true,
+    localImportCompleted: true,
   }));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 '''
@@ -463,9 +446,9 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
     assert result.returncode == 0, output
     assert json.loads(result.stdout.decode("utf-8")) == {
         "legacyListRequests": 0,
-        "llmBlocked": True,
+        "missingBackupPrompt": True,
         "importPreflight": True,
-        "llmMutationMapped": True,
+        "localImportCompleted": True,
     }
 
 

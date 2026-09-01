@@ -19,6 +19,14 @@
       "error_code": null,
       "evidence": "local-extension"
     },
+    "/toy/letter/legacy/local-import": {
+      "methods": ["GET", "POST"],
+      "capability": "letters.legacy_import",
+      "state": "available",
+      "read_only": false,
+      "error_code": null,
+      "evidence": "local-extension"
+    },
     "/toy/letter/legacy/official-import": {
       "methods": ["GET", "POST"],
       "capability": "letters.official_import",

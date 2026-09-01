@@ -12,7 +12,7 @@ import sqlite3
 from typing import Mapping, Sequence
 
 from runtime.memory.local_memory import LocalMemoryAdapter
-from runtime.memory.memory_port import LegacyLetter
+from runtime.memory.memory_port import LegacyLetter, MemoryPort
 
 
 _MAX_SOURCE_BYTES = 16 * 1024 * 1024
@@ -160,12 +160,11 @@ def _read_existing_hashes(database_path: Path) -> set[str]:
         connection.close()
 
 
-def _recovery_plan(
+def _recovery_plan_from_hashes(
     raw: bytes,
     pairs: tuple[tuple[str, str], ...],
-    database_path: Path,
+    existing: set[str],
 ) -> OfflineLetterPairRecoveryReport:
-    existing = _read_existing_hashes(database_path)
     batch: set[str] = set()
     duplicates = 0
     for pair in pairs:
@@ -183,6 +182,18 @@ def _recovery_plan(
     )
 
 
+def _recovery_plan(
+    raw: bytes,
+    pairs: tuple[tuple[str, str], ...],
+    database_path: Path,
+) -> OfflineLetterPairRecoveryReport:
+    return _recovery_plan_from_hashes(
+        raw,
+        pairs,
+        _read_existing_hashes(database_path),
+    )
+
+
 def plan_offline_letter_pair_recovery(
     source_path: str | Path,
     *,
@@ -190,6 +201,21 @@ def plan_offline_letter_pair_recovery(
 ) -> OfflineLetterPairRecoveryReport:
     raw, pairs = _parse_source(Path(source_path))
     return _recovery_plan(raw, pairs, Path(database_path))
+
+
+def plan_offline_letter_pair_recovery_with_adapter(
+    source_path: str | Path,
+    *,
+    adapter: MemoryPort,
+) -> OfflineLetterPairRecoveryReport:
+    """Inspect a paired backup against the active Archive adapter."""
+
+    raw, pairs = _parse_source(Path(source_path))
+    return _recovery_plan_from_hashes(
+        raw,
+        pairs,
+        adapter.legacy_content_hashes(),
+    )
 
 
 def apply_offline_letter_pair_recovery(
@@ -208,6 +234,32 @@ def apply_offline_letter_pair_recovery(
         )
     finally:
         archive.close()
+    return replace(
+        plan,
+        status="rolled_back" if result.rolled_back else "committed",
+        inserted=result.inserted,
+        duplicates=result.duplicates,
+        rejected=result.rejected,
+    )
+
+
+def apply_offline_letter_pair_recovery_to_adapter(
+    source_path: str | Path,
+    *,
+    adapter: MemoryPort,
+) -> OfflineLetterPairRecoveryReport:
+    """Import a local paired backup through the active Archive adapter."""
+
+    raw, pairs = _parse_source(Path(source_path))
+    plan = _recovery_plan_from_hashes(
+        raw,
+        pairs,
+        adapter.legacy_content_hashes(),
+    )
+    result = adapter.import_legacy_records(
+        _build_records(raw, pairs),
+        atomic=True,
+    )
     return replace(
         plan,
         status="rolled_back" if result.rolled_back else "committed",

@@ -65,6 +65,8 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "FEEDBACK_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "SHARE_TOKEN_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "MEMORY_UNAVAILABLE": {"http_status": 503, "retryable": True},
+    "OFFLINE_LETTER_BACKUP_REQUIRED": {"http_status": 404, "retryable": True},
+    "OFFLINE_LETTER_BACKUP_INVALID": {"http_status": 400, "retryable": True},
     "OFFICIAL_LETTER_IMPORT_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "OFFICIAL_HISTORY_LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
@@ -214,6 +216,11 @@ ROUTES: dict[str, dict[str, Any]] = {
     ),
     "/toy/letter/legacy/import": _route(
         ["POST"],
+        "letters.legacy_import",
+        evidence="local-extension",
+    ),
+    "/toy/letter/legacy/local-import": _route(
+        ["GET", "POST"],
         "letters.legacy_import",
         evidence="local-extension",
     ),

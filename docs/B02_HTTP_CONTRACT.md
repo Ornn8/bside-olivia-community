@@ -40,7 +40,7 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 音乐写操作 | `/toy/addPerformance` 等 | unavailable | 501 `MUSIC_WRITE_NOT_IMPLEMENTED` |
 | MIDI | `/toy/midi/*` | terminal/partial | 任务状态兼容现有原型；生成/上传/分享码导入明确 501 |
 | legacy import | `/toy/letter/legacy/import` | available | SQLite 本地扩展；仅接受 `mode=read_only`，以单事务原子导入旧信并按内容哈希去重；导入后旧信域只读且不与新聊天合并 |
-| 官方文字信件导入 | `/toy/letter/legacy/official-import` | available/degraded | 用户在设置页明确确认后，先要求 Mem0 与 PrivateWorld 可用；首次初始化关系状态时还要求大模型已配置。随后临时读取官方客户端登录日志并从官方接口导入原信与文字回信；严格按时间写入 Mem0、初始化 PrivateWorld，最后才原子发布到信箱；忽略视频，不保存或回显凭证 |
+| 本地历史信件恢复 | `/toy/letter/legacy/local-import` | available/degraded | 设置页只读取安装时选定的原版游戏目录中的 `letter_pairs.json`；用户确认后把成对文字记录作为只读历史原子写入本地信箱。官方服务器已关闭，本入口不读取登录日志、不访问官方接口，也不调用 LLM、Mem0、PrivateWorld 或媒体 |
 | 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
 | 诊断包导出 | `/toy/diagnostics/export` | available | 设置页显式触发，只在本机生成并下载严格白名单 ZIP；不上传，不包含密钥、正文、记忆、真实 ID、绝对路径、完整 URL 或原始日志 |
 
@@ -55,10 +55,7 @@ CORS 仅允许 loopback Origin，或精确命中原生客户端固定信任源
 - 缺少 `letter_id`/`content`：400 `MISSING_FIELD`。
 - `content` 为空、`material` 非 object、JSON 非法或请求体非 object：400 稳定错误。
 - legacy import 的 body、`mode` 或 `letters` 不合法：400 `INVALID_BODY`；SQLite 存储不可用：503 `MEMORY_UNAVAILABLE`。两类错误都不回显旧信正文、路径或密钥。
-- 官方文字信件导入无法读取登录日志、官方接口或有效账户时：503 `OFFICIAL_LETTER_IMPORT_UNAVAILABLE`；用户可先启动官方客户端并登录后重试。
-- Mem0 或 PrivateWorld 在采集前不可用时，分别返回 503 `OFFICIAL_HISTORY_MEMORY_UNAVAILABLE` 或 `PRIVATE_WORLD_HISTORY_UNAVAILABLE`，不会读取官方历史。预检无法在读取私人历史前识别本次 corpus，因此大模型未配置时保守返回 503 `OFFICIAL_HISTORY_LLM_UNAVAILABLE`，即使 PrivateWorld 已有其他状态也不会读取官方历史或写入 Mem0。迁移取得 corpus 后仍会在调用 provider 前查询匹配的稳定 command audit；归档失败后的同 corpus 重试在大模型已就绪时不会重复调用 provider。迁移中断时返回 503 `OFFICIAL_HISTORY_MEMORY_WRITE_FAILED` 或 `PRIVATE_WORLD_HISTORY_UNAVAILABLE`，不会把本批历史信件发布到信箱；已写入 Mem0 的记录由稳定 source id 判重，重试不会重复生成。SQLite 只读归档是最后一步可见性提交，成功后官方历史信件按原时间出现在默认信箱中，但保持 `scope=legacy`、`read_only=true`、`is_read=true`，不增加未读数，也不生成新回信或视频。
-
-`GET /toy/letter/legacy/official-import` 返回当前导入进度，响应遵循 `contracts/official_history_import_progress.schema.json`。带 `preflight=1` 时响应遵循 `contracts/official_history_import_preflight.schema.json`，只检查本地 Mem0、PrivateWorld 和必要的大模型配置，不读取信件、不调用 provider，也不启动或重试导入。成功返回 `READY` 和布尔值 `llm_required`；不可用时返回稳定错误 envelope。客户端使用 `stage`、`processed` 和 `total` 显示读取、记忆整理、关系恢复与信箱写入进度。
+- 本地历史恢复找不到 `letter_pairs.json` 时返回 404 `OFFLINE_LETTER_BACKUP_REQUIRED`，设置页明确提示官方服务器已关闭并要求准备本地备份；格式不合法时返回 400 `OFFLINE_LETTER_BACKUP_INVALID`。两种情况都不会发起网络请求或写入部分记录。
 - 找不到信件或 MIDI job：404，不返回空的成功对象。
 - 空信箱、无匹配歌曲、空 playlist：200，但 `source=local-memory|empty`、列表和计数明确为空。
 - LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。

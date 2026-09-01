@@ -19,7 +19,7 @@ SQLite 表、FTS 索引和配置都属于本机数据，位于被 `.gitignore` �
 
 `tools.memory_import.LegacyLetterImporter` 支持 JSON、JSONL、CSV 和逐行文本。支持显式映射、BOM/UTF-8/常见本地编码、路径根限制、dry-run 和 checkpoint；格式、编码、JSON 行和字段错误返回稳定代码，不把正文或路径放入报告。默认 `atomic=true`，坏行或存储失败整批回滚；内容 SHA-256 用于幂等重复检测。
 
-本机已有成对文字备份时，`python -m runtime.imports.offline_letter_pairs --source <json> --memory-root <memory-root>` 默认只 dry-run；用户确认后附加 `--apply` 才会原子写入。输入必须是只含非空 `content`/`reply` 的 JSON 数组，输出仅含计数、状态和源文件 SHA-256。恢复记录使用独立的 typed provenance 与 `offline_mailbox_publish_status=validated_pair_v1`，可作为 `scope=legacy`、`read_only=true`、已读历史显示在默认信箱；它不会调用 LLM、Mem0、PrivateWorld 或媒体，也不会写 `history.evidence.v1`、`official_history_publish_status` 或官方历史记忆语义。通用 HTTP legacy import 会剥离这些本机发布字段，不能伪造默认信箱可见性；原始备份仍不进入仓库或安装包。
+本机已有成对文字备份时，设置页优先通过 `/toy/letter/legacy/local-import` 查找安装时选定的原版游戏目录中的 `letter_pairs.json`；用户确认后原子写入。找不到时明确提示官方服务器已关闭并要求用户准备本地备份，不回退到官方接口。命令行 `python -m runtime.imports.offline_letter_pairs --source <json> --memory-root <memory-root>` 仍可用于显式 dry-run，附加 `--apply` 后写入。输入必须是只含非空 `content`/`reply` 的 JSON 数组，输出仅含计数、状态和源文件 SHA-256。恢复记录使用独立的 typed provenance 与 `offline_mailbox_publish_status=validated_pair_v1`，可作为 `scope=legacy`、`read_only=true`、已读历史显示在默认信箱；它不会调用 LLM、Mem0、PrivateWorld 或媒体，也不会写 `history.evidence.v1`、`official_history_publish_status` 或官方历史记忆语义。通用 HTTP legacy import 会剥离这些本机发布字段，不能伪造默认信箱可见性；原始备份仍不进入仓库或安装包。
 
 metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储；超过安全上限会拒绝整条记录，绝不会截断序列化后的 JSON。`export_records(domains=...)` 要求调用方显式选择域，并在返回前校验可以生成有效 JSON；未选择域会拒绝。
 
@@ -27,11 +27,7 @@ metadata 先规范化为 JSON 数据模型，再作为完整 JSON 文本存储�
 
 检索内容只作为 `<MEMORY_CONTEXT_UNTRUSTED_DATA>` 内的引用资料。正文在渲染时转义 `<`、`>`、方括号、下划线和反斜杠；角色伪装、命令、重复 delimiter 都不会成为 system 指令。资料区分 `CONVERSATION_MEMORY_CURRENT` 与 `LEGACY_LETTERS_REFERENCE_ONLY`，并携带有限 provenance。
 
-聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。`/toy/letter/legacy/official-import` 由设置页用户确认触发，复用同一只读导入边界，只导入用户原信和官方文字回信，忽略视频；官方凭证只在本次请求内存中使用。一个本地 data-root 只对应一个用户档案：首个含文字回信的官方账号写入稳定账号标记，后续不同账号会在任何归档或记忆写入前被拒绝；需要切换账号时必须使用独立 data-root。导入前必须确认真实 Mem0 与 PrivateWorld 可用，否则在采集官方历史前失败。采集并校验后，系统按 `occurred_at` 从早到晚逐封执行 `remember_exchange`；只有写入或稳定判重成功才会继续，`SKIPPED` 视为失败。
-
-Mem0 完成后，PrivateWorld 以完整、规范排序的 `source_record_id` 集合生成稳定命令 ID，并在调用评估 provider 前查询命令审计。已有审计直接复用，不再调用 provider；没有审计时，即使 Mem0 全部判重或 PrivateWorld 已有状态，也只评估一次完整语料，并通过 `ApplyHistoricalRelationshipEvidence` 对 `familiarity` / `closeness` 做逐轴 `max`。该命令不改变阶段、trust、comfort、tension、增长配额、亲密授权或其他私人状态。最后一步才把完成标记与记录一起原子写入 SQLite 只读归档，并发布到默认信箱时间线；旧版本留下且没有完成标记的官方归档不会被发布。历史信件保持 `scope=legacy`、`read_only=true`、`is_read=true`，因此可在真实信箱查看，但不增加未读数，也不会生成新回信或视频。
-
-`official_history_publish_status` 是服务端保留 metadata；通用 legacy import 会丢弃调用方提交的同名字段。官方历史成功重试若命中旧版同内容归档，会在同一 SQLite 事务内升级该归档的来源、原时间和完成标记，并在事务结束前恢复只读 update trigger。
+聊天清空只调用 `clear_conversation()`，不会触碰 `legacy_letters`。旧信件没有单条删除 API；显式 `uninstall(delete_legacy=true)` 才会在一个事务中整库删除，并返回实际删除计数和 `whole_library` 范围。HTTP `/toy/letter/legacy/import` 只接受显式 `mode=read_only` 的内存 JSON 记录；它把原文、来源和 metadata 原样交给现有 SQLite adapter 的原子导入和 SHA-256 去重逻辑，响应只返回计数而不回显正文或本地路径。本地 `letter_pairs.json` 不含可信时间戳，因此恢复信件的时间保持未知，不伪造原时间，也不自动改变关系状态或写入长期语义记忆。
 
 `official_history_memory_semantics` 也是服务端保留 metadata。只有值为 `actor_split_first_person_v2` 的官方历史才可跳过记忆重建；旧记录会先删除，再按 actor 分别提取来信用户事实与林离事实，只有林离事实必须使用第一人称“我”。首次导入时 SQLite 尚未创建 `legacy_letters` 表属于空库引导状态，可安全回退到进程内空归档；其他 SQLite 错误继续失败关闭。
 
