@@ -146,7 +146,7 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
         "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4",
         "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4",
-        "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-reply-action-base-v1.mp4",
+        "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
     }
     assert ordinary.runtime_artifacts == (
         VideoRuntimeArtifact(
@@ -1512,6 +1512,7 @@ def test_production_manifest_persists_managed_worker_and_finishes_ready(
         "ordinary_video/breeze/runtime/nodes.py",
         "ordinary_video/breeze/model/LICENSE", "ordinary_video/ffmpeg/runtime/bin/ffmpeg.exe",
         "ordinary_video/scenes/official-reply-action-base-v1.mp4",
+        "ordinary_video/scenes/official-performance-lipsync-safe-2950f-v1.mp4",
         "ordinary_video/scenes/official-reply-reference-000-043s-v1.mp4",
         "music_video/roformer/models/MelBandRoformer.ckpt",
         "music_video/roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
@@ -1664,6 +1665,7 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
         ordinary / "latentsync/runtime/configs/unet/stage2_efficient.yaml",
         ordinary / "latentsync/runtime/checkpoints/latentsync_unet.pt",
         ordinary / "scenes/official-reply-action-base-v1.mp4",
+        ordinary / "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
         ordinary / "scenes/official-reply-reference-000-043s-v1.mp4",
         music / "minimax/runtime/python/python.exe",
         music / "minimax/runtime/main.py",
