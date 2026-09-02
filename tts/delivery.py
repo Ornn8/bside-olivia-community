@@ -391,7 +391,7 @@ def render_delivery_wav(
     plan: ReplyDeliveryPlan | object,
     output_path: Path,
     *,
-    timeout_seconds: float = 3600.0,
+    timeout_seconds: float = 7200.0,
     enforce_content_gate: bool = True,
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""

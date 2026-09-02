@@ -168,7 +168,7 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
     }
     assert request["cfg_scale"] == 4.0
     assert request["model_variant"] == "int8_hybrid"
-    assert request["max_new_tokens"] == 650
+    assert request["max_new_tokens"] == 600
     assert request["quality_gate_required"] is True
     assert request["quality_forbidden_text"] == request["instruction"]
 
