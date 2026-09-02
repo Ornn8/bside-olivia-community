@@ -1193,12 +1193,60 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
     visual_config.write_bytes(b"visual-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 4, "minimax": 5, "separate": 6}
+    assert calls == {"spoken": 4, "minimax": 4, "separate": 5}
 
     visual_worker.write_bytes(b"worker-v2")
     music_reply.render_musical_reply("letter", "changed reply", output, **kwargs)
 
-    assert calls == {"spoken": 5, "minimax": 6, "separate": 7}
+    assert calls == {"spoken": 5, "minimax": 4, "separate": 5}
+
+
+def test_manifest_plate_change_reuses_audio_but_rebuilds_visual_stages(
+    tmp_path: Path,
+) -> None:
+    expected = {
+        "schema_version": 3,
+        "inputs": {
+            "canonical_reply_sha256": "reply",
+            "voice_performance_sha256": "voice",
+            "caption_sha256": "caption",
+            "duration_seconds": 60,
+            "lyrics_sha256": "lyrics",
+        },
+        "assets": {
+            "performance_video": {"sha256": "correct-plate"},
+            "official_reply_reference": {"sha256": "official"},
+            "spoken_action_base": {"sha256": "spoken"},
+            "tts_config": {"sha256": "tts"},
+            "visual_config": {"sha256": "visual"},
+            "visual_worker": {"sha256": "worker"},
+        },
+        "providers": {
+            "face_sync": {"sha256": "face"},
+            "music": {"sha256": "music"},
+            "vocal_separator": {"sha256": "separator"},
+        },
+        "artifacts": {},
+    }
+    loaded = json.loads(json.dumps(expected))
+    loaded["assets"]["performance_video"] = {"sha256": "wrong-plate"}
+    loaded["artifacts"] = {
+        "normal_video": {"fingerprint": "normal"},
+        "song_audio": {"fingerprint": "song"},
+        "vocals": {"fingerprint": "vocals"},
+        "song_video": {"fingerprint": "wrong-visual"},
+        "final_output": {"fingerprint": "wrong-final"},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(loaded), encoding="utf-8")
+
+    compatible = music_reply._read_compatible_manifest(manifest_path, expected)
+
+    assert compatible["artifacts"] == {
+        "normal_video": loaded["artifacts"]["normal_video"],
+        "song_audio": loaded["artifacts"]["song_audio"],
+        "vocals": loaded["artifacts"]["vocals"],
+    }
 
 
 def test_render_musical_reply_invalidates_manifest_cached_short_song_audio(
@@ -1458,12 +1506,17 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     ):
         asset.write_bytes(f"provider-v{index}".encode())
         music_reply.render_musical_reply("letter", "reply", output, **kwargs)
-        assert calls == {"minimax": index, "separate": index, "performance": index}
+        music_runs = index - 1 if asset == latentsync_checkpoint else index
+        assert calls == {
+            "minimax": music_runs,
+            "separate": music_runs,
+            "performance": index,
+        }
 
     minimax_node.unlink()
     music_reply.render_musical_reply("letter", "reply", output, **kwargs)
 
-    assert calls == {"minimax": 9, "separate": 9, "performance": 9}
+    assert calls == {"minimax": 8, "separate": 8, "performance": 9}
 
 @pytest.fixture(autouse=True)
 def _eligible_breeze_gpu(monkeypatch: pytest.MonkeyPatch) -> None:

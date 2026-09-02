@@ -1500,6 +1500,15 @@ def _read_compatible_manifest(
             )
             if isinstance(normal, dict):
                 artifacts["normal_video"] = normal
+        if isinstance(loaded, dict) and _music_audio_stage_inputs_match(
+            loaded, expected
+        ):
+            loaded_artifacts = loaded.get("artifacts")
+            if isinstance(loaded_artifacts, dict):
+                for name in ("song_audio", "vocals"):
+                    record = loaded_artifacts.get(name)
+                    if isinstance(record, dict):
+                        artifacts[name] = record
         return {**expected, "artifacts": artifacts}
     artifacts = loaded.get("artifacts")
     return {**expected, "artifacts": artifacts if isinstance(artifacts, dict) else {}}
@@ -1526,6 +1535,35 @@ def _normal_stage_inputs_match(
             ),
         ),
         ("providers", ("face_sync",)),
+    ):
+        old_values = loaded.get(section)
+        new_values = expected.get(section)
+        if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+            return False
+        if any(old_values.get(key) != new_values.get(key) for key in keys):
+            return False
+    return True
+
+
+def _music_audio_stage_inputs_match(
+    loaded: dict[str, object],
+    expected: dict[str, object],
+) -> bool:
+    """Keep generated music and vocals when only the visual plate changes."""
+
+    if loaded.get("schema_version") != expected.get("schema_version"):
+        return False
+    for section, keys in (
+        (
+            "inputs",
+            (
+                "canonical_reply_sha256",
+                "caption_sha256",
+                "duration_seconds",
+                "lyrics_sha256",
+            ),
+        ),
+        ("providers", ("music", "vocal_separator")),
     ):
         old_values = loaded.get(section)
         new_values = expected.get(section)

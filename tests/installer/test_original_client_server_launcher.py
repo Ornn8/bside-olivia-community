@@ -477,7 +477,9 @@ def test_launcher_auto_uses_private_voice_but_keeps_public_absence_valid(
     assert "OLIVIA_REPLY_VOICE_REFERENCE" not in public
 
 
-def test_launcher_uses_registered_reply_motion_for_music_performance(tmp_path: Path) -> None:
+def test_launcher_never_reuses_registered_reply_motion_for_music_performance(
+    tmp_path: Path,
+) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
     assets = root / "app" / "0.0.9.627" / "assets" / "Wallpaper_Presence"
     assets.mkdir(parents=True)
@@ -504,7 +506,6 @@ def test_launcher_uses_registered_reply_motion_for_music_performance(tmp_path: P
     assert environment == {
         "OLIVIA_ORDINARY_ACTION_BASE": str(accepted_scene.resolve()),
         "OLIVIA_OFFICIAL_REPLY_REFERENCE": str(accepted_reference.resolve()),
-        "OLIVIA_MUSIC_PERFORMANCE_BASE": str(accepted_scene.resolve()),
     }
 
 

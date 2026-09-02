@@ -113,7 +113,7 @@
                 "OLIVIA_LATENTSYNC_PYTHON": "latentsync/runtime/python/python.exe",
                 "OLIVIA_LATENTSYNC_ROOT": "latentsync/runtime",
                 "OLIVIA_ORDINARY_ACTION_BASE": "scenes/official-reply-action-base-v1.mp4",
-                "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-reply-action-base-v1.mp4",
+                "OLIVIA_MUSIC_PERFORMANCE_BASE": "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
                 "OLIVIA_OFFICIAL_REPLY_REFERENCE": "scenes/official-reply-reference-000-043s-v1.mp4"
             },
             "runtime_patches": [
@@ -410,6 +410,16 @@
                     "license": "Olivia original media preservation",
                     "sources": {
                         "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-reply-action-base-v1.mp4"
+                    }
+                },
+                {
+                    "id": "official-music-performance-base",
+                    "path": "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
+                    "size_bytes": 19900636,
+                    "sha256": "ee6e513d772fe8c70d4fef3c2176a4e8e33f4e973bef2a6be55fce0dd6688efd",
+                    "license": "Olivia original media preservation",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/official-performance-lipsync-safe-2950f-v1.mp4"
                     }
                 },
                 {
