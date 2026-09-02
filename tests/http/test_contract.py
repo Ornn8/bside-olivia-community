@@ -1859,6 +1859,93 @@ def test_llm_failure_can_be_retried_through_the_resend_route(
     assert len(local_server.store.letters) == 2
 
 
+def test_user_can_manually_resend_a_provider_rejected_letter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    outcomes: list[str | Exception] = [
+        local_server.LLMError("LLM_PROVIDER_REJECTED"),
+        "synthetic successful manual resend",
+    ]
+
+    def reply(_content, _context="", **_kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    failed = asyncio.run(
+        local_server.route(
+            "POST", "/toy/letter/send", {"content": "synthetic manual retry"}, {}
+        )
+    )
+    retried = asyncio.run(
+        local_server.route(
+            "POST",
+            "/toy/letter/resend",
+            {"letter_id": failed["data"]["letter_id"]},
+            {},
+        )
+    )
+
+    assert failed["code"] == 503
+    assert failed["data"]["error_code"] == "LLM_PROVIDER_REJECTED"
+    assert failed["data"]["retryable"] is False
+    assert retried["code"] == 0
+    assert retried["data"]["status"] == "COMPLETED"
+
+
+def test_http_manual_resend_acknowledges_before_background_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    failed_id = "synthetic-provider-rejected"
+    local_server.store.letters[:] = [
+        {
+            "letter_id": failed_id,
+            "content": "synthetic manual resend",
+            "material": {},
+            "letter_status": "FAILED",
+            "error_code": "LLM_PROVIDER_REJECTED",
+            "audit_status": 2,
+            "is_read": 1,
+            "created_at": int(time.time()),
+            "reply_text": "",
+        }
+    ]
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        local_server,
+        "_schedule_reply_job",
+        lambda letter_id, *_args, **_kwargs: scheduled.append(letter_id),
+    )
+
+    async def exercise() -> tuple[int, dict]:
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            response = await client.post(
+                "/toy/letter/resend", json={"letter_id": failed_id}
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(exercise())
+
+    assert status == 200
+    assert payload["data"]["status"] == "PENDING"
+    assert scheduled == [payload["data"]["letter_id"]]
+
+
 def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

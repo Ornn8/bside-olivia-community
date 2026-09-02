@@ -1668,7 +1668,10 @@ async def handler(request: web.Request):
                 path,
                 body,
                 query,
-                defer_reply=(method == "POST" and canonical_path == "/toy/letter/send"),
+                defer_reply=(
+                    method == "POST"
+                    and canonical_path in {"/toy/letter/send", "/toy/letter/resend"}
+                ),
                 companion_confirmed=(
                     request.headers.get("X-Olivia-Companion-Action") == "confirmed"
                 ),
@@ -3267,8 +3270,7 @@ async def route(
                 "error_code": "LETTER_SUPERSEDED",
                 "replacement_letter_id": original["superseded_by"],
             })
-        _public_code, retryable = _public_llm_error(original.get("error_code"))
-        if original.get("letter_status") != "FAILED" or not retryable:
+        if original.get("letter_status") != "FAILED":
             return err(409, "LETTER_RESEND_NOT_ALLOWED", {
                 "status": "FAILED",
                 "error_code": "LETTER_RESEND_NOT_ALLOWED",
