@@ -26,7 +26,7 @@ from tools.minimax_profile import (  # noqa: E402
 
 
 _ALLOWED_DURATIONS = frozenset({40, 60})
-_INFERENCE_TIMEOUT_SECONDS = 7200.0
+_INFERENCE_TIMEOUT_SECONDS = 14400.0
 _EXPECTED_LYRIC_LINES = {40: 12, 60: 16}
 _SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
@@ -236,6 +236,7 @@ def _copy_result(
     generated_root: Path,
     output: Path,
     gpu_samples: list[dict[str, float]],
+    server_process: subprocess.Popen,
 ) -> None:
     deadline = time.monotonic() + _INFERENCE_TIMEOUT_SECONDS
     next_gpu_sample = 0.0
@@ -246,7 +247,16 @@ def _copy_result(
             if sample is not None:
                 gpu_samples.append(sample)
             next_gpu_sample = now + 10.0
-        history = _request_json(f"{base_url}/history/{prompt_id}")
+        if server_process.poll() is not None:
+            raise RuntimeError("MINIMAX_MUSIC3_SERVER_EXITED")
+        try:
+            history = _request_json(f"{base_url}/history/{prompt_id}")
+        except (OSError, TimeoutError):
+            # Long GPU kernels can make ComfyUI's local HTTP loop temporarily
+            # unresponsive.  The inference is still healthy while its process
+            # remains alive, so keep polling until the overall deadline.
+            time.sleep(2.0)
+            continue
         item = history.get(prompt_id)
         if isinstance(item, dict):
             outputs = item.get("outputs")
@@ -401,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                     generated_root=generated_root,
                     output=output,
                     gpu_samples=gpu_samples,
+                    server_process=process,
                 )
                 metrics["jobs"].append({
                     "request_json": str(request_path),

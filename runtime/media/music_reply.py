@@ -43,7 +43,7 @@ from runtime.media.song_content import plan_song_content
 from .voice_direction import VoicePerformancePlan
 
 
-_MINIMAX_WORKER_TIMEOUT_SECONDS = 7500.0
+_MINIMAX_WORKER_TIMEOUT_SECONDS = 14700.0
 _MUSIC_STAGE_MANIFEST_VERSION = 3
 _RUNTIME_PROBE_TIMEOUT_SECONDS = 120.0
 _RUNTIME_PROBE_REMOVED_ENVIRONMENT = (
