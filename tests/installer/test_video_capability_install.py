@@ -83,8 +83,8 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
     breeze_files = [
         item for item in ordinary.files if item.identifier.startswith("breeze-")
     ]
-    assert len(breeze_files) == 17
-    assert sum(item.size_bytes for item in breeze_files) == 5_744_963_625
+    assert len(breeze_files) == 18
+    assert sum(item.size_bytes for item in breeze_files) == 5_787_613_526
     assert ordinary.dependencies == ("breeze_tts2", "latentsync", "ffmpeg")
     assert not any(item.identifier.startswith("cosy-") for item in ordinary.files)
     assert all(
@@ -93,6 +93,7 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
         if item.identifier
         not in {
             "breeze-python-runtime",
+            "breeze-runtime-comfy-kitchen-wheel",
             "breeze-runtime-whisper-wheel",
             "breeze-runtime-code",
             "breeze-quality-gate-whisper-base",
@@ -460,7 +461,7 @@ def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
         (installed / ".olivia-breeze-runtime.json").read_text(encoding="utf-8")
     )
     assert marker["requirements_sha256"] == (
-        "efc8292ae94e7ec7d7eb3c2d3430c9bd666638c7bacec75d595145c78f08a4cd"
+        "1d1f2aafb3eeda0d882335354fb89ca572dbc0cb5438766020db818780c08ddc"
     )
     assert load_video_runtime_environment(data_root)["OLIVIA_BREEZE_TTS_PYTHON"] == str(
         installed / "breeze" / "python" / "python.exe"
