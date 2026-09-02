@@ -1060,8 +1060,6 @@ def prepare_setup_payload(
         raise SetupBuildError("SETUP_PRIVATE_VIDEO_OFFLINE_REQUIRED")
     if distribution == "personal" and video_offline_root is not None:
         raise SetupBuildError("SETUP_VIDEO_OFFLINE_PRIVATE_ONLY")
-    if native_navigation_manifest is not None and not private_distribution:
-        raise SetupBuildError("SETUP_NATIVE_NAVIGATION_MANIFEST_PRIVATE_ONLY")
     if private_distribution and native_navigation_manifest is None:
         assert voice_reference is not None
         native_navigation_manifest = (

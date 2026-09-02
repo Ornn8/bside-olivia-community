@@ -537,6 +537,33 @@ def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Pat
         )
 
 
+def test_prepare_public_payload_accepts_explicit_native_navigation_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
+    navigation_manifest = reference.parent / "native-navigation-compatibility.json"
+    destination = tmp_path / "public-payload"
+
+    prepare_setup_payload(
+        source,
+        offline,
+        destination,
+        distribution="public",
+        native_navigation_manifest=navigation_manifest,
+        validate_schema=False,
+    )
+
+    assert (
+        destination / "installer/native-navigation-compatibility.json"
+    ).read_bytes() == navigation_manifest.read_bytes()
+    assert not (destination / "offline/voice").exists()
+    assert not any(
+        path.suffix.casefold() in {".wav", ".mp3", ".safetensors", ".onnx"}
+        for path in destination.rglob("*")
+        if path.is_file()
+    )
+
+
 def test_prepare_private_payload_accepts_complete_split_bom_without_runtime_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
