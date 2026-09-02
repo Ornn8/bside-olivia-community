@@ -608,6 +608,43 @@ def test_roformer_zero_duration_wav_is_rejected_before_publication(
     assert not vocals.exists()
 
 
+def test_ieee_float_wav_falls_back_to_configured_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import struct
+    import subprocess
+
+    audio = tmp_path / "float-vocals.wav"
+    payload = b"\0" * 16
+    fmt = struct.pack("<HHIIHH", 3, 2, 44100, 44100 * 8, 8, 32)
+    audio.write_bytes(
+        b"RIFF"
+        + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(payload))
+        + b"WAVEfmt "
+        + struct.pack("<I", len(fmt))
+        + fmt
+        + b"data"
+        + struct.pack("<I", len(payload))
+        + payload
+    )
+    configured_ffmpeg = tmp_path / "ffmpeg.exe"
+    configured_ffmpeg.write_bytes(b"synthetic")
+
+    def fake_run(command, **_kwargs):
+        assert command[0] == str(configured_ffmpeg)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"out_time=00:00:01.000000\nprogress=end\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(music_reply.subprocess, "run", fake_run)
+
+    assert music_reply._valid_wave_audio(audio, ffmpeg_path=configured_ffmpeg)
+
+
 def test_official_voice_reference_is_bounded_for_cosyvoice(tmp_path, monkeypatch):
     reference = tmp_path / "official-reference.wav"
     with wave.open(str(reference), "wb") as target:

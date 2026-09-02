@@ -1052,14 +1052,23 @@ def separate_vocals(
         candidates = sorted(outputs.rglob("*vocals*.wav"))
         if not candidates:
             raise MusicReplyError("ROFORMER_OUTPUT_MISSING")
-        if not _valid_wave_audio(candidates[0]):
+        if not _valid_wave_audio(candidates[0], ffmpeg_path=ffmpeg_path):
             raise MusicReplyError("ROFORMER_OUTPUT_INVALID")
         vocals_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(candidates[0], vocals_path)
 
 
-def _valid_wave_audio(path: Path, *, minimum_duration_seconds: float = 0.1) -> bool:
-    duration = _media_duration_seconds(path, required_streams=("0:a:0",))
+def _valid_wave_audio(
+    path: Path,
+    *,
+    minimum_duration_seconds: float = 0.1,
+    ffmpeg_path: Path | None = None,
+) -> bool:
+    duration = _media_duration_seconds(
+        path,
+        required_streams=("0:a:0",),
+        ffmpeg_path=ffmpeg_path,
+    )
     return duration is not None and duration >= minimum_duration_seconds
 
 
@@ -1289,7 +1298,11 @@ def _media_duration_seconds(path: Path, *, required_streams: tuple[str, ...], ff
                 payload = stream.readframes(frame_count)
             if frame_rate <= 0 or expected_size <= 0 or len(payload) < expected_size: return None
             return frame_count / frame_rate
-        except (EOFError, OSError, wave.Error): return None
+        except (EOFError, OSError, wave.Error):
+            # RoFormer writes standards-compliant IEEE-float WAV (format tag 3),
+            # which Python's ``wave`` module cannot decode.  Fall through to the
+            # configured FFmpeg decoder instead of rejecting valid stem output.
+            pass
     def decode(stream: str) -> subprocess.CompletedProcess[bytes] | None:
         try:
             return subprocess.run([
