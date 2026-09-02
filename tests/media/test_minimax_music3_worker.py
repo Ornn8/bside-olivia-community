@@ -231,3 +231,47 @@ def test_118_second_generation_timeouts_cover_both_model_phases() -> None:
 
     assert worker._INFERENCE_TIMEOUT_SECONDS >= 7200.0
     assert adapter.timeout_seconds >= worker._INFERENCE_TIMEOUT_SECONDS + 300.0
+
+
+def test_history_poll_retries_transient_timeout_while_server_is_alive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = tmp_path / "generated" / "audio"
+    generated.mkdir(parents=True)
+    source = generated / "song.flac"
+    source.write_bytes(b"audio")
+    calls = 0
+
+    def request_json(_url: str) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("busy GPU kernel")
+        return {
+            "prompt": {
+                "outputs": {"9": {"audio": [{"filename": source.name, "subfolder": "audio"}]}}
+            }
+        }
+
+    class AliveProcess:
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    monkeypatch.setattr(worker, "_request_json", request_json)
+    monkeypatch.setattr(worker, "_gpu_sample", lambda: None)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    output = tmp_path / "song.flac"
+
+    worker._copy_result(
+        base_url="http://127.0.0.1:1",
+        prompt_id="prompt",
+        generated_root=tmp_path / "generated",
+        output=output,
+        gpu_samples=[],
+        server_process=AliveProcess(),
+    )
+
+    assert calls == 2
+    assert output.read_bytes() == b"audio"
