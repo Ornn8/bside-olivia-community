@@ -210,11 +210,11 @@ class BreezeTTS2Provider:
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
             "cfg_scale": float(options.get("cfg_scale", 4.0)),
             "seed": int(options.get("seed", 200717)),
-            # The ordinary-reply contract rejects audio over 52 seconds.
-            # Breeze emits 12.5 frames/s, so never spend GPU time beyond the
-            # longest candidate the product can accept.
+            # Breeze emits 12.5 frames/s. Cap generation at 48 seconds so the
+            # result stays inside the 40-50 second delivery contract without
+            # spending another slow-GPU pass on an overlong candidate.
             "max_new_tokens": max(
-                64, min(650, int(options.get("max_new_tokens", 650)))
+                64, min(600, int(options.get("max_new_tokens", 600)))
             ),
             "temperature": float(options.get("temperature", 0.9)),
             "top_k": int(options.get("top_k", 50)),
