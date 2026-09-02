@@ -84,7 +84,7 @@ _SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471
 _BREEZE_MINIMUM_VRAM_MIB = 10 * 1024
 _BREEZE_RUNTIME_REQUIREMENTS = "installer/breeze-runtime-requirements.txt"
 _BREEZE_RUNTIME_REQUIREMENTS_SHA256 = (
-    "efc8292ae94e7ec7d7eb3c2d3430c9bd666638c7bacec75d595145c78f08a4cd"
+    "1d1f2aafb3eeda0d882335354fb89ca572dbc0cb5438766020db818780c08ddc"
 )
 _BREEZE_RUNTIME_MARKER = ".olivia-breeze-runtime.json"
 _PROMOTION_LOCK = threading.RLock()
@@ -2872,7 +2872,7 @@ class VideoCapabilityInstaller:
     @staticmethod
     def _verify_breeze_runtime_process(python_path: Path, runtime_root: Path) -> bool:
         script = (
-            "import _distutils_hack, soundfile, torch, transformers, whisper; "
+            "import _distutils_hack, comfy_kitchen, soundfile, torch, transformers, whisper; "
             "assert torch.__version__ == '2.9.1+cu128'; "
             "assert torch.version.cuda == '12.8'; "
             "assert torch.cuda.is_available(); "

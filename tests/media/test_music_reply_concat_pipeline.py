@@ -683,6 +683,24 @@ def test_truncated_video_is_not_recorded_as_completed_stage(tmp_path: Path) -> N
     assert not manifest_path.exists()
 
 
+def test_target_frame_count_uses_bundled_ffprobe_without_imageio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = _write(tmp_path / "reply.mp4", b"synthetic-video")
+    ffmpeg = _write(tmp_path / "ffmpeg.exe", b"synthetic-ffmpeg")
+    _write(tmp_path / "ffprobe.exe", b"synthetic-ffprobe")
+    observed: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        observed.append(command)
+        return SimpleNamespace(returncode=0, stdout=b"2.4\n", stderr=b"")
+
+    monkeypatch.setattr(music_reply.subprocess, "run", run)
+
+    assert music_reply._target_frame_count(video, ffmpeg_path=ffmpeg) == 60
+    assert Path(observed[0][0]).name == "ffprobe.exe"
+
+
 def test_short_required_video_stream_is_not_recorded_as_completed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ffmpeg, video = _write(tmp_path / "ffmpeg.exe", b"runtime"), _write(tmp_path / "short-audio.mp4", b"container")
     manifest, manifest_path = {"artifacts": {}}, tmp_path / "manifest.json"
@@ -754,7 +772,7 @@ def test_concat_videos_inserts_silent_transition_between_spoken_and_performance(
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
-        lambda path, fps=25: frames[Path(path)],
+        lambda path, fps=25, **_kwargs: frames[Path(path)],
     )
 
     def fake_run(command, error_code, *, timeout=900.0):
@@ -814,7 +832,7 @@ def test_concat_videos_without_transition_preserves_two_segment_order(
     monkeypatch.setattr(
         music_reply,
         "_target_frame_count",
-        lambda path, fps=25: frames[Path(path)],
+        lambda path, fps=25, **_kwargs: frames[Path(path)],
     )
 
     def fake_run(command, error_code, *, timeout=900.0):

@@ -145,14 +145,12 @@ def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
 
 
 def media_runtime_available(env: Mapping[str, str] | None = None) -> bool:
-    """Check the FFmpeg resolver and frame probe used by complete delivery."""
+    """Check the configured FFmpeg used by complete delivery."""
 
     try:
         resolve_ffmpeg_executable(env)
-        import imageio_ffmpeg
-
-        return callable(getattr(imageio_ffmpeg, "count_frames_and_secs", None))
-    except (ImportError, RuntimeError, OSError, LatentSyncReplyError):
+        return True
+    except (RuntimeError, OSError, LatentSyncReplyError):
         return False
 
 

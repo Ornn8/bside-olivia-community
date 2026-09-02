@@ -647,13 +647,10 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         missing.write_bytes(original)
 
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
-    for resolved_ffmpeg in (None, write("runtime/ffmpeg.exe")):
-        monkeypatch.setattr(
-            latentsync_reply.shutil,
-            "which",
-            lambda _name: resolved_ffmpeg,
-        )
-        assert routing_context_from_environment(env) == RoutingContext(False)
+    assert routing_context_from_environment(env) == RoutingContext(True)
+
+    env["OLIVIA_FFMPEG_EXE"] = str(tmp_path / "missing-ffmpeg.exe")
+    assert routing_context_from_environment(env) == RoutingContext(False)
 
     acceptance_document = Path("docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
         encoding="utf-8"

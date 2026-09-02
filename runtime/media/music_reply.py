@@ -1111,12 +1111,36 @@ def render_full_face_performance(
     return {**metadata, "face_model": "LatentSync-1.5", "mouth_refiner": "native_face_paste"}
 
 
-def _target_frame_count(video_path: Path, fps: int = 25) -> int:
+def _target_frame_count(
+    video_path: Path,
+    fps: int = 25,
+    *,
+    ffmpeg_path: Path | None = None,
+) -> int:
     try:
-        import imageio_ffmpeg
-
-        _source_frames, duration = imageio_ffmpeg.count_frames_and_secs(str(video_path))
-    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        ffmpeg = Path(_ffmpeg(ffmpeg_path)).resolve()
+        ffprobe = ffmpeg.with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if not ffprobe.is_file():
+            raise OSError("ffprobe unavailable")
+        completed = subprocess.run(
+            [
+                str(ffprobe),
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("ffprobe failed")
+        duration = float(completed.stdout.decode("utf-8", errors="strict").strip())
+    except (OSError, RuntimeError, UnicodeError, ValueError, subprocess.SubprocessError) as exc:
         raise MusicReplyError("MUSIC_REPLY_DURATION_UNAVAILABLE") from exc
     frames = round(float(duration) * fps)
     if frames <= 0:
@@ -1154,7 +1178,9 @@ def concat_videos(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-concat-", dir=output_path.parent) as temporary:
         root = Path(temporary)
-        target_frames = _target_frame_count(normal_video_path) + _target_frame_count(song_video_path)
+        target_frames = _target_frame_count(
+            normal_video_path, ffmpeg_path=ffmpeg_path
+        ) + _target_frame_count(song_video_path, ffmpeg_path=ffmpeg_path)
         video_filter = (
             "scale=1280:720:force_original_aspect_ratio=decrease,"
             "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,"
