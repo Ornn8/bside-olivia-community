@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p02.persona-corpus-manifest.v1",
+  "title": "Local persona corpus per-file role manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "entries"],
+  "properties": {
+    "schema_version": {"const": "p02.persona-corpus-manifest.v1"},
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "correspondence_id", "evidence_role"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+\\.txt$"
+        },
+        "correspondence_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+        },
+        "evidence_role": {
+          "enum": ["user_letter", "canonical_character_reply"]
+        }
+      }
+    }
+  }
+}

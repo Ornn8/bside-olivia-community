@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p02.persona-distillation-input.v1",
+  "title": "Local-only persona distillation input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "documents", "holdout_source_ids"],
+  "properties": {
+    "schema_version": {"const": "p02.persona-distillation-input.v1"},
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/document"}
+    },
+    "holdout_source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,96}$"
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "partition_id",
+        "text",
+        "source_kind",
+        "rights_status",
+        "evidence_role"
+      ],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "partition_id": {"$ref": "#/$defs/identifier"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 200000},
+        "source_kind": {
+          "enum": ["public_document", "local_private_correspondence"]
+        },
+        "rights_status": {
+          "enum": ["REDISTRIBUTABLE", "SUMMARY_ONLY", "LOCAL_PRIVATE_ONLY"]
+        },
+        "evidence_role": {
+          "enum": [
+            "user_letter",
+            "canonical_character_reply",
+            "public_character_source"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_kind": {"const": "local_private_correspondence"}
+            }
+          },
+          "then": {
+            "properties": {
+              "rights_status": {"const": "LOCAL_PRIVATE_ONLY"},
+              "evidence_role": {
+                "enum": ["user_letter", "canonical_character_reply"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"source_kind": {"const": "public_document"}}
+          },
+          "then": {
+            "properties": {
+              "rights_status": {"enum": ["REDISTRIBUTABLE", "SUMMARY_ONLY"]},
+              "evidence_role": {"const": "public_character_source"}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

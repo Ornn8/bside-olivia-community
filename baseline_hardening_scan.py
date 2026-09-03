@@ -162,7 +162,10 @@ SECRET_PATTERNS = (
 )
 
 SENSITIVE_PATH_PATTERN = re.compile(
-    r"(?i)(?:^|/)(?:\.env(?:\.|$)|[^/]*(?:secret|token|credential|password)[^/]*|"
+    r"(?i)(?:^|/)\.private(?:/|$)|"
+    r"(?:^|/)[^/]*(?:holdout[-_]ids|persona[-_]distillation[-_]output|"
+    r"private[-_]corpus)[^/]*\.(?:json|jsonl|txt|csv)$|"
+    r"(?:^|/)(?:\.env(?:\.|$)|[^/]*(?:secret|token|credential|password)[^/]*|"
     r"[^/]+\.(?:pem|key|p12|pfx|crt|sqlite|sqlite3|db)|"
     r"[^/]+\.(?:safetensors|pth|pt|ckpt|onnx|gguf|bin|wav|flac|mp3|mp4|zip|7z|rar))$"
 )
@@ -329,6 +332,7 @@ def scan_sensitive_paths(root: Path, files: list[Path]) -> tuple[list[str], list
         "secret_token_credential_paths",
         "private_key_paths",
         "model_media_archive_paths",
+        "private_corpus_and_holdout_artifact_paths",
     ]
 
 
