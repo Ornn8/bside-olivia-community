@@ -282,8 +282,8 @@ def test_local_server_fresh_process_wires_default_private_world_runtime(
         "provider": "sqlite",
         "reason_code": None,
         "enabled": True,
-        "schema_version": 3,
-        "migration_status": "created_v3",
+        "schema_version": 4,
+        "migration_status": "created_v4",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "in-process",
@@ -496,4 +496,6 @@ def test_local_server_private_world_failure_uses_null_port_without_blocking_lett
         "nickname_permission": "not_allowed",
         "home_history_allowed": False,
         "known_continuations": [],
+        "active_boundaries": [],
+        "acknowledged_affection": None,
     }

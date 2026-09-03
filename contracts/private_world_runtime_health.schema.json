@@ -28,9 +28,15 @@
     "network_called": {"const": false}
   },
   "$defs": {
-    "current_schema": {"const": 3},
+    "current_schema": {"const": 4},
     "migration": {
-      "enum": ["created_v3", "current_v3", "migrated_v2_to_v3"]
+        "enum": [
+          "created_v4",
+          "current_v4",
+          "migrated_v1_to_v4",
+          "migrated_v2_to_v4",
+          "migrated_v3_to_v4"
+        ]
     },
     "unavailable_reason": {
       "enum": [

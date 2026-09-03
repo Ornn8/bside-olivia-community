@@ -13,6 +13,10 @@ import sqlite3
 from typing import Iterator
 
 from .port import (
+    AcknowledgedAffection,
+    ActiveBoundary,
+    AffectionIntensity,
+    AffectionScope,
     ContinuationAwareness,
     HomeAccess,
     IntimacyGrant,
@@ -24,7 +28,7 @@ from .port import (
 from runtime.reply.reply_context import IntimacyTier
 
 
-PRIVATE_WORLD_LEDGER_SCHEMA_VERSION = 3
+PRIVATE_WORLD_LEDGER_SCHEMA_VERSION = 4
 _METADATA_KEY = "schema_version"
 _LEGACY_TABLES = frozenset(
     {"private_world_events", "private_world_snapshots"}
@@ -49,6 +53,10 @@ _V3_PAYLOAD_FIELDS = _V2_PAYLOAD_FIELDS | {
     "intimacy_grants",
     "growth_window_start",
     "growth_used",
+}
+_V4_PAYLOAD_FIELDS = _V3_PAYLOAD_FIELDS | {
+    "active_boundaries",
+    "acknowledged_affection",
 }
 
 
@@ -189,7 +197,7 @@ class SQLitePrivateWorldLedger:
             "%Y%m%dT%H%M%S%fZ"
         )
         backup = self._database_path.with_name(
-            f"{self._database_path.name}.pre-v3-{stamp}.bak"
+            f"{self._database_path.name}.pre-v4-{stamp}.bak"
         )
         created = False
         try:
@@ -234,6 +242,9 @@ class SQLitePrivateWorldLedger:
                         migrated_rows = self._validated_v2_rows(connection)
                     elif previous == 2:
                         migrated_rows = self._validated_v2_rows(connection)
+                        self._backup_legacy_database(connection)
+                    elif previous == 3:
+                        migrated_rows = self._validated_v3_rows(connection)
                         self._backup_legacy_database(connection)
                     connection.execute(
                         """CREATE TABLE IF NOT EXISTS private_world_events (
@@ -284,12 +295,12 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError(
                 "private world schema initialization failed"
             ) from exc
-        if previous in {1, 2}:
-            self._migration_status = "migrated_v2_to_v3"
+        if previous in {1, 2, 3}:
+            self._migration_status = f"migrated_v{previous}_to_v4"
         elif previous == 0:
-            self._migration_status = "created_v3"
+            self._migration_status = "created_v4"
         else:
-            self._migration_status = "current_v3"
+            self._migration_status = "current_v4"
 
     def apply_once(
         self,
@@ -432,10 +443,22 @@ class SQLitePrivateWorldLedger:
 
     @staticmethod
     def _v2_snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
-        payload = snapshot.to_dict()
+        payload = json.loads(SQLitePrivateWorldLedger._v3_snapshot_json(snapshot))
         payload.pop("intimacy_grants")
         payload.pop("growth_window_start")
         payload.pop("growth_used")
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _v3_snapshot_json(snapshot: PrivateWorldSnapshot) -> str:
+        payload = snapshot.to_dict()
+        payload.pop("active_boundaries")
+        payload.pop("acknowledged_affection")
         return json.dumps(
             payload,
             ensure_ascii=False,
@@ -460,6 +483,8 @@ class SQLitePrivateWorldLedger:
         payload: dict[str, object],
         facts: tuple[LocalContinuationFact, ...],
         grants: tuple[IntimacyGrant, ...] = (),
+        boundaries: tuple[ActiveBoundary, ...] = (),
+        affection: AcknowledgedAffection | None = None,
     ) -> PrivateWorldSnapshot:
         return PrivateWorldSnapshot(
             version=payload["version"],
@@ -478,6 +503,8 @@ class SQLitePrivateWorldLedger:
             intimacy_grants=grants,
             growth_window_start=payload.get("growth_window_start", ""),
             growth_used=payload.get("growth_used", 0),
+            active_boundaries=boundaries,
+            acknowledged_affection=affection,
         )
 
     def _strict_v1_stored_snapshot(
@@ -576,6 +603,56 @@ class SQLitePrivateWorldLedger:
             migrated.append((stored_version, self._snapshot_json(snapshot)))
         return tuple(migrated)
 
+    def _validated_v3_rows(
+        self,
+        connection: sqlite3.Connection,
+    ) -> tuple[tuple[int, str], ...]:
+        rows = connection.execute(
+            """SELECT version, payload_json FROM private_world_snapshots
+               ORDER BY version"""
+        ).fetchall()
+        migrated: list[tuple[int, str]] = []
+        for stored_version, payload_json in rows:
+            if type(stored_version) is not int or stored_version < 1:
+                raise LedgerWriteError("stored v3 row version is invalid")
+            try:
+                payload = self._payload_object(payload_json)
+                if set(payload) != _V3_PAYLOAD_FIELDS:
+                    raise ValueError("stored v3 fields are invalid")
+                if payload["view"] != "snapshot":
+                    raise ValueError("stored v3 view is invalid")
+                facts = payload["continuation_facts"]
+                grants = payload["intimacy_grants"]
+                if not isinstance(facts, list) or not isinstance(grants, list):
+                    raise ValueError("stored v3 collections are invalid")
+                snapshot = self._snapshot_from_payload(
+                    payload,
+                    tuple(
+                        LocalContinuationFact(
+                            fact_id=item["fact_id"],
+                            statement=item["statement"],
+                            awareness=ContinuationAwareness(item["awareness"]),
+                        )
+                        for item in facts
+                    ),
+                    tuple(
+                        IntimacyGrant(
+                            grant_id=item["grant_id"],
+                            tier=IntimacyTier(item["tier"]),
+                            statement=item["statement"],
+                        )
+                        for item in grants
+                    ),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LedgerWriteError("stored v3 state is invalid") from exc
+            if snapshot.version != stored_version:
+                raise LedgerWriteError("stored v3 version does not match row")
+            if self._v3_snapshot_json(snapshot) != payload_json:
+                raise LedgerWriteError("stored v3 state is not canonical")
+            migrated.append((stored_version, self._snapshot_json(snapshot)))
+        return tuple(migrated)
+
     def _strict_stored_snapshot(
         self,
         stored_version: object,
@@ -587,7 +664,7 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError("stored snapshot row version is invalid")
         try:
             payload = self._payload_object(payload_json)
-            if set(payload) != _V3_PAYLOAD_FIELDS:
+            if set(payload) != _V4_PAYLOAD_FIELDS:
                 raise ValueError("stored state fields are invalid")
             if payload["view"] != "snapshot":
                 raise ValueError("stored state view is invalid")
@@ -597,6 +674,14 @@ class SQLitePrivateWorldLedger:
             grants = payload["intimacy_grants"]
             if not isinstance(grants, list):
                 raise ValueError("stored intimacy grants must be a list")
+            boundaries = payload["active_boundaries"]
+            if not isinstance(boundaries, list):
+                raise ValueError("stored active boundaries must be a list")
+            affection_payload = payload["acknowledged_affection"]
+            if affection_payload is not None and not isinstance(
+                affection_payload, dict
+            ):
+                raise ValueError("stored acknowledged affection is invalid")
             snapshot = self._snapshot_from_payload(
                 payload,
                 tuple(
@@ -614,6 +699,25 @@ class SQLitePrivateWorldLedger:
                         statement=item["statement"],
                     )
                     for item in grants
+                ),
+                tuple(
+                    ActiveBoundary(
+                        boundary_id=item["boundary_id"],
+                        set_at=item["set_at"],
+                        scope=item["scope"],
+                    )
+                    for item in boundaries
+                ),
+                (
+                    AcknowledgedAffection(
+                        intensity=AffectionIntensity(
+                            affection_payload["intensity"]
+                        ),
+                        statement_ref_id=affection_payload["statement_ref_id"],
+                        scope=AffectionScope(affection_payload["scope"]),
+                    )
+                    if affection_payload is not None
+                    else None
                 ),
             )
         except (KeyError, TypeError, ValueError) as exc:

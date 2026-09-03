@@ -4,7 +4,7 @@
 `PrivateWorldSnapshot`, `PrivateWorldControlView`,
 `PrivateWorldCharacterView`, and disabled `NullPrivateWorldPort`.
 
-The schema v3 snapshot stores bounded relationship scores, relationship stage,
+The schema v4 snapshot stores bounded relationship scores, relationship stage,
 append-only `intimacy_grants`, the 7-day growth window, current nickname
 permissions, home access, legacy continuation awareness, and typed
 `LocalContinuationFact` records. Each grant has a stable identifier, bounded

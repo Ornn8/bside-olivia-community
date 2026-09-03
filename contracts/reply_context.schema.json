@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "p02.reply-context.v2",
+  "$id": "p02.reply-context.v3",
   "title": "P02 ReplyContext contract",
   "type": "object",
   "additionalProperties": false,
@@ -155,6 +155,32 @@
         }
       }
     },
+    "known_active_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boundary_id", "scope"],
+      "properties": {
+        "boundary_id": {"$ref": "#/$defs/identifier"},
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+        }
+      }
+    },
+    "known_acknowledged_affection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intensity", "statement_ref_id", "scope"],
+      "properties": {
+        "intensity": {"enum": ["warmth", "care", "love"]},
+        "statement_ref_id": {"$ref": "#/$defs/identifier"},
+        "scope": {
+          "enum": ["this_reply", "ongoing_correspondence", "relationship"]
+        }
+      }
+    },
     "private_behavior": {
       "type": "object",
       "additionalProperties": false,
@@ -169,7 +195,9 @@
         "granted_intimacy",
         "nickname_permission",
         "home_history_allowed",
-        "known_continuations"
+        "known_continuations",
+        "active_boundaries",
+        "acknowledged_affection"
       ],
       "properties": {
         "familiarity": {
@@ -248,6 +276,17 @@
           "items": {
             "$ref": "#/$defs/known_continuation"
           }
+        },
+        "active_boundaries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/known_active_boundary"}
+        },
+        "acknowledged_affection": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/known_acknowledged_affection"}
+          ]
         }
       }
     },

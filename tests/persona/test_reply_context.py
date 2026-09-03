@@ -11,6 +11,7 @@ from runtime.reply.reply_context import (
     BehaviorLevel,
     IntimacyRequest,
     IntimacyTier,
+    KnownActiveBoundary,
     PrivateBehaviorView,
     OutputChannel,
     OutputConstraints,
@@ -196,7 +197,7 @@ def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
     ).to_dict()
 
-    assert schema["$id"] == "p02.reply-context.v2"
+    assert schema["$id"] == "p02.reply-context.v3"
     assert list(validator.iter_errors(valid)) == []
 
     invalid_channel = {**valid, "output_constraints": {**valid["output_constraints"]}}
@@ -218,6 +219,26 @@ def test_schema_matches_runtime_mode_and_privacy_invariants() -> None:
     invalid_home_access["private_behavior"].pop("home_history_allowed")
     invalid_home_access["private_behavior"]["home_access"] = "visit_access"
     assert list(validator.iter_errors(invalid_home_access))
+
+
+def test_projected_boundary_scope_character_rules_match_schema() -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "reply_context.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    valid = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    ).to_dict()
+    invalid = {**valid, "private_behavior": {**valid["private_behavior"]}}
+    invalid["private_behavior"]["active_boundaries"] = [
+        {"boundary_id": "boundary.synthetic", "scope": "bad\nscope"}
+    ]
+
+    with pytest.raises(ReplyContextError):
+        KnownActiveBoundary("boundary.synthetic", "bad\nscope")
+    assert list(Draft202012Validator(schema).iter_errors(invalid))
 
 
 def test_public_contract_documentation_names_api_errors_and_scope_boundary() -> None:

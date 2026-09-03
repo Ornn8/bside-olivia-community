@@ -92,6 +92,7 @@ class NicknamePermission(str, Enum):
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PLAIN_TEXT_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,57 @@ class KnownContinuationFact:
 
 
 @dataclass(frozen=True)
+class KnownActiveBoundary:
+    boundary_id: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.boundary_id, str) or not _ID_RE.fullmatch(
+            self.boundary_id
+        ):
+            raise ReplyContextError("boundary identifier must be stable")
+        if (
+            not isinstance(self.scope, str)
+            or not self.scope.strip()
+            or len(self.scope) > 200
+            or _PLAIN_TEXT_CONTROL_RE.search(self.scope)
+        ):
+            raise ReplyContextError("boundary scope is invalid")
+        object.__setattr__(self, "scope", self.scope.strip())
+
+    def to_dict(self) -> dict[str, str]:
+        return {"boundary_id": self.boundary_id, "scope": self.scope}
+
+
+@dataclass(frozen=True)
+class KnownAcknowledgedAffection:
+    intensity: str
+    statement_ref_id: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        if self.intensity not in {"warmth", "care", "love"}:
+            raise ReplyContextError("affection intensity is invalid")
+        if not isinstance(self.statement_ref_id, str) or not _ID_RE.fullmatch(
+            self.statement_ref_id
+        ):
+            raise ReplyContextError("affection statement reference is invalid")
+        if self.scope not in {
+            "this_reply",
+            "ongoing_correspondence",
+            "relationship",
+        }:
+            raise ReplyContextError("affection scope is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "intensity": self.intensity,
+            "statement_ref_id": self.statement_ref_id,
+            "scope": self.scope,
+        }
+
+
+@dataclass(frozen=True)
 class PrivateBehaviorView:
     familiarity: BehaviorLevel = BehaviorLevel.UNKNOWN
     trust: BehaviorLevel = BehaviorLevel.UNKNOWN
@@ -191,6 +243,8 @@ class PrivateBehaviorView:
     nickname_permission: NicknamePermission = NicknamePermission.NOT_ALLOWED
     home_history_allowed: bool = False
     known_continuations: tuple[KnownContinuationFact, ...] = ()
+    active_boundaries: tuple[KnownActiveBoundary, ...] = ()
+    acknowledged_affection: KnownAcknowledgedAffection | None = None
 
     def __post_init__(self) -> None:
         expected_types = (
@@ -232,6 +286,21 @@ class PrivateBehaviorView:
                 "known continuations must be typed, unique, and bounded"
             )
         object.__setattr__(self, "known_continuations", facts)
+        if isinstance(self.active_boundaries, (str, bytes)):
+            raise ReplyContextError("active boundaries must be a typed sequence")
+        boundaries = tuple(self.active_boundaries)
+        if (
+            len(boundaries) > 16
+            or any(not isinstance(item, KnownActiveBoundary) for item in boundaries)
+            or len({item.boundary_id for item in boundaries}) != len(boundaries)
+        ):
+            raise ReplyContextError("active boundaries must be typed and unique")
+        object.__setattr__(self, "active_boundaries", boundaries)
+        if self.acknowledged_affection is not None and not isinstance(
+            self.acknowledged_affection,
+            KnownAcknowledgedAffection,
+        ):
+            raise ReplyContextError("acknowledged affection is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -248,6 +317,14 @@ class PrivateBehaviorView:
             "known_continuations": [
                 fact.to_dict() for fact in self.known_continuations
             ],
+            "active_boundaries": [
+                boundary.to_dict() for boundary in self.active_boundaries
+            ],
+            "acknowledged_affection": (
+                self.acknowledged_affection.to_dict()
+                if self.acknowledged_affection is not None
+                else None
+            ),
         }
 
 

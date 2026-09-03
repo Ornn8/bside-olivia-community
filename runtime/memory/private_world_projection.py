@@ -12,6 +12,8 @@ from runtime.reply.reply_context import (
     BehaviorLevel,
     IntimacyTier,
     KnownContinuationFact,
+    KnownAcknowledgedAffection,
+    KnownActiveBoundary,
     NicknamePermission,
     PrivateBehaviorView,
     RelationshipStage,
@@ -38,6 +40,10 @@ def _stage(value: str) -> RelationshipStage:
 
 def _known_fact(value: LocalContinuationFact) -> KnownContinuationFact:
     return KnownContinuationFact(value.fact_id, value.statement)
+
+
+def _known_boundary(value) -> KnownActiveBoundary:
+    return KnownActiveBoundary(value.boundary_id, value.scope)
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,18 @@ def project_private_world(
     known_facts = tuple(
         _known_fact(fact) for fact in character.continuation_facts
     )
+    known_boundaries = tuple(
+        _known_boundary(boundary) for boundary in character.active_boundaries
+    )
+    known_affection = (
+        KnownAcknowledgedAffection(
+            intensity=character.acknowledged_affection.intensity.value,
+            statement_ref_id=character.acknowledged_affection.statement_ref_id,
+            scope=character.acknowledged_affection.scope.value,
+        )
+        if character.acknowledged_affection is not None
+        else None
+    )
     continuation_known = character.continuation_known
     stage = _stage(character.relationship_stage)
     intimacy_ceiling = intimacy_ceiling_for_stage(stage)
@@ -97,6 +115,8 @@ def project_private_world(
             character.home_history_allowed
         ),
         known_continuations=known_facts,
+        active_boundaries=known_boundaries,
+        acknowledged_affection=known_affection,
     )
     return ProjectedPrivateWorld(
         behavior=behavior,
