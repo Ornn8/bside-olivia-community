@@ -13,6 +13,23 @@ from jsonschema.exceptions import ValidationError
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_release_persona_declarations_all_have_a_supported_facet() -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "persona_v2.schema.json").read_text(encoding="utf-8")
+    )
+    release = json.loads(
+        (ROOT / "linli_character" / "persona_release_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    supported = set(
+        schema["$defs"]["declaration"]["properties"]["facet"]["enum"]
+    )
+
+    assert release["declarations"]
+    assert all(row.get("facet") in supported for row in release["declarations"])
+
+
 def test_v2_constitution_uses_the_merged_p02_01_schema() -> None:
     schema = json.loads((ROOT / "contracts" / "persona_v2.schema.json").read_text(encoding="utf-8"))
     constitution_path = ROOT / "linli_character" / "persona_v2.json"

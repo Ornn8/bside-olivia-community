@@ -8,6 +8,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 import pytest
 
+from llm_gateway import GatewayConfig
 from persona_assembly import assemble_persona
 from persona_loader import load_persona
 from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
@@ -70,6 +71,62 @@ def test_release_profile_contains_character_behavior_not_only_safety_rules() -> 
     assert any(row["facet"] == "AUTONOMY" for row in by_id.values())
     assert any(row["facet"] == "EXPRESSION_STYLE" for row in by_id.values())
     assert any(row["facet"] == "RELATIONSHIP_STYLE" for row in by_id.values())
+
+
+def test_release_public_canon_is_unique_publishable_and_source_registered() -> None:
+    release = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
+    public_canon = [
+        row for row in release["declarations"] if row["tier"] == "PUBLIC_CANON"
+    ]
+    statements = [row["statement"] for row in public_canon]
+    registered_source_ids = {row["source_id"] for row in provenance["sources"]}
+
+    assert len(public_canon) >= 10
+    assert len(statements) == len(set(statements))
+    assert all(row["allowed_public_release"] for row in public_canon)
+    assert {row["source_id"] for row in public_canon} <= registered_source_ids
+
+
+def test_release_character_autonomy_rules_are_assembled() -> None:
+    release = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    by_id = {row["declaration_id"]: row for row in release["declarations"]}
+    expected = {
+        "character.no_trope_labels": (
+            "CORE_TRAIT",
+            "不用人格标签词概括自己，不把性格写成固定套路的轮换。",
+        ),
+        "character.no_economic_fabrication": (
+            "BACKGROUND",
+            "经济来源与资产规模未设定，不补造数字、信托或家族背景。",
+        ),
+        "character.not_reward_dispenser": (
+            "AUTONOMY",
+            "可以不接受请求、不喜欢某个玩笑、不同意；回应不以取悦为默认。",
+        ),
+        "character.no_offline_meeting": (
+            "RELATIONSHIP_STYLE",
+            "不与用户约定或暗示线下见面的可能。",
+        ),
+    }
+
+    loaded = load_persona(RELEASE_PATH)
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 9, 3, tzinfo=timezone.utc)),
+    )
+    assembly = assemble_persona(
+        loaded.snapshot,
+        context,
+        user_input="今天想说说近况。",
+        max_units=GatewayConfig().max_input_chars,
+    )
+
+    for declaration_id, (facet, statement) in expected.items():
+        assert by_id[declaration_id]["facet"] == facet
+        assert by_id[declaration_id]["tier"] == "CONSTITUTION"
+        assert statement in assembly.system_content
+    assert any(row["facet"] == "AUTONOMY" for row in by_id.values())
 
 
 @pytest.mark.parametrize(
@@ -140,10 +197,10 @@ def test_release_profile_contains_exact_concrete_anchors(
     }
 
 
-def test_release_profile_contains_64_declarations_after_anchor_batch() -> None:
+def test_release_profile_contains_78_declarations_after_public_canon_and_autonomy_batch() -> None:
     payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
 
-    assert len(payload["declarations"]) == 64
+    assert len(payload["declarations"]) == 78
 
 
 def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None:
@@ -151,8 +208,8 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
     payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
 
     exemplars = loaded.snapshot.style_exemplars
-    provenance = payload["style_exemplar_provenance"]
-    assert 4 <= len(exemplars) <= 6
+    synthetic_provenance = payload["synthetic_style_exemplar_provenance"]
+    assert len(exemplars) == 12
     assert {item.situation for item in exemplars} == {
         "brief_greeting",
         "ordinary_smalltalk",
@@ -161,8 +218,17 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
         "natural_close",
         "music_request",
     }
-    assert all(item.mode == "text_letter" for item in exemplars)
-    assert all(item.derivation == "PRIVATE_CORPUS_ABSTRACTION" for item in exemplars)
+    assert {item.mode for item in exemplars} == {
+        "text_letter",
+        "spoken_video",
+        "musical_video",
+    }
+    synthetic = tuple(
+        item for item in exemplars if item.derivation == "SYNTHETIC"
+    )
+    assert len(synthetic) == 12
+    assert len({(item.mode, item.situation) for item in synthetic}) == 12
+    assert {item.derivation for item in exemplars} == {"SYNTHETIC"}
     assert all(item.rights_status == "SUMMARY_ONLY" for item in exemplars)
     assert all(item.allowed_public_release for item in exemplars)
     assert all(item.style_only for item in exemplars)
@@ -170,18 +236,18 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
     assert all(item.user_text_is_synthetic for item in exemplars)
     assert all(not item.assistant_text_is_verbatim for item in exemplars)
     assert all("?" not in item.assistant_text and "？" not in item.assistant_text for item in exemplars)
-    assert {item.source_id for item in exemplars} == {provenance["source_id"]}
-    assert provenance == {
-        "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
-        "user_folder_count": 30, "fold_count": 5,
-        "fold_user_counts": [6, 6, 6, 6, 6], "holdout_fold": 0,
-        "training_folds": [1, 2, 3, 4], "training_text_count": 120,
-        "videos_excluded": True, "user_folders_indivisible": True,
-        "assignment_method": "NFC_SHA256_SORT_ROUND_ROBIN",
-        "holdout_body_read": False, "user_text_policy": "SYNTHETIC",
+    assert {item.source_id for item in synthetic} == {
+        synthetic_provenance["source_id"]
+    }
+    assert synthetic_provenance == {
+        "source_id": "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED",
+        "derivation": "SYNTHETIC",
+        "review_basis": "CONSTITUTION_REVIEWED",
+        "private_corpus_used": False,
+        "user_text_policy": "SYNTHETIC",
         "assistant_text_policy": "NON_VERBATIM_ABSTRACTION",
         "contiguous_7_char_overlap_count": 0,
-        "user_authorization_date": "2026-08-30",
+        "reviewed_at": "2026-09-03",
     }
     replies = [item.assistant_text for item in exemplars]
     assert {text.count("。") for text in replies} >= {1, 2, 3}
@@ -357,30 +423,37 @@ def test_release_provenance_registers_every_asset_source_bidirectionally() -> No
 def test_release_style_source_records_rights_and_distillation_boundary() -> None:
     release = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
     provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
-    source = next(
+    synthetic_source = next(
         row
         for row in provenance["sources"]
-        if row["source_id"] == "P02.LINLI.STYLE.CV5.TRAINING"
+        if row["source_id"]
+        == "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED"
     )
     style_records = release["style_exemplars"]
+    synthetic_records = [
+        row for row in style_records if row["derivation"] == "SYNTHETIC"
+    ]
 
-    assert source["rights_status"] == "SUMMARY_ONLY"
+    assert not any(
+        row["source_id"] == "P02.LINLI.STYLE.CV5.TRAINING"
+        for row in provenance["sources"]
+    )
     assert {row["rights_status"] for row in style_records} == {
-        source["rights_status"]
+        synthetic_source["rights_status"]
     }
-    assert source["allowed_public_release"] is True
-    assert set(source["declaration_ids"]) == {
-        row["exemplar_id"] for row in style_records
+    assert synthetic_source["allowed_public_release"] is True
+    assert set(synthetic_source["declaration_ids"]) == {
+        row["exemplar_id"] for row in synthetic_records
     }
+    assert synthetic_source["privacy_risk"] == "LOW"
+    assert "no private correspondence" in synthetic_source["exclusion_reason"]
     evidence = next(
         row
         for row in provenance["evidence"]
-        if row["source_id"] == source["source_id"]
+        if row["source_id"] == synthetic_source["source_id"]
     )
-    assert evidence["kind"] == "style_distillation"
-    assert "Thirty indivisible user folders" in evidence["summary"]
-    assert "five deterministic folds" in evidence["summary"]
-    assert "holdout with bodies unread" in evidence["summary"]
+    assert evidence["kind"] == "constitution_reviewed_synthetic_style"
+    assert "Private correspondence was not used" in evidence["summary"]
 
 
 def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:
