@@ -5,10 +5,17 @@ persisted with `reply_revision`. Its stable `delivery_id` is
 `letter_id:reply_revision`; the SQLite ledger applies it once.
 
 `DeliveryEvent` accepts only `CANONICAL_REPLY_DELIVERED` and has no stage,
-intimacy, nickname, home-access, or continuation mutation payload. Confirmed
-relationship and intimacy changes must use a typed command through
-`PrivateWorldCommandService`; canonical delivery cannot act as an authorization
-adapter.
+intimacy, nickname, home-access, continuation, boundary, or affection mutation
+payload. It retains this single responsibility. Character relationship facts
+use the dedicated typed `RelationshipFactCommand` and
+`PrivateWorldRelationshipCommitter`; canonical delivery cannot act as an
+authorization adapter.
+
+The current production status is **typed contract + trusted internal entry
+ready**. Automatic reply integration is not enabled: reply generation and LLM
+candidate analysis do not submit relationship facts. A future caller may commit
+one only after an explicit trusted approval step supplies the typed command and
+verifiable canonical delivery evidence.
 
 The letter is first stored with `private_world_status=PENDING`, then committed.
 Startup recovery retries pending records without changing or deleting canonical

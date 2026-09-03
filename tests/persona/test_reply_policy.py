@@ -5,6 +5,8 @@ import pytest
 from runtime.reply.reply_context import (
     IntimacyRequest,
     IntimacyTier,
+    KnownActiveBoundary,
+    KnownContinuationFact,
     OutputChannel,
     OutputConstraints,
     PrivateBehaviorView,
@@ -136,6 +138,11 @@ def test_shared_history_is_blocked_only_from_explicit_structured_evidence() -> N
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            active_boundaries=(
+                KnownActiveBoundary("claim.synthetic", "synthetic_scope"),
+            ),
+        ),
     )
     candidate = "还记得我们一起去过海边。"
     unauthorized = SharedHistoryClaim("claim.synthetic", 0, len(candidate), False)
@@ -147,6 +154,37 @@ def test_shared_history_is_blocked_only_from_explicit_structured_evidence() -> N
     assert tuple(violation.code for violation in blocked.violations) == (
         ViolationCode.UNAUTHORIZED_SHARED_HISTORY,
     )
+
+
+def test_existing_known_continuation_remains_shared_history_authority() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(
+            known_continuations=(
+                KnownContinuationFact(
+                    "continuation.synthetic",
+                    "The character knows this synthetic shared history.",
+                ),
+            ),
+        ),
+    )
+    candidate = "我们上次说到这里。"
+
+    result = scan_reply(
+        candidate,
+        context,
+        shared_history_claims=(
+            SharedHistoryClaim(
+                "continuation.synthetic",
+                0,
+                len(candidate),
+                True,
+            ),
+        ),
+    )
+
+    assert result.passed is True
 
 
 def test_unrequested_intimacy_is_blocked_only_from_structured_evidence() -> None:

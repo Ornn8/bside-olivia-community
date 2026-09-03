@@ -35,7 +35,7 @@ NOW = datetime(2026, 8, 22, tzinfo=timezone.utc)
 def test_delivery_rejects_every_noncanonical_mutation_kind(
     kind: ReducerEventKind,
 ) -> None:
-    with pytest.raises(ValueError, match="canonical reply delivery"):
+    with pytest.raises(TypeError, match="kind"):
         DeliveryEvent(
             delivery_id=f"delivery.rejected-{kind.value}",
             kind=kind,
@@ -53,7 +53,6 @@ def test_delivery_event_has_no_mutation_payload_surface() -> None:
     with pytest.raises(TypeError, match="intimacy_grant"):
         DeliveryEvent(
             delivery_id="letter-intimacy:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
             semantic_key="canonical.intimacy",
             intimacy_grant=grant,
@@ -61,7 +60,6 @@ def test_delivery_event_has_no_mutation_payload_surface() -> None:
     with pytest.raises(TypeError, match="target_stage"):
         DeliveryEvent(
             delivery_id="letter-stage:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
             semantic_key="canonical.stage",
             target_stage="close",
@@ -69,23 +67,20 @@ def test_delivery_event_has_no_mutation_payload_surface() -> None:
         )
 
 
-def test_committer_revalidates_canonical_kind_before_ledger_mutation(
+def test_committer_has_no_relationship_kind_switch(
     tmp_path: Path,
 ) -> None:
     ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
     committer = PrivateWorldDeliveryCommitter(ledger)
     delivery = DeliveryEvent(
         delivery_id="letter-forged:1",
-        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
         occurred_at=NOW,
         semantic_key="canonical.forged",
     )
     object.__setattr__(delivery, "kind", ReducerEventKind.BOUNDARY_RESPECTED)
-    object.__setattr__(delivery, "__post_init__", lambda: None)
 
-    with pytest.raises(ValueError, match="canonical reply delivery"):
-        committer.commit(delivery)
-    assert ledger.events() == ()
+    assert committer.commit(delivery) is DeliveryStatus.COMMITTED
+    assert ledger.events()[0].event_type == "canonical_reply_delivered"
     assert ledger.snapshot() == PrivateWorldSnapshot()
 
 
@@ -94,7 +89,6 @@ def test_delivery_commits_once_with_stable_delivery_id(tmp_path: Path) -> None:
     committer = PrivateWorldDeliveryCommitter(ledger)
     delivery = DeliveryEvent(
         delivery_id="letter-1:1",
-        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
         occurred_at=NOW,
         semantic_key="canonical.letter-1",
     )
@@ -117,7 +111,6 @@ def test_canonical_delivery_persists_without_relationship_mutation(
     status = committer.commit(
         DeliveryEvent(
             delivery_id="letter-2:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
             semantic_key="canonical.synthetic",
         )
@@ -135,7 +128,6 @@ def test_delivery_degrades_when_sqlite_snapshot_fails(
     committer = PrivateWorldDeliveryCommitter(ledger)
     delivery = DeliveryEvent(
         delivery_id="letter-sqlite-failure:1",
-        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
         occurred_at=NOW,
         semantic_key="canonical.sqlite-failure",
     )
@@ -156,7 +148,6 @@ def test_delivery_degrades_when_snapshot_json_is_semantically_corrupt(
     committer = PrivateWorldDeliveryCommitter(ledger)
     delivery = DeliveryEvent(
         delivery_id="letter-corrupt-snapshot:1",
-        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
         occurred_at=NOW,
         semantic_key="canonical.corrupt-snapshot",
     )
@@ -194,7 +185,6 @@ def test_delivery_degrades_when_snapshot_json_has_the_wrong_shape(
     assert committer.commit(
         DeliveryEvent(
             delivery_id="wrong-shape-delivery:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
             semantic_key="canonical.wrong-shape",
         )

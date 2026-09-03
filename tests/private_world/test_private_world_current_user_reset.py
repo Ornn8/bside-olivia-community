@@ -11,19 +11,17 @@ from private_world_commands import (
 )
 from private_world_service import PrivateWorldCommandService
 from runtime.memory.private_world_delivery import DeliveryEvent, DeliveryStatus
-from private_world_reducer import ReducerEventKind
 from runtime.memory.private_world_runtime import create_private_world_runtime
 
 
 NOW = datetime(2026, 8, 26, tzinfo=timezone.utc)
 
 
-def _commit(runtime, *, kind: ReducerEventKind) -> None:
+def _commit(runtime) -> None:
     assert runtime.committer is not None
     assert runtime.committer.commit(
         DeliveryEvent(
             delivery_id="same-delivery:1",
-            kind=kind,
             occurred_at=NOW,
             semantic_key="same.semantic:1",
         )
@@ -37,7 +35,7 @@ def test_current_user_reset_is_isolated_idempotent_and_persists(
     user_a = create_private_world_runtime(environment, user_id="User-A")
     user_b = create_private_world_runtime(environment, user_id="user-b")
 
-    _commit(user_a, kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED)
+    _commit(user_a)
     PrivateWorldCommandService(user_b.port).execute(
         RecordBoundaryRespected(
             command_id="command.synthetic-boundary",

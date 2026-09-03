@@ -115,7 +115,6 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
     committer = PrivateWorldDeliveryCommitter(ledger)
     delivery = DeliveryEvent(
         delivery_id="synthetic-letter:1",
-        kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
         occurred_at=NOW,
         semantic_key="canonical.synthetic-letter",
     )
@@ -201,7 +200,6 @@ def test_private_world_export_reset_and_delete_are_explicit_and_complete(
     committer.commit(
         DeliveryEvent(
             delivery_id="admin-letter:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=NOW,
             semantic_key="canonical.admin-letter",
         )

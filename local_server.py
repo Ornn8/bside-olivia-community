@@ -108,6 +108,11 @@ from runtime.memory.private_world_delivery import (
     DeliveryStatus,
     PrivateWorldDeliveryCommitter,
 )
+from runtime.memory.private_world_relationship import (
+    PrivateWorldRelationshipCommitter,
+    RelationshipFactCommand,
+    RelationshipFactStatus,
+)
 from private_world_candidate import (
     GatewayPrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateAnalyzer,
@@ -117,7 +122,6 @@ from private_world_candidate import (
     deliver_private_world_candidate,
 )
 from private_world_candidates import SQLitePrivateWorldCandidateStore
-from private_world_reducer import ReducerEventKind
 from private_world_service import PrivateWorldCommandService
 from runtime.memory.private_world_projection import project_private_world
 from runtime.memory.private_world_runtime import (
@@ -1164,6 +1168,9 @@ private_world_runtime: PrivateWorldRuntime = create_private_world_runtime(
 private_world_port: PrivateWorldPort = private_world_runtime.port
 private_world_committer: PrivateWorldDeliveryCommitter | None = (
     private_world_runtime.committer
+)
+private_world_relationship_committer: PrivateWorldRelationshipCommitter | None = (
+    private_world_runtime.relationship_committer
 )
 private_world_command_service: PrivateWorldCommandService | None = (
     PrivateWorldCommandService(private_world_runtime.port)
@@ -3806,7 +3813,9 @@ def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
     letter["private_world_delivery_id"] = delivery_id
     letter["private_world_status"] = "PENDING"
     letter["private_world_occurred_at"] = datetime.now(timezone.utc).isoformat()
-    letter["private_world_event_kind"] = ReducerEventKind.CANONICAL_REPLY_DELIVERED.value
+    letter["private_world_reply_sha256"] = hashlib.sha256(
+        canonical_text.encode("utf-8")
+    ).hexdigest()
     letter["private_world_semantic_key"] = f"canonical.{semantic_digest}"
 
 
@@ -3866,11 +3875,17 @@ def _commit_private_world_letter(letter: dict) -> bool:
         letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
         return False
     try:
+        reply_digest = letter.get("private_world_reply_sha256")
+        if not isinstance(reply_digest, str):
+            reply_digest = hashlib.sha256(
+                str(letter["reply_text"]).encode("utf-8")
+            ).hexdigest()
+            letter["private_world_reply_sha256"] = reply_digest
         delivery = DeliveryEvent(
             delivery_id=str(letter["private_world_delivery_id"]),
-            kind=ReducerEventKind(str(letter["private_world_event_kind"])),
             occurred_at=datetime.fromisoformat(str(letter["private_world_occurred_at"])),
             semantic_key=str(letter["private_world_semantic_key"]),
+            canonical_reply_sha256=reply_digest,
         )
         status = private_world_committer.commit(delivery)
     except (KeyError, TypeError, ValueError):
@@ -3882,6 +3897,16 @@ def _commit_private_world_letter(letter: dict) -> bool:
         return True
     letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
     return False
+
+
+def commit_private_world_relationship_fact(
+    command: RelationshipFactCommand,
+) -> RelationshipFactStatus:
+    """Commit a typed character fact through the dedicated authority path."""
+
+    if private_world_relationship_committer is None:
+        return RelationshipFactStatus.UNAVAILABLE
+    return private_world_relationship_committer.commit(command)
 
 
 def recover_pending_private_world() -> int:
