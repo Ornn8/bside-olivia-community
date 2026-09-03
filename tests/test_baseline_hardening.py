@@ -166,6 +166,21 @@ def test_b00_scanner_patterns_cover_variants_without_echoing_source() -> None:
     )
 
 
+def test_sensitive_path_scanner_blocks_private_corpus_and_holdout_artifacts() -> None:
+    import baseline_hardening_scan as scanner
+
+    for path in (
+        ".private/corpus/user/001.txt",
+        "artifacts/holdout_ids.json",
+        "artifacts/persona_distillation_output.jsonl",
+        "artifacts/private_corpus.csv",
+    ):
+        assert scanner.SENSITIVE_PATH_PATTERN.search(path), path
+    assert not scanner.SENSITIVE_PATH_PATTERN.search(
+        "contracts/persona_distillation_input.schema.json"
+    )
+
+
 def test_b00_scanner_covers_english_dependency_and_triple_quoted_docstrings(
     tmp_path: Path,
 ) -> None:

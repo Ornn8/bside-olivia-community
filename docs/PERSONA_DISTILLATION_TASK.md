@@ -129,3 +129,44 @@
 6. `CHANGELOG.md`：每次事实/推断/边界变化的原因、证据和回滚方式。
 
 完成定义：来源登记完整、事实/推断/未知可区分、玩家隐私零混入、长原文零提交、反例与保留集测试全绿、独立 Luna Max 审查通过。任何一项未完成都只能标为“人格任务书执行中”，不能标为最终林离人格。
+
+## 10. 本地蒸馏管线
+
+仓库只保存输入契约和校验代码，不保存往来语料、参与者目录名、来源记录
+ID、holdout 划分或蒸馏结果。`docs/persona-sources/` 提供经审查的公开或授权
+摘要；操作员提供的往来目录仅在本机读取。
+
+先运行不会输出私密内容的清点命令：
+
+```powershell
+python -m runtime.persona.persona_distillation --corpus-root <local-corpus-root>
+```
+
+直接子目录按用户整体分组，经 NFC 规范化和 SHA-256 排序后轮转分配到五折；
+第 0 折为 holdout，其正文不会被读取。命令只输出数量、视频排除状态和语料
+指纹，不输出名称、路径、来源 ID 或正文。
+
+每份文档必须标记为用户来信、已投递的角色 canonical reply 或公开角色来源。
+只有后两类能授权 declaration 或助手风格样例；用户来信即使内容看似可信也会
+被拒绝。`PersonaTopicExtractor` 仅收到训练折，按固定主题顺序产出候选；最终器
+拒绝 holdout 引用、由本地往来支持的公开发布声明、重复 ID、无效分类和与训练
+来源存在连续 7 字重合的私有派生样例，并使用规范排序和 JSON 序列化生成稳定
+结果摘要。
+
+若目录同时包含原信与角色正式回信，必须另提供逐文件角色清单：
+
+```powershell
+python -m runtime.persona.persona_distillation `
+  --corpus-root <local-corpus-root> `
+  --role-manifest <local-role-manifest.json>
+```
+
+清单遵循 `contracts/persona_corpus_manifest.schema.json`，逐项声明相对路径、
+往来 ID 和 `user_letter` / `canonical_character_reply` 角色，并完整覆盖目录内
+所有文本。角色回信必须与同一往来 ID、同一顶层用户 partition 的用户原信成对
+出现；同一往来 ID 不得跨顶层用户 partition，避免跨训练/holdout 用户配对。
+运行时不根据文件名或正文猜测角色。未提供清单时，所有文本一律按
+`user_letter` 处理，状态保持 `LOCAL_PRIVATE_INPUT_ONLY`。
+
+蒸馏结果只能作为本机审查工件。不得把结果、holdout 清单或语料导出加入 Git；
+只有单独审查过的摘要和合成回归夹具可以进入跟踪资产。
