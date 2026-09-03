@@ -14,6 +14,7 @@ from runtime.memory.conversation_memory_identity import (
     normalize_conversation_memory_user_id,
 )
 from runtime.memory.private_world_delivery import PrivateWorldDeliveryCommitter
+from runtime.memory.private_world_relationship import PrivateWorldRelationshipCommitter
 from private_world_ledger import (
     LedgerWriteError,
     SQLitePrivateWorldLedger,
@@ -48,6 +49,7 @@ def _user_database(path: Path, user_id: object) -> Path:
 class PrivateWorldRuntime:
     port: PrivateWorldPort
     committer: PrivateWorldDeliveryCommitter | None
+    relationship_committer: PrivateWorldRelationshipCommitter | None
     status: str
     provider: str
     reason_code: str | None
@@ -159,6 +161,7 @@ def create_private_world_runtime(
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
             None,
+            None,
             "unavailable",
             "none",
             "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
@@ -168,6 +171,7 @@ def create_private_world_runtime(
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
             None,
+            None,
             "disabled",
             "none",
             reason,
@@ -176,6 +180,7 @@ def create_private_world_runtime(
     if path is None:
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
+            None,
             None,
             "unavailable",
             "none",
@@ -189,6 +194,7 @@ def create_private_world_runtime(
         return PrivateWorldRuntime(
             ledger,
             PrivateWorldDeliveryCommitter(ledger),
+            PrivateWorldRelationshipCommitter(ledger),
             "available",
             "sqlite",
             None,
@@ -201,6 +207,7 @@ def create_private_world_runtime(
     except (OSError, ValueError, RuntimeError, sqlite3.Error, LedgerWriteError):
         return PrivateWorldRuntime(
             NullPrivateWorldPort(),
+            None,
             None,
             "unavailable",
             "none",

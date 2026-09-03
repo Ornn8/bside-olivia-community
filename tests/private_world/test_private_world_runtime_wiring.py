@@ -324,7 +324,6 @@ def test_invalid_configured_current_user_never_opens_legacy_private_world(
     assert legacy.committer.commit(
         DeliveryEvent(
             delivery_id="legacy-local-user:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
             semantic_key="legacy.local-user:1",
         )

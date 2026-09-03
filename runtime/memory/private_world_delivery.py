@@ -14,8 +14,7 @@ from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
-
-
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 class DeliveryStatus(StrEnum):
     COMMITTED = "COMMITTED"
     DUPLICATE = "DUPLICATE"
@@ -25,20 +24,23 @@ class DeliveryStatus(StrEnum):
 @dataclass(frozen=True)
 class DeliveryEvent:
     delivery_id: str
-    kind: ReducerEventKind
     occurred_at: datetime
     semantic_key: str
     last_equivalent_at: datetime | None = None
+    canonical_reply_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.delivery_id, str) or not _ID_RE.fullmatch(
             self.delivery_id
         ):
             raise ValueError("delivery_id is invalid")
-        if self.kind is not ReducerEventKind.CANONICAL_REPLY_DELIVERED:
-            raise ValueError("canonical reply delivery kind is required")
+        if self.canonical_reply_sha256 is not None and (
+            not isinstance(self.canonical_reply_sha256, str)
+            or not _SHA256_RE.fullmatch(self.canonical_reply_sha256)
+        ):
+            raise ValueError("canonical reply digest is invalid")
         ReducerEvent(
-            kind=self.kind,
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=self.occurred_at,
             semantic_key=self.semantic_key,
             last_equivalent_at=self.last_equivalent_at,
@@ -52,11 +54,9 @@ class PrivateWorldDeliveryCommitter:
     def commit(self, delivery: DeliveryEvent) -> DeliveryStatus:
         if type(delivery) is not DeliveryEvent:
             raise TypeError("typed delivery is required")
-        if delivery.kind is not ReducerEventKind.CANONICAL_REPLY_DELIVERED:
-            raise ValueError("canonical reply delivery kind is required")
         DeliveryEvent.__post_init__(delivery)
         event = ReducerEvent(
-            kind=delivery.kind,
+            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=delivery.occurred_at,
             semantic_key=delivery.semantic_key,
             last_equivalent_at=delivery.last_equivalent_at,
@@ -87,6 +87,15 @@ class PrivateWorldDeliveryCommitter:
                         "change_fields": [
                             change.field for change in reduced.delta.changes
                         ],
+                        **(
+                            {
+                                "canonical_reply_sha256": (
+                                    delivery.canonical_reply_sha256
+                                )
+                            }
+                            if delivery.canonical_reply_sha256 is not None
+                            else {}
+                        ),
                     },
                     occurred_at=delivery.occurred_at.isoformat(),
                 ),

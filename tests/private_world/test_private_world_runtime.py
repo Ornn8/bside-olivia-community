@@ -36,6 +36,7 @@ from runtime.memory.private_world_runtime import (
     create_private_world_runtime,
     resolve_private_world_database,
 )
+from runtime.memory.private_world_relationship import PrivateWorldRelationshipCommitter
 from private_world_reducer import ReducerEventKind
 from runtime.reply.reply_context import IntimacyTier
 
@@ -241,6 +242,18 @@ def test_new_ledger_records_v4_metadata_without_backup(tmp_path: Path) -> None:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
         ).fetchone() == ("4",)
+def test_available_runtime_wires_a_dedicated_relationship_committer(
+    tmp_path: Path,
+) -> None:
+    runtime = create_private_world_runtime(
+        {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path / "state")}
+    )
+
+    assert isinstance(
+        runtime.relationship_committer,
+        PrivateWorldRelationshipCommitter,
+    )
+    assert runtime.relationship_committer.ledger is runtime.port
 
 
 def test_newer_schema_is_rejected_without_modification(tmp_path: Path) -> None:
@@ -541,7 +554,6 @@ def test_unknown_stored_snapshot_field_degrades_health_and_canonical_commit(
     assert runtime.committer.commit(
         DeliveryEvent(
             delivery_id="unknown-field-commit:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
             semantic_key="canonical.unknown-field",
         )
@@ -607,7 +619,6 @@ def test_strict_stored_snapshot_validation_rejects_every_noncanonical_row(
     assert runtime.committer.commit(
         DeliveryEvent(
             delivery_id=f"{corruption}-commit:1",
-            kind=ReducerEventKind.CANONICAL_REPLY_DELIVERED,
             occurred_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
             semantic_key=f"canonical.{corruption}",
         )

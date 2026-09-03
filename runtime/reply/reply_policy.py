@@ -195,7 +195,18 @@ def scan_reply(
     for claim in shared_history_claims:
         if not isinstance(claim, SharedHistoryClaim) or claim.end > len(candidate):
             raise ValueError("shared history claim is invalid for candidate")
-        if not claim.authorized:
+        authority_ids = {
+            boundary.boundary_id
+            for boundary in context.private_behavior.active_boundaries
+        }
+        authority_ids.update(
+            fact.fact_id for fact in context.private_behavior.known_continuations
+        )
+        if context.private_behavior.acknowledged_affection is not None:
+            authority_ids.add(
+                context.private_behavior.acknowledged_affection.statement_ref_id
+            )
+        if not claim.authorized or claim.claim_id not in authority_ids:
             violations.append(
                 Violation(
                     ViolationCode.UNAUTHORIZED_SHARED_HISTORY,
