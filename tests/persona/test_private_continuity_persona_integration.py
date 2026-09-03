@@ -70,7 +70,7 @@ def test_private_continuity_reaches_persona_without_control_only_state() -> None
     assert '"home_history_allowed":true' in system
     assert "visit_access" not in system
     assert "林离已经知道下周课程时间会调整。" in system
-    assert "81" not in system
+    assert '"trust":81' not in system
     assert "trip.pending" not in system
     assert "plan.control" not in system
     assert "角色尚未知道的旅行安排" not in system

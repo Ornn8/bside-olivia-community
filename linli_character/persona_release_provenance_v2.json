@@ -42,6 +42,10 @@
         "constitution.world_time",
         "constitution.no_hidden_fields",
         "constitution.language_match",
+        "character.no_trope_labels",
+        "character.no_economic_fabrication",
+        "character.not_reward_dispenser",
+        "character.no_offline_meeting",
         "identity.linli_name",
         "background.shanghai_music_student",
         "background.independent_life",
@@ -88,26 +92,106 @@
       "exclusion_reason": "The public source is a user-authorized abstract persona reference. Concrete relationship records, communication timelines, addresses, nicknames, and local-continuation instances are excluded from the repository and the release profile."
     },
     {
-      "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
-      "title": "林离风格样例 CV5 训练折分摘要",
-      "source_url": "https://github.com/Ornn8/bside-olivia-community/blob/819c25818b42e98ed0bb8fd16ac1578185be5e1c/linli_character/persona_release_v2.json",
-      "publisher": "Ornn8/bside-olivia-community maintainers",
-      "published_at": "2026-08-30",
-      "accessed_at": "2026-08-30",
-      "source_type": "user_authorized_style_distillation",
+      "source_id": "PUBLIC.STEAM.STORE.4532590",
+      "title": "BSide: Olivia Lin on Steam",
+      "source_url": "https://store.steampowered.com/app/4532590/BSide_Olivia_Lin/",
+      "publisher": "miHoYo via Steam",
+      "published_at": "2026-07-13",
+      "accessed_at": "2026-09-03",
+      "source_type": "first_party_product_page_summary",
       "access_status": "ACCESSIBLE",
       "rights_status": "SUMMARY_ONLY",
       "allowed_public_release": true,
-      "privacy_risk": "MEDIUM",
+      "privacy_risk": "LOW",
       "declaration_ids": [
-        "style.text.brief_greeting",
-        "style.text.ordinary_smalltalk",
-        "style.text.emotional_acknowledgement",
-        "style.text.boundary_refusal",
-        "style.text.natural_close",
-        "style.text.music_request"
+        "public.identity.shanghai_student",
+        "public.background.piano_major",
+        "public.background.psychology_minor",
+        "public.background.music_memory_research",
+        "public.background.letters"
       ],
-      "exclusion_reason": "Only non-verbatim style abstractions from training folds are released; holdout bodies, private source text, and videos remain excluded."
+      "exclusion_reason": "Only short factual summaries visible on the public product page are retained; images and page copy are not reproduced."
+    },
+    {
+      "source_id": "PUBLIC.STEAM.SHUTDOWN.20260811",
+      "title": "《BSide: Olivia Lin》停止运营公告",
+      "source_url": "https://steamcommunity.com/app/4532590/allnews/",
+      "publisher": "miHoYo via Steam Community",
+      "published_at": "2026-08-11",
+      "accessed_at": "2026-09-03",
+      "source_type": "first_party_operational_announcement_summary",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "allowed_public_release": true,
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "public.background.vinyl",
+        "public.background.old_movies",
+        "public.background.rainy_days"
+      ],
+      "exclusion_reason": "Only three short character-preference summaries are retained; operational data and announcement copy are excluded from persona content."
+    },
+    {
+      "source_id": "PUBLIC.BILIBILI.CANON.20250828",
+      "title": "卡农 | 一个人的练习",
+      "source_url": "https://www.bilibili.com/video/BV1cHeRz4EA6/",
+      "publisher": "林离Olivia public account",
+      "published_at": "2025-08-28",
+      "accessed_at": "2026-09-03",
+      "source_type": "public_account_video_metadata_summary",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "allowed_public_release": true,
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "public.background.first_piano_video"
+      ],
+      "exclusion_reason": "Only account name, publication date, and the piano-performance category are retained; media, captions, and comments are excluded."
+    },
+    {
+      "source_id": "PUBLIC.BILIBILI.LETTER.20260327",
+      "title": "读信 / 回信 / 弹琴",
+      "source_url": "https://www.bilibili.com/list/3546934956526060?bvid=BV11BXnBaEKR&oid=116293286042482",
+      "publisher": "林离Olivia public account",
+      "published_at": "2026-03-27",
+      "accessed_at": "2026-09-03",
+      "source_type": "public_account_video_metadata_summary",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "allowed_public_release": true,
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "public.background.letter_reply_video"
+      ],
+      "exclusion_reason": "Only account name, publication date, and the public title are retained; letter bodies, video, captions, and comments are excluded."
+    },
+    {
+      "source_id": "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED",
+      "title": "人格宪法审阅的合成风格样例",
+      "source_url": "https://github.com/Ornn8/bside-olivia-community/blob/c4a1ab9c4ce12a9e038a0efc47e19fda0448e74e/docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md",
+      "publisher": "Ornn8/bside-olivia-community maintainers",
+      "published_at": "2026-09-03",
+      "accessed_at": "2026-09-03",
+      "source_type": "constitution_reviewed_synthetic_style",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "allowed_public_release": true,
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "style.synthetic.text.brief_greeting",
+        "style.synthetic.text.boundary_refusal",
+        "style.synthetic.spoken.emotional_acknowledgement",
+        "style.synthetic.spoken.natural_close",
+        "style.synthetic.spoken.ordinary_smalltalk",
+        "style.synthetic.musical.music_request",
+        "style.synthetic.musical.boundary_refusal",
+        "style.synthetic.musical.natural_close",
+        "style.synthetic.text.ordinary_smalltalk",
+        "style.synthetic.text.emotional_acknowledgement",
+        "style.synthetic.text.natural_close",
+        "style.synthetic.text.music_request"
+      ],
+      "exclusion_reason": "Examples are newly written synthetic text reviewed against the public constitution; no private correspondence supplied wording or style evidence."
     }
   ],
   "evidence": [
@@ -147,11 +231,39 @@
       "reference": "WORKORDER-intimacy-model PR-4 section 4.1"
     },
     {
-      "evidence_id": "P02.LINLI.STYLE.CV5.TRAINING.distillation",
-      "source_id": "P02.LINLI.STYLE.CV5.TRAINING",
-      "kind": "style_distillation",
-      "summary": "Thirty indivisible user folders were assigned across five deterministic folds. Fold 0 remained holdout with bodies unread; folds 1-4 supplied 120 training texts. Videos were excluded, user prompts are synthetic, assistant examples are non-verbatim abstractions, and no contiguous seven-character overlap was found.",
-      "reference": "persona_release_v2.json style_exemplar_provenance"
+      "evidence_id": "PUBLIC.STEAM.STORE.4532590.summary",
+      "source_id": "PUBLIC.STEAM.STORE.4532590",
+      "kind": "public_source_summary",
+      "summary": "Steam 的第一方商店说明直接列出林离的上海背景、钢琴主修、心理学辅修、音乐与回忆研究，以及读信并回应的产品设定。",
+      "reference": "About This Software and feature sections"
+    },
+    {
+      "evidence_id": "PUBLIC.STEAM.SHUTDOWN.20260811.summary",
+      "source_id": "PUBLIC.STEAM.SHUTDOWN.20260811",
+      "kind": "public_source_summary",
+      "summary": "第一方停运公告直接重申林离钟爱黑胶、老电影和雨天。",
+      "reference": "shutdown announcement closing paragraph"
+    },
+    {
+      "evidence_id": "PUBLIC.BILIBILI.CANON.20250828.summary",
+      "source_id": "PUBLIC.BILIBILI.CANON.20250828",
+      "kind": "public_source_summary",
+      "summary": "林离 Olivia 公开账号的视频元数据显示 2025 年 8 月 28 日发布钢琴演奏内容。",
+      "reference": "BV1cHeRz4EA6 public metadata"
+    },
+    {
+      "evidence_id": "PUBLIC.BILIBILI.LETTER.20260327.summary",
+      "source_id": "PUBLIC.BILIBILI.LETTER.20260327",
+      "kind": "public_source_summary",
+      "summary": "林离 Olivia 公开账号的视频元数据显示 2026 年 3 月 27 日发布读信、回信与弹琴内容。",
+      "reference": "BV11BXnBaEKR public metadata"
+    },
+    {
+      "evidence_id": "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED.review",
+      "source_id": "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED",
+      "kind": "constitution_reviewed_synthetic_style",
+      "summary": "Twelve examples were written as synthetic prompts and replies, then reviewed only against the public persona constitution. Private correspondence was not used as evidence for their wording or character style.",
+      "reference": "persona_release_v2.json synthetic_style_exemplar_provenance"
     }
   ]
 }

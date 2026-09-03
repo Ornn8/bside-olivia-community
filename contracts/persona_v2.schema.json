@@ -27,12 +27,20 @@
       }
     },
     "style_exemplars": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/style_exemplar"}},
-    "style_exemplar_provenance": {"$ref": "#/$defs/style_exemplar_provenance"}
+    "style_exemplar_provenance": {"$ref": "#/$defs/style_exemplar_provenance"},
+    "synthetic_style_exemplar_provenance": {
+      "$ref": "#/$defs/synthetic_style_exemplar_provenance"
+    }
   },
   "allOf": [
     {
       "if": {"properties": {"style_exemplars": {"minItems": 1}}, "required": ["style_exemplars"]},
-      "then": {"required": ["style_exemplar_provenance"]}
+      "then": {
+        "anyOf": [
+          {"required": ["style_exemplar_provenance"]},
+          {"required": ["synthetic_style_exemplar_provenance"]}
+        ]
+      }
     }
   ],
   "$defs": {
@@ -126,6 +134,25 @@
         "assistant_text_policy": {"const": "NON_VERBATIM_ABSTRACTION"},
         "contiguous_7_char_overlap_count": {"const": 0},
         "user_authorization_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    },
+    "synthetic_style_exemplar_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id", "derivation", "review_basis", "private_corpus_used",
+        "user_text_policy", "assistant_text_policy",
+        "contiguous_7_char_overlap_count", "reviewed_at"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,96}$"},
+        "derivation": {"const": "SYNTHETIC"},
+        "review_basis": {"const": "CONSTITUTION_REVIEWED"},
+        "private_corpus_used": {"const": false},
+        "user_text_policy": {"const": "SYNTHETIC"},
+        "assistant_text_policy": {"const": "NON_VERBATIM_ABSTRACTION"},
+        "contiguous_7_char_overlap_count": {"const": 0},
+        "reviewed_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
       }
     },
     "style_exemplar": {

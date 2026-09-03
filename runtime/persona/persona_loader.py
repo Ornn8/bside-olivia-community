@@ -120,9 +120,20 @@ def load_persona(
         return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
     exemplars = payload.get("style_exemplars", ())
     provenance = payload.get("style_exemplar_provenance")
-    if exemplars and any(
-        row["source_id"] != provenance["source_id"] for row in exemplars
-    ):
+    synthetic_provenance = payload.get("synthetic_style_exemplar_provenance")
+    def _exemplar_source_matches(row: dict[str, object]) -> bool:
+        selected = (
+            synthetic_provenance
+            if row["derivation"] == "SYNTHETIC"
+            and isinstance(synthetic_provenance, dict)
+            else provenance
+        )
+        return (
+            isinstance(selected, dict)
+            and row["source_id"] == selected.get("source_id")
+        )
+
+    if exemplars and any(not _exemplar_source_matches(row) for row in exemplars):
         return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
     if any(
         not row["allowed_public_release"]

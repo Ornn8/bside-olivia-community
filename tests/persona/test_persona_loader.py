@@ -139,6 +139,21 @@ def _style_provenance(source_id: str = "source.synthetic") -> dict[str, object]:
     }
 
 
+def _synthetic_style_provenance(
+    source_id: str = "source.constitution-reviewed",
+) -> dict[str, object]:
+    return {
+        "source_id": source_id,
+        "derivation": "SYNTHETIC",
+        "review_basis": "CONSTITUTION_REVIEWED",
+        "private_corpus_used": False,
+        "user_text_policy": "SYNTHETIC",
+        "assistant_text_policy": "NON_VERBATIM_ABSTRACTION",
+        "contiguous_7_char_overlap_count": 0,
+        "reviewed_at": "2026-09-03",
+    }
+
+
 def test_valid_registry_returns_a_complete_typed_persona_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -220,6 +235,41 @@ def test_style_exemplar_source_mismatch_fails_schema_validation(tmp_path: Path) 
     payload = _registry_with_style_exemplar()
     payload["style_exemplar_provenance"] = _style_provenance("source.other")
     path = tmp_path / "source-mismatch.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.error_code == PersonaLoadErrorCode.SCHEMA_INVALID
+    assert result.fallback is True
+
+
+def test_synthetic_exemplar_uses_independent_constitution_reviewed_provenance(
+    tmp_path: Path,
+) -> None:
+    payload = _registry_with_style_exemplar()
+    payload["style_exemplars"][0]["source_id"] = "source.constitution-reviewed"
+    payload["style_exemplar_provenance"] = _style_provenance("source.private-corpus")
+    payload["synthetic_style_exemplar_provenance"] = (
+        _synthetic_style_provenance()
+    )
+    path = tmp_path / "synthetic-provenance.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = load_persona(path)
+
+    assert result.ready is True
+
+
+def test_private_abstraction_cannot_borrow_synthetic_provenance(
+    tmp_path: Path,
+) -> None:
+    payload = _registry_with_style_exemplar()
+    payload["style_exemplars"][0]["source_id"] = "source.constitution-reviewed"
+    payload["style_exemplars"][0]["derivation"] = "PRIVATE_CORPUS_ABSTRACTION"
+    payload["synthetic_style_exemplar_provenance"] = (
+        _synthetic_style_provenance()
+    )
+    path = tmp_path / "private-with-synthetic-provenance.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     result = load_persona(path)
