@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
 from voice_direction import (
     VoiceDirectionError,
     VoicePerformancePlan,
@@ -45,6 +46,35 @@ def _valid_music_direction() -> dict[str, object]:
     }
 
 
+def _persona_snapshot(*, mode: str, statement: str) -> PersonaSnapshot:
+    return PersonaSnapshot(
+        schema_version="p02.persona.v2",
+        persona_id="synthetic.persona",
+        declarations=(
+            PersonaDeclaration(
+                declaration_id=f"mode.{mode}.synthetic",
+                source_id="source.synthetic",
+                tier="MODE_STYLE",
+                confidence="HIGH",
+                rights_status="SUMMARY_ONLY",
+                allowed_public_release=True,
+                statement=statement,
+                mode=mode,
+                facet="MODE_STYLE",
+            ),
+        ),
+        status="READY",
+        source="persona_v2",
+        profile=PersonaProfile(
+            display_name="Synthetic",
+            locale="zh-CN",
+            summary="Synthetic persona.",
+            required_facets=("MODE_STYLE",),
+            required_modes=(mode,),
+        ),
+    )
+
+
 def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> None:
     reply = "你不是不够好。你只是被一次突然的离开伤到了。先别急着逼自己相信谁。"
     director = _FakeVoiceDirector(_valid_direction())
@@ -70,6 +100,30 @@ def test_director_preserves_frozen_reply_and_requests_only_global_controls() -> 
     assert set(properties) == {"short_instruction"}
     assert plan.overall_emotion == plan.short_instruction
     assert plan.energy == 0.55
+
+
+def test_voice_director_injects_only_the_spoken_mode_persona_direction() -> None:
+    statement = "Synthetic spoken persona direction marker."
+    director = _FakeVoiceDirector(_valid_direction())
+
+    plan = asyncio.run(
+        direct_voice_performance(
+            "第一句。第二句。",
+            director,
+            persona_snapshot=_persona_snapshot(
+                mode="spoken_video",
+                statement=statement,
+            ),
+        )
+    )
+
+    request = director.requests[0]
+    tool_description = request["tools"][0]["function"]["description"]
+    assert statement in tool_description
+    assert plan.persona_projection_status == "READY"
+    restored = VoicePerformancePlan.from_dict(plan.to_dict())
+    assert restored.persona_projection_status == "READY"
+    assert restored == plan
 
 
 def test_director_rejects_tool_calls_missing_required_controls() -> None:
@@ -105,6 +159,27 @@ def test_music_director_preserves_the_pre_a_tool_and_plan_profile() -> None:
     assert VoicePerformancePlan.from_music_dict(legacy) == plan
     with pytest.raises(VoiceDirectionError, match="VOICE_DIRECTION_INVALID"):
         VoicePerformancePlan.from_dict(plan.to_dict())
+
+
+def test_music_director_exposes_mode_style_fallback_instead_of_hiding_it() -> None:
+    statement = "Synthetic letter-only persona direction marker."
+    director = _FakeVoiceDirector(_valid_music_direction())
+
+    plan = asyncio.run(
+        direct_music_voice_performance(
+            "第一句。第二句。",
+            director,
+            persona_snapshot=_persona_snapshot(
+                mode="text_letter",
+                statement=statement,
+            ),
+        )
+    )
+
+    tool_description = director.requests[0]["tools"][0]["function"]["description"]
+    assert "projection_status=FALLBACK_MODE_STYLE_EMPTY" in tool_description
+    assert statement not in tool_description
+    assert plan.persona_projection_status == "FALLBACK_MODE_STYLE_EMPTY"
 
 
 @pytest.mark.parametrize(

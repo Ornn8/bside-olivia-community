@@ -13,6 +13,7 @@ from .persona_loader import (
     PersonaSnapshot,
     PersonaStyleExemplar,
 )
+from .persona_mode import persona_mode_for_reply_mode
 from runtime.reply.prompt_budget import (
     PromptBudgetItem,
     PromptBudgetReport,
@@ -139,6 +140,7 @@ def _persona_blocks(
     history: tuple[UntrustedFragment, ...],
     evidence_summaries: tuple[UntrustedFragment, ...],
 ) -> tuple[_Block, ...]:
+    persona_mode = persona_mode_for_reply_mode(context.mode)
     if snapshot.status == "READY":
         if snapshot.profile is None:
             raise ValueError("READY persona requires a profile")
@@ -201,7 +203,7 @@ def _persona_blocks(
             "mode_constraints",
             PromptSection.MODE_CONSTRAINTS,
             {
-                "mode": context.mode.value,
+                "mode": persona_mode,
                 "trusted_time": context.to_dict()["trusted_time"],
                 "output": context.output_constraints.to_dict(),
                 "reply_priorities": (
@@ -218,7 +220,7 @@ def _persona_blocks(
         declaration
         for declaration in declarations
         if declaration.tier == "MODE_STYLE"
-        and declaration.mode == context.mode.value
+        and declaration.mode == persona_mode
     )
     mode_styles = _declaration_blocks(
         matching_styles, "MODE_STYLE", PromptSection.MODE_STYLE
@@ -335,7 +337,7 @@ def _select_style_exemplars(
     candidates = tuple(
         item
         for item in snapshot.style_exemplars
-        if item.mode == context.mode.value
+        if item.mode == persona_mode_for_reply_mode(context.mode)
         and item.style_only
         and not item.factual_authority
     )

@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -11,6 +12,7 @@ from persona_loader import (
     PersonaSnapshot,
     PersonaStyleExemplar,
 )
+from runtime.persona.persona_mode import persona_mode_for_reply_mode
 from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
     IntimacyTier,
@@ -189,6 +191,53 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     ].index("<public_canon")
 
 
+def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
+    snapshot = PersonaSnapshot(
+        schema_version="p02.persona.v2",
+        persona_id="synthetic.persona",
+        declarations=(
+            _declaration(
+                "constitution.boundary",
+                "CONSTITUTION",
+                "POLICY",
+                "Do not invent shared history.",
+            ),
+            _declaration(
+                "mode.text.synthetic",
+                "MODE_STYLE",
+                "MODE_STYLE",
+                "Use the synthetic letter direction.",
+                "text_letter",
+            ),
+            _declaration(
+                "mode.music.synthetic",
+                "MODE_STYLE",
+                "MODE_STYLE",
+                "Use the synthetic musical direction.",
+                "musical_video",
+            ),
+        ),
+        status="READY",
+        source="persona_v2",
+        profile=_profile(),
+    )
+    context = ReplyContext.create(
+        ReplyMode.MUSICAL_VIDEO,
+        trusted_time=TrustedTime(datetime(2026, 9, 3, tzinfo=timezone.utc)),
+    )
+
+    assembly = assemble_persona(
+        snapshot,
+        context,
+        user_input="Synthetic music request.",
+        max_units=4_000,
+    )
+
+    assert persona_mode_for_reply_mode(ReplyMode.MUSICAL_VIDEO) == "musical_video"
+    assert "Use the synthetic musical direction." in assembly.system_content
+    assert "Use the synthetic letter direction." not in assembly.system_content
+
+
 @pytest.mark.parametrize(
     ("user_input", "expected"),
     (
@@ -220,6 +269,49 @@ def test_style_selection_uses_precise_distinct_situations(
     assert assembly.system_content.count("<style_examples>") == 1
     assert '"style_only":true' in assembly.system_content
     assert '"factual_authority":false' in assembly.system_content
+
+
+def test_style_exemplar_facts_never_enter_the_public_canon_block() -> None:
+    invented_fact = "Linli owns a lighthouse on Mars."
+    snapshot = _style_snapshot(
+        _style_exemplar(
+            "style.synthetic.non_authoritative_fact",
+            user_text="Synthetic input.",
+            assistant_text=invented_fact,
+            situation="ordinary_smalltalk",
+        )
+    )
+    snapshot = replace(
+        snapshot,
+        declarations=snapshot.declarations
+        + (
+            _declaration(
+                "public.synthetic",
+                "PUBLIC_CANON",
+                "IDENTITY",
+                "Linli is a synthetic test character.",
+            ),
+        ),
+    )
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+    )
+
+    assembly = assemble_persona(
+        snapshot,
+        context,
+        user_input="Synthetic input.",
+        max_units=8_000,
+    )
+    style_start = assembly.system_content.index("<style_examples>")
+    style_end = assembly.system_content.index("</style_examples>")
+    canon_start = assembly.system_content.index("<public_canon>")
+    canon_end = assembly.system_content.index("</public_canon>")
+
+    assert invented_fact in assembly.system_content[style_start:style_end]
+    assert invented_fact not in assembly.system_content[canon_start:canon_end]
+    assert "never copy facts" in assembly.system_content[style_start:style_end]
 
 
 def test_policy_only_snapshot_keeps_rules_but_does_not_claim_character_identity() -> None:
