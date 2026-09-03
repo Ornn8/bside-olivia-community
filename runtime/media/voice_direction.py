@@ -7,6 +7,10 @@ from math import isfinite
 import re
 from typing import Any, Mapping, Protocol, Sequence
 
+from persona_loader import PersonaSnapshot
+from runtime.persona.persona_mode import persona_mode_for_reply_mode
+from runtime.reply.reply_context import ReplyMode
+
 
 class VoiceDirectionError(RuntimeError):
     """A director response cannot safely control the frozen reply."""
@@ -57,6 +61,9 @@ _CONTROL_CHANNEL = "non_spoken"
 _PROFILE = "cosyvoice3_base_a_v1"
 _MUSIC_PROFILE = "legacy_music_global_direction_v1"
 _DURATION_TARGET = (40.0, 50.0)
+_PERSONA_PROJECTION_STATUSES = frozenset(
+    {"READY", "FALLBACK_PERSONA_UNAVAILABLE", "FALLBACK_MODE_STYLE_EMPTY"}
+)
 _TOOL_FIELDS = frozenset({"short_instruction"})
 _MUSIC_TOOL_FIELDS = frozenset(
     {"overall_emotion", "global_speed", "energy", "breath_before_sentences", "emphasize_sentences"}
@@ -73,12 +80,16 @@ _PERSISTED_FIELDS = frozenset({
     "control_channel",
     "profile",
     "duration_target_seconds",
+    "persona_projection_status",
 })
 _LEGACY_MUSIC_PERSISTED_FIELDS = _MUSIC_TOOL_FIELDS | {
     "reply_text",
     "source",
     "control_channel",
     "duration_target_seconds",
+}
+_MUSIC_PERSISTED_FIELDS = _LEGACY_MUSIC_PERSISTED_FIELDS | {
+    "persona_projection_status"
 }
 _ALLOWED_INSTRUCTION_RE = re.compile(r"[\u3400-\u9fff，。！？、；：…—]+")
 
@@ -98,6 +109,7 @@ class VoicePerformancePlan:
     control_channel: str = _CONTROL_CHANNEL
     profile: str = _PROFILE
     duration_target_seconds: tuple[float, float] = _DURATION_TARGET
+    persona_projection_status: str = "FALLBACK_PERSONA_UNAVAILABLE"
 
     def __post_init__(self) -> None:
         _validate_plan(self)
@@ -152,6 +164,7 @@ class VoicePerformancePlan:
             "source": self.source,
             "control_channel": self.control_channel,
             "duration_target_seconds": list(self.duration_target_seconds),
+            "persona_projection_status": self.persona_projection_status,
         }
         if self.profile != _MUSIC_PROFILE:
             value.update(short_instruction=self.short_instruction, profile=self.profile)
@@ -164,6 +177,13 @@ class VoicePerformancePlan:
     @classmethod
     def from_music_dict(cls, value: Mapping[str, object]) -> "VoicePerformancePlan":
         if set(value) == _LEGACY_MUSIC_PERSISTED_FIELDS:
+            value = {
+                **value,
+                "short_instruction": "",
+                "profile": _MUSIC_PROFILE,
+                "persona_projection_status": "FALLBACK_PERSONA_UNAVAILABLE",
+            }
+        elif set(value) == _MUSIC_PERSISTED_FIELDS:
             value = {**value, "short_instruction": "", "profile": _MUSIC_PROFILE}
         return _persisted_plan(
             cls, value, profile=_MUSIC_PROFILE, minimum_speed=1.02
@@ -206,6 +226,7 @@ def _persisted_plan(
         control_channel=channel,
         profile=str(value["profile"]),
         duration_target_seconds=_duration_target(value["duration_target_seconds"]),
+        persona_projection_status=str(value["persona_projection_status"]),
     )
     if plan.profile != profile:
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
@@ -259,6 +280,64 @@ _MUSIC_TOOL = {
         },
     },
 }
+
+
+@dataclass(frozen=True)
+class _VoicePersonaProjection:
+    status: str
+    mode: str
+    statements: tuple[str, ...]
+
+
+def _project_voice_persona(
+    snapshot: PersonaSnapshot | None,
+    mode: ReplyMode,
+) -> _VoicePersonaProjection:
+    persona_mode = persona_mode_for_reply_mode(mode)
+    if snapshot is None or snapshot.status != "READY":
+        return _VoicePersonaProjection(
+            status="FALLBACK_PERSONA_UNAVAILABLE",
+            mode=persona_mode,
+            statements=(),
+        )
+    statements = tuple(
+        declaration.statement
+        for declaration in snapshot.declarations
+        if declaration.tier == "MODE_STYLE"
+        and declaration.facet == "MODE_STYLE"
+        and declaration.mode == persona_mode
+    )
+    if not statements:
+        return _VoicePersonaProjection(
+            status="FALLBACK_MODE_STYLE_EMPTY",
+            mode=persona_mode,
+            statements=(),
+        )
+    return _VoicePersonaProjection(
+        status="READY",
+        mode=persona_mode,
+        statements=statements,
+    )
+
+
+def _tool_with_persona(
+    tool: Mapping[str, object],
+    projection: _VoicePersonaProjection,
+) -> dict[str, object]:
+    function_value = tool.get("function")
+    if not isinstance(function_value, Mapping):
+        raise VoiceDirectionError("VOICE_DIRECTION_TOOL_INVALID")
+    function = dict(function_value)
+    guidance = (
+        " | ".join(projection.statements)
+        if projection.statements
+        else "Use the bounded module defaults."
+    )
+    function["description"] = (
+        f"{function.get('description', '')} Persona mode={projection.mode}; "
+        f"projection_status={projection.status}; mode-style guidance: {guidance}"
+    )
+    return {**tool, "function": function}
 
 
 def _sentences(text: str) -> tuple[str, ...]:
@@ -349,6 +428,7 @@ def _validate_plan(plan: VoicePerformancePlan) -> None:
         or plan.source != _SOURCE
         or plan.control_channel != _CONTROL_CHANNEL
         or plan.profile not in {_PROFILE, _MUSIC_PROFILE}
+        or plan.persona_projection_status not in _PERSONA_PROJECTION_STATUSES
     ):
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
     if plan.profile == _PROFILE:
@@ -400,9 +480,12 @@ async def direct_voice_performance(
     *,
     letter_content: str | None = None,
     request_id: str | None = None,
+    persona_snapshot: PersonaSnapshot | None = None,
+    mode: ReplyMode = ReplyMode.SPOKEN_VIDEO,
 ) -> VoicePerformancePlan:
     """Ask a second LLM call for global controls without changing frozen text."""
 
+    projection = _project_voice_persona(persona_snapshot, mode)
     sentences = _sentences(reply_text)
     indexed = "\n".join(f"S{index}: {text}" for index, text in enumerate(sentences, 1))
     messages = [
@@ -428,7 +511,11 @@ async def direct_voice_performance(
         },
     ]
     arguments = await _tool_arguments(
-        gateway, messages, _TOOL, _TOOL_FIELDS, request_id
+        gateway,
+        messages,
+        _tool_with_persona(_TOOL, projection),
+        _TOOL_FIELDS,
+        request_id,
     )
     short_instruction = validate_short_instruction(arguments["short_instruction"])
     return VoicePerformancePlan(
@@ -439,6 +526,7 @@ async def direct_voice_performance(
         breath_before_sentences=(),
         emphasize_sentences=(),
         short_instruction=short_instruction,
+        persona_projection_status=projection.status,
     )
 
 
@@ -447,9 +535,13 @@ async def direct_music_voice_performance(
     gateway: VoiceToolGateway,
     *,
     request_id: str | None = None,
+    persona_snapshot: PersonaSnapshot | None = None,
 ) -> VoicePerformancePlan:
     """Preserve the pre-A global director contract for the musical prelude."""
 
+    projection = _project_voice_persona(
+        persona_snapshot, ReplyMode.MUSICAL_VIDEO
+    )
     sentences = _sentences(reply_text)
     indexed = "\n".join(f"S{index}: {text}" for index, text in enumerate(sentences, 1))
     messages = [
@@ -467,7 +559,11 @@ async def direct_music_voice_performance(
         },
     ]
     arguments = await _tool_arguments(
-        gateway, messages, _MUSIC_TOOL, _MUSIC_TOOL_FIELDS, request_id
+        gateway,
+        messages,
+        _tool_with_persona(_MUSIC_TOOL, projection),
+        _MUSIC_TOOL_FIELDS,
+        request_id,
     )
     overall_emotion = arguments["overall_emotion"]
     if not isinstance(overall_emotion, str):
@@ -491,4 +587,5 @@ async def direct_music_voice_performance(
         ),
         short_instruction="",
         profile=_MUSIC_PROFILE,
+        persona_projection_status=projection.status,
     )

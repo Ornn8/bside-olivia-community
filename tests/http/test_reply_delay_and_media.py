@@ -515,14 +515,23 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
 
     directed_requests = []
 
-    async def direct_frozen_reply(text, gateway, *, letter_content=None, request_id=None):
+    async def direct_frozen_reply(
+        text,
+        gateway,
+        *,
+        letter_content=None,
+        request_id=None,
+        persona_snapshot=None,
+        mode=None,
+    ):
         assert text == reply_text
         assert gateway is local_server.letters_adapter.gateway
         assert letter_content in {
             "ordinary video request",
             "spoken plus music request",
         }
-        directed_requests.append(request_id)
+        assert persona_snapshot.status == "READY"
+        directed_requests.append((request_id, mode))
         return plan
 
     received = {}
@@ -570,8 +579,8 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
     }
     assert all(letter["media_status"] == "COMPLETED" for letter in letters)
     assert directed_requests == [
-        "letter-reply:spoken-entry:voice-direction",
-        "letter-reply:musical-entry:voice-direction",
+        ("letter-reply:spoken-entry:voice-direction", ReplyMode.SPOKEN_VIDEO),
+        ("letter-reply:musical-entry:voice-direction", ReplyMode.MUSICAL_VIDEO),
     ]
     assert letters[0]["voice_performance_plan"] == plan.to_dict()
     assert letters[1]["voice_performance_plan"] == plan.to_dict()
@@ -640,8 +649,18 @@ def test_music_voice_plan_uses_llm_direction_and_persists_it(monkeypatch):
     )
     calls = []
 
-    async def direct(text, gateway, *, letter_content=None, request_id=None):
-        calls.append((text, gateway, letter_content, request_id))
+    async def direct(
+        text,
+        gateway,
+        *,
+        letter_content=None,
+        request_id=None,
+        persona_snapshot=None,
+        mode=None,
+    ):
+        calls.append(
+            (text, gateway, letter_content, request_id, persona_snapshot, mode)
+        )
         return expected
 
     monkeypatch.setattr(local_server, "direct_voice_performance", direct)
@@ -649,14 +668,15 @@ def test_music_voice_plan_uses_llm_direction_and_persists_it(monkeypatch):
     plan = asyncio.run(local_server._music_voice_plan_for_letter(letter, reply_text))
 
     assert plan == expected
-    assert calls == [
-        (
-            reply_text,
-            local_server.letters_adapter.gateway,
-            "music letter",
-            "letter-reply:music-directed:voice-direction",
-        )
-    ]
+    assert len(calls) == 1
+    assert calls[0][:4] == (
+        reply_text,
+        local_server.letters_adapter.gateway,
+        "music letter",
+        "letter-reply:music-directed:voice-direction",
+    )
+    assert calls[0][4].status == "READY"
+    assert calls[0][5] is ReplyMode.MUSICAL_VIDEO
     assert letter["voice_performance_plan"] == expected.to_dict()
 
 
@@ -679,8 +699,18 @@ def test_voice_direction_retries_keep_a_persisted_provider_idempotency_key(monke
     def persist():
         persisted_request_ids.append(letter.get("voice_direction_request_id"))
 
-    async def direct(_text, _gateway, *, letter_content=None, request_id=None):
+    async def direct(
+        _text,
+        _gateway,
+        *,
+        letter_content=None,
+        request_id=None,
+        persona_snapshot=None,
+        mode=None,
+    ):
         provider_calls.append(request_id)
+        assert persona_snapshot.status == "READY"
+        assert mode is ReplyMode.SPOKEN_VIDEO
         assert letter["voice_direction_request_id"] == request_id
         if len(provider_calls) == 1:
             raise asyncio.CancelledError()

@@ -1397,6 +1397,8 @@ def _persist_media_state() -> None:
 async def _voice_plan_for_letter(
     letter: dict,
     reply_text: str,
+    *,
+    mode: ReplyMode = ReplyMode.SPOKEN_VIDEO,
 ) -> VoicePerformancePlan:
     """Direct the frozen reply once, then reuse its persisted performance plan."""
 
@@ -1424,12 +1426,19 @@ async def _voice_plan_for_letter(
         # restart in the provider-success/persistence window uses the same key.
         letter["voice_direction_request_id"] = request_id
         _persist_media_state()
+    persona_snapshot = (
+        load_persona(letters_adapter.persona_v2_path).snapshot
+        if letters_adapter.config.persona_v2_enabled
+        else None
+    )
     plan = await asyncio.wait_for(
         direct_voice_performance(
             reply_text,
             letters_adapter.gateway,
             letter_content=str(letter.get("content", "")),
             request_id=request_id,
+            persona_snapshot=persona_snapshot,
+            mode=mode,
         ),
         timeout=LLM_TIMEOUT_SECONDS,
     )
@@ -1459,7 +1468,11 @@ async def _music_voice_plan_for_letter(
         if legacy_plan is not None:
             letter.pop("voice_performance_plan", None)
             _persist_media_state()
-    return await _voice_plan_for_letter(letter, reply_text)
+    return await _voice_plan_for_letter(
+        letter,
+        reply_text,
+        mode=ReplyMode.MUSICAL_VIDEO,
+    )
 
 
 music_adapter = MusicAdapter()
