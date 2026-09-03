@@ -76,6 +76,8 @@ def _legacy_v2_database(path: Path) -> None:
             payload.pop("intimacy_grants")
             payload.pop("growth_window_start")
             payload.pop("growth_used")
+            payload.pop("active_boundaries")
+            payload.pop("acknowledged_affection")
             connection.execute(
                 """INSERT INTO private_world_snapshots
                    (version, payload_json, event_id) VALUES (?, ?, ?)""",
@@ -117,7 +119,7 @@ def _legacy_v1_database(path: Path) -> None:
             )
 
 
-def test_v2_ledger_migrates_to_v3_without_losing_events_or_snapshots(
+def test_v2_ledger_migrates_to_v4_without_losing_events_or_snapshots(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "private-world.sqlite3"
@@ -125,8 +127,8 @@ def test_v2_ledger_migrates_to_v3_without_losing_events_or_snapshots(
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 3
-    assert ledger.migration_status == "migrated_v2_to_v3"
+    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 4
+    assert ledger.migration_status == "migrated_v2_to_v4"
     assert ledger.events() == (_event(1), _event(2))
     assert ledger.snapshot() == PrivateWorldSnapshot(version=2, trust=2)
     with sqlite3.connect(database) as connection:
@@ -139,14 +141,16 @@ def test_v2_ledger_migrates_to_v3_without_losing_events_or_snapshots(
             json.loads(row[1])["intimacy_grants"] == []
             and json.loads(row[1])["growth_window_start"] == ""
             and json.loads(row[1])["growth_used"] == 0
+            and json.loads(row[1])["active_boundaries"] == []
+            and json.loads(row[1])["acknowledged_affection"] is None
             for row in rows
         )
-    backups = tuple(tmp_path.glob("private-world.sqlite3.pre-v3-*.bak"))
+    backups = tuple(tmp_path.glob("private-world.sqlite3.pre-v4-*.bak"))
     assert len(backups) == 1
     assert backups[0].is_file() and backups[0].stat().st_size > 0
 
 
-def test_v1_ledger_uses_the_validated_v2_to_v3_migration_chain(
+def test_v1_ledger_uses_the_validated_migration_chain_to_v4(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "private-world.sqlite3"
@@ -154,14 +158,14 @@ def test_v1_ledger_uses_the_validated_v2_to_v3_migration_chain(
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.schema_version == 3
-    assert ledger.migration_status == "migrated_v2_to_v3"
+    assert ledger.schema_version == 4
+    assert ledger.migration_status == "migrated_v1_to_v4"
     assert ledger.events() == (_event(1), _event(2))
     assert ledger.snapshot() == PrivateWorldSnapshot(version=2, trust=2)
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("3",)
+        ).fetchone() == ("4",)
         payloads = connection.execute(
             "SELECT payload_json FROM private_world_snapshots ORDER BY version"
         ).fetchall()
@@ -170,23 +174,66 @@ def test_v1_ledger_uses_the_validated_v2_to_v3_migration_chain(
         "intimacy_grants",
         "growth_window_start",
         "growth_used",
+        "active_boundaries",
+        "acknowledged_affection",
     } for row in payloads)
-    assert len(tuple(tmp_path.glob("private-world.sqlite3.pre-v3-*.bak"))) == 1
+    assert len(tuple(tmp_path.glob("private-world.sqlite3.pre-v4-*.bak"))) == 1
 
 
-def test_v3_ledger_reopens_without_another_migration_or_backup(
+def test_v4_ledger_reopens_without_another_migration_or_backup(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "private-world.sqlite3"
     created = SQLitePrivateWorldLedger(database)
 
-    assert created.migration_status == "created_v3"
-    assert not tuple(tmp_path.glob("*.pre-v3-*.bak"))
+    assert created.migration_status == "created_v4"
+    assert not tuple(tmp_path.glob("*.pre-v4-*.bak"))
 
     reopened = SQLitePrivateWorldLedger(database)
 
-    assert reopened.migration_status == "current_v3"
-    assert not tuple(tmp_path.glob("*.pre-v3-*.bak"))
+    assert reopened.migration_status == "current_v4"
+    assert not tuple(tmp_path.glob("*.pre-v4-*.bak"))
+
+
+def test_v3_ledger_migrates_new_relationship_fields_to_empty_defaults(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "private-world.sqlite3"
+    ledger = SQLitePrivateWorldLedger(database)
+    ledger.apply_once(_event(1), PrivateWorldSnapshot(version=1, trust=2))
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM private_world_snapshots WHERE version = 1"
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload.pop("active_boundaries")
+        payload.pop("acknowledged_affection")
+        connection.execute(
+            "UPDATE private_world_snapshots SET payload_json = ? WHERE version = 1",
+            (
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+        connection.execute(
+            "UPDATE private_world_metadata SET value = '3' WHERE key = 'schema_version'"
+        )
+
+    migrated = SQLitePrivateWorldLedger(database)
+
+    assert migrated.migration_status == "migrated_v3_to_v4"
+    assert migrated.snapshot() == PrivateWorldSnapshot(version=1, trust=2)
+    backups = tuple(tmp_path.glob("private-world.sqlite3.pre-v4-*.bak"))
+    assert len(backups) == 1
+
+    reopened = SQLitePrivateWorldLedger(database)
+
+    assert reopened.migration_status == "current_v4"
+    assert tuple(tmp_path.glob("*.pre-v4-*.bak")) == backups
 
 
 def test_apply_once_atomically_appends_event_and_snapshot(tmp_path: Path) -> None:

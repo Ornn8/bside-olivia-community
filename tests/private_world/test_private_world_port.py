@@ -6,6 +6,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 from private_world_port import (
+    ActiveBoundary,
     ContinuationAwareness,
     HomeAccess,
     IntimacyGrant,
@@ -122,13 +123,15 @@ def test_snapshot_keeps_hidden_and_control_only_values_out_of_character_view() -
         "nickname_permissions": ["小河豚", "旅行者"],
         "home_history_allowed": True,
         "continuation_known": True,
-        "continuation_facts": [
+            "continuation_facts": [
             {
                 "fact_id": "class.known",
                 "statement": "她已经知道下周课程时间会调整。",
                 "awareness": "character_known",
-            }
-        ],
+                }
+            ],
+            "active_boundaries": [],
+            "acknowledged_affection": None,
     }
     serialized = repr(character)
     assert "pending" not in serialized
@@ -182,6 +185,8 @@ def test_snapshot_exposes_intimacy_control_state_without_leaking_grant_details()
         "home_history_allowed",
         "continuation_known",
         "continuation_facts",
+        "active_boundaries",
+        "acknowledged_affection",
     }
     assert "statement" not in repr(character)
     assert "growth_" not in repr(character)
@@ -227,6 +232,59 @@ def test_schema_rejects_invalid_utc_timestamps(
 
     validator = _private_world_validator(schema)
     assert list(validator.iter_errors(payload))
+
+
+@pytest.mark.parametrize(
+    "invalid_timestamp",
+    [
+        "2026-08-29T09:00:00+09:00",
+        "2026-08-29T00:00:00",
+    ],
+)
+def test_boundary_timestamp_is_utc_in_runtime_and_schema(
+    invalid_timestamp: str,
+) -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "private_world.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload = PrivateWorldSnapshot().to_dict()
+    payload["active_boundaries"] = [
+        {
+            "boundary_id": "boundary.synthetic",
+            "set_at": invalid_timestamp,
+            "scope": "synthetic scope",
+        }
+    ]
+
+    with pytest.raises(PrivateWorldError):
+        ActiveBoundary("boundary.synthetic", invalid_timestamp, "synthetic scope")
+    assert list(_private_world_validator(schema).iter_errors(payload))
+
+
+def test_boundary_scope_character_rules_match_runtime_and_schema() -> None:
+    schema = json.loads(
+        (ROOT / "contracts" / "private_world.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload = PrivateWorldSnapshot().to_dict()
+    payload["active_boundaries"] = [
+        {
+            "boundary_id": "boundary.synthetic",
+            "set_at": "2026-08-29T00:00:00+00:00",
+            "scope": "bad\nscope",
+        }
+    ]
+
+    with pytest.raises(PrivateWorldError):
+        ActiveBoundary(
+            "boundary.synthetic",
+            "2026-08-29T00:00:00+00:00",
+            "bad\nscope",
+        )
+    assert list(_private_world_validator(schema).iter_errors(payload))
 
 
 def test_contract_rejects_unbounded_or_ambiguous_values() -> None:

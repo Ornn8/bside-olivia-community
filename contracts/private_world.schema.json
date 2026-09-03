@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "p02.private-world.v1",
+  "$id": "p02.private-world.v2",
   "title": "P02 PrivateWorld views",
   "oneOf": [
     {"$ref": "#/$defs/snapshot"},
@@ -56,6 +56,37 @@
           "minLength": 1,
           "maxLength": 200,
           "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+        }
+      }
+    },
+    "active_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boundary_id", "set_at", "scope"],
+      "properties": {
+        "boundary_id": {"$ref": "#/$defs/identifier"},
+        "set_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|\\+00:00)$"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+        }
+      }
+    },
+    "acknowledged_affection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intensity", "statement_ref_id", "scope"],
+      "properties": {
+        "intensity": {"enum": ["warmth", "care", "love"]},
+        "statement_ref_id": {"$ref": "#/$defs/identifier"},
+        "scope": {
+          "enum": ["this_reply", "ongoing_correspondence", "relationship"]
         }
       }
     },
@@ -153,7 +184,9 @@
         "continuation_facts",
         "intimacy_grants",
         "growth_window_start",
-        "growth_used"
+        "growth_used",
+        "active_boundaries",
+        "acknowledged_affection"
       ],
       "properties": {
         "view": {"const": "control"},
@@ -186,7 +219,18 @@
           "items": {"$ref": "#/$defs/intimacy_grant"}
         },
         "growth_window_start": {"$ref": "#/$defs/growth_window_start"},
-        "growth_used": {"$ref": "#/$defs/growth_used"}
+        "growth_used": {"$ref": "#/$defs/growth_used"},
+        "active_boundaries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/active_boundary"}
+        },
+        "acknowledged_affection": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/acknowledged_affection"}
+          ]
+        }
       }
     },
     "character": {
@@ -199,7 +243,9 @@
         "nickname_permissions",
         "home_history_allowed",
         "continuation_known",
-        "continuation_facts"
+        "continuation_facts",
+        "active_boundaries",
+        "acknowledged_affection"
       ],
       "properties": {
         "view": {"const": "character"},
@@ -219,6 +265,17 @@
           "type": "array",
           "maxItems": 32,
           "items": {"$ref": "#/$defs/character_fact"}
+        },
+        "active_boundaries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/active_boundary"}
+        },
+        "acknowledged_affection": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/acknowledged_affection"}
+          ]
         }
       }
     },
@@ -240,7 +297,9 @@
         "continuation_facts",
         "intimacy_grants",
         "growth_window_start",
-        "growth_used"
+        "growth_used",
+        "active_boundaries",
+        "acknowledged_affection"
       ],
       "properties": {
         "view": {"const": "snapshot"},
@@ -277,7 +336,18 @@
           "items": {"$ref": "#/$defs/intimacy_grant"}
         },
         "growth_window_start": {"$ref": "#/$defs/growth_window_start"},
-        "growth_used": {"$ref": "#/$defs/growth_used"}
+        "growth_used": {"$ref": "#/$defs/growth_used"},
+        "active_boundaries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/active_boundary"}
+        },
+        "acknowledged_affection": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/acknowledged_affection"}
+          ]
+        }
       }
     }
   }

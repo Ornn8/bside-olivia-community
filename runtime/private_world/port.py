@@ -28,6 +28,18 @@ class ContinuationAwareness(str, Enum):
     PENDING = "pending"
 
 
+class AffectionIntensity(str, Enum):
+    WARMTH = "warmth"
+    CARE = "care"
+    LOVE = "love"
+
+
+class AffectionScope(str, Enum):
+    THIS_REPLY = "this_reply"
+    ONGOING_CORRESPONDENCE = "ongoing_correspondence"
+    RELATIONSHIP = "relationship"
+
+
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
@@ -135,6 +147,60 @@ class IntimacyGrant:
         }
 
 
+@dataclass(frozen=True)
+class ActiveBoundary:
+    boundary_id: str
+    set_at: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.boundary_id, str) or not _TOKEN_RE.fullmatch(
+            self.boundary_id
+        ):
+            raise PrivateWorldError("boundary id is invalid")
+        object.__setattr__(
+            self,
+            "set_at",
+            _validate_utc_timestamp(self.set_at, field_name="boundary set time"),
+        )
+        object.__setattr__(
+            self,
+            "scope",
+            _plain_text(self.scope, field_name="boundary scope", max_length=200),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "boundary_id": self.boundary_id,
+            "set_at": self.set_at,
+            "scope": self.scope,
+        }
+
+
+@dataclass(frozen=True)
+class AcknowledgedAffection:
+    intensity: AffectionIntensity
+    statement_ref_id: str
+    scope: AffectionScope
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.intensity, AffectionIntensity):
+            raise PrivateWorldError("affection intensity is invalid")
+        if not isinstance(self.statement_ref_id, str) or not _TOKEN_RE.fullmatch(
+            self.statement_ref_id
+        ):
+            raise PrivateWorldError("affection statement reference is invalid")
+        if not isinstance(self.scope, AffectionScope):
+            raise PrivateWorldError("affection scope is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "intensity": self.intensity.value,
+            "statement_ref_id": self.statement_ref_id,
+            "scope": self.scope.value,
+        }
+
+
 def _validate_facts(
     values: tuple[LocalContinuationFact, ...],
 ) -> tuple[LocalContinuationFact, ...]:
@@ -169,22 +235,43 @@ def _validate_grants(
     return values
 
 
-def _validate_growth_window_start(value: str) -> str:
-    if value == "":
-        return value
+def _validate_boundaries(
+    values: tuple[ActiveBoundary, ...],
+) -> tuple[ActiveBoundary, ...]:
+    if isinstance(values, (str, bytes)):
+        raise PrivateWorldError("active boundaries must be a sequence")
+    if not isinstance(values, tuple):
+        values = tuple(values)
+    if len(values) > 16 or any(
+        not isinstance(value, ActiveBoundary) for value in values
+    ):
+        raise PrivateWorldError("active boundaries must be typed and bounded")
+    identifiers = tuple(value.boundary_id for value in values)
+    if len(set(identifiers)) != len(identifiers):
+        raise PrivateWorldError("active boundary ids must be unique")
+    return values
+
+
+def _validate_utc_timestamp(value: str, *, field_name: str) -> str:
     if (
         not isinstance(value, str)
         or value != value.strip()
         or not _UTC_TIMESTAMP_RE.fullmatch(value)
     ):
-        raise PrivateWorldError("growth window start is invalid")
+        raise PrivateWorldError(f"{field_name} is invalid")
     try:
         instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise PrivateWorldError("growth window start is invalid") from exc
+        raise PrivateWorldError(f"{field_name} is invalid") from exc
     if instant.tzinfo is None or instant.utcoffset() != timedelta(0):
-        raise PrivateWorldError("growth window start must be UTC")
+        raise PrivateWorldError(f"{field_name} must be UTC")
     return value
+
+
+def _validate_growth_window_start(value: str) -> str:
+    if value == "":
+        return value
+    return _validate_utc_timestamp(value, field_name="growth window start")
 
 
 def _validate_shared(
@@ -222,6 +309,8 @@ class PrivateWorldControlView:
     intimacy_grants: tuple[IntimacyGrant, ...] = ()
     growth_window_start: str = ""
     growth_used: int = 0
+    active_boundaries: tuple[ActiveBoundary, ...] = ()
+    acknowledged_affection: AcknowledgedAffection | None = None
 
     def __post_init__(self) -> None:
         for name in _HIDDEN_NAMES:
@@ -245,6 +334,15 @@ class PrivateWorldControlView:
             "growth_window_start",
             _validate_growth_window_start(self.growth_window_start),
         )
+        object.__setattr__(
+            self,
+            "active_boundaries",
+            _validate_boundaries(self.active_boundaries),
+        )
+        if self.acknowledged_affection is not None and not isinstance(
+            self.acknowledged_affection, AcknowledgedAffection
+        ):
+            raise PrivateWorldError("acknowledged affection is invalid")
         if type(self.growth_used) is not int or not 0 <= self.growth_used <= 255:
             raise PrivateWorldError("growth used must be an integer from 0 to 255")
 
@@ -264,6 +362,14 @@ class PrivateWorldControlView:
             ],
             "growth_window_start": self.growth_window_start,
             "growth_used": self.growth_used,
+            "active_boundaries": [
+                boundary.to_dict() for boundary in self.active_boundaries
+            ],
+            "acknowledged_affection": (
+                self.acknowledged_affection.to_dict()
+                if self.acknowledged_affection is not None
+                else None
+            ),
         }
 
 
@@ -275,6 +381,8 @@ class PrivateWorldCharacterView:
     continuation_known: bool
     continuation_facts: tuple[LocalContinuationFact, ...] = ()
     granted_intimacy: IntimacyTier = IntimacyTier.NONE
+    active_boundaries: tuple[ActiveBoundary, ...] = ()
+    acknowledged_affection: AcknowledgedAffection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.relationship_stage, str) or not _TOKEN_RE.fullmatch(
@@ -301,6 +409,15 @@ class PrivateWorldCharacterView:
         object.__setattr__(self, "continuation_facts", facts)
         if not isinstance(self.granted_intimacy, IntimacyTier):
             raise PrivateWorldError("granted intimacy is invalid")
+        object.__setattr__(
+            self,
+            "active_boundaries",
+            _validate_boundaries(self.active_boundaries),
+        )
+        if self.acknowledged_affection is not None and not isinstance(
+            self.acknowledged_affection, AcknowledgedAffection
+        ):
+            raise PrivateWorldError("acknowledged affection is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -313,6 +430,14 @@ class PrivateWorldCharacterView:
             "continuation_facts": [
                 fact.to_dict() for fact in self.continuation_facts
             ],
+            "active_boundaries": [
+                boundary.to_dict() for boundary in self.active_boundaries
+            ],
+            "acknowledged_affection": (
+                self.acknowledged_affection.to_dict()
+                if self.acknowledged_affection is not None
+                else None
+            ),
         }
 
 
@@ -332,6 +457,8 @@ class PrivateWorldSnapshot:
     intimacy_grants: tuple[IntimacyGrant, ...] = ()
     growth_window_start: str = ""
     growth_used: int = 0
+    active_boundaries: tuple[ActiveBoundary, ...] = ()
+    acknowledged_affection: AcknowledgedAffection | None = None
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version < 1:
@@ -357,6 +484,15 @@ class PrivateWorldSnapshot:
             "growth_window_start",
             _validate_growth_window_start(self.growth_window_start),
         )
+        object.__setattr__(
+            self,
+            "active_boundaries",
+            _validate_boundaries(self.active_boundaries),
+        )
+        if self.acknowledged_affection is not None and not isinstance(
+            self.acknowledged_affection, AcknowledgedAffection
+        ):
+            raise PrivateWorldError("acknowledged affection is invalid")
         if type(self.growth_used) is not int or not 0 <= self.growth_used <= 255:
             raise PrivateWorldError("growth used must be an integer from 0 to 255")
 
@@ -375,6 +511,8 @@ class PrivateWorldSnapshot:
             intimacy_grants=self.intimacy_grants,
             growth_window_start=self.growth_window_start,
             growth_used=self.growth_used,
+            active_boundaries=self.active_boundaries,
+            acknowledged_affection=self.acknowledged_affection,
         )
 
     def character_view(self) -> PrivateWorldCharacterView:
@@ -400,6 +538,8 @@ class PrivateWorldSnapshot:
             continuation_known=continuation_known,
             continuation_facts=known_facts,
             granted_intimacy=granted_intimacy,
+            active_boundaries=self.active_boundaries,
+            acknowledged_affection=self.acknowledged_affection,
         )
 
     def to_dict(self) -> dict[str, object]:

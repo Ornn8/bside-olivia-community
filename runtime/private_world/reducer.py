@@ -24,6 +24,10 @@ from .commands import (
     UpsertContinuationFact,
 )
 from .port import (
+    AcknowledgedAffection,
+    ActiveBoundary,
+    AffectionIntensity,
+    AffectionScope,
     IntimacyGrant,
     LocalContinuationFact,
     PrivateWorldSnapshot,
@@ -51,6 +55,9 @@ class ReducerEventKind(str, Enum):
     REPEATED_PHRASE = "repeated_phrase"
     CONFESSION = "confession"
     INACTIVITY = "inactivity"
+    CHARACTER_BOUNDARY_SET = "character_boundary_set"
+    CHARACTER_BOUNDARY_WITHDRAWN = "character_boundary_withdrawn"
+    CHARACTER_AFFECTION_ACKNOWLEDGED = "character_affection_acknowledged"
 
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -63,6 +70,16 @@ _INTIMACY_TIER_ORDER = (
     IntimacyTier.LIGHT_CONTACT,
     IntimacyTier.CLOSE_CONTACT,
 )
+_AFFECTION_INTENSITY_ORDER = (
+    AffectionIntensity.WARMTH,
+    AffectionIntensity.CARE,
+    AffectionIntensity.LOVE,
+)
+_CHARACTER_FACT_KINDS = {
+    ReducerEventKind.CHARACTER_BOUNDARY_SET,
+    ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN,
+    ReducerEventKind.CHARACTER_AFFECTION_ACKNOWLEDGED,
+}
 _NO_EFFECT_KINDS = {
     ReducerEventKind.CANONICAL_REPLY_DELIVERED,
     ReducerEventKind.HIGH_FREQUENCY_MESSAGE,
@@ -82,6 +99,11 @@ class ReducerEvent:
     target_stage: str | None = None
     basis_event_ids: tuple[str, ...] = ()
     intimacy_grant: IntimacyGrant | None = None
+    canonical_reply_id: str | None = None
+    boundary: ActiveBoundary | None = None
+    boundary_id: str | None = None
+    acknowledged_affection: AcknowledgedAffection | None = None
+    asserted_affection_scope: AffectionScope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ReducerEventKind):
@@ -112,7 +134,53 @@ class ReducerEvent:
                 "basis_event_ids",
                 tuple(self.basis_event_ids),
             )
-        if self.kind is ReducerEventKind.STAGE_CONFIRMED:
+        if self.kind in _CHARACTER_FACT_KINDS:
+            if (
+                not isinstance(self.canonical_reply_id, str)
+                or not _TOKEN_RE.fullmatch(self.canonical_reply_id)
+            ):
+                raise ReducerInputError(
+                    "character fact requires a canonical reply reference"
+                )
+            if self.target_stage is not None or self.basis_event_ids or self.intimacy_grant:
+                raise ReducerInputError("character fact payload is invalid")
+            if self.kind is ReducerEventKind.CHARACTER_BOUNDARY_SET:
+                if not isinstance(self.boundary, ActiveBoundary):
+                    raise ReducerInputError("boundary set requires a typed boundary")
+                if datetime.fromisoformat(
+                    self.boundary.set_at.replace("Z", "+00:00")
+                ) != self.occurred_at.astimezone(timezone.utc):
+                    raise ReducerInputError("boundary set time must match delivery")
+                if (
+                    self.boundary_id is not None
+                    or self.acknowledged_affection is not None
+                    or self.asserted_affection_scope is not None
+                ):
+                    raise ReducerInputError("boundary set payload is invalid")
+            elif self.kind is ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN:
+                if (
+                    not isinstance(self.boundary_id, str)
+                    or not _TOKEN_RE.fullmatch(self.boundary_id)
+                ):
+                    raise ReducerInputError("boundary withdrawal requires an id")
+                if (
+                    self.boundary is not None
+                    or self.acknowledged_affection is not None
+                    or self.asserted_affection_scope is not None
+                ):
+                    raise ReducerInputError("boundary withdrawal payload is invalid")
+            else:
+                if not isinstance(self.acknowledged_affection, AcknowledgedAffection):
+                    raise ReducerInputError(
+                        "affection acknowledgement requires a typed statement"
+                    )
+                if not isinstance(self.asserted_affection_scope, AffectionScope):
+                    raise ReducerInputError("affection scope evidence is required")
+                if self.acknowledged_affection.scope is not self.asserted_affection_scope:
+                    raise ReducerInputError("affection scope cannot be widened")
+                if self.boundary is not None or self.boundary_id is not None:
+                    raise ReducerInputError("affection payload is invalid")
+        elif self.kind is ReducerEventKind.STAGE_CONFIRMED:
             if self.intimacy_grant is not None:
                 raise ReducerInputError(
                     "stage confirmation cannot carry an intimacy grant"
@@ -152,6 +220,11 @@ class ReducerEvent:
             self.target_stage is not None
             or self.basis_event_ids
             or self.intimacy_grant is not None
+            or self.canonical_reply_id is not None
+            or self.boundary is not None
+            or self.boundary_id is not None
+            or self.acknowledged_affection is not None
+            or self.asserted_affection_scope is not None
         ):
             raise ReducerInputError(
                 "event payload is invalid for this event kind"
@@ -203,6 +276,21 @@ def _growth_window(
         if now_utc - started_at < _GROWTH_WINDOW:
             return snapshot.growth_window_start, snapshot.growth_used
     return now_utc.isoformat(), 0
+
+
+def _add_growth_metadata(
+    snapshot: PrivateWorldSnapshot,
+    now: datetime,
+    updates: dict[str, object],
+) -> None:
+    growth_start, growth_used = _growth_window(snapshot, now)
+    if growth_used + 1 <= _WEEKLY_GROWTH_CAP:
+        updates.update(
+            {
+                "growth_window_start": growth_start,
+                "growth_used": growth_used + 1,
+            }
+        )
 
 
 def _intimacy_exceeds_stage(
@@ -345,6 +433,43 @@ def reduce_private_world(
                 updates,
                 reason_code="GROWTH_CAP_REACHED",
             )
+    elif event.kind is ReducerEventKind.CHARACTER_BOUNDARY_SET:
+        boundary = event.boundary
+        if boundary is None:
+            raise ReducerInputError("boundary set event is invalid")
+        boundaries = list(snapshot.active_boundaries)
+        for index, existing in enumerate(boundaries):
+            if existing.boundary_id == boundary.boundary_id:
+                if existing == boundary:
+                    return _no_change(snapshot, "BOUNDARY_UNCHANGED")
+                boundaries[index] = boundary
+                break
+        else:
+            if len(boundaries) >= 16:
+                return _no_change(snapshot, "BOUNDARY_LIMIT_REACHED")
+            boundaries.append(boundary)
+        updates = {"active_boundaries": tuple(boundaries)}
+        _add_growth_metadata(snapshot, event.occurred_at, updates)
+    elif event.kind is ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN:
+        remaining = tuple(
+            boundary
+            for boundary in snapshot.active_boundaries
+            if boundary.boundary_id != event.boundary_id
+        )
+        if len(remaining) == len(snapshot.active_boundaries):
+            return _no_change(snapshot, "BOUNDARY_NOT_FOUND")
+        updates = {"active_boundaries": remaining}
+    elif event.kind is ReducerEventKind.CHARACTER_AFFECTION_ACKNOWLEDGED:
+        affection = event.acknowledged_affection
+        if affection is None:
+            raise ReducerInputError("affection event is invalid")
+        existing = snapshot.acknowledged_affection
+        if existing is not None and _AFFECTION_INTENSITY_ORDER.index(
+            affection.intensity
+        ) <= _AFFECTION_INTENSITY_ORDER.index(existing.intensity):
+            return _no_change(snapshot, "AFFECTION_NOT_STRONGER")
+        updates = {"acknowledged_affection": affection}
+        _add_growth_metadata(snapshot, event.occurred_at, updates)
 
     return _apply_updates(
         snapshot,

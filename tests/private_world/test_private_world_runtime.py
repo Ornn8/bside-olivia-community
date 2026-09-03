@@ -115,24 +115,24 @@ def test_legacy_ledger_is_backed_up_and_migrated_once(tmp_path: Path) -> None:
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 3
-    assert ledger.migration_status == "migrated_v2_to_v3"
+    assert ledger.schema_version == PRIVATE_WORLD_LEDGER_SCHEMA_VERSION == 4
+    assert ledger.migration_status == "migrated_v1_to_v4"
     assert ledger.snapshot() == PrivateWorldSnapshot(
         version=1,
         trust=3,
         relationship_stage="acquaintance",
     )
-    backups = tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
+    backups = tuple(tmp_path.glob("private_world.sqlite3.pre-v4-*.bak"))
     assert len(backups) == 1
     assert backups[0].is_file() and backups[0].stat().st_size > 0
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("3",)
+        ).fetchone() == ("4",)
 
     reopened = SQLitePrivateWorldLedger(database)
-    assert reopened.migration_status == "current_v3"
-    assert tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak")) == backups
+    assert reopened.migration_status == "current_v4"
+    assert tuple(tmp_path.glob("private_world.sqlite3.pre-v4-*.bak")) == backups
 
 
 def test_later_metadata_less_v1_payload_with_continuation_facts_migrates(
@@ -143,7 +143,7 @@ def test_later_metadata_less_v1_payload_with_continuation_facts_migrates(
 
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.migration_status == "migrated_v2_to_v3"
+    assert ledger.migration_status == "migrated_v1_to_v4"
     assert ledger.snapshot() == PrivateWorldSnapshot(
         version=1,
         trust=3,
@@ -195,7 +195,7 @@ def test_v1_migration_locks_the_validated_source_epoch_before_backup(
 
     assert competing_write == {"result": "locked"}
     assert ledger.snapshot().trust == 3
-    backup = next(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
+    backup = next(tmp_path.glob("private_world.sqlite3.pre-v4-*.bak"))
     with sqlite3.connect(backup) as connection:
         backup_payload = connection.execute(
             "SELECT payload_json FROM private_world_snapshots WHERE version = 1"
@@ -224,23 +224,23 @@ def test_invalid_v1_payload_does_not_modify_database_or_create_backup(
         SQLitePrivateWorldLedger(database)
 
     assert hashlib.sha256(database.read_bytes()).hexdigest() == original_hash
-    assert not tuple(tmp_path.glob("private_world.sqlite3.pre-v3-*.bak"))
+    assert not tuple(tmp_path.glob("private_world.sqlite3.pre-v4-*.bak"))
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'private_world_metadata'"
         ).fetchone() is None
 
 
-def test_new_ledger_records_v3_metadata_without_backup(tmp_path: Path) -> None:
+def test_new_ledger_records_v4_metadata_without_backup(tmp_path: Path) -> None:
     database = tmp_path / "private_world.sqlite3"
     ledger = SQLitePrivateWorldLedger(database)
 
-    assert ledger.migration_status == "created_v3"
-    assert not tuple(tmp_path.glob("*.pre-v3-*.bak"))
+    assert ledger.migration_status == "created_v4"
+    assert not tuple(tmp_path.glob("*.pre-v4-*.bak"))
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM private_world_metadata WHERE key = 'schema_version'"
-        ).fetchone() == ("3",)
+        ).fetchone() == ("4",)
 
 
 def test_newer_schema_is_rejected_without_modification(tmp_path: Path) -> None:
@@ -277,8 +277,8 @@ def test_default_runtime_uses_local_data_root_and_reports_sanitized_health(
         "provider": "sqlite",
         "reason_code": None,
         "enabled": True,
-        "schema_version": 3,
-        "migration_status": "created_v3",
+        "schema_version": 4,
+        "migration_status": "created_v4",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "in-process",
@@ -335,8 +335,8 @@ def test_public_private_world_health_matches_the_sanitized_schema(
             "provider": "none",
             "reason_code": None,
             "enabled": True,
-            "schema_version": 3,
-            "migration_status": "current_v3",
+            "schema_version": 4,
+            "migration_status": "current_v4",
             "event_count": 0,
             "snapshot_count": 0,
             "probe": "in-process",
@@ -371,8 +371,8 @@ def test_public_private_world_health_matches_the_sanitized_schema(
             "provider": "sqlite",
             "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
             "enabled": True,
-            "schema_version": 3,
-            "migration_status": "current_v3",
+            "schema_version": 4,
+            "migration_status": "current_v4",
             "event_count": 0,
             "snapshot_count": 0,
             "probe": "in-process",
@@ -463,8 +463,8 @@ def test_runtime_health_fails_closed_when_sqlite_becomes_unavailable(
         "provider": "none",
         "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
         "enabled": True,
-        "schema_version": 3,
-        "migration_status": "created_v3",
+        "schema_version": 4,
+        "migration_status": "created_v4",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "not-run",
@@ -501,8 +501,8 @@ def test_runtime_health_fails_closed_when_current_snapshot_is_semantically_corru
         "provider": "none",
         "reason_code": "PRIVATE_WORLD_STORAGE_UNAVAILABLE",
         "enabled": True,
-        "schema_version": 3,
-        "migration_status": "created_v3",
+        "schema_version": 4,
+        "migration_status": "created_v4",
         "event_count": 0,
         "snapshot_count": 0,
         "probe": "not-run",
@@ -789,6 +789,8 @@ def test_available_sqlite_projects_only_character_view_into_reply_context(
                 "statement": "角色已知的合成课程调整。",
             }
         ],
+        "active_boundaries": [],
+        "acknowledged_affection": None,
     }
     assert "合成称呼" in serialized_model_private_world
     assert "角色已知的合成课程调整。" in serialized_model_private_world
