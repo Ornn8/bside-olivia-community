@@ -62,6 +62,20 @@ def test_cat_anchor_accepts_a_natural_direct_question() -> None:
 
 
 @pytest.mark.parametrize(
+    ("user_input", "expected_anchor"),
+    (
+        ("你听黑胶吗？", "anchor.listening_shelf"),
+        ("你读什么书？", "anchor.reading"),
+        ("你喝茶吗？", "anchor.stopping_ritual"),
+    ),
+)
+def test_action_phrasing_selects_the_relevant_anchor(
+    user_input: str, expected_anchor: str
+) -> None:
+    assert expected_anchor in _anchor_ids(user_input)
+
+
+@pytest.mark.parametrize(
     "user_input",
     ("今天下雨了。", "今天买的面包有点难吃。", "在吗？"),
 )
@@ -100,6 +114,7 @@ def test_anchor_disclosure_never_exceeds_the_limit(user_input: str) -> None:
         "你室友最近练琴吗？",
         "你老板最近练琴吗？",
         "你最近听室友练琴吗？",
+        "你听室友弹夜曲吗？",
     ),
 )
 def test_short_gap_does_not_reassign_other_people_to_persona(user_input: str) -> None:
