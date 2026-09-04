@@ -280,6 +280,8 @@ def test_video_capability_progress_shows_elapsed_time_and_current_file() -> None
     assert "const elapsedSeconds =" in video_panel
     assert "activeFile.current_file" in video_panel
     assert "已用时 ${elapsedSeconds} 秒" in video_panel
+    assert 'const verifyingOnly = bundles.some((item) => item.state === "verifying")' in video_panel
+    assert "正在校验安装文件" in video_panel
 
 
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:

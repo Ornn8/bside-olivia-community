@@ -1389,6 +1389,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     const { state, downloadable } = videoCapabilityViewState(bundles);
     const canUninstall = payload && payload.can_uninstall === true;
+    const verifyingOnly = bundles.some((item) => item.state === "verifying")
+      && !bundles.some((item) => ["queued", "downloading"].includes(item.state));
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
     const runtimeProgress = payload && payload.runtime_import && typeof payload.runtime_import === "object"
@@ -1448,7 +1450,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : state === "failed"
       ? "安装失败，可重试"
       : state === "downloading"
-      ? "正在下载并安装"
+      ? verifyingOnly ? "正在校验安装文件" : "正在下载并安装"
       : ["license_review_required", "prerequisites_required"].includes(state)
       ? runtimePreparing
         ? "组件已下载，正在准备运行环境"
