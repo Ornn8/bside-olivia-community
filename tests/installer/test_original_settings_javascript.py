@@ -270,6 +270,18 @@ def test_video_capability_panel_exposes_scoped_uninstall_action() -> None:
     assert "已生成的视频、信件和记忆会保留" in video_panel
 
 
+def test_video_capability_progress_shows_elapsed_time_and_current_file() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel", 1)[0]
+
+    assert "const progressStartedAt = Date.now();" in video_panel
+    assert "const elapsedSeconds =" in video_panel
+    assert "activeFile.current_file" in video_panel
+    assert "已用时 ${elapsedSeconds} 秒" in video_panel
+
+
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     active_video_panel = source.split(

@@ -1622,6 +1622,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refresh.append(refreshButton);
     panel.replaceChildren(heading, summary, list, refresh);
     if (state === "downloading" || runtimePreparing) {
+      const progressStartedAt = Date.now();
       const updateProgress = async () => {
         let nextPayload = null;
         try {
@@ -1652,15 +1653,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           (total, entry) => total + (Number(entry.total_bytes) || 0),
           0
         );
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1000));
+        const activeFile = nextBundles.find((entry) =>
+          ["queued", "downloading", "verifying"].includes(entry.state)
+          && typeof entry.current_file === "string"
+        );
+        const activeFileText = activeFile ? `，当前：${activeFile.current_file}` : "";
         progressText.textContent = nextTotalBytes
-          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}`
-          : "大小将在安装时按固定清单校验";
+          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}，已用时 ${elapsedSeconds} 秒${activeFileText}`
+          : `大小将在安装时按固定清单校验，已用时 ${elapsedSeconds} 秒${activeFileText}`;
         if (nextRuntimePreparing) {
           const checkedBytes = Math.max(0, Number(nextRuntime.checked_bytes) || 0);
           const runtimeTotalBytes = Math.max(0, Number(nextRuntime.total_bytes) || 0);
           progressText.textContent = runtimeTotalBytes > 0
-            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}`
-            : "正在准备视频运行环境……";
+            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}，已用时 ${elapsedSeconds} 秒`
+            : `正在准备视频运行环境，已用时 ${elapsedSeconds} 秒……`;
         }
         panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
       };

@@ -357,7 +357,8 @@ def test_video_uninstall_removes_only_the_managed_capability_tree(
     assert installer.uninstall() == "APPLIED"
 
     assert installer.install_root.is_dir()
-    assert list(installer.install_root.iterdir()) == []
+    assert [item.name for item in installer.install_root.iterdir()] == ["shared"]
+    assert (installer.install_root / "shared/reference.wav").read_bytes() == b"managed"
     assert media.read_bytes() == b"keep"
     status = installer.status()
     assert status["can_uninstall"] is False
@@ -2476,6 +2477,38 @@ def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missi
         installer.install_root / "ordinary_video" / "models" / "model.bin"
     ).read_bytes() == payload
     assert load_video_runtime_environment(installer.data_root) == {}
+
+
+def test_offline_retry_reuses_an_already_verified_cached_file(tmp_path: Path) -> None:
+    payload = b"verified cached payload"
+    spec = VideoFile(
+        "model",
+        "models/model.bin",
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        "fixture",
+        {},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+    )
+    target = installer.install_root / ".downloads/models/model.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload)
+    archive = tmp_path / "offline.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(spec.relative_path, b"must not overwrite verified cache")
+
+    installer._copy_offline(archive, spec, target)
+
+    assert target.read_bytes() == payload
 
 
 def test_manifest_append_downloads_only_new_direct_files(

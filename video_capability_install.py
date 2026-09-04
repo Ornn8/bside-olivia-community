@@ -1370,7 +1370,9 @@ class VideoCapabilityInstaller:
                 "schema_version": "olivia.video-capability-status.v2",
                 "status": "READY" if all(item["state"] == "ready" for item in bundles) else "UNAVAILABLE",
                 "capability": "video",
-                "can_uninstall": any(self.install_root.iterdir()),
+                "can_uninstall": any(
+                    child.name != "shared" for child in self.install_root.iterdir()
+                ),
                 "install_locations": [{"root": "local_data_root", "relative_path": "capabilities/video"}],
                 "bundles": bundles,
                 "runtime_import": dict(self._runtime_import),
@@ -1782,10 +1784,16 @@ class VideoCapabilityInstaller:
                 return "REJECTED"
             install_root = _checked_install_root(self.data_root, create=True)
             _reject_reparse_tree(install_root)
-            if not any(install_root.iterdir()):
+            managed_children = [
+                child for child in install_root.iterdir() if child.name != "shared"
+            ]
+            if not managed_children:
                 return "NOOP"
-            shutil.rmtree(install_root)
-            self.install_root = _checked_install_root(self.data_root, create=True)
+            for child in managed_children:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
             self._pause.clear()
             self._runtime_archive_identity = None
             self._runtime_failed_archive_identities.clear()
@@ -2983,6 +2991,12 @@ class VideoCapabilityInstaller:
         )
 
     def _copy_offline(self, offline_root: Path, item: VideoFile, target: Path) -> None:
+        if target.is_file() and not _is_reparse_point(target):
+            try:
+                _verify(target, item)
+                return
+            except (OSError, VideoCapabilityError):
+                pass
         if offline_root.is_file() and zipfile.is_zipfile(offline_root):
             with zipfile.ZipFile(offline_root) as archive:
                 member = _safe_relative(item.relative_path)
