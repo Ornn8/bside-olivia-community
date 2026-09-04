@@ -50,6 +50,11 @@ _PERSONA_SUBJECTS = {"奥利维亚", "olivia", "林离", "你"}
 _CLAUSE_BOUNDARY_RE = re.compile(r"[，,。；;！？?!\n]")
 _DIRECT_QUERY_GAP_TOKENS = (
     "小时候",
+    "养过",
+    "曾经",
+    "知道",
+    "觉得",
+    "发现",
     "是不是",
     "喜欢不喜欢",
     "为什么",
@@ -112,6 +117,18 @@ _DIRECT_QUERY_GAP_TOKENS = (
     "在",
     "去",
     "有",
+    "养",
+)
+_DIRECT_QUERY_GAP_MAX_CHARS = 6
+_DIRECT_QUERY_TEMPORAL_REMAINDER_RE = re.compile(
+    r"(?:"
+    r"(?:今|昨|前|明|后)(?:天|日|晚|夜|早|晨|年|月)?|"
+    r"这(?:几)?(?:天|日|周|星期|月|年|早|晚)|"
+    r"(?:上|下|本|每)(?:周|星期|礼拜|月|年)|"
+    r"周末|星期末|礼拜末|早上|上午|中午|下午|晚上|今晚|今早|今晨|夜里|"
+    r"(?:春|夏|秋|冬)(?:天|季)?|放假|假期|期末|月初|月中|月底|年初|年中|年底|"
+    r"[0-9零〇一二两三四五六七八九十百]+(?:天|日|号|周|星期|月|年|点|时|分)"
+    r")+"
 )
 _DIRECT_QUERY_GAP_FILLER_RE = re.compile(r"[\s的地得呀啦嘛呢吧啊哦哈]")
 _RECIPROCAL_CUE_RE = re.compile(
@@ -464,9 +481,11 @@ def _select_soft_canon(
     recent_context = (*history[-2:], *evidence_summaries[-2:])
     context_query = "\n".join(item.text for item in recent_context)
     current_ranked = _rank_soft_anchors(anchors, user_input)
+    selection_query = user_input
     if current_ranked:
         ranked = current_ranked
     elif _CONTEXT_FOLLOW_UP_RE.fullmatch(user_input) is not None:
+        selection_query = context_query
         ranked = _rank_soft_anchors(anchors, context_query)
     else:
         ranked = []
@@ -477,6 +496,20 @@ def _select_soft_canon(
             ranked, key=lambda item: (-item[0], item[1])
         )[:_SOFT_ANCHOR_LIMIT]
     }
+    if not selected_ids:
+        rejected_ids = _lexically_matching_anchor_ids(anchors, selection_query)
+        ordered = tuple(
+            sorted(
+                item.declaration_id
+                for item in anchors
+                if item.declaration_id not in rejected_ids
+            )
+        )
+        if ordered:
+            digest = hashlib.sha256(user_input.encode("utf-8")).digest()
+            selected_ids = {
+                ordered[int.from_bytes(digest[:4], "big") % len(ordered)]
+            }
     return tuple(
         item
         for item in soft_canon
@@ -504,13 +537,40 @@ def _rank_soft_anchors(
     return ranked
 
 
+def _lexically_matching_anchor_ids(
+    anchors: tuple[PersonaDeclaration, ...],
+    query: str,
+) -> frozenset[str]:
+    return frozenset(
+        declaration.declaration_id
+        for declaration in anchors
+        if (
+            pattern := _ANCHOR_DISCLOSURE_PATTERNS.get(declaration.declaration_id)
+        )
+        is not None
+        and pattern.search(query) is not None
+    )
+
+
 def _anchor_match_is_persona_directed(query: str, start: int, end: int) -> bool:
-    preceding_boundaries = tuple(_CLAUSE_BOUNDARY_RE.finditer(query, 0, start))
+    direction_start = start
+    if query.startswith("最近", start):
+        action_starts = tuple(
+            position
+            for token in ("练", "弹")
+            if (position := query.find(token, start, end)) >= 0
+        )
+        if action_starts:
+            direction_start = min(action_starts)
+
+    preceding_boundaries = tuple(
+        _CLAUSE_BOUNDARY_RE.finditer(query, 0, direction_start)
+    )
     clause_start = preceding_boundaries[-1].end() if preceding_boundaries else 0
     following_boundary = _CLAUSE_BOUNDARY_RE.search(query, end)
     clause_end = following_boundary.start() if following_boundary else len(query)
     clause = query[clause_start:clause_end]
-    local_start = start - clause_start
+    local_start = direction_start - clause_start
 
     if _PERSONA_DISCLOSURE_CUE_RE.search(clause) is None:
         return _RECIPROCAL_CUE_RE.search(query, end) is not None
@@ -530,7 +590,10 @@ def _is_direct_query_gap(value: str) -> bool:
     remainder = _DIRECT_QUERY_GAP_FILLER_RE.sub("", value)
     for token in _DIRECT_QUERY_GAP_TOKENS:
         remainder = remainder.replace(token, "")
-    return remainder == ""
+    return not remainder or (
+        len(remainder) <= _DIRECT_QUERY_GAP_MAX_CHARS
+        and _DIRECT_QUERY_TEMPORAL_REMAINDER_RE.fullmatch(remainder) is not None
+    )
 
 
 def _select_style_exemplars(
