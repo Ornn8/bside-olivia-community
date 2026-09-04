@@ -42,7 +42,8 @@ release package.
 
 The default release package contains short, independently rewritten
 declarations distilled from
-`docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md`.
+`docs/persona-sources/linli-im-private-constitution-1.0.zh-CN.md` and the
+directly authorized, revision-pinned `yilangren/OliviaSoul` persona reference.
 
 It covers:
 
@@ -56,9 +57,12 @@ It covers:
 - separate text-letter, spoken-video, musical-video, and disabled future-IM
   style rules.
 
-The original long source text, private nickname instances, addresses,
+The original long source text, private nickname instances, exact addresses,
 relationship history, control protocol, and local-continuation instances are
-not injected into the public prompt. The mapping is recorded in
+not injected into the public prompt. A bounded public residence summary may be
+progressively disclosed only when the current letter directly asks Linli about
+it or clearly continues that question from recent context. The source mapping
+and fixed content revision are recorded in
 `linli_character/persona_release_provenance_v2.json`.
 
 ## Prompt hierarchy

@@ -33,7 +33,119 @@ _FORBIDDEN_RULES = (
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
+_SOFT_ANCHOR_LIMIT = 4
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
+_PERSONA_DISCLOSURE_CUE_RE = re.compile(
+    r"(?:林离|Olivia|奥利维亚|你)"
+    r"(?:(?!我|[。！？?!\n]).){0,24}"
+    r"(?:吗|呢|什么|哪|几|多少|怎么|为什么|是否|有没有|会不会|"
+    r"喜欢不喜欢|怕不怕)",
+    re.I,
+)
+_SUBJECT_RE = re.compile(
+    r"奥利维亚|Olivia|林离|他们|她们|它们|我们|别人|对方|朋友|同事|同学|他|她|它|我|你",
+    re.I,
+)
+_PERSONA_SUBJECTS = {"奥利维亚", "olivia", "林离", "你"}
+_CLAUSE_BOUNDARY_RE = re.compile(r"[，,。；;！？?!\n]")
+_DIRECT_QUERY_GAP_TOKENS = (
+    "小时候",
+    "是不是",
+    "喜欢不喜欢",
+    "为什么",
+    "有没有",
+    "会不会",
+    "不喜欢",
+    "怎么样",
+    "平时",
+    "平常",
+    "现在",
+    "最近",
+    "目前",
+    "以前",
+    "一般",
+    "通常",
+    "常常",
+    "经常",
+    "总是",
+    "偶尔",
+    "到底",
+    "究竟",
+    "其实",
+    "真的",
+    "比较",
+    "有点",
+    "多少",
+    "哪里",
+    "哪儿",
+    "哪个",
+    "哪所",
+    "什么",
+    "自己",
+    "本人",
+    "喜欢",
+    "害怕",
+    "不会",
+    "打算",
+    "准备",
+    "来自",
+    "家里",
+    "是否",
+    "最",
+    "更",
+    "很",
+    "挺",
+    "也",
+    "还",
+    "都",
+    "就",
+    "又",
+    "真",
+    "怕",
+    "会",
+    "想",
+    "常",
+    "叫",
+    "对",
+    "关于",
+    "从",
+    "在",
+    "去",
+    "有",
+)
+_DIRECT_QUERY_GAP_FILLER_RE = re.compile(r"[\s的地得呀啦嘛呢吧啊哦哈]")
+_RECIPROCAL_CUE_RE = re.compile(
+    r"[，,；;]\s*(?:林离|Olivia|奥利维亚|你)\s*(?:呢|吗|怎么样)[？?]?\s*$",
+    re.I,
+)
+_CONTEXT_FOLLOW_UP_RE = re.compile(
+    r"\s*(?:那)?(?:后来|然后|还有|接着|之后|为什么|怎么)"
+    r"(?:呢|怎么样|回事)?[。！？?!]?\s*"
+)
+_ANCHOR_DISCLOSURE_PATTERNS = {
+    "anchor.current_piece": re.compile(r"肖邦|夜曲|主科|最近.{0,6}(?:练|弹)|(?:练|弹).{0,4}什么|练琴"),
+    "anchor.quit_prep_school": re.compile(r"附中|普通中学|比赛|拿奖|为什么.{0,6}(?:学校|学琴)"),
+    "anchor.listening_shelf": re.compile(r"黑胶|王菲|Bill Evans|爵士|暗涌|听什么|歌单", re.I),
+    "anchor.grandmother_traces": re.compile(r"外婆|小铃铛|合影|手抄.{0,4}(?:谱|乐谱)"),
+    "anchor.desk_objects": re.compile(r"桌|窗台|行星|水星|火星|节拍器|眼镜|香薰"),
+    "anchor.stopping_ritual": re.compile(r"绿茶|茶叶|安静|放松|练琴前"),
+    "anchor.everyday_taste": re.compile(r"喜欢吃|想吃|吃什么|好吃|口味|食物|菜|甜|辣|馄饨|葱油|糖醋|糯米藕"),
+    "anchor.blue_butterflies": re.compile(r"蓝色?.{0,2}蝴蝶|工业区|凌晨四点"),
+    "anchor.name_origin": re.compile(r"名字|姓名|为什么叫|离卦|名字.{0,4}离"),
+    "anchor.silence": re.compile(r"silence|沉默|停顿|声音.{0,4}痕迹", re.I),
+    "anchor.grandmother_piano": re.compile(r"老钢琴|钢琴.{0,6}外婆|外婆.{0,6}钢琴|钢琴.{0,4}调音|调音师"),
+    "anchor.cat": re.compile(r"猫|宠物|养什么"),
+    "anchor.singing": re.compile(r"唱歌|会唱|唱得|歌声"),
+    "anchor.afraid_of_bugs": re.compile(r"虫|蜘蛛|云南|害怕什么"),
+    "anchor.usual_outfit": re.compile(r"穿|衣服|毛衣|短裤|项链|打扮"),
+    "anchor.reading": re.compile(r"读书|看书|文学|书单|阅读|喜欢.{0,4}书"),
+    "anchor.bilibili": re.compile(r"B站|bilibili|发过.{0,6}(?:视频|曲)|原神.{0,4}音乐", re.I),
+    "anchor.father": re.compile(r"父亲|爸爸|父母|家人|英国|寄.{0,4}录音"),
+    "anchor.hua": re.compile(r"《花》|写.{0,4}曲|作曲|磁带|谱子"),
+    "anchor.residence": re.compile(r"住在|住哪|住处|家在|房子|黄浦|复兴公园|三角钢琴"),
+    "anchor.physical": re.compile(r"几岁|年龄|生日|出生|身高|头发|棕色|多大"),
+    "anchor.school_timeline": re.compile(r"学校|上音|音乐学院|年级|入学|毕业|大学|工作室"),
+}
 _STYLE_SITUATIONS = (
     (
         "emotional_acknowledgement",
@@ -291,9 +403,15 @@ def _persona_blocks(
             declarations, "PUBLIC_CANON", PromptSection.PUBLIC_CANON
         )
     )
+    soft_canon = _select_soft_canon(
+        declarations,
+        user_input=user_input,
+        history=history,
+        evidence_summaries=evidence_summaries,
+    )
     blocks.extend(
         _declaration_blocks(
-            declarations, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON
+            soft_canon, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON
         )
     )
     blocks.extend(
@@ -325,6 +443,94 @@ def _persona_blocks(
             )
         )
     return tuple(blocks)
+
+
+def _select_soft_canon(
+    declarations: tuple[PersonaDeclaration, ...],
+    *,
+    user_input: str,
+    history: tuple[UntrustedFragment, ...],
+    evidence_summaries: tuple[UntrustedFragment, ...],
+) -> tuple[PersonaDeclaration, ...]:
+    soft_canon = tuple(
+        item for item in declarations if item.tier == "COMMUNITY_SOFT_CANON"
+    )
+    anchors = tuple(
+        item for item in soft_canon if item.declaration_id.startswith("anchor.")
+    )
+    if not anchors:
+        return soft_canon
+
+    recent_context = (*history[-2:], *evidence_summaries[-2:])
+    context_query = "\n".join(item.text for item in recent_context)
+    current_ranked = _rank_soft_anchors(anchors, user_input)
+    if current_ranked:
+        ranked = current_ranked
+    elif _CONTEXT_FOLLOW_UP_RE.fullmatch(user_input) is not None:
+        ranked = _rank_soft_anchors(anchors, context_query)
+    else:
+        ranked = []
+
+    selected_ids = {
+        declaration_id
+        for _, declaration_id in sorted(
+            ranked, key=lambda item: (-item[0], item[1])
+        )[:_SOFT_ANCHOR_LIMIT]
+    }
+    return tuple(
+        item
+        for item in soft_canon
+        if not item.declaration_id.startswith("anchor.")
+        or item.declaration_id in selected_ids
+    )
+
+
+def _rank_soft_anchors(
+    anchors: tuple[PersonaDeclaration, ...],
+    query: str,
+) -> list[tuple[int, str]]:
+    ranked: list[tuple[int, str]] = []
+    for declaration in anchors:
+        pattern = _ANCHOR_DISCLOSURE_PATTERNS.get(declaration.declaration_id)
+        if pattern is None:
+            continue
+        matches = tuple(
+            match
+            for match in pattern.finditer(query)
+            if _anchor_match_is_persona_directed(query, match.start(), match.end())
+        )
+        if matches:
+            ranked.append((len(matches), declaration.declaration_id))
+    return ranked
+
+
+def _anchor_match_is_persona_directed(query: str, start: int, end: int) -> bool:
+    preceding_boundaries = tuple(_CLAUSE_BOUNDARY_RE.finditer(query, 0, start))
+    clause_start = preceding_boundaries[-1].end() if preceding_boundaries else 0
+    following_boundary = _CLAUSE_BOUNDARY_RE.search(query, end)
+    clause_end = following_boundary.start() if following_boundary else len(query)
+    clause = query[clause_start:clause_end]
+    local_start = start - clause_start
+
+    if _PERSONA_DISCLOSURE_CUE_RE.search(clause) is None:
+        return _RECIPROCAL_CUE_RE.search(query, end) is not None
+
+    subjects = tuple(_SUBJECT_RE.finditer(clause, 0, local_start))
+    if subjects:
+        last_subject = subjects[-1]
+        if (
+            last_subject.group(0).lower() in _PERSONA_SUBJECTS
+            and _is_direct_query_gap(clause[last_subject.end() : local_start])
+        ):
+            return True
+    return _RECIPROCAL_CUE_RE.search(query, end) is not None
+
+
+def _is_direct_query_gap(value: str) -> bool:
+    remainder = _DIRECT_QUERY_GAP_FILLER_RE.sub("", value)
+    for token in _DIRECT_QUERY_GAP_TOKENS:
+        remainder = remainder.replace(token, "")
+    return remainder == ""
 
 
 def _select_style_exemplars(
