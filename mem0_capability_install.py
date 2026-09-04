@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 import uuid
+import zipfile
 
 from installer.uninstall_safety import safe_managed_target
 
@@ -27,6 +29,7 @@ _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 Progress = Callable[[int, int, str], None]
 _RUNTIME_BYTECODE_POLICY = "pip-compile-v1"
 _RUNTIME_PREPARATION_PROGRESS = "python-runtime-preparation"
+_OFFLINE_SOURCE = "offline-package"
 
 
 class CapabilityState(StrEnum):
@@ -94,6 +97,172 @@ class Mem0CapabilityBOM:
     @property
     def estimated_download_bytes(self) -> int:
         return self.runtime.estimated_download_bytes + self.model.download_bytes
+
+
+class Mem0OfflinePackage:
+    """Verify one fixed offline package before exposing installable payloads."""
+
+    _MANIFEST = "olivia-memory-offline-manifest.json"
+    _CAPABILITY_MANIFEST = "installer/mem0-capability-manifest.json"
+    _RUNTIME_ARTIFACTS = "installer/mem0-runtime-artifacts.json"
+    _REQUIREMENTS = "installer/mem0-runtime-requirements.txt"
+
+    def __init__(
+        self,
+        *,
+        archive: Path,
+        staging_parent: Path,
+        bom: Mem0CapabilityBOM,
+        capability_manifest: Path,
+        runtime_artifacts: Path,
+        requirements: Path,
+    ) -> None:
+        self.archive = archive
+        self.staging_parent = staging_parent
+        self.bom = bom
+        self.capability_manifest = capability_manifest
+        self.runtime_artifacts = runtime_artifacts
+        self.requirements = requirements
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+
+    def _expected_manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": "olivia.memory-offline-private.v1",
+            "capability": "long_term_memory",
+            "version": self.bom.version,
+            "capability_manifest_sha256": self._file_sha256(
+                self.capability_manifest
+            ),
+            "requirements_sha256": self._file_sha256(self.requirements),
+            "runtime_artifacts_sha256": self._file_sha256(self.runtime_artifacts),
+            "wheel_count": self.bom.runtime.package_count,
+            "model": {
+                "repo_id": self.bom.model.repo_id,
+                "revision": self.bom.model.revision,
+                "files": {
+                    name: {
+                        "size_bytes": item.size_bytes,
+                        "sha256": item.sha256,
+                    }
+                    for name, item in self.bom.model.files.items()
+                },
+            },
+        }
+
+    def _expected_payloads(self) -> dict[str, tuple[int, str]]:
+        payloads = {
+            f"wheelhouse/{item.filename}": (item.size_bytes, item.sha256)
+            for item in self.bom.runtime.artifacts
+        }
+        payloads.update(
+            {
+                f"model/{name}": (item.size_bytes, item.sha256)
+                for name, item in self.bom.model.files.items()
+            }
+        )
+        return payloads
+
+    @staticmethod
+    def _safe_members(
+        archive: zipfile.ZipFile, expected_names: set[str]
+    ) -> dict[str, zipfile.ZipInfo]:
+        members: dict[str, zipfile.ZipInfo] = {}
+        casefolded: set[str] = set()
+        for item in archive.infolist():
+            name = item.filename
+            parts = PurePosixPath(name).parts
+            normalized = name.casefold()
+            mode = (item.external_attr >> 16) & 0o170000
+            if (
+                not name
+                or "\\" in name
+                or PurePosixPath(name).is_absolute()
+                or ".." in parts
+                or item.is_dir()
+                or item.flag_bits & 0x1
+                or mode == 0o120000
+                or normalized in casefolded
+                or name not in expected_names
+            ):
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+            casefolded.add(normalized)
+            members[name] = item
+        if set(members) != expected_names:
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+        return members
+
+    @staticmethod
+    def _member_sha256(archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> str:
+        digest = hashlib.sha256()
+        with archive.open(member) as stream:
+            while block := stream.read(1 << 20):
+                digest.update(block)
+        return digest.hexdigest()
+
+    @contextmanager
+    def prepare(self) -> Iterator[Path]:
+        staging = self.staging_parent / f".mem0-offline-stage-{uuid.uuid4().hex}"
+        try:
+            if (
+                not self.archive.is_absolute()
+                or self.archive.is_symlink()
+                or self.archive.suffix.casefold() != ".zip"
+                or not self.archive.is_file()
+            ):
+                raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+            payloads = self._expected_payloads()
+            trusted_files = {
+                self._CAPABILITY_MANIFEST: self.capability_manifest,
+                self._RUNTIME_ARTIFACTS: self.runtime_artifacts,
+                self._REQUIREMENTS: self.requirements,
+            }
+            expected_names = {
+                self._MANIFEST,
+                *trusted_files,
+                *payloads,
+            }
+            with zipfile.ZipFile(self.archive) as archive:
+                members = self._safe_members(archive, expected_names)
+                manifest_info = members[self._MANIFEST]
+                if manifest_info.file_size > 64 * 1024:
+                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+                try:
+                    manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID") from exc
+                if manifest != self._expected_manifest():
+                    raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+                for name, trusted_path in trusted_files.items():
+                    member = members[name]
+                    if (
+                        member.file_size != trusted_path.stat().st_size
+                        or self._member_sha256(archive, member)
+                        != self._file_sha256(trusted_path)
+                    ):
+                        raise RuntimeError("MEM0_OFFLINE_PACKAGE_HASH_MISMATCH")
+                staging.mkdir(parents=True)
+                for name, (size_bytes, sha256) in payloads.items():
+                    member = members[name]
+                    if member.file_size != size_bytes:
+                        raise RuntimeError("MEM0_OFFLINE_PACKAGE_HASH_MISMATCH")
+                    destination = staging.joinpath(*PurePosixPath(name).parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    digest = hashlib.sha256()
+                    with archive.open(member) as source, destination.open("wb") as target:
+                        while block := source.read(1 << 20):
+                            digest.update(block)
+                            target.write(block)
+                    if digest.hexdigest() != sha256:
+                        raise RuntimeError("MEM0_OFFLINE_PACKAGE_HASH_MISMATCH")
+            yield staging
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID") from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _https_source(value: object) -> str:
@@ -519,6 +688,45 @@ class ResumableModelDownloader:
             return False
 
 
+class _OfflineModelDownloader:
+    def __init__(
+        self,
+        *,
+        model_root: Path,
+        revision: str,
+        files: Mapping[str, ModelArtifact],
+        pause_requested: threading.Event,
+        progress: Progress,
+    ) -> None:
+        self.model_root = model_root
+        self.revision = revision
+        self.files = files
+        self.pause_requested = pause_requested
+        self.progress = progress
+        self.completed_bytes = 0
+        self.total_bytes = sum(item.size_bytes for item in files.values())
+        self.last_source = _OFFLINE_SOURCE
+
+    def download(
+        self,
+        *,
+        revision: str,
+        relative_path: str,
+        destination: Path,
+    ) -> None:
+        if revision != self.revision or relative_path not in self.files:
+            raise RuntimeError("MEM0_EMBEDDING_IDENTITY_MISMATCH")
+        if self.pause_requested.is_set():
+            raise _DownloadPaused
+        source = self.model_root.joinpath(*PurePosixPath(relative_path).parts)
+        if not source.is_file() or source.is_symlink():
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        self.completed_bytes += self.files[relative_path].size_bytes
+        self.progress(self.completed_bytes, self.total_bytes, relative_path)
+
+
 class _DownloadPaused(RuntimeError):
     pass
 
@@ -657,7 +865,7 @@ class ManagedMem0Runtime:
             if (
                 marker.get("requirements_sha256")
                 != hashlib.sha256(self.requirements.read_bytes()).hexdigest()
-                or marker.get("source") not in self.sources
+                or marker.get("source") not in {*self.sources, _OFFLINE_SOURCE}
                 or marker.get("bytecode_policy") != _RUNTIME_BYTECODE_POLICY
             ):
                 return False
@@ -774,8 +982,11 @@ class ManagedMem0Runtime:
             return
         attempts: tuple[tuple[str | None, Path | None], ...]
         if offline_root is not None:
-            raise ValueError("offline capability packs are not enabled")
-        if source_mode == "official":
+            wheelhouse = offline_root / "wheelhouse"
+            if source_mode != "offline" or not wheelhouse.is_dir():
+                raise ValueError("offline capability package is invalid")
+            attempts = ((_OFFLINE_SOURCE, wheelhouse),)
+        elif source_mode == "official":
             attempts = ((self.sources[1], None),)
         elif source_mode == "auto":
             attempts = ((self.sources[0], None), (self.sources[1], None))
@@ -831,7 +1042,7 @@ class ManagedMem0Runtime:
                 progress_roots=(self.cache, self.staging),
             )
             if result == 0:
-                self.last_source = "offline" if wheelhouse is not None else source
+                self.last_source = source
                 installed = True
                 break
         if not installed:
@@ -926,6 +1137,7 @@ class ManagedEmbeddingModel:
             return None
         accepted = {
             *self.bom.sources,
+            _OFFLINE_SOURCE,
             "verified-existing-cache",
             "verified-download-cache",
             "verified-legacy-download-cache",
@@ -1050,28 +1262,38 @@ class ManagedEmbeddingModel:
 
         if self.ready():
             return
-        if offline_root is not None:
-            raise ValueError("offline capability packs are not enabled")
         cache_was_verified = self._bom_cache_ready()
         previous_source = self._read_source()
-        self._ensure_download_ownership()
-        downloader: ResumableModelDownloader
+        downloader: ResumableModelDownloader | _OfflineModelDownloader
 
         def report(downloaded: int, total: int, current: str) -> None:
             self.last_source = downloader.last_source
             progress(downloaded, total, current)
 
-        downloader = ResumableModelDownloader(
-            repo_id=self.bom.repo_id,
-            revision=self.bom.revision,
-            files=self.bom.files,
-            sources=self.bom.sources,
-            source_revisions=self.bom.source_revisions,
-            download_root=self.download_root,
-            source_mode=source_mode,
-            pause_requested=pause_requested,
-            progress=report,
-        )
+        if offline_root is not None:
+            model_root = offline_root / "model"
+            if source_mode != "offline" or not model_root.is_dir():
+                raise ValueError("offline capability package is invalid")
+            downloader = _OfflineModelDownloader(
+                model_root=model_root,
+                revision=self.bom.revision,
+                files=self.bom.files,
+                pause_requested=pause_requested,
+                progress=report,
+            )
+        else:
+            self._ensure_download_ownership()
+            downloader = ResumableModelDownloader(
+                repo_id=self.bom.repo_id,
+                revision=self.bom.revision,
+                files=self.bom.files,
+                sources=self.bom.sources,
+                source_revisions=self.bom.source_revisions,
+                download_root=self.download_root,
+                source_mode=source_mode,
+                pause_requested=pause_requested,
+                progress=report,
+            )
         result = Mem0EmbeddingInstaller(
             self.config,
             downloader=downloader,
@@ -1135,6 +1357,7 @@ def create_mem0_capability_installer(
 ) -> Mem0CapabilityInstaller:
     manifest = backend_root / "installer" / "mem0-capability-manifest.json"
     requirements = backend_root / "installer" / "mem0-runtime-requirements.txt"
+    runtime_artifacts = backend_root / "installer" / "mem0-runtime-artifacts.json"
     bom = load_mem0_capability_bom(manifest, requirements)
     runtime = ManagedMem0Runtime(
         install_root=install_root,
@@ -1167,6 +1390,14 @@ def create_mem0_capability_installer(
                 lambda: shutil.disk_usage(data_root).free,
                 max(1_073_741_824, bom.model.download_bytes * 2),
             ),
+        ),
+        offline_package_factory=lambda archive: Mem0OfflinePackage(
+            archive=archive,
+            staging_parent=install_root / "downloads",
+            bom=bom,
+            capability_manifest=manifest,
+            runtime_artifacts=runtime_artifacts,
+            requirements=requirements,
         ),
     )
 
@@ -1230,6 +1461,7 @@ class Mem0CapabilityInstaller:
         required_free_bytes: int = 0,
         free_space: Callable[[], int] | None = None,
         space_checks: tuple[tuple[Callable[[], int], int], ...] = (),
+        offline_package_factory: Callable[[Path], Mem0OfflinePackage] | None = None,
     ) -> None:
         self.runtime = runtime
         self.model = model
@@ -1241,6 +1473,7 @@ class Mem0CapabilityInstaller:
         self.space_checks = space_checks or (
             ((free_space, max(0, required_free_bytes)),) if free_space else ()
         )
+        self.offline_package_factory = offline_package_factory
         self._lock = threading.Lock()
         self._pause = threading.Event()
         self._thread: threading.Thread | None = None
@@ -1391,7 +1624,9 @@ class Mem0CapabilityInstaller:
         source_mode: str,
         offline_root: Path | None = None,
     ) -> str:
-        if source_mode not in {"auto", "official"} or offline_root is not None:
+        online = source_mode in {"auto", "official"} and offline_root is None
+        offline = source_mode == "offline" and offline_root is not None
+        if not (online or offline) or offline and self.offline_package_factory is None:
             raise ValueError("capability source mode is invalid")
         self._installed_measurement_complete = False
         if self._ready_after_migration():
@@ -1423,34 +1658,38 @@ class Mem0CapabilityInstaller:
                 self._progress_floor,
                 source=source_mode,
             )
+        package_context = (
+            self.offline_package_factory(offline_root).prepare()
+            if offline and self.offline_package_factory is not None
+            else nullcontext(None)
+        )
         try:
-            self.runtime.install(
-                source_mode=source_mode,
-                offline_root=offline_root,
-                pause_requested=self._pause,
-                progress=self._progress("runtime", self.runtime, source_mode),
-            )
-            if self._pause.is_set():
-                raise _DownloadPaused
-            self.model.install(
-                source_mode=source_mode,
-                offline_root=offline_root,
-                pause_requested=self._pause,
-                progress=self._progress("model", self.model, source_mode),
-            )
-            if self._pause.is_set():
-                raise _DownloadPaused
-            with self._lock:
-                self._status = self._new_status(
-                    CapabilityState.VERIFYING,
-                    "verification",
-                    self.total,
-                    source=str(
-                        self._actual_source(source_mode)
-                    ),
+            with package_context as prepared_root:
+                self.runtime.install(
+                    source_mode=source_mode,
+                    offline_root=prepared_root,
+                    pause_requested=self._pause,
+                    progress=self._progress("runtime", self.runtime, source_mode),
                 )
-            if not self.runtime.ready() or not self.model.ready():
-                raise RuntimeError("MEM0_CAPABILITY_VERIFY_FAILED")
+                if self._pause.is_set():
+                    raise _DownloadPaused
+                self.model.install(
+                    source_mode=source_mode,
+                    offline_root=prepared_root,
+                    pause_requested=self._pause,
+                    progress=self._progress("model", self.model, source_mode),
+                )
+                if self._pause.is_set():
+                    raise _DownloadPaused
+                with self._lock:
+                    self._status = self._new_status(
+                        CapabilityState.VERIFYING,
+                        "verification",
+                        self.total,
+                        source=str(self._actual_source(source_mode)),
+                    )
+                if not self.runtime.ready() or not self.model.ready():
+                    raise RuntimeError("MEM0_CAPABILITY_VERIFY_FAILED")
         except _DownloadPaused:
             with self._lock:
                 self._status = self._new_status(
@@ -1483,7 +1722,9 @@ class Mem0CapabilityInstaller:
         offline_root: Path | None = None,
         _progress_floor: int = 0,
     ) -> str:
-        if source_mode not in {"auto", "official"} or offline_root is not None:
+        online = source_mode in {"auto", "official"} and offline_root is None
+        offline = source_mode == "offline" and offline_root is not None
+        if not (online or offline) or offline and self.offline_package_factory is None:
             raise ValueError("capability source mode is invalid")
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -1592,11 +1833,14 @@ __all__ = [
     "CapabilityStatus",
     "ManagedMem0Runtime",
     "ManagedEmbeddingModel",
+    "Mem0OfflinePackage",
     "ModelBOM",
     "Mem0CapabilityBOM",
     "Mem0CapabilityInstaller",
     "ModelArtifact",
     "ResumableModelDownloader",
+    "RuntimeArtifact",
+    "RuntimeBOM",
     "create_mem0_capability_installer",
     "load_mem0_capability_bom",
 ]
