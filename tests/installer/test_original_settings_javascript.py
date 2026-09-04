@@ -206,6 +206,47 @@ def test_paused_memory_download_keeps_its_original_source_selection() -> None:
     assert "source.value = payload.source" in memory_panel
 
 
+def test_memory_capability_offers_direct_offline_zip_import() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    memory_panel = source.split(
+        "const renderMem0CapabilityPanel = async (panel) => {", 1
+    )[1].split("const videoCapabilityViewState", 1)[0]
+
+    assert 'button("断网恢复：导入离线包（ZIP）"' in memory_panel
+    assert '{ action: "import_offline" }' in memory_panel
+    assert "无需解压" in memory_panel
+
+
+def test_paused_offline_memory_import_cannot_fall_through_to_online_resume() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    memory_panel = source.split(
+        "const renderMem0CapabilityPanel = async (panel) => {", 1
+    )[1].split("const videoCapabilityViewState", 1)[0]
+
+    assert "const onlineInstallAvailable = !offlineImport && (" in memory_panel
+    assert '|| stateValue === "paused"' in memory_panel
+
+
+def test_memory_offline_import_progress_is_not_described_as_a_download() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    memory_panel = source.split(
+        "const renderMem0CapabilityPanel = async (panel) => {", 1
+    )[1].split("const videoCapabilityViewState", 1)[0]
+
+    assert (
+        'const offlineImport = ["offline", "offline-package"].includes(payload.source);'
+        in memory_panel
+    )
+    assert (
+        'downloading: offlineImport ? "正在校验并导入离线包" : "下载中"'
+        in memory_panel
+    )
+    assert 'queued: offlineImport ? "等待导入" : "等待下载"' in memory_panel
+    assert 'field(offlineImport ? "离线包内容" : "下载量"' in memory_panel
+    assert 'field(offlineImport ? "待处理" : "剩余"' in memory_panel
+    assert 'button(offlineImport ? "暂停导入" : "暂停下载"' in memory_panel
+
+
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     active_video_panel = source.split(

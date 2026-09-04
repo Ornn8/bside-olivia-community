@@ -17,7 +17,7 @@
     },
     "/toy/capabilities/mem0/action": {
       "methods": ["POST", "OPTIONS"],
-      "status_values": ["APPLIED", "NOOP", "REJECTED"],
+      "status_values": ["APPLIED", "NOOP", "REJECTED", "CANCELLED"],
       "request_fields": ["action", "source?", "remove_model?"],
       "response_fields": ["status"]
     }
@@ -30,6 +30,8 @@
     "CAPABILITY_HOST_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "CAPABILITY_JSON_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "CAPABILITY_LOGIN_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_OFFLINE_ARCHIVE_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "CAPABILITY_OFFLINE_PICKER_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "CAPABILITY_ORIGIN_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "CAPABILITY_REQUEST_TOO_LARGE": {"http_statuses": [413], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "CAPABILITY_RESULT_INVALID": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import zipfile
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -219,6 +220,74 @@ def test_capability_api_requires_login_session_and_has_no_offline_import_route(
                 headers={"Origin": TRUSTED_ORIGIN},
             )
             assert offline.status == 404
+
+    asyncio.run(scenario())
+
+
+def test_capability_api_selects_memory_zip_without_accepting_a_renderer_path(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "Olivia-memory-offline-private.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("olivia-memory-offline-manifest.json", "{}")
+
+    async def scenario() -> None:
+        installer = _Installer()
+        app = web.Application()
+        mount_original_client_capability_api(
+            app,
+            installer,
+            trusted_origins=(TRUSTED_ORIGIN,),
+            authorize_session=lambda _value: None,
+            select_offline_archive=lambda: archive,
+        )
+        headers = {
+            "Origin": TRUSTED_ORIGIN,
+            "X-Olivia-Capability-Action": "confirmed",
+            "X-Olivia-Setup-Session": "signed-in-session",
+        }
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                ACTION_PATH,
+                headers=headers,
+                json={"action": "import_offline"},
+            )
+            assert response.status == 200
+            assert await response.json() == {"status": "APPLIED"}
+            assert installer.starts == [("offline", archive.resolve(), False)]
+
+    asyncio.run(scenario())
+
+
+def test_capability_api_rejects_renderer_supplied_memory_archive_paths() -> None:
+    async def scenario() -> None:
+        installer = _Installer()
+        app = web.Application()
+        mount_original_client_capability_api(
+            app,
+            installer,
+            trusted_origins=(TRUSTED_ORIGIN,),
+            authorize_session=lambda _value: None,
+            select_offline_archive=lambda: (_ for _ in ()).throw(
+                AssertionError("the picker must not run for invalid fields")
+            ),
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                ACTION_PATH,
+                headers={
+                    "Origin": TRUSTED_ORIGIN,
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": "signed-in-session",
+                },
+                json={"action": "import_offline", "archive": r"C:\untrusted.zip"},
+            )
+            assert response.status == 400
+            assert await response.json() == {
+                "status": "FAILED",
+                "error_code": "CAPABILITY_FIELDS_INVALID",
+            }
+        assert installer.starts == []
 
     asyncio.run(scenario())
 

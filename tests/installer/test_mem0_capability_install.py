@@ -18,6 +18,7 @@ from mem0_capability_install import (
     ManagedEmbeddingModel,
     Mem0CapabilityInstaller,
     ModelArtifact,
+    ModelBOM,
     ResumableModelDownloader,
     load_mem0_capability_bom,
 )
@@ -971,6 +972,57 @@ def test_managed_runtime_uses_mirror_then_official_and_registers_atomic_target(
     assert all("mem0-site-packages" not in line for line in pth.read_text(encoding="utf-8").splitlines())
 
 
+def test_managed_runtime_installs_from_verified_wheelhouse_without_an_index(
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "install"
+    python_root = install_root / "runtime" / "python-3.12"
+    python_root.mkdir(parents=True)
+    python_executable = python_root / "python.exe"
+    python_executable.write_bytes(b"synthetic")
+    pth = python_root / "python312._pth"
+    pth.write_text("python312.zip\nsite-packages\nimport site\n", encoding="utf-8")
+    requirements = install_root / "local_backend" / "installer" / "mem0-runtime-requirements.txt"
+    requirements.parent.mkdir(parents=True)
+    requirements.write_bytes(REQUIREMENTS.read_bytes())
+    offline_root = tmp_path / "verified-offline"
+    wheelhouse = offline_root / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def runner(command, *, environment, pause_requested, progress, progress_roots) -> int:
+        del environment, pause_requested, progress_roots
+        calls.append(list(command))
+        target = Path(command[command.index("--target") + 1])
+        (target / "fixture.dist-info").mkdir(parents=True, exist_ok=True)
+        progress(1)
+        return 0
+
+    layer = ManagedMem0Runtime(
+        install_root=install_root,
+        python_executable=python_executable,
+        requirements=requirements,
+        sources=("https://mirror.example/simple", "https://official.example/simple"),
+        download_bytes=1,
+        verifier=lambda runtime, _requirements: (runtime / "fixture.dist-info").is_dir(),
+        runner=runner,
+    )
+
+    layer.install(
+        source_mode="offline",
+        offline_root=offline_root,
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+    )
+
+    assert len(calls) == 1
+    assert "--no-index" in calls[0]
+    assert calls[0][calls[0].index("--find-links") + 1] == str(wheelhouse)
+    assert "--index-url" not in calls[0]
+    assert layer.last_source == "offline-package"
+    assert layer.ready() is True
+
+
 def test_managed_runtime_verifies_in_embedded_python_child_and_caches_result(
     tmp_path: Path,
     monkeypatch,
@@ -1050,6 +1102,63 @@ def test_managed_embedding_uninstall_removes_model_and_transport_cache(
 
     assert not layer.config.embedding_snapshot.exists()
     assert not manifest.exists()
+    assert not layer.download_root.exists()
+
+
+def test_managed_embedding_installs_from_verified_model_directory_without_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"trusted offline model"
+    artifact = ModelArtifact(len(content), hashlib.sha256(content).hexdigest())
+    bom = ModelBOM(
+        repo_id="BAAI/bge-small-zh-v1.5",
+        revision="7999e1d3359715c523056ef9478215996d62a620",
+        license="MIT",
+        sources=("https://mirror.example", "https://official.example"),
+        source_revisions=("a" * 40, "b" * 40),
+        files={"model.bin": artifact},
+    )
+    offline_root = tmp_path / "verified-offline"
+    (offline_root / "model").mkdir(parents=True)
+    (offline_root / "model" / "model.bin").write_bytes(content)
+    layer = ManagedEmbeddingModel(
+        data_root=tmp_path / "data",
+        install_root=tmp_path / "install",
+        bom=bom,
+        download_root=tmp_path / "install" / "downloads" / "mem0-model",
+    )
+    installed = False
+
+    class FakeInstaller:
+        def __init__(self, _config, *, downloader, expected_hashes) -> None:
+            assert expected_hashes == {"model.bin": artifact.sha256}
+            self.downloader = downloader
+
+        def install(self):
+            nonlocal installed
+            destination = tmp_path / "embedding-stage" / "model.bin"
+            self.downloader.download(
+                revision=bom.revision,
+                relative_path="model.bin",
+                destination=destination,
+            )
+            assert destination.read_bytes() == content
+            installed = True
+            return SimpleNamespace(status="APPLIED", reason_code=None)
+
+    monkeypatch.setattr(mem0_embedding_install, "Mem0EmbeddingInstaller", FakeInstaller)
+    monkeypatch.setattr(layer, "_bom_cache_ready", lambda: installed)
+
+    layer.install(
+        source_mode="offline",
+        offline_root=offline_root,
+        pause_requested=threading.Event(),
+        progress=lambda *_args: None,
+    )
+
+    assert layer.last_source == "offline-package"
+    assert layer._read_source() == "offline-package"
     assert not layer.download_root.exists()
 
 

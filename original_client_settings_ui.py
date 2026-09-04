@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v16"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v17"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1169,6 +1169,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const allowedStates = ["missing", "queued", "downloading", "verifying", "ready", "paused", "repair", "incompatible"];
     const stateValue = allowedStates.includes(payload.state) ? payload.state : "repair";
+    const offlineImport = ["offline", "offline-package"].includes(payload.source);
     let runtimeLoaded = false;
     if (stateValue === "ready") {
       try {
@@ -1182,8 +1183,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const labels = {
       missing: "未安装",
-      queued: "等待下载",
-      downloading: "下载中",
+      queued: offlineImport ? "等待导入" : "等待下载",
+      downloading: offlineImport ? "正在校验并导入离线包" : "下载中",
       verifying: "校验中",
       ready: runtimeLoaded ? "已安装并已加载" : "已安装，重启 Olivia 后加载",
       paused: "已暂停",
@@ -1199,8 +1200,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const metadata = stack();
     metadata.append(
       field("状态", labels[stateValue]),
-      field("下载量", formatBytes(payload.total_bytes)),
-      field("剩余", formatBytes(payload.remaining_bytes)),
+      field(offlineImport ? "离线包内容" : "下载量", formatBytes(payload.total_bytes)),
+      field(offlineImport ? "待处理" : "剩余", formatBytes(payload.remaining_bytes)),
       field("安装后占用", formatBytes(payload.installed_bytes)),
       field("实际来源", typeof payload.source === "string" ? payload.source : "尚未选择"),
       field("运行设备", payload.requires_gpu === false ? "CPU（无需 GPU）" : "请查看兼容说明")
@@ -1212,15 +1213,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ? "正在准备运行环境（首次安装或更新时只需进行一次）"
         : payload.current_file;
       const current = typeof currentFile === "string" ? `，当前：${currentFile}` : "";
-      result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，剩余 ${formatBytes(payload.remaining_bytes)}${current}`;
+      result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，${offlineImport ? "待处理" : "剩余"} ${formatBytes(payload.remaining_bytes)}${current}`;
     } else if (stateValue === "repair") {
-      result.textContent = "上次安装未完成，可保留已下载内容并重试。";
+      result.textContent = offlineImport
+        ? "上次离线导入未完成，请重新选择完整离线包。"
+        : "上次安装未完成，可保留已下载内容并重试。";
     }
     const controls = actions();
     const refresh = async () => {
       await renderMem0CapabilityPanel(panel);
     };
-    if (["missing", "repair", "paused"].includes(stateValue)) {
+    const onlineInstallAvailable = !offlineImport && (
+      ["missing", "repair"].includes(stateValue) || stateValue === "paused"
+    );
+    if (onlineInstallAvailable) {
       const source = document.createElement("select");
       source.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
       for (const [value, label, disabled] of [
@@ -1256,7 +1262,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       controls.append(source, install);
     } else if (["queued", "downloading", "verifying"].includes(stateValue)) {
-      const pause = button("暂停下载", async () => {
+      const pause = button(offlineImport ? "暂停导入" : "暂停下载", async () => {
         try {
           await requestCapability(MEM0_CAPABILITY_ACTION_PATH, { action: "pause" });
           await refresh();
@@ -1285,6 +1291,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         await refresh();
       });
       controls.append(uninstall, removeAll);
+    }
+    if (["missing", "repair", "paused"].includes(stateValue)) {
+      const importOffline = button("断网恢复：导入离线包（ZIP）", async () => {
+        setButtonsBusy([importOffline], true);
+        result.textContent = "请选择 Olivia 记忆离线包（ZIP），无需解压。";
+        try {
+          const response = await requestCapability(
+            MEM0_CAPABILITY_ACTION_PATH,
+            { action: "import_offline" }
+          );
+          if (response.status === "CANCELLED") {
+            result.textContent = "已取消导入。";
+            return;
+          }
+          await refresh();
+        } catch (_error) {
+          result.textContent = "离线包导入未能启动，请重新选择完整 ZIP。";
+          setButtonsBusy([importOffline], false);
+        }
+      });
+      controls.append(importOffline);
     }
     panel.replaceChildren(heading, summary, metadata, controls, result);
   };
