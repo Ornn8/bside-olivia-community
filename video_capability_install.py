@@ -1370,6 +1370,7 @@ class VideoCapabilityInstaller:
                 "schema_version": "olivia.video-capability-status.v2",
                 "status": "READY" if all(item["state"] == "ready" for item in bundles) else "UNAVAILABLE",
                 "capability": "video",
+                "can_uninstall": any(self.install_root.iterdir()),
                 "install_locations": [{"root": "local_data_root", "relative_path": "capabilities/video"}],
                 "bundles": bundles,
                 "runtime_import": dict(self._runtime_import),
@@ -1770,6 +1771,38 @@ class VideoCapabilityInstaller:
             if not active:
                 return "NOOP"
             self._pause.set()
+            return "APPLIED"
+
+    def uninstall(self) -> str:
+        """Remove only the app-managed video capability tree."""
+        with self._lock:
+            bundle_active = any(thread.is_alive() for thread in self._threads.values())
+            runtime_active = self._runtime_thread is not None and self._runtime_thread.is_alive()
+            if bundle_active or runtime_active:
+                return "REJECTED"
+            install_root = _checked_install_root(self.data_root, create=True)
+            _reject_reparse_tree(install_root)
+            if not any(install_root.iterdir()):
+                return "NOOP"
+            shutil.rmtree(install_root)
+            self.install_root = _checked_install_root(self.data_root, create=True)
+            self._pause.clear()
+            self._runtime_archive_identity = None
+            self._runtime_failed_archive_identities.clear()
+            self._runtime_import = {
+                "state": "idle",
+                "checked_bytes": 0,
+                "total_bytes": 0,
+            }
+            self._status = {
+                bundle.identifier: VideoBundleStatus(
+                    bundle.identifier,
+                    VideoCapabilityState.MISSING,
+                    0,
+                    sum(item.size_bytes for item in bundle.files),
+                )
+                for bundle in self.manifest.bundles
+            }
             return "APPLIED"
 
     def resume(self, *, bundle_id: str, source_mode: str = "auto", accept_licenses: bool = False) -> str:

@@ -12,6 +12,9 @@ import sys
 from urllib.parse import urlsplit
 
 
+_OFFLINE_SOURCE = "offline-package"
+
+
 def verify_runtime(runtime: Path, requirements: Path) -> bool:
     runtime = runtime.resolve()
     requirements = requirements.resolve()
@@ -50,20 +53,22 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
         or any(not isinstance(item, str) for item in sources.values())
         or manifest.get("bytecode_policy") != "pip-compile-v1"
         or not isinstance(source, str)
-        or source not in sources.values()
+        or source not in {*sources.values(), _OFFLINE_SOURCE}
     ):
         return False
-    parsed_source = urlsplit(source)
-    if (
-        manifest.get("requirements_sha256") != expected_hash
-        or parsed_source.scheme != "https"
-        or not parsed_source.hostname
-        or parsed_source.username
-        or parsed_source.password
-        or parsed_source.query
-        or parsed_source.fragment
-    ):
+    if manifest.get("requirements_sha256") != expected_hash:
         return False
+    if source != _OFFLINE_SOURCE:
+        parsed_source = urlsplit(source)
+        if (
+            parsed_source.scheme != "https"
+            or not parsed_source.hostname
+            or parsed_source.username
+            or parsed_source.password
+            or parsed_source.query
+            or parsed_source.fragment
+        ):
+            return False
 
     sys.path[:0] = [
         str(runtime),

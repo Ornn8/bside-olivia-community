@@ -4,11 +4,12 @@
   "title": "Video capability status",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "status", "capability", "install_locations", "bundles"],
+  "required": ["schema_version", "status", "capability", "can_uninstall", "install_locations", "bundles"],
   "properties": {
     "schema_version": {"const": "olivia.video-capability-status.v2"},
     "status": {"enum": ["READY", "UNAVAILABLE"]},
     "capability": {"const": "video"},
+    "can_uninstall": {"type": "boolean"},
     "install_locations": {"type": "array", "items": {"type": "object"}},
     "bundles": {
       "type": "array",
