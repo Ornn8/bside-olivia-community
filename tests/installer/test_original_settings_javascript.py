@@ -247,6 +247,43 @@ def test_memory_offline_import_progress_is_not_described_as_a_download() -> None
     assert 'button(offlineImport ? "暂停导入" : "暂停下载"' in memory_panel
 
 
+def test_memory_runtime_preparation_shows_live_elapsed_time() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    memory_panel = source.split(
+        "const renderMem0CapabilityPanel = async (panel) => {", 1
+    )[1].split("const videoCapabilityViewState", 1)[0]
+
+    assert "let mem0RuntimeProgressStartedAt = null;" in source
+    assert "const runtimeElapsedSeconds =" in memory_panel
+    assert "mem0RuntimeProgressStartedAt = Date.now();" in memory_panel
+
+
+def test_video_capability_panel_exposes_scoped_uninstall_action() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel", 1)[0]
+
+    assert 'const canUninstall = payload && payload.can_uninstall === true;' in video_panel
+    assert 'button("卸载视频组件"' in video_panel
+    assert '{ action: "uninstall" }' in video_panel
+    assert "已生成的视频、信件和记忆会保留" in video_panel
+
+
+def test_video_capability_progress_shows_elapsed_time_and_current_file() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+    video_panel = source.split(
+        "const renderVideoCapabilityPanel = async (panel) => {", 1
+    )[1].split("const renderCapabilityPanel", 1)[0]
+
+    assert "const progressStartedAt = Date.now();" in video_panel
+    assert "const elapsedSeconds =" in video_panel
+    assert "activeFile.current_file" in video_panel
+    assert "已用时 ${elapsedSeconds} 秒" in video_panel
+    assert 'const verifyingOnly = bundles.some((item) => item.state === "verifying")' in video_panel
+    assert "正在校验安装文件" in video_panel
+
+
 def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     active_video_panel = source.split(

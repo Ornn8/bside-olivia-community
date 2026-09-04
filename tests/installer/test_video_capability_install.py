@@ -322,6 +322,50 @@ def test_breeze_hardware_gate_retries_after_gpu_becomes_eligible(tmp_path: Path)
     assert installer.status()["bundles"][0]["state"] == "ready"
 
 
+def test_video_uninstall_removes_only_the_managed_capability_tree(
+    tmp_path: Path,
+) -> None:
+    data_root = (tmp_path / "data").resolve()
+    manifest = VideoManifest(
+        version="fixture",
+        bundles=(
+            VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()),
+            VideoBundle("music_video", "music", "FIXED", False, (), ()),
+        ),
+    )
+    installer = VideoCapabilityInstaller(data_root=data_root, manifest=manifest)
+    for relative in (
+        "ordinary_video/model.bin",
+        "music_video/model.bin",
+        "runtime/python.exe",
+        "shared/reference.wav",
+        "generated/tts.json",
+        ".downloads/partial.bin",
+        ".staging/partial.bin",
+    ):
+        target = installer.install_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"managed")
+    (installer.install_root / "runtime-environment.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    media = data_root / "media" / "reply.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"keep")
+
+    assert installer.status()["can_uninstall"] is True
+    assert installer.uninstall() == "APPLIED"
+
+    assert installer.install_root.is_dir()
+    assert [item.name for item in installer.install_root.iterdir()] == ["shared"]
+    assert (installer.install_root / "shared/reference.wav").read_bytes() == b"managed"
+    assert media.read_bytes() == b"keep"
+    status = installer.status()
+    assert status["can_uninstall"] is False
+    assert {item["state"] for item in status["bundles"]} == {"missing"}
+    assert installer.uninstall() == "NOOP"
+
+
 def test_breeze_hardware_status_rechecks_gpu_zero_instead_of_using_cached_result(
     tmp_path: Path,
 ) -> None:
@@ -2435,6 +2479,38 @@ def test_downloaded_models_remain_installed_when_runtime_prerequisites_are_missi
     assert load_video_runtime_environment(installer.data_root) == {}
 
 
+def test_offline_retry_reuses_an_already_verified_cached_file(tmp_path: Path) -> None:
+    payload = b"verified cached payload"
+    spec = VideoFile(
+        "model",
+        "models/model.bin",
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        "fixture",
+        {},
+    )
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest(
+            "1.0",
+            (
+                VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), (spec,)),
+                VideoBundle("music_video", "music", "FIXED", False, (), ()),
+            ),
+        ),
+    )
+    target = installer.install_root / ".downloads/models/model.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload)
+    archive = tmp_path / "offline.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(spec.relative_path, b"must not overwrite verified cache")
+
+    installer._copy_offline(archive, spec, target)
+
+    assert target.read_bytes() == payload
+
+
 def test_manifest_append_downloads_only_new_direct_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3649,7 +3725,7 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
 
     class FakeInstaller:
         def status(self):
-            return {"schema_version": "olivia.video-capability-status.v2", "status": "UNAVAILABLE", "capability": "video", "install_locations": [], "bundles": []}
+            return {"schema_version": "olivia.video-capability-status.v2", "status": "UNAVAILABLE", "capability": "video", "can_uninstall": False, "install_locations": [], "bundles": []}
 
         def import_runtime_root(self, *, runtime_root: Path, manifest_sha256: str):
             observed.append((runtime_root, manifest_sha256))
@@ -3703,6 +3779,7 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
     for name, document in (
         ("status", status_payload),
         ("action", {"action": "pause"}),
+        ("action", {"action": "uninstall"}),
         ("action", {"action": "select_runtime"}),
         (
             "action",
@@ -3725,6 +3802,51 @@ def test_video_capability_api_selects_and_imports_runtime_root(tmp_path: Path) -
     assert status == 200
     assert payload == {"status": "APPLIED"}
     assert observed == [(runtime_root, manifest_sha256)]
+
+
+def test_video_capability_api_uninstalls_the_managed_capability() -> None:
+    observed: list[str] = []
+
+    class FakeInstaller:
+        def status(self):
+            return {
+                "schema_version": "olivia.video-capability-status.v2",
+                "status": "UNAVAILABLE",
+                "capability": "video",
+                "can_uninstall": True,
+                "install_locations": [],
+                "bundles": [],
+            }
+
+        def uninstall(self):
+            observed.append("uninstall")
+            return "APPLIED"
+
+    async def call():
+        app = web.Application()
+        mount_original_client_video_capability_api(
+            app,
+            FakeInstaller(),
+            trusted_origins=(),
+            authorize_session=lambda _token: None,
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/toy/capabilities/video/action",
+                json={"action": "uninstall"},
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "X-Olivia-Capability-Action": "confirmed",
+                    "X-Olivia-Setup-Session": "session",
+                },
+            )
+            return response.status, await response.json()
+
+    status, payload = asyncio.run(call())
+
+    assert status == 200
+    assert payload == {"status": "APPLIED"}
+    assert observed == ["uninstall"]
 
 
 def test_video_capability_api_selects_and_imports_runtime_archive(tmp_path: Path) -> None:

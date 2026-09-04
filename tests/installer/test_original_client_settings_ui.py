@@ -123,9 +123,14 @@ def test_ready_mem0_preserves_restart_fallback_when_companion_is_offline() -> No
 
 def test_mem0_runtime_download_explains_temporarily_flat_progress() -> None:
     assert (
-        '["python-runtime-preparation", "python-dependencies"].includes(payload.current_file)\n'
-        '        ? "正在准备运行环境（首次安装或更新时只需进行一次）"'
-    ) in BOOTSTRAP_JAVASCRIPT
+        '["python-runtime-preparation", "python-dependencies"].includes(payload.current_file)'
+        in BOOTSTRAP_JAVASCRIPT
+    )
+    assert "mem0RuntimeProgressStartedAt = Date.now()" in BOOTSTRAP_JAVASCRIPT
+    assert (
+        "正在准备运行环境，已用时 ${runtimeElapsedSeconds} 秒（首次约需 3–8 分钟）"
+        in BOOTSTRAP_JAVASCRIPT
+    )
 
 
 def test_memory_initialization_poll_recovers_and_stops_when_detached() -> None:

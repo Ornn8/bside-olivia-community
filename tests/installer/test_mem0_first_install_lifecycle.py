@@ -252,6 +252,24 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
 
     assert result.returncode == 0, result.stderr
 
+    payload = json.loads(
+        (runtime / ".olivia-mem0-runtime-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["source"] = "offline-package"
+    (runtime / ".olivia-mem0-runtime-manifest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    offline_result = subprocess.run(
+        [sys.executable, str(verifier), str(runtime), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert offline_result.returncode == 0, offline_result.stderr
+
     marker = runtime / ".olivia-mem0-runtime-manifest.json"
     payload = json.loads(marker.read_text(encoding="utf-8"))
     legacy_payload = dict(payload)

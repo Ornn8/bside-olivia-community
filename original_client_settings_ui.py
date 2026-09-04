@@ -42,6 +42,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const CAPABILITY_CONFIRM_HEADER = "X-Olivia-Capability-Action";
   const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
+  let mem0RuntimeProgressStartedAt = null;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
   const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
@@ -1170,6 +1171,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const allowedStates = ["missing", "queued", "downloading", "verifying", "ready", "paused", "repair", "incompatible"];
     const stateValue = allowedStates.includes(payload.state) ? payload.state : "repair";
     const offlineImport = ["offline", "offline-package"].includes(payload.source);
+    const runtimePreparing = ["queued", "downloading", "verifying"].includes(stateValue)
+      && ["python-runtime-preparation", "python-dependencies"].includes(payload.current_file);
+    if (runtimePreparing && mem0RuntimeProgressStartedAt === null) {
+      mem0RuntimeProgressStartedAt = Date.now();
+    } else if (!runtimePreparing) {
+      mem0RuntimeProgressStartedAt = null;
+    }
+    const runtimeElapsedSeconds = runtimePreparing
+      ? Math.max(0, Math.floor((Date.now() - mem0RuntimeProgressStartedAt) / 1000))
+      : 0;
     let runtimeLoaded = false;
     if (stateValue === "ready") {
       try {
@@ -1209,8 +1220,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
-      const currentFile = ["python-runtime-preparation", "python-dependencies"].includes(payload.current_file)
-        ? "正在准备运行环境（首次安装或更新时只需进行一次）"
+      const currentFile = runtimePreparing
+        ? `正在准备运行环境，已用时 ${runtimeElapsedSeconds} 秒（首次约需 3–8 分钟）`
         : payload.current_file;
       const current = typeof currentFile === "string" ? `，当前：${currentFile}` : "";
       result.textContent = `${labels[stateValue]}：${formatBytes(payload.downloaded_bytes)} / ${formatBytes(payload.total_bytes)}，${offlineImport ? "待处理" : "剩余"} ${formatBytes(payload.remaining_bytes)}${current}`;
@@ -1377,6 +1388,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       total_bytes: 0,
     });
     const { state, downloadable } = videoCapabilityViewState(bundles);
+    const canUninstall = payload && payload.can_uninstall === true;
+    const verifyingOnly = bundles.some((item) => item.state === "verifying")
+      && !bundles.some((item) => ["queued", "downloading"].includes(item.state));
     const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
     const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
     const runtimeProgress = payload && payload.runtime_import && typeof payload.runtime_import === "object"
@@ -1436,7 +1450,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : state === "failed"
       ? "安装失败，可重试"
       : state === "downloading"
-      ? "正在下载并安装"
+      ? verifyingOnly ? "正在校验安装文件" : "正在下载并安装"
       : ["license_review_required", "prerequisites_required"].includes(state)
       ? runtimePreparing
         ? "组件已下载，正在准备运行环境"
@@ -1568,6 +1582,31 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       item.append(install);
     }
+    if (canUninstall && state !== "downloading" && !runtimePreparing) {
+      const uninstall = button("卸载视频组件", async () => {
+        if (!await confirmAction("确认卸载视频回信的全部本地组件？已生成的视频、信件和记忆会保留。")) return;
+        if (!await confirmAction("重新启用视频回信需要再次下载或导入约 36.8 GiB，仍要继续吗？")) return;
+        setButtonsBusy([uninstall], true);
+        result.textContent = "正在卸载视频组件……";
+        try {
+          const response = await requestCapability(
+            VIDEO_CAPABILITY_ACTION_PATH,
+            { action: "uninstall" },
+            2 * 60 * 1000
+          );
+          if (response.status === "REJECTED") {
+            result.textContent = "视频组件正在使用，请等待当前任务结束后重试。";
+            setButtonsBusy([uninstall], false);
+            return;
+          }
+          await renderVideoCapabilityPanel(panel);
+        } catch (_error) {
+          result.textContent = "视频组件卸载失败，请关闭正在运行的视频任务后重试。";
+          setButtonsBusy([uninstall], false);
+        }
+      });
+      item.append(uninstall);
+    }
     item.append(result);
     const list = stack();
     list.append(item);
@@ -1585,6 +1624,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refresh.append(refreshButton);
     panel.replaceChildren(heading, summary, list, refresh);
     if (state === "downloading" || runtimePreparing) {
+      const progressStartedAt = Date.now();
       const updateProgress = async () => {
         let nextPayload = null;
         try {
@@ -1615,15 +1655,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           (total, entry) => total + (Number(entry.total_bytes) || 0),
           0
         );
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1000));
+        const activeFile = nextBundles.find((entry) =>
+          ["queued", "downloading", "verifying"].includes(entry.state)
+          && typeof entry.current_file === "string"
+        );
+        const activeFileText = activeFile ? `，当前：${activeFile.current_file}` : "";
         progressText.textContent = nextTotalBytes
-          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}`
-          : "大小将在安装时按固定清单校验";
+          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}，已用时 ${elapsedSeconds} 秒${activeFileText}`
+          : `大小将在安装时按固定清单校验，已用时 ${elapsedSeconds} 秒${activeFileText}`;
         if (nextRuntimePreparing) {
           const checkedBytes = Math.max(0, Number(nextRuntime.checked_bytes) || 0);
           const runtimeTotalBytes = Math.max(0, Number(nextRuntime.total_bytes) || 0);
           progressText.textContent = runtimeTotalBytes > 0
-            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}`
-            : "正在准备视频运行环境……";
+            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}，已用时 ${elapsedSeconds} 秒`
+            : `正在准备视频运行环境，已用时 ${elapsedSeconds} 秒……`;
         }
         panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
       };
