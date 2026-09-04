@@ -52,7 +52,7 @@ class ReplyRequest:
     messages: Sequence[Mapping[str, Any]] | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     idempotency_key: str | None = None
-    max_input_chars: int = 22000
+    max_input_chars: int = 30000
     gateway_scope: GatewayRequestScope | None = None
 
     def normalized_messages(self) -> tuple[dict[str, str], ...]:

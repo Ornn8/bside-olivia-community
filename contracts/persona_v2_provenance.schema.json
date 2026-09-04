@@ -108,18 +108,40 @@
       }
     },
     "rights_basis": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["basis_type", "source_url", "revision", "status"],
-      "properties": {
-        "basis_type": {"enum": ["repository_license"]},
-        "source_url": {"type": "string", "format": "uri"},
-        "revision": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basis_type", "source_url", "revision", "status"],
+          "properties": {
+            "basis_type": {"const": "repository_license"},
+            "source_url": {"type": "string", "format": "uri"},
+            "revision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "status": {"enum": ["CONFIRMED", "NOT_CONFIRMED"]}
+          }
         },
-        "status": {"enum": ["CONFIRMED", "NOT_CONFIRMED"]}
-      }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "basis_type",
+            "granted_at",
+            "scope",
+            "record_location",
+            "status"
+          ],
+          "properties": {
+            "basis_type": {"const": "direct_author_grant"},
+            "granted_at": {"type": "string", "format": "date"},
+            "scope": {"type": "string", "minLength": 1, "maxLength": 400},
+            "record_location": {"const": "maintainer_local_only"},
+            "status": {"const": "CONFIRMED"}
+          }
+        }
+      ]
     },
     "evidence": {
       "type": "object",

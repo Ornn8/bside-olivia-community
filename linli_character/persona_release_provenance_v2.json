@@ -87,9 +87,59 @@
         "anchor.grandmother_traces",
         "anchor.desk_objects",
         "anchor.stopping_ritual",
-        "anchor.everyday_taste"
+        "anchor.everyday_taste",
+        "anchor.blue_butterflies"
       ],
       "exclusion_reason": "The public source is a user-authorized abstract persona reference. Concrete relationship records, communication timelines, addresses, nicknames, and local-continuation instances are excluded from the repository and the release profile."
+    },
+    {
+      "source_id": "P02.LINLI.OLIVIASOUL",
+      "title": "OliviaSoul 社区项目人设与写法资产",
+      "source_url": "https://github.com/yilangren/OliviaSoul",
+      "publisher": "yilangren",
+      "published_at": "not asserted",
+      "accessed_at": "2026-09-04",
+      "source_type": "community_project_authored_reference",
+      "access_status": "ACCESSIBLE",
+      "rights_status": "SUMMARY_ONLY",
+      "content_source": {
+        "repository": "yilangren/OliviaSoul",
+        "path": "source/林离人设.md",
+        "revision": "2ffe7f1c2f73d0c3b00c25258e0ce93b8f4b92ad",
+        "sha256": "11318896e5588fbb24e47bddd8e082f82488facdabfbd70d8b242ca76e1d504d"
+      },
+      "rights_basis": {
+        "basis_type": "direct_author_grant",
+        "granted_at": "2026-08-26",
+        "scope": "作者授权本项目自由取用其成果；对价为本项目向其提供视频管线。原仓库无 LICENSE 文件，本授权是唯一权利依据。",
+        "record_location": "maintainer_local_only",
+        "status": "CONFIRMED"
+      },
+      "privacy_risk": "LOW",
+      "declaration_ids": [
+        "anchor.name_origin",
+        "anchor.silence",
+        "anchor.grandmother_piano",
+        "anchor.cat",
+        "anchor.singing",
+        "anchor.afraid_of_bugs",
+        "anchor.usual_outfit",
+        "anchor.reading",
+        "anchor.bilibili",
+        "anchor.father",
+        "anchor.hua",
+        "anchor.residence",
+        "anchor.physical",
+        "anchor.school_timeline",
+        "style.word_texture",
+        "style.play_along",
+        "style.odd_word_first",
+        "style.care_quota",
+        "style.picky_about_praise",
+        "style.vary_closing",
+        "style.no_repeat_imagery"
+      ],
+      "exclusion_reason": ""
     },
     {
       "source_id": "PUBLIC.STEAM.STORE.4532590",
@@ -257,6 +307,13 @@
       "kind": "public_source_summary",
       "summary": "林离 Olivia 公开账号的视频元数据显示 2026 年 3 月 27 日发布读信、回信与弹琴内容。",
       "reference": "BV11BXnBaEKR public metadata"
+    },
+    {
+      "evidence_id": "P02.LINLI.OLIVIASOUL.grant",
+      "source_id": "P02.LINLI.OLIVIASOUL",
+      "kind": "author_grant_record",
+      "summary": "来源项目作者直接授权取用其人设与写法资产；发布包只保留自主改写的短声明，不含原文。",
+      "reference": "maintainer local record"
     },
     {
       "evidence_id": "P02.LINLI.STYLE.SYNTHETIC.CONSTITUTION_REVIEWED.review",

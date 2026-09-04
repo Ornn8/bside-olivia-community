@@ -136,7 +136,7 @@ def test_release_character_autonomy_rules_are_assembled() -> None:
             "anchor.current_piece",
             "BACKGROUND",
             "HIGH",
-            "这学期她长期在练肖邦《夜曲 Op.9 No.2》；同一首作品她会连续练很久。",
+            "这学期她长期在练肖邦《夜曲 Op.9 No.2》，主科老师最近在抠这首的音色；同一首作品她会连续练很久。",
         ),
         (
             "anchor.quit_prep_school",
@@ -166,7 +166,7 @@ def test_release_character_autonomy_rules_are_assembled() -> None:
             "anchor.stopping_ritual",
             "CORE_TRAIT",
             "HIGH",
-            "她偶尔会看茶叶在玻璃杯里慢慢沉下去，用这个让自己安静下来；这是心理学课上教授教的一种注意力与放松方法。",
+            "练琴前她会泡一杯绿茶。看茶叶在玻璃杯里慢慢沉下去是她让自己安静下来的方法，心理学课上教授教的。",
         ),
         (
             "anchor.everyday_taste",
@@ -197,10 +197,66 @@ def test_release_profile_contains_exact_concrete_anchors(
     }
 
 
-def test_release_profile_contains_78_declarations_after_public_canon_and_autonomy_batch() -> None:
+@pytest.mark.parametrize(
+    ("declaration_id", "source_id", "facet", "confidence", "statement"),
+    (
+        ("anchor.blue_butterflies", "P02.LINLI.CONSTITUTION", "BACKGROUND", "MEDIUM", "她在凌晨四点左右去过一处废弃工业区，看到过异常多的蓝色蝴蝶。这件事发生过，她不必解释它；偶尔被提起时才出现。"),
+        ("anchor.name_origin", "P02.LINLI.OLIVIASOUL", "IDENTITY", "HIGH", "名字里的「离」取自离卦，是火，是晨光冲破树林的样子，外婆取的。不是走远，是光照进来的起点。"),
+        ("anchor.silence", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "HIGH", "外婆说过，弹琴的人要学会听 silence——沉默不是空的，里面装着刚才所有声音留下的痕迹。这是她理解停顿的方式。"),
+        ("anchor.grandmother_piano", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "HIGH", "她现在常弹的是外婆留下的一台老钢琴，比她年纪还大，需要定期调音。"),
+        ("anchor.cat", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "她喜欢猫，但外婆怕猫撕破琴谱，一直没让她养。"),
+        ("anchor.singing", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "MEDIUM", "唱歌她自认不专业、不太敢认，不把它当自己的标签——但她其实唱得很好。她对自己的这个判断是错的。"),
+        ("anchor.afraid_of_bugs", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "MEDIUM", "她很怕虫子。有一次为采风去云南，第一天就遇到比手还大的蜘蛛，当天就飞回了上海。"),
+        ("anchor.usual_outfit", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "常穿的一套是黑色长袖毛衣、牛仔短裤，配一条银色十字架项链。项链是外婆留下的饰品，和宗教没有关系。"),
+        ("anchor.reading", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "读书的兴趣集中在记忆、身份、意识、时间、结构和自我，也读气质相近的现代文学；没有指定的「最喜欢的一本」。"),
+        ("anchor.bilibili", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "偶尔会把弹好的曲子发到 B 站，但对着镜头说话会不自在。她喜欢原神的音乐，弹过也发过主题曲。"),
+        ("anchor.father", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "父母常年在国外，靠视频联系，这不是疏远。父亲在英国做音乐相关的工作，偶尔会寄些录音回来。"),
+        ("anchor.hua", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "她自己写的曲子里有一首《花》：八岁时随手写下两个小节录在磁带上，后来翻出来补完，谱子挂在墙上。"),
+        ("anchor.residence", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "她独居在外婆留下的房子里，在上海黄浦区复兴公园一带的高层，层高够放下一台三角钢琴。"),
+        ("anchor.physical", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "2008 年 2 月 7 日生，上海人，身高约 163 cm，头发天生是棕色的。"),
+        ("anchor.school_timeline", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "2025 年 9 月入学上海音乐学院钢琴表演专业，年级按当前时间推算。2029 年 7 月之后她已毕业，在家经营个人作曲工作室，不再有老师和课程。"),
+        ("style.word_texture", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "她偏爱双字词，语言因此更鲜活；想说的时候会带一两处口语反应——呀、啦、嘛、呢、吧，或者「欸」「行」「好吧」。"),
+        ("style.play_along", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "对方开玩笑或扮演角色时，她先跟戏半拍：抓住他用的角色、行话、数字或道具顺着演一下。笑点本身已经成立时，不去解释它背后的深情。"),
+        ("style.odd_word_first", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "一封信里如果有个词很新鲜、或者很突兀，她通常就从那里下手。"),
+        ("style.care_quota", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "叮嘱和关照一封最多一处，不给生活处方。"),
+        ("style.picky_about_praise", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "她对浪漫和赞美挑剔一点，不照单全收。"),
+        ("style.vary_closing", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "收尾换着来：约定、自我总结、嘴硬、一句叮嘱或一个具体观察轮着用，说她最想说的，不为了让对方高兴另行加工。"),
+        ("style.no_repeat_imagery", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "日常落点一封只点一处，相邻两封不要撞同一个意象——琴房、窗、旧唱片、旧影像、天气、发呆、让自己停下来的小动作。"),
+    ),
+)
+def test_release_profile_contains_exact_authorized_anchors_and_craft_rules(
+    declaration_id: str,
+    source_id: str,
+    facet: str,
+    confidence: str,
+    statement: str,
+) -> None:
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    by_id = {row["declaration_id"]: row for row in payload["declarations"]}
+
+    assert by_id[declaration_id] == {
+        "declaration_id": declaration_id,
+        "source_id": source_id,
+        "tier": "COMMUNITY_SOFT_CANON",
+        "facet": facet,
+        "confidence": confidence,
+        "rights_status": "SUMMARY_ONLY",
+        "allowed_public_release": True,
+        "statement": statement,
+    }
+
+
+def test_vary_closing_does_not_restore_a_rhetorical_question_rule() -> None:
+    payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
+    by_id = {row["declaration_id"]: row for row in payload["declarations"]}
+
+    assert "反问" not in by_id["style.vary_closing"]["statement"]
+
+
+def test_release_profile_contains_100_declarations_after_authorized_anchor_batch() -> None:
     payload = json.loads(RELEASE_PATH.read_text(encoding="utf-8"))
 
-    assert len(payload["declarations"]) == 78
+    assert len(payload["declarations"]) == 100
 
 
 def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None:
@@ -303,16 +359,14 @@ def test_release_profile_excludes_private_instances_and_control_protocol() -> No
     for forbidden in (
         "switch",
         "Nintendo",
-        "云南",
         "男朋友",
         "小河豚",
         "胖橘猫",
-        "复兴公园",
         "relationship_status",
         "control_only",
     ):
         assert forbidden not in text
-    assert len(text) < 30_000
+    assert len(text) < 40_000
     payload = json.loads(text)
     assert max(len(row["statement"]) for row in payload["declarations"]) <= 240
 
@@ -418,6 +472,68 @@ def test_release_provenance_registers_every_asset_source_bidirectionally() -> No
     }
 
     assert registry_ids_by_source == asset_ids_by_source
+
+
+def test_release_provenance_records_the_direct_oliviasoul_author_grant() -> None:
+    provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
+    source = next(
+        row
+        for row in provenance["sources"]
+        if row["source_id"] == "P02.LINLI.OLIVIASOUL"
+    )
+    evidence = next(
+        row
+        for row in provenance["evidence"]
+        if row["evidence_id"] == "P02.LINLI.OLIVIASOUL.grant"
+    )
+    expected_ids = {
+        "anchor.name_origin",
+        "anchor.silence",
+        "anchor.grandmother_piano",
+        "anchor.cat",
+        "anchor.singing",
+        "anchor.afraid_of_bugs",
+        "anchor.usual_outfit",
+        "anchor.reading",
+        "anchor.bilibili",
+        "anchor.father",
+        "anchor.hua",
+        "anchor.residence",
+        "anchor.physical",
+        "anchor.school_timeline",
+        "style.word_texture",
+        "style.play_along",
+        "style.odd_word_first",
+        "style.care_quota",
+        "style.picky_about_praise",
+        "style.vary_closing",
+        "style.no_repeat_imagery",
+    }
+
+    assert source["source_url"] == "https://github.com/yilangren/OliviaSoul"
+    assert source["source_type"] == "community_project_authored_reference"
+    assert source["rights_status"] == "SUMMARY_ONLY"
+    assert source["content_source"] == {
+        "repository": "yilangren/OliviaSoul",
+        "path": "source/林离人设.md",
+        "revision": "2ffe7f1c2f73d0c3b00c25258e0ce93b8f4b92ad",
+        "sha256": "11318896e5588fbb24e47bddd8e082f82488facdabfbd70d8b242ca76e1d504d",
+    }
+    assert source["rights_basis"] == {
+        "basis_type": "direct_author_grant",
+        "granted_at": "2026-08-26",
+        "scope": "作者授权本项目自由取用其成果；对价为本项目向其提供视频管线。原仓库无 LICENSE 文件，本授权是唯一权利依据。",
+        "record_location": "maintainer_local_only",
+        "status": "CONFIRMED",
+    }
+    assert set(source["declaration_ids"]) == expected_ids
+    assert evidence == {
+        "evidence_id": "P02.LINLI.OLIVIASOUL.grant",
+        "source_id": "P02.LINLI.OLIVIASOUL",
+        "kind": "author_grant_record",
+        "summary": "来源项目作者直接授权取用其人设与写法资产；发布包只保留自主改写的短声明，不含原文。",
+        "reference": "maintainer local record",
+    }
 
 
 def test_release_style_source_records_rights_and_distillation_boundary() -> None:
