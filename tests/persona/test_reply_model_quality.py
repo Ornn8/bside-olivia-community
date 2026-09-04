@@ -3306,6 +3306,20 @@ def test_text_letter_forced_question_is_rewritten_then_freshly_reviewed(
     assert "do not add a question just to create a closing" in (
         gateway.rewrite_system_prompts[0]
     )
+    rewrite_prompt = gateway.rewrite_system_prompts[0]
+    assert "Did I lecture the user or make plans for them?" in rewrite_prompt
+    assert "Did I answer what the user explicitly asked?" in rewrite_prompt
+    assert (
+        "Did I make any refusal tactful without weakening Linli's autonomy?"
+        in rewrite_prompt
+    )
+    assert "Did I explain why I chose to say it this way?" in rewrite_prompt
+    assert (
+        "Did I include more than one reminder or piece of advice?"
+        in rewrite_prompt
+    )
+    assert "silently self-check" in rewrite_prompt
+    assert "without outputting the checklist" in rewrite_prompt
 
 
 def test_persistent_hard_forced_question_is_blocked_after_single_rewrite(
