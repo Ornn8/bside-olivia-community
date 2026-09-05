@@ -286,13 +286,49 @@ def _stop(process: subprocess.Popen) -> None:
         process.wait(timeout=10)
 
 
-_COMFY_BOOTSTRAP = (
-    "import runpy,sys; "
-    "root,entry,*args=sys.argv[1:]; "
-    "sys.path.insert(0, root); "
-    "sys.argv=[entry,*args]; "
-    "runpy.run_path(entry,run_name='__main__')"
-)
+# Executed only in the isolated Comfy child. The maintained node already returns
+# CPU conditioning; release its AR patcher before the graph loads DiT.
+_AR_RELEASE_ADAPTER = '''
+import inspect
+
+def _wrap_ar_release(encoder, unload):
+    method = getattr(encoder, 'execute', None)
+    original = getattr(method, '__func__', None)
+    expected = ('cls', 'clip', 'caption', 'lyrics', 'seed', 'max_duration', 'cfg_scale', 'top_k')
+    if not callable(original) or not callable(unload) or tuple(inspect.signature(original).parameters) != expected:
+        raise RuntimeError('MINIMAX_AR_RELEASE_API_INCOMPATIBLE')
+    def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):
+        patcher = getattr(clip, 'patcher', None)
+        if patcher is None:
+            raise RuntimeError('MINIMAX_AR_RELEASE_API_INCOMPATIBLE')
+        result = original(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k)
+        try:
+            unload(patcher)
+        except Exception:
+            raise RuntimeError('MINIMAX_AR_RELEASE_FAILED') from None
+        return result
+    encoder.execute = classmethod(execute)
+'''
+
+_COMFY_BOOTSTRAP = '''
+import runpy, sys, os
+from importlib.machinery import SourceFileLoader
+root, entry, *args = sys.argv[1:]
+sys.path.insert(0, root)
+sys.argv = [entry, *args]
+''' + _AR_RELEASE_ADAPTER + '''
+_target = os.path.normcase(os.path.abspath(os.path.join(root, 'comfy_extras', 'nodes_minimax_music.py')))
+_original_exec = SourceFileLoader.exec_module
+def _exec_with_ar_release(loader, module):
+    _original_exec(loader, module)
+    if os.path.normcase(os.path.abspath(loader.path)) == _target:
+        import comfy.model_management as management
+        _wrap_ar_release(getattr(module, 'MiniMaxMusic3TextEncode', None),
+                         getattr(management, 'unload_model_and_clones', None))
+        SourceFileLoader.exec_module = _original_exec
+SourceFileLoader.exec_module = _exec_with_ar_release
+runpy.run_path(entry, run_name='__main__')
+'''
 
 
 def _comfy_command(
