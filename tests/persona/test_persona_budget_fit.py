@@ -57,6 +57,22 @@ def test_release_persona_fits_default_budget() -> None:
     assert assembled.budget_report.dropped_ids == ()
 
 
+def test_release_style_does_not_require_opposition_or_admonishing_closures() -> None:
+    assembled = assemble_persona(
+        load_persona(RELEASE_PERSONA).snapshot,
+        ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW),
+        user_input='今天晚饭吃了面，喝了温水。',
+        max_units=GatewayConfig().max_input_chars,
+    )
+    declarations = [json.loads(value) for value in re.findall(
+        r'<community_soft_canon>\n([^\n]+)\n</community_soft_canon>', assembled.system_content)]
+    statements = {item['declaration_id']: item['statement'] for item in declarations}
+    assert '不为表现性格故意唱反调' in statements['trait.tease_and_refuse']
+    assert '也可以完全不叮嘱' in statements['style.care_quota']
+    assert '不轮换固定套路' in statements['style.vary_closing']
+    assert '不替用户补动机' in statements['memory.ask_for_reminder']
+
+
 def test_shipped_llm_config_uses_the_public_input_budget() -> None:
     payload = json.loads(
         (ROOT / "contracts" / "llm_config.example.json").read_text(encoding="utf-8")
