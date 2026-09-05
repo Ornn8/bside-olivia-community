@@ -198,6 +198,9 @@ def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
 
 def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> None:
     class Backend:
+        def diagnostic_status_history(self):
+            return ()
+
         @staticmethod
         def read_status() -> CompanionReadStatus:
             return CompanionReadStatus(
@@ -228,6 +231,11 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
                 "status": state,
                 "backend_id": "desktop-local",
                 "contract_version": "2.0",
+                "providers": {"memory": {"conversation": {"runtime": {
+                    "status": "degraded", "worker_running": True,
+                    "pending_count": 2, "attempt_count": 7, "terminal_count": 1,
+                    "private_content": "must-not-leak",
+                }}}},
                 "required_checks": {"example": "available"},
                 "capabilities": {
                     "settings.video_reply": {"status": "available"},
@@ -262,6 +270,8 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
     assert source["health"]["checks"] == {  # type: ignore[index]
         "candidates": {"state": "available"},
         "memory": {"state": "available"},
+        "memory_worker": {"state": "degraded", "worker_running": True,
+                          "pending_count": 2, "attempt_count": 7, "terminal_count": 1},
         "native_tts": {"state": "unavailable"},
         "private_world": {
             "state": "degraded",

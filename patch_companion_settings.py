@@ -2,7 +2,7 @@
 
 The patch only changes a staged ``feapp.dat`` archive. It inserts one
 repository-owned local script into ``index.html`` and, for the supported
-0.0.9.627 bundle, replaces exactly one known mailbox write-visibility anchor.
+0.0.9.627 bundle, repairs known mailbox write-visibility and initial-quota anchors.
 Every other existing member stays byte-for-byte intact, and any validation
 failure rolls the archive back.
 """
@@ -322,6 +322,17 @@ def _repair_mailbox_write_access(root: Path) -> str:
     if not main.is_file():
         return "UNCHANGED"
     source = _read_text(main, "COMPANION_MAIN_MODULE_UNREADABLE")
+    # The offline server grants 99 current-mailbox writes.  The native store
+    # otherwise initializes/resets to zero until its account-driven refresh,
+    # leaving a fresh local session unable to open the composer.
+    source_before_quota = source
+    source = source.replace(
+        'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
+        'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',
+    ).replace(
+        'function O(){R(),t.value=[],s.value=0,i.value=0,m.value=0,',
+        'function O(){R(),t.value=[],s.value=99,i.value=0,m.value=0,',
+    )
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
@@ -335,6 +346,9 @@ def _repair_mailbox_write_access(root: Path) -> str:
         )
         return "PATCHED"
     if anchor_count == 0 and replacement_count == 1:
+        if source != source_before_quota:
+            _write_utf8(main, source)
+            return "PATCHED"
         return "ALREADY_PATCHED"
     raise CompanionSettingsPatchError(
         "COMPANION_MAILBOX_WRITE_ANCHOR_INVALID"

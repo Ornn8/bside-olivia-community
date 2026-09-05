@@ -276,7 +276,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const controller = new AbortController();
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
-      : 5000;
+      : path === STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
@@ -293,7 +293,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ? responseBody.data
         : responseBody;
       const valid = path === LOCAL_LETTER_IMPORT_PATH
-        ? payload && payload.status === "READY"
+        ? params.progress === "1"
+          ? payload && ["IDLE", "RUNNING", "APPLIED", "FAILED", "UNAVAILABLE"].includes(payload.status)
+          : payload && payload.status === "READY"
           && Number.isInteger(payload.seen)
           && Number.isInteger(payload.would_insert)
           && Number.isInteger(payload.would_update)
@@ -1243,7 +1245,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           api_key: key.input.value.trim(),
         });
         state.textContent = "连接成功，可以保存。";
-        save.disabled = false;
+        setButtonsBusy([save], false);
       } catch (_error) {
         state.textContent = "连接失败，请检查地址、模型和 API key。";
         save.disabled = true;
@@ -1952,15 +1954,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : {};
       statusNode.textContent = "本机陪伴服务已连接。";
       statusNode.dataset.state = "available";
+      const failed = Object.entries(capabilities).filter(([, value]) =>
+        value && (value.state === "unavailable" || value.state === "degraded"));
+      if (failed.length) {
+        const labels = {memory: "长期记忆", private_world: "私人世界", candidates: "记忆候选"};
+        statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
+          const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
+            ? `（${value.reason_code}）` : "";
+          return `${labels[name] || "部分功能"}暂不可用${code}`;
+        }).join("；") + "。";
+        statusNode.dataset.state = "degraded";
+      }
       await Promise.allSettled(tasks.concat([
         renderMemoryPanel(panels.memory, capabilities.memory),
         renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),
       ]));
-    } catch (_error) {
-      statusNode.textContent = "本机陪伴服务暂不可用。";
+    } catch (error) {
+      statusNode.textContent = error && error.name === "AbortError"
+        ? "陪伴状态查询超时，其他功能将独立检查；可重新打开此窗口重试。"
+        : "陪伴状态读取失败，其他功能将独立检查；可导出诊断包排查。";
       statusNode.dataset.state = "unavailable";
-      renderUnavailable(panels.memory, "unavailable", "长期记忆");
-      renderUnavailable(panels.privateWorld, "unavailable", "私人世界");
+      await Promise.allSettled(tasks.concat([
+        renderMemoryPanel(panels.memory, {state: "available"}),
+        renderPrivateWorldPanel(panels.privateWorld, {state: "available"}),
+      ]));
     }
   };
 
@@ -2176,7 +2193,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panels.append(panel);
     }
 
-    dialog.append(header, status, tabs, panels);
+    const localVersion = text("p", "本地补丁版本：正在读取……", "text-text-secondary text-body-m font-regular");
+    requestJson("/toy/updates/local/status").then((value) => {
+      localVersion.textContent = typeof value.version === "string"
+        ? `本地补丁版本：${value.version}（当前运行）`
+        : "本地补丁版本：基础安装版";
+    }).catch(() => { localVersion.textContent = "本地补丁版本：暂时无法读取"; });
+    dialog.append(header, localVersion, status, tabs, panels);
     if (initialMode) {
       const finishActions = actions();
       finishActions.style.marginTop = "18px";
@@ -2394,7 +2417,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       importPending = true;
       importState.textContent = "正在读取本地备份并写入信箱……";
       try {
-        const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
+        let payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
+        if (payload.status !== "RUNNING") {
+          payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true});
+        }
+        while (payload.status === "RUNNING") {
+          const stages = {preflight: "检查备份", memory: "整理长期记忆", relationship: "整理关系状态"};
+          importState.textContent = `${stages[payload.stage] || "后台导入中"}：${payload.processed || 0} / ${payload.total || 0}。请勿重复提交；关闭此面板不会停止任务。`;
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+          payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
+        }
+        if (payload.status !== "APPLIED") {
+          const failure = new Error("import-failed");
+          failure.code = payload.error_code || "OFFLINE_HISTORY_IMPORT_FAILED";
+          throw failure;
+        }
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
         const removed = Number.isInteger(payload.removed) ? payload.removed : 0;
@@ -2412,8 +2449,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? missingBackupText
           : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
             ? "本地 letter_pairs.json 格式无效，请更换完整备份后重试。"
-            : "本地信件导入失败，请重启 Olivia 后重试。";
-        importButton.textContent = "重试导入";
+            : error && error.code && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code)
+              ? `本地信件导入未完成：${error.code}。请保留诊断包。`
+              : "暂时无法读取导入结果，后台任务可能仍在继续。点击可查询进度，请勿重启或重复导入。";
+        importButton.textContent = "查看进度 / 导入";
       } finally {
         importPending = false;
         setButtonsBusy([importButton], false);

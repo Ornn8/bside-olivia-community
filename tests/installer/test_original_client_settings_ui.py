@@ -246,7 +246,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert "letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
     assert "作为只读历史进入信箱" in BOOTSTRAP_JAVASCRIPT
     assert "不联网" in BOOTSTRAP_JAVASCRIPT
-    assert "requestMutation(LOCAL_LETTER_IMPORT_PATH, {})" in BOOTSTRAP_JAVASCRIPT
+    assert "requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true})" in BOOTSTRAP_JAVASCRIPT
     assert "requestJson(LOCAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.updated" in BOOTSTRAP_JAVASCRIPT
@@ -254,7 +254,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert "payload.would_update" in BOOTSTRAP_JAVASCRIPT
     assert "payload.would_remove" in BOOTSTRAP_JAVASCRIPT
     assert "未在原版游戏目录找到 letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
-    assert 'importButton.textContent = "重试导入"' in BOOTSTRAP_JAVASCRIPT
+    assert 'importButton.textContent = "查看进度 / 导入"' in BOOTSTRAP_JAVASCRIPT
     assert "mountOfficialLetterImport(section)" not in BOOTSTRAP_JAVASCRIPT
 
 
@@ -367,6 +367,9 @@ const fetch = async (endpoint, options) => {
   }
   if (endpoint.pathname === "/toy/letter/legacy/local-import") {
     if (options.method === "GET") {
+      if (endpoint.searchParams.get("progress") === "1") {
+        return {ok: true, json: async () => ({code: 0, data: {status: "IDLE"}})};
+      }
       return backupAvailable
         ? { ok: true, json: async () => ({ code: 0, data: {
             status: "READY", seen: 2, would_insert: 2, would_update: 0, would_remove: 0, duplicates: 0,
@@ -828,6 +831,9 @@ const statusPayload = (status) => ({
   }
   if (endpoint.pathname === "/toy/companion/private-world/candidates") {
     return { ok: true, json: async () => ({ status: currentStatus, candidates: [] }) };
+  }
+  if (endpoint.pathname === "/toy/updates/local/status") {
+    return { ok: true, json: async () => ({ status: "READY", version: "0.1.438" }) };
   }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };

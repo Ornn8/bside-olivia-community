@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -18,6 +22,30 @@ from original_client_update_api import (
 
 TRUSTED_ORIGIN = "https://client.example"
 ROOT = Path(__file__).parents[2]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native picker")
+@pytest.mark.parametrize("selected", [True, False])
+def test_patch_picker_uses_visible_topmost_owner_and_preserves_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: bool,
+) -> None:
+    import original_client_update_api as api
+
+    patch = tmp_path / "local.oliviapatch"
+    patch.write_bytes(b"synthetic patch")
+
+    def run(command, **kwargs):
+        script = command[-1]
+        assert "$owner.TopMost = $true;" in script
+        assert "$owner.ShowInTaskbar = $false;" in script
+        assert script.index("$owner.Show();") < script.index("$dialog.ShowDialog($owner)")
+        assert "$owner.Activate();" in script
+        assert "finally" in script and "$owner.Dispose();" in script and "$dialog.Dispose();" in script
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        return subprocess.CompletedProcess(command, 0, str(patch) if selected else "", "")
+
+    monkeypatch.setattr(api.subprocess, "run", run)
+    assert api._select_windows_patch() == (patch.resolve() if selected else None)
 
 
 class _Updater:
