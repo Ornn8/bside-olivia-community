@@ -1619,12 +1619,44 @@ def _load_product_mem0_module() -> object:
         return module
 
 
+class _ValidatedExtractionLLM:
+    """Fail before Mem0 converts malformed extraction output into an empty result."""
+
+    def __init__(self, provider: object) -> None:
+        self._provider = provider
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._provider, name)
+
+    def generate_response(self, *args: object, **kwargs: object) -> object:
+        response = self._provider.generate_response(*args, **kwargs)
+        if kwargs.get("response_format") == {"type": "json_object"}:
+            try:
+                text = response.strip()
+                if text.startswith("```") and text.endswith("```"):
+                    text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+                parsed = json.loads(text, strict=False)
+                memories = parsed["memory"]
+                if not isinstance(memories, list) or any(
+                    not isinstance(item, dict) or not isinstance(item.get("text"), str)
+                    for item in memories
+                ):
+                    raise ValueError("invalid extraction shape")
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_INVALID") from None
+        return response
+
+
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     module = _load_product_mem0_module()
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
         raise ImportError("Mem0 Memory.from_config is unavailable")
-    return memory_type.from_config(dict(config))
+    backend = memory_type.from_config(dict(config))
+    provider = getattr(backend, "llm", None)
+    if callable(getattr(provider, "generate_response", None)):
+        backend.llm = _ValidatedExtractionLLM(provider)
+    return backend
 
 
 def create_mem0_adapter(

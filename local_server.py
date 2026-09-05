@@ -1184,7 +1184,7 @@ _archive_memory_config = (
     if _memory_config.provider == "mem0"
     else _memory_config
 )
-memory_adapter: MemoryPort = create_memory_adapter(_archive_memory_config)
+memory_adapter: MemoryPort = create_memory_adapter(_archive_memory_config, live_archive=True)
 conversation_memory_adapter: ConversationMemoryPort = (
     create_conversation_memory_adapter(
         _memory_config,
