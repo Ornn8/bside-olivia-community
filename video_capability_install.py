@@ -2525,14 +2525,20 @@ class VideoCapabilityInstaller:
                     for artifact in bundle.runtime_artifacts
                 )
             ]
+            self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
+                      current="解压运行环境", source=source_used)
             expected.extend(self._assemble_archives(root, bundle))
-            self._set(bundle, VideoCapabilityState.VERIFYING, downloaded, source=source_used)
+            self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
+                      current="校验安装文件", source=source_used)
             final = self._final_root(bundle)
             if len({item["path"].casefold() for item in expected}) != len(expected):
                 raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
             if _is_reparse_point(root):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             _verify_staged_tree(root, expected)
+            if "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {}):
+                self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
+                          current="安装本地运行依赖（无需联网）", source=source_used)
             self._bootstrap_breeze_runtime(root, bundle)
             (root / ".ready.json").write_text(
                 json.dumps(
@@ -2878,6 +2884,7 @@ class VideoCapabilityInstaller:
         environment.update(
             PIP_DISABLE_PIP_VERSION_CHECK="1",
             PIP_NO_INPUT="1",
+            PIP_CONFIG_FILE=os.devnull,
             PYTHONNOUSERSITE="1",
             PYTHONSAFEPATH="1",
         )
@@ -2886,14 +2893,14 @@ class VideoCapabilityInstaller:
                 sys.executable,
                 "-m",
                 "pip",
+                "--isolated",
                 "install",
+                "--no-index",
                 "--require-hashes",
                 "--no-deps",
                 "--only-binary=:all:",
                 "--find-links",
                 str(python_path.parent.parent / "wheels"),
-                "--extra-index-url",
-                "https://download.pytorch.org/whl/cu128",
                 "--target",
                 str(site_packages),
                 "--requirement",
@@ -2998,13 +3005,22 @@ class VideoCapabilityInstaller:
             except (OSError, VideoCapabilityError):
                 pass
         if offline_root.is_file() and zipfile.is_zipfile(offline_root):
-            with zipfile.ZipFile(offline_root) as archive:
-                member = _safe_relative(item.relative_path)
-                if member not in archive.namelist():
-                    raise VideoCapabilityError("VIDEO_OFFLINE_FILE_MISSING")
-                with archive.open(member) as source, target.open("wb") as destination:
-                    shutil.copyfileobj(source, destination)
-            return
+            member = _safe_relative(item.relative_path)
+            candidates = [offline_root]
+            if member.startswith("breeze/wheels/") and member.endswith(".whl"):
+                candidates.append(offline_root.parent / "Olivia-breeze-runtime-offline.zip")
+            for candidate in candidates:
+                if not candidate.is_file() or _is_reparse_point(candidate):
+                    continue
+                with zipfile.ZipFile(candidate) as archive:
+                    if member not in archive.namelist():
+                        continue
+                    if archive.getinfo(member).file_size != item.size_bytes:
+                        raise VideoCapabilityError("VIDEO_OFFLINE_FILE_SIZE_INVALID")
+                    with archive.open(member) as source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                    return
+            raise VideoCapabilityError("VIDEO_OFFLINE_FILE_MISSING")
         source = _inside(offline_root.resolve(), offline_root / item.relative_path)
         if not source.is_file():
             raise VideoCapabilityError("VIDEO_OFFLINE_FILE_MISSING")

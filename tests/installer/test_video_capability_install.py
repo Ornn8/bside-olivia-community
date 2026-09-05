@@ -83,13 +83,14 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
     breeze_files = [
         item for item in ordinary.files if item.identifier.startswith("breeze-")
     ]
-    assert len(breeze_files) == 18
-    assert sum(item.size_bytes for item in breeze_files) == 5_787_613_526
+    baseline_files = [item for item in breeze_files if not item.identifier.startswith("breeze-dependency-")]
+    assert len(baseline_files) == 18
+    assert sum(item.size_bytes for item in baseline_files) == 5_787_613_526
     assert ordinary.dependencies == ("breeze_tts2", "latentsync", "ffmpeg")
     assert not any(item.identifier.startswith("cosy-") for item in ordinary.files)
     assert all(
         item.license == "BreezeBlue-Research-and-Non-Commercial-1.0"
-        for item in breeze_files
+        for item in baseline_files
         if item.identifier
         not in {
             "breeze-python-runtime",
@@ -412,6 +413,30 @@ def test_breeze_hardware_status_rechecks_gpu_zero_instead_of_using_cached_result
     assert status["bundles"][0]["reason_code"] == "BREEZE_TTS_10GB_VRAM_REQUIRED"
 
 
+def test_video_manifest_contains_every_hash_locked_breeze_wheel() -> None:
+    import re
+    from packaging.utils import canonicalize_name, parse_wheel_filename
+    manifest = load_video_manifest(Path("installer/video-capability-manifest.json"))
+    wheels = {}
+    for item in manifest.bundles[0].files:
+        if item.relative_path.startswith("breeze/wheels/"):
+            name, version, _, _ = parse_wheel_filename(Path(item.relative_path).name)
+            wheels[name] = (str(version), item.sha256)
+    requirements = Path("installer/breeze-runtime-requirements.txt").read_text()
+    blocks = requirements.replace("\\\n", " ").splitlines()
+    locked = {}
+    for line in blocks:
+        match = re.match(r"([\w-]+)==(\S+)", line)
+        if match:
+            name, version = match.groups()
+            locked[canonicalize_name(name)] = version
+            assert canonicalize_name(name) in wheels, name
+            actual_version, sha = wheels[canonicalize_name(name)]
+            assert actual_version == version
+            assert f"--hash=sha256:{sha}" in line, name
+    assert set(locked) == set(wheels)
+
+
 def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
     tmp_path: Path,
 ) -> None:
@@ -447,6 +472,9 @@ def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
     runner_calls: list[tuple[Path, Path, Path]] = []
 
     def install_packages(python: Path, site_packages: Path, requirements: Path) -> None:
+        status = installer.status()["bundles"][0]
+        assert status["state"] == "verifying"
+        assert status["current_file"] == "安装本地运行依赖（无需联网）"
         runner_calls.append((python, site_packages, requirements))
         (site_packages / "torch").mkdir()
         (site_packages / "torch" / "__init__.py").write_text(
@@ -538,6 +566,8 @@ def test_breeze_runtime_bootstrap_is_hash_locked_and_wheel_only(
     assert "--only-binary=:all:" in command
     assert "--find-links" in command
     assert str(tmp_path / "breeze" / "wheels") in command
+    assert "--no-index" in command
+    assert "--extra-index-url" not in command
     assert "--no-binary" not in command
     assert "--no-build-isolation" not in command
 
@@ -2509,6 +2539,36 @@ def test_offline_retry_reuses_an_already_verified_cached_file(tmp_path: Path) ->
     installer._copy_offline(archive, spec, target)
 
     assert target.read_bytes() == payload
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_offline_import_reads_hash_checked_wheels_from_supplement(
+    tmp_path: Path, corrupt: bool,
+) -> None:
+    payload = b"locked wheel fixture"
+    spec = VideoFile("wheel", "breeze/wheels/fixture.whl", len(payload),
+                     hashlib.sha256(payload).hexdigest(), "MIT", {})
+    archive = tmp_path / "old-video.zip"
+    with zipfile.ZipFile(archive, "w"):
+        pass
+    with zipfile.ZipFile(tmp_path / "Olivia-breeze-runtime-offline.zip", "w") as supplement:
+        supplement.writestr(spec.relative_path, b"x" * len(payload) if corrupt else payload)
+    def reject_network(*args, **kwargs):
+        raise AssertionError("Offline import contacted network")
+    installer = VideoCapabilityInstaller(
+        data_root=(tmp_path / "data").resolve(),
+        manifest=VideoManifest("fixture", (
+            VideoBundle("ordinary_video", "ordinary", "MIT", False, (), (spec,)),
+        )), opener=reject_network,
+    )
+    assert installer.import_offline(bundle_id="ordinary_video", offline_root=archive) == "APPLIED"
+    state = _wait(installer, 0, "ready", "prerequisites_required", "failed")
+    if corrupt:
+        assert state == "failed"
+        assert not (installer.install_root / "ordinary_video" / spec.relative_path).exists()
+    else:
+        assert state in {"ready", "prerequisites_required"}, installer.status()
+        assert (installer.install_root / "ordinary_video" / spec.relative_path).read_bytes() == payload
 
 
 def test_manifest_append_downloads_only_new_direct_files(
