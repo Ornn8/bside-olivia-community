@@ -32,6 +32,7 @@ def test_fact_recall_uses_originals_not_assistant_claims_about_the_user(query):
     '你上次答应录给我的是什么？',
     'What did you say in your last reply?',
     '你问我的那个问题，我想好了。',
+    '你之前说要录音，是哪封信说的？',
     '今天我有点累，想跟你说说。',
 ])
 def test_dialogue_and_explicit_reply_reference_keep_canonical_reply(query):
@@ -84,6 +85,24 @@ def test_sparse_history_does_not_claim_adjacency_from_retrieval_order():
     assert 'time 是回信完成时间' in packet['meaning']
     assert '不凭窗口位置称“上一封”“刚才”' in packet['meaning']
     assert all('linli_reply' not in item for item in packet['letters'])
+
+
+@pytest.mark.parametrize('query', [
+    '一起听讲座只是我编的，这个限定是哪封信的内容？',
+    '我不吃香菜，是哪一封信提到的？',
+    'Which letter mentioned my food preferences?',
+])
+def test_source_lookup_discloses_originals_not_reply_times_or_assistant_attribution(query):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": 'original', "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": '2026-09-05T12:50:00+00:00',
+             "content": '一起听讲座是我编的。我不吃香菜。',
+             "reply_text": '你在上一封信里说过，时间是12:50。'}]
+    packet = json.loads(recent_correspondence(rows, query=query))
+    assert packet['purpose'] == 'source_attribution'
+    assert packet['letters'] == [{'source_id': 'reply:original:1', 'user_letter': rows[0]['content']}]
+    assert '不标具体时刻或第几封' in packet['meaning']
+    assert '回信完成时间' not in packet['meaning']
 
 
 def test_repeated_questions_do_not_displace_the_original_factual_correction():
