@@ -531,7 +531,7 @@ def test_private_behavior_assembly_exposes_only_bounded_intimacy_tiers() -> None
         snapshot,
         context,
         user_input="Synthetic input.",
-        max_units=2_000,
+        max_units=3_000,  # Test the projection, not optional-block budget eviction.
     )
     matched = re.search(
         r"<private_behavior>\n(.+?)\n</private_behavior>",

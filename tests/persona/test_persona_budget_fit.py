@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,27 @@ from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 8, 30, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+def test_release_attitude_requires_evidence_without_removing_personality(mode) -> None:
+    loaded = load_persona(RELEASE_PERSONA)
+    assembled = assemble_persona(
+        loaded.snapshot, ReplyContext.create(mode, trusted_time=NOW),
+        user_input='我只是在核对记忆，不是在试探你。',
+        max_units=GatewayConfig().max_input_chars,
+    )
+    rules = json.loads(re.search(r'<forbidden>\n([^\n]+)\n</forbidden>', assembled.system_content)[1])
+    # This checks the provider-input contract, not the model's compliance.
+    attitude = next(rule for rule in rules if '对用户的态度' in rule)
+    assert '明确言行或可核对事实' in attitude
+    assert '“我猜”' in attitude and '无依据的指责' in attitude
+    assert '核对、重复提问、纠正记忆本身不表示' in attitude
+    assert '不同意见和拒绝' in attitude and '明确的玩笑' in attitude
+    assert '不顺带给用户的理智、品性或生活选择打分' in attitude
+    assert '有分歧或越界就谈具体行为及自己的边界' in attitude
+    assert '"declaration_id":"trait.tease_and_refuse"' in assembled.system_content
+    assert assembled.user_content == '我只是在核对记忆，不是在试探你。'
 
 
 def test_release_persona_fits_default_budget() -> None:
@@ -33,6 +55,22 @@ def test_release_persona_fits_default_budget() -> None:
     invalid = GatewayConfig.from_mapping({"max_input_chars": "invalid"})
     assert invalid.max_input_chars == 30_000
     assert assembled.budget_report.dropped_ids == ()
+
+
+def test_release_style_does_not_require_opposition_or_admonishing_closures() -> None:
+    assembled = assemble_persona(
+        load_persona(RELEASE_PERSONA).snapshot,
+        ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW),
+        user_input='今天晚饭吃了面，喝了温水。',
+        max_units=GatewayConfig().max_input_chars,
+    )
+    declarations = [json.loads(value) for value in re.findall(
+        r'<community_soft_canon>\n([^\n]+)\n</community_soft_canon>', assembled.system_content)]
+    statements = {item['declaration_id']: item['statement'] for item in declarations}
+    assert '不为表现性格故意唱反调' in statements['trait.tease_and_refuse']
+    assert '也可以完全不叮嘱' in statements['style.care_quota']
+    assert '不轮换固定套路' in statements['style.vary_closing']
+    assert '不替用户补动机' in statements['memory.ask_for_reminder']
 
 
 def test_shipped_llm_config_uses_the_public_input_budget() -> None:
