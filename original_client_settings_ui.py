@@ -979,7 +979,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const labels = { planned: "打算做", ongoing: "进行中", paused: "暂时搁下", completed: "已完成", cancelled: "已取消", awaiting_user: "等你说说后续" };
     const when = (value) => {
       const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     };
     const card = () => {
       const el = document.createElement("article");
@@ -1012,6 +1012,90 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const status = text("p", "读取近况…", "text-text-secondary text-body-m");
     let busy = false;
     let attempted = false;
+    const momentRow = (moment) => {
+      const content = moment.content;
+      const body = moment.kind === "daily" ? content.note : content.current ? content.current.note : (content.updates || []).map(item => item.detail).join(" · ");
+      const el = document.createElement("details");
+      el.style.cssText = "padding:10px 0;overflow-wrap:anywhere";
+      el.append(text("summary", `${when(moment.occurred_at)} · ${body.slice(0, 54)}${body.length > 54 ? "…" : ""}`, "text-text-body text-body-m"));
+      el.append(text("p", body, "text-text-body text-body-m"));
+      for (const item of content.progress || content.updates || []) el.append(text("p", `${item.title}：${item.detail}`, "text-text-secondary text-body-m"));
+      topic(el, {note: body, occurred_at: moment.occurred_at});
+      return el;
+    };
+    const historyPanel = () => {
+      const archive = document.createElement("details");
+      archive.style.cssText = "margin-top:20px;overflow-wrap:anywhere";
+      archive.append(text("summary", "翻看以前的生活片段", "text-text-title text-label-l"));
+      const body = document.createElement("div");
+      const feedback = text("p", "", "text-text-secondary text-caption-m");
+      feedback.setAttribute("role", "status");
+      archive.append(feedback, body);
+      let pending = false, loaded = false, page = 0;
+      const cursors = [null];
+      const show = async (index) => {
+        if (pending || !alive() || !archive.isConnected) return;
+        pending = true;
+        feedback.textContent = "读取历史片段…";
+        try {
+          const before = cursors[index];
+          const result = await requestJson(DAILY_LIFE_PATH, {history: 1, before});
+          if (!alive() || !archive.isConnected) return;
+          if (result.schema_version !== "olivia.daily-life.history.v1" || !Array.isArray(result.moments)) throw new Error("DAILY_LIFE_INVALID");
+          const navigation = document.createElement("div");
+          navigation.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px";
+          const previous = button("上一页", () => show(page - 1));
+          const next = button("下一页", () => show(page + 1));
+          previous.disabled = index === 0;
+          next.disabled = !result.next_cursor;
+          page = index;
+          cursors[index + 1] = result.next_cursor;
+          navigation.append(previous, text("span", `第 ${index + 1} 页`, "text-text-secondary text-caption-m"), next);
+          body.replaceChildren(...result.moments.map(momentRow), navigation);
+          feedback.textContent = result.moments.length ? "每页最多 8 条，按时间从新到旧。" : "还没有历史片段。";
+          loaded = true;
+        } catch (_error) {
+          feedback.replaceChildren(text("span", "历史暂时没能读取，已显示的内容仍然保留。 ", "text-text-secondary text-caption-m"), button("重试读取历史", () => show(index)));
+        } finally { pending = false; }
+      };
+      archive.addEventListener("toggle", () => { if (archive.open && !loaded) show(0); });
+      return archive;
+    };
+    const relationshipPanel = () => {
+      const area = document.createElement("details");
+      area.style.cssText = "margin-top:20px;overflow-wrap:anywhere";
+      area.append(text("summary", "你们的关系", "text-text-title text-label-l"));
+      const content = document.createElement("div");
+      content.style.cssText = "display:grid;gap:10px;padding-top:12px";
+      area.append(content);
+      let pending = false, loaded = false;
+      const read = async () => {
+        if (pending || !alive() || !area.isConnected) return;
+        pending = true;
+        content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
+        try {
+          const result = await requestJson(PRIVATE_WORLD_PATH);
+          if (!alive() || !area.isConnected) return;
+          if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
+          const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
+          const levels = {unknown:"尚未确定", low:"较低", medium:"中等", high:"较高"};
+          content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
+          const list = document.createElement("dl");
+          list.style.cssText = "display:grid;grid-template-columns:auto 1fr;gap:8px 24px;margin:0";
+          for (const [key, label] of [["familiarity","熟悉"],["trust","信任"],["comfort","自在"],["closeness","亲近"],["tension","紧张"]]) {
+            const value = text("dd", levels[result.levels[key]] || "尚未确定", "text-text-body text-body-m");
+            value.style.margin = "0";
+            list.append(text("dt", label, "text-text-secondary text-body-m"), value);
+          }
+          content.append(list, text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
+          loaded = true;
+        } catch (_error) {
+          content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));
+        } finally { pending = false; }
+      };
+      area.addEventListener("toggle", () => { if (area.open && !loaded) read(); });
+      return area;
+    };
     const draw = (payload) => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
@@ -1027,33 +1111,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } else now.append(text("p", "还没有留下近况。连接大模型后，这里会开始记录她的生活。", "text-text-secondary text-body-m"));
       const projects = section("最近在忙", "有些事会慢慢来，也可以暂时搁下。");
       const shared = section("与你有关", "推荐、约定，以及你留下的参与。");
-      for (const [target, items, empty] of [[projects, payload.projects, "她还没有提起正在忙的事。"], [shared, payload.shared, "你们的共同事项会从信件中慢慢留下来。"]]) {
+      for (const [target, items, empty, limit] of [[projects, payload.projects, "她还没有提起正在忙的事。", 3], [shared, payload.shared, "你们的共同事项会从信件中慢慢留下来。", 2]]) {
+        const more = document.createElement("details");
+        more.append(text("summary", "其他事项与已结束的约定", "text-text-secondary text-caption-m"));
+        let shown = 0;
         for (const item of items) {
-          const el = card();
-          el.append(text("h5", item.title, "text-text-title text-label-l"),
+          const el = document.createElement("details");
+          el.style.cssText = "padding:8px 0;overflow-wrap:anywhere";
+          el.append(text("summary", `${item.title} · ${labels[item.status] || "进展未知"}`, "text-text-title text-label-l"),
             text("p", item.detail, "text-text-body text-body-m"),
-            text("small", `${labels[item.status] || "进展未知"} · ${when(item.updated_at)}`, "text-text-secondary text-caption-m"));
+            text("small", when(item.updated_at), "text-text-secondary text-caption-m"));
           topic(el, item);
-          target.append(el);
+          if (!["completed", "cancelled"].includes(item.status) && shown < limit) { target.append(el); shown++; }
+          else more.append(el);
         }
+        if (more.children.length > 1) target.append(more);
         if (!items.length) target.append(text("p", empty, "text-text-secondary text-body-m"));
       }
-      const moments = section("生活片段", "已经分享的片段会保留下来，不随刷新改写。");
-      for (const moment of payload.moments.slice(0, 8)) {
-        const el = card();
-        const content = moment.content;
-        const body = moment.kind === "daily" ? content.note : content.current ? content.current.note : (content.updates || []).map(item => item.detail).join(" · ");
-        el.append(text("small", when(moment.occurred_at), "text-text-secondary text-caption-m"), text("p", body, "text-text-body text-body-m"));
-        const detail = document.createElement("details");
-        detail.append(text("summary", "展开当时的进展", "text-text-secondary text-caption-m"));
-        for (const item of content.progress || content.updates || []) detail.append(text("p", `${item.title}：${item.detail}`, "text-text-body text-body-m"));
-        el.append(detail);
-        moments.append(el);
-      }
-      if (!payload.moments.length) moments.append(text("p", "还没有生活片段。", "text-text-secondary text-body-m"));
+      const moments = section("生活片段", "最近 3 条，展开可读全文。");
+      const recent = payload.moments.filter(item => !payload.current || item.id !== payload.current.source_id).slice(0, 3);
+      for (const moment of recent) moments.append(momentRow(moment));
+      if (!recent.length) moments.append(text("p", "新的生活片段会慢慢留下来。", "text-text-secondary text-body-m"));
       status.textContent = payload.refreshing ? "正在整理新的近况，已有内容仍可阅读。"
         : payload.error_code ? "新近况暂时没能整理好，已有记录已保留。可以稍后重试。" : "近况已保存。";
-      panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, moments, shared);
+      panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationshipPanel());
     };
     const load = async (refresh = false) => {
       if (busy || !alive()) return;

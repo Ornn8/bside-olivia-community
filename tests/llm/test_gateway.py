@@ -317,6 +317,24 @@ def test_deepseek_v4_flash_release_text_requests_max_reasoning(
     assert "private chain" not in captured.err
 
 
+def test_background_reasoning_uses_long_deadline_without_forcing_max_effort(monkeypatch):
+    async def exercise():
+        seen = {}
+        async def handler(request):
+            seen.update(await request.json())
+            await asyncio.sleep(0.12)
+            return web.json_response({"choices": [{"message": {"content": "{}", "reasoning_content": "hidden"}}]})
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), timeout_seconds=0.05, reasoning_timeout_seconds=1))
+            response = await adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.BACKGROUND_REASONING)
+            assert response.text == "{}"
+            assert "reasoning_effort" not in seen and "thinking" not in seen
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
 @pytest.mark.parametrize(
     "request_id",
     [None, "letter-reply:video", "quality-video", "historical-import", "live-turn", "song-plan"],

@@ -469,6 +469,12 @@ async def _daily_life(request: web.Request) -> web.Response:
         life = request.app.get(_DAILY_LIFE_KEY)
         if not isinstance(life, DailyLifeRuntime):
             return _error("DAILY_LIFE_UNAVAILABLE", 503, origin=origin)
+        if request.method == "GET" and request.query.get("history") == "1":
+            try:
+                result = await asyncio.to_thread(life.store.history, before=request.query.get("before"))
+            except ValueError:
+                return _error("DAILY_LIFE_CURSOR_INVALID", 400, origin=origin)
+            return web.json_response(result, headers=headers)
         now = datetime.now(timezone.utc)
         if request.method == "POST":
             if request.headers.get("X-Olivia-Companion-Action") != "confirmed":

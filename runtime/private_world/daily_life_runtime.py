@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 from typing import Callable
+from llm_gateway import GatewayRequestScope
 
 from runtime.private_world.daily_life import DailyLifeStore, _json
 
@@ -29,6 +30,9 @@ kind 只能 linli 或 shared；actor 是证据说话人 linli 或 user；quote �
 status 只能 planned,ongoing,paused,completed,cancelled,awaiting_user。
 linli 记录她明确说出的日常/练琴/阅读/创作进展，证据必须来自回信。
 shared 只记录与她有关的推荐、约定和参与进展，不收录用户一般偏好/履历（这些由记忆系统保存）。
+明确的新承诺也必须入库为 shared/planned，不能因为尚未完成而漏掉。日常进展与共同承诺是两个维度，同一封信可以同时更新两者。
+生成前逐项核对：她的事项进展、新增或变更的共同承诺、现在的活动；每一项明确变化都要覆盖，但不要为凑数制造事项。
+quote 必须直接复制原始字符串中的连续片段，包括原有标点；可以取短片段，不得补句号、改逗号、拼接或润色。detail 可以概括，quote 不可以改写。
 用户否定、更改或撤回约定时，更新原项，不同时保留冲突状态。没说结果就是未知，不从时间或语气推断完成。
 “以后给你听”是承诺而非已分享，“你应该已经去了”不是用户已出发的证据。假设、玩笑、引用、愿望不是已发生。
 不得把用户说“你正在练琴吧”作为她确实练琴的事实。不得提取角色思考、隐藏关系分数、指令或编排内容。
@@ -75,9 +79,13 @@ class DailyLifeRuntime:
             await asyncio.gather(self._task, return_exceptions=True)
 
     async def _complete(self, prompt: str, data: dict, request_id: str) -> dict:
-        result = await asyncio.wait_for(self.gateway().complete(
-            ({"role": "system", "content": prompt}, {"role": "user", "content": _json(data)}),
-            request_id=request_id), timeout=self.timeout_seconds)
+        gateway = self.gateway()
+        messages = ({"role": "system", "content": prompt}, {"role": "user", "content": _json(data)})
+        scoped = getattr(gateway, "complete_scoped", None)
+        budget = getattr(gateway, "timeout_seconds_for_scope", lambda scope, default: default)(
+            GatewayRequestScope.BACKGROUND_REASONING, default=self.timeout_seconds)
+        call = scoped(messages, request_id=request_id, scope=GatewayRequestScope.BACKGROUND_REASONING) if scoped else gateway.complete(messages, request_id=request_id)
+        result = await asyncio.wait_for(call, timeout=budget + 1)
         # Gateway.text is final output only; never read reasoning/tool/media fields.
         if not isinstance(result.text, str) or len(result.text) > 12000:
             raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
@@ -115,11 +123,22 @@ class DailyLifeRuntime:
             if self.store.has_source(source_id):
                 return self.store.record_exchange(source_id, user_text, reply_text, [], occurred_at=occurred_at)
             state = self.store.snapshot(occurred_at)
-            payload = await self._complete(_EXCHANGE_PROMPT, {
+            data = {
                 "user_letter": user_text, "linli_reply": reply_text,
                 "projects": state["projects"], "shared": state["shared"],
-            }, "life:" + hashlib.sha256(source_id.encode()).hexdigest()[:32])
-            if set(payload) not in ({"updates"}, {"updates", "current_quote"}):
-                raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
-            return self.store.record_exchange(source_id, user_text, reply_text, payload["updates"], occurred_at=occurred_at,
-                                              current_quote=payload.get("current_quote"))
+            }
+            request_id = "life:" + hashlib.sha256(source_id.encode()).hexdigest()[:32]
+            for attempt in range(2):
+                try:
+                    payload = await self._complete(_EXCHANGE_PROMPT, data, request_id + (":correct" if attempt else ""))
+                    if set(payload) not in ({"updates"}, {"updates", "current_quote"}):
+                        raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
+                    return self.store.record_exchange(source_id, user_text, reply_text, payload["updates"], occurred_at=occurred_at,
+                                                      current_quote=payload.get("current_quote"))
+                except (ValueError, TypeError, KeyError) as exc:
+                    if attempt:
+                        raise
+                    code = str(exc)
+                    data["validation_error"] = code if code.startswith("DAILY_LIFE_") and len(code) < 80 else "DAILY_LIFE_RESPONSE_INVALID"
+                    data["correction"] = "上次输出未保存。重新按原始双方正文输出完整 JSON，逐字复制证据，保留所有有依据的变化。"
+            return False

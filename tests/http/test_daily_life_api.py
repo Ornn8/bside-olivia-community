@@ -25,6 +25,13 @@ def test_visible_life_endpoint_matches_persisted_reply_context(tmp_path):
             assert data["current"]["note"] == "今天想把这段弹稳。"
             assert data["current"]["note"] in store.reply_context("今天怎么样？", now=now)
             assert "levels" not in data and "trust" not in data
+            history = await client.get("/toy/companion/private-world/life?history=1", headers={"Origin": "https://client.example"})
+            archived = await history.json()
+            assert archived["schema_version"] == "olivia.daily-life.history.v1"
+            assert archived["moments"][0]["id"] == "day:test"
+            assert archived["next_cursor"] is None
+            bad_cursor = await client.get("/toy/companion/private-world/life?history=1&before=bad", headers={"Origin": "https://client.example"})
+            assert bad_cursor.status == 400
             preflight = await client.options("/toy/companion/private-world/life", headers={"Origin": "https://client.example"})
             assert preflight.status == 204
             assert "X-Olivia-Companion-Action" in preflight.headers["Access-Control-Allow-Headers"]

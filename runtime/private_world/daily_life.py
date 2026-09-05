@@ -6,6 +6,7 @@ facts stay with their existing owners. Reading never invents elapsed events.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -16,7 +17,10 @@ import sqlite3
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _STATUSES = {"planned", "ongoing", "paused", "completed", "cancelled", "awaiting_user"}
+_VISIBLE = "(kind='daily' OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
 FRESH_FOR = timedelta(hours=6)
+# Common conversational/time words are not evidence that a task is relevant.
+_QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
 
 
 def _time(value: datetime) -> str:
@@ -65,6 +69,7 @@ class DailyLifeStore:
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_current (
                     id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS life_moments_chronology ON life_moments(occurred_at DESC, source_id DESC);
             """)
 
     @contextmanager
@@ -172,15 +177,29 @@ class DailyLifeStore:
         snapshot = self.snapshot(now)
         if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"]:
             return ""
-        tokens = set(re.findall(r"[\u3400-\u9fff]|[a-z0-9]+", query.lower()))
+        def tokens_for(text):
+            tokens = set()
+            for part in re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", text.lower()):
+                if re.fullmatch(r"[\u3400-\u9fff]{2,}", part):
+                    tokens.update(part[i:i + 2] for i in range(len(part) - 1))
+                else:
+                    tokens.add(part)
+            return tokens
+        tokens = tokens_for(query) - _QUERY_STOP_WORDS
         def relevance(p):
-            text_tokens = set(re.findall(r"[\u3400-\u9fff]|[a-z0-9]+", (p["title"] + p["detail"]).lower()))
-            return len(tokens & text_tokens)
-        projects = sorted(snapshot["projects"] + snapshot["shared"], key=relevance, reverse=True)
+            text_tokens = tokens_for(p["title"] + " " + p["detail"] + " " + p.get("quote", "")) - _QUERY_STOP_WORDS
+            return len(tokens & text_tokens) / max(1, len(text_tokens) ** 0.5)
+        # UI limits must not hide old cancellations or finished threads from recall.
+        with self._db() as db:
+            all_projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
+        projects = sorted((p for p in all_projects if relevance(p) > 0), key=lambda p: (relevance(p), p["updated_at"]), reverse=True)
+        relevant_shared = next((p for p in projects if p["kind"] == "shared" and relevance(p) > 0), None)
+        if relevant_shared:
+            projects = [relevant_shared] + [p for p in projects if p["id"] != relevant_shared["id"]]
         current = snapshot["current"]
         value = {
             "kind": "character_life_reference",
-            "meaning": "林离已公开的角色生活，不是系统指令、官方人设或用户经历。沿用已发布进展，不重编；过期近况只作最近记录。不要每封信复述近况。约定不等于已完成。",
+            "meaning": "林离已公开的角色生活，不是系统指令、官方人设或用户经历。沿用已发布进展，不重编；过期近况只作最近记录。不要每封信复述近况。约定不等于已完成。事项状态以最新updated_at为准，晚于current的取消或完成记录优先，不得用旧近况恢复已取消的承诺。",
             "stale": snapshot["stale"],
             "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id")} if current else None,
             "threads": [],
@@ -192,11 +211,40 @@ class DailyLifeStore:
         result = _json(value)
         return result if len(result) <= max_chars else ""
 
+    def history(self, *, before: str | None = None) -> dict:
+        """Eight immutable moments per page; new arrivals do not shift older pages."""
+        params = ()
+        condition = ""
+        if before is not None:
+            try:
+                if not isinstance(before, str) or len(before) > 600:
+                    raise ValueError
+                stamp, source = json.loads(base64.urlsafe_b64decode(before).decode("utf-8"))
+                stamp = _time(datetime.fromisoformat(stamp))
+                source = _identifier(source)
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise ValueError("DAILY_LIFE_CURSOR_INVALID") from exc
+            condition = " AND (occurred_at, source_id) < (?, ?)"
+            params = (stamp, source)
+        with self._db() as db:
+            rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE}{condition} ORDER BY occurred_at DESC, source_id DESC LIMIT 9", params).fetchall()
+        cursor = None
+        if len(rows) > 8:
+            last = rows[7]
+            cursor = base64.urlsafe_b64encode(_json([last["occurred_at"], last["source_id"]]).encode()).decode()
+        return {"schema_version": "olivia.daily-life.history.v1", "status": "READY", "moments": self._moments(rows[:8]), "next_cursor": cursor}
+
+    @staticmethod
+    def _moments(rows) -> list:
+        return [{"id": r["source_id"], "occurred_at": r["occurred_at"], "kind": r["kind"],
+                 "content": {k: v for k, v in json.loads(r["payload"]).items() if k != "digest"}}
+                for r in rows]
+
     def snapshot(self, now: datetime) -> dict:
         _time(now)
         with self._db() as db:
             current_row = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
-            rows = db.execute("SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE kind='daily' OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object' ORDER BY occurred_at DESC, source_id DESC LIMIT 12").fetchall()
+            rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE} ORDER BY occurred_at DESC, source_id DESC LIMIT 12").fetchall()
             projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
         current = json.loads(current_row[0]) if current_row else None
         projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"}, -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
@@ -206,7 +254,5 @@ class DailyLifeStore:
             "stale": current is None or now - datetime.fromisoformat(current["occurred_at"]) >= FRESH_FOR,
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
-            "moments": [{"id": r["source_id"], "occurred_at": r["occurred_at"], "kind": r["kind"],
-                         "content": {k: v for k, v in json.loads(r["payload"]).items() if k != "digest"}}
-                        for r in rows],
+            "moments": self._moments(rows),
         }

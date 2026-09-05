@@ -35,6 +35,7 @@ class GatewayRequestScope(str, Enum):
     """Trusted in-process call scope; never serialized into provider request ids."""
 
     TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
+    BACKGROUND_REASONING = "background_reasoning"
 
 
 class GatewayError(RuntimeError):
@@ -762,7 +763,7 @@ class OpenAICompatibleAdapter(Gateway):
         *,
         default: float,
     ) -> float:
-        if self._uses_max_reasoning(scope):
+        if self._uses_max_reasoning(scope) or scope is GatewayRequestScope.BACKGROUND_REASONING:
             return self.config.reasoning_timeout_seconds
         return default
 
@@ -805,10 +806,11 @@ class OpenAICompatibleAdapter(Gateway):
         request_id: str,
         *,
         max_reasoning: bool = False,
+        background_reasoning: bool = False,
     ) -> dict[str, Any]:
         key = self._ensure_configured()
         timeout = aiohttp.ClientTimeout(
-            total=self._request_timeout_seconds(max_reasoning=max_reasoning)
+            total=self._request_timeout_seconds(max_reasoning=max_reasoning or background_reasoning)
         )
         for attempt in range(self.config.max_retries + 1):
             try:
@@ -881,7 +883,10 @@ class OpenAICompatibleAdapter(Gateway):
             stream=False,
             max_reasoning=max_reasoning,
         )
-        data = await self._post_json(body, request, max_reasoning=max_reasoning)
+        if scope is GatewayRequestScope.BACKGROUND_REASONING:
+            data = await self._post_json(body, request, background_reasoning=True)
+        else:
+            data = await self._post_json(body, request, max_reasoning=max_reasoning)
         if _extract_finish_reason(data) == "length":
             raise ProviderProtocolError()
         text = _extract_response_text(data)
