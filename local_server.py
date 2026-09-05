@@ -2354,9 +2354,17 @@ def _letter_collection(scope: str):
     current = [letter for letter in store.letters if not letter.get("superseded_by")]
     return sorted(
         [*current, *_official_history_mailbox_projection()],
-        key=lambda letter: (_mailbox_created_at(letter), str(letter.get("letter_id", ""))),
+        key=_mailbox_sort_key,
         reverse=True,
     )
+
+
+def _mailbox_sort_key(letter: Mapping[str, object]) -> tuple:
+    metadata = letter.get("metadata")
+    if is_published_offline_letter_pair(metadata):
+        provenance = metadata[OFFLINE_LETTER_PAIR_PROVENANCE_KEY]
+        return (0.0, str(provenance["source_sha256"]), -provenance["source_index"])
+    return (_mailbox_created_at(letter), str(letter.get("letter_id", "")), 0)
 
 
 def _bind_memory_adapter(adapter: MemoryPort) -> None:

@@ -17,6 +17,11 @@ from original_client_letter_contract import (
 NOW = 1_800_000_000.0
 
 
+def test_explicit_unknown_history_time_is_not_replaced_by_current_time():
+    summary = serialize_letter_summary(_letter(created_at=None, replied_at=None), now=NOW)
+    assert summary["createdAt"] is None
+
+
 def _letter(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "letter_id": "letter-fixture-001",

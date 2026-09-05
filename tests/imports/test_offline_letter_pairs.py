@@ -390,6 +390,9 @@ def test_cli_recovery_keeps_unknown_time_in_the_default_mailbox(tmp_path, capsys
         archive.close()
 
     assert listed["data"]["total"] == 2
+    assert [row["summary"] for row in listed["data"]["list"]] == [
+        "synthetic old letter one", "synthetic old letter two",
+    ]
     assert item["summary"].startswith("synthetic old letter")
     assert item["created_at"] is None
     assert unread["data"]["unread_count"] == 0
@@ -398,6 +401,23 @@ def test_cli_recovery_keeps_unknown_time_in_the_default_mailbox(tmp_path, capsys
     assert detail["data"]["replied_at"] is None
     assert detail["data"]["scope"] == "legacy"
     assert detail["data"]["read_only"] is True
+
+
+def test_undated_mailbox_preserves_order_of_the_source_array(tmp_path, capsys, monkeypatch):
+    import local_server
+    pairs=[{"content": f"ordered synthetic letter {i}", "reply": f"ordered reply {i}"} for i in range(8)]
+    source=tmp_path/"pairs.json"
+    source.write_text(json.dumps(pairs),encoding="utf-8")
+    memory_root=tmp_path/"memory"
+    _run_cli(source,memory_root,capsys,apply=True)
+    archive=LocalMemoryAdapter(memory_root/"memory.sqlite3")
+    monkeypatch.setattr(local_server.store,"letters",[])
+    monkeypatch.setattr(local_server,"memory_adapter",archive)
+    try:
+        response=asyncio.run(local_server.route("GET","/toy/letter/list",{},{}))
+        assert [row["summary"] for row in response["data"]["list"]] == [pair["content"] for pair in pairs]
+    finally:
+        archive.close()
 
 
 def test_generic_legacy_http_import_cannot_forge_offline_mailbox_publication(monkeypatch):
