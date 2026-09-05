@@ -10,6 +10,53 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize('query', [
+    '我们在青岛一起听过那场建筑讲座吗？',
+    '青岛那场建筑讲座是我们的共同经历，还是我编的？',
+    '还记得我的口味吗？',
+    'Do you remember my food preferences?',
+])
+def test_fact_recall_uses_originals_not_assistant_claims_about_the_user(query):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": "one", "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": "2026-09-05T01:00:00+00:00",
+             "content": "青岛一起听讲座只是我编的假设。我喜欢酸口和微辣。",
+             "reply_text": "你已经问过七遍了，你就是在试探我。"}]
+    context = recent_correspondence(rows, query=query)
+    assert rows[0]['content'] in [item['user_letter'] for item in json.loads(context)['letters']]
+    assert rows[0]['reply_text'] not in context
+
+
+@pytest.mark.parametrize('query', [
+    '你刚才说的话是什么意思？',
+    '你上次答应录给我的是什么？',
+    'What did you say in your last reply?',
+    '你问我的那个问题，我想好了。',
+    '今天我有点累，想跟你说说。',
+])
+def test_dialogue_and_explicit_reply_reference_keep_canonical_reply(query):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": "one", "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": "2026-09-05T01:00:00+00:00",
+             "content": "你愿意告诉我现在的想法吗？",
+             "reply_text": "我想先把第二段练顺，再录给你。你愿意等吗？"}]
+    context = recent_correspondence(rows, query=query)
+    assert json.loads(context)['letters'][0]['linli_reply'] == rows[0]['reply_text']
+
+
+def test_explicit_reference_can_retrieve_an_older_reply_without_treating_it_as_user_fact():
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": str(index), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{index}:00+00:00",
+             "content": '你好。',
+             "reply_text": '我说过你是在试探，但这只是我的猜测。' if index == 0 else '晚安。'}
+            for index in range(4)]
+    context = json.loads(recent_correspondence(rows, query='你前面说我在试探，是什么意思？'))
+    assert context['purpose'] == 'reply_reference'
+    assert any(item.get('linli_reply') == rows[0]['reply_text'] for item in context['letters'])
+    assert len(context['letters']) == 1  # Later chatter is not evidence for that earlier judgment.
+
+
 def test_older_recall_does_not_reinforce_historical_assistant_inventions():
     from runtime.reply.recent_correspondence import recent_correspondence
     rows = [{"letter_id": str(index), "reply_revision": 1, "letter_status": "COMPLETED",
@@ -20,7 +67,7 @@ def test_older_recall_does_not_reinforce_historical_assistant_inventions():
     context = recent_correspondence(rows, query="那次剧院演出发生过吗？")
     assert "只是我编造的场景" in context
     assert "七遍" not in context
-    assert "慢慢读" in context  # Immediate back-and-forth is still available.
+    assert "慢慢读" not in context  # Factual recall must not use her earlier prose as proof.
 
 
 def test_repeated_questions_do_not_displace_the_original_factual_correction():
@@ -80,7 +127,7 @@ class ExternalModel:
         return await self.complete_scoped(messages, **kwargs)
     async def complete_scoped(self, messages, **kwargs):
         calls.append(messages)
-        return SimpleNamespace(text='收到，这只是你编的场景。')
+        return SimpleNamespace(text='你已经问过七遍了，答案一直一样。')
 server.letters_adapter.gateway=ExternalModel()
 async def main():
     runtime=create_configured_original_client_server_runtime(server_module=server)
@@ -96,7 +143,8 @@ async def main():
                 if letter['letter_status'] in {'COMPLETED','FAILED'}: break
                 await asyncio.sleep(.01)
             assert letter['letter_status']=='COMPLETED', letter.get('error_code')
-    print(json.dumps({'calls':calls,'letters':len(server.store.letters)},ensure_ascii=True))
+    print(json.dumps({'calls':calls,'letters':len(server.store.letters),
+                      'stored_replies':[row['reply_text'] for row in server.store.letters]},ensure_ascii=True))
 asyncio.run(main())
 '''
     env = {k: v for k, v in os.environ.items() if not k.startswith(('OLIVIA_', 'OPENAI_', 'DEEPSEEK_'))}
@@ -113,4 +161,6 @@ asyncio.run(main())
     assert len(payload['calls']) == 2 + gap
     context = json.dumps(payload['calls'][-1], ensure_ascii=False)
     assert '只是我编的场景，不是真的' in context
-    assert '收到，这只是你编的场景' in context
+    assert all(reply == '你已经问过七遍了，答案一直一样。' for reply in payload['stored_replies'])
+    assert '你已经问过七遍了' not in context
+    assert 'fact_recall' in context

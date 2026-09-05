@@ -376,13 +376,18 @@ def test_manual_memory_uses_exact_infer_false(tmp_path: Path) -> None:
     assert call["metadata"]["actor"] == "local_user"
 
 
+@pytest.mark.parametrize('assistant_message', [
+    '我会记住这段重要经历。',
+    '你已经问过七遍了，你只是想试探我，根本不信任我。',
+])
 def test_live_exchange_extracts_only_user_fact_input(
     tmp_path: Path,
+    assistant_message: str,
 ) -> None:
     backend = FakeMem0()
     result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
         user_message="我在栖月码头找回了祖母送的指南针。",
-        assistant_message="我会记住这段重要经历。",
+        assistant_message=assistant_message,
         occurred_at=NOW,
         source_id="letter:fixture:fallback",
         user_id="local-user",
@@ -397,7 +402,7 @@ def test_live_exchange_extracts_only_user_fact_input(
     ]
     assert add_calls[0]["metadata"]["actor"] == "local_user"
     assert "用户本人" in add_calls[0]["prompt"]
-    assert "我会记住这段重要经历" not in repr(add_calls)
+    assert assistant_message not in repr(add_calls)
 
 
 def test_explicit_commitment_is_preserved_when_both_inference_passes_are_empty(
