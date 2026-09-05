@@ -2786,6 +2786,23 @@ class VideoCapabilityInstaller:
 
     def _assemble_archives(self, root: Path, bundle: VideoBundle) -> list[dict[str, object]]:
         expected: list[dict[str, object]] = []
+        last_progress = 0.0
+
+        def progress(phase: str, done: int, total: int) -> None:
+            nonlocal last_progress
+            if self._pause.is_set():
+                raise InterruptedError
+            now = time.monotonic()
+            if done != total and now - last_progress < 0.5:
+                return
+            last_progress = now
+            label = "解压运行环境" if phase == "extracting" else "校验解压文件"
+            with self._lock:
+                current = self._status[bundle.identifier]
+                self._set(bundle, VideoCapabilityState.VERIFYING, current.downloaded_bytes,
+                          current=f"{label} {done / 1048576:.1f} / {total / 1048576:.1f} MiB",
+                          source=current.source)
+
         for item in bundle.files:
             if item.install is None:
                 continue
@@ -2795,6 +2812,7 @@ class VideoCapabilityInstaller:
                 archive_path,
                 destination,
                 strip_components=item.install.strip_components,
+                progress=progress,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
         file_by_id = {item.identifier: item for item in bundle.files}
@@ -2823,6 +2841,7 @@ class VideoCapabilityInstaller:
                     destination,
                     strip_components=artifact.strip_components,
                     maximum_expanded_bytes=_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES,
+                    progress=progress,
                 )
                 expected.extend(
                     {
@@ -3214,6 +3233,7 @@ def _extract_zip_safely(
     *,
     strip_components: int,
     maximum_expanded_bytes: int | None = None,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> list[dict[str, object]]:
     if maximum_expanded_bytes is None:
         maximum_expanded_bytes = _MAX_ARCHIVE_EXPANDED_BYTES
@@ -3223,6 +3243,11 @@ def _extract_zip_safely(
     expanded = 0
     try:
         with zipfile.ZipFile(archive_path) as archive:
+            total = sum(member.file_size for member in archive.infolist()
+                        if not member.is_dir()
+                        and (member.external_attr >> 16) & 0o170000 != 0o120000
+                        and len(PurePosixPath(member.filename).parts) > strip_components)
+            extracted_bytes = 0
             for member in archive.infolist():
                 mode = (member.external_attr >> 16) & 0o170000
                 raw = member.filename[:-1] if member.is_dir() and member.filename.endswith("/") else member.filename
@@ -3261,10 +3286,17 @@ def _extract_zip_safely(
                         output.write(chunk)
                         digest.update(chunk)
                         written_bytes += len(chunk)
+                        extracted_bytes += len(chunk)
+                        if progress is not None:
+                            progress("extracting", extracted_bytes, total)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
+        verified_bytes = 0
         for item in expected:
             if _tree_entry(destination, str(item["path"])) != item:
                 raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
+            verified_bytes += int(item["size_bytes"])
+            if progress is not None:
+                progress("verifying", verified_bytes, total)
         return expected
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
