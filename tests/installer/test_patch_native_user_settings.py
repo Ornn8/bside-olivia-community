@@ -68,6 +68,39 @@ def test_format_prefix_is_not_hard_coded(tmp_path: Path) -> None:
     assert settings.read_bytes().count(TRUE_WIDGET_PAIR) == 1
 
 
+@pytest.mark.parametrize(
+    "widgets",
+    [
+        FALSE_WIDGET_PAIR,
+        b"\x0amailWidget\x06\x04true\x0bmusicWidget\x06\x04true",
+    ],
+    ids=["disabled", "previous-release-invalid-value-length"],
+)
+def test_widget_values_use_native_length_prefixed_encoding(tmp_path: Path, widgets: bytes) -> None:
+    settings = tmp_path / "usersettings.dat"
+    original = _settings_blob(widgets, prefix=b"", suffix=b"")
+    settings.write_bytes(original)
+
+    assert patch_native_user_settings(settings).status == "patched"
+    data = settings.read_bytes()
+    offset = 4
+    # The native store frames the serialized string with its own byte length.
+    # A true value is 5 bytes (04 + true), not false's 6 bytes (05 + false).
+    for expected_name in (b"mailWidget", b"musicWidget"):
+        name_length = data[offset]
+        offset += 1
+        assert data[offset:offset + name_length] == expected_name
+        offset += name_length
+        value_length = data[offset]
+        offset += 1
+        encoded = data[offset:offset + value_length]
+        assert encoded == b"\x04true"
+        offset += value_length
+    assert offset == 4 + struct.unpack_from("<I", data)[0]
+    assert settings.with_name("usersettings.dat.native-nav.orig").read_bytes() == original
+    assert patch_native_user_settings(settings).status == "already_enabled"
+
+
 def test_missing_settings_are_skipped_without_creating_sidecars(tmp_path: Path) -> None:
     settings = tmp_path / "usersettings.dat"
 

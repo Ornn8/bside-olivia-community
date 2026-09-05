@@ -1424,6 +1424,14 @@ def test_restart_repairs_legacy_managed_worker_pair_before_ready(
     profile = worker.with_name("minimax_profile.py")
     profile.unlink()
     observed: list[dict[str, str]] = []
+    music_root = installer.install_root / "music_video"
+    original_walk = os.walk
+
+    def bounded_walk(top, *args, **kwargs):
+        assert Path(top) != music_root, "startup must not scan the complete music runtime"
+        return original_walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(video_capability_install.os, "walk", bounded_walk)
 
     restarted = VideoCapabilityInstaller(
         data_root=data_root,
@@ -1999,6 +2007,26 @@ def _managed_worker_import_fixture(
         / "tools"
     )
     return installer, runtime_root, manifest_sha256, worker_directory
+
+
+def test_runtime_import_rejects_linked_managed_worker_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer, runtime_root, manifest_sha256, worker_directory = (
+        _managed_worker_import_fixture(tmp_path, monkeypatch)
+    )
+    outside = tmp_path / "outside-worker"
+    outside.mkdir()
+    worker_directory.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        worker_directory.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating directory links is unavailable")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_WORKER_UNAVAILABLE"):
+        installer.import_runtime_root(
+            runtime_root=runtime_root, manifest_sha256=manifest_sha256
+        )
+    assert list(outside.iterdir()) == []
 
 
 def test_runtime_import_reports_stable_worker_error_when_worker_directory_cannot_be_prepared(
