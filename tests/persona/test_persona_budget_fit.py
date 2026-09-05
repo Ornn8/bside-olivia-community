@@ -17,6 +17,24 @@ NOW = TrustedTime(datetime(2026, 8, 30, tzinfo=timezone.utc))
 
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
+    assembly = assemble_persona(
+        load_persona(RELEASE_PERSONA).snapshot,
+        ReplyContext.create(mode, trusted_time=NOW),
+        user_input='我们一起听讲座是我编的假设。',
+        max_units=GatewayConfig().max_input_chars,
+    )
+    rules = json.loads(re.search(r'<forbidden>\n([^\n]+)\n</forbidden>', assembly.system_content)[1])
+    # Provider-input contract: scope cannot depend on a recall query or history.
+    scope = next(rule for rule in rules if '人物组合' in rule)
+    assert '陈述和提问' in scope
+    assert '未被说明的个人经历保持未知' in scope
+    assert '不把推论说成用户讲过的话' in scope
+    assert '<untrusted_history>' not in assembly.system_content
+    assert assembly.budget_report.dropped_ids == ()
+
+
+@pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
 def test_release_attitude_requires_evidence_without_removing_personality(mode) -> None:
     loaded = load_persona(RELEASE_PERSONA)
     assembled = assemble_persona(

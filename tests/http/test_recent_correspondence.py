@@ -70,6 +70,22 @@ def test_older_recall_does_not_reinforce_historical_assistant_inventions():
     assert "慢慢读" not in context  # Factual recall must not use her earlier prose as proof.
 
 
+def test_sparse_history_does_not_claim_adjacency_from_retrieval_order():
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": str(index), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{index}:00+00:00",
+             "content": '我独自去过青岛；一起听讲座只是想象。' if index == 0 else '今天看书。',
+             "reply_text": '收到。'} for index in range(6)]
+    text = recent_correspondence(rows, query='我们一起听过青岛那场讲座吗？')
+    packet = json.loads(text)
+    assert packet['letters'][0]['source_id'] == 'reply:0:1'
+    assert packet['letters'][-1]['source_id'] == 'reply:5:1'
+    assert len(packet['letters']) <= 4 and len(text) <= 2800
+    assert 'time 是回信完成时间' in packet['meaning']
+    assert '不凭窗口位置称“上一封”“刚才”' in packet['meaning']
+    assert all('linli_reply' not in item for item in packet['letters'])
+
+
 def test_repeated_questions_do_not_displace_the_original_factual_correction():
     from runtime.reply.recent_correspondence import recent_correspondence
     query = "我们一起看过那场演出吗？"
@@ -167,3 +183,5 @@ asyncio.run(main())
     # The real send pipeline must carry the attitude contract to the provider.
     assert '核对、重复提问、纠正记忆本身不表示恶意、试探或自欺' in context
     assert '不同意见和拒绝' in context
+    assert '未被说明的个人经历保持未知' in context
+    assert '不凭窗口位置称“上一封”“刚才”' in context
