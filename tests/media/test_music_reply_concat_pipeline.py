@@ -606,6 +606,24 @@ def test_runtime_probe_retries_transient_failures_once_with_sanitized_environmen
     assert len(calls) == 2
 
 
+def test_exception_failure_preserves_safe_code_chain_without_private_text(tmp_path):
+    leaf = ValueError("private text C:/secret/key.txt secret-token")
+    middle = music_reply.LatentSyncReplyError("LATENTSYNC_FAILED")
+    middle.__cause__ = leaf
+    outer = music_reply.ReplyMediaError("REPLY_VIDEO_FAILED")
+    outer.__cause__ = middle
+    failure = music_reply._provider_exception_failure(
+        "MUSIC_REPLY_NORMAL_VIDEO_FAILED", outer,
+        {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)},
+    )
+    raw = (tmp_path / "logs/media-provider.jsonl").read_text(encoding="utf-8")
+    assert "exception_types=ReplyMediaError>LatentSyncReplyError>ValueError" in failure.diagnostic
+    assert "exception_codes=REPLY_VIDEO_FAILED>LATENTSYNC_FAILED" in failure.diagnostic
+    assert all(value not in raw for value in ("private text", "C:/secret", "secret-token"))
+    assert str(failure) == "MUSIC_REPLY_NORMAL_VIDEO_FAILED"
+    assert failure.__cause__ is None and failure.__context__ is None
+
+
 def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     python, worker, comfy = _write(tmp_path / "python.exe"), _write(tmp_path / "worker.py"), tmp_path / "comfy"; song = tmp_path / "song.flac"
     _write(comfy / "main.py"); private = "private-letter-200717"; data_root = tmp_path / "data"
@@ -621,7 +639,9 @@ def test_provider_failures_are_stable_private_safe_and_unchained(tmp_path: Path,
     persisted = (data_root / "logs" / "media-provider.jsonl").read_text(encoding="utf-8")
     assert "MINIMAX_MUSIC3_FAILED" in persisted and "returncode=23" in persisted and len(diagnostic) <= 512
     assert all(value not in diagnostic and value not in persisted for value in sensitive)
-    def stable(error, code, detail="returncode=unavailable; stderr=process timeout"): assert (str(error), error.diagnostic, error.__cause__, error.__context__) == (code, detail, None, None)
+    def stable(error, code, detail="returncode=unavailable; stderr=process timeout"):
+        assert (str(error), error.__cause__, error.__context__) == (code, None, None)
+        assert error.diagnostic == detail or error.diagnostic.startswith(detail + "; exception_types=")
     monkeypatch.setattr(music_reply, "run_managed_process", lambda command, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 1, stderr=private.encode())))
     with pytest.raises(music_reply.MusicReplyError) as caught: adapter.generate(private, private, tmp_path / "song.flac", duration_seconds=40)
     stable(caught.value, "MINIMAX_MUSIC3_FAILED")
@@ -976,8 +996,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     audio_present = False
     with pytest.raises(music_reply.MusicReplyError) as caught:
         render()
-    assert (str(caught.value), caught.value.diagnostic, caught.value.__cause__, caught.value.__context__) == \
-        ("MUSIC_REPLY_NORMAL_VIDEO_FAILED", "returncode=unavailable; stderr=process timeout", None, None)
+    assert (str(caught.value), caught.value.__cause__, caught.value.__context__) == \
+        ("MUSIC_REPLY_NORMAL_VIDEO_FAILED", None, None)
+    assert caught.value.diagnostic.startswith("returncode=unavailable; stderr=process timeout; exception_types=")
     normal_error = False
     order.clear()
     result = render()

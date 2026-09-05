@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 import pytest
 
@@ -130,6 +131,40 @@ def test_existing_v1_journal_adds_budget_without_reinterpreting_attempts(tmp_pat
         assert len(succeeding.calls) == 1
         assert restarted.health()["attempt_count"] == 101
         assert restarted.health()["terminal_count"] == 1
+    asyncio.run(scenario())
+
+
+def test_two_interleaved_slow_failures_exhaust_each_sources_budget(tmp_path):
+    class BrokenMemory:
+        def __init__(self):
+            self.calls = []
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def remember_exchange(self, **kwargs):
+            source = kwargs["source_id"]
+            self.calls.append(source)
+            time.sleep(0.025)
+            return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source, error_code="MEM0_WRITE_FAILED")
+    async def scenario():
+        state = tmp_path / "state.json"
+        _state(state)
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        payload["letters"].append({**payload["letters"][0], "letter_id": "letter-2"})
+        state.write_text(json.dumps(payload), encoding="utf-8")
+        original = state.read_bytes()
+        memory = BrokenMemory()
+        box = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.005))
+        for _ in range(20):
+            await box.scan_once()
+            await asyncio.sleep(0.03)
+        assert memory.calls.count("reply:letter-1:1") == 3
+        assert memory.calls.count("reply:letter-2:1") == 3
+        restarted = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory))
+        await restarted.scan_once()
+        assert len(memory.calls) == 6
+        assert restarted.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert restarted.health()["pending_count"] == 2
+        assert state.read_bytes() == original
     asyncio.run(scenario())
 
 

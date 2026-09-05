@@ -182,6 +182,10 @@ class CanonicalMemoryOutbox:
                     pending += 1
                     continue
                 result = await self.committer.commit(delivery)
+                drain = getattr(self.committer, "drain_completed", None)
+                if callable(drain):
+                    for completed_delivery, completed_result in drain():
+                        self._record(completed_delivery, completed_result)
                 if result.status is CanonicalMemoryDeliveryStatus.WRITTEN:
                     delivered += 1
                     self._record(delivery, result)

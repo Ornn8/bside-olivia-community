@@ -87,9 +87,16 @@ def _persist_provider_failure(error_code: str, diagnostic: str, environment: Map
 
 def _provider_exception_failure(error_code: str, exc: BaseException, environment: Mapping[str, str] | None = None) -> MusicReplyError:
     chain, current = [], exc
-    while current is not None and current not in chain: chain.append(current); current = current.__cause__ or current.__context__
+    while current is not None and current not in chain and len(chain) < 8: chain.append(current); current = current.__cause__ or current.__context__
     root = chain[-1]; category = "TimeoutExpired" if any(isinstance(item, (TimeoutError, subprocess.TimeoutExpired)) for item in chain) else type(root).__name__
-    diagnostic = _provider_failure_diagnostic(returncode=getattr(root, "returncode", "unavailable"), stderr=category)
+    returncode = getattr(root, "returncode", None)
+    diagnostic = _provider_failure_diagnostic(returncode=returncode if type(returncode) is int else "unavailable", stderr=category)
+    names = [type(item).__name__ for item in chain if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", type(item).__name__)]
+    codes = [str(item) for item in chain if len(str(item)) <= 80 and re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+", str(item))]
+    diagnostic += "; exception_types=" + ">".join(names)
+    if codes:
+        diagnostic += "; exception_codes=" + ">".join(codes)
+    diagnostic = diagnostic[:_PROVIDER_DIAGNOSTIC_LIMIT]
     _persist_provider_failure(error_code, diagnostic, environment)
     return MusicReplyError(error_code, diagnostic=diagnostic)
 
