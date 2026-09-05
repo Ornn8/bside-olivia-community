@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v17"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v17-mailbox1"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1817,6 +1817,50 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     document.querySelector(`[${ROOT_ATTR}]`)?.remove();
   };
 
+  // The lite client's mailbox is the original /collection view. Keep both
+  // destinations inside the main window: desktop widgets can be off-screen.
+  const mountMainNavigation = () => {
+    const route = window.location.hash.split("?")[0];
+    let nav = document.querySelector("[data-olivia-main-navigation]");
+    if (route !== "#/studio" && route !== "#/collection") {
+      nav?.remove();
+      return;
+    }
+    if (!nav) {
+      nav = document.createElement("nav");
+      nav.setAttribute("data-olivia-main-navigation", "");
+      nav.setAttribute("aria-label", "信箱与曲库");
+      Object.assign(nav.style, {
+        position: "fixed", top: "60px", left: "120px", zIndex: "20",
+        display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
+      });
+      for (const [label, href] of [["信箱", "#/collection"], ["曲库", "#/studio"]]) {
+        const link = text("a", label, "text-body-m");
+        link.href = href;
+        Object.assign(link.style, {
+          display: "inline-flex", alignItems: "center", minHeight: "36px",
+          padding: "0 16px", borderRadius: "18px", border: "1px solid #6b7280",
+          textDecoration: "none", whiteSpace: "nowrap", pointerEvents: "auto",
+          WebkitAppRegion: "no-drag",
+        });
+        nav.append(link);
+      }
+      document.body.append(nav);
+    }
+    for (const link of nav.querySelectorAll("a")) {
+      const active = link.getAttribute("href") === route;
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+      link.style.color = active ? "#111827" : "#d1d5db";
+      link.style.background = active ? "#d9d2c8" : "#17181a";
+    }
+  };
+
+  const finishInitialSetup = async (skipped) => {
+    await requestSetup(SETUP_COMPLETE_PATH, { skipped });
+    window.location.hash = "#/collection";
+  };
+
   const openDialog = (initialMode = false, initialPanel = "llm") => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
@@ -1901,7 +1945,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const close = button(initialMode ? "稍后设置" : "关闭", async () => {
       if (initialMode) {
         try {
-          await requestSetup(SETUP_COMPLETE_PATH, { skipped: true });
+          await finishInitialSetup(true);
         } catch (_error) {
           return;
         }
@@ -1983,7 +2027,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const finish = button("完成初始设置", async () => {
         setButtonsBusy([finish], true);
         try {
-          await requestSetup(SETUP_COMPLETE_PATH, { skipped: false });
+          await finishInitialSetup(false);
           backdrop.remove();
         } catch (_error) {
           status.textContent = "初始设置状态保存失败，请重试。";
@@ -2324,6 +2368,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.requestAnimationFrame(() => {
       scheduled = false;
       constrainLetterInputs();
+      mountMainNavigation();
       mountShell();
       maybeOpenInitialSetup();
     });
