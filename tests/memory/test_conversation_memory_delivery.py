@@ -88,6 +88,38 @@ def _delivery(**changes: object) -> CanonicalMemoryDelivery:
     return CanonicalMemoryDelivery(**values)  # type: ignore[arg-type]
 
 
+def test_failure_budget_marks_completed_writes_not_waiting_or_preflight():
+    async def scenario():
+        broken = FakeMemory(result_status=MemoryWriteStatus.UNAVAILABLE)
+        failed = await ConversationMemoryDeliveryCommitter(broken).commit(_delivery())
+        assert failed.completed_failure is True
+        raised = await ConversationMemoryDeliveryCommitter(FakeMemory(raises=True)).commit(_delivery())
+        assert raised.completed_failure is True
+        blocked = FakeMemory(provider_status="unavailable", error_code="MEM0_WRITE_FAILED")
+        preflight = await ConversationMemoryDeliveryCommitter(blocked).commit(_delivery())
+        assert preflight.completed_failure is False
+        assert blocked.calls == []
+        release = threading.Event()
+        class SlowMemory(FakeMemory):
+            def remember_exchange(self, **kwargs):
+                assert release.wait(2)
+                return super().remember_exchange(**kwargs)
+        slow = SlowMemory()
+        committer = ConversationMemoryDeliveryCommitter(slow, timeout_seconds=0.01)
+        try:
+            for _ in range(4):
+                waiting = await committer.commit(_delivery())
+                assert waiting.error_code == "MEM0_WRITE_TIMEOUT"
+                assert waiting.completed_failure is False
+        finally:
+            release.set()
+        await asyncio.sleep(0.1)
+        done = await committer.commit(_delivery())
+        assert done.status is CanonicalMemoryDeliveryStatus.WRITTEN
+        assert len(slow.calls) == 1
+    asyncio.run(scenario())
+
+
 def test_available_provider_receives_exact_canonical_exchange_in_worker_thread() -> None:
     async def scenario() -> None:
         memory = FakeMemory()

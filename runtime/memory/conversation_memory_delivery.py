@@ -91,8 +91,14 @@ class CanonicalMemoryDeliveryResult:
     source_id: str
     memory_count: int = 0
     error_code: str | None = None
+    # Internal coordinator metadata, not a model/HTTP call counter.
+    completed_failure: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.completed_failure) is not bool or (
+            self.completed_failure and self.status is not CanonicalMemoryDeliveryStatus.UNAVAILABLE
+        ):
+            raise CanonicalMemoryDeliveryError("completed failure marker is invalid")
         if not isinstance(self.status, CanonicalMemoryDeliveryStatus):
             raise CanonicalMemoryDeliveryError("status is invalid")
         if not isinstance(self.source_id, str) or not self.source_id:
@@ -250,6 +256,12 @@ class ConversationMemoryDeliveryCommitter:
                 if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
                 else None
             ),
+            completed_failure=status is CanonicalMemoryDeliveryStatus.UNAVAILABLE and error_code in {
+                "MEM0_WRITE_FAILED", "MEM0_WRITE_ROLLBACK_FAILED",
+                "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_LANGUAGE_MISMATCH",
+                "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED", "MEM0_CHARACTER_IDENTITY_MISMATCH",
+                "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED",
+            },
         )
 
 
@@ -307,6 +319,7 @@ def _deliver_to_provider(
             CanonicalMemoryDeliveryStatus.UNAVAILABLE,
             delivery.source_id,
             error_code="MEM0_WRITE_FAILED",
+            completed_failure=True,
         )
 
 
