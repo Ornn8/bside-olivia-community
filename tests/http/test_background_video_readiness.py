@@ -78,3 +78,23 @@ def test_failed_probe_is_cached_until_ttl_and_retried_without_blocking():
     assert check({})["runtime_probe_pending"]
     assert wait_result(check, {})["ready"] is True
     assert len(calls) == 2
+
+
+def test_bundle_install_marker_invalidates_missing_dependency_cache(tmp_path):
+    marker = tmp_path / "capabilities/video/ordinary_video/.ready.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"version":"before-supplement"}')
+    calls = []
+    def probe(env):
+        calls.append(1)
+        return {"ready": "after-supplement" in marker.read_text()}
+    check = BackgroundVideoReadiness(probe)
+    env = {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)}
+    assert wait_result(check, env)["ready"] is False
+    marker.write_text('{"version":"before-supplement"}')
+    assert check(env)["ready"] is False
+    assert len(calls) == 1
+    marker.write_text('{"version":"after-supplement"}')
+    assert check(env)["runtime_probe_pending"] is True
+    assert wait_result(check, env)["ready"] is True
+    assert len(calls) == 2

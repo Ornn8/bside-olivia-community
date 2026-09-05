@@ -39,6 +39,12 @@ class BackgroundVideoReadiness:
         paths = set(self._paths)
         paths.update(Path(value) for value in environment.values()
                      if isinstance(value, str) and Path(value).is_absolute())
+        data_root = environment.get("OLIVIA_LOCAL_DATA_ROOT", "")
+        if data_root and Path(data_root).is_absolute():
+            paths.update(
+                Path(data_root) / "capabilities" / "video" / bundle / ".ready.json"
+                for bundle in ("ordinary_video", "music_video")
+            )
         return (tuple(sorted(environment.items())),
                 tuple(self._file_identity(path) for path in sorted(paths)))
 
