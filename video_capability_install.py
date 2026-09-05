@@ -1256,6 +1256,8 @@ class VideoCapabilityInstaller:
                 result = {}
             if probe_cache is not None:
                 probe_cache["result"] = result
+        if result.get("runtime_probe_pending") is True:
+            return VideoCapabilityState.VERIFYING, None
         if bundle.identifier == "ordinary_video":
             missing = result.get("ordinary_missing_dependencies")
             ready = isinstance(missing, (list, tuple)) and not missing
@@ -1371,7 +1373,7 @@ class VideoCapabilityInstaller:
                     bundle,
                     probe_cache=probe_cache,
                 )
-                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
+                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), current_file="检查视频运行依赖" if state == VideoCapabilityState.VERIFYING else None, source=current.source if current else None, reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
 
@@ -1800,7 +1802,7 @@ class VideoCapabilityInstaller:
             ):
                 return "NOOP"
             self._pause.clear()
-            self._set(bundle, VideoCapabilityState.QUEUED, 0, source=source_mode)
+            self._set(bundle, VideoCapabilityState.QUEUED, 0, source="offline-package" if offline_root is not None else source_mode)
             thread = threading.Thread(target=self._run, args=(bundle, source_mode, offline_root), name=f"olivia-video-{bundle_id}", daemon=True)
             self._threads[bundle_id] = thread
             thread.start()
@@ -2133,6 +2135,9 @@ class VideoCapabilityInstaller:
             self._set_runtime_import_state(
                 "failed", reason_code="VIDEO_RUNTIME_PROBE_FAILED"
             )
+            return True
+        if readiness.get("runtime_probe_pending") is True:
+            self._set_runtime_import_state("required", reason_code="VIDEO_RUNTIME_PROBE_PENDING")
             return True
         ordinary_missing = readiness.get("ordinary_missing_dependencies")
         ready = (
@@ -2537,6 +2542,7 @@ class VideoCapabilityInstaller:
 
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         root = self._staging_root(bundle)
+        source_used = "offline-package" if offline_root is not None else source_mode
         try:
             if bundle.identifier == "ordinary_video" and offline_root is not None:
                 parent = offline_root.parent if offline_root.is_file() else offline_root
@@ -2551,7 +2557,6 @@ class VideoCapabilityInstaller:
             if any(_is_reparse_point(path) for path in (root.parent, root, download_root.parent, download_root)):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             downloaded = 0
-            source_used = source_mode
             for item in bundle.files:
                 if self._pause.is_set():
                     raise InterruptedError
@@ -2635,7 +2640,7 @@ class VideoCapabilityInstaller:
                 self._maybe_start_runtime_prepare()
         except InterruptedError:
             with self._lock:
-                self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_mode)
+                self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_used)
         except Exception as exc:
             with self._lock:
                 reason = (
@@ -2643,7 +2648,7 @@ class VideoCapabilityInstaller:
                     if isinstance(exc, VideoCapabilityError)
                     else "VIDEO_BUNDLE_INSTALL_FAILED"
                 )
-                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_mode, reason=reason)
+                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_used, reason=reason)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -2693,7 +2698,7 @@ class VideoCapabilityInstaller:
             missing.append(item)
         download_root = self._download_root(bundle)
         download_root.mkdir(parents=True, exist_ok=True)
-        source_used = source_mode
+        source_used = "offline-package" if offline_root is not None else source_mode
         downloaded = existing_bytes
         for item in missing:
             if self._pause.is_set():
@@ -2786,6 +2791,23 @@ class VideoCapabilityInstaller:
 
     def _assemble_archives(self, root: Path, bundle: VideoBundle) -> list[dict[str, object]]:
         expected: list[dict[str, object]] = []
+        last_progress = 0.0
+
+        def progress(phase: str, done: int, total: int) -> None:
+            nonlocal last_progress
+            if self._pause.is_set():
+                raise InterruptedError
+            now = time.monotonic()
+            if done != total and now - last_progress < 0.5:
+                return
+            last_progress = now
+            label = "解压运行环境" if phase == "extracting" else "校验解压文件"
+            with self._lock:
+                current = self._status[bundle.identifier]
+                self._set(bundle, VideoCapabilityState.VERIFYING, current.downloaded_bytes,
+                          current=f"{label} {done / 1048576:.1f} / {total / 1048576:.1f} MiB",
+                          source=current.source)
+
         for item in bundle.files:
             if item.install is None:
                 continue
@@ -2795,6 +2817,7 @@ class VideoCapabilityInstaller:
                 archive_path,
                 destination,
                 strip_components=item.install.strip_components,
+                progress=progress,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
         file_by_id = {item.identifier: item for item in bundle.files}
@@ -2823,6 +2846,7 @@ class VideoCapabilityInstaller:
                     destination,
                     strip_components=artifact.strip_components,
                     maximum_expanded_bytes=_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES,
+                    progress=progress,
                 )
                 expected.extend(
                     {
@@ -3071,6 +3095,11 @@ class VideoCapabilityInstaller:
             candidates = [offline_root]
             if member.startswith("breeze/wheels/") and member.endswith(".whl"):
                 candidates.append(offline_root.parent / "Olivia-breeze-runtime-offline.zip")
+            if member in {
+                "latentsync/runtime/stabilityai/sd-vae-ft-mse/config.json",
+                "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
+            }:
+                candidates.append(offline_root.parent / "Olivia-latentsync-vae-offline.zip")
             for candidate in candidates:
                 if not candidate.is_file() or _is_reparse_point(candidate):
                     continue
@@ -3214,6 +3243,7 @@ def _extract_zip_safely(
     *,
     strip_components: int,
     maximum_expanded_bytes: int | None = None,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> list[dict[str, object]]:
     if maximum_expanded_bytes is None:
         maximum_expanded_bytes = _MAX_ARCHIVE_EXPANDED_BYTES
@@ -3223,6 +3253,11 @@ def _extract_zip_safely(
     expanded = 0
     try:
         with zipfile.ZipFile(archive_path) as archive:
+            total = sum(member.file_size for member in archive.infolist()
+                        if not member.is_dir()
+                        and (member.external_attr >> 16) & 0o170000 != 0o120000
+                        and len(PurePosixPath(member.filename).parts) > strip_components)
+            extracted_bytes = 0
             for member in archive.infolist():
                 mode = (member.external_attr >> 16) & 0o170000
                 raw = member.filename[:-1] if member.is_dir() and member.filename.endswith("/") else member.filename
@@ -3261,10 +3296,17 @@ def _extract_zip_safely(
                         output.write(chunk)
                         digest.update(chunk)
                         written_bytes += len(chunk)
+                        extracted_bytes += len(chunk)
+                        if progress is not None:
+                            progress("extracting", extracted_bytes, total)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
+        verified_bytes = 0
         for item in expected:
             if _tree_entry(destination, str(item["path"])) != item:
                 raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
+            verified_bytes += int(item["size_bytes"])
+            if progress is not None:
+                progress("verifying", verified_bytes, total)
         return expected
     except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc

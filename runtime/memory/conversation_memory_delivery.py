@@ -91,8 +91,14 @@ class CanonicalMemoryDeliveryResult:
     source_id: str
     memory_count: int = 0
     error_code: str | None = None
+    # Internal coordinator metadata, not a model/HTTP call counter.
+    completed_failure: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.completed_failure) is not bool or (
+            self.completed_failure and self.status is not CanonicalMemoryDeliveryStatus.UNAVAILABLE
+        ):
+            raise CanonicalMemoryDeliveryError("completed failure marker is invalid")
         if not isinstance(self.status, CanonicalMemoryDeliveryStatus):
             raise CanonicalMemoryDeliveryError("status is invalid")
         if not isinstance(self.source_id, str) or not self.source_id:
@@ -144,7 +150,14 @@ class ConversationMemoryDeliveryCommitter:
         self.memory_lifecycle = memory_lifecycle
         self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
         self._pending_delivery: CanonicalMemoryDelivery | None = None
+        self._completed_deliveries: dict[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult] = {}
         self._commit_lock = asyncio.Lock()
+
+    def drain_completed(self) -> tuple[tuple[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult], ...]:
+        """Transfer foreign settled results to the journal under their own identity."""
+        completed = tuple(self._completed_deliveries.items())
+        self._completed_deliveries.clear()
+        return completed
 
     async def commit(
         self,
@@ -156,6 +169,9 @@ class ConversationMemoryDeliveryCommitter:
     async def _commit(self, delivery: CanonicalMemoryDelivery) -> CanonicalMemoryDeliveryResult:
         if not isinstance(delivery, CanonicalMemoryDelivery):
             raise TypeError("a canonical memory delivery is required")
+        cached = self._completed_deliveries.pop(delivery, None)
+        if cached is not None:
+            return cached
         lifecycle_error = getattr(self.memory_lifecycle, "reason_code", None)
         if isinstance(lifecycle_error, str):
             return CanonicalMemoryDeliveryResult(
@@ -183,7 +199,9 @@ class ConversationMemoryDeliveryCommitter:
             state, result = await self._provider_call.settle_async(timeout_seconds=self.timeout_seconds)
             if state != "timeout":
                 self._pending_delivery = None
-        if state != "timeout" and (previous != delivery or state != "completed"):
+                if previous != delivery and state in {"completed", "failed"}:
+                    self._completed_deliveries[previous] = self._delivery_result(previous, state, result)
+        if state != "timeout" and (previous != delivery or state not in {"completed", "failed"}):
             self._pending_delivery = delivery
             state, result = await self._provider_call.call_async(
                 lambda: (
@@ -195,6 +213,10 @@ class ConversationMemoryDeliveryCommitter:
             )
             if state not in {"timeout", "inflight"}:
                 self._pending_delivery = None
+        return self._delivery_result(delivery, state, result)
+
+    @staticmethod
+    def _delivery_result(delivery: CanonicalMemoryDelivery, state: str, result: object) -> CanonicalMemoryDeliveryResult:
         if state in {"timeout", "inflight"}:
             return CanonicalMemoryDeliveryResult(
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
@@ -206,6 +228,7 @@ class ConversationMemoryDeliveryCommitter:
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
                 delivery.source_id,
                 error_code="MEM0_WRITE_FAILED",
+                completed_failure=True,
             )
         if isinstance(result, CanonicalMemoryDeliveryResult):
             return result
@@ -219,6 +242,7 @@ class ConversationMemoryDeliveryCommitter:
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
                 delivery.source_id,
                 error_code="MEM0_WRITE_RESULT_INVALID",
+                completed_failure=True,
             )
 
         mapping = {
@@ -250,6 +274,12 @@ class ConversationMemoryDeliveryCommitter:
                 if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
                 else None
             ),
+            completed_failure=status is CanonicalMemoryDeliveryStatus.UNAVAILABLE and error_code in {
+                "MEM0_WRITE_FAILED", "MEM0_WRITE_ROLLBACK_FAILED",
+                "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_LANGUAGE_MISMATCH",
+                "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED", "MEM0_CHARACTER_IDENTITY_MISMATCH",
+                "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED",
+            },
         )
 
 
@@ -307,6 +337,7 @@ def _deliver_to_provider(
             CanonicalMemoryDeliveryStatus.UNAVAILABLE,
             delivery.source_id,
             error_code="MEM0_WRITE_FAILED",
+            completed_failure=True,
         )
 
 

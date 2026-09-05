@@ -1088,7 +1088,9 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(
         f"letter-reply:{letter_id}",
         f"letter-reply:{letter_id}:duration-repair",
     ]
-    assert "180到200个汉字" in requests[1].content
+    assert "180到200个非空白字符" in requests[1].content
+    assert "汉字、标点、数字和英文字母均计入" in requests[1].content
+    assert "空格和换行不计入" in requests[1].content
     assert letter["reply_text"] == "林" * 190
 
 

@@ -11,7 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
-from llm_gateway import Gateway, GatewayConfig, create_gateway, load_gateway_config
+from llm_gateway import Gateway, GatewayConfig, GatewayRequestScope, create_gateway, load_gateway_config
 from persona_assembly import assemble_persona
 from persona_loader import load_persona
 from persona_provider import FilePersonaProvider
@@ -357,7 +357,12 @@ def plan_song_content(
         separators=(",", ":"),
     )
     messages = _planning_messages(user_input, duration, gateway_config)
-    response = asyncio.run(active_gateway.complete(messages))
+    complete_scoped = getattr(active_gateway, "complete_scoped", None)
+    def complete_plan(plan_messages):
+        if callable(complete_scoped):
+            return asyncio.run(complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT))
+        return asyncio.run(active_gateway.complete(plan_messages))
+    response = complete_plan(messages)
     try:
         semantic_plan = parse_song_semantic_plan(response.text, duration)
     except ValueError as exc:
@@ -377,7 +382,7 @@ def plan_song_content(
                 ),
             },
         )
-        repaired = asyncio.run(active_gateway.complete(repair_messages))
+        repaired = complete_plan(repair_messages)
         semantic_plan = parse_song_semantic_plan(repaired.text, duration)
 
     # Imported lazily because music_caption imports the typed plan definitions

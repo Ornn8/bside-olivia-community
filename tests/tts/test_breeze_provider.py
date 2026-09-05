@@ -354,6 +354,50 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
     assert synthesis_request["max_attempts"] == 1
 
 
+@pytest.mark.parametrize("durations,success,attempts", [
+    ([36.8, 43.0], True, 3), ([36.8, 36.8, 36.8], False, 3),
+    ([36.8], False, 0), ([36.8, 36.8, 36.8], False, 99),
+])
+def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path, monkeypatch, durations, success, attempts):
+    observed = []
+    def fake_run(command, **kwargs):
+        assert Path(command[1]).name == "external_breeze_worker.py", "no ASR or time stretching"
+        request = json.loads(Path(command[command.index("--request") + 1]).read_text(encoding="utf-8"))
+        observed.append(request)
+        output = Path(command[command.index("--output") + 1])
+        with wave.open(str(output), "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(24000)
+            target.writeframes(b"\0\0" * int(durations[len(observed) - 1] * 24000))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(delivery, "delivery_configured", lambda *args, **kwargs: True)
+    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    config, plan = _breeze_config(tmp_path), _plan()
+    expected = delivery.build_external_delivery_request(config, plan)
+    expected["max_attempts"] = attempts
+    monkeypatch.setattr(delivery, "build_external_delivery_request", lambda *args: dict(expected))
+    output = tmp_path / "reply.wav"
+    if success:
+        result = delivery.render_delivery_wav(config, plan, output, enforce_content_gate=False)
+        assert result.duration_seconds == 43.0
+        assert result.quality_report is None
+    else:
+        with pytest.raises(delivery.DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
+            delivery.render_delivery_wav(config, plan, output, enforce_content_gate=False)
+        assert not output.exists()
+    assert len(observed) == len(durations)
+    for index, request in enumerate(observed):
+        assert request["seed"] == expected["seed"] + index
+        assert request["max_attempts"] == 1
+        assert request["text"] == expected["text"] == plan.spoken_text
+        assert request["voice_plan"] == expected["voice_plan"]
+        assert {key: value for key, value in request.items() if key not in {"seed", "max_attempts"}} == {
+            **{key: value for key, value in expected.items() if key not in {"seed", "max_attempts"}},
+            "verify_accepted_base_model": False,
+        }
+
+
 @pytest.mark.parametrize("phase,audio_started", [("preflight", False), ("generation", True)])
 def test_breeze_failure_never_runs_a_second_tts_model(
     tmp_path: Path,

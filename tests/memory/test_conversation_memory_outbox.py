@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 import pytest
 
@@ -12,7 +13,9 @@ from runtime.memory.conversation_memory_delivery import (
     CanonicalMemoryDelivery,
     CanonicalMemoryDeliveryResult,
     CanonicalMemoryDeliveryStatus,
+    ConversationMemoryDeliveryCommitter,
 )
+from conversation_memory_port import ConversationMemoryStatus, MemoryWriteResult, MemoryWriteStatus
 from runtime.memory.conversation_memory_outbox import (
     CanonicalMemoryOutbox,
     ConversationMemoryOutboxError,
@@ -82,6 +85,110 @@ def _outbox(tmp_path: Path, committer: SequencedCommitter) -> CanonicalMemoryOut
         tmp_path / "memory" / "delivery.sqlite3",
         committer,
     )
+
+
+def test_completed_failures_exhaust_persistent_budget_without_dropping_letter(tmp_path):
+    class BrokenMemory:
+        calls = 0
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def remember_exchange(self, **kwargs):
+            self.calls += 1
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE, kwargs["source_id"],
+                error_code="MEM0_WRITE_FAILED",
+            )
+    async def scenario():
+        state = tmp_path / "state.json"
+        _state(state)
+        original = state.read_bytes()
+        broken = BrokenMemory()
+        for _ in range(8):
+            # Recreate the coordinator each time to prove restart persistence.
+            box = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(broken))
+            await box.scan_once()
+        assert broken.calls == 3
+        assert box.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert box.health()["pending_count"] == 1
+        assert box.health()["terminal_count"] == 0
+        from runtime.memory.conversation_memory_runtime import ConversationMemoryRuntime
+        assert ConversationMemoryRuntime(box).status().reason_code == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert state.read_bytes() == original
+    asyncio.run(scenario())
+
+
+def test_existing_v1_journal_adds_budget_without_reinterpreting_attempts(tmp_path):
+    async def scenario():
+        _state(tmp_path / "state.json")
+        box = _outbox(tmp_path, SequencedCommitter([CanonicalMemoryDeliveryStatus.UNAVAILABLE]))
+        await box.scan_once()
+        with sqlite3.connect(box.journal_path) as connection:
+            connection.execute("DROP TABLE canonical_memory_failure_budget")
+            connection.execute("UPDATE canonical_memory_deliveries SET attempts = 100")
+        succeeding = SequencedCommitter()
+        restarted = _outbox(tmp_path, succeeding)
+        await restarted.scan_once()
+        assert len(succeeding.calls) == 1
+        assert restarted.health()["attempt_count"] == 101
+        assert restarted.health()["terminal_count"] == 1
+    asyncio.run(scenario())
+
+
+def test_two_interleaved_slow_failures_exhaust_each_sources_budget(tmp_path):
+    class BrokenMemory:
+        def __init__(self):
+            self.calls = []
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def remember_exchange(self, **kwargs):
+            source = kwargs["source_id"]
+            self.calls.append(source)
+            time.sleep(0.025)
+            return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source, error_code="MEM0_WRITE_FAILED")
+    async def scenario():
+        state = tmp_path / "state.json"
+        _state(state)
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        payload["letters"].append({**payload["letters"][0], "letter_id": "letter-2"})
+        state.write_text(json.dumps(payload), encoding="utf-8")
+        original = state.read_bytes()
+        memory = BrokenMemory()
+        box = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.005))
+        for _ in range(20):
+            await box.scan_once()
+            await asyncio.sleep(0.03)
+        assert memory.calls.count("reply:letter-1:1") == 3
+        assert memory.calls.count("reply:letter-2:1") == 3
+        restarted = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory))
+        await restarted.scan_once()
+        assert len(memory.calls) == 6
+        assert restarted.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert restarted.health()["pending_count"] == 2
+        assert state.read_bytes() == original
+    asyncio.run(scenario())
+
+
+def test_waiting_and_preflight_failures_do_not_spend_completed_failure_budget(tmp_path):
+    class WaitingCommitter:
+        calls = 0
+        async def commit(self, delivery):
+            self.calls += 1
+            if self.calls <= 8:
+                return CanonicalMemoryDeliveryResult(
+                    CanonicalMemoryDeliveryStatus.UNAVAILABLE, delivery.source_id,
+                    error_code="MEM0_WRITE_TIMEOUT" if self.calls % 2 else "MEM0_WRITE_FAILED",
+                )
+            return CanonicalMemoryDeliveryResult(CanonicalMemoryDeliveryStatus.WRITTEN, delivery.source_id)
+    async def scenario():
+        _state(tmp_path / "state.json")
+        waiting = WaitingCommitter()
+        box = _outbox(tmp_path, waiting)
+        for _ in range(10):
+            await box.scan_once()
+        assert waiting.calls == 9
+        assert box.health()["terminal_count"] == 1
+        assert box.health()["pending_count"] == 0
+    asyncio.run(scenario())
 
 
 def test_written_delivery_is_terminal_across_rescan_and_restart(tmp_path: Path) -> None:

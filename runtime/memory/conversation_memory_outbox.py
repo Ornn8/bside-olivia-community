@@ -27,6 +27,7 @@ from runtime.memory.conversation_memory_delivery import (
 
 
 OUTBOX_SCHEMA_VERSION = 1
+_MAX_COMPLETED_FAILURES = 3
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _ERROR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _TERMINAL = frozenset(
@@ -146,6 +147,10 @@ class CanonicalMemoryOutbox:
                     CREATE UNIQUE INDEX IF NOT EXISTS
                         idx_canonical_memory_letter_revision
                         ON canonical_memory_deliveries(letter_id, revision);
+                    CREATE TABLE IF NOT EXISTS canonical_memory_failure_budget (
+                        source_id TEXT PRIMARY KEY REFERENCES canonical_memory_deliveries(source_id),
+                        failures INTEGER NOT NULL CHECK (failures >= 0)
+                    );
                     """
                 )
                 connection.execute(f"PRAGMA user_version={OUTBOX_SCHEMA_VERSION}")
@@ -173,7 +178,14 @@ class CanonicalMemoryOutbox:
                 if self._is_terminal(delivery.source_id):
                     duplicates += 1
                     continue
+                if self._budget_exhausted(delivery.source_id):
+                    pending += 1
+                    continue
                 result = await self.committer.commit(delivery)
+                drain = getattr(self.committer, "drain_completed", None)
+                if callable(drain):
+                    for completed_delivery, completed_result in drain():
+                        self._record(completed_delivery, completed_result)
                 if result.status is CanonicalMemoryDeliveryStatus.WRITTEN:
                     delivered += 1
                     self._record(delivery, result)
@@ -210,6 +222,12 @@ class CanonicalMemoryOutbox:
                         "FROM canonical_memory_deliveries"
                     ).fetchone()[0]
                 )
+                exhausted = connection.execute(
+                    "SELECT COUNT(*) FROM canonical_memory_failure_budget b "
+                    "JOIN canonical_memory_deliveries d USING(source_id) "
+                    "WHERE b.failures >= ? AND d.status IN ('pending', 'unavailable')",
+                    (_MAX_COMPLETED_FAILURES,),
+                ).fetchone()[0]
         except (OSError, sqlite3.Error, ValueError):
             return {
                 "status": "unavailable",
@@ -218,7 +236,7 @@ class CanonicalMemoryOutbox:
             }
         counts = {str(status): int(count) for status, count in rows}
         pending = counts.get("pending", 0) + counts.get("unavailable", 0)
-        return {
+        result = {
             "status": "degraded" if pending else "available",
             "provider": "sqlite-outbox",
             "schema_version": OUTBOX_SCHEMA_VERSION,
@@ -226,6 +244,20 @@ class CanonicalMemoryOutbox:
             "pending_count": pending,
             "attempt_count": attempts,
         }
+        if exhausted:
+            result["reason_code"] = "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        return result
+
+    def _budget_exhausted(self, source_id: str) -> bool:
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT failures FROM canonical_memory_failure_budget WHERE source_id = ?",
+                    (source_id,),
+                ).fetchone()
+        except (OSError, sqlite3.Error) as exc:
+            raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STORAGE_UNAVAILABLE") from exc
+        return row is not None and row[0] >= _MAX_COMPLETED_FAILURES
 
     def _read_letters(self) -> tuple[Mapping[str, object], ...]:
         try:
@@ -294,6 +326,12 @@ class CanonicalMemoryOutbox:
                         timestamp,
                     ),
                 )
+                if result.completed_failure:
+                    connection.execute(
+                        "INSERT INTO canonical_memory_failure_budget(source_id, failures) VALUES (?, 1) "
+                        "ON CONFLICT(source_id) DO UPDATE SET failures = failures + 1",
+                        (delivery.source_id,),
+                    )
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryOutboxError(
                 "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"
