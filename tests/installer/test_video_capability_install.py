@@ -2613,6 +2613,7 @@ def test_offline_import_reads_hash_checked_wheels_from_supplement(
     )
     assert installer.import_offline(bundle_id="ordinary_video", offline_root=archive) == "APPLIED"
     state = _wait(installer, 0, "ready", "prerequisites_required", "failed")
+    assert installer.status()["bundles"][0]["source"] == "offline-package"
     if corrupt:
         assert state == "failed"
         assert not (installer.install_root / "ordinary_video" / spec.relative_path).exists()

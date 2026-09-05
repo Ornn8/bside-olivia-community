@@ -1371,7 +1371,7 @@ class VideoCapabilityInstaller:
                     bundle,
                     probe_cache=probe_cache,
                 )
-                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), reason_code=reason)
+                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), source=current.source if current else None, reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
 
@@ -1800,7 +1800,7 @@ class VideoCapabilityInstaller:
             ):
                 return "NOOP"
             self._pause.clear()
-            self._set(bundle, VideoCapabilityState.QUEUED, 0, source=source_mode)
+            self._set(bundle, VideoCapabilityState.QUEUED, 0, source="offline-package" if offline_root is not None else source_mode)
             thread = threading.Thread(target=self._run, args=(bundle, source_mode, offline_root), name=f"olivia-video-{bundle_id}", daemon=True)
             self._threads[bundle_id] = thread
             thread.start()
@@ -2537,6 +2537,7 @@ class VideoCapabilityInstaller:
 
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         root = self._staging_root(bundle)
+        source_used = "offline-package" if offline_root is not None else source_mode
         try:
             if bundle.identifier == "ordinary_video" and offline_root is not None:
                 parent = offline_root.parent if offline_root.is_file() else offline_root
@@ -2551,7 +2552,6 @@ class VideoCapabilityInstaller:
             if any(_is_reparse_point(path) for path in (root.parent, root, download_root.parent, download_root)):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             downloaded = 0
-            source_used = source_mode
             for item in bundle.files:
                 if self._pause.is_set():
                     raise InterruptedError
@@ -2635,7 +2635,7 @@ class VideoCapabilityInstaller:
                 self._maybe_start_runtime_prepare()
         except InterruptedError:
             with self._lock:
-                self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_mode)
+                self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_used)
         except Exception as exc:
             with self._lock:
                 reason = (
@@ -2643,7 +2643,7 @@ class VideoCapabilityInstaller:
                     if isinstance(exc, VideoCapabilityError)
                     else "VIDEO_BUNDLE_INSTALL_FAILED"
                 )
-                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_mode, reason=reason)
+                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_used, reason=reason)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -2693,7 +2693,7 @@ class VideoCapabilityInstaller:
             missing.append(item)
         download_root = self._download_root(bundle)
         download_root.mkdir(parents=True, exist_ok=True)
-        source_used = source_mode
+        source_used = "offline-package" if offline_root is not None else source_mode
         downloaded = existing_bytes
         for item in missing:
             if self._pause.is_set():

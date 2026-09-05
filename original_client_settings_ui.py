@@ -1608,7 +1608,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : state === "failed"
       ? "安装失败，可重试"
       : state === "downloading"
-      ? verifyingOnly ? "正在校验安装文件" : "正在下载并安装"
+      ? verifyingOnly ? "正在校验安装文件" : bundles.some((item) => item.source === "offline-package") ? "正在导入离线包并安装" : "正在下载并安装"
       : ["license_review_required", "prerequisites_required"].includes(state)
       ? runtimePreparing
         ? "组件已下载，正在准备运行环境"
