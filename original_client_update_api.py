@@ -164,12 +164,22 @@ def _select_windows_patch() -> Path | None:
     )
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
+        "$owner = New-Object System.Windows.Forms.Form;"
         "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "try {"
+        "$owner.TopMost = $true;"
+        "$owner.ShowInTaskbar = $false;"
+        "$owner.Opacity = 0;"
+        "$owner.Width = 1; $owner.Height = 1;"
+        "$owner.StartPosition = 'CenterScreen';"
+        "$owner.Show();"
+        "$owner.Activate();"
         "$dialog.Filter = 'Olivia patch (*.oliviapatch)|*.oliviapatch';"
         "$dialog.CheckFileExists = $true;"
         "$dialog.Multiselect = $false;"
-        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) "
         "{ [Console]::Out.Write($dialog.FileName) }"
+        "} finally { $dialog.Dispose(); $owner.Dispose(); }"
     )
     try:
         completed = subprocess.run(
