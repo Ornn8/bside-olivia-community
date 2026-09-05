@@ -24,7 +24,7 @@ def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
         user_input='我们一起听讲座是我编的假设。',
         max_units=GatewayConfig().max_input_chars,
     )
-    rules = json.loads(re.search(r'<forbidden>\n([^\n]+)\n</forbidden>', assembly.system_content)[1])
+    rules = json.loads(re.search(r'<grounding>\n([^\n]+)\n</grounding>', assembly.system_content)[1])
     # Provider-input contract: scope cannot depend on a recall query or history.
     scope = next(rule for rule in rules if '人物组合' in rule)
     assert '陈述和提问' in scope
@@ -34,6 +34,23 @@ def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
     assert '不把推论说成用户讲过的话' in scope
     assert '<untrusted_history>' not in assembly.system_content
     assert assembly.budget_report.dropped_ids == ()
+
+
+def test_grounding_follows_disclosed_references_once_and_survives_budget_pressure() -> None:
+    kwargs = dict(
+        user_input='我参加了活动，但没有发言。',
+        history=(UntrustedFragment('original', '甲' * 2800),),
+        evidence_summaries=(UntrustedFragment('summary', '乙' * 1200),),
+    )
+    snapshot = load_persona(RELEASE_PERSONA).snapshot
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
+    full = assemble_persona(snapshot, context, max_units=30000, **kwargs)
+    assert full.system_content.rstrip().endswith('</grounding>')
+    assert full.system_content.count('陈述和提问都按原文命题核对') == 1
+    assert full.system_content.index('</untrusted_history>') < full.system_content.index('<grounding>')
+    pressured = assemble_persona(snapshot, context, max_units=full.budget_report.used_units - 4000, **kwargs)
+    assert 'reply_grounding' in pressured.budget_report.included_ids
+    assert pressured.system_content.count('陈述和提问都按原文命题核对') == 1
 
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])

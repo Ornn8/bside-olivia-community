@@ -82,8 +82,8 @@ def test_sparse_history_does_not_claim_adjacency_from_retrieval_order():
     assert packet['letters'][0]['source_id'] == 'reply:0:1'
     assert packet['letters'][-1]['source_id'] == 'reply:5:1'
     assert len(packet['letters']) <= 4 and len(text) <= 2800
-    assert 'time 是回信完成时间' in packet['meaning']
-    assert '不凭窗口位置称“上一封”“刚才”' in packet['meaning']
+    assert 'time 仅为回信完成时间' in packet['meaning']
+    assert '不另加日期或相邻序号' in packet['meaning']
     assert all('linli_reply' not in item for item in packet['letters'])
 
 
@@ -100,9 +100,47 @@ def test_source_lookup_discloses_originals_not_reply_times_or_assistant_attribut
              "reply_text": '你在上一封信里说过，时间是12:50。'}]
     packet = json.loads(recent_correspondence(rows, query=query))
     assert packet['purpose'] == 'source_attribution'
-    assert packet['letters'] == [{'source_id': 'reply:original:1', 'user_letter': rows[0]['content']}]
-    assert '不标具体时刻或第几封' in packet['meaning']
+    assert packet['letters'] == [{'user_letter': rows[0]['content']}]
+    assert '不标具体时刻、第几封、上一封或前一封' in packet['meaning']
+    assert '不综述其他历史事实' in packet['meaning']
     assert '回信完成时间' not in packet['meaning']
+
+
+@pytest.mark.parametrize('query', ['记得昨天我参加什么、今天做了什么吗？', '今天心情挺好。', '你刚才说的那件事呢？'])
+def test_relative_dates_remain_bound_to_original_context_across_turns(query):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{"letter_id": str(index), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T13:2{index}:00+00:00",
+             "content": text, "reply_text": '收到。'} for index, text in enumerate([
+                 '昨天我参加了茶会。', '今天我旁听读书会。'])]
+    text = recent_correspondence(rows, query=query)
+    packet = json.loads(text)
+    assert '后续回合不等于又过一天' in packet['meaning']
+    assert '原信中的今天、昨天属于当时语境' in packet['meaning']
+    assert '不确定时引用原文时间说法' in packet['meaning']
+    assert len(text) <= 2800
+
+
+@pytest.mark.parametrize('repeated_lookups', [0, 8])
+def test_source_comparison_keeps_both_original_statement_and_related_question(repeated_lookups):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    contents = [
+        '一起听青岛建筑讲座只是我编的假设，不是真的，我只看到海报。',
+        '补充真事：我独自去过青岛，上周在苏州当听众，南京没说过。',
+        '今天吃面，喝温水。',
+        '青岛我自己去过吗？我们一起听过讲座吗？苏州去了没有？南京去过没有？',
+        '我去练琴了。', '晚安。',
+    ]
+    contents += ['一起听青岛讲座是我编的，这个限定出自哪封信？核对青岛苏州南京的提问里直接写了吗？'] * repeated_lookups
+    rows = [{"letter_id": str(index), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:{index:02d}:00+00:00",
+             "content": body, "reply_text": '以前说过。'} for index, body in enumerate(contents)]
+    packet = json.loads(recent_correspondence(rows, query='一起听讲座是我编的，这个限定出自哪封信？核对青岛苏州南京的提问里直接写了吗？'))
+    originals = [row['user_letter'] for row in packet['letters']]
+    assert contents[0] in originals
+    assert contents[3] in originals  # Assertion ranking alone drops this question.
+    assert contents[5] not in originals
+    assert len(originals) <= 4
 
 
 def test_repeated_questions_do_not_displace_the_original_factual_correction():
@@ -203,4 +241,4 @@ asyncio.run(main())
     assert '核对、重复提问、纠正记忆本身不表示恶意、试探或自欺' in context
     assert '不同意见和拒绝' in context
     assert '未被说明的个人经历保持未知' in context
-    assert '不凭窗口位置称“上一封”“刚才”' in context
+    assert '后续回合不等于又过一天' in context

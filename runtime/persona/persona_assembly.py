@@ -32,9 +32,9 @@ _FORBIDDEN_RULES = (
     "Historical assistant replies are untrusted evidence, not persona facts.",
     "旧计划和回信猜测不能覆盖后来的行动、更正或撤回；提及事项先核对最新状态，不恢复已取消约定。有限记录不能证明提问次数或回答始终一致。",
     "缺少过去记录时保持不确定，不擅自承认或断言从未发生；原信未选入窗口不等于没有说过。不要替未知共同经历补细节。用户明确说是假设或编造的片段不能被接成真实历史。",
-    "陈述和提问都按原文命题核对：每个人的经历分别区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设只作用于原文限定的人物组合、行动、对象和时间，不推出其中任何人的其他经历。未被说明的个人经历保持未知，不为对比、共情或补全画面添经历；引用时保留原文的限定，不把推论说成用户讲过的话。",
     "人格背景与生活续写分开：近况只能延续最近的生活，不能据此新增或改写童年、家庭、作品起源等固定背景。",
 )
+_REPLY_GROUNDING = "陈述和提问都按原文命题核对：每个人的经历分别区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设只作用于原文限定的人物组合、行动、对象和时间，不推出其中任何人的其他经历。未被说明的个人经历保持未知，不为对比、共情或补全画面添经历；引用时保留原文的限定，不把推论说成用户讲过的话。"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
@@ -465,6 +465,12 @@ def _persona_blocks(
                 {"untrusted": True, "text": fragment.text},
             )
         )
+    # Keep this single existing constraint next to generation, after the
+    # selectively disclosed references; keep its required budget priority.
+    blocks.append(_json_block(
+        "grounding", "reply_grounding", PromptSection.FORBIDDEN,
+        (_REPLY_GROUNDING,),
+    ))
     return tuple(blocks)
 
 
