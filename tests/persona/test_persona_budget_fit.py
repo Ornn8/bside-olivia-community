@@ -29,6 +29,8 @@ def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
     scope = next(rule for rule in rules if '人物组合' in rule)
     assert '陈述和提问' in scope
     assert '未被说明的个人经历保持未知' in scope
+    assert '已知肯定、已知否定和未知' in scope
+    assert '“做过”和“没做过”都需要原信依据' in scope
     assert '不把推论说成用户讲过的话' in scope
     assert '<untrusted_history>' not in assembly.system_content
     assert assembly.budget_report.dropped_ids == ()
