@@ -317,6 +317,43 @@ def test_deepseek_v4_flash_release_text_requests_max_reasoning(
     assert "private chain" not in captured.err
 
 
+@pytest.mark.parametrize("model,style,disabled", [
+    ("deepseek-v4-flash", "chat_completions", True),
+    ("deepseek-v4-pro", "chat_completions", True),
+    ("another-model", "chat_completions", False),
+    ("deepseek-v4-flash", "responses", False),
+])
+def test_song_content_scope_disables_only_deepseek_v4_chat_thinking(monkeypatch, model, style, disabled):
+    async def exercise():
+        seen = {}
+        async def handler(request):
+            seen.update(await request.json())
+            if style == "responses":
+                return web.json_response({"output_text": "{}"})
+            return web.json_response({"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]})
+        app = web.Application()
+        app.router.add_post("/v1/" + ("responses" if style == "responses" else "chat/completions"), handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), model=model, api_style=style))
+            response = await adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT)
+        assert response.text == "{}"
+        assert seen.get("thinking") == ({"type": "disabled"} if disabled else None)
+        assert "reasoning_effort" not in seen
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
+@pytest.mark.parametrize("content,finish_reason", [("", "stop"), ("{}", "length")])
+def test_song_content_scope_keeps_protocol_fail_closed(monkeypatch, content, finish_reason):
+    adapter = OpenAICompatibleAdapter(make_config("http://127.0.0.1:1/v1", model="deepseek-v4-flash"))
+    async def response(body, request_id, **kwargs):
+        assert body["thinking"] == {"type": "disabled"}
+        return {"choices": [{"finish_reason": finish_reason, "message": {"content": content, "reasoning_content": "private reasoning"}}]}
+    monkeypatch.setattr(adapter, "_post_json", response)
+    with pytest.raises(ProviderProtocolError):
+        run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT))
+
+
 def test_background_reasoning_uses_long_deadline_without_forcing_max_effort(monkeypatch):
     async def exercise():
         seen = {}

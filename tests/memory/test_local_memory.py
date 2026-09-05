@@ -28,6 +28,25 @@ def make_adapter(tmp_path: Path, **kwargs) -> LocalMemoryAdapter:
     return LocalMemoryAdapter(tmp_path / "memory.sqlite3", **kwargs)
 
 
+def test_read_only_archive_sees_committed_history_in_wal(tmp_path: Path) -> None:
+    writer = make_adapter(tmp_path)
+    reader = None
+    try:
+        writer.connection.execute("PRAGMA wal_autocheckpoint=0")
+        writer.import_legacy_records([LegacyLetter("synthetic persisted letter", "wal-1", "fixture")])
+        reader = create_memory_adapter(
+            MemoryConfig(enabled=False, provider="sqlite", data_root=tmp_path),
+            live_archive=True,
+        )
+        assert [row["source_record_id"] for row in reader.list_legacy()] == ["wal-1"]
+        writer.import_legacy_records([LegacyLetter("second synthetic letter", "wal-2", "fixture")])
+        assert {row["source_record_id"] for row in reader.list_legacy()} == {"wal-1", "wal-2"}
+    finally:
+        if reader is not None:
+            reader.close()
+        writer.close()
+
+
 def test_explicit_mem0_config_selects_conversation_adapter_without_archive_crossing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

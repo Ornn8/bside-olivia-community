@@ -222,7 +222,11 @@ def serialize_letter_summary(
     letter_id = _required_identifier(letter)
     status = _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=published)
     audit_status = _audit_status(letter.get("audit_status", letter.get("auditStatus")))
-    created_at = _timestamp(letter.get("created_at", letter.get("createdAt")), default=current_time)
+    raw_created_at = letter.get("created_at", letter.get("createdAt"))
+    explicit_unknown = raw_created_at is None and (
+        "created_at" in letter or "createdAt" in letter
+    )
+    created_at = None if explicit_unknown else _timestamp(raw_created_at, default=current_time)
     payload: dict[str, object] = {
         "letterId": letter_id,
         "isRead": 1 if letter.get("is_read", letter.get("isRead", 1)) else 0,

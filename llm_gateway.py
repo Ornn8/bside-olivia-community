@@ -36,6 +36,7 @@ class GatewayRequestScope(str, Enum):
 
     TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
     BACKGROUND_REASONING = "background_reasoning"
+    SONG_CONTENT = "song_content"
 
 
 class GatewayError(RuntimeError):
@@ -883,6 +884,12 @@ class OpenAICompatibleAdapter(Gateway):
             stream=False,
             max_reasoning=max_reasoning,
         )
+        if (
+            scope is GatewayRequestScope.SONG_CONTENT
+            and self.config.api_style == "chat_completions"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+        ):
+            body["thinking"] = {"type": "disabled"}
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
             data = await self._post_json(body, request, background_reasoning=True)
         else:

@@ -17,6 +17,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
   const DAILY_LIFE_PATH = PRIVATE_WORLD_PATH + "/life";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
+  let refreshVideoReplySetting = async () => {};
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
   const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";
@@ -1546,6 +1547,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       total_bytes: 0,
     });
     const { state, downloadable } = videoCapabilityViewState(bundles);
+    if (payload && payload.status === "READY") void refreshVideoReplySetting();
     const canUninstall = payload && payload.can_uninstall === true;
     const verifyingOnly = bundles.some((item) => item.state === "verifying")
       && !bundles.some((item) => ["queued", "downloading"].includes(item.state));
@@ -1608,7 +1610,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : state === "failed"
       ? "安装失败，可重试"
       : state === "downloading"
-      ? verifyingOnly ? "正在校验安装文件" : "正在下载并安装"
+      ? verifyingOnly ? "正在校验安装文件" : bundles.some((item) => item.source === "offline-package") ? "正在导入离线包并安装" : "正在下载并安装"
       : ["license_review_required", "prerequisites_required"].includes(state)
       ? runtimePreparing
         ? "组件已下载，正在准备运行环境"
@@ -2115,6 +2117,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h2", initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
+    const dismiss = () => {
+      backdrop.remove();
+      void refreshVideoReplySetting();
+    };
     const close = button(initialMode ? "稍后设置" : "关闭", async () => {
       if (initialMode) {
         try {
@@ -2123,7 +2129,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           return;
         }
       }
-      backdrop.remove();
+      dismiss();
     });
     header.append(heading, close);
 
@@ -2219,12 +2225,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     backdrop.append(theme, dialog);
     backdrop.addEventListener("click", (event) => {
       if (!initialMode && event.target === backdrop) {
-        backdrop.remove();
+        dismiss();
       }
     });
     backdrop.addEventListener("keydown", (event) => {
       if (!initialMode && event.key === "Escape") {
-        backdrop.remove();
+        dismiss();
       }
     });
     document.body.append(backdrop);
@@ -2334,6 +2340,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     controls.append(toggle, downloads);
     row.append(copy, controls);
     section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
+    refreshVideoReplySetting = () => row.isConnected ? hydrate() : Promise.resolve();
     render();
     void hydrate();
   };

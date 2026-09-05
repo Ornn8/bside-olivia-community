@@ -531,24 +531,24 @@ def render_delivery_wav(
             )
 
         quality_report: dict[str, object] | None = None
-        if require_quality_gate:
-            quality_rejection_count = 0
-            synthesis_attempts = max(
-                1, min(3, int(request.get("max_attempts", 1)))
-            )
-            for attempt in range(synthesis_attempts):
-                candidate = dict(request)
-                candidate["seed"] = int(request.get("seed", 200717)) + attempt
-                candidate["max_attempts"] = 1
-                run_worker(candidate)
-                sample_rate, frame_count = _validate_wav(temporary_output)
-                try:
-                    sample_rate, frame_count = _fit_overlong_wav(
-                        temporary_output, frame_count / sample_rate
-                    )
-                    validate_delivery_duration(frame_count / sample_rate)
-                except DeliveryAudioError:
-                    continue
+        quality_rejection_count = 0
+        synthesis_attempts = max(1, min(3, int(request.get("max_attempts", 1))))
+        for attempt in range(synthesis_attempts):
+            candidate = dict(request)
+            candidate["seed"] = int(request.get("seed", 200717)) + attempt
+            candidate["max_attempts"] = 1
+            run_worker(candidate)
+            sample_rate, frame_count = _validate_wav(temporary_output)
+            try:
+                sample_rate, frame_count = _fit_overlong_wav(
+                    temporary_output, frame_count / sample_rate
+                )
+                validate_delivery_duration(frame_count / sample_rate)
+            except DeliveryAudioError as exc:
+                if str(exc) != "TTS_DELIVERY_DURATION_OUT_OF_RANGE":
+                    raise
+                continue
+            if require_quality_gate:
                 quality_report = run_quality_gate(candidate)
                 quality_report.update(
                     attempt=attempt + 1,
@@ -559,16 +559,11 @@ def render_delivery_wav(
                     break
                 quality_rejection_count += 1
             else:
-                if quality_rejection_count == synthesis_attempts:
-                    raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
-                raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
+                break
         else:
-            run_worker(request)
-            sample_rate, frame_count = _validate_wav(temporary_output)
-            sample_rate, frame_count = _fit_overlong_wav(
-                temporary_output, frame_count / sample_rate
-            )
-            validate_delivery_duration(frame_count / sample_rate)
+            if quality_rejection_count == synthesis_attempts:
+                raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
+            raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
         temporary_output.replace(output_path)
         return DeliveryAudioResult(
             duration_seconds=frame_count / sample_rate,
