@@ -164,3 +164,6 @@ asyncio.run(main())
     assert all(reply == '你已经问过七遍了，答案一直一样。' for reply in payload['stored_replies'])
     assert '你已经问过七遍了' not in context
     assert 'fact_recall' in context
+    # The real send pipeline must carry the attitude contract to the provider.
+    assert '核对、重复提问、纠正记忆本身不表示恶意、试探或自欺' in context
+    assert '不同意见和拒绝' in context

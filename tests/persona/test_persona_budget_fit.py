@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,25 @@ from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 8, 30, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+def test_release_attitude_requires_evidence_without_removing_personality(mode) -> None:
+    loaded = load_persona(RELEASE_PERSONA)
+    assembled = assemble_persona(
+        loaded.snapshot, ReplyContext.create(mode, trusted_time=NOW),
+        user_input='我只是在核对记忆，不是在试探你。',
+        max_units=GatewayConfig().max_input_chars,
+    )
+    rules = json.loads(re.search(r'<forbidden>\n([^\n]+)\n</forbidden>', assembled.system_content)[1])
+    # This checks the provider-input contract, not the model's compliance.
+    attitude = next(rule for rule in rules if '对用户的态度' in rule)
+    assert '明确言行或可核对事实' in attitude
+    assert '“我猜”' in attitude and '无依据的指责' in attitude
+    assert '核对、重复提问、纠正记忆本身不表示' in attitude
+    assert '不同意见和拒绝' in attitude and '明确的玩笑' in attitude
+    assert '"declaration_id":"trait.tease_and_refuse"' in assembled.system_content
+    assert assembled.user_content == '我只是在核对记忆，不是在试探你。'
 
 
 def test_release_persona_fits_default_budget() -> None:
