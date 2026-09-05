@@ -2250,7 +2250,18 @@ class VideoCapabilityInstaller:
             not source.is_file() or _is_reparse_point(source) for source in sources
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
-        _reject_reparse_tree(music)
+        # Only these two managed files are replaced. Validate their lexical
+        # ancestor chain before resolve(), not every model/runtime file nearby.
+        unresolved_worker = music / relative
+        unresolved_worker.relative_to(music)
+        for target in (unresolved_worker, unresolved_worker.with_name("minimax_profile.py")):
+            current = target
+            while True:
+                if os.path.lexists(current) and _is_reparse_point(current):
+                    raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
+                if current == music:
+                    break
+                current = current.parent
         worker_target = _inside(music, music / relative)
         targets = (
             _inside(music, worker_target.with_name("minimax_profile.py")),
