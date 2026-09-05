@@ -1256,6 +1256,8 @@ class VideoCapabilityInstaller:
                 result = {}
             if probe_cache is not None:
                 probe_cache["result"] = result
+        if result.get("runtime_probe_pending") is True:
+            return VideoCapabilityState.VERIFYING, None
         if bundle.identifier == "ordinary_video":
             missing = result.get("ordinary_missing_dependencies")
             ready = isinstance(missing, (list, tuple)) and not missing
@@ -1371,7 +1373,7 @@ class VideoCapabilityInstaller:
                     bundle,
                     probe_cache=probe_cache,
                 )
-                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), source=current.source if current else None, reason_code=reason)
+                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), current_file="检查视频运行依赖" if state == VideoCapabilityState.VERIFYING else None, source=current.source if current else None, reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
 
@@ -2133,6 +2135,9 @@ class VideoCapabilityInstaller:
             self._set_runtime_import_state(
                 "failed", reason_code="VIDEO_RUNTIME_PROBE_FAILED"
             )
+            return True
+        if readiness.get("runtime_probe_pending") is True:
+            self._set_runtime_import_state("required", reason_code="VIDEO_RUNTIME_PROBE_PENDING")
             return True
         ordinary_missing = readiness.get("ordinary_missing_dependencies")
         ready = (
