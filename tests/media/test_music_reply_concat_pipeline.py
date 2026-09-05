@@ -890,6 +890,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         lyrics=semantic.lyrics,
         caption=caption,
         duration_seconds=semantic.duration_seconds,
+        semantic_plan=semantic,
     )
     output = tmp_path / "final.mp4"
     normal = tmp_path / "spoken.mp4"
@@ -1004,7 +1005,6 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     result = render()
 
     assert order == [
-        "plan",
         "spoken",
         "minimax",
         "separate",

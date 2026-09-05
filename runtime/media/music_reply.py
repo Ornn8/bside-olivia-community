@@ -1724,20 +1724,19 @@ def render_musical_reply(
     provider_cache_root = provider_paths.provider_cache_root
     if provider_cache_root is None or not provider_cache_root.is_absolute():
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
-    try:
-        planner_options = {"gateway": gateway} if gateway is not None else {}
-        song_plan = plan_song_content(
-            content,
-            reply_text,
-            duration_seconds,
-            **planner_options,
-        )
-    except Exception as exc:
-        raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     stage_root = output_path.parent / (
         f"{output_path.stem}-music-v2-{duration_seconds}s-stages"
     )
     stage_root.mkdir(parents=True, exist_ok=True)
+    try:
+        from runtime.media.song_plan_cache import cached_song_plan
+        planner_options = {"gateway": gateway} if gateway is not None else {}
+        song_plan = cached_song_plan(
+            stage_root / "song-plan.private.json", content, reply_text, duration_seconds,
+            lambda: plan_song_content(content, reply_text, duration_seconds, **planner_options),
+        )
+    except Exception as exc:
+        raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     manifest_path = stage_root / "manifest.json"
     expected_manifest = _build_music_stage_manifest(
         content,

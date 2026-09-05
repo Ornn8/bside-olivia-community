@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -110,6 +110,7 @@ class SongContentPlan:
     lyrics: str
     caption: str
     duration_seconds: int
+    semantic_plan: SongSemanticPlan | None = field(default=None, repr=False, compare=False)
 
 
 _LINE_COUNTS = {40: 12, 60: 16}
@@ -396,6 +397,7 @@ def plan_song_content(
         lyrics=semantic_plan.lyrics,
         caption=caption,
         duration_seconds=semantic_plan.duration_seconds,
+        semantic_plan=semantic_plan,
     )
 
 
