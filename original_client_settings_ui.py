@@ -1102,9 +1102,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
       const now = section("此刻的林离", payload.stale ? "这是她最近留下的近况，不代表此刻仍在做同一件事。" : "她愿意与你分享的一小段生活。");
+      if (payload.rhythm) {
+        now.append(text("p", payload.rhythm.activity, "text-text-title text-title-s"),
+          text("p", payload.rhythm.note, "text-text-secondary text-body-m"));
+      }
       if (payload.current) {
         const current = payload.current;
         const el = card();
+        if (payload.rhythm) el.append(text("small", "最近一次分享（不是实时活动）", "text-text-secondary text-caption-m"));
         el.append(text("p", `${current.location} · ${current.activity}`, "text-text-title text-title-s"),
           text("p", current.note, "text-text-body text-body-m"),
           text("small", when(current.occurred_at), "text-text-secondary text-caption-m"));

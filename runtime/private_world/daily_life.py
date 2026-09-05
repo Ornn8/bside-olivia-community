@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import sqlite3
 from runtime.memory.private_world_relationship import validate_exchange_relationship
+from runtime.private_world.life_rhythm import rhythm, LOCAL
+from statistics import median
 
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
@@ -70,6 +72,12 @@ class DailyLifeStore:
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_current (
                     id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_rest_exchanges (
+                    source_id TEXT PRIMARY KEY, received_at TEXT NOT NULL, replied_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_routine_days (
+                    day TEXT PRIMARY KEY, shift_minutes INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_user_routine (
+                    source_id TEXT PRIMARY KEY, occurred_at TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS life_moments_chronology ON life_moments(occurred_at DESC, source_id DESC);
             """)
 
@@ -86,6 +94,46 @@ class DailyLifeStore:
     def has_source(self, source_id: str) -> bool:
         with self._db() as db:
             return db.execute("SELECT 1 FROM life_moments WHERE source_id=?", (source_id,)).fetchone() is not None
+
+    def adapt_routine(self, now: datetime, *, affinity: float) -> None:
+        """At most 15 minutes per active day, from >=3 distinct evening dates.
+
+        This learns availability, not an assertion about the user's bedtime.
+        A new plan starts at the next 23:00 window, never retroactively.
+        """
+        _time(now)
+        affinity = max(0.0, min(1.0, float(affinity)))
+        local = now.astimezone(LOCAL)
+        day = local.date() + (timedelta(days=1) if local.hour >= 23 else timedelta())
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT 1 FROM life_routine_days WHERE day=?', (day.isoformat(),)).fetchone():
+                return
+            old = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
+            previous = old[0] if old else 0
+            daily = {}
+            for row in db.execute('SELECT received_at FROM life_rest_exchanges WHERE received_at>=? AND received_at<?',
+                                  (_time(now - timedelta(days=7)), _time(now))):
+                stamp = datetime.fromisoformat(row[0]).astimezone(LOCAL)
+                minute = stamp.hour * 60 + stamp.minute
+                if minute < 180:
+                    minute += 1440
+                if 21 * 60 <= minute <= 27 * 60:
+                    evening = (stamp - timedelta(hours=12)).date()
+                    daily[evening] = max(daily.get(evening, 0), minute)
+            target = previous
+            preference = db.execute('SELECT payload FROM life_user_routine WHERE occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 1', (_time(now),)).fetchone()
+            preference = json.loads(preference[0]) if preference else None
+            if affinity < 0.2:
+                target = 0
+            elif preference and preference['sleep_minute'] is not None:
+                minute = (preference['sleep_minute'] - preference['utc_offset_minutes'] + 480) % 1440
+                offset = (minute - 23 * 60 + 720) % 1440 - 720
+                target = round(max(-60, min(120, offset)) * affinity)
+            elif len(daily) >= 3:
+                target = round(max(-60, min(120, median(daily.values()) - 23 * 60)) * affinity)
+            shift = previous + max(-15, min(15, target - previous))
+            db.execute('INSERT INTO life_routine_days VALUES (?,?)', (day.isoformat(), shift))
 
     def publish_day(self, source_id: str, current: dict, projects: list, *, occurred_at: datetime) -> bool:
         _identifier(source_id)
@@ -121,14 +169,26 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None) -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
             raise ValueError("DAILY_LIFE_SOURCE_INVALID")
         stamp = _time(occurred_at)
+        received = _time(received_at or occurred_at)
+        if received > stamp:
+            raise ValueError("DAILY_LIFE_TIME_INVALID")
         digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
         relationship = validate_exchange_relationship(relationship, user_text, reply_text)
+        if routine is not None:
+            if not isinstance(routine, dict) or set(routine) != {'sleep_minute', 'utc_offset_minutes', 'quote'}:
+                raise ValueError('DAILY_LIFE_ROUTINE_INVALID')
+            if _text(routine['quote'], 240) not in user_text:
+                raise ValueError('DAILY_LIFE_EVIDENCE_INVALID')
+            minute, offset = routine['sleep_minute'], routine['utc_offset_minutes']
+            if not (minute is None and offset is None):
+                if type(minute) is not int or not 0 <= minute < 1440 or type(offset) is not int or not -720 <= offset <= 840:
+                    raise ValueError('DAILY_LIFE_ROUTINE_INVALID')
         current = None
         if current_quote is not None:
             quote = _text(current_quote, 180)
@@ -170,6 +230,9 @@ class DailyLifeStore:
                         continue  # A delayed delivery cannot roll current life backwards.
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (item["id"], _json(item)))
             db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship})))
+            db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
+            if routine is not None:
+                db.execute('INSERT INTO life_user_routine VALUES (?,?,?)', (source_id, stamp, _json(routine)))
             if current:
                 self._set_current(db, current)
         return True
@@ -263,11 +326,16 @@ class DailyLifeStore:
             current_row = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
             rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE} ORDER BY occurred_at DESC, source_id DESC LIMIT 12").fetchall()
             projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
+            exchanges = [(datetime.fromisoformat(r[0]), datetime.fromisoformat(r[1])) for r in db.execute(
+                "SELECT received_at, replied_at FROM life_rest_exchanges WHERE replied_at>=? AND received_at<=? ORDER BY received_at",
+                (_time(now - timedelta(days=14)), _time(now)))]
+            shifts = dict(db.execute('SELECT day, shift_minutes FROM life_routine_days'))
         current = json.loads(current_row[0]) if current_row else None
         projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"}, -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
         return {
             "schema_version": "olivia.daily-life.v1", "status": "READY",
             "current": current,
+            "rhythm": rhythm(now, exchanges, shifts),
             "stale": current is None or now - datetime.fromisoformat(current["occurred_at"]) >= FRESH_FOR,
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],

@@ -467,6 +467,11 @@ def _persona_blocks(
         )
     # Keep this single existing constraint next to generation, after the
     # selectively disclosed references; keep its required budget priority.
+    if any(fragment.fragment_id == "linli.rhythm" for fragment in evidence_summaries):
+        blocks.append(_json_block(
+            "life_rhythm", "life_rhythm", PromptSection.FORBIDDEN,
+            "linli.rhythm 是程序维护的当前角色作息，优先于过期近况；保持她自己的生活，不展示内部字段或分数。sleep 表示来信把她叫醒，interrupted_rest 表示还没重新睡着，不重复声称被叫醒。夜间普通闲聊被叫醒可简短表达困倦和不悦，关系疏远时更克制；倾诉认真回应，不因对方倾诉责备他。已有双方夜聊约定要尊重，不反过来指责打扰。疲劳影响今天的安排和语气，休息好后恢复；亲近不取消边界，不以身体状态让对方内疚。不自动编造疾病、去医院或共同经历。正常进餐、休息和专注时段有自己的节奏，不每封都汇报作息。",
+        ))
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
         (_REPLY_GROUNDING,),
