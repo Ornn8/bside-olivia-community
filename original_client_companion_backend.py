@@ -8,6 +8,9 @@ used by the patched original Olivia settings view.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from collections import deque
+from threading import Lock
+import time
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
@@ -156,6 +159,8 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         self._candidates = candidates
         self._embedding_installer = embedding_installer
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._status_history: deque[dict[str, object]] = deque(maxlen=90)
+        self._status_history_lock = Lock()
 
     def _memory_status(self) -> CompanionCapability:
         if self._memory_admin is None:
@@ -220,10 +225,30 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
 
     def read_status(self) -> CompanionReadStatus:
         return CompanionReadStatus(
-            memory=self._memory_status(),
-            private_world=self._private_world_status(),
-            candidates=self._candidate_status(),
+            memory=self._timed_status("memory", self._memory_status),
+            private_world=self._timed_status("private_world", self._private_world_status),
+            candidates=self._timed_status("candidates", self._candidate_status),
         )
+
+    def _timed_status(self, name: str, read: Callable[[], CompanionCapability]) -> CompanionCapability:
+        started = time.monotonic()
+        result = read()
+        record: dict[str, object] = {
+            "event": f"companion_{name}_status",
+            "status": result.state,
+            "elapsed_ms": min(86_400_000, max(0, int((time.monotonic() - started) * 1000))),
+            "recorded_at_ms": int(time.time() * 1000),
+        }
+        if result.reason_code:
+            record["error_code"] = result.reason_code
+        with self._status_history_lock:
+            self._status_history.append(record)
+        return result
+
+    def diagnostic_status_history(self) -> tuple[dict[str, object], ...]:
+        """Recent process-local timings and codes, without queries or records."""
+        with self._status_history_lock:
+            return tuple(dict(record) for record in self._status_history)
 
     def list_memories(
         self,

@@ -526,6 +526,19 @@ def _diagnostic_source(
                 if profile_name == "core":
                     core_data = data
             if core_data is not None:
+                providers = core_data.get("providers", {})
+                memory_provider = providers.get("memory", {}) if isinstance(providers, Mapping) else {}
+                conversation = memory_provider.get("conversation", {}) if isinstance(memory_provider, Mapping) else {}
+                worker = conversation.get("runtime", {}) if isinstance(conversation, Mapping) else {}
+                if isinstance(worker, Mapping) and worker:
+                    entry = {"state": state(worker.get("status"))}
+                    for field in ("pending_count", "attempt_count", "terminal_count", "worker_running"):
+                        if field in worker:
+                            entry[field] = worker[field]
+                    reason = code(worker.get("reason_code"))
+                    if reason:
+                        entry["error_code"] = reason
+                    checks["memory_worker"] = entry
                 for name in ("contract_version",):
                     value = core_data.get(name)
                     if isinstance(value, str):
@@ -579,7 +592,10 @@ def _diagnostic_source(
                 "items": task_items,
             },
             "launcher_tail": list(launcher_tail_provider() if launcher_tail_provider else ()),
-            "runtime_tail": list(runtime_tail_provider() if runtime_tail_provider else ()),
+            "runtime_tail": (
+                list(runtime_tail_provider() if runtime_tail_provider else ())[-110:]
+                + list(backend.diagnostic_status_history())
+            ),
         }
 
     return collect
