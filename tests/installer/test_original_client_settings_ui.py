@@ -830,6 +830,9 @@ const statusPayload = (status) => ({
   if (endpoint.pathname === "/toy/companion/private-world/candidates") {
     return { ok: true, json: async () => ({ status: currentStatus, candidates: [] }) };
   }
+  if (endpoint.pathname === "/toy/updates/local/status") {
+    return { ok: true, json: async () => ({ status: "READY", version: "0.1.438" }) };
+  }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };
 };

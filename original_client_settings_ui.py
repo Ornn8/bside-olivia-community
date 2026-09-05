@@ -1087,7 +1087,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           api_key: key.input.value.trim(),
         });
         state.textContent = "连接成功，可以保存。";
-        save.disabled = false;
+        setButtonsBusy([save], false);
       } catch (_error) {
         state.textContent = "连接失败，请检查地址、模型和 API key。";
         save.disabled = true;
@@ -2020,7 +2020,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panels.append(panel);
     }
 
-    dialog.append(header, status, tabs, panels);
+    const localVersion = text("p", "本地补丁版本：正在读取……", "text-text-secondary text-body-m font-regular");
+    requestJson("/toy/updates/local/status").then((value) => {
+      localVersion.textContent = typeof value.version === "string"
+        ? `本地补丁版本：${value.version}（当前运行）`
+        : "本地补丁版本：基础安装版";
+    }).catch(() => { localVersion.textContent = "本地补丁版本：暂时无法读取"; });
+    dialog.append(header, localVersion, status, tabs, panels);
     if (initialMode) {
       const finishActions = actions();
       finishActions.style.marginTop = "18px";
