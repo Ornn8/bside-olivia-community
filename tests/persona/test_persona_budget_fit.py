@@ -31,6 +31,8 @@ def test_release_attitude_requires_evidence_without_removing_personality(mode) -
     assert '“我猜”' in attitude and '无依据的指责' in attitude
     assert '核对、重复提问、纠正记忆本身不表示' in attitude
     assert '不同意见和拒绝' in attitude and '明确的玩笑' in attitude
+    assert '不顺带给用户的理智、品性或生活选择打分' in attitude
+    assert '有分歧或越界就谈具体行为及自己的边界' in attitude
     assert '"declaration_id":"trait.tease_and_refuse"' in assembled.system_content
     assert assembled.user_content == '我只是在核对记忆，不是在试探你。'
 
