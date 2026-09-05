@@ -64,6 +64,7 @@ from letter_triage import (
 )
 from runtime.media.media_paths import configured_media_path
 from music_reply import (
+    _persist_provider_failure,
     MusicReplyError,
     require_breeze_hardware,
     render_musical_reply,
@@ -3535,6 +3536,21 @@ async def route(
     _safe_log('unimplemented_route', method=method, path=p)
     return not_implemented()
 
+def _record_media_job_failure(exc: Exception, stage: str, environment: Mapping[str, str]) -> None:
+    """Keep structural failure evidence without exception messages or user content."""
+    details = {"stage": stage if stage in {"prepare", "voice_plan", "render", "publish"} else "prepare"}
+    for prefix, error in (("", exc), ("cause_", exc.__cause__)):
+        if error is None:
+            continue
+        name = type(error).__name__
+        if _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", name):
+            details[prefix + "exception_type"] = name
+        candidate = str(error)
+        if len(candidate) <= 80 and _re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+", candidate):
+            details[prefix + "candidate_code"] = candidate
+    _persist_provider_failure("MEDIA_JOB_FAILED", json.dumps(details, sort_keys=True), environment)
+
+
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
     """Render one media reply at a time and persist a relative artifact path."""
 
@@ -3554,6 +3570,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             _persist_media_state()
             return
         output_path = output_dir / f"{letter_id}.mp4"
+        stage = "prepare"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             require_breeze_hardware()
@@ -3565,8 +3582,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
 
             tts_config = runtime_path("OLIVIA_TTS_CONFIG")
             if reply_mode == ReplyMode.SPOKEN_VIDEO.value:
+                stage = "voice_plan"
                 voice_plan = await _voice_plan_for_letter(letter, reply_text)
+                stage = "prepare"
                 spoken_action_base = runtime_path("OLIVIA_ORDINARY_ACTION_BASE")
+                stage = "render"
                 await asyncio.to_thread(
                     render_reply_video,
                     reply_text,
@@ -3582,7 +3602,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     environment=environment,
                 )
             elif reply_mode == ReplyMode.MUSICAL_VIDEO.value:
+                stage = "voice_plan"
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
+                stage = "prepare"
                 music_duration_seconds = int(letter.get("music_duration_seconds", 60))
                 performance_scene = _current_music_performance(environment)
                 if performance_scene is None or not performance_scene.is_file():
@@ -3603,6 +3625,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     or not official_reply_reference.is_file()
                 ):
                     raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
+                stage = "render"
                 render_metadata = await asyncio.to_thread(render_musical_reply,
                     content,
                     reply_text,
@@ -3623,6 +3646,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     environment=environment,
                 )
                 letter.update(_sanitized_music_render_metadata(render_metadata))
+            stage = "publish"
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
@@ -3637,6 +3661,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             ValueError,
             OSError,
         ) as exc:
+            _record_media_job_failure(exc, stage, environment)
             candidate = str(exc)[:80]
             error_contract = contract.letter_detail_media_error_metadata(candidate)
             error_code = candidate if error_contract is not None else "MEDIA_PROVIDER_UNAVAILABLE"
