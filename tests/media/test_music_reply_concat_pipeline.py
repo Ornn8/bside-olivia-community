@@ -271,6 +271,8 @@ def test_video_reply_readiness_does_not_require_livetalking(
         "scripts/inference.py",
         "configs/unet/stage2_efficient.yaml",
         "checkpoints/latentsync_unet.pt",
+        "stabilityai/sd-vae-ft-mse/config.json",
+        "stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
     ):
         _write(latentsync_root / relative)
     performance = _write(tmp_path / "private" / "performance.mp4")
@@ -390,6 +392,8 @@ def test_musical_reply_accepts_portable_roformer_python(
         "scripts/inference.py",
         "configs/unet/stage2_efficient.yaml",
         "checkpoints/latentsync_unet.pt",
+        "stabilityai/sd-vae-ft-mse/config.json",
+        "stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
     ):
         _write(latentsync_root / relative)
     performance = _write(tmp_path / "private" / "performance.mp4")
@@ -437,6 +441,8 @@ def test_video_reply_readiness_requires_speech_and_music_dependencies(
         "scripts/inference.py",
         "configs/unet/stage2_efficient.yaml",
         "checkpoints/latentsync_unet.pt",
+        "stabilityai/sd-vae-ft-mse/config.json",
+        "stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
     ):
         _write(latentsync_root / relative)
     ffmpeg = _write(tmp_path / "ffmpeg.exe")

@@ -403,8 +403,17 @@ def video_reply_dependency_status(
         )
     )
     latentsync_root = configured("OLIVIA_LATENTSYNC_ROOT")
+    # The upstream relative model ID resolves here when its offline files exist.
+    # Import/CUDA probes alone cannot detect this inference-time dependency.
+    vae_files = ("config.json", "diffusion_pytorch_model.safetensors")
+    vae_ready = bool(latentsync_root is not None and all(
+        (latentsync_root / "stabilityai" / "sd-vae-ft-mse" / name).is_file()
+        and (latentsync_root / "stabilityai" / "sd-vae-ft-mse" / name).stat().st_size > 0
+        for name in vae_files
+    ))
     latentsync_ready = bool(
         latentsync_root is not None
+        and vae_ready
         and latentsync_root.is_dir()
         and file("OLIVIA_LATENTSYNC_PYTHON")
         and all(

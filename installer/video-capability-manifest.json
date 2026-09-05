@@ -1,6 +1,6 @@
 {
     "schema_version": "olivia.video-capability-bom.v1",
-    "version": "2026.09.05",
+    "version": "2026.09.06",
     "provenance": {
         "policy": "assembly-only; private Olivia assets are never downloaded or redistributed",
         "breeze_code": {
@@ -338,6 +338,28 @@
                     "sources": {
                         "domestic": "https://hf-mirror.com/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/preprocessor_config.json",
                         "official": "https://huggingface.co/drbaph/Breeze-TTS-2-comfyui/resolve/a6bfd9d0d4e8b3b61c3a5ed3ecf55468c8ab88e4/audio_tokenizer/preprocessor_config.json"
+                    }
+                },
+                {
+                    "id": "latentsync-vae-config",
+                    "path": "latentsync/runtime/stabilityai/sd-vae-ft-mse/config.json",
+                    "size_bytes": 547,
+                    "sha256": "92d3dfb746fca211a2c9e019e285f8597412211728dce3c5bcf4eda0f2d62e7e",
+                    "license": "MIT",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/stabilityai/sd-vae-ft-mse/resolve/31f26fdeee1355a5c34592e401dd41e45d25a493/config.json",
+                        "official": "https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/31f26fdeee1355a5c34592e401dd41e45d25a493/config.json"
+                    }
+                },
+                {
+                    "id": "latentsync-vae-weights",
+                    "path": "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
+                    "size_bytes": 334643276,
+                    "sha256": "a1d993488569e928462932c8c38a0760b874d166399b14414135bd9c42df5815",
+                    "license": "MIT",
+                    "sources": {
+                        "domestic": "https://hf-mirror.com/stabilityai/sd-vae-ft-mse/resolve/31f26fdeee1355a5c34592e401dd41e45d25a493/diffusion_pytorch_model.safetensors",
+                        "official": "https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/31f26fdeee1355a5c34592e401dd41e45d25a493/diffusion_pytorch_model.safetensors"
                     }
                 },
                 {

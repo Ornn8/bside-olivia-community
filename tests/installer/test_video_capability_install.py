@@ -1746,6 +1746,8 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
         ordinary / "latentsync/runtime/scripts/inference.py",
         ordinary / "latentsync/runtime/configs/unet/stage2_efficient.yaml",
         ordinary / "latentsync/runtime/checkpoints/latentsync_unet.pt",
+        ordinary / "latentsync/runtime/stabilityai/sd-vae-ft-mse/config.json",
+        ordinary / "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
         ordinary / "scenes/official-reply-action-base-v1.mp4",
         ordinary / "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
         ordinary / "scenes/official-reply-reference-000-043s-v1.mp4",

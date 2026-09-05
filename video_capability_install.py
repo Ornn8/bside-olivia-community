@@ -3095,6 +3095,11 @@ class VideoCapabilityInstaller:
             candidates = [offline_root]
             if member.startswith("breeze/wheels/") and member.endswith(".whl"):
                 candidates.append(offline_root.parent / "Olivia-breeze-runtime-offline.zip")
+            if member in {
+                "latentsync/runtime/stabilityai/sd-vae-ft-mse/config.json",
+                "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
+            }:
+                candidates.append(offline_root.parent / "Olivia-latentsync-vae-offline.zip")
             for candidate in candidates:
                 if not candidate.is_file() or _is_reparse_point(candidate):
                     continue
