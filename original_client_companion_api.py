@@ -1,6 +1,7 @@
 """Read-only companion data adapter for the original Olivia settings view.
 
-The module mounts bounded GET endpoints on the existing loopback aiohttp app.
+The module mounts bounded GET endpoints and a lazy public-life refresh action
+on the existing loopback aiohttp app.
 It contains transport and validation only: memory extraction, PrivateWorld
 reduction, candidate decisions, and persistence remain owned by their services.
 """
@@ -9,18 +10,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import re
+import sqlite3
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlsplit
 
 from aiohttp import web
+from runtime.private_world.daily_life_runtime import DailyLifeRuntime
 
 
 COMPANION_READ_SCHEMA = "p03.original-companion-read.v1"
 STATUS_PATH = "/toy/companion/status"
 MEMORY_PATH = "/toy/companion/memory"
 PRIVATE_WORLD_PATH = "/toy/companion/private-world"
+DAILY_LIFE_PATH = PRIVATE_WORLD_PATH + "/life"
+_DAILY_LIFE_KEY = web.AppKey("original_daily_life", object)
 CANDIDATES_PATH = "/toy/companion/private-world/candidates"
 _BACKEND_KEY = web.AppKey("original_companion_read_backend", object)
 _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_trusted_origins", frozenset)
@@ -452,6 +457,38 @@ async def _private_world(request: web.Request) -> web.Response:
         return _error("COMPANION_READ_UNAVAILABLE", 503, origin=origin)
 
 
+async def _daily_life(request: web.Request) -> web.Response:
+    origin = None
+    try:
+        origin = _authorize(request)
+        headers = _headers(origin)
+        headers.update({"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, X-Olivia-Companion-Action"})
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=headers)
+        life = request.app.get(_DAILY_LIFE_KEY)
+        if not isinstance(life, DailyLifeRuntime):
+            return _error("DAILY_LIFE_UNAVAILABLE", 503, origin=origin)
+        now = datetime.now(timezone.utc)
+        if request.method == "POST":
+            if request.headers.get("X-Olivia-Companion-Action") != "confirmed":
+                return _error("COMPANION_CONFIRMATION_REQUIRED", 403, origin=origin)
+            if request.content_type != "application/json":
+                return _error("DAILY_LIFE_JSON_REQUIRED", 415, origin=origin)
+            if request.content_length is None or request.content_length > 256:
+                return _error("DAILY_LIFE_REQUEST_INVALID", 400, origin=origin)
+            body = await request.json()
+            if body != {}:
+                return _error("DAILY_LIFE_REQUEST_INVALID", 400, origin=origin)
+            life.schedule_refresh(now)
+        result = await asyncio.to_thread(life.snapshot, now)
+        return web.json_response(result, headers=headers)
+    except OriginalClientCompanionAPIError as exc:
+        return _error(exc.code, exc.status, origin=origin)
+    except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+        return _error("DAILY_LIFE_UNAVAILABLE", 503, origin=origin)
+
+
 async def _candidates(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
@@ -503,6 +540,7 @@ def mount_original_companion_read_api(
     backend: OriginalClientCompanionReadBackend,
     *,
     trusted_origins: Sequence[str] = (),
+    daily_life: DailyLifeRuntime | None = None,
 ) -> None:
     """Mount the read contract once on the existing local application."""
 
@@ -515,6 +553,14 @@ def mount_original_companion_read_api(
         raise RuntimeError("COMPANION_READ_ALREADY_MOUNTED")
     app[_BACKEND_KEY] = backend
     app[_TRUSTED_ORIGINS_KEY] = origins
+    app[_DAILY_LIFE_KEY] = daily_life
+    app.router.add_route("GET", DAILY_LIFE_PATH, _daily_life)
+    app.router.add_route("POST", DAILY_LIFE_PATH, _daily_life)
+    app.router.add_route("OPTIONS", DAILY_LIFE_PATH, _daily_life)
+    if daily_life is not None:
+        async def close_life(_app):
+            await daily_life.close()
+        app.on_cleanup.append(close_life)
     app.router.add_get(STATUS_PATH, _status)
     app.router.add_get(MEMORY_PATH, _memory)
     app.router.add_get(PRIVATE_WORLD_PATH, _private_world)
