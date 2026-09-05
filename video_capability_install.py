@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from typing import Any
 import uuid
@@ -38,6 +39,44 @@ from runtime.media.managed_voice_reference import (
 
 _SHA256 = 64
 _PUBLIC_BUNDLES = {"ordinary_video", "music_video"}
+
+
+def restore_voice_reference_supplement(data_root: Path, archive_path: Path) -> None:
+    """Validate the private reference supplement before publishing missing files."""
+    names = {"linli-reference.wav", "linli-reference.json", "linli-reference.txt"}
+    try:
+        with tempfile.TemporaryDirectory(prefix="olivia-reference-check-") as temporary:
+            staged_data = Path(temporary)
+            shared = staged_data / "capabilities/video/shared"
+            shared.mkdir(parents=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                entries = archive.infolist()
+                if len(entries) != 3 or {entry.filename for entry in entries} != names:
+                    raise ValueError("invalid reference members")
+                for entry in entries:
+                    if not 0 < entry.file_size <= 1_048_576:
+                        raise ValueError("invalid reference size")
+                    (shared / entry.filename).write_bytes(archive.read(entry))
+            resolve_managed_voice_reference(staged_data)
+            resolve_managed_voice_reference_transcript(staged_data)
+            video = _checked_install_root(data_root.resolve(), create=True)
+            target = _inside(video, video / "shared")
+            target.mkdir(exist_ok=True)
+            _reject_reparse_tree(target)
+            # Do not overwrite a different installed reference or a partial user edit.
+            for name in names:
+                destination = _inside(target, target / name)
+                if destination.exists() and destination.read_bytes() != (shared / name).read_bytes():
+                    raise ValueError("existing reference differs")
+            for name in sorted(names):
+                destination = _inside(target, target / name)
+                if not destination.exists():
+                    with destination.open("xb") as stream:
+                        stream.write((shared / name).read_bytes())
+            resolve_managed_voice_reference(data_root)
+            resolve_managed_voice_reference_transcript(data_root)
+    except (OSError, ValueError, zipfile.BadZipFile, ManagedVoiceReferenceError) as exc:
+        raise VideoCapabilityError("VIDEO_VOICE_REFERENCE_SUPPLEMENT_INVALID") from exc
 _SOURCE_MODES = {"auto", "official"}
 _SOURCE_IDS = {"domestic", "official"}
 _RUNTIME_ENVIRONMENT_FILE = "runtime-environment.json"
@@ -2500,6 +2539,11 @@ class VideoCapabilityInstaller:
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
         root = self._staging_root(bundle)
         try:
+            if bundle.identifier == "ordinary_video" and offline_root is not None:
+                parent = offline_root.parent if offline_root.is_file() else offline_root
+                supplement = parent / "Olivia-voice-reference-offline.zip"
+                if supplement.is_file():
+                    restore_voice_reference_supplement(self.data_root, supplement)
             if self._run_append_only_upgrade(bundle, source_mode, offline_root):
                 return
             root.mkdir(parents=True, exist_ok=True)

@@ -292,7 +292,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ? responseBody.data
         : responseBody;
       const valid = path === LOCAL_LETTER_IMPORT_PATH
-        ? payload && payload.status === "READY"
+        ? params.progress === "1"
+          ? payload && ["IDLE", "RUNNING", "APPLIED", "FAILED", "UNAVAILABLE"].includes(payload.status)
+          : payload && payload.status === "READY"
           && Number.isInteger(payload.seen)
           && Number.isInteger(payload.would_insert)
           && Number.isInteger(payload.would_update)
@@ -2259,7 +2261,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       importPending = true;
       importState.textContent = "正在读取本地备份并写入信箱……";
       try {
-        const payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {});
+        let payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
+        if (payload.status !== "RUNNING") {
+          payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true});
+        }
+        while (payload.status === "RUNNING") {
+          const stages = {preflight: "检查备份", memory: "整理长期记忆", relationship: "整理关系状态"};
+          importState.textContent = `${stages[payload.stage] || "后台导入中"}：${payload.processed || 0} / ${payload.total || 0}。请勿重复提交；关闭此面板不会停止任务。`;
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+          payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
+        }
+        if (payload.status !== "APPLIED") {
+          const failure = new Error("import-failed");
+          failure.code = payload.error_code || "OFFLINE_HISTORY_IMPORT_FAILED";
+          throw failure;
+        }
         const inserted = Number.isInteger(payload.inserted) ? payload.inserted : 0;
         const updated = Number.isInteger(payload.updated) ? payload.updated : 0;
         const removed = Number.isInteger(payload.removed) ? payload.removed : 0;
@@ -2277,8 +2293,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? missingBackupText
           : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
             ? "本地 letter_pairs.json 格式无效，请更换完整备份后重试。"
-            : "本地信件导入失败，请重启 Olivia 后重试。";
-        importButton.textContent = "重试导入";
+            : error && error.code && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code)
+              ? `本地信件导入未完成：${error.code}。请保留诊断包。`
+              : "暂时无法读取导入结果，后台任务可能仍在继续。点击可查询进度，请勿重启或重复导入。";
+        importButton.textContent = "查看进度 / 导入";
       } finally {
         importPending = false;
         setButtonsBusy([importButton], false);

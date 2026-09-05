@@ -202,6 +202,36 @@ LETTER_RETRY_DEDUP_SECONDS = 60
 MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
 
 _official_import_progress_lock = threading.Lock()
+_local_import_task: asyncio.Task | None = None
+_local_import_result: dict | None = None
+
+
+def _local_import_snapshot():
+    if _local_import_task is not None and not _local_import_task.done():
+        return ok({**_official_import_progress_snapshot(), "status": "RUNNING"})
+    return _local_import_result or ok({"status": "IDLE"})
+
+
+async def _run_local_import():
+    global _local_import_result
+    try:
+        _local_import_result = await route(
+            "POST", "/toy/letter/legacy/local-import", {}, {},
+            companion_confirmed=True, _local_import_worker=True,
+        )
+    except asyncio.CancelledError:
+        _local_import_result = err(503, "OFFLINE_HISTORY_INTERRUPTED")
+        raise
+    except Exception:
+        _local_import_result = err(503, "OFFLINE_HISTORY_IMPORT_FAILED")
+    finally:
+        result = (_local_import_result or {}).get("data", {})
+        fields = {"status": result.get("status", "FAILED")}
+        for value in (result.get("error_code"), (result.get("memory_migration") or {}).get("error_code")):
+            if isinstance(value, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(value):
+                fields["error_code"] = value
+        _safe_log("local_history_import_result", **fields)
+
 _official_import_progress: dict[str, object] = {
     "status": "IDLE",
     "stage": "idle",
@@ -2552,6 +2582,7 @@ async def route(
     *,
     defer_reply: bool = False,
     companion_confirmed: bool = False,
+    _local_import_worker: bool = False,
 ):
     canonical_path = contract.canonical_route_path(path)
     p = (
@@ -2620,6 +2651,19 @@ async def route(
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
     if p == "/toy/letter/legacy/local-import":
+        global _local_import_task, _local_import_result
+        if method == "GET" and query.get("progress") == "1":
+            return _local_import_snapshot()
+        if method == "POST" and not _local_import_worker:
+            if companion_confirmed is not True:
+                return err(403, "COMPANION_CONFIRMATION_REQUIRED")
+            if _local_import_task is not None and not _local_import_task.done():
+                return _local_import_snapshot()
+            if isinstance(body, dict) and body.get("background") is True:
+                _local_import_result = None
+                _update_official_import_progress(status="RUNNING", stage="preflight", total=0, processed=0)
+                _local_import_task = asyncio.create_task(_run_local_import())
+                return _local_import_snapshot()
         source = _default_offline_letter_pair_source()
         if source is None:
             return err(404, "OFFLINE_LETTER_BACKUP_REQUIRED", {
