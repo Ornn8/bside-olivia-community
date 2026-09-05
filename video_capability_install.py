@@ -2250,12 +2250,31 @@ class VideoCapabilityInstaller:
             not source.is_file() or _is_reparse_point(source) for source in sources
         ):
             raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
-        _reject_reparse_tree(music)
+        # Check the lexical ancestor chain before resolving paths, including
+        # junctions that point back inside the managed tree.
+        relative = _safe_relative(relative)
+        current = music / relative
+        while current != music:
+            if current.exists() and _is_reparse_point(current):
+                raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+            current = current.parent
+        if _is_reparse_point(music):
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
+        profile = (music / relative).with_name("minimax_profile.py")
+        if profile.exists() and _is_reparse_point(profile):
+            raise VideoCapabilityError("VIDEO_RUNTIME_WORKER_UNAVAILABLE")
         worker_target = _inside(music, music / relative)
         targets = (
             _inside(music, worker_target.with_name("minimax_profile.py")),
             worker_target,
         )
+        if all(
+            target.is_file() and not _is_reparse_point(target)
+            and _sha256_file(source) == _sha256_file(target)
+            for source, target in zip(sources, targets, strict=True)
+        ):
+            return
+        _reject_reparse_tree(music)
         worker_target.parent.mkdir(parents=True, exist_ok=True)
         if _is_reparse_point(worker_target.parent) or any(
             target.exists() and _is_reparse_point(target) for target in targets

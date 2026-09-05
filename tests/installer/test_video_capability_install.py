@@ -2031,6 +2031,28 @@ def _managed_worker_import_fixture(
     return installer, runtime_root, manifest_sha256, worker_directory
 
 
+def test_unchanged_managed_workers_do_not_rescan_or_rewrite_music_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer, _, _, directory = _managed_worker_import_fixture(tmp_path, monkeypatch)
+    installer._install_managed_minimax_worker()
+    targets = [directory / "minimax_profile.py", directory / "minimax_music3_worker.py"]
+    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in targets]
+    scans = []
+    original = video_capability_install._reject_reparse_tree
+    def scan(path):
+        scans.append(path)
+        return original(path)
+    monkeypatch.setattr(video_capability_install, "_reject_reparse_tree", scan)
+    installer._install_managed_minimax_worker()
+    assert scans == []
+    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in targets] == before
+    targets[0].write_bytes(b"outdated worker")
+    installer._install_managed_minimax_worker()
+    assert scans == [installer.install_root / "music_video"]
+    assert targets[0].read_bytes() == before[0][0]
+
+
 def test_runtime_import_reports_stable_worker_error_when_worker_directory_cannot_be_prepared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
