@@ -91,9 +91,9 @@ def test_ordinary_video_copy_contract_matches_cross_lingual_calibration():
     initial = build_ordinary_video_llm_content("原始来信")
     repair = build_ordinary_video_repair_content("旧候选")
 
-    assert "180到200个汉字" in initial
+    assert "180到200个非空白字符" in initial
     assert "目标为190字" in initial
-    assert "180到200个汉字" in repair
+    assert "180到200个非空白字符" in repair
     assert ordinary_video_reply_length_ok("林" * 179) is False
     assert ordinary_video_reply_length_ok("林" * 180) is True
     assert ordinary_video_reply_length_ok("林" * 200) is True
