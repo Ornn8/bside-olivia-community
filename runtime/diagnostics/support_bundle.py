@@ -105,6 +105,17 @@ def _project_health(value: object) -> dict[str, object]:
         entry: dict[str, object] = {"state": _status(check.get("state"))}
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
+        if name == "memory_worker":
+            for field in ("pending_count", "attempt_count", "terminal_count"):
+                if field in check:
+                    value = check[field]
+                    if type(value) is not int or not 0 <= value <= 1_000_000_000:
+                        raise _invalid()
+                    entry[field] = value
+            if "worker_running" in check:
+                if type(check["worker_running"]) is not bool:
+                    raise _invalid()
+                entry["worker_running"] = check["worker_running"]
         projected[name] = entry
     return {"checks": projected, "status": _status(source.get("status"))}
 
@@ -195,6 +206,12 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     if "error_code" in source:
         record["error_code"] = _code(source["error_code"])
     if runtime:
+        for name, maximum in (("elapsed_ms", 86_400_000), ("recorded_at_ms", 10_000_000_000_000)):
+            if name in source:
+                value = source[name]
+                if type(value) is not int or not 0 <= value <= maximum:
+                    raise _invalid()
+                record[name] = value
         if "reply_mode" in source:
             reply_mode = source["reply_mode"]
             if reply_mode not in _REPLY_MODES:

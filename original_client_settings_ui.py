@@ -275,7 +275,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const controller = new AbortController();
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
-      : 5000;
+      : path === STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
@@ -1796,15 +1796,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : {};
       statusNode.textContent = "本机陪伴服务已连接。";
       statusNode.dataset.state = "available";
+      const failed = Object.entries(capabilities).filter(([, value]) =>
+        value && (value.state === "unavailable" || value.state === "degraded"));
+      if (failed.length) {
+        const labels = {memory: "长期记忆", private_world: "私人世界", candidates: "记忆候选"};
+        statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
+          const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
+            ? `（${value.reason_code}）` : "";
+          return `${labels[name] || "部分功能"}暂不可用${code}`;
+        }).join("；") + "。";
+        statusNode.dataset.state = "degraded";
+      }
       await Promise.allSettled(tasks.concat([
         renderMemoryPanel(panels.memory, capabilities.memory),
         renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),
       ]));
-    } catch (_error) {
-      statusNode.textContent = "本机陪伴服务暂不可用。";
+    } catch (error) {
+      statusNode.textContent = error && error.name === "AbortError"
+        ? "陪伴状态查询超时，其他功能将独立检查；可重新打开此窗口重试。"
+        : "陪伴状态读取失败，其他功能将独立检查；可导出诊断包排查。";
       statusNode.dataset.state = "unavailable";
-      renderUnavailable(panels.memory, "unavailable", "长期记忆");
-      renderUnavailable(panels.privateWorld, "unavailable", "私人世界");
+      await Promise.allSettled(tasks.concat([
+        renderMemoryPanel(panels.memory, {state: "available"}),
+        renderPrivateWorldPanel(panels.privateWorld, {state: "available"}),
+      ]));
     }
   };
 

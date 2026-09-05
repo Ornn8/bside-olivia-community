@@ -75,6 +75,19 @@ def _contents(bundle: bytes) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+def test_memory_worker_counters_are_exported_without_private_fields():
+    source = _source()
+    source['health']['checks']['memory_worker'] = {
+        'state': 'degraded', 'pending_count': 2, 'attempt_count': 7,
+        'terminal_count': 1, 'worker_running': True, 'user_id': 'private-id',
+    }
+    result = json.loads(_contents(build_diagnostic_bundle(source))['health.json'])
+    assert result['checks']['memory_worker'] == {
+        'state': 'degraded', 'pending_count': 2, 'attempt_count': 7,
+        'terminal_count': 1, 'worker_running': True,
+    }
+
+
 def test_bundle_has_only_fixed_deterministic_members_and_safe_projection() -> None:
     first = build_diagnostic_bundle(_source())
     assert first == build_diagnostic_bundle(_source())

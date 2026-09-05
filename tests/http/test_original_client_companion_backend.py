@@ -22,6 +22,33 @@ from private_world_candidates import (
 NOW = datetime(2026, 8, 23, 10, 30, tzinfo=timezone.utc)
 
 
+def test_status_history_retains_timeout_after_recovery() -> None:
+    from dataclasses import replace
+    from original_client_server import _diagnostic_source
+    from runtime.diagnostics.support_bundle import build_diagnostic_bundle
+    import io, json, zipfile
+
+    class RecoveringMemory(MemoryAdminFixture):
+        failed = True
+
+        def status(self):
+            result = super().status()
+            return replace(result, status="unavailable", reason_code="MEM0_SEARCH_TIMEOUT") if self.failed else result
+
+    memory = RecoveringMemory()
+    backend = OriginalClientCompanionServiceBackend(memory_admin=memory)
+    backend.read_status()
+    memory.failed = False
+    source = _diagnostic_source(backend, setup_service=None, launcher_tail_provider=None, runtime_tail_provider=None)()
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        records = [json.loads(line) for line in archive.read("runtime-tail.jsonl").splitlines()]
+    checks = [item for item in records if item["event"] == "companion_memory_status"]
+    assert [item["status"] for item in checks] == ["unavailable", "available"]
+    assert checks[0]["error_code"] == "MEM0_SEARCH_TIMEOUT"
+    assert all(isinstance(item["elapsed_ms"], int) and item["elapsed_ms"] >= 0 for item in checks)
+    assert all(set(item) <= {"event", "status", "error_code", "elapsed_ms", "recorded_at_ms"} for item in checks)
+
+
 class MemoryAdminFixture:
     def __init__(self) -> None:
         self.requests: list[tuple[str | None, int]] = []
