@@ -97,7 +97,7 @@ function renderSnapshot(snapshot) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = 3;
-    cell.textContent = "暂无私人世界线事实";
+    cell.textContent = "暂无林离世界事实";
     row.append(cell);
     continuationList.append(row);
   }
@@ -214,7 +214,7 @@ function bindForms() {
       showNotice("请先选择关系事件依据", true);
       return;
     }
-    if (!window.confirm("确认修改关系阶段？这会写入可审计的私人世界记录。")) {
+    if (!window.confirm("确认修改关系阶段？这会写入可审计的林离世界记录。")) {
       return;
     }
     try {
@@ -301,7 +301,7 @@ function bindForms() {
         await mutate(
           "/control/api/private-world/continuations",
           body,
-          "私人世界线已更新",
+          "林离世界已更新",
         );
         event.currentTarget.reset();
       } catch (error) {

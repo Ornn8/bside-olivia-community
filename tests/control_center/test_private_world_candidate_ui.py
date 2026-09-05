@@ -140,7 +140,7 @@ def test_candidate_assets_are_packaged_self_contained_and_non_gamified() -> None
     assert "批准并记录" in page
     assert "拒绝建议" in page
     assert "批准前不会改变任何关系状态" in page
-    assert "关系阶段、私人称呼、住所权限和私人世界线不会" in page
+    assert "关系阶段、私人称呼、住所权限和林离世界线不会" in page
 
     for document in (page, css, script):
         assert "https://" not in document

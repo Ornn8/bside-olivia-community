@@ -121,3 +121,10 @@ def test_explicit_user_routine_is_grounded_and_does_not_immediately_shift_sleep(
     assert store.snapshot(now)['rhythm']['sleep_shift_minutes'] == 0
     store.adapt_routine(now + timedelta(minutes=1), affinity=.8)
     assert store.snapshot(now)['rhythm']['sleep_shift_minutes'] == 15
+
+
+def test_public_world_name_keeps_existing_route_and_storage_identifiers():
+    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT as source
+    assert '林离世界' in source
+    assert '私人世界' not in source
+    assert 'private-world' in source

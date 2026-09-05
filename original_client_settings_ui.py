@@ -694,7 +694,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.clearTimeout(panel.__oliviaMemoryStatusTimer);
     const state = capabilityState(capability);
     const confirmClear = async () => await confirmAction("确认清空当前用户的 Mem0 长期记忆？")
-      && await confirmAction("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
+      && await confirmAction("清空后无法恢复。原始信件和林离世界不会受影响，仍要继续吗？");
     if (state === "disabled" || state === "unavailable") {
       if (state === "unavailable" && capability && capability.reason_code === "MEM0_INITIALIZING") {
         panel.replaceChildren(
@@ -722,7 +722,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             const status = await requestJson(STATUS_PATH);
             await renderMemoryPanel(panel, status.capabilities.memory);
           } catch (_error) {
-            resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+            resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
           } finally {
             setButtonsBusy([resume], false);
           }
@@ -901,7 +901,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const toggle = button(paused ? "恢复长期记忆" : "暂停长期记忆", async () => {
       const action = paused ? "恢复" : "暂停";
-      if (!await confirmAction(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
+      if (!await confirmAction(`确认${action} Mem0 长期记忆？Archive 和林离世界不会受影响。`)) {
         return;
       }
       setButtonsBusy([toggle, clear], true);
@@ -936,7 +936,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         );
         await refreshLifecyclePanel();
       } catch (_error) {
-        resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+        resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
       } finally {
         setButtonsBusy([toggle, clear], false);
       }
@@ -1964,7 +1964,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const failed = Object.entries(capabilities).filter(([, value]) =>
         value && (value.state === "unavailable" || value.state === "degraded"));
       if (failed.length) {
-        const labels = {memory: "长期记忆", private_world: "私人世界", candidates: "记忆候选"};
+        const labels = {memory: "长期记忆", private_world: "林离世界", candidates: "记忆候选"};
         statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
           const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
             ? `（${value.reason_code}）` : "";
@@ -2164,7 +2164,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           { id: "capability", label: "本地能力与下载", key: "capability" },
           { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
-          { id: "private-world", label: "私人世界", key: "privateWorld" },
+          { id: "private-world", label: "林离世界", key: "privateWorld" },
         ];
 
     const showPanel = (id) => {
@@ -2501,7 +2501,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const copy = document.createElement("div");
     copy.className = "flex flex-col gap-0 flex-1 min-w-0";
     copy.append(
-      text("div", "记忆与私人世界", "text-text-body text-label-l"),
+      text("div", "记忆与林离世界", "text-text-body text-label-l"),
       text(
         "div",
         "在 Olivia 客户端内查看并管理本地连续性。",
