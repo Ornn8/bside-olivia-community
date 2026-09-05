@@ -986,7 +986,7 @@ def create_model_quality_ports(
         return None, None
     if not _env_bool(
         "OLIVIA_REPLY_REVIEW_ENABLED",
-        True,
+        False,
     ):
         return None, None
 

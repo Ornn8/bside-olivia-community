@@ -33,6 +33,44 @@ NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
 REPLY_SHA256 = hashlib.sha256(b"synthetic canonical reply").hexdigest()
 
 
+def test_canonical_interaction_evidence_moves_affection_not_permissions(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
+    deliveries = PrivateWorldDeliveryCommitter(ledger)
+    relationships = PrivateWorldRelationshipCommitter(ledger)
+    user, reply = "不用赶，按你自己的节奏练。", "听到你这么说我轻松多了。"
+    signal = {"kind": "support_received", "user_quote": user, "reply_quote": reply}
+    assert relationships.commit_exchange("letter:1", user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.REJECTED
+    deliveries.commit(DeliveryEvent(delivery_id="letter:1", occurred_at=NOW, semantic_key="letter:1",
+        canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+    assert relationships.commit_exchange("letter:1", user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.COMMITTED
+    first = ledger.snapshot()
+    assert (first.trust, first.comfort, first.familiarity) == (1, 1, 1)
+    assert relationships.commit_exchange("letter:1", user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.DUPLICATE
+    assert ledger.snapshot() == first
+    changed = reply + "另一段正文"
+    assert relationships.commit_exchange("letter:1", user, changed, signal, occurred_at=NOW) is RelationshipFactStatus.REJECTED
+    for kind, expected in (("conflict", (0, 0, 3)), ("repair", (1, 1, 1))):
+        delivery_id = "letter:" + kind
+        when = NOW + timedelta(minutes=1)
+        deliveries.commit(DeliveryEvent(delivery_id=delivery_id, occurred_at=when, semantic_key=delivery_id,
+            canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+        relationships.commit_exchange(delivery_id, user, reply, {**signal, "kind":kind}, occurred_at=when)
+        current = ledger.snapshot()
+        assert (current.trust, current.comfort, current.tension) == expected
+        assert current.relationship_stage == "unknown"
+        assert current.intimacy_grants == ()
+        assert current.nickname_permissions == ()
+
+
+@pytest.mark.parametrize("field,value", [("user_quote", "她说的话"), ("reply_quote", "编造的原文"), ("kind", "stage_confirmed")])
+def test_canonical_interaction_rejects_wrong_evidence_or_permission_kind(tmp_path, field, value):
+    committer = PrivateWorldRelationshipCommitter(SQLitePrivateWorldLedger(tmp_path / "world.sqlite3"))
+    with pytest.raises(ValueError):
+        committer.commit_exchange("letter:1", "不用赶", "谢谢理解", {
+            **{"kind":"support_received", "user_quote":"不用赶", "reply_quote":"谢谢理解"}, field:value,
+        }, occurred_at=NOW)
+
+
 def test_projection_authorizes_only_ledger_backed_character_statements() -> None:
     affection = AcknowledgedAffection(
         intensity=AffectionIntensity.CARE,

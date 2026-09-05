@@ -562,6 +562,7 @@ class LetterAdapter:
         conversation_memory: ConversationMemoryPort | None = None,
         private_world_port: PrivateWorldPort | None = None,
         daily_life: DailyLifeRuntime | None = None,
+        recent_letters: Callable[[], list[dict]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         runtime_config = config or LLM_CONFIG
@@ -573,6 +574,7 @@ class LetterAdapter:
         self.memory_port: MemoryPort = memory_port or NullMemoryPort()
         self.conversation_memory = conversation_memory
         self.daily_life = daily_life
+        self.recent_letters = recent_letters
         self.private_world_port: PrivateWorldPort = (
             private_world_port or NullPrivateWorldPort()
         )
@@ -720,7 +722,7 @@ class LetterAdapter:
             reply_context,
             user_input=user_content,
             max_units=self.config.max_input_chars,
-            history=history,
+            history=(*history, *self.recent_letter_fragments(content)),
             evidence_summaries=self.daily_life_fragments(content),
         ).to_messages()
 
@@ -728,10 +730,22 @@ class LetterAdapter:
         if self.daily_life is None:
             return ()
         try:
-            value = self.daily_life.store.reply_context(content, now=self._now())
+            related = "\n".join(
+                pair["user_letter"] + "\n" + pair.get("linli_reply", "")
+                for fragment in self.recent_letter_fragments(content)
+                for pair in json.loads(fragment.text)["letters"]
+            )
+            value = self.daily_life.store.reply_context(content, now=self._now(), related_text=related)
             return (UntrustedFragment("linli.daily-life", value),) if value else ()
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             return ()
+
+    def recent_letter_fragments(self, content: str = "") -> tuple[UntrustedFragment, ...]:
+        if self.recent_letters is None:
+            return ()
+        from runtime.reply.recent_correspondence import recent_correspondence
+        text = recent_correspondence(self.recent_letters(), query=content, excluded_sources=self._memory_source_exclusions())
+        return (UntrustedFragment("letters.recent", text),) if text else ()
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:
@@ -1016,7 +1030,16 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
             handle.write(serialized)
             handle.flush()
             _os.fsync(handle.fileno())
-        _os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                _os.replace(temporary, path)
+                break
+            except OSError as exc:
+                # A concurrent outbox reader on Windows can deny replacement
+                # briefly. Keep the existing file intact while retrying.
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
     except (OSError, UnicodeError):
         if descriptor is not None:
             try:
@@ -1195,6 +1218,7 @@ letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
+    recent_letters=lambda: list(store.letters),
 )
 
 
@@ -3876,6 +3900,17 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
                 occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
             )
+            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"])
+            if signal is not None:
+                if private_world_relationship_committer is None:
+                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+                relationship_status = private_world_relationship_committer.commit_exchange(
+                    letter["private_world_delivery_id"], letter["content"], letter["reply_text"], signal,
+                    occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
+                )
+                letter["relationship_status"] = relationship_status.value
+                if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
+                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
             letter["daily_life_status"] = "COMMITTED"
             letter.pop("daily_life_error_code", None)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):

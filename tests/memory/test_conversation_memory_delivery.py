@@ -110,6 +110,22 @@ def test_available_provider_receives_exact_canonical_exchange_in_worker_thread()
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("next_letter", ["letter-1", "letter-2"])
+def test_retry_consumes_late_canonical_delivery_without_writing_twice(next_letter: str) -> None:
+    async def scenario() -> None:
+        memory = FakeMemory(delay_seconds=0.08)
+        committer = ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.02)
+        first = await committer.commit(_delivery())
+        assert first.error_code == "MEM0_WRITE_TIMEOUT"
+        await asyncio.sleep(0.12)
+        memory.delay_seconds = 0
+        recovered = await committer.commit(_delivery(letter_id=next_letter))
+        assert recovered.status is CanonicalMemoryDeliveryStatus.WRITTEN
+        assert recovered.source_id == _delivery(letter_id=next_letter).source_id
+        assert len(memory.calls) == (1 if next_letter == "letter-1" else 2)
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("provider_result", "expected"),
     [

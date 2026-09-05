@@ -1412,6 +1412,43 @@ def test_state_persist_fsyncs_unique_snapshots_before_replace(
     assert ".state.json.bak.tmp" not in temporary_names
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows sharing semantics")
+def test_letter_send_recovers_when_background_reader_briefly_holds_state(tmp_path, monkeypatch):
+    import local_server
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_store_state_error_code", None)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *args, **kwargs: None)
+    local_server._persist_store_state()
+    state_path = tmp_path / "state.json"
+    opened, release = threading.Event(), threading.Event()
+    errors = []
+    def read_state():
+        with state_path.open("rb"):
+            opened.set()
+            release.wait(2)
+    reader = threading.Thread(target=read_state)
+    reader.start()
+    assert opened.wait(1)
+    real_replace = local_server._os.replace
+    def observe_replace(source, destination):
+        try:
+            return real_replace(source, destination)
+        except PermissionError as exc:
+            errors.append(exc.winerror)
+            release.set()
+            raise
+    monkeypatch.setattr(local_server._os, "replace", observe_replace)
+    try:
+        status, payload = _post_current_letter(local_server, "原生文件占用恢复测试")
+    finally:
+        release.set()
+        reader.join(2)
+    assert errors and errors[0] in {5, 32, 33}
+    assert status == 200, payload
+    assert local_server._store_state_error_code is None
+    assert json.loads(state_path.read_text(encoding="utf-8"))["letters"][0]["content"] == "原生文件占用恢复测试"
+
+
 def test_directory_fsync_failure_keeps_committed_letter_scheduled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

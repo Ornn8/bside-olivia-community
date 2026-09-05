@@ -226,12 +226,13 @@ def _prepare_generation_request(
         )
     selection = _selected_history(memory_context)
     life_fragments = getattr(adapter, "daily_life_fragments", None)
+    recent_fragments = getattr(adapter, "recent_letter_fragments", None)
     messages = assemble_persona(
         loaded.snapshot,
         context,
         user_input=request.content,
         max_units=request.max_input_chars,
-        history=selection.fragments,
+        history=(*selection.fragments, *(recent_fragments(request.content) if callable(recent_fragments) else ())),
         evidence_summaries=life_fragments(request.content) if callable(life_fragments) else (),
     ).to_messages()
     return _PreparedGeneration(

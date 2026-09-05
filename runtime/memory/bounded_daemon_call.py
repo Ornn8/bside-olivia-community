@@ -96,6 +96,24 @@ class BoundedDaemonCall:
         self._consume(pending)
         return result
 
+    async def settle_async(self, *, timeout_seconds: float) -> tuple[str, object | None]:
+        """Consume a late result without blocking the event loop or starting a worker."""
+        timeout_seconds = validate_timeout_seconds(timeout_seconds)
+        with self._lock:
+            pending = self._pending
+        if pending is None:
+            return "missing", None
+        done, outcome = pending
+        deadline = time.monotonic() + timeout_seconds
+        while not done.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "timeout", None
+            await asyncio.sleep(min(0.01, remaining))
+        result = self._result(outcome)
+        self._consume(pending)
+        return result
+
     def _start(
         self,
         operation: Callable[[], object],

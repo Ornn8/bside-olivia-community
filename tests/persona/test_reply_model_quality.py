@@ -3622,10 +3622,14 @@ def test_invalid_enabled_reviewer_blocks_before_deterministic_rewrite(
     assert gateway.call_kinds == ["generation", *("review",) * 5]
 
 
-def test_quality_model_can_be_disabled_without_disabling_generation(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("enabled", [None, "false"])
+def test_quality_model_is_opt_in_without_disabling_generation(
+    monkeypatch: pytest.MonkeyPatch, enabled: str | None,
 ) -> None:
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "false")
+    if enabled is None:
+        monkeypatch.delenv("OLIVIA_REPLY_REVIEW_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", enabled)
     memory = NullMemoryPort()
     gateway = SequencedQualityGateway(candidate="我在。", reviews=[])
     adapter = SimpleNamespace(
@@ -3668,6 +3672,7 @@ def test_quality_model_can_be_disabled_without_disabling_generation(
 def test_quality_model_default_timeout_allows_slow_configured_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "true")
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_MODEL", raising=False)
     gateway = SequencedQualityGateway(candidate="候选。", reviews=[])

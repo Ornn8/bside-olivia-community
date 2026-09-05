@@ -16,13 +16,35 @@ from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_INTERACTION_KINDS = {
+    ReducerEventKind.BOUNDARY_RESPECTED, ReducerEventKind.SUPPORT_RECEIVED,
+    ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR,
+}
 _RELATIONSHIP_FACT_KINDS = frozenset(
     {
         ReducerEventKind.CHARACTER_BOUNDARY_SET,
         ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN,
         ReducerEventKind.CHARACTER_AFFECTION_ACKNOWLEDGED,
+        ReducerEventKind.BOUNDARY_RESPECTED,
+        ReducerEventKind.SUPPORT_RECEIVED,
+        ReducerEventKind.CONFLICT,
+        ReducerEventKind.REPAIR,
     }
 )
+
+
+def validate_exchange_relationship(signal: object, user_text: str, reply_text: str) -> dict | None:
+    if signal is None:
+        return None
+    if not isinstance(signal, dict) or set(signal) != {"kind", "user_quote", "reply_quote"}:
+        raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
+    if signal["kind"] not in {"support_received", "boundary_respected", "conflict", "repair"}:
+        raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
+    for field, source in (("user_quote", user_text), ("reply_quote", reply_text)):
+        quote = signal[field]
+        if not isinstance(quote, str) or not quote.strip() or len(quote) > 240 or quote not in source:
+            raise ValueError("DAILY_LIFE_RELATIONSHIP_EVIDENCE_INVALID")
+    return dict(signal)
 
 
 class RelationshipFactStatus(StrEnum):
@@ -83,7 +105,7 @@ class RelationshipFactCommand:
             occurred_at=self.occurred_at,
             semantic_key=self.semantic_key,
             last_equivalent_at=self.last_equivalent_at,
-            canonical_reply_id=self.canonical_delivery_id,
+            canonical_reply_id=self.canonical_delivery_id if self.kind not in _INTERACTION_KINDS else None,
             boundary=self.boundary,
             boundary_id=self.boundary_id,
             acknowledged_affection=self.acknowledged_affection,
@@ -94,6 +116,28 @@ class RelationshipFactCommand:
 class PrivateWorldRelationshipCommitter:
     def __init__(self, ledger: SQLitePrivateWorldLedger) -> None:
         self.ledger = ledger
+
+    def commit_exchange(self, delivery_id: str, user_text: str, reply_text: str, signal: dict, *, occurred_at: datetime) -> RelationshipFactStatus:
+        """Project grounded canonical interaction, never manual permission commands."""
+        signal = validate_exchange_relationship(signal, user_text, reply_text)
+        if signal is None:
+            return RelationshipFactStatus.REJECTED
+        semantic_key = "canonical-interaction:" + signal["kind"]
+        try:
+            previous = [datetime.fromisoformat(event.occurred_at.replace("Z", "+00:00"))
+                        for event in self.ledger.events()
+                        if event.payload.get("semantic_key") == semantic_key
+                        and event.payload.get("applied") is True]
+            last_equivalent = max(previous, default=None)
+            return self.commit(RelationshipFactCommand(
+                command_id="exchange." + hashlib.sha256(delivery_id.encode()).hexdigest(),
+                kind=ReducerEventKind(signal["kind"]), occurred_at=occurred_at,
+                semantic_key=semantic_key, canonical_delivery_id=delivery_id,
+                canonical_reply_sha256=hashlib.sha256(reply_text.encode("utf-8")).hexdigest(),
+                evidence_ref_id=delivery_id + ".interaction", last_equivalent_at=last_equivalent,
+            ))
+        except (ValueError, OSError, sqlite3.Error, LedgerWriteError):
+            return RelationshipFactStatus.UNAVAILABLE
 
     def commit(self, command: RelationshipFactCommand) -> RelationshipFactStatus:
         if type(command) is not RelationshipFactCommand:
@@ -136,7 +180,7 @@ class PrivateWorldRelationshipCommitter:
             occurred_at=command.occurred_at,
             semantic_key=command.semantic_key,
             last_equivalent_at=command.last_equivalent_at,
-            canonical_reply_id=command.canonical_delivery_id,
+            canonical_reply_id=command.canonical_delivery_id if command.kind not in _INTERACTION_KINDS else None,
             boundary=command.boundary,
             boundary_id=command.boundary_id,
             acknowledged_affection=command.acknowledged_affection,
@@ -160,10 +204,12 @@ class PrivateWorldRelationshipCommitter:
                         "canonical_delivery_id": command.canonical_delivery_id,
                         "canonical_reply_sha256": command.canonical_reply_sha256,
                         "evidence_ref_id": command.evidence_ref_id,
+                        "semantic_key": command.semantic_key,
                     },
                     occurred_at=command.occurred_at.isoformat(),
                 ),
                 reduced.snapshot,
+                expected_snapshot_version=snapshot.version,
             )
         except (
             AttributeError,

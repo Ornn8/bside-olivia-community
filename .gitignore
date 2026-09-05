@@ -133,6 +133,7 @@ linli_character/message_templates.json
 # public index, and sanitized historical snapshots.
 docs/*
 !docs/PRIVATE_WORLD_LIFE.md
+!docs/PRIVATE_WORLD_LETTER_ACCEPTANCE_20260905.md
 docs/reviews/*
 !docs/README.md
 !docs/B11_VISUAL_RUNTIME.md

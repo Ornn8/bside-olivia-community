@@ -162,3 +162,38 @@ def test_reply_recalls_relevant_cancelled_promise_even_beyond_overview_limit(tmp
     # One specific topic word is enough even when only the evidence/detail names it.
     short = json.loads(life.reply_context("那段录音发过了吗？", now=NOW))
     assert short["threads"][0]["id"] == "shared0"
+
+
+def test_disclosed_old_correspondence_loads_latest_state_without_unrelated_threads(tmp_path):
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    for identifier, text in (("parcel", "包裹已经寄出，尚未确认收到。"), ("trip", "出游约定取消了。")):
+        life.record_exchange(f"reply:{identifier}:1", text, "知道了。", [{
+            "id": identifier, "title": identifier, "detail": text, "status": "ongoing" if identifier == "parcel" else "cancelled",
+            "kind": "shared", "actor": "user", "quote": text,
+        }], occurred_at=NOW)
+    result = json.loads(life.reply_context("晚安。", related_text="我还计划寄包裹。", now=NOW))
+    assert [item["id"] for item in result["threads"]] == ["parcel"]
+    assert result["threads"][0]["detail"] == "包裹已经寄出，尚未确认收到。"
+    assert len(life.reply_context("晚安。", related_text="我还计划寄包裹。", now=NOW)) <= 1800
+
+
+def test_exchange_extraction_cannot_copy_previous_evidence_as_current_quote(tmp_path):
+    from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+    store.record_exchange("reply:old:1", "周末打算寄包裹。", "我等着。", [{
+        "id":"parcel", "title":"寄包裹", "detail":"用户计划寄包裹", "status":"planned",
+        "kind":"shared", "actor":"user", "quote":"周末打算寄包裹。",
+    }], occurred_at=NOW)
+    class Model:
+        async def complete(self, messages, **kwargs):
+            data = json.loads(messages[-1]["content"])
+            assert data["user_letter"] == "包裹寄出了。"
+            assert "quote" not in data["previous_state"]["shared"][0]
+            assert "周末打算寄包裹。" not in messages[-1]["content"]
+            return SimpleNamespace(text=json.dumps({"updates":[{
+                "id":"parcel", "title":"寄包裹", "detail":"用户已寄出", "status":"completed",
+                "kind":"shared", "actor":"user", "quote":"包裹寄出了。",
+            }]}))
+    life = DailyLifeRuntime(store, lambda: Model(), lambda: "")
+    asyncio.run(life.consume_exchange("reply:new:1", "包裹寄出了。", "知道了。", occurred_at=NOW + timedelta(hours=1)))
+    assert store.snapshot(NOW + timedelta(hours=1))["shared"][0]["status"] == "completed"

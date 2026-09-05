@@ -178,8 +178,9 @@ accepted warning.
 
 ## Runtime controls
 
-- `OLIVIA_REPLY_REVIEW_ENABLED=false` disables semantic review and restores the
-  existing deterministic-clean degraded path;
+- Semantic re-review is opt-in: `OLIVIA_REPLY_REVIEW_ENABLED=true` enables it.
+  Unset or `false` uses the existing deterministic-clean path without additional
+  review-model calls; primary reply reasoning remains enabled and unchanged.
 - `OLIVIA_REPLY_REWRITE_ENABLED=false` leaves review enabled but disables model
   rewrite;
 - `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` sets a bounded 0.1-120 second timeout;

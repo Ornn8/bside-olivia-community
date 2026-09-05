@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from runtime.memory.private_world_relationship import validate_exchange_relationship
 
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
@@ -120,13 +121,14 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None) -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
             raise ValueError("DAILY_LIFE_SOURCE_INVALID")
         stamp = _time(occurred_at)
         digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
+        relationship = validate_exchange_relationship(relationship, user_text, reply_text)
         current = None
         if current_quote is not None:
             quote = _text(current_quote, 180)
@@ -167,12 +169,23 @@ class DailyLifeStore:
                     if existing["updated_at"] > stamp:
                         continue  # A delayed delivery cannot roll current life backwards.
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (item["id"], _json(item)))
-            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current})))
+            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship})))
             if current:
                 self._set_current(db, current)
         return True
 
-    def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800) -> str:
+    def exchange_relationship(self, source_id: str, user_text: str, reply_text: str) -> dict | None:
+        with self._db() as db:
+            row = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='exchange'", (source_id,)).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[0])
+        digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
+        if payload.get("digest") != digest:
+            raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
+        return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
+
+    def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
         snapshot = self.snapshot(now)
         if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"]:
@@ -186,9 +199,13 @@ class DailyLifeStore:
                     tokens.add(part)
             return tokens
         tokens = tokens_for(query) - _QUERY_STOP_WORDS
+        related_tokens = tokens_for(related_text) - _QUERY_STOP_WORDS
         def relevance(p):
             text_tokens = tokens_for(p["title"] + " " + p["detail"] + " " + p.get("quote", "")) - _QUERY_STOP_WORDS
-            return len(tokens & text_tokens) / max(1, len(text_tokens) ** 0.5)
+            # Current question first; earlier letters may introduce an old
+            # plan, so disclose that topic's current state in the same budget.
+            direct = len(tokens & text_tokens)
+            return (1000 if direct else 0) + (direct + len(related_tokens & text_tokens)) / max(1, len(text_tokens) ** 0.5)
         # UI limits must not hide old cancellations or finished threads from recall.
         with self._db() as db:
             all_projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
@@ -237,7 +254,7 @@ class DailyLifeStore:
     @staticmethod
     def _moments(rows) -> list:
         return [{"id": r["source_id"], "occurred_at": r["occurred_at"], "kind": r["kind"],
-                 "content": {k: v for k, v in json.loads(r["payload"]).items() if k != "digest"}}
+                 "content": {k: v for k, v in json.loads(r["payload"]).items() if k not in {"digest", "relationship"}}}
                 for r in rows]
 
     def snapshot(self, now: datetime) -> dict:

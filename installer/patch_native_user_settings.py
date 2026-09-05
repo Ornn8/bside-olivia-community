@@ -12,7 +12,10 @@ from pathlib import Path
 
 
 FALSE_WIDGET_PAIR = b"\x0amailWidget\x06\x05false\x0bmusicWidget\x06\x05false"
-TRUE_WIDGET_PAIR = b"\x0amailWidget\x06\x04true\x0bmusicWidget\x06\x04true"
+TRUE_WIDGET_PAIR = b"\x0amailWidget\x05\x04true\x0bmusicWidget\x05\x04true"
+# Earlier releases shortened the string but left the enclosing value length at 6.
+# Recognize only that exact malformed pair so an upgrade can repair it in place.
+_LEGACY_TRUE_WIDGET_PAIR = b"\x0amailWidget\x06\x04true\x0bmusicWidget\x06\x04true"
 _BACKUP_SUFFIX = ".native-nav.orig"
 _REPARSE_POINT = 0x00000400
 
@@ -176,9 +179,9 @@ def _logical_bytes(original: bytes) -> tuple[int, bytes]:
     return payload_size, original[:logical_end]
 
 
-def _patched_payload(original: bytes, payload_size: int, logical: bytes) -> bytes:
-    replaced = logical.replace(FALSE_WIDGET_PAIR, TRUE_WIDGET_PAIR, 1)
-    patched_size = payload_size - (len(FALSE_WIDGET_PAIR) - len(TRUE_WIDGET_PAIR))
+def _patched_payload(original: bytes, payload_size: int, logical: bytes, source: bytes) -> bytes:
+    replaced = logical.replace(source, TRUE_WIDGET_PAIR, 1)
+    patched_size = payload_size - (len(source) - len(TRUE_WIDGET_PAIR))
     patched_logical = struct.pack("<I", patched_size) + replaced[4:]
     return patched_logical + (b"\x00" * (len(original) - len(patched_logical)))
 
@@ -192,8 +195,9 @@ def _patch(settings_path: Path) -> NativeUserSettingsPatchResult:
     payload_size, logical = _logical_bytes(original)
     false_count = logical.count(FALSE_WIDGET_PAIR)
     true_count = logical.count(TRUE_WIDGET_PAIR)
+    legacy_count = logical.count(_LEGACY_TRUE_WIDGET_PAIR)
     original_sha256 = target_snapshot.sha256
-    if false_count + true_count > 1:
+    if false_count + true_count + legacy_count > 1:
         raise NativeUserSettingsPatchError("USER_SETTINGS_WIDGET_PAIR_AMBIGUOUS")
     if false_count == 0 and true_count == 1:
         return NativeUserSettingsPatchResult(
@@ -201,10 +205,11 @@ def _patch(settings_path: Path) -> NativeUserSettingsPatchResult:
             original_sha256=original_sha256,
             patched_sha256=original_sha256,
         )
-    if false_count != 1 or true_count != 0:
+    if false_count + legacy_count != 1 or true_count != 0:
         raise NativeUserSettingsPatchError("USER_SETTINGS_WIDGET_PAIR_UNSUPPORTED")
 
-    patched = _patched_payload(original, payload_size, logical)
+    source = FALSE_WIDGET_PAIR if false_count else _LEGACY_TRUE_WIDGET_PAIR
+    patched = _patched_payload(original, payload_size, logical, source)
     backup_path = settings_path.with_name(settings_path.name + _BACKUP_SUFFIX)
     try:
         _atomic_sidecar(backup_path, original)

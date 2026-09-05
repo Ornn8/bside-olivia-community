@@ -8,6 +8,8 @@ changes the already-persisted reply.
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -141,11 +143,17 @@ class ConversationMemoryDeliveryCommitter:
         self.timeout_seconds = validate_timeout_seconds(timeout_seconds)
         self.memory_lifecycle = memory_lifecycle
         self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
+        self._pending_delivery: CanonicalMemoryDelivery | None = None
+        self._commit_lock = asyncio.Lock()
 
     async def commit(
         self,
         delivery: CanonicalMemoryDelivery,
     ) -> CanonicalMemoryDeliveryResult:
+        async with self._commit_lock:
+            return await self._commit(delivery)
+
+    async def _commit(self, delivery: CanonicalMemoryDelivery) -> CanonicalMemoryDeliveryResult:
         if not isinstance(delivery, CanonicalMemoryDelivery):
             raise TypeError("a canonical memory delivery is required")
         lifecycle_error = getattr(self.memory_lifecycle, "reason_code", None)
@@ -169,18 +177,24 @@ class ConversationMemoryDeliveryCommitter:
                     error_code="MEMORY_ADMIN_AUDIT_UNAVAILABLE",
                 )
 
-        state, result = await self._provider_call.call_async(
-            lambda: (
-                _deliver_with_lifecycle(
-                    self.memory_lifecycle,
-                    self.memory,
-                    delivery,
-                )
-                if self.memory_lifecycle is not None
-                else _deliver_to_provider(self.memory, delivery)
-            ),
-            timeout_seconds=self.timeout_seconds,
-        )
+        previous = self._pending_delivery
+        state, result = "missing", None
+        if previous is not None:
+            state, result = await self._provider_call.settle_async(timeout_seconds=self.timeout_seconds)
+            if state != "timeout":
+                self._pending_delivery = None
+        if state != "timeout" and (previous != delivery or state != "completed"):
+            self._pending_delivery = delivery
+            state, result = await self._provider_call.call_async(
+                lambda: (
+                    _deliver_with_lifecycle(self.memory_lifecycle, self.memory, delivery)
+                    if self.memory_lifecycle is not None
+                    else _deliver_to_provider(self.memory, delivery)
+                ),
+                timeout_seconds=self.timeout_seconds,
+            )
+            if state not in {"timeout", "inflight"}:
+                self._pending_delivery = None
         if state in {"timeout", "inflight"}:
             return CanonicalMemoryDeliveryResult(
                 CanonicalMemoryDeliveryStatus.UNAVAILABLE,
