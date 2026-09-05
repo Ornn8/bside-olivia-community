@@ -88,6 +88,83 @@ def _delivery(**changes: object) -> CanonicalMemoryDelivery:
     return CanonicalMemoryDelivery(**values)  # type: ignore[arg-type]
 
 
+def test_failure_budget_marks_completed_writes_not_waiting_or_preflight():
+    async def scenario():
+        broken = FakeMemory(result_status=MemoryWriteStatus.UNAVAILABLE)
+        failed = await ConversationMemoryDeliveryCommitter(broken).commit(_delivery())
+        assert failed.completed_failure is True
+        raised = await ConversationMemoryDeliveryCommitter(FakeMemory(raises=True)).commit(_delivery())
+        assert raised.completed_failure is True
+        blocked = FakeMemory(provider_status="unavailable", error_code="MEM0_WRITE_FAILED")
+        preflight = await ConversationMemoryDeliveryCommitter(blocked).commit(_delivery())
+        assert preflight.completed_failure is False
+        assert blocked.calls == []
+        release = threading.Event()
+        class SlowMemory(FakeMemory):
+            def remember_exchange(self, **kwargs):
+                assert release.wait(2)
+                return super().remember_exchange(**kwargs)
+        slow = SlowMemory()
+        committer = ConversationMemoryDeliveryCommitter(slow, timeout_seconds=0.01)
+        try:
+            for _ in range(4):
+                waiting = await committer.commit(_delivery())
+                assert waiting.error_code == "MEM0_WRITE_TIMEOUT"
+                assert waiting.completed_failure is False
+        finally:
+            release.set()
+        await asyncio.sleep(0.1)
+        done = await committer.commit(_delivery())
+        assert done.status is CanonicalMemoryDeliveryStatus.WRITTEN
+        assert len(slow.calls) == 1
+    asyncio.run(scenario())
+
+
+def test_interleaved_late_failures_retain_original_source_and_are_consumed_once():
+    async def scenario():
+        release = {name: threading.Event() for name in ("letter-a", "letter-b")}
+        class SlowBroken(FakeMemory):
+            def remember_exchange(self, **kwargs):
+                name = str(kwargs["source_id"]).split(":")[1]
+                assert release[name].wait(2)
+                return super().remember_exchange(**kwargs)
+        memory = SlowBroken(result_status=MemoryWriteStatus.UNAVAILABLE)
+        committer = ConversationMemoryDeliveryCommitter(memory, timeout_seconds=0.01)
+        a, b = _delivery(letter_id="letter-a"), _delivery(letter_id="letter-b")
+        try:
+            assert (await committer.commit(a)).error_code == "MEM0_WRITE_TIMEOUT"
+            release["letter-a"].set()
+            await asyncio.sleep(0.05)
+            assert (await committer.commit(b)).error_code == "MEM0_WRITE_TIMEOUT"
+            release["letter-b"].set()
+            await asyncio.sleep(0.05)
+            done_a = await committer.commit(a)
+            done_b = await committer.commit(b)
+            assert done_a.source_id == a.source_id and done_a.completed_failure
+            assert done_b.source_id == b.source_id and done_b.completed_failure
+            assert len(memory.calls) == 2
+        finally:
+            for event in release.values():
+                event.set()
+    asyncio.run(scenario())
+
+
+def test_failed_worker_settlement_is_reported_before_retrying_same_source():
+    class FailedSettlement:
+        async def settle_async(self, **kwargs):
+            return "failed", None
+        async def call_async(self, *args, **kwargs):
+            raise AssertionError("completed failure must be recorded before a retry")
+    async def scenario():
+        committer = ConversationMemoryDeliveryCommitter(FakeMemory())
+        committer._pending_delivery = _delivery()
+        committer._provider_call = FailedSettlement()
+        result = await committer.commit(_delivery())
+        assert result.completed_failure is True
+        assert result.error_code == "MEM0_WRITE_FAILED"
+    asyncio.run(scenario())
+
+
 def test_available_provider_receives_exact_canonical_exchange_in_worker_thread() -> None:
     async def scenario() -> None:
         memory = FakeMemory()

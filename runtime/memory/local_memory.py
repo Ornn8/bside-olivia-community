@@ -288,6 +288,7 @@ class LocalMemoryAdapter:
         persona_evidence: Sequence[str | Mapping[str, Any]] | None = None,
         conversation_enabled: bool = True,
         read_only: bool = False,
+        live_archive: bool = False,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.data_root = self.db_path.parent
@@ -302,7 +303,11 @@ class LocalMemoryAdapter:
             self._ensure_private_root()
         try:
             if self.read_only:
-                target = self.db_path.resolve(strict=True).as_uri() + "?mode=ro&immutable=1"
+                # The owned archive can still have committed records in its WAL.
+                # Immutable readers ignore that journal and can hide imported mail.
+                target = self.db_path.resolve(strict=True).as_uri() + (
+                    "?mode=ro" if live_archive else "?mode=ro&immutable=1"
+                )
                 self.connection = sqlite3.connect(
                     target,
                     uri=True,
@@ -1331,6 +1336,7 @@ def create_memory_adapter(
     *,
     environ: Mapping[str, str] | None = None,
     allow_legacy_create: bool = False,
+    live_archive: bool = False,
 ) -> MemoryPort:
     """Create the optional local adapter without affecting core startup."""
 
@@ -1355,6 +1361,7 @@ def create_memory_adapter(
             persona_evidence=config.persona_evidence,
             conversation_enabled=config.enabled,
             read_only=not config.enabled and not allow_legacy_create,
+            live_archive=live_archive,
         )
     except (OSError, sqlite3.Error, ValueError):
         return UnavailableMemoryPort("sqlite adapter unavailable", provider="sqlite")

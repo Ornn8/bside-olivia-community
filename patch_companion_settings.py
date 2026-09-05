@@ -317,6 +317,17 @@ def _repack(root: Path, destination: Path) -> None:
             pass
 
 
+_LOCAL_MAILBOX_REQUEST_HELPER = (
+    'function oliviaLocalMailboxRequest(e){try{'
+    'const s=document.querySelector("script[data-olivia-companion-settings][data-api-base]");'
+    'if(!s)return false;const b=new URL(s.dataset.apiBase),u=new URL(e.url,e.baseURL);'
+    'return b.protocol==="http:"&&["127.0.0.1","localhost"].includes(b.hostname)'
+    '&&u.origin===b.origin&&!u.username&&!u.password'
+    '&&/^\\/(?:toy\\/)?letter\\/(?:list|detail|unread_count|send|resend)$/.test(u.pathname)'
+    '}catch{return false}}'
+)
+
+
 def _repair_mailbox_write_access(root: Path) -> str:
     main = root / Path(*MAIN_JS_0627.split("/"))
     if not main.is_file():
@@ -326,6 +337,29 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    offline_guard = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode)throw new Ol(e);'
+    if offline_guard in source:
+        source = source.replace(
+            offline_guard,
+            _LOCAL_MAILBOX_REQUEST_HELPER + offline_guard.replace(
+                'if(t.isOfflineMode)', 'if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))'
+            ),
+            1,
+        )
+    source = source.replace(
+        'He(()=>{p.value||d.fetchMailList(!0)})',
+        'He(()=>{d.fetchMailList(!0),d.startPolling()})',
+    )
+    source = source.replace(
+        'timestamp:e.createdAt*1e3',
+        'timestamp:e.createdAt==null?null:e.createdAt*1e3',
+    ).replace(
+        'timestamp:(e.repliedAt??e.createdAt)*1e3',
+        'timestamp:(e.repliedAt??e.createdAt)==null?null:(e.repliedAt??e.createdAt)*1e3',
+    ).replace(
+        'Ws=e=>{const t=new Date(e),',
+        'Ws=e=>{if(e==null)return"时间未知";const t=new Date(e),',
+    )
     source = source.replace(
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',

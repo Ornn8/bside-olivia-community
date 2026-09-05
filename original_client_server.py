@@ -38,6 +38,7 @@ from mem0_capability_install import (
 from mem0_embedding_install import Mem0EmbeddingInstaller
 from mem0_memory import Mem0Config
 from music_reply import video_reply_dependency_status
+from runtime.media.background_video_readiness import BackgroundVideoReadiness
 from original_client_companion_api import mount_original_companion_read_api
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
@@ -816,7 +817,13 @@ def _configured_video_capability_installer(
         return VideoCapabilityInstaller(
             data_root=data_root,
             manifest=manifest,
-            readiness_probe=readiness,
+            readiness_probe=BackgroundVideoReadiness(
+                readiness,
+                fingerprint_paths=(
+                    Path(__file__).resolve().parent / "installer" / "video-capability-manifest.json",
+                    data_root / "capabilities" / "video" / "runtime-environment.json",
+                ),
+            ),
             artifact_roots=artifact_roots,
             runtime_archives=tuple(dict.fromkeys(runtime_archives)),
             runtime_archive_roots=tuple(dict.fromkeys(runtime_search_roots)),

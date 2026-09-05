@@ -1746,6 +1746,8 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
         ordinary / "latentsync/runtime/scripts/inference.py",
         ordinary / "latentsync/runtime/configs/unet/stage2_efficient.yaml",
         ordinary / "latentsync/runtime/checkpoints/latentsync_unet.pt",
+        ordinary / "latentsync/runtime/stabilityai/sd-vae-ft-mse/config.json",
+        ordinary / "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
         ordinary / "scenes/official-reply-action-base-v1.mp4",
         ordinary / "scenes/official-performance-lipsync-safe-2950f-v1.mp4",
         ordinary / "scenes/official-reply-reference-000-043s-v1.mp4",
@@ -2613,6 +2615,7 @@ def test_offline_import_reads_hash_checked_wheels_from_supplement(
     )
     assert installer.import_offline(bundle_id="ordinary_video", offline_root=archive) == "APPLIED"
     state = _wait(installer, 0, "ready", "prerequisites_required", "failed")
+    assert installer.status()["bundles"][0]["source"] == "offline-package"
     if corrupt:
         assert state == "failed"
         assert not (installer.install_root / "ordinary_video" / spec.relative_path).exists()

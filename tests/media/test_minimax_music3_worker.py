@@ -222,6 +222,128 @@ def test_comfy_command_bootstraps_embedded_python_import_path(tmp_path: Path) ->
     assert "sys.path.insert(0, root)" in worker._COMFY_BOOTSTRAP
 
 
+def test_ar_release_preserves_conditioning_and_precedes_dit() -> None:
+    from types import SimpleNamespace
+
+    events = []
+    result = object()
+    patcher = object()
+    clip = SimpleNamespace(patcher=patcher)
+
+    class Encoder:
+        @classmethod
+        def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):
+            events.append(("AR", caption, lyrics, seed, max_duration, cfg_scale, top_k))
+            return result
+
+    namespace = {}
+    exec(worker._AR_RELEASE_ADAPTER, namespace)
+    namespace["_wrap_ar_release"](
+        Encoder, lambda value: events.append(("unload", value))
+    )
+    actual = Encoder.execute(clip, "caption", "lyrics", 9, 40, 2.0, 50)
+    events.append(("DiT", actual))
+    assert actual is result
+    assert events == [("AR", "caption", "lyrics", 9, 40, 2.0, 50),
+                      ("unload", patcher), ("DiT", result)]
+
+
+@pytest.mark.parametrize("failure", ["signature", "unload_api", "patcher"])
+def test_ar_release_rejects_incompatible_api(failure: str) -> None:
+    from types import SimpleNamespace
+
+    class Encoder:
+        @classmethod
+        def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):
+            return object()
+
+    if failure == "signature":
+        Encoder.execute = classmethod(lambda cls, clip: None)
+    namespace = {}
+    exec(worker._AR_RELEASE_ADAPTER, namespace)
+    with pytest.raises(RuntimeError, match="^MINIMAX_AR_RELEASE_API_INCOMPATIBLE$"):
+        namespace["_wrap_ar_release"](Encoder, None if failure == "unload_api" else lambda _: None)
+        Encoder.execute(SimpleNamespace(), "caption", "lyrics", 9, 40, 2.0, 50)
+
+
+def test_ar_release_bootstrap_wraps_dynamic_builtin_without_changing_files(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    comfy = tmp_path / "comfy"
+    comfy.mkdir()
+    (comfy / "__init__.py").write_text("")
+    (comfy / "model_management.py").write_text(
+        "events = []\ndef unload_model_and_clones(patcher):\n    events.append(('unload', patcher))\n"
+    )
+    extras = tmp_path / "comfy_extras"
+    extras.mkdir()
+    node = extras / "nodes_minimax_music.py"
+    node.write_text(
+        "from comfy.model_management import events\n"
+        "conditioning = object()\n"
+        "class MiniMaxMusic3TextEncode:\n"
+        "    @classmethod\n"
+        "    def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):\n"
+        "        events.append(('AR', clip.patcher))\n"
+        "        return conditioning\n"
+    )
+    original = node.read_bytes()
+    entry = tmp_path / "main.py"
+    entry.write_text(
+        "import importlib.util\nfrom types import SimpleNamespace\n"
+        "from comfy.model_management import events\n"
+        "from importlib.machinery import SourceFileLoader\n"
+        f"spec = importlib.util.spec_from_file_location('builtin_node', {str(node)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\n"
+        "result = module.MiniMaxMusic3TextEncode.execute(SimpleNamespace(patcher=7), 'c', 'l', 9, 40, 2.0, 50)\n"
+        "events.append(('DiT', 7))\nassert result is module.conditioning\n"
+        "assert events == [('AR', 7), ('unload', 7), ('DiT', 7)]\n"
+        "assert SourceFileLoader.exec_module.__name__ == 'exec_module'\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", worker._COMFY_BOOTSTRAP, str(tmp_path), str(entry)],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == ""
+    assert node.read_bytes() == original
+
+
+def test_ar_failure_does_not_unload_or_hide_original_error() -> None:
+    from types import SimpleNamespace
+
+    events = []
+    class Encoder:
+        @classmethod
+        def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):
+            raise ValueError("synthetic AR failure")
+    namespace = {}
+    exec(worker._AR_RELEASE_ADAPTER, namespace)
+    namespace["_wrap_ar_release"](Encoder, lambda _: events.append("unload"))
+    with pytest.raises(ValueError, match="synthetic AR failure"):
+        Encoder.execute(SimpleNamespace(patcher=object()), "c", "l", 9, 40, 2.0, 50)
+    assert events == []
+
+
+def test_ar_unload_failure_has_stable_error_without_input_logging(capsys) -> None:
+    from types import SimpleNamespace
+
+    class Encoder:
+        @classmethod
+        def execute(cls, clip, caption, lyrics, seed, max_duration, cfg_scale, top_k):
+            return object()
+    def broken_unload(patcher):
+        raise ValueError("private synthetic detail")
+    namespace = {}
+    exec(worker._AR_RELEASE_ADAPTER, namespace)
+    namespace["_wrap_ar_release"](Encoder, broken_unload)
+    with pytest.raises(RuntimeError, match="^MINIMAX_AR_RELEASE_FAILED$") as error:
+        Encoder.execute(SimpleNamespace(patcher=object()), "private caption", "private lyric", 9, 40, 2.0, 50)
+    assert error.value.__suppress_context__ is True
+    assert capsys.readouterr() == ("", "")
+
+
 def test_118_second_generation_timeouts_cover_both_model_phases() -> None:
     adapter = MiniMaxMusic3Worker(
         python_path=Path("python.exe"),

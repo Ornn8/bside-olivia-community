@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_gateway import GatewayConfig
+from llm_gateway import GatewayConfig, GatewayRequestScope
 from runtime.media.music_caption import validate_minimax_caption
 from runtime.media.song_content import (
     SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
@@ -86,6 +86,22 @@ class SequencedGateway(RecordingGateway):
     async def complete(self, messages, request_id=None):
         self.calls.append((tuple(messages), request_id))
         return Response(self.payloads.pop(0))
+
+
+def test_song_planning_and_schema_repair_use_song_content_scope():
+    class ScopedGateway(SequencedGateway):
+        def __init__(self):
+            super().__init__(["{}", json.dumps(_payload())])
+            self.scopes = []
+
+        async def complete_scoped(self, messages, *, scope):
+            self.scopes.append(scope)
+            return await super().complete(messages)
+
+    gateway = ScopedGateway()
+    result = plan_song_content("synthetic letter", "synthetic reply", 40, gateway=gateway)
+    assert result.lyrics == _short_lyrics(40)
+    assert gateway.scopes == [GatewayRequestScope.SONG_CONTENT] * 2
 
 
 def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_caption() -> None:
