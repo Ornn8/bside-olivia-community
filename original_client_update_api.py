@@ -22,6 +22,7 @@ from installer.component_update import (
 
 
 ACTION_PATH = "/toy/updates/local/action"
+STATUS_PATH = "/toy/updates/local/status"
 CONFIRM_HEADER = "X-Olivia-Update-Action"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_JSON_BYTES = 8_192
@@ -48,6 +49,15 @@ class ComponentUpdater(Protocol):
 
 SessionAuthorizer = Callable[[str], None]
 PatchPicker = Callable[[], Path | None]
+
+
+def running_component_version(backend_root: Path | None = None) -> dict[str, str | None]:
+    # The selected update can differ until restart. Report this loaded module.
+    root = backend_root if backend_root is not None else Path(__file__).resolve().parent
+    match = re.fullmatch(r"([0-9A-Za-z][0-9A-Za-z.+-]{0,63})-([0-9a-f]{64})", root.name)
+    if match and root.parent.name == "local_backend" and root.parent.parent.name == "versions":
+        return {"version": match[1], "manifest_sha256": match[2]}
+    return {"version": None, "manifest_sha256": None}
 
 
 class LocalComponentUpdater:
@@ -164,12 +174,22 @@ def _select_windows_patch() -> Path | None:
     )
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
+        "$owner = New-Object System.Windows.Forms.Form;"
         "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "try {"
+        "$owner.TopMost = $true;"
+        "$owner.ShowInTaskbar = $false;"
+        "$owner.Opacity = 0;"
+        "$owner.Width = 1; $owner.Height = 1;"
+        "$owner.StartPosition = 'CenterScreen';"
+        "$owner.Show();"
+        "$owner.Activate();"
         "$dialog.Filter = 'Olivia patch (*.oliviapatch)|*.oliviapatch';"
         "$dialog.CheckFileExists = $true;"
         "$dialog.Multiselect = $false;"
-        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+        "if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) "
         "{ [Console]::Out.Write($dialog.FileName) }"
+        "} finally { $dialog.Dispose(); $owner.Dispose(); }"
     )
     try:
         completed = subprocess.run(
@@ -290,6 +310,12 @@ def mount_original_client_update_api(
             raise UpdateAPIError("UPDATE_ACTION_UNAVAILABLE", status=503) from exc
         return web.json_response(_public_result(result), headers=_headers(origin))
 
+    async def status(request: web.Request) -> web.Response:
+        origin = _authorize(request, confirmation=False)
+        return web.json_response({"status": "READY", **running_component_version()}, headers=_headers(origin))
+
+    app.router.add_get(STATUS_PATH, status)
+    app.router.add_options(STATUS_PATH, options)
     app.router.add_post(ACTION_PATH, action)
     app.router.add_options(ACTION_PATH, options)
 
