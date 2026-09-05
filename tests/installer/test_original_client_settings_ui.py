@@ -157,7 +157,7 @@ const run = async () => { const [id, fn] = timers.entries().next().value; timers
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v17-mailbox1"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v19"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -463,16 +463,15 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
     }
 
 
-def test_original_settings_private_world_entry_shows_safe_relationship_summary() -> None:
+def test_original_settings_private_world_entry_shows_character_life_not_scores() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert "私人世界状态" in source
+    assert "林离的生活" in source
     assert "原因代码" in source
     for forbidden in (
         "CANDIDATES_PATH",
         "legacyPrivateWorldLabels",
         "legacyCandidateRoute",
-        "encodeURIComponent",
         "待确认的关系建议",
         "批准",
         "拒绝",
@@ -484,15 +483,14 @@ def test_original_settings_private_world_entry_shows_safe_relationship_summary()
         assert forbidden not in source
     for required in (
         "PRIVATE_WORLD_PATH",
-        "relationship_stage",
-        "关系阶段",
-        "熟悉度",
-        "信任",
-        "舒适",
-        "亲密",
-        "紧张",
+        "此刻的林离",
+        "最近在忙",
+        "生活片段",
+        "与你有关",
+        "DAILY_LIFE_PATH",
     ):
         assert required in source
+    assert "fields.map(([key, label])" not in source
 
 
 def test_original_settings_private_world_status_fails_closed() -> None:
@@ -528,11 +526,9 @@ const context = {
     ok: true,
     json: async () => ({
       status: "READY",
-      relationship_stage: "familiar",
-      levels: {
-        familiarity: "high", trust: "medium", comfort: "medium",
-        closeness: "low", tension: "low",
-      },
+          schema_version: "olivia.daily-life.v1", stale: false, refreshing: false,
+          current: { location: "琴房", activity: "练琴", note: "慢慢弹稳。", occurred_at: "2026-09-05T10:00:00Z" },
+          projects: [], shared: [], moments: [],
     }),
   }),
   MutationObserver: class { constructor() {} observe() {} },
@@ -572,15 +568,15 @@ vm.runInNewContext(source, context);
     assert result.returncode == 0, output
     rendered = json.loads(result.stdout.decode("utf-8"))
     assert [item[1] for item in rendered] == [
-        "状态：可用", "状态：未启用", "状态：暂不可用", "状态：暂不可用",
+        "近况已保存。", "状态：未启用", "状态：暂不可用", "状态：暂不可用",
         "状态：暂不可用", "状态：暂不可用", "状态：暂不可用", "状态：暂不可用",
     ]
     assert rendered[2][2] == "原因代码：PRIVATE_WORLD_STORAGE_UNAVAILABLE"
     assert rendered[3][2] == "原因代码：无"
     assert rendered[4][2] == "原因代码：无"
     assert rendered[7][2] == "原因代码：无"
-    assert rendered[0][2] == "关系阶段：熟悉"
-    assert rendered[0][3] == "熟悉度：高 · 信任：中 · 舒适：中 · 亲密：低 · 紧张：低"
+    assert rendered[0][0] == "林离的生活"
+    assert rendered[0][2] == "更新近况"
 
 
 def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -> None:
@@ -599,7 +595,6 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         'method: "PUT"',
         'method: "PATCH"',
         'method: "DELETE"',
-        "source_id",
         "user_id",
         "database_path",
         "0–100",
@@ -763,6 +758,10 @@ const statusPayload = (status) => ({
   },
 });
     const fetch = async (endpoint, options) => {
+      if (endpoint.pathname === "/toy/companion/private-world/life") {
+        return { ok: true, json: async () => ({ status: "READY", schema_version: "olivia.daily-life.v1", stale: false,
+          current: null, projects: [], shared: [], moments: [], refreshing: false }) };
+      }
       if (endpoint.pathname === "/toy/setup/status") {
         return { ok: true, json: async () => ({
           status: "READY",

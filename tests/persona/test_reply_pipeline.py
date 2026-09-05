@@ -298,6 +298,23 @@ def _configured_v2_pipeline(persona_path: Path):
     return pipeline, orchestrator, bridge, provider
 
 
+def test_persisted_visible_life_is_disclosed_to_real_persona_generation(tmp_path):
+    from runtime.private_world.daily_life import DailyLifeStore
+    from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    pipeline, _, bridge, provider = _configured_v2_pipeline(ROOT / "linli_character/persona_release_v2.json")
+    now = datetime.now(timezone.utc)
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+    store.publish_day("day:piano", {"location": "琴房", "activity": "慢练左手", "note": "这两小节今天顺了一点。"}, [], occurred_at=now)
+    bridge.adapter.daily_life = DailyLifeRuntime(store, lambda: provider, lambda: "")
+    result = asyncio.run(pipeline.run(ReplyRequest(content="你今天练琴怎么样？", request_id="life-context"), _context()))
+    assert result.state is ReplyState.COMPLETED
+    prompt = "\n".join(m["content"] for m in provider.messages)
+    assert "这两小节今天顺了一点" in prompt
+    assert "character_life_reference" in prompt
+    assert "<evidence_summary>" in prompt
+    assert "day:piano" in prompt
+
+
 class SourceAwareConversationMemory:
     enabled = True
 

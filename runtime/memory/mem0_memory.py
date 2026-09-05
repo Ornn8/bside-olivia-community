@@ -789,6 +789,7 @@ class Mem0ConversationMemoryAdapter:
         self._provider_call = BoundedDaemonCall(thread_name="olivia-mem0-read")
         self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write")
         self._write_gate = threading.Lock()
+        self._pending_exchange_key: tuple[str, str] | None = None
         self._last_error_code: str | None = None
 
     def _filters(self, user_id: str) -> dict[str, object]:
@@ -1008,18 +1009,33 @@ class Mem0ConversationMemoryAdapter:
     def _write_with_timeout(
         self,
         operation: Callable[[], object],
+        *,
+        exchange_key: tuple[str, str] | None = None,
     ) -> tuple[str, object | None]:
         deadline = time.monotonic() + self.config.write_timeout_seconds
         if not self._write_gate.acquire(timeout=self.config.write_timeout_seconds):
             return "timeout", None
         try:
+            if exchange_key is not None and self._pending_exchange_key is not None:
+                pending_key = self._pending_exchange_key
+                state, value = self._write_call.settle(
+                    timeout_seconds=max(0.001, deadline - time.monotonic()),
+                )
+                if state == "timeout":
+                    return "timeout", None
+                self._pending_exchange_key = None
+                if state == "completed" and pending_key == exchange_key and isinstance(value, MemoryWriteResult):
+                    return state, value
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return "timeout", None
-            return self._write_call.call(
+            state, value = self._write_call.call(
                 lambda: self._locked_provider_call(operation),
                 timeout_seconds=remaining,
             )
+            if state == "timeout":
+                self._pending_exchange_key = exchange_key
+            return state, value
         finally:
             self._write_gate.release()
 
@@ -1359,7 +1375,8 @@ class Mem0ConversationMemoryAdapter:
                 occurred_at=occurred_at,
                 source_id=source_id,
                 user_id=user_id,
-            )
+            ),
+            exchange_key=(user_id, source_id),
         )
         if state in {"timeout", "inflight"}:
             self._last_error_code = "MEM0_WRITE_TIMEOUT"
@@ -1404,6 +1421,8 @@ class Mem0ConversationMemoryAdapter:
             state, value = self._write_call.settle(
                 timeout_seconds=self.config.write_timeout_seconds,
             )
+            if state != "timeout":
+                self._pending_exchange_key = None
             if (
                 state == "completed"
                 and isinstance(value, MemoryWriteResult)

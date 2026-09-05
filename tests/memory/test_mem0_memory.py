@@ -1742,6 +1742,41 @@ def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
     assert settled.memory_ids == ("memory.fixture.1",)
 
 
+def test_outbox_retry_recovers_nested_mem0_timeout(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    class SlowMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            release.wait(1)
+            return super().add(messages, **kwargs)
+
+    backend = SlowMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, replace(_config(tmp_path), write_timeout_seconds=0.1))
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"letters": [{
+        "letter_id": "late-letter", "reply_revision": 1, "letter_status": "COMPLETED",
+        "content": "我喜欢酸口，不吃香菜。", "reply_text": "我记住了。",
+        "created_at": NOW.isoformat(),
+    }]}), encoding="utf-8")
+    outbox = CanonicalMemoryOutbox(state, tmp_path / "delivery.sqlite3",
+        ConversationMemoryDeliveryCommitter(adapter, timeout_seconds=0.15), user_id="local-user")
+
+    async def scenario():
+        try:
+            first = await outbox.scan_once()
+            assert first.pending == 1
+            release.set()
+            await asyncio.sleep(0.06)
+            for _ in range(3):
+                await outbox.scan_once()
+            assert outbox.health()["terminal_count"] == 1
+            assert outbox.health()["pending_count"] == 0
+            assert sum(name == "add" for name, _ in backend.calls) == 1
+        finally:
+            release.set()
+    asyncio.run(scenario())
+
+
 def test_timed_out_exchange_settlement_is_bounded_when_provider_stays_blocked(
     tmp_path: Path,
 ) -> None:

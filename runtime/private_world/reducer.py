@@ -46,6 +46,7 @@ class ReducerInputError(ValueError):
 class ReducerEventKind(str, Enum):
     CANONICAL_REPLY_DELIVERED = "canonical_reply_delivered"
     BOUNDARY_RESPECTED = "boundary_respected"
+    SUPPORT_RECEIVED = "support_received"
     CONFLICT = "conflict"
     REPAIR = "repair"
     STAGE_CONFIRMED = "stage_confirmed"
@@ -357,7 +358,7 @@ def reduce_private_world(
 
     updates: dict[str, object] = {}
     reason_code = event.kind.value.upper()
-    if event.kind is ReducerEventKind.BOUNDARY_RESPECTED:
+    if event.kind in {ReducerEventKind.BOUNDARY_RESPECTED, ReducerEventKind.SUPPORT_RECEIVED}:
         updates = {
             "trust": _bounded(snapshot.trust, 1),
             "comfort": _bounded(snapshot.comfort, 1),

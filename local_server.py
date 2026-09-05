@@ -124,6 +124,8 @@ from private_world_candidate import (
 from private_world_candidates import SQLitePrivateWorldCandidateStore
 from private_world_service import PrivateWorldCommandService
 from runtime.memory.private_world_projection import project_private_world
+from runtime.private_world.daily_life import DailyLifeStore
+from runtime.private_world.daily_life_runtime import DailyLifeRuntime, life_persona
 from runtime.memory.private_world_runtime import (
     PrivateWorldRuntime,
     create_private_world_runtime,
@@ -559,6 +561,8 @@ class LetterAdapter:
         memory_port: MemoryPort | None = None,
         conversation_memory: ConversationMemoryPort | None = None,
         private_world_port: PrivateWorldPort | None = None,
+        daily_life: DailyLifeRuntime | None = None,
+        recent_letters: Callable[[], list[dict]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         runtime_config = config or LLM_CONFIG
@@ -569,6 +573,8 @@ class LetterAdapter:
         self._runtime = (runtime_config, runtime_gateway)
         self.memory_port: MemoryPort = memory_port or NullMemoryPort()
         self.conversation_memory = conversation_memory
+        self.daily_life = daily_life
+        self.recent_letters = recent_letters
         self.private_world_port: PrivateWorldPort = (
             private_world_port or NullPrivateWorldPort()
         )
@@ -716,8 +722,30 @@ class LetterAdapter:
             reply_context,
             user_input=user_content,
             max_units=self.config.max_input_chars,
-            history=history,
+            history=(*history, *self.recent_letter_fragments(content)),
+            evidence_summaries=self.daily_life_fragments(content),
         ).to_messages()
+
+    def daily_life_fragments(self, content: str) -> tuple[UntrustedFragment, ...]:
+        if self.daily_life is None:
+            return ()
+        try:
+            related = "\n".join(
+                pair["user_letter"] + "\n" + pair.get("linli_reply", "")
+                for fragment in self.recent_letter_fragments(content)
+                for pair in json.loads(fragment.text)["letters"]
+            )
+            value = self.daily_life.store.reply_context(content, now=self._now(), related_text=related)
+            return (UntrustedFragment("linli.daily-life", value),) if value else ()
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            return ()
+
+    def recent_letter_fragments(self, content: str = "") -> tuple[UntrustedFragment, ...]:
+        if self.recent_letters is None:
+            return ()
+        from runtime.reply.recent_correspondence import recent_correspondence
+        text = recent_correspondence(self.recent_letters(), query=content, excluded_sources=self._memory_source_exclusions())
+        return (UntrustedFragment("letters.recent", text),) if text else ()
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:
@@ -1002,7 +1030,16 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
             handle.write(serialized)
             handle.flush()
             _os.fsync(handle.fileno())
-        _os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                _os.replace(temporary, path)
+                break
+            except OSError as exc:
+                # A concurrent outbox reader on Windows can deny replacement
+                # briefly. Keep the existing file intact while retrying.
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
     except (OSError, UnicodeError):
         if descriptor is not None:
             try:
@@ -1181,7 +1218,26 @@ letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
+    recent_letters=lambda: list(store.letters),
 )
+
+
+def _create_daily_life_runtime() -> DailyLifeRuntime | None:
+    try:
+        path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
+        if not enabled or path is None:
+            return None
+        return DailyLifeRuntime(
+            DailyLifeStore(path.with_name("daily_life.sqlite3")),
+            lambda: letters_adapter.gateway,
+            lambda: life_persona(letters_adapter.persona_v2_path),
+        )
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+        return None
+
+
+daily_life_runtime = _create_daily_life_runtime()
+letters_adapter.daily_life = daily_life_runtime
 
 
 def _create_candidate_runtime() -> PrivateWorldCandidateRuntime:
@@ -1393,6 +1449,7 @@ media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
 private_world_candidate_tasks: set[asyncio.Task] = set()
+daily_life_tasks: dict[str, asyncio.Task] = {}
 reply_jobs: dict[str, asyncio.Task] = {}
 media_jobs: dict[str, asyncio.Task] = {}
 
@@ -3737,6 +3794,11 @@ def _schedule_pending_media_jobs() -> int:
 async def _start_reply_tasks(_app: web.Application) -> None:
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
+    if daily_life_runtime is not None:
+        daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+        for letter in store.letters:
+            if letter.get("letter_status") == "COMPLETED" and letter.get("daily_life_status") == "PENDING":
+                _schedule_daily_life_exchange(letter)
 
 
 def _start_ready_conversation_memory_runtime():
@@ -3772,13 +3834,16 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks)
+    tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks | set(daily_life_tasks.values()))
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     reply_tasks.clear()
     private_world_candidate_tasks.clear()
+    daily_life_tasks.clear()
+    if daily_life_runtime is not None:
+        await daily_life_runtime.close()
     media_tasks.clear()
     reply_jobs.clear()
     media_jobs.clear()
@@ -3817,6 +3882,45 @@ def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
         canonical_text.encode("utf-8")
     ).hexdigest()
     letter["private_world_semantic_key"] = f"canonical.{semantic_digest}"
+
+
+def _schedule_daily_life_exchange(letter: dict) -> None:
+    if daily_life_runtime is None:
+        return
+    if not letter.get("letter_id") or not letter.get("reply_revision"):
+        return
+    source_id = f"reply:{letter['letter_id']}:{letter['reply_revision']}"
+    active = daily_life_tasks.get(source_id)
+    if active is not None and not active.done():
+        return
+
+    async def deliver():
+        try:
+            await daily_life_runtime.consume_exchange(
+                source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
+                occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
+            )
+            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"])
+            if signal is not None:
+                if private_world_relationship_committer is None:
+                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+                relationship_status = private_world_relationship_committer.commit_exchange(
+                    letter["private_world_delivery_id"], letter["content"], letter["reply_text"], signal,
+                    occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
+                )
+                letter["relationship_status"] = relationship_status.value
+                if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
+                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+            letter["daily_life_status"] = "COMMITTED"
+            letter.pop("daily_life_error_code", None)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
+            letter["daily_life_error_code"] = "DAILY_LIFE_EXCHANGE_UNAVAILABLE"
+        finally:
+            _persist_store_state()
+
+    task = asyncio.create_task(deliver())
+    daily_life_tasks[source_id] = task
+    task.add_done_callback(lambda _task: daily_life_tasks.pop(source_id, None))
 
 
 async def _deliver_private_world_candidate(
@@ -4098,6 +4202,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         return False
 
     _prepare_private_world_delivery(letter, result.text)
+    if daily_life_runtime is not None:
+        letter["daily_life_status"] = "PENDING"
     letter["reply_text"] = result.text
     letter["letter_status"] = "COMPLETED"
     _mark_superseded_failed_retries()
@@ -4106,6 +4212,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     _persist_store_state()
     if private_world_committed:
         _schedule_private_world_candidate(letter, content, result.text)
+    _schedule_daily_life_exchange(letter)
 
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,

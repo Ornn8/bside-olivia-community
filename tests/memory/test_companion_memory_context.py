@@ -12,6 +12,7 @@ from memory_port import (
     CONVERSATION_MEMORY,
     LEGACY_LETTERS,
     MemoryRecord,
+    NullMemoryPort,
 )
 
 
@@ -115,6 +116,28 @@ def test_enabled_mem0_replaces_old_sqlite_conversation_but_keeps_archive() -> No
     assert prompt.domains == (CONVERSATION_MEMORY, LEGACY_LETTERS)
     assert archive.calls == [(LEGACY_LETTERS,)]
     assert current.calls == [("东京", "local-user", 8)]
+
+
+def test_empty_archive_budget_preserves_all_retrieved_preference_details() -> None:
+    class Preferences(FakeConversationMemory):
+        def search_context(self, query, *, user_id, limit):
+            return tuple(ConversationMemoryRecord(
+                memory_id=f"memory-pref-{index}", text=text, user_id=user_id,
+                source_id="reply:previous-letter:1", score=0.9 - index * 0.01,
+                occurred_at=NOW, created_at=NOW,
+            ) for index, text in enumerate((
+                "这些是用户的口味，不是林离的口味。",
+                "冰饮会让用户胃痛，所以只喝温水。",
+                "用户喜欢酸口和微辣，不喜欢甜腻，不吃香菜。",
+                "用户最喜欢吃酸汤面。",
+            )))
+
+    prompt = CompanionMemoryPromptBuilder(NullMemoryPort(), Preferences(), user_id="local-user").build(
+        "帮我点一碗面和饮料，怎么备注？", max_chars=2400)
+    assert len(prompt.text) <= 2400
+    assert len(prompt.references) == 4
+    assert "不吃香菜" in prompt.text
+    assert "胃痛" in prompt.text
 
 
 def test_prompt_keeps_mem0_data_untrusted_and_does_not_surface_scope_or_metadata() -> None:

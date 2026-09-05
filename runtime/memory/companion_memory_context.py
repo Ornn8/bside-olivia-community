@@ -195,6 +195,16 @@ class CompanionMemoryPromptBuilder:
 
         current_budget = max(0, int(budget * self.current_share))
         archive_budget = max(0, budget - current_budget)
+        archive = MemoryPromptBuilder(
+            _LegacyArchiveView(self.archive_memory),
+            max_results=self.max_results,
+            legacy_budget=archive_budget,
+            conversation_budget=0,
+            conversation_memory=None,
+        ).build(query, max_chars=archive_budget)
+        # Reserve space for actual Archive references, not an empty half of the
+        # prompt. This keeps recall bounded without dropping facts needlessly.
+        current_budget = max(0, budget - len(archive.text) - (1 if archive.text else 0))
         current = MemoryPromptBuilder(
             _ConversationMemoryView(
                 self.conversation_memory,
@@ -209,14 +219,6 @@ class CompanionMemoryPromptBuilder:
             max_chars=current_budget,
             exclude_source_ids=exclude_source_ids,
         )
-        archive = MemoryPromptBuilder(
-            _LegacyArchiveView(self.archive_memory),
-            max_results=self.max_results,
-            legacy_budget=archive_budget,
-            conversation_budget=0,
-            conversation_memory=None,
-        ).build(query, max_chars=archive_budget)
-
         parts = tuple(prompt.text for prompt in (current, archive) if prompt.text)
         references = (*current.references, *archive.references)
         domains = tuple(dict.fromkeys((*current.domains, *archive.domains)))

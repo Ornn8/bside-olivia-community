@@ -80,6 +80,7 @@ from private_world_ledger import LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_port import PrivateWorldPort, PrivateWorldSnapshot
 from runtime.memory.private_world_projection import project_private_world
 from runtime.memory.private_world_runtime import resolve_private_world_database
+from runtime.private_world.daily_life_runtime import DailyLifeRuntime
 from runtime.media.media_paths import configured_media_path
 from private_world_service import PrivateWorldCommandService
 
@@ -589,6 +590,7 @@ def create_original_client_server_runtime(
     *,
     memory_admin: ConversationMemoryAdminService | None = None,
     private_world: PrivateWorldPort | None = None,
+    daily_life: DailyLifeRuntime | None = None,
     candidates: SQLitePrivateWorldCandidateStore | None = None,
     candidate_decisions: CandidateReviewBackend | None = None,
     embedding_installer: Mem0EmbeddingInstaller | None = None,
@@ -672,6 +674,7 @@ def create_original_client_server_runtime(
         app,
         backend,
         trusted_origins=origins,
+        daily_life=daily_life,
     )
     mount_original_client_companion_mutation_api(
         app,
@@ -993,6 +996,7 @@ def create_configured_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
         private_world=private_world,
+        daily_life=getattr(server_module, "daily_life_runtime", None),
         candidates=candidates,
         candidate_decisions=candidate_decisions,
         embedding_installer=embedding_installer,
