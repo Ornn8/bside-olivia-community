@@ -132,6 +132,7 @@ linli_character/message_templates.json
 # Ignore documentation by default; explicitly allow formal documents, the
 # public index, and sanitized historical snapshots.
 docs/*
+!docs/PRIVATE_WORLD_LIFE.md
 docs/reviews/*
 !docs/README.md
 !docs/B11_VISUAL_RUNTIME.md
