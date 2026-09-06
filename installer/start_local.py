@@ -940,12 +940,12 @@ def main(argv: list[str] | None = None) -> int:
             attempt=1,
             exit_code=exit_code,
         )
-        if fresh_profile and exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
+        if exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
             _append_launcher_event(
                 data_root,
                 "client_retry",
                 attempt=2,
-                reason="known_fresh_profile_exit",
+                reason="known_fresh_profile_exit" if fresh_profile else "known_client_exit",
             )
             _prepare_native_user_settings(roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)

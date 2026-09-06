@@ -2073,6 +2073,32 @@ def test_resend_retry_storage_error_preserves_original_letter(monkeypatch):
     assert local_server.store.letters == [before]
 
 
+@pytest.mark.parametrize("same_request", [False, True])
+def test_parallel_letter_admission_is_atomic_and_idempotent(monkeypatch, same_request):
+    import local_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *a, **k: None)
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: False)
+    async def scenario():
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            async def send(index):
+                response = await client.post("/toy/letter/send", json={
+                    "content": "synthetic concurrent" if same_request else f"synthetic concurrent {index}",
+                    "idempotency_key": "same" if same_request else f"request-{index}",
+                })
+                return await response.json()
+            return await asyncio.gather(send(0), send(1))
+    results = asyncio.run(scenario())
+    assert len(local_server.store.letters) == 1
+    assert sorted(result["code"] for result in results) == ([0, 0] if same_request else [0, 409])
+    if same_request:
+        assert results[0]["data"]["letter_id"] == results[1]["data"]["letter_id"]
+
+
 def test_llm_failure_can_be_retried_through_the_resend_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

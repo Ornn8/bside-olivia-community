@@ -1196,7 +1196,7 @@ def test_patch_feapp_supports_original_client_0_0_9_627(
     assert 'localStorage.setItem("appMode","lite")' in patched
     assert "await t.replace({name:ve.Home})" in patched
     assert "await t.replace({name:ve.Collection})" not in patched
-    assert '"hide-write":!1' in patched
+    assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))' in patched
     assert '"hide-write":o(p)||!o(N3)' not in patched
     assert 'const W=K?"":Nt()' in patched
     assert 'Ee=Nt();f.value=' in patched

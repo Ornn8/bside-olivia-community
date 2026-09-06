@@ -367,6 +367,13 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'function O(){R(),t.value=[],s.value=0,i.value=0,m.value=0,',
         'function O(){R(),t.value=[],s.value=99,i.value=0,m.value=0,',
     )
+    # Migrate the old always-visible offline patch and refresh terminal status
+    # even when unread/media fields are unchanged (notably pending -> failed).
+    source = source.replace('"hide-write":!1', MAILBOX_WRITE_ANCHOR_0627)
+    source = source.replace(
+        're.isUnread!==Ee.isUnread)&&',
+        're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)&&',
+    )
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
