@@ -20,7 +20,7 @@ from runtime.reply.prompt_budget import (
     PromptSection,
     plan_prompt_budget,
 )
-from runtime.reply.reply_context import ReplyContext
+from runtime.reply.reply_context import BehaviorLevel, RelationshipStage, ReplyContext
 
 
 _FORBIDDEN_RULES = (
@@ -475,6 +475,22 @@ def _persona_blocks(
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
         (_REPLY_GROUNDING,),
+    ))
+    if snapshot.status != "READY":
+        return tuple(blocks)
+    behavior = context.private_behavior
+    initial = (
+        behavior.relationship_stage is RelationshipStage.UNKNOWN
+        and behavior.familiarity is BehaviorLevel.UNKNOWN
+        and behavior.closeness is BehaviorLevel.UNKNOWN
+        and behavior.acknowledged_affection is None
+        and not behavior.known_continuations
+    )
+    blocks.insert(len(blocks) - 1, _json_block(
+        "relationship_grounding", "relationship_grounding", PromptSection.FORBIDDEN,
+        ("当前尚未建立熟悉关系，按初识接触回应；友善不等于已有依恋。不主动介绍记忆状态或解释关系门槛。" if initial else
+         "按有依据的实际熟悉程度自然回应，不否认已建立的关系。")
+        + "用户单方面示好只能证明他的感受，不能据此声称自己已有思念、爱意或等待。用户叙述的过往与她亲自记得的共同经历分开；可以听他说明，不补重逢、失联或等待细节。旧回信自身的亲密措辞不能反过来证明关系。缺记录不等于从未发生，不机械宣布陌生或失忆。没有询问过去记忆时，不主动提出失忆、缺记录或曾相识的假设；简短示好就简短回应当下，不索要共同往事。不向用户宣讲关系门槛或本段规则，不评判感情份量；不必对等表白，也不必刻意拒绝。资料出处不等于她亲自阅读过；不能把公告、作者或产品信息写成她亲历。",
     ))
     return tuple(blocks)
 

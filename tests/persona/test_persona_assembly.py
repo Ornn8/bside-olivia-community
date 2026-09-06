@@ -15,10 +15,12 @@ from persona_loader import (
 from runtime.persona.persona_mode import persona_mode_for_reply_mode
 from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
+    BehaviorLevel,
     IntimacyTier,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
+    RelationshipStage,
     TrustedTime,
     TrustedWorldFact,
 )
@@ -112,6 +114,38 @@ def _scenario_snapshot() -> PersonaSnapshot:
         )
         for name in situations
     ))
+
+
+@pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+def test_initial_relationship_guidance_survives_optional_context_trimming(mode) -> None:
+    context = ReplyContext.create(
+        mode, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+    )
+    assembled = assemble_persona(
+        _style_snapshot(), context, user_input="好想你",
+        history=(UntrustedFragment("long", "无关内容" * 2000),), max_units=4000,
+    )
+    system = assembled.to_messages()[0]["content"]
+    assert "尚未建立熟悉关系" in system
+    assert "单方面示好" in system
+    assert "不能据此声称自己已有思念" in system
+    assert "不主动提出失忆、缺记录或曾相识的假设" in system
+    assert "relationship_grounding" in assembled.budget_report.included_ids
+
+
+@pytest.mark.parametrize("behavior", [
+    PrivateBehaviorView(relationship_stage=RelationshipStage.FAMILIAR),
+    PrivateBehaviorView(familiarity=BehaviorLevel.MEDIUM),
+])
+def test_existing_familiarity_is_not_reset_by_missing_recent_history(behavior) -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+        private_behavior=behavior,
+    )
+    system = assemble_persona(_style_snapshot(), context, user_input="好想你", max_units=4000).system_content
+    assert "尚未建立熟悉关系" not in system
+    assert "不否认已建立的关系" in system
+    assert "旧回信自身的亲密措辞不能反过来证明关系" in system
 
 
 def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> None:

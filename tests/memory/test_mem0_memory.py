@@ -142,6 +142,21 @@ def _config(tmp_path: Path) -> Mem0Config:
     )
 
 
+@pytest.mark.parametrize("source_id", ["reply:first-contact:1", "history:first-contact"])
+def test_extraction_keeps_attribution_without_inventing_relationship_history(tmp_path, source_id):
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    adapter.remember_exchange(
+        source_id=source_id, user_id="local-user", user_message="好想你。你或许不知道我已经失去过你一次。",
+        assistant_message="我收到了，你可以说说。", occurred_at=NOW,
+    )
+    prompts = [call["prompt"] for method, call in backend.calls if method == "add"]
+    assert prompts
+    assert all("不得推导持续往来、再次表达、情感依赖" in prompt for prompt in prompts)
+    assert all("用户说过不等于双方经历过" in prompt for prompt in prompts)
+    assert "原文短句逐字引用" in prompts[0]
+
+
 def _write_verified_embedding_cache(config: Mem0Config) -> None:
     files = {
         "1_Pooling/config.json": b"{\"word_embedding_dimension\": 512}",
