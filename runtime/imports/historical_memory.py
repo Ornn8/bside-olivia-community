@@ -372,23 +372,35 @@ def migrate_historical_exchanges(
         ):
             settle_exchange_write = getattr(memory, "settle_exchange_write", None)
             if callable(settle_exchange_write):
-                try:
-                    settled = settle_exchange_write(
-                        source_id=exchange.memory_source_id,
-                        user_id=normalized_user_id,
+                while True:
+                    try:
+                        settled = settle_exchange_write(
+                            source_id=exchange.memory_source_id,
+                            user_id=normalized_user_id,
+                        )
+                    except Exception:
+                        settled = None
+                    result = (
+                        settled
+                        if isinstance(settled, MemoryWriteResult)
+                        and settled.source_id == exchange.memory_source_id
+                        else MemoryWriteResult(
+                            MemoryWriteStatus.UNAVAILABLE,
+                            exchange.memory_source_id,
+                            error_code="MEM0_WRITE_UNCERTAIN",
+                        )
                     )
-                except Exception:
-                    settled = None
-                result = (
-                    settled
-                    if isinstance(settled, MemoryWriteResult)
-                    and settled.source_id == exchange.memory_source_id
-                    else MemoryWriteResult(
-                        MemoryWriteStatus.UNAVAILABLE,
-                        exchange.memory_source_id,
-                        error_code="MEM0_WRITE_UNCERTAIN",
-                    )
-                )
+                    # Historical import already runs as a background task. A
+                    # bounded wait expiring does not cancel the provider write:
+                    # settle that same call before publishing or rolling back.
+                    if not (
+                        isinstance(settled, MemoryWriteResult)
+                        and settled.source_id == exchange.memory_source_id
+                        and result.status is MemoryWriteStatus.UNAVAILABLE
+                        and result.error_code in {"MEM0_WRITE_TIMEOUT", "MEM0_WRITE_UNCERTAIN"}
+                        and getattr(memory, "operation_pending", False) is True
+                    ):
+                        break
         if result.status is MemoryWriteStatus.UNAVAILABLE:
             failure_code = result.error_code or "MEM0_WRITE_FAILED"
             if require_persisted:

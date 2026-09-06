@@ -408,6 +408,19 @@ class DeferredConversationMemoryAdapter:
     def remember_exchange(self, **kwargs):
         return self._current().remember_exchange(**kwargs)
 
+    @property
+    def operation_pending(self) -> bool:
+        return getattr(self._current(), "operation_pending", False) is True
+
+    def settle_exchange_write(self, *, source_id: str, user_id: str) -> MemoryWriteResult:
+        settle = getattr(self._current(), "settle_exchange_write", None)
+        if callable(settle):
+            return settle(source_id=source_id, user_id=user_id)
+        return MemoryWriteResult(
+            MemoryWriteStatus.UNAVAILABLE, source_id,
+            error_code="MEM0_WRITE_UNCERTAIN",
+        )
+
     def list_memories(self, *, user_id: str, limit: int = 100):
         return self._current().list_memories(user_id=user_id, limit=limit)
 
