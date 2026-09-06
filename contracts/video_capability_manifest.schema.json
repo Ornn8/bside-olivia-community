@@ -52,7 +52,8 @@
               "OLIVIA_ROFORMER_PYTHON",
               "OLIVIA_ROFORMER_MODEL_PATH",
               "OLIVIA_ROFORMER_CONFIG_PATH",
-              "OLIVIA_SEED_VC_ROOT",
+              "OLIVIA_SOULX_SVC_ROOT",
+              "OLIVIA_SOULX_SVC_PYTHON",
               "OLIVIA_TTS_CONFIG",
               "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"
             ]

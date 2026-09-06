@@ -419,6 +419,8 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     )
     monkeypatch.setattr(music_reply, "_media_duration_seconds", lambda *_args, **_kwargs: 60.0)
     observed: dict[str, object] = {}
+    _fake_singing_conversion(project_root, monkeypatch, observed)
+    environment["OLIVIA_REPLY_VOICE_REFERENCE"] = "voice/reference.wav"
     output = tmp_path / "output.mp4"
 
     monkeypatch.setattr(
@@ -463,6 +465,7 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
         )
         observed["roformer_environment"] = kwargs["environment"]
         write(Path(destination), b"vocals")
+        write(kwargs["accompaniment_path"], b"piano")
 
     monkeypatch.setattr(music_reply, "separate_vocals", fake_separate)
 
@@ -517,6 +520,8 @@ def test_musical_render_uses_one_immutable_provider_path_snapshot(
     assert observed["face_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
     assert observed["tts_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
     assert observed["roformer_environment"]["OLIVIA_PROJECT_ROOT"] == str(project_root)
+    assert observed["conversion_environment"] is observed["roformer_environment"]
+    assert observed["conversion_reference"] == project_root / "voice/reference.wav"
     assert output.read_bytes() == b"final"
 
 
@@ -1089,6 +1094,7 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
         monkeypatch.setenv(name, path.relative_to(project_root).as_posix())
 
     observed: dict[str, object] = {}
+    _fake_singing_conversion(project_root, monkeypatch, observed)
 
     class FakeMiniMaxWorker:
         def __init__(self, *, python_path, worker_path, comfy_root, **_kwargs):
@@ -1107,6 +1113,7 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
                 stream.setsampwidth(2)
                 stream.setframerate(16000)
                 stream.writeframes(b"\0\0" * 1600)
+            shutil.copyfile(output_root / "synthetic_vocals.wav", output_root / "synthetic_instrumental.wav")
         elif error_code == "ROFORMER_INPUT_CONVERSION_FAILED":
             Path(command[-1]).write_bytes(b"wav")
         elif error_code == "MUSIC_REPLY_AUDIO_MUX_FAILED":
@@ -1184,4 +1191,26 @@ def test_musical_renderer_resolves_all_provider_paths_from_project_root(
         str(provider_paths["OLIVIA_ROFORMER_CONFIG_PATH"]),
     ]
     assert roformer_commands[0][0] == str(provider_paths["OLIVIA_ROFORMER_EXE"])
+    assert observed["conversion_reference"] == project_root / "voice/reference.wav"
     assert output.read_bytes() == b"final-video"
+
+
+def _fake_singing_conversion(project_root, monkeypatch, observed):
+    reference = project_root / "voice/reference.wav"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0" * 1600)
+    monkeypatch.setenv("OLIVIA_REPLY_VOICE_REFERENCE", "voice/reference.wav")
+    monkeypatch.setattr(music_reply, "voice_conversion_fingerprint", lambda _env: {"contract": "synthetic-soulx"})
+    def convert(vocals, effective_reference, output, **kwargs):
+        assert vocals.is_absolute()
+        observed["conversion_reference"] = effective_reference
+        observed["conversion_environment"] = kwargs["environment"]
+        output.write_bytes(b"converted-vocals")
+    def mix(vocals, accompaniment, output, **kwargs):
+        assert vocals.is_absolute() and accompaniment.is_absolute()
+        assert vocals.read_bytes() == b"converted-vocals"
+        output.write_bytes(b"remixed-song")
+    monkeypatch.setattr(music_reply, "convert_singing_voice", convert)
+    monkeypatch.setattr(music_reply, "mix_song_voice", mix)

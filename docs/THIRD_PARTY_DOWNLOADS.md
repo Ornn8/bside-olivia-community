@@ -4,7 +4,7 @@
 
 ## 客户端内一键安装视频能力
 
-安装后的客户端在“本地能力与下载”中只提供一个“视频回信（说话 + 音乐）”入口。点击一次会按依赖顺序组装 CosyVoice 3、LatentSync、MiniMax Music 3、RoFormer 与 FFmpeg 的公开部分；内部 bundle 仅用于断点续传和依赖编排，不作为用户选择项。LiveTalking、Seed-VC 与 Demucs 不参与这条固定产品链路的 readiness。
+安装后的客户端在“本地能力与下载”中只提供一个“视频回信（说话 + 音乐）”入口。点击一次会按依赖顺序组装 Breeze TTS 2、LatentSync、MiniMax Music 3、RoFormer、SoulX 音色转换与 FFmpeg 的公开部分；内部 bundle 仅用于断点续传和依赖编排，不作为用户选择项。LiveTalking 与 Demucs 不参与这条固定产品链路的 readiness。
 
 下载器默认选择国内源，失败后回退官方源；切换来源时丢弃原来源的 `.part`，同一来源内使用 HTTP Range 续传。每个文件都校验声明的 size 和 SHA-256。声明了 `install.kind=zip` 的归档复用 Windows 更新包路径规则，在 staging 内拒绝路径逃逸、ADS、设备名、尾随点/空格、链接、重复路径和超限展开，并在解包后复验完整文件树。公开文件组装后会持久化运行时根路径；缺少运行时、正版素材或任一清单文件时不会把视频能力标记为 `ready`。
 
