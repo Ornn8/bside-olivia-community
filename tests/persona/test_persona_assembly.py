@@ -17,6 +17,7 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
     BehaviorLevel,
     IntimacyTier,
+    KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
@@ -144,6 +145,7 @@ def test_initial_relationship_guidance_survives_optional_context_trimming(mode) 
     assert "不能据此声称自己已有思念" in system
     assert "不主动提出失忆、缺记录或曾相识的假设" in system
     assert "relationship_grounding" in assembled.budget_report.included_ids
+    assert "没有角色已知的身份延续事实" in system
 
 
 @pytest.mark.parametrize("behavior", [
@@ -159,6 +161,18 @@ def test_existing_familiarity_is_not_reset_by_missing_recent_history(behavior) -
     assert "尚未建立熟悉关系" not in system
     assert "不否认已建立的关系" in system
     assert "旧回信自身的亲密措辞不能反过来证明关系" in system
+
+
+def test_known_continuation_is_not_denied_by_unknown_continuation_guidance():
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+        private_behavior=PrivateBehaviorView(known_continuations=(
+            KnownContinuationFact("continuation.synthetic", "我知道这里保留了书信。"),
+        )),
+    )
+    system = assemble_persona(_style_snapshot(), context, user_input="你好", max_units=8000).system_content
+    assert "没有角色已知的身份延续事实" not in system
+    assert "我知道这里保留了书信。" in system
 
 
 def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> None:
