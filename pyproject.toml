@@ -108,7 +108,7 @@ include = [
 contracts = ["*.json"]
 "contracts.asset_baseline" = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
-installer = ["video-capability-manifest.json", "seed-vc-overlap-frames.patch"]
+installer = ["video-capability-manifest.json"]
 linli_character = [
     "persona_release_v2.json",
     "persona_release_provenance_v2.json",

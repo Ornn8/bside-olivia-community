@@ -83,6 +83,7 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
         "latentsync",
         "minimax_music3",
         "roformer",
+        "soulx_svc",
         "official_video_assets",
         "music_video_assets",
         "ffmpeg",
@@ -117,6 +118,7 @@ def test_video_reply_dependency_catalog_is_complete_and_prefers_mainland_sources
     )
     assert dependencies["official_video_assets"]["install_mode"] == "local_import"
     assert dependencies["ffmpeg"]["install_mode"] == "manual"
+    assert dependencies["soulx_svc"]["reason_code"] == "SOULX_SVC_UNAVAILABLE"
 
 
 def test_video_reply_requires_voice_only_when_private_pair_is_declared(
@@ -254,6 +256,8 @@ def test_video_reply_blocks_an_invalid_explicit_effective_voice(
 def test_video_reply_readiness_does_not_require_livetalking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(music_reply, "voice_conversion_runtime_ready", lambda _env: True)
+    monkeypatch.setattr(music_reply, "_run_runtime_probe", lambda *_a, **_kw: True)
     tts_config = _write(tmp_path / "config" / "tts.json")
     data_root = tmp_path / "data"
     data_root.mkdir()
@@ -278,6 +282,8 @@ def test_video_reply_readiness_does_not_require_livetalking(
     performance = _write(tmp_path / "private" / "performance.mp4")
     ffmpeg = _write(tmp_path / "ffmpeg.exe")
     environment = {
+        "OLIVIA_SOULX_SVC_ROOT": str(tmp_path),
+        "OLIVIA_SOULX_SVC_PYTHON": str(_write(tmp_path / "soulx-python.exe")),
         "OLIVIA_TTS_CONFIG": str(tts_config),
         "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
         "OLIVIA_MINIMAX_COMFY_ROOT": str(minimax_root),
@@ -373,9 +379,57 @@ def test_video_reply_readiness_rechecks_breeze_minimum_vram(
     ]
 
 
+def test_soulx_svc_readiness_checks_local_closure_before_optional_cuda_probe(tmp_path, monkeypatch):
+    environment = {
+        "OLIVIA_SOULX_SVC_ROOT": str(tmp_path),
+        "OLIVIA_SOULX_SVC_PYTHON": str(_write(tmp_path / "python.exe")),
+    }
+    calls = []
+    monkeypatch.setattr(music_reply, "_run_runtime_probe", lambda command, **kw: calls.append((command, kw)) or False)
+    monkeypatch.setattr(music_reply, "voice_conversion_runtime_ready", lambda _env: False)
+    def status(probe):
+        result = music_reply.video_reply_dependency_status(environment, performance_video_path=None, probe_runtime=probe)
+        return next(item for item in result["dependencies"] if item["id"] == "soulx_svc")
+    assert status(True)["state"] == "missing"
+    assert calls == []
+    monkeypatch.setattr(music_reply, "voice_conversion_runtime_ready", lambda _env: True)
+    assert status(False)["state"] == "ready"
+    assert calls == []
+    assert status(True)["state"] == "missing"
+    assert calls[0][0][1:3] == ["-I", "-B"]
+    assert "torch, transformers, librosa" in calls[0][0][-1]
+    assert "torch.cuda.is_available()" in calls[0][0][-1]
+
+
+@pytest.mark.parametrize("has_instrumental", [True, False])
+def test_roformer_preserves_both_stems_and_never_substitutes_original_song(tmp_path, monkeypatch, has_instrumental):
+    song = _write(tmp_path / "song.flac", b"original-song")
+    vocals, accompaniment = tmp_path / "vocals.wav", tmp_path / "piano.wav"
+    monkeypatch.setattr(music_reply, "_valid_wave_audio", lambda *_a, **_kw: True)
+    def run(command, code, **_kwargs):
+        if code == "ROFORMER_FAILED":
+            outputs = Path(command[command.index("--store_dir") + 1])
+            _write(outputs / "song_vocals.wav", b"separated-vocals")
+            if has_instrumental:
+                _write(outputs / "song_instrumental.wav", b"separated-piano")
+    monkeypatch.setattr(music_reply, "_run", run)
+    kwargs = dict(executable=_write(tmp_path / "roformer.exe"), model_path=_write(tmp_path / "model.ckpt"),
+                  config_path=_write(tmp_path / "model.yaml"), environment={},
+                  ffmpeg_path=_write(tmp_path / "ffmpeg.exe"), accompaniment_path=accompaniment)
+    if has_instrumental:
+        music_reply.separate_vocals(song, vocals, **kwargs)
+        assert vocals.read_bytes() == b"separated-vocals"
+        assert accompaniment.read_bytes() == b"separated-piano"
+    else:
+        with pytest.raises(music_reply.MusicReplyError, match="ROFORMER_INSTRUMENTAL_MISSING"):
+            music_reply.separate_vocals(song, vocals, **kwargs)
+        assert not vocals.exists() and not accompaniment.exists()
+
+
 def test_musical_reply_accepts_portable_roformer_python(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(music_reply, "voice_conversion_runtime_ready", lambda _env: True)
     data_root = tmp_path / "data"
     data_root.mkdir()
     minimax_root = tmp_path / "minimax"
@@ -941,9 +995,27 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         order.append("separate")
         observed["separate"] = (Path(source), Path(destination))
         _write(Path(destination), b"vocals")
+        order.append("accompaniment")
+        _write(_kwargs["accompaniment_path"], b"piano")
+
+    def fake_convert(vocals, reference, destination, **_kwargs):
+        order.append("convert")
+        assert Path(vocals).read_bytes() == b"vocals"
+        _write(Path(destination), b"linli-vocals")
+
+    def fake_mix(vocals, accompaniment, destination, **_kwargs):
+        order.append("mix")
+        assert Path(vocals).read_bytes() == b"linli-vocals"
+        assert Path(accompaniment).read_bytes() == b"piano"
+        _write(Path(destination), b"converted-song")
+
+    monkeypatch.setattr(music_reply, "convert_singing_voice", fake_convert, raising=False)
+    monkeypatch.setattr(music_reply, "mix_song_voice", fake_mix, raising=False)
 
     def fake_face(base, vocals, full_song, destination, **_kwargs):
         order.append("performance")
+        assert Path(vocals).read_bytes() == b"linli-vocals"
+        assert Path(full_song).read_bytes() == b"converted-song"
         observed["performance"] = (
             Path(base),
             Path(vocals),
@@ -1008,6 +1080,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         "spoken",
         "minimax",
         "separate",
+        "accompaniment",
+        "convert",
+        "mix",
         "performance",
         "concat",
     ]
@@ -1046,6 +1121,60 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert result["spoken_stage"] == "completed"
     assert result["music_stage"] == "completed"
     assert result["performance_stage"] == "completed"
+
+    # Upgrading an old manifest must reuse costly generation/separation, but never
+    # reuse the pre-conversion performance or original-song final audio.
+    manifest_path = tmp_path / "final-music-v2-40s-stages" / "manifest.json"
+    manifest["providers"].pop("singing_voice")
+    for name in ("accompaniment", "converted_vocals", "mixed_song"):
+        manifest["artifacts"].pop(name)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    order.clear()
+    render()
+    assert order == ["separate", "accompaniment", "convert", "mix", "performance", "concat"]
+
+    # The old config file can still contain cfg=4 even though the effective
+    # provider now forces cfg=1. A pre-contract speech artifact must not survive.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["providers"].pop("speech", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    order.clear()
+    render()
+    assert "spoken" in order
+    assert "minimax" not in order and "separate" not in order and "convert" not in order
+
+    # Provider revision changes invalidate converted outputs, not source stems.
+    monkeypatch.setattr(music_reply, "voice_conversion_fingerprint", lambda _env: {"model": "synthetic-v2"})
+    order.clear()
+    render()
+    assert order == ["convert", "mix", "performance", "concat"]
+
+    # The reference bytes, rather than just its filename, bind conversion cache.
+    reference = tmp_path / "voice-reference.wav"
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\1\0" * 1_600)
+    order.clear()
+    render()
+    assert order == ["convert", "mix", "performance", "concat"]
+
+    # A failed converter cannot fall back to the unconverted song or publish a
+    # partial replacement; retry still does not regenerate the original song.
+    previous_output = output.read_bytes()
+    monkeypatch.setattr(music_reply, "voice_conversion_fingerprint", lambda _env: {"model": "synthetic-v3"})
+    def failed_convert(_vocals, _reference, destination, **_kwargs):
+        _write(destination, b"partial")
+        raise music_reply.VoiceConversionError("SOULX_SVC_FAILED")
+    monkeypatch.setattr(music_reply, "convert_singing_voice", failed_convert)
+    order.clear()
+    with pytest.raises(music_reply.MusicReplyError, match="SINGING_VOICE_CONVERSION_FAILED"):
+        render()
+    assert order == []
+    assert output.read_bytes() == previous_output
+    assert not (manifest_path.parent / "converted-vocals.partial.wav").exists()
+    monkeypatch.setattr(music_reply, "convert_singing_voice", fake_convert)
+    render()
+    assert order == ["convert", "mix", "performance", "concat"]
 
 
 def test_render_musical_reply_fails_closed_without_official_transition(
@@ -1134,6 +1263,7 @@ def test_render_musical_reply_resumes_from_persisted_spoken_and_song_stages(
         if calls["separate"] == 1:
             raise music_reply.MusicReplyError("ROFORMER_FAILED")
         _write(Path(destination), b"vocals")
+        _write(_kwargs["accompaniment_path"], b"piano")
 
     monkeypatch.setattr(music_reply, "render_reply_video", fake_normal)
     monkeypatch.setattr(music_reply.MiniMaxMusic3Worker, "generate", fake_generate)
@@ -1334,6 +1464,7 @@ def test_render_musical_reply_invalidates_manifest_cached_short_song_audio(
     def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
+        _write(_kwargs["accompaniment_path"], b"piano")
 
     def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
@@ -1414,7 +1545,8 @@ def test_invalid_partials_preserve_every_published_music_stage(tmp_path: Path, m
     monkeypatch.setattr(music_reply, "separate_vocals", lambda _source, destination, **_kwargs: _write(Path(destination), b"short-vocals"))
     rejected("vocals", old_vocals, b"last-known-good-vocals", stage_root / "vocals.partial.wav")
     old_video = _write(tmp_path / "song-video.mp4", b"last-known-good-video")
-    monkeypatch.setattr(music_reply, "separate_vocals", lambda _source, destination, **_kwargs: _write(Path(destination), b"valid-vocals"))
+    monkeypatch.setattr(music_reply, "separate_vocals", lambda _source, destination, **_kwargs: (
+        _write(Path(destination), b"valid-vocals"), _write(_kwargs["accompaniment_path"], b"piano")))
     monkeypatch.setattr(music_reply, "render_full_face_performance", lambda _base, _vocals, _song, destination, **_kwargs: (_write(Path(destination), b"short-video") and {"performance_stage": "completed"}))
     rejected("song_video", old_video, b"last-known-good-video", tmp_path / "song-video.partial.mp4")
     old_output = _write(output, b"last-known-good-final")
@@ -1498,6 +1630,7 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
     def fake_separate(_source, destination, **_kwargs):
         calls["separate"] += 1
         _write(Path(destination), f"vocals-{calls['separate']}".encode())
+        _write(_kwargs["accompaniment_path"], b"piano")
 
     def fake_face(_base, _vocals, _song, destination, **_kwargs):
         calls["performance"] += 1
@@ -1548,3 +1681,17 @@ def test_render_musical_reply_invalidates_cache_when_configured_provider_assets_
 @pytest.fixture(autouse=True)
 def _eligible_breeze_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(music_reply, "_breeze_hardware_status", lambda: (True, None))
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_singing_adapters(tmp_path, monkeypatch, request):
+    if not (request.node.name.startswith("test_render_musical_reply") or request.node.name == "test_invalid_partials_preserve_every_published_music_stage"):
+        return
+    reference = tmp_path / "voice-reference.wav"
+    with wave.open(str(reference), "wb") as target:
+        target.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        target.writeframes(b"\0\0" * 1_600)
+    monkeypatch.setenv("OLIVIA_REPLY_VOICE_REFERENCE", str(reference))
+    monkeypatch.setattr(music_reply, "voice_conversion_fingerprint", lambda _env: {"model": "synthetic-v1"})
+    monkeypatch.setattr(music_reply, "convert_singing_voice", lambda _vocals, _ref, output, **_kw: _write(output, b"converted"))
+    monkeypatch.setattr(music_reply, "mix_song_voice", lambda _vocals, _piano, output, **_kw: _write(output, b"mixed"))

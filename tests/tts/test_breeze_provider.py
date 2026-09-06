@@ -166,7 +166,7 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
         "breath_before_sentences": [2],
         "emphasize_sentences": [1],
     }
-    assert request["cfg_scale"] == 4.0
+    assert request["cfg_scale"] == 1.0
     assert request["model_variant"] == "int8_hybrid"
     assert request["max_new_tokens"] == 600
     assert request["quality_gate_required"] is True
@@ -184,7 +184,9 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
     assert BreezeTTS2Provider(limited).performance_request(plan)["max_new_tokens"] == 64
 
 
+@pytest.mark.parametrize("cfg_scale", [None, 1.0, 2.0])
 def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
+    cfg_scale,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -270,7 +272,12 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
     output = tmp_path / "speech.wav"
     status = tmp_path / "status.json"
 
+    if cfg_scale is None:
+        request.pop("cfg_scale")
+    else:
+        request["cfg_scale"] = cfg_scale
     external_breeze_worker._synthesize(request, output, status)
+    assert calls["generation"]["cfg_scale"] == (1.0 if cfg_scale is None else cfg_scale)
 
     assert calls["load"] == (
         "int8 hybrid (recommended)",
@@ -454,3 +461,20 @@ def test_breeze_profile_persists_selection_without_exposing_paths(
     with pytest.raises(TTSValidationError) as exc_info:
         manager.install(missing)
     assert exc_info.value.code == "TTS_EXTERNAL_ASSET_MISSING"
+
+
+def test_video_reply_upgrades_legacy_breeze_cfg_without_changing_other_options(tmp_path):
+    from runtime.reply.reply_media import _tts_config
+
+    original = _breeze_config(tmp_path)
+    legacy_options = {**original.provider_options, "cfg_scale": 4.0, "temperature": 0.87, "seed": 200717}
+    path = tmp_path / "tts-local.json"
+    path.write_text(json.dumps({"settings": {**original.__dict__, "provider_options": legacy_options}}), encoding="utf-8")
+
+    config = _tts_config(path, tmp_path / "work", ordinary_video=True, env={})
+    request = BreezeTTS2Provider(config).performance_request(_plan())
+
+    assert request["cfg_scale"] == 1.0
+    assert request["temperature"] == 0.87
+    assert request["seed"] == 200717
+    assert json.loads(path.read_text(encoding="utf-8"))["settings"]["provider_options"] == legacy_options

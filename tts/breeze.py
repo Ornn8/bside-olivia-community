@@ -208,7 +208,7 @@ class BreezeTTS2Provider:
             "device": str(options.get("device", "cuda") or "cuda"),
             "attention": str(options.get("attention", "eager") or "eager"),
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
-            "cfg_scale": float(options.get("cfg_scale", 4.0)),
+            "cfg_scale": float(options.get("cfg_scale", 1.0)),
             "seed": int(options.get("seed", 200717)),
             # Breeze emits 12.5 frames/s. Cap generation at 48 seconds so the
             # result stays inside the 40-50 second delivery contract without

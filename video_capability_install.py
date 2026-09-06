@@ -98,7 +98,8 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_ROFORMER_PYTHON",
     "OLIVIA_ROFORMER_MODEL_PATH",
     "OLIVIA_ROFORMER_CONFIG_PATH",
-    "OLIVIA_SEED_VC_ROOT",
+    "OLIVIA_SOULX_SVC_ROOT",
+    "OLIVIA_SOULX_SVC_PYTHON",
     "OLIVIA_TTS_CONFIG",
     "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT",
     "OLIVIA_ORDINARY_ACTION_BASE",
@@ -107,7 +108,7 @@ _RUNTIME_ENVIRONMENT_KEYS = {
     "OLIVIA_REPLY_VOICE_REFERENCE",
     "OLIVIA_PROVIDER_CACHE_ROOT",
 }
-_PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_BREEZE_TTS_PYTHON", "OLIVIA_LATENTSYNC_PYTHON", "OLIVIA_MINIMAX_COMFY_PYTHON", "OLIVIA_ROFORMER_PYTHON"))
+_PORTABLE_RUNTIME_ENVIRONMENT_KEYS = frozenset(("OLIVIA_BREEZE_TTS_PYTHON", "OLIVIA_LATENTSYNC_PYTHON", "OLIVIA_MINIMAX_COMFY_PYTHON", "OLIVIA_ROFORMER_PYTHON", "OLIVIA_SOULX_SVC_PYTHON"))
 _MAX_ARCHIVE_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES = 64 * 1024 * 1024 * 1024
 _RUNTIME_PORTABILITY_TIMEOUT_SECONDS = 20.0
@@ -119,7 +120,6 @@ _RUNTIME_IMPORT_CHECKPOINT = ".runtime-import-checkpoint.json"
 _RUNTIME_HOST_DEPENDENCIES = frozenset(
     {"breeze_tts2", "latentsync", "minimax_music3", "roformer"}
 )
-_SEED_VC_PATCH_SHA256 = "f61ffb5193514ee3e34a439ebcd89c6168cf4bdb6a8d960513ee471d8840f2a6"
 _BREEZE_MINIMUM_VRAM_MIB = 10 * 1024
 _BREEZE_RUNTIME_REQUIREMENTS = "installer/breeze-runtime-requirements.txt"
 _BREEZE_RUNTIME_REQUIREMENTS_SHA256 = (
@@ -780,9 +780,10 @@ def _portable_python_runtime(python: Path, runtime_root: Path) -> bool:
 def _runtime_environment_is_portable(
     environment: Mapping[str, str], runtime_root: Path
 ) -> bool:
-    if set(environment) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
+    required = _PORTABLE_RUNTIME_ENVIRONMENT_KEYS - {"OLIVIA_SOULX_SVC_PYTHON"}
+    if not required <= set(environment) <= _PORTABLE_RUNTIME_ENVIRONMENT_KEYS:
         return False
-    candidates = [Path(environment[key]) for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS]
+    candidates = [Path(environment[key]) for key in environment]
     return bool(candidates) and all(
         _portable_python_runtime(candidate, runtime_root) for candidate in candidates
     )
@@ -1210,11 +1211,6 @@ class VideoCapabilityInstaller:
                 key in persisted and Path(persisted[key]).exists()
                 for key in (bundle.runtime_environment or {})
             )
-            if "OLIVIA_SEED_VC_ROOT" in (bundle.runtime_environment or {}):
-                seed_root = Path(persisted["OLIVIA_SEED_VC_ROOT"])
-                ready = ready and (
-                    seed_root / ".olivia-overlap-frames-patched.json"
-                ).is_file()
             return ready
         except (OSError, VideoCapabilityError):
             return False
@@ -1577,7 +1573,7 @@ class VideoCapabilityInstaller:
                                 "device": "cuda",
                                 "attention": "eager",
                                 "decode_mode": "eager",
-                                "cfg_scale": 4.0,
+                                "cfg_scale": 1.0,
                                 "seed": 200717,
                                 "max_new_tokens": 650,
                             },
@@ -2057,7 +2053,8 @@ class VideoCapabilityInstaller:
             )
             if (
                 not isinstance(payload, dict)
-                or set(payload.get("external_environment", {})) != _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+                or not (_PORTABLE_RUNTIME_ENVIRONMENT_KEYS - {"OLIVIA_SOULX_SVC_PYTHON"})
+                <= set(payload.get("external_environment", {})) <= _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
                 or payload.get("host_status") not in (None, {
                     "status": "READY",
                     "reason_code": None,
@@ -2114,6 +2111,7 @@ class VideoCapabilityInstaller:
         if not all(
             key in environment and Path(environment[key]).is_file()
             for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+            if key != "OLIVIA_SOULX_SVC_PYTHON" or key in environment
         ):
             return False
         if self._readiness_probe is None:
@@ -2892,20 +2890,6 @@ class VideoCapabilityInstaller:
             ):
                 expected = [entry for entry in expected if entry["path"] != relative]
                 expected.append(_tree_entry(root, relative))
-        seed_root = root / "seed_vc" / "runtime"
-        if bundle.identifier == "music_video" and (seed_root / "inference.py").is_file():
-            apply_seed_vc_overlap_frames_patch(
-                seed_root,
-                Path(__file__).resolve().parent
-                / "installer"
-                / "seed-vc-overlap-frames.patch",
-            )
-            for relative in (
-                "seed_vc/runtime/inference.py",
-                "seed_vc/runtime/.olivia-overlap-frames-patched.json",
-            ):
-                expected = [entry for entry in expected if entry["path"] != relative]
-                expected.append(_tree_entry(root, relative))
         return expected
 
     @staticmethod
@@ -3100,6 +3084,13 @@ class VideoCapabilityInstaller:
                 "latentsync/runtime/stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
             }:
                 candidates.append(offline_root.parent / "Olivia-latentsync-vae-offline.zip")
+            soulx_parts = {part_id: index for bundle in self.manifest.bundles
+                           for artifact in bundle.runtime_artifacts
+                           if artifact.identifier == "soulx-svc-runtime"
+                           for index, part_id in enumerate(artifact.part_ids, 1)}
+            if item.identifier in soulx_parts:
+                index = soulx_parts[item.identifier]
+                candidates.append(offline_root.parent / f"Olivia-soulx-svc-runtime-offline-{index:02d}.zip")
             for candidate in candidates:
                 if not candidate.is_file() or _is_reparse_point(candidate):
                     continue
@@ -3575,59 +3566,7 @@ def apply_runtime_text_patch(
         temporary.unlink(missing_ok=True)
 
 
-def apply_seed_vc_overlap_frames_patch(
-    seed_root: Path, patch_path: Path
-) -> None:
-    """Apply the pinned Seed-VC overlap option patch without requiring Git."""
-
-    try:
-        patch = patch_path.read_text(encoding="utf-8")
-        patch_sha = hashlib.sha256(patch.encode("utf-8")).hexdigest()
-        source_path = _inside(seed_root.resolve(), seed_root / "inference.py")
-        source = source_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise VideoCapabilityError("VIDEO_SEED_VC_PATCH_UNAVAILABLE") from exc
-    if patch_sha != _SEED_VC_PATCH_SHA256:
-        raise VideoCapabilityError("VIDEO_SEED_VC_PATCH_INVALID")
-    changes = (
-        (
-            "    overlap_frame_len = 16",
-            "    overlap_frame_len = args.overlap_frames",
-        ),
-        (
-            '    parser.add_argument("--fp16", type=str2bool, default=True)',
-            '    parser.add_argument("--fp16", type=str2bool, default=True)\n'
-            '    parser.add_argument("--overlap-frames", type=int, default=16)',
-        ),
-    )
-    for before, after in changes:
-        if f"-{before}" not in patch or f"+{after.splitlines()[-1]}" not in patch:
-            raise VideoCapabilityError("VIDEO_SEED_VC_PATCH_INVALID")
-        if source.count(before) != 1:
-            raise VideoCapabilityError("VIDEO_SEED_VC_SOURCE_MISMATCH")
-        source = source.replace(before, after, 1)
-    temporary = source_path.with_suffix(".patched")
-    temporary.write_text(source, encoding="utf-8")
-    os.replace(temporary, source_path)
-    verified = source_path.read_text(encoding="utf-8")
-    if any(after not in verified for _before, after in changes):
-        raise VideoCapabilityError("VIDEO_SEED_VC_PATCH_VERIFICATION_FAILED")
-    marker = seed_root / ".olivia-overlap-frames-patched.json"
-    marker.write_text(
-        json.dumps(
-            {
-                "schema_version": "olivia.seed-vc-patch.v1",
-                "patch_sha256": patch_sha,
-                "source_sha256": hashlib.sha256(verified.encode("utf-8")).hexdigest(),
-                "overlap_frames_default": 16,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-
-
-__all__ = ["apply_runtime_text_patch", "apply_seed_vc_overlap_frames_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "VideoRuntimePatch", "load_video_manifest", "load_video_runtime_environment", "write_runtime_root_manifest"]
+__all__ = ["apply_runtime_text_patch", "VideoBundle", "VideoBundleStatus", "VideoCapabilityError", "VideoCapabilityInstaller", "VideoCapabilityState", "VideoFile", "VideoFileInstall", "VideoManifest", "VideoRuntimePatch", "load_video_manifest", "load_video_runtime_environment", "write_runtime_root_manifest"]
 
 
 if __name__ == "__main__":

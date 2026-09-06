@@ -131,7 +131,6 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "installer/cosyvoice-windows-audio.patch.json",
     "installer/latentsync-windows-memmap.patch.json",
     "installer/latentsync-windows-mp4-writer.patch.json",
-    "installer/seed-vc-overlap-frames.patch",
     "installer/mem0-runtime-artifacts.json",
     "runtime/__init__.py",
     "runtime/imports/__init__.py",
