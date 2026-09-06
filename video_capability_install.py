@@ -133,6 +133,28 @@ class VideoCapabilityError(ValueError):
     """Raised for invalid manifests or unsafe installation inputs."""
 
 
+class _BreezeRuntimeInstallError(VideoCapabilityError):
+    def __init__(self, diagnostic_code: str):
+        super().__init__("BREEZE_TTS_RUNTIME_INSTALL_FAILED")
+        self.diagnostic_code = diagnostic_code
+
+
+def _breeze_pip_diagnostic(stderr: str) -> str:
+    # Only fixed categories leave this function; never retain subprocess output.
+    text = stderr.casefold()
+    for category, patterns in (
+        ("DISK_FULL", ("[errno 28]", "[winerror 112]", "no space left on device")),
+        ("MISSING_PIP", ("no module named pip", "no module named 'pip'")),
+        ("UNSUPPORTED_WHEEL", ("not a supported wheel on this platform",)),
+        ("HASH_MISMATCH", ("do not match the hashes",)),
+        ("WHEEL_UNAVAILABLE", ("no matching distribution found",)),
+        ("ACCESS_DENIED", ("[winerror 5]", "[errno 13]", "permission denied")),
+    ):
+        if any(pattern in text for pattern in patterns):
+            return f"BREEZE_PIP_{category}"
+    return "BREEZE_PIP_FAILED"
+
+
 class _RuntimeHostUnavailable(RuntimeError):
     """The portable runtime process could not start on this host."""
 
@@ -350,6 +372,7 @@ class VideoBundleStatus:
     current_file: str | None = None
     source: str | None = None
     reason_code: str | None = None
+    diagnostic_code: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -365,6 +388,8 @@ class VideoBundleStatus:
             value["source"] = self.source
         if self.reason_code:
             value["reason_code"] = self.reason_code
+        if self.diagnostic_code:
+            value["diagnostic_code"] = self.diagnostic_code
         return value
 
 
@@ -1455,8 +1480,8 @@ class VideoCapabilityInstaller:
             }
         self._report_runtime_progress("checking", checked_bytes, total_bytes)
 
-    def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None) -> None:
-        self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason)
+    def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None, diagnostic: str | None = None) -> None:
+        self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason, diagnostic)
 
     def _managed_runtime_path(
         self, environment: Mapping[str, str], key: str, *, directory: bool
@@ -2648,7 +2673,8 @@ class VideoCapabilityInstaller:
                     if isinstance(exc, VideoCapabilityError)
                     else "VIDEO_BUNDLE_INSTALL_FAILED"
                 )
-                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_used, reason=reason)
+                self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_used, reason=reason,
+                          diagnostic=exc.diagnostic_code if isinstance(exc, _BreezeRuntimeInstallError) else None)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -2960,34 +2986,38 @@ class VideoCapabilityInstaller:
             PYTHONNOUSERSITE="1",
             PYTHONSAFEPATH="1",
         )
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "--isolated",
-                "install",
-                "--no-index",
-                "--require-hashes",
-                "--no-deps",
-                "--only-binary=:all:",
-                "--find-links",
-                str(python_path.parent.parent / "wheels"),
-                "--target",
-                str(site_packages),
-                "--requirement",
-                str(requirements),
-            ],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=7200.0,
-            env=environment,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "--isolated",
+                    "install",
+                    "--no-index",
+                    "--require-hashes",
+                    "--no-deps",
+                    "--only-binary=:all:",
+                    "--find-links",
+                    str(python_path.parent.parent / "wheels"),
+                    "--target",
+                    str(site_packages),
+                    "--requirement",
+                    str(requirements),
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=7200.0,
+                env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired:
+            raise _BreezeRuntimeInstallError("BREEZE_PIP_TIMEOUT") from None
         if completed.returncode != 0:
-            raise VideoCapabilityError("BREEZE_TTS_RUNTIME_INSTALL_FAILED")
+            raise _BreezeRuntimeInstallError(_breeze_pip_diagnostic(completed.stderr or ""))
 
     @staticmethod
     def _verify_breeze_runtime_process(python_path: Path, runtime_root: Path) -> bool:

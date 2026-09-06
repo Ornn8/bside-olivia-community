@@ -40,6 +40,7 @@ from mem0_embedding_install import Mem0EmbeddingInstaller
 from mem0_memory import Mem0Config
 from music_reply import video_reply_dependency_status
 from runtime.media.background_video_readiness import BackgroundVideoReadiness
+from runtime.diagnostics.support_bundle import BREEZE_INSTALL_DIAGNOSTIC_CODES
 from original_client_companion_api import mount_original_companion_read_api
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
@@ -534,6 +535,9 @@ def _diagnostic_source(
                     reason = code(snapshot.get("reason_code"))
                     if reason:
                         entry["error_code"] = reason
+                    diagnostic = snapshot.get("diagnostic_code")
+                    if isinstance(diagnostic, str) and diagnostic in BREEZE_INSTALL_DIAGNOSTIC_CODES:
+                        entry["diagnostic_code"] = diagnostic
                     for field in ("downloaded_bytes", "total_bytes", "remaining_bytes", "checked_bytes"):
                         count = snapshot.get(field)
                         if type(count) is int and 0 <= count <= 10**15:

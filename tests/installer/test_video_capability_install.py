@@ -439,8 +439,9 @@ def test_video_manifest_contains_every_hash_locked_breeze_wheel() -> None:
     assert set(locked) == set(wheels)
 
 
+@pytest.mark.parametrize("pip_failure", [False, True])
 def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pip_failure: bool,
 ) -> None:
     artifacts = tmp_path / "artifacts"
     archive = artifacts / "runtime" / "python-fixture.zip"
@@ -478,6 +479,10 @@ def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
         assert status["state"] == "verifying"
         assert status["current_file"] == "安装本地运行依赖（无需联网）"
         runner_calls.append((python, site_packages, requirements))
+        if pip_failure:
+            monkeypatch.setattr(video_capability_install.subprocess, "run", lambda *a, **k:
+                SimpleNamespace(returncode=1, stdout="", stderr="[Errno 28] No space left on device private-secret"))
+            VideoCapabilityInstaller._install_breeze_runtime_packages(python, site_packages, requirements)
         (site_packages / "torch").mkdir()
         (site_packages / "torch" / "__init__.py").write_text(
             "__version__ = '2.9.1+cu128'\n", encoding="utf-8"
@@ -522,6 +527,14 @@ def test_empty_capability_root_bootstraps_a_verified_breeze_runtime(
 
     assert installer.start(bundle_id="ordinary_video", source_mode="official") == "APPLIED"
     state = _wait(installer, 0, "ready", "failed")
+    if pip_failure:
+        snapshot = installer.status()["bundles"][0]
+        assert state == "failed"
+        assert snapshot["reason_code"] == "BREEZE_TTS_RUNTIME_INSTALL_FAILED"
+        assert snapshot["diagnostic_code"] == "BREEZE_PIP_DISK_FULL"
+        assert "private-secret" not in json.dumps(snapshot)
+        assert not (installer.install_root / "ordinary_video" / ".ready.json").exists()
+        return
     assert state == "ready", installer.status()
 
     installed = installer.install_root / "ordinary_video"
@@ -572,6 +585,36 @@ def test_breeze_runtime_bootstrap_is_hash_locked_and_wheel_only(
     assert "--extra-index-url" not in command
     assert "--no-binary" not in command
     assert "--no-build-isolation" not in command
+
+
+@pytest.mark.parametrize("stderr, expected", [
+    ("[Errno 28] No space left on device", "DISK_FULL"),
+    ("[WinError 112] There is not enough space on the disk", "DISK_FULL"),
+    ("No module named pip", "MISSING_PIP"),
+    ("package.whl is not a supported wheel on this platform", "UNSUPPORTED_WHEEL"),
+    ("THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE", "HASH_MISMATCH"),
+    ("No matching distribution found for torch", "WHEEL_UNAVAILABLE"),
+    ("[WinError 5] Access is denied", "ACCESS_DENIED"),
+    ("unclassified failure", "FAILED"),
+])
+def test_breeze_pip_failure_has_only_fixed_diagnostic(tmp_path, monkeypatch, stderr, expected):
+    secret = r" C:\Users\private\secret-key.txt sk-private-token"
+    monkeypatch.setattr(video_capability_install.subprocess, "run", lambda *a, **k:
+        SimpleNamespace(returncode=1, stdout=secret, stderr=stderr + secret))
+    with pytest.raises(VideoCapabilityError, match="^BREEZE_TTS_RUNTIME_INSTALL_FAILED$") as caught:
+        VideoCapabilityInstaller._install_breeze_runtime_packages(tmp_path / "python.exe", tmp_path, tmp_path / "lock")
+    assert caught.value.diagnostic_code == "BREEZE_PIP_" + expected
+    assert "private" not in repr(caught.value.__dict__)
+
+
+def test_breeze_pip_timeout_has_fixed_diagnostic_without_output(tmp_path, monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("private-command", 7200, output=b"private-key", stderr=b"private-path")
+    monkeypatch.setattr(video_capability_install.subprocess, "run", timeout)
+    with pytest.raises(VideoCapabilityError, match="^BREEZE_TTS_RUNTIME_INSTALL_FAILED$") as caught:
+        VideoCapabilityInstaller._install_breeze_runtime_packages(tmp_path / "python.exe", tmp_path, tmp_path / "lock")
+    assert caught.value.diagnostic_code == "BREEZE_PIP_TIMEOUT"
+    assert caught.value.__suppress_context__
 
 
 def test_runtime_artifact_parts_are_verified_reassembled_and_removed_after_install(

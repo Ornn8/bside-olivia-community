@@ -70,6 +70,25 @@ def _source() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("diagnostic", [
+    "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
+    "BREEZE_PIP_HASH_MISMATCH", "BREEZE_PIP_WHEEL_UNAVAILABLE", "BREEZE_PIP_ACCESS_DENIED",
+    "BREEZE_PIP_TIMEOUT", "BREEZE_PIP_FAILED", "PRIVATE_KEY_SHOULD_NOT_LEAK",
+])
+def test_video_install_diagnostic_is_an_exact_allowlist(diagnostic):
+    source = _source()
+    source["health"]["checks"]["video_ordinary"] = {
+        "state": "failed", "diagnostic_code": diagnostic,
+    }
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        entry = json.loads(archive.read("health.json"))["checks"]["video_ordinary"]
+        if diagnostic.startswith("BREEZE_PIP_"):
+            assert entry["diagnostic_code"] == diagnostic
+        else:
+            assert "diagnostic_code" not in entry
+            assert diagnostic.encode() not in archive.read("health.json")
+
+
 def _contents(bundle: bytes) -> dict[str, bytes]:
     with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
         return {name: archive.read(name) for name in archive.namelist()}

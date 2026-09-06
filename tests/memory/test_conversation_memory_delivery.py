@@ -88,6 +88,14 @@ def _delivery(**changes: object) -> CanonicalMemoryDelivery:
     return CanonicalMemoryDelivery(**values)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("code", ["MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED"])
+def test_extraction_failures_still_consume_completed_write_retry_budget(code):
+    memory = FakeMemory(result_status=MemoryWriteStatus.UNAVAILABLE, error_code=code)
+    result = asyncio.run(ConversationMemoryDeliveryCommitter(memory).commit(_delivery()))
+    assert result.error_code == code
+    assert result.completed_failure is True
+
+
 def test_failure_budget_marks_completed_writes_not_waiting_or_preflight():
     async def scenario():
         broken = FakeMemory(result_status=MemoryWriteStatus.UNAVAILABLE)

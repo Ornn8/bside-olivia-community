@@ -7,6 +7,7 @@ provider failures collapse to stable, privacy-safe states.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -16,10 +17,12 @@ from numbers import Real
 import os
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import threading
 import time
 from typing import Callable, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
 from runtime.memory.bounded_daemon_call import BoundedDaemonCall
 from .conversation_memory_port import (
@@ -65,6 +68,16 @@ _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE = re.compile(
     re.IGNORECASE,
 )
 _HISTORY_FIRST_PERSON_RE = re.compile(r"我")
+
+
+def _valid_history_character_identity(fact: str) -> bool:
+    # A first-person name annotation is not a third-person narrator.
+    identity_text = fact.replace("我（林离）", "我").replace("我(林离)", "我")
+    return bool(_HISTORY_FIRST_PERSON_RE.search(identity_text)) and not bool(
+        _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(identity_text)
+    )
+
+
 _HISTORY_ACTOR_KEY = "history_actor"
 _HISTORY_EXTRACTION_VERSION_KEY = "history_extraction_version"
 _HISTORY_EXTRACTION_VERSION = "relationship-v2"
@@ -165,6 +178,19 @@ class Mem0AdapterError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _extraction_failure_code(error: BaseException) -> str:
+    # Upstream wraps extraction errors with LLMError; never copy its message.
+    for _ in range(8):
+        if isinstance(error, Mem0AdapterError) and error.code in {
+            "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED",
+        }:
+            return error.code
+        if error.__cause__ is None:
+            break
+        error = error.__cause__
+    return "MEM0_WRITE_FAILED"
 
 
 class Mem0Backend(Protocol):
@@ -1087,7 +1113,11 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
     ) -> MemoryWriteResult:
         user_id = self._normalized_user_id(user_id)
+        content_sha = hashlib.sha256(json.dumps(
+            [self.config.agent_id, user_message, assistant_message], ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
         for alias in self._configured_user_aliases(user_id):
+            audit_mismatch = False
             try:
                 exact_response = self.backend.get_all(
                     filters={**self._provider_filters(alias), "source_id": source_id},
@@ -1110,6 +1140,21 @@ class Mem0ConversationMemoryAdapter:
                     source_id,
                     error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
                 )
+            if source_id.startswith("history:"):
+                try:
+                    audited_ids = self._history_audit(user_id=alias, source_id=source_id, content_sha=content_sha)
+                except (OSError, sqlite3.Error, ValueError):
+                    return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source_id,
+                        error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE")
+                if audited_ids is not None and audited_ids == sorted(record.memory_id for record in source_records):
+                    return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+                audit_mismatch = audited_ids is not None
+                if audit_mismatch:
+                    try:
+                        self._invalidate_history_audit(user_id=alias, source_id=source_id)
+                    except (OSError, sqlite3.Error):
+                        return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source_id,
+                            error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE")
             if source_id.startswith("history:") and source_records:
                 exact_rows = self._exact_source_id_rows(exact_response)
                 actors = {
@@ -1125,7 +1170,8 @@ class Mem0ConversationMemoryAdapter:
                     == _HISTORY_LINLI_ACTOR
                 )
                 history_is_current = (
-                    actors == {_HISTORY_USER_ACTOR, _HISTORY_LINLI_ACTOR}
+                    not audit_mismatch
+                    and actors == {_HISTORY_USER_ACTOR, _HISTORY_LINLI_ACTOR}
                     and all(
                         isinstance(row.get("metadata"), Mapping)
                         and row["metadata"].get(_HISTORY_EXTRACTION_VERSION_KEY)
@@ -1134,8 +1180,7 @@ class Mem0ConversationMemoryAdapter:
                     )
                     and bool(linli_facts)
                     and all(
-                        _HISTORY_FIRST_PERSON_RE.search(fact)
-                        and not _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(fact)
+                        _valid_history_character_identity(fact)
                         for fact in linli_facts
                     )
                 )
@@ -1234,7 +1279,7 @@ class Mem0ConversationMemoryAdapter:
                             infer=False,
                         )
                     )
-        except Exception:
+        except Exception as error:
             pending_ids = self._delete_provider_memories(tuple(created_ids))
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -1243,7 +1288,7 @@ class Mem0ConversationMemoryAdapter:
                 error_code=(
                     "MEM0_WRITE_ROLLBACK_FAILED"
                     if pending_ids
-                    else "MEM0_WRITE_FAILED"
+                    else _extraction_failure_code(error)
                 ),
             )
         acknowledgement_groups = tuple(_add_acknowledgements(value) for value in values)
@@ -1279,8 +1324,7 @@ class Mem0ConversationMemoryAdapter:
             invalid_identity_ids = {
                 memory_id
                 for memory_id, memory in acknowledgement_groups[1] or ()
-                if not _HISTORY_FIRST_PERSON_RE.search(memory)
-                or _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(memory)
+                if not _valid_history_character_identity(memory)
             }
         invalid_language_ids = (
             {
@@ -1368,6 +1412,13 @@ class Mem0ConversationMemoryAdapter:
         memory_ids = tuple(
             memory_id for group in valid_groups for memory_id, _memory in group
         )
+        if history_write:
+            try:
+                self._history_audit(user_id=user_id, source_id=source_id, content_sha=content_sha, memory_ids=memory_ids)
+            except (OSError, sqlite3.Error, ValueError):
+                pending_ids = self._delete_provider_memories(memory_ids)
+                return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source_id, pending_ids,
+                    error_code="MEM0_WRITE_ROLLBACK_FAILED" if pending_ids else "MEM0_WRITE_FAILED")
         return MemoryWriteResult(
             MemoryWriteStatus.WRITTEN
             if history_write or memory_ids
@@ -1375,6 +1426,34 @@ class Mem0ConversationMemoryAdapter:
             source_id,
             memory_ids,
         )
+
+    def _invalidate_history_audit(self, *, user_id: str, source_id: str) -> None:
+        path = self.config.data_root / "history-extraction-audit.sqlite3"
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DELETE FROM completed WHERE user_id=? AND source_id=?",
+                (user_id, source_id))
+
+    def _history_audit(self, *, user_id: str, source_id: str, content_sha: str,
+                       memory_ids: tuple[str, ...] | None = None) -> list[str] | None:
+        """Record completed extraction, including zero facts, outside searchable memory."""
+        path = self.config.data_root / "history-extraction-audit.sqlite3"
+        if memory_ids is None and not path.exists():
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS completed (user_id TEXT, source_id TEXT, version TEXT, content_sha TEXT, ids TEXT, PRIMARY KEY(user_id, source_id))")
+            if memory_ids is not None:
+                connection.execute("INSERT OR REPLACE INTO completed VALUES (?, ?, ?, ?, ?)",
+                    (user_id, source_id, _HISTORY_EXTRACTION_VERSION, content_sha, json.dumps(sorted(memory_ids))))
+                return None
+            row = connection.execute("SELECT ids FROM completed WHERE user_id=? AND source_id=? AND version=? AND content_sha=?",
+                (user_id, source_id, _HISTORY_EXTRACTION_VERSION, content_sha)).fetchone()
+            if row is None:
+                return None
+            ids = json.loads(row[0])
+            if not isinstance(ids, list) or any(not isinstance(value, str) for value in ids):
+                raise ValueError("invalid history audit")
+            return ids
 
     def remember_exchange(
         self,
@@ -1589,6 +1668,11 @@ class Mem0ConversationMemoryAdapter:
             if self.list_memories(user_id=user_id, limit=1000):
                 self._last_error_code = "MEM0_CLEAR_FAILED"
                 return 0
+            audit_path = self.config.data_root / "history-extraction-audit.sqlite3"
+            if audit_path.exists():
+                with closing(sqlite3.connect(audit_path)) as connection, connection:
+                    for alias in self._configured_user_aliases(user_id):
+                        connection.execute("DELETE FROM completed WHERE user_id=?", (alias,))
             self._last_error_code = None
             return deleted
         except Mem0AdapterError:
@@ -1694,6 +1778,29 @@ class _ValidatedExtractionLLM:
         return response
 
 
+def _guard_extraction_client(provider: object) -> None:
+    """Guard this memory-only client before upstream discards response metadata."""
+    client = getattr(provider, "client", None)
+    completions = getattr(getattr(client, "chat", None), "completions", None)
+    create = getattr(completions, "create", None)
+    if not callable(create):
+        return
+    official_deepseek = urlsplit(str(getattr(client, "base_url", ""))).hostname == "api.deepseek.com"
+
+    def guarded_create(*args: object, **kwargs: object) -> object:
+        if official_deepseek:
+            kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
+            }
+        response = create(*args, **kwargs)
+        if any(getattr(choice, "finish_reason", None) == "length"
+               for choice in getattr(response, "choices", ())):
+            raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")
+        return response
+
+    completions.create = guarded_create
+
+
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     module = _load_product_mem0_module()
     memory_type = getattr(module, "Memory", None)
@@ -1702,6 +1809,7 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     backend = memory_type.from_config(dict(config))
     provider = getattr(backend, "llm", None)
     if callable(getattr(provider, "generate_response", None)):
+        _guard_extraction_client(provider)
         backend.llm = _ValidatedExtractionLLM(provider)
     return backend
 

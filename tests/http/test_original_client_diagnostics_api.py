@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import io
 import json
@@ -196,7 +198,8 @@ def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
     )
 
 
-def test_video_diagnostic_reads_existing_state_without_starting_installation(monkeypatch):
+@pytest.mark.parametrize("diagnostic", ["BREEZE_PIP_DISK_FULL", "PRIVATE_KEY_SHOULD_NOT_LEAK"])
+def test_video_diagnostic_reads_existing_state_without_starting_installation(monkeypatch, diagnostic):
     from threading import Lock
     from types import SimpleNamespace
     from runtime.diagnostics.support_bundle import build_diagnostic_bundle
@@ -210,16 +213,20 @@ def test_video_diagnostic_reads_existing_state_without_starting_installation(mon
     def forbidden(): raise AssertionError("diagnostics must not call installer.status")
     installer = SimpleNamespace(_lock=Lock(), status=forbidden,
         _runtime_import={"state": "failed", "reason_code": "VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE", "checked_bytes": 42, "private_path": "must-not-leak"},
-        _status={"music_video": SimpleNamespace(to_dict=lambda: {"state": "failed", "reason_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1, "path": "must-not-leak"})})
+        _status={"music_video": SimpleNamespace(to_dict=lambda: {"state": "failed", "reason_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1, "path": "must-not-leak", "diagnostic_code": diagnostic})})
     monkeypatch.setattr("original_client_update_api.running_component_version", lambda: {"version": "0.1.455"})
     collect = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
         runtime_tail_provider=None, video_capability_installer=installer)
     with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(collect()))) as bundle:
         checks = json.loads(bundle.read("health.json"))["checks"]
-        assert checks["video_music"] == {"state": "failed", "error_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1}
+        expected = {"state": "failed", "error_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1}
+        if diagnostic == "BREEZE_PIP_DISK_FULL":
+            expected["diagnostic_code"] = diagnostic
+        assert checks["video_music"] == expected
         assert checks["video_runtime"]["checked_bytes"] == 42
         assert json.loads(bundle.read("summary.json"))["running_version"] == "0.1.455"
         assert all(b"must-not-leak" not in bundle.read(name) for name in bundle.namelist())
+        assert all(b"PRIVATE_KEY_SHOULD_NOT_LEAK" not in bundle.read(name) for name in bundle.namelist())
     installer._lock.acquire()
     try:
         assert collect()["health"]["checks"]["video_runtime"]["error_code"] == "VIDEO_DIAGNOSTIC_BUSY"
