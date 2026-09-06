@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 import re
@@ -41,12 +41,16 @@ class ConversationMemoryRuntimeStatus:
     terminal_count: int = 0
     pending_count: int = 0
     attempt_count: int = 0
+    # Internal readiness hint; no provider calls or public schema changes.
+    delivery_pending: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in {"available", "degraded", "unavailable", "disabled"}:
             raise ValueError("conversation memory runtime status is invalid")
         if type(self.enabled) is not bool or type(self.worker_running) is not bool:
             raise ValueError("runtime flags must be boolean")
+        if type(self.delivery_pending) is not bool:
+            raise ValueError("delivery_pending must be boolean")
         if not isinstance(self.provider, str) or not self.provider:
             raise ValueError("runtime provider is invalid")
         if self.reason_code is not None and not _ERROR_RE.fullmatch(self.reason_code):
@@ -155,6 +159,7 @@ class ConversationMemoryRuntime:
             terminal_count=_count(health.get("terminal_count")),
             pending_count=_count(health.get("pending_count")),
             attempt_count=_count(health.get("attempt_count")),
+            delivery_pending=self.outbox.committer.delivery_pending,
         )
         with self._reply_status_lock:
             self._reply_status = resolved
@@ -178,6 +183,11 @@ class ConversationMemoryRuntime:
                 pending_count=cached.pending_count,
                 attempt_count=cached.attempt_count,
             )
+        # A scan can start a write before its next health snapshot. Keep a
+        # settled call pending until that snapshot confirms journal publication.
+        pending = cached.delivery_pending or self.outbox.committer.delivery_pending
+        if pending and cached.reason_code is None:
+            return replace(cached, status="degraded", delivery_pending=True)
         return cached
 
     def _run(self) -> None:

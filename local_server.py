@@ -3771,16 +3771,22 @@ async def _run_reply_when_memory_ready(
         if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
             elapsed = max(0.0, time.time() - float(created_at))
             timeout_seconds = max(0.0, timeout_seconds - elapsed)
-    if timeout_seconds <= 0.0:
-        _fail_pending_reply_for_memory_timeout(letter_id)
-        return False
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            while not _conversation_memory_ready_for_reply():
-                await asyncio.sleep(0.25)
-    except TimeoutError:
-        _fail_pending_reply_for_memory_timeout(letter_id)
-        return False
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while not _conversation_memory_ready_for_reply():
+        if asyncio.get_running_loop().time() >= deadline:
+            runtime = conversation_memory_reply_readiness_status()
+            # A timed-out wait must not discard a letter while the existing
+            # memory call is still being settled. Only the outbox owns retries.
+            busy = (
+                runtime.enabled and runtime.worker_running
+                and runtime.delivery_pending
+                and runtime.status == "degraded"
+                and runtime.reason_code is None
+            )
+            if not busy:
+                _fail_pending_reply_for_memory_timeout(letter_id)
+                return False
+        await asyncio.sleep(0.25)
     return await _run_reply_job(letter_id, content, idempotency_key=idempotency_key)
 
 
