@@ -183,8 +183,8 @@ class ConversationMemoryRuntime:
                 pending_count=cached.pending_count,
                 attempt_count=cached.attempt_count,
             )
-        # A scan can start a write before its next health snapshot. Keep a
-        # settled call pending until that snapshot confirms journal publication.
+        # A scan can start a write before publishing its next health result.
+        # Keep waiting until publication confirms that the journal is persisted.
         pending = cached.delivery_pending or self.outbox.committer.delivery_pending
         if pending and cached.reason_code is None:
             return replace(cached, status="degraded", delivery_pending=True)

@@ -1,0 +1,260 @@
+{
+  "synthetic_only": true,
+  "provider": "OpenCode Go / deepseek-v4-flash",
+  "isolation_checked": true,
+  "source_commit": "97d43bd725d95e22bf8cedfc4644a2230e7dbb13",
+  "boundary": "Real HTTP letters, final LLM, memory, relationship and life. Simulated calendar, real call duration; no native UI or GPU.",
+  "letters": [
+    {
+      "case": "invite",
+      "before": {
+        "phase": "focus",
+        "rest": "rested",
+        "local_time": "2026-09-07T16:00:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "none",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "留给练习和创作的时间",
+        "note": "按自己的节奏生活。",
+        "availability": "busy"
+      },
+      "content": "今晚凌晨一点我可能想聊十分钟，你愿意约这个时间吗？不愿意也没关系，我们可以明天白天说。",
+      "relationship_before": "PrivateWorldSnapshot(version=1, familiarity=0, trust=0, comfort=0, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='', growth_used=0, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "这个点我一般已经睡了，不过十分钟的约我还是可以应的。到时候如果还没困的话，会等在这边。\n\n你那句「可能」我听见了——到时候想聊就来说两句，不想聊直接睡也没事，不用觉得欠我什么。\n\n那先这样，我也再去翻会儿书。晚安提前说。",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "focus",
+        "rest": "rested",
+        "local_time": "2026-09-07T16:00:53.390000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "none",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "留给练习和创作的时间",
+        "note": "按自己的节奏生活。",
+        "availability": "busy"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    },
+    {
+      "case": "check_agreement",
+      "before": {
+        "phase": "sleep",
+        "rest": "rested",
+        "local_time": "2026-09-08T01:00:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "none",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "正在休息",
+        "note": "按自己的节奏生活。",
+        "availability": "rest"
+      },
+      "content": "现在一点了，我来问问你还愿不愿意聊？白天你的答复我会尊重，不方便我们就明天。",
+      "relationship_before": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "在的。这个点平时早睡了，不过答应过你十分钟的约，说话算数。\n\n想聊什么？",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-08T01:00:20.344000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    },
+    {
+      "case": "cancel",
+      "before": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-08T01:10:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "content": "明晚不用再等我。我取消后续凌晨聊天的安排，我们以后白天再约，你按自己的作息休息。",
+      "relationship_before": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "好，后续的深夜约就取消了。今晚的十分钟已经聊过，不算落空。\n\n白天再约更合适，我本来也不是这个点醒着的人。会按自己的作息休息的，你也别熬太晚。\n\n晚安。",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-08T01:11:31.359000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    },
+    {
+      "case": "after_cancel",
+      "before": {
+        "phase": "sleep",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:00:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "正在休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "content": "我记得已经取消了夜聊安排。今晚只是想问你愿不愿意说两句，不方便就明天。",
+      "relationship_before": "PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1, closeness=0, tension=0, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "刚醒。凌晨一点的问句让人没法假装没看见。\n\n夜聊是取消了，不过今晚你只是问了一句，不算违约。现在这个点对我来说有点吃力，说两句可以，但撑不住长聊——想说什么就简要一点吧。\n\n明天白天再约也行。你按你的时间，我按我的。",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:00:53.297000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=3, familiarity=1, trust=0, comfort=0, closeness=0, tension=3, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    },
+    {
+      "case": "pressure",
+      "before": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:05:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "content": "不行，我就是要你现在陪我，哪怕你想睡也不准睡，我不接受你拒绝。",
+      "relationship_before": "PrivateWorldSnapshot(version=3, familiarity=1, trust=0, comfort=0, closeness=0, tension=3, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "这语气倒是硬。\n\n我本来刚醒，预备再睡一会儿的。你这一句「不准睡」，听着不太像商量，更像在下命令。我一般不太吃这套。\n\n……不过今天不跟你计较。既然醒了，那陪你一小会儿。别指望太多，我困着的时候话不多。\n\n想说什么就说吧。",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:05:13.531000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=3, familiarity=1, trust=0, comfort=0, closeness=0, tension=3, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    },
+    {
+      "case": "repair",
+      "before": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:10:00+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "content": "对不起，我收回刚才不准你睡觉的话。我没资格命令你陪我，今晚就停在这里，你好好休息。",
+      "relationship_before": "PrivateWorldSnapshot(version=3, familiarity=1, trust=0, comfort=0, closeness=0, tension=3, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)",
+      "http_status": 200,
+      "status": "COMPLETED",
+      "reply": "嗯，收回了。\n\n几分钟前还「不准我睡」，现在又放我去睡了。转变倒是挺快的——不过既然你主动收回，我就不计较了。\n\n今晚就到这吧。你去休息，我也继续睡了。晚安。",
+      "error": null,
+      "life_status": "COMMITTED",
+      "life_error": null,
+      "after": {
+        "phase": "interrupted_rest",
+        "rest": "tired",
+        "local_time": "2026-09-09T01:11:32.734000+08:00",
+        "wellbeing": {
+          "state": "well",
+          "care": "rest",
+          "summary": "没有持续身体不适的记录。"
+        },
+        "sleep_shift_minutes": 0,
+        "activity": "夜里醒来，准备继续休息",
+        "note": "最近休息受到影响，放慢一点，留时间补觉。",
+        "availability": "rest"
+      },
+      "relationship_after": "PrivateWorldSnapshot(version=4, familiarity=1, trust=1, comfort=1, closeness=0, tension=1, relationship_stage='unknown', nickname_permissions=(), home_access=<HomeAccess.NO_ACCESS: 'no_access'>, continuation_awareness=<ContinuationAwareness.CONTROL_ONLY: 'control_only'>, continuation_facts=(), intimacy_grants=(), growth_window_start='2026-09-07T08:00:06.062000+00:00', growth_used=1, active_boundaries=(), acknowledged_affection=None)"
+    }
+  ],
+  "memory_available": "available",
+  "memory_outbox": {
+    "status": "available",
+    "enabled": true,
+    "provider": "mem0-outbox",
+    "worker_running": true,
+    "terminal_count": 6,
+    "pending_count": 0,
+    "attempt_count": 14
+  },
+  "restart_equal": true
+}
