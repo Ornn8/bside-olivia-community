@@ -6,6 +6,15 @@
   "additionalProperties": false,
   "required": ["schema_version", "status", "capability", "can_uninstall", "install_locations", "bundles"],
   "properties": {
+    "offline_action_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error_code", "stage"],
+      "properties": {
+        "error_code": {"enum": ["VIDEO_CAPABILITY_LOGIN_REQUIRED", "VIDEO_CAPABILITY_CONFIRMATION_REQUIRED", "VIDEO_OFFLINE_PICKER_UNAVAILABLE", "VIDEO_OFFLINE_ARCHIVE_INVALID", "VIDEO_CAPABILITY_ACTION_UNAVAILABLE", "VIDEO_CAPABILITY_RESULT_INVALID"]},
+        "stage": {"enum": ["authorization", "selection", "validation", "installation"]}
+      }
+    },
     "schema_version": {"const": "olivia.video-capability-status.v2"},
     "status": {"enum": ["READY", "UNAVAILABLE"]},
     "capability": {"const": "video"},

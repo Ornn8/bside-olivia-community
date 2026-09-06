@@ -226,7 +226,7 @@ def test_http_startup_exposes_core_health_while_mem0_initializes(
         assert retry["data"]["status"] == "AVAILABLE"
         assert closed_after_first and memory.closed and local_server._start_ready_conversation_memory_runtime() is None
         assert failure_reason == "MEM0_IMPORT_FAILED" and recovered == "available"
-        assert factory_calls == ["old", "latest"]
+        assert factory_calls == ["old", "latest", "latest"]  # Reopening after close recreates released storage.
     finally:
         release.set()
 
@@ -1990,6 +1990,89 @@ def test_handler_rejects_malformed_json_and_wrong_methods() -> None:
     assert asyncio.run(exercise()) == (400, "INVALID_JSON", 405, "METHOD_NOT_ALLOWED")
 
 
+@pytest.mark.parametrize("provider_recovers", [False, True])
+def test_memory_failed_resend_grants_bounded_outbox_recovery_before_reply(tmp_path, monkeypatch, provider_recovers):
+    import local_server
+    from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
+    from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+    from conversation_memory_port import ConversationMemoryStatus, MemoryWriteResult, MemoryWriteStatus
+    class Memory:
+        calls = 0
+        succeeds = False
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def remember_exchange(self, **kwargs):
+            self.calls += 1
+            return MemoryWriteResult(MemoryWriteStatus.WRITTEN if self.succeeds else MemoryWriteStatus.UNAVAILABLE,
+                kwargs["source_id"], error_code=None if self.succeeds else "MEM0_WRITE_FAILED")
+    memory = Memory()
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"letters": [{"letter_id": "completed-earlier", "letter_status": "COMPLETED",
+        "reply_revision": 1, "content": "synthetic", "reply_text": "synthetic",
+        "private_world_occurred_at": "2026-09-06T00:00:00+00:00"}]}))
+    box = CanonicalMemoryOutbox(state, tmp_path / "delivery.sqlite3", ConversationMemoryDeliveryCommitter(memory))
+    original = {"letter_id": "failed-memory", "letter_status": "FAILED", "error_code": "MEMORY_UNAVAILABLE",
+        "content": "synthetic recovery", "material": {}}
+    local_server.store.letters[:] = [original]
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", box.retry_exhausted_once)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: box.health()["status"] == "available")
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *a, **k: None)
+    generated = []
+    async def generate(*a, **k):
+        generated.append(True)
+        return True
+    monkeypatch.setattr(local_server, "_run_reply_job", generate)
+    async def scenario():
+        for _ in range(4):
+            await box.scan_once()
+        assert memory.calls == 3
+        memory.succeeds = provider_recovers
+        resent = await local_server.route("POST", "/toy/letter/resend", {"letter_id": original["letter_id"]}, {}, defer_reply=True)
+        assert resent["code"] == 0
+        assert generated == []
+        for _ in range(4):
+            await box.scan_once()
+        assert memory.calls == 4
+        replacement = resent["data"]["letter_id"]
+        assert await local_server._run_reply_when_memory_ready(replacement, "synthetic", idempotency_key=None,
+            ready_timeout_seconds=0) is provider_recovers
+        again = await local_server.route("POST", "/toy/letter/resend", {"letter_id": original["letter_id"]}, {})
+        assert again["code"] == 410
+        assert generated == ([True] if provider_recovers else [])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status,superseded", [("COMPLETED", False), ("FAILED", True)])
+def test_ineligible_resend_does_not_grant_memory_retries(monkeypatch, status, superseded):
+    import local_server
+    original = {"letter_id": "ineligible", "letter_status": status, "error_code": "MEMORY_UNAVAILABLE"}
+    if superseded:
+        original["superseded_by"] = "replacement"
+    local_server.store.letters[:] = [original]
+    calls = []
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", lambda: calls.append(True))
+    response = asyncio.run(local_server.route("POST", "/toy/letter/resend", {"letter_id": "ineligible"}, {}))
+    assert response["code"] in {409, 410}
+    assert calls == []
+
+
+def test_resend_retry_storage_error_preserves_original_letter(monkeypatch):
+    import local_server
+    original = {"letter_id": "retry-storage-error", "letter_status": "FAILED",
+        "error_code": "MEMORY_UNAVAILABLE", "content": "synthetic"}
+    local_server.store.letters[:] = [original]
+    before = dict(original)
+    def fail():
+        raise RuntimeError("private storage detail")
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", fail)
+    response = asyncio.run(local_server.route("POST", "/toy/letter/resend", {"letter_id": original["letter_id"]}, {}))
+    assert response["code"] == 503
+    assert response["data"]["error_code"] == "MEMORY_UNAVAILABLE"
+    assert "private" not in repr(response)
+    assert local_server.store.letters == [before]
+
+
 def test_llm_failure_can_be_retried_through_the_resend_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1997,6 +2080,9 @@ def test_llm_failure_can_be_retried_through_the_resend_route(
     import local_server
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    def unexpected_memory_retry():
+        pytest.fail("LLM failure must not grant memory retries")
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", unexpected_memory_retry)
     outcomes: list[str | Exception] = [
         local_server.LLMError("LLM_TIMEOUT"),
         "synthetic successful resend",

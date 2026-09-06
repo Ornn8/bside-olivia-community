@@ -27,6 +27,20 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _LOOPBACK_ORIGIN_RE = re.compile(r"^http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}$")
 _ORIGINS_KEY = web.AppKey("original_client_video_capability_origins", frozenset)
 _MOUNTED_KEY = web.AppKey("original_client_video_capability_mounted", bool)
+OFFLINE_ACTION_ERROR_CODES = frozenset({
+    "VIDEO_CAPABILITY_LOGIN_REQUIRED", "VIDEO_CAPABILITY_CONFIRMATION_REQUIRED",
+    "VIDEO_OFFLINE_PICKER_UNAVAILABLE", "VIDEO_OFFLINE_ARCHIVE_INVALID",
+    "VIDEO_CAPABILITY_ACTION_UNAVAILABLE", "VIDEO_CAPABILITY_RESULT_INVALID",
+})
+OFFLINE_ACTION_STAGES = frozenset({"authorization", "selection", "validation", "installation"})
+
+
+def offline_action_failure(installer) -> dict[str, str] | None:
+    value = getattr(installer, "_offline_action_failure", None)
+    if (isinstance(value, dict) and value.get("error_code") in OFFLINE_ACTION_ERROR_CODES
+            and value.get("stage") in OFFLINE_ACTION_STAGES):
+        return {"error_code": value["error_code"], "stage": value["stage"]}
+    return None
 
 
 class VideoCapabilityAPIError(RuntimeError):
@@ -241,6 +255,11 @@ def mount_original_client_video_capability_api(
         try:
             return await handler(request)
         except VideoCapabilityAPIError as exc:
+            if request.get("offline_stage") in OFFLINE_ACTION_STAGES:
+                installer._offline_action_failure = {
+                    "error_code": exc.code if exc.code in OFFLINE_ACTION_ERROR_CODES else "VIDEO_CAPABILITY_ACTION_UNAVAILABLE",
+                    "stage": "validation" if exc.code == "VIDEO_OFFLINE_ARCHIVE_INVALID" else request["offline_stage"],
+                }
             return web.json_response({"status": "FAILED", "error_code": exc.code}, status=exc.status)
 
     app.middlewares.append(errors)
@@ -257,17 +276,22 @@ def mount_original_client_video_capability_api(
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
         payload = await asyncio.to_thread(installer.status)
+        failure = offline_action_failure(installer)
+        if isinstance(payload, dict) and failure is not None:
+            payload = {**payload, "offline_action_failure": failure}
         if not isinstance(payload, dict) or payload.get("capability") != "video":
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_STATUS_INVALID", status=503)
         return web.json_response(payload, headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"})
 
     async def action(request: web.Request) -> web.Response:
+        payload = await _body(request)
+        if payload.get("action") == "import_offline":
+            request["offline_stage"] = "authorization"
         origin = _authorize(request, confirmation=True)
         try:
             authorize_session(request.headers.get(SESSION_HEADER, ""))
         except Exception as exc:
             raise VideoCapabilityAPIError("VIDEO_CAPABILITY_LOGIN_REQUIRED", status=403) from exc
-        payload = await _body(request)
         action_name = payload.get("action")
         bundle_id = payload.get("bundle_id")
         source = payload.get("source", "auto")
@@ -347,8 +371,16 @@ def mount_original_client_video_capability_api(
         elif action_name == "import_offline":
             if set(payload) != {"action"}:
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
-            selected = await asyncio.to_thread(offline_picker)
+            request["offline_stage"] = "selection"
+            try:
+                selected = await asyncio.to_thread(offline_picker)
+            except VideoCapabilityAPIError:
+                raise
+            except Exception as exc:
+                raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503) from exc
+            request["offline_stage"] = "validation"
             if selected is None:
+                installer._offline_action_failure = None
                 return web.json_response(
                     {"status": "CANCELLED"},
                     headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
@@ -357,6 +389,7 @@ def mount_original_client_video_capability_api(
             try:
                 async with control_lock:
                     if _is_runtime_archive(archive):
+                        request["offline_stage"] = "installation"
                         result = await asyncio.to_thread(
                             installer.start_runtime_archive_import,
                             runtime_archive=archive,
@@ -365,6 +398,7 @@ def mount_original_client_video_capability_api(
                             raise VideoCapabilityAPIError(
                                 "VIDEO_CAPABILITY_RESULT_INVALID", status=503
                             )
+                        installer._offline_action_failure = None
                         return web.json_response(
                             {"status": result},
                             headers={
@@ -372,6 +406,7 @@ def mount_original_client_video_capability_api(
                                 "Cache-Control": "no-store",
                             },
                         )
+                    request["offline_stage"] = "installation"
                     results = [
                         await asyncio.to_thread(
                             installer.import_offline,
@@ -391,6 +426,7 @@ def mount_original_client_video_capability_api(
                     "VIDEO_CAPABILITY_RESULT_INVALID", status=503
                 )
             result = "APPLIED" if "APPLIED" in results else "NOOP"
+            installer._offline_action_failure = None
             return web.json_response(
                 {"status": result},
                 headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},

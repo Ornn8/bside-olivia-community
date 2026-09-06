@@ -109,15 +109,15 @@ def test_ready_mem0_reports_loaded_when_companion_runtime_is_available() -> None
     assert _render_ready_mem0_status(companion_state="available") == "已安装并已加载"
 
 
-def test_ready_mem0_requests_restart_when_companion_runtime_is_unavailable() -> None:
+def test_ready_mem0_does_not_promise_restart_fixes_unavailable_runtime() -> None:
     assert _render_ready_mem0_status(companion_state="unavailable") == (
-        "已安装，重启 Olivia 后加载"
+        "组件已安装，记忆尚未加载；请查看长期记忆页"
     )
 
 
-def test_ready_mem0_preserves_restart_fallback_when_companion_is_offline() -> None:
+def test_ready_mem0_reports_not_loaded_when_companion_is_offline() -> None:
     assert _render_ready_mem0_status(companion_state=None) == (
-        "已安装，重启 Olivia 后加载"
+        "组件已安装，记忆尚未加载；请查看长期记忆页"
     )
 
 

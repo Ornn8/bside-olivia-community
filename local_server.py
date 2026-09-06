@@ -3418,6 +3418,14 @@ async def route(
                 "error_code": "LETTER_RESEND_NOT_ALLOWED",
                 "retryable": False,
             })
+        if original.get("error_code") == "MEMORY_UNAVAILABLE":
+            try:
+                retry_exhausted_conversation_memory()
+            except Exception:
+                return err(503, "MEMORY_UNAVAILABLE", {
+                    "status": "FAILED", "error_code": "MEMORY_UNAVAILABLE", "retryable": True,
+                    "letter_id": lid,
+                })
         retried = await route(
             "POST",
             "/toy/letter/send",
