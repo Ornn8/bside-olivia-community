@@ -479,6 +479,7 @@ _CURRENT_LETTER_MEMORY_SOURCE: ContextVar[str | None] = ContextVar(
     "current_letter_memory_source",
     default=None,
 )
+_CURRENT_LETTER_RECEIPT: ContextVar[datetime | None] = ContextVar("current_letter_receipt", default=None)
 
 
 class _LetterGateway(Gateway):
@@ -766,8 +767,11 @@ class LetterAdapter:
                 for fragment in self.recent_letter_fragments(content)
                 for pair in json.loads(fragment.text)["letters"]
             )
-            value = self.daily_life.store.reply_context(content, now=self._now(), related_text=related)
-            return (UntrustedFragment("linli.daily-life", value),) if value else ()
+            now = _CURRENT_LETTER_RECEIPT.get() or self._now()
+            value = self.daily_life.store.reply_context(content, now=now, related_text=related)
+            rhythm = self.daily_life.snapshot(now)["rhythm"]
+            fragments = (UntrustedFragment("linli.daily-life", value),) if value else ()
+            return (*fragments, UntrustedFragment("linli.rhythm", json.dumps(rhythm, ensure_ascii=False)))
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             return ()
 
@@ -1262,6 +1266,7 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
             DailyLifeStore(path.with_name("daily_life.sqlite3")),
             lambda: letters_adapter.gateway,
             lambda: life_persona(letters_adapter.persona_v2_path),
+            relationship=lambda: letters_adapter.private_world_port.snapshot(),
         )
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         return None
@@ -3341,6 +3346,7 @@ async def route(
             "audit_status": 2,
             "is_read": 1,
             "created_at": int(time.time()),
+            "life_received_at": letters_adapter._now().isoformat(),
             "reply_text": "",
             "reply_mode": ReplyMode.TEXT_LETTER.value,
             "triage": {"status": "pending"},
@@ -3765,16 +3771,22 @@ async def _run_reply_when_memory_ready(
         if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
             elapsed = max(0.0, time.time() - float(created_at))
             timeout_seconds = max(0.0, timeout_seconds - elapsed)
-    if timeout_seconds <= 0.0:
-        _fail_pending_reply_for_memory_timeout(letter_id)
-        return False
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            while not _conversation_memory_ready_for_reply():
-                await asyncio.sleep(0.25)
-    except TimeoutError:
-        _fail_pending_reply_for_memory_timeout(letter_id)
-        return False
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while not _conversation_memory_ready_for_reply():
+        if asyncio.get_running_loop().time() >= deadline:
+            runtime = conversation_memory_reply_readiness_status()
+            # A timed-out wait must not discard a letter while the existing
+            # memory call is still being settled. Only the outbox owns retries.
+            busy = (
+                runtime.enabled and runtime.worker_running
+                and runtime.delivery_pending
+                and runtime.status == "degraded"
+                and runtime.reason_code is None
+            )
+            if not busy:
+                _fail_pending_reply_for_memory_timeout(letter_id)
+                return False
+        await asyncio.sleep(0.25)
     return await _run_reply_job(letter_id, content, idempotency_key=idempotency_key)
 
 
@@ -3954,7 +3966,7 @@ def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
     letter["reply_revision"] = revision
     letter["private_world_delivery_id"] = delivery_id
     letter["private_world_status"] = "PENDING"
-    letter["private_world_occurred_at"] = datetime.now(timezone.utc).isoformat()
+    letter["private_world_occurred_at"] = letters_adapter._now().isoformat()
     letter["private_world_reply_sha256"] = hashlib.sha256(
         canonical_text.encode("utf-8")
     ).hexdigest()
@@ -3976,6 +3988,7 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
             await daily_life_runtime.consume_exchange(
                 source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
                 occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
+                received_at=datetime.fromisoformat(letter.get("life_received_at", letter["private_world_occurred_at"])),
             )
             signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"])
             if signal is not None:
@@ -4118,6 +4131,9 @@ async def _run_reply_pipeline_for_letter(
     source_token = _CURRENT_LETTER_MEMORY_SOURCE.set(
         f"reply:{letter_id}:{revision}"
     )
+    receipt_token = _CURRENT_LETTER_RECEIPT.set(
+        datetime.fromisoformat(letter["life_received_at"]) if letter.get("life_received_at") else letters_adapter._now()
+    )
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -4152,6 +4168,7 @@ async def _run_reply_pipeline_for_letter(
         )
     finally:
         _CURRENT_LETTER_MEMORY_SOURCE.reset(source_token)
+        _CURRENT_LETTER_RECEIPT.reset(receipt_token)
 
 
 async def generate_reply(letter_id, content, *, idempotency_key=None):
@@ -4163,6 +4180,10 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     )
     if letter is None:
         return False
+
+    # Persist once: retries and slow background extraction cannot move receipt
+    # time to the end of generation or create another sleep interruption.
+    letter.setdefault("life_received_at", letters_adapter._now().isoformat())
 
     letter["letter_status"] = "PROCESSING"
     _persist_store_state()

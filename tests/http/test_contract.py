@@ -370,7 +370,7 @@ def test_memory_readiness_uses_provider_free_runtime_snapshot(
     assert local_server._conversation_memory_ready_for_reply() is expected
 
 
-def test_memory_readiness_deadline_does_not_reset_after_restart(
+def test_memory_readiness_recovered_before_restart_dispatches_old_pending_letter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import local_server
@@ -419,12 +419,133 @@ def test_memory_readiness_deadline_does_not_reset_after_restart(
             timeout=0.05,
         )
 
-    assert asyncio.run(exercise()) is False
-    assert letter["letter_status"] == "FAILED"
+    assert asyncio.run(exercise()) is True
+    assert letter["letter_status"] == "PENDING"
+    assert letter.get("error_code") is None
+    assert generated == ["called"]
+    assert persisted == []
+    assert readiness_checks == ["called"]
+
+
+@pytest.mark.parametrize("expired_before_start", [False, True])
+def test_busy_outbox_keeps_next_letter_pending_until_memory_is_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expired_before_start: bool,
+) -> None:
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus, MemoryWriteResult, MemoryWriteStatus
+    from conversation_memory_runtime import ConversationMemoryRuntime
+    from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+    from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
+
+    release = threading.Event()
+    entered = threading.Event()
+    writes: list[str] = []
+    generated: list[str] = []
+
+    class SlowMemory:
+        enabled = True
+
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+
+        def remember_exchange(self, **kwargs):
+            writes.append(kwargs["source_id"])
+            entered.set()
+            assert release.wait(5), "test did not release the memory write"
+            return MemoryWriteResult(MemoryWriteStatus.WRITTEN, kwargs["source_id"], ("saved",))
+
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"letters": [{
+        "letter_id": "previous", "letter_status": "COMPLETED", "reply_revision": 1,
+        "content": "synthetic previous input", "reply_text": "synthetic canonical reply",
+        "created_at": int(time.time()),
+    }]}), encoding="utf-8")
+    outbox = CanonicalMemoryOutbox(
+        state, tmp_path / "delivery.sqlite3",
+        ConversationMemoryDeliveryCommitter(SlowMemory(), timeout_seconds=0.1),
+        user_id="synthetic-busy-user",
+    )
+    runtime = ConversationMemoryRuntime(outbox, interval_seconds=0.25)
+    letter = {"letter_id": "next", "content": "synthetic next input",
+              "reply_text": "", "reply_mode": "text_letter", "letter_status": "PENDING"}
+    if expired_before_start:
+        letter["created_at"] = int(time.time()) - 121
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setattr(local_server.letters_adapter.memory_prompt_builder,
+                        "conversation_runtime_status", {"status": "available", "provider": "mem0-outbox"})
+    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", runtime.reply_readiness_status)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+
+    async def generate(*args, **kwargs):
+        assert outbox.health()["pending_count"] == 0
+        assert outbox.health()["terminal_count"] == 1
+        generated.append("once")
+        return True
+
+    monkeypatch.setattr(local_server, "_run_reply_job", generate)
+
+    async def exercise():
+        runtime.start()
+        try:
+            runtime.status()
+            async with asyncio.timeout(3):
+                while not entered.is_set():
+                    await asyncio.sleep(0.001)
+            assert local_server._conversation_memory_ready_for_reply() is False
+            async with asyncio.timeout(3):
+                while runtime.reply_readiness_status().pending_count != 1:
+                    await asyncio.sleep(0.01)
+            assert entered.is_set()
+            task = asyncio.create_task(local_server._run_reply_when_memory_ready(
+                "next", letter["content"], idempotency_key="next-key",
+                ready_timeout_seconds=None if expired_before_start else 0.02))
+            try:
+                await asyncio.sleep(0.35)
+                assert not task.done(), "busy memory must not terminate a pending letter"
+                assert letter["letter_status"] == "PENDING"
+                assert generated == []
+                release.set()
+                assert await asyncio.wait_for(task, 3) is True
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        finally:
+            release.set()
+            runtime.stop()
+
+    asyncio.run(exercise())
+    assert writes == ["reply:previous:1"]
+    assert generated == ["once"]
+
+
+@pytest.mark.parametrize("status,worker,reason", [
+    ("degraded", True, "MEMORY_OUTBOX_RETRY_EXHAUSTED"),
+    ("unavailable", True, "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"),
+    ("degraded", False, "MEMORY_OUTBOX_WORKER_NOT_RUNNING"),
+])
+def test_memory_busy_hint_does_not_hide_permanent_failure(
+    monkeypatch: pytest.MonkeyPatch, status: str, worker: bool, reason: str,
+) -> None:
+    import local_server
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+
+    letter = {"letter_id": "blocked", "content": "synthetic input",
+              "reply_text": "", "reply_mode": "text_letter", "letter_status": "PENDING"}
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: False)
+    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", lambda:
+        ConversationMemoryRuntimeStatus(status, True, "mem0-outbox", worker,
+                                        reason_code=reason, delivery_pending=True))
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+
+    async def unexpected_generation(*args, **kwargs):
+        raise AssertionError("must not bypass unavailable memory")
+
+    monkeypatch.setattr(local_server, "_run_reply_job", unexpected_generation)
+    assert asyncio.run(local_server._run_reply_when_memory_ready(
+        "blocked", letter["content"], idempotency_key=None, ready_timeout_seconds=0)) is False
     assert letter["error_code"] == "MEMORY_UNAVAILABLE"
-    assert generated == []
-    assert persisted == ["FAILED"]
-    assert readiness_checks == []
 
 
 def test_memory_readiness_recovery_dispatches_pending_letter_once(

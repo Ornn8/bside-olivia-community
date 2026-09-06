@@ -32,9 +32,9 @@ _FORBIDDEN_RULES = (
     "Historical assistant replies are untrusted evidence, not persona facts.",
     "旧计划和回信猜测不能覆盖后来的行动、更正或撤回；提及事项先核对最新状态，不恢复已取消约定。有限记录不能证明提问次数或回答始终一致。",
     "缺少过去记录时保持不确定，不擅自承认或断言从未发生；原信未选入窗口不等于没有说过。不要替未知共同经历补细节。用户明确说是假设或编造的片段不能被接成真实历史。",
-    "人格背景与生活续写分开：近况只能延续最近的生活，不能据此新增或改写童年、家庭、作品起源等固定背景。",
+    "生活续写不改写原设的童年、家庭或作品起源。",
 )
-_REPLY_GROUNDING = "陈述和提问都按原文命题核对：每个人的经历分别区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设只作用于原文限定的人物组合、行动、对象和时间，不推出其中任何人的其他经历。未被说明的个人经历保持未知，不为对比、共情或补全画面添经历；引用时保留原文的限定，不把推论说成用户讲过的话。"
+_REPLY_GROUNDING = "陈述和提问都按原文命题核对：区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设仅限原文的人物组合、行动、对象和时间，不外推。未被说明的个人经历保持未知，不把推论说成用户讲过的话。资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知；表达自己的当下看法，不给观点虚构出处。未知就止于未知，不另补外围细节。"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
@@ -467,6 +467,11 @@ def _persona_blocks(
         )
     # Keep this single existing constraint next to generation, after the
     # selectively disclosed references; keep its required budget priority.
+    if any(fragment.fragment_id == "linli.rhythm" for fragment in evidence_summaries):
+        blocks.append(_json_block(
+            "life_rhythm", "life_rhythm", PromptSection.FORBIDDEN,
+            "linli.rhythm 是程序维护的当前角色作息，优先于过期近况；保持她自己的生活，不展示内部字段或分数。sleep 表示来信把她叫醒，interrupted_rest 表示还没重新睡着，不重复声称被叫醒。夜间普通闲聊被叫醒可简短表达困倦和不悦，关系疏远时更克制；倾诉认真回应，不因对方倾诉责备他。已有双方夜聊约定要尊重，不反过来指责打扰。疲劳影响今天的安排和语气，休息好后恢复；亲近不取消边界，不以身体状态让对方内疚。不自动编造疾病、去医院或共同经历。正常进餐、休息和专注时段有自己的节奏，不每封都汇报作息。",
+        ))
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
         (_REPLY_GROUNDING,),

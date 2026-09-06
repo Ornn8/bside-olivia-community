@@ -792,6 +792,14 @@ class Mem0ConversationMemoryAdapter:
         self._pending_exchange_key: tuple[str, str] | None = None
         self._last_error_code: str | None = None
 
+    @property
+    def operation_pending(self) -> bool:
+        """Read-only hint including writes awaiting settlement after timeout."""
+        return (
+            self._provider_call.inflight or self._write_call.inflight
+            or self._pending_exchange_key is not None
+        )
+
     def _filters(self, user_id: str) -> dict[str, object]:
         user_id = self._normalized_user_id(user_id)
         return self._provider_filters(user_id)

@@ -1770,12 +1770,14 @@ def test_outbox_retry_recovers_nested_mem0_timeout(tmp_path: Path) -> None:
         try:
             first = await outbox.scan_once()
             assert first.pending == 1
+            assert outbox.committer.delivery_pending is True
             release.set()
             await asyncio.sleep(0.06)
             for _ in range(3):
                 await outbox.scan_once()
             assert outbox.health()["terminal_count"] == 1
             assert outbox.health()["pending_count"] == 0
+            assert outbox.committer.delivery_pending is False
             assert sum(name == "add" for name, _ in backend.calls) == 1
         finally:
             release.set()

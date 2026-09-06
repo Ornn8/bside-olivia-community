@@ -438,7 +438,7 @@ def _verify_archive(
         "data-olivia-companion-settings-root",
         "panel.dataset.oliviaCompanionPanel",
         "长期记忆",
-        "私人世界",
+        "林离世界",
         "纠正",
         "删除",
         "暂停长期记忆",

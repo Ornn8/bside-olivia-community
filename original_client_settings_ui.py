@@ -694,7 +694,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.clearTimeout(panel.__oliviaMemoryStatusTimer);
     const state = capabilityState(capability);
     const confirmClear = async () => await confirmAction("确认清空当前用户的 Mem0 长期记忆？")
-      && await confirmAction("清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？");
+      && await confirmAction("清空后无法恢复。原始信件和林离世界不会受影响，仍要继续吗？");
     if (state === "disabled" || state === "unavailable") {
       if (state === "unavailable" && capability && capability.reason_code === "MEM0_INITIALIZING") {
         panel.replaceChildren(
@@ -722,7 +722,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             const status = await requestJson(STATUS_PATH);
             await renderMemoryPanel(panel, status.capabilities.memory);
           } catch (_error) {
-            resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+            resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
           } finally {
             setButtonsBusy([resume], false);
           }
@@ -901,7 +901,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const toggle = button(paused ? "恢复长期记忆" : "暂停长期记忆", async () => {
       const action = paused ? "恢复" : "暂停";
-      if (!await confirmAction(`确认${action} Mem0 长期记忆？Archive 和私人世界不会受影响。`)) {
+      if (!await confirmAction(`确认${action} Mem0 长期记忆？Archive 和林离世界不会受影响。`)) {
         return;
       }
       setButtonsBusy([toggle, clear], true);
@@ -936,7 +936,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         );
         await refreshLifecyclePanel();
       } catch (_error) {
-        resultState.textContent = "长期记忆清空失败，原始信件和私人世界保持不变。";
+        resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
       } finally {
         setButtonsBusy([toggle, clear], false);
       }
@@ -1103,9 +1103,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
       const now = section("此刻的林离", payload.stale ? "这是她最近留下的近况，不代表此刻仍在做同一件事。" : "她愿意与你分享的一小段生活。");
+      if (payload.rhythm) {
+        now.append(text("p", payload.rhythm.activity, "text-text-title text-title-s"),
+          text("p", payload.rhythm.note, "text-text-secondary text-body-m"));
+        if (payload.rhythm.wellbeing && payload.rhythm.wellbeing.state !== "well") {
+          now.append(text("p", payload.rhythm.wellbeing.summary, "text-text-secondary text-body-m"));
+        }
+      }
       if (payload.current) {
         const current = payload.current;
         const el = card();
+        if (payload.rhythm) el.append(text("small", "最近一次分享（不是实时活动）", "text-text-secondary text-caption-m"));
         el.append(text("p", `${current.location} · ${current.activity}`, "text-text-title text-title-s"),
           text("p", current.note, "text-text-body text-body-m"),
           text("small", when(current.occurred_at), "text-text-secondary text-caption-m"));
@@ -1742,9 +1750,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       item.append(install);
     }
-    if (canUninstall && state !== "downloading" && !runtimePreparing) {
-      const uninstall = button("卸载视频组件", async () => {
-        if (!await confirmAction("确认卸载视频回信的全部本地组件？已生成的视频、信件和记忆会保留。")) return;
+    if (canUninstall) {
+      const uninstallBusy = state === "downloading" || runtimePreparing;
+      const uninstall = button("卸载视频模型与运行依赖", async () => {
+        if (uninstallBusy) return;
+        if (!await confirmAction("确认卸载视频模型与运行依赖？已生成的视频、信件和记忆会保留。")) return;
         if (!await confirmAction("重新启用视频回信需要再次下载或导入约 36.8 GiB，仍要继续吗？")) return;
         setButtonsBusy([uninstall], true);
         result.textContent = "正在卸载视频组件……";
@@ -1765,7 +1775,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           setButtonsBusy([uninstall], false);
         }
       });
+      setButtonsBusy([uninstall], uninstallBusy);
       item.append(uninstall);
+      if (uninstallBusy) {
+        item.append(text("p", runtimePreparing || verifyingOnly
+          ? "正在安装或校验视频组件，请等待当前步骤结束后再卸载。"
+          : "请先暂停下载，等待当前安装步骤结束后再卸载。",
+          "text-text-secondary text-caption-m font-regular"));
+      }
     }
     item.append(result);
     const list = stack();
@@ -1959,7 +1976,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const failed = Object.entries(capabilities).filter(([, value]) =>
         value && (value.state === "unavailable" || value.state === "degraded"));
       if (failed.length) {
-        const labels = {memory: "长期记忆", private_world: "私人世界", candidates: "记忆候选"};
+        const labels = {memory: "长期记忆", private_world: "林离世界", candidates: "记忆候选"};
         statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
           const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
             ? `（${value.reason_code}）` : "";
@@ -2159,7 +2176,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           { id: "capability", label: "本地能力与下载", key: "capability" },
           { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
-          { id: "private-world", label: "私人世界", key: "privateWorld" },
+          { id: "private-world", label: "林离世界", key: "privateWorld" },
         ];
 
     const showPanel = (id) => {
@@ -2496,7 +2513,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const copy = document.createElement("div");
     copy.className = "flex flex-col gap-0 flex-1 min-w-0";
     copy.append(
-      text("div", "记忆与私人世界", "text-text-body text-label-l"),
+      text("div", "记忆与林离世界", "text-text-body text-label-l"),
       text(
         "div",
         "在 Olivia 客户端内查看并管理本地连续性。",

@@ -625,7 +625,7 @@ def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> Non
     source = BOOTSTRAP_JAVASCRIPT
     assert source.count('const clear = button("清空当前用户记忆"') == 1
     assert "确认清空当前用户的 Mem0 长期记忆？" in source
-    assert "清空后无法恢复。原始信件和私人世界不会受影响，仍要继续吗？" in source
+    assert "清空后无法恢复。原始信件和林离世界不会受影响，仍要继续吗？" in source
     assert "requestMutation(MEMORY_CLEAR_PATH" in source
     assert 'request_id: requestId("memory.clear")' in source
     assert "confirmed: true" in source

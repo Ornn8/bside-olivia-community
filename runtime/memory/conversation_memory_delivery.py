@@ -153,6 +153,14 @@ class ConversationMemoryDeliveryCommitter:
         self._completed_deliveries: dict[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult] = {}
         self._commit_lock = asyncio.Lock()
 
+    @property
+    def delivery_pending(self) -> bool:
+        """A started provider call still needs to be settled and journaled."""
+        return (
+            self._pending_delivery is not None
+            or getattr(self.memory, "operation_pending", False) is True
+        )
+
     def drain_completed(self) -> tuple[tuple[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult], ...]:
         """Transfer foreign settled results to the journal under their own identity."""
         completed = tuple(self._completed_deliveries.items())

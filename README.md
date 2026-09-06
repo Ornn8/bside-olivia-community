@@ -17,9 +17,19 @@ BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。
 
 项目并不重新制作一个聊天壳。核心目标是让原版体验、可审计人格、长期记忆、私有关系状态和离线媒体生成组合成一条可维护、可降级、可替换的产品管线。
 
-> **发布边界：** 文字回信主链可运行；视频与音乐回信的自动阶段链路已验证，完整成片的发布/真实客户端验收尚未完成。DPAPI 当前用户启动读取修复已合入；可选模型在登录后的初始设置中按需安装，并可在客户端 Settings 管理。Live 实时对话暂停开发。
+> **发布边界：** 文字回信与林离世界走正式信件链路。0.1.455 已验证本机媒体成片与原生播放（复用已有来信和歌曲，不是新生成一封信的全程计时）；不同设备的音色与口型仍需实际试听。可选模型在登录后的初始设置中按需安装，也可在设置中下载或导入离线包。Live 实时对话暂停开发。
 
 ## 项目做到了什么
+
+### 新增：林离世界
+
+她的生活不只是一张好感度表：作息、吃饭休息、夜间被叫醒后的疲劳，以及随关系逐步调整的相处节奏，都与正式信件联动。半小时安静后重新入睡，连续往来按实际时间计入休息损失；状态会延续到下一天，而不是每封信重新生成。
+
+连续缺觉会影响她的次日安排和身体状态，真正休息后逐步恢复；倾诉、已约好的夜聊、取消约定和施压分别处理，好感变化仍进入既有关系账本。页面展示作息、最近分享和可折叠事项，不把旧分享冒充实时活动。
+
+分阶段使用 OpenCode Go / DeepSeek V4 Flash 完成 **14 封跨日来信 + 6 封约定/边界来信**：正式回信、生活写入和记忆投递均完成，重开数据库状态一致。另完成候选安装包新目录安装与原生寄信联动。测试使用独立合成用户与模拟日历；不是无幻觉率或医学有效性结论，失败样本与精确版本边界见[林离世界设计与验证](docs/LINLI_WORLD.md)。
+
+### 已有能力
 
 - 复用用户合法取得的原版 `0.0.9.627` 客户端，在隔离副本内接入本机服务，不修改正版 Steam 目录；
 - 将来信、Persona、记忆、PrivateWorld 与审校装配为唯一 canonical reply，再投影为文字或媒体；
@@ -36,15 +46,15 @@ flowchart LR
     HTTP --> Context[ReplyContext]
     Persona[Persona 2.0] --> Context
     Memory[Mem0 长期记忆] --> Context
-    World[PrivateWorld 行为投影] --> Context
+    World[林离世界：作息与关系投影] --> Context
     Context --> LLM[OpenAI-compatible LLM]
     LLM --> Gate[ReplyQualityGate]
     Gate --> Canonical[Canonical reply]
     Canonical --> Collection[原版 Collection]
     Canonical -. 后台可选投影 .-> Media[媒体编排]
-    Media --> TTS[CosyVoice TTS]
+    Media --> TTS[Breeze TTS 2]
     Media --> Visual[LatentSync / FFmpeg]
-    Media --> Music[MiniMax Music 3 / RoFormer]
+    Media --> Music[MiniMax Music 3 / RoFormer / SoulX]
     TTS --> Render[本机媒体合成]
     Visual --> Render
     Music --> Render
@@ -65,12 +75,12 @@ flowchart LR
 | 接口契约 | JSON Schema、稳定错误码、幂等 request ID、fail-closed 校验 |
 | 模型网关 | OpenAI-compatible API；默认适配 DeepSeek，支持结构化工具调用 |
 | Persona | Persona 2.0、provenance、prompt budget、ReplyContext、可审计装配 |
-| 回信质量 | 确定性策略检查、一次模型审校、全局最多一次正文重写 |
+| 回信质量 | 正文约束与出处边界；模型审校为可选项，本轮验收未开启 |
 | 长期记忆 | Mem0、`sentence-transformers` 离线 embedding、按用户隔离的本机数据根 |
-| 私有关系 | SQLite 事件账本、reducer、有限行为投影；隐藏数值不直接进入模型 |
-| 语音 | CosyVoice 3、VoicePerformancePlan、整段单次 TTS、ASR 质量门禁 |
+| 林离世界 | SQLite 生活事项与关系账本、实际书信时间线、渐进作息；隐藏好感分数不直接进入模型 |
+| 语音 | Breeze TTS 2、整段单次语音、简短整体导向、固定受管声音参考，CFG=1 |
 | 视频 | 原版场景、LatentSync 1.5 口型适配、FFmpeg 转场与时间线合成 |
-| 音乐 | MiniMax Music 3、结构化歌词与音乐方向、RoFormer 人声分离、钢琴场景 |
+| 音乐 | MiniMax Music 3、RoFormer 双声部、SoulX-Singer-SVC 人声转换、转换人声与伴奏重混音 |
 | ASR / Live | NeMo-Speech.cpp 接口与流式契约；Live 当前暂停，不属于发布范围 |
 | Windows 安装 | PowerShell、受管 Python、Steam AppID 发现、归档哈希校验、DPAPI |
 | 工程质量 | `pytest`、Windows GitHub Actions、hardening scan、合成隐私 fixture |
@@ -83,13 +93,13 @@ flowchart LR
 
 ### 文字回信
 
-来信经过 Persona、上下文、长期记忆和 PrivateWorld 行为提示装配，再由 LLM 生成正文。正文通过质量门后持久化，并按真实产品节奏延迟送达。
+来信经过 Persona、上下文、长期记忆和林离世界状态装配，再由 LLM 生成最终正文并持久化。思考内容不作为信件或记忆；生活与关系只消费正式正文，重复投递不重复生效。
 
 这是当前最成熟的主链。模型不可用时会报告 `UNAVAILABLE` 或 `DEGRADED`，不会把静态模板伪装成真实模型回信。
 
 ### 视频回信
 
-每封视频回信固定包含 **自然说话段 + 固定原版转身/黑屏转场 + 约 60 秒音乐演唱段 + 渐暗收尾**。说话段使用 CosyVoice、固定原版日常动作底片与 LatentSync 口型；随后生成足以容纳主歌和副歌的音乐段。歌曲、歌词和表演方向由同一封信的 canonical reply 派生。LiveTalking 只是独立可选的实时能力，不属于视频回信。
+每封视频回信固定包含 **自然说话段 + 固定原版转身/黑屏转场 + 约 60 秒音乐演唱段 + 渐暗收尾**。说话段使用 Breeze TTS 2、原版日常动作底片与 LatentSync 口型；音乐经 RoFormer 分离，SoulX 转换人声后与伴奏重混，口型使用转换后人声。歌曲、歌词和表演方向由同一封信的 canonical reply 派生。LiveTalking 是独立可选能力，不属于视频回信。
 
 后台阶段清单 schema v3 将固定说话动作底片纳入内容指纹；旧版清单会自动失效并重建对应阶段。代码入口与 provider 合约已经接入，但不同机器上的 TTS、口型、面部稳定性和场景衔接仍需人工视听验收。
 
@@ -129,7 +139,7 @@ cd bside-olivia-community
 
 安装器创建隔离副本并自动查找 Steam AppID `4532590`。正版目录不写入补丁、备份或生成数据；版本或关键归档哈希不匹配时会在写入前停止。
 
-`CONFIGURE.cmd` 用于保存 API key 和可选参考文件。密钥通过当前 Windows 用户的 DPAPI 加密保存；启动器已把解密值仅注入后端子进程，客户端与日志都不会接收它。环境变量仍可显式覆盖；这不等同于发布或真实客户端验收完成。
+`CONFIGURE.cmd` 用于保存 API key 和可选参考文件。DPAPI 当前用户启动读取修复已合入：密钥通过当前 Windows 用户加密保存，启动器把解密值仅注入后端子进程，客户端与日志都不会接收它。环境变量仍可显式覆盖；真实客户端验收的范围和结果见[林离世界设计与验证](docs/LINLI_WORLD.md)，不代表所有设备均通过。
 
 大型 TTS、视觉与音乐模型不随安装包分发。请按[第三方下载清单](docs/THIRD_PARTY_DOWNLOADS.md)从上游获取，并接受各自许可证。
 
@@ -144,7 +154,7 @@ cd bside-olivia-community
 | Mem0 | 实验可用 | 准备好的环境可写入和召回；一键新装仍在修复 |
 | 视频回信（说话 + 60 秒音乐） | 实验性 | 编排与模型接口存在；完整成片的耗时、路由、稳定性和跨机器视听效果仍待验收 |
 | Live 实时对话 | 暂停 | 不进入当前 Release |
-| 正式 Release | 未发布 | 当前只提供源码和验收候选，不宣称最终发布完成 |
+| 正式 Release | 持续发行 | 已有 0.1.455；新增林离世界的实际发行版本与下载以 GitHub Releases 为准 |
 
 CI 通过只证明对应代码、契约和合成 fixture 通过，不等于第三方模型、真实 GPU、原版客户端或人工视听验收完成。
 

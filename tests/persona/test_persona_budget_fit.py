@@ -32,6 +32,8 @@ def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
     assert '已知肯定、已知否定和未知' in scope
     assert '“做过”和“没做过”都需要原信依据' in scope
     assert '不把推论说成用户讲过的话' in scope
+    assert '资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知' in scope
+    assert '表达自己的当下看法，不给观点虚构出处' in scope
     assert '<untrusted_history>' not in assembly.system_content
     assert assembly.budget_report.dropped_ids == ()
 
