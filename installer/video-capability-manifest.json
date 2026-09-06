@@ -857,7 +857,8 @@
             "dependencies": [
                 "ordinary_video",
                 "minimax_music3",
-                "roformer"
+                "roformer",
+                "soulx_svc"
             ],
             "runtime_environment": {
                 "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe",
@@ -865,7 +866,9 @@
                 "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
                 "OLIVIA_ROFORMER_PYTHON": "roformer/runtime/python/python.exe",
                 "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
-                "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml"
+                "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
+                "OLIVIA_SOULX_SVC_ROOT": "soulx_svc/runtime",
+                "OLIVIA_SOULX_SVC_PYTHON": "soulx_svc/runtime/python/python.exe"
             },
             "files": [
                 {
@@ -983,6 +986,56 @@
                     "sources": {
                         "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.2/olivia-video-runtime-minimax-20260831.zip.part02"
                     }
+                },
+                {
+                    "id": "soulx-svc-runtime-part-01",
+                    "path": "runtime/olivia-video-runtime-soulx-svc-20260906.zip.part01",
+                    "size_bytes": 1500000000,
+                    "sha256": "9cf7a9b0a6522abba3775fb85b83f4d7ee8088d756f92406df338c10ad5775ce",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.455/olivia-video-runtime-soulx-svc-20260906.zip.part01"
+                    }
+                },
+                {
+                    "id": "soulx-svc-runtime-part-02",
+                    "path": "runtime/olivia-video-runtime-soulx-svc-20260906.zip.part02",
+                    "size_bytes": 1500000000,
+                    "sha256": "92311084177a7fdc67b46f9f191ee02096b76f6989b53e43764a14959170e326",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.455/olivia-video-runtime-soulx-svc-20260906.zip.part02"
+                    }
+                },
+                {
+                    "id": "soulx-svc-runtime-part-03",
+                    "path": "runtime/olivia-video-runtime-soulx-svc-20260906.zip.part03",
+                    "size_bytes": 1500000000,
+                    "sha256": "1fc813c0cccb64c7bdb2455afe2052522098cce25e7c1f445f73323e42148a77",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.455/olivia-video-runtime-soulx-svc-20260906.zip.part03"
+                    }
+                },
+                {
+                    "id": "soulx-svc-runtime-part-04",
+                    "path": "runtime/olivia-video-runtime-soulx-svc-20260906.zip.part04",
+                    "size_bytes": 1500000000,
+                    "sha256": "09886be2257fde513737ebf509ca361910fbdfda42a17c8ae24a6e314ad13555",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.455/olivia-video-runtime-soulx-svc-20260906.zip.part04"
+                    }
+                },
+                {
+                    "id": "soulx-svc-runtime-part-05",
+                    "path": "runtime/olivia-video-runtime-soulx-svc-20260906.zip.part05",
+                    "size_bytes": 99714126,
+                    "sha256": "4b4c7c76dd5966333de51b34a08620ef4563cabaa1cc41bbad645071e0790e27",
+                    "license": "Runtime dependency aggregate; upstream licenses preserved in archive",
+                    "sources": {
+                        "official": "https://github.com/Ornn8/bside-olivia-community/releases/download/v0.1.455/olivia-video-runtime-soulx-svc-20260906.zip.part05"
+                    }
                 }
             ],
             "runtime_artifacts": [
@@ -1006,6 +1059,20 @@
                     "archive_size_bytes": 2889933971,
                     "archive_sha256": "205562052ec4232ad37f162c2b832c4130abe506065b7f2f77f8739bf8650adb",
                     "destination": "roformer",
+                    "strip_components": 1
+                },
+                {
+                    "id": "soulx-svc-runtime",
+                    "part_ids": [
+                        "soulx-svc-runtime-part-01",
+                        "soulx-svc-runtime-part-02",
+                        "soulx-svc-runtime-part-03",
+                        "soulx-svc-runtime-part-04",
+                        "soulx-svc-runtime-part-05"
+                    ],
+                    "archive_size_bytes": 6099714126,
+                    "archive_sha256": "37358207b82f00a37736241ab478668f95546a3934fafa6550fc71b1b45b714e",
+                    "destination": "soulx_svc",
                     "strip_components": 1
                 }
             ]

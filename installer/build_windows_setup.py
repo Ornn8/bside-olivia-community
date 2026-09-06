@@ -187,7 +187,6 @@ RELEASE_INSTALLER_FILES = {
     "installer/cosyvoice-windows-audio.patch.json",
     "installer/latentsync-windows-memmap.patch.json",
     "installer/latentsync-windows-mp4-writer.patch.json",
-    "installer/seed-vc-overlap-frames.patch",
 }
 RELEASE_TOOL_FILES = {
     "tools/asr_healthcheck.py",
@@ -206,6 +205,7 @@ RELEASE_TOOL_FILES = {
     "tools/memory_import.py",
     "tools/minimax_music3_worker.py",
     "tools/minimax_profile.py",
+    "tools/soulx_svc_worker.py",
     "tools/music_renderer.py",
     "tools/tts_cli.py",
 }

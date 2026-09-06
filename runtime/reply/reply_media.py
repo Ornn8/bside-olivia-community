@@ -143,6 +143,9 @@ def _tts_config(
         if key in provider_options and str(provider_options[key]).strip():
             provider_options[key] = str(configured_path(provider_options[key]))
     if ordinary_video:
+        if provider == "breeze_tts2":
+            # Apply the accepted delivery setting to existing generated configs too.
+            provider_options["cfg_scale"] = 1.0
         configured_reference = environment.get("OLIVIA_REPLY_VOICE_REFERENCE")
         if configured_reference is not None and str(configured_reference).strip():
             official_reference = configured_path(configured_reference)

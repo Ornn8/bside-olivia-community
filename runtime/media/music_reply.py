@@ -40,6 +40,13 @@ from runtime.reply.reply_media import (
     render_reply_video,
 )
 from runtime.media.song_content import plan_song_content
+from runtime.media.voice_conversion import (
+    VoiceConversionError,
+    convert_singing_voice,
+    mix_song_voice,
+    voice_conversion_fingerprint,
+    voice_conversion_runtime_ready,
+)
 from .voice_direction import VoicePerformancePlan
 
 
@@ -305,6 +312,8 @@ def musical_reply_configured(
         latentsync_root / "checkpoints" / "latentsync_unet.pt",
     )
     return bool(
+        voice_conversion_runtime_ready(env)
+        and
         performance_video_path is not None
         and performance_video_path.is_file()
         and ordinary_scene.is_file()
@@ -462,6 +471,17 @@ def video_reply_dependency_status(
             )
         )
     )
+    soulx_svc_ready = voice_conversion_runtime_ready(env)
+    if soulx_svc_ready and probe_runtime:
+        soulx_svc_root = configured("OLIVIA_SOULX_SVC_ROOT")
+        soulx_svc_python = configured("OLIVIA_SOULX_SVC_PYTHON")
+        soulx_svc_ready = bool(soulx_svc_root and soulx_svc_python and _run_runtime_probe(
+            [str(soulx_svc_python), "-I", "-B", "-c",
+             "import torch, transformers, librosa; "
+             "assert torch.version.cuda; assert torch.cuda.is_available(); "
+             "torch.ones(1, device='cuda')"],
+            cwd=soulx_svc_root,
+        ))
     ordinary_assets_ready = file("OLIVIA_ORDINARY_ACTION_BASE")
     music_assets_ready = bool(
         file("OLIVIA_OFFICIAL_REPLY_REFERENCE")
@@ -620,6 +640,14 @@ def video_reply_dependency_status(
             ),
         ),
         item(
+            "soulx_svc",
+            "演唱音色转换（SoulX-Singer-SVC）",
+            soulx_svc_ready,
+            "manual",
+            "使用本机 SoulX-Singer-SVC 运行环境与离线模型",
+            reason_code="SOULX_SVC_UNAVAILABLE",
+        ),
+        item(
             "official_video_assets",
             "Olivia 场景与转场素材",
             ordinary_assets_ready,
@@ -685,6 +713,7 @@ def video_reply_dependency_status(
         ordinary_ready
         and minimax_ready
         and roformer_ready
+        and soulx_svc_ready
         and music_assets_ready
         and musical_reply_configured(env, performance_video_path=performance_video_path)
     )
@@ -1013,6 +1042,7 @@ def separate_vocals(
     config_path: Path | None,
     environment: Mapping[str, str],
     ffmpeg_path: Path | None = None,
+    accompaniment_path: Path | None = None,
 ) -> None:
     if any(
         value is None or not value.is_file()
@@ -1066,10 +1096,18 @@ def separate_vocals(
             },
         )
         candidates = sorted(outputs.rglob("*vocals*.wav"))
-        if not candidates:
+        if len(candidates) != 1:
             raise MusicReplyError("ROFORMER_OUTPUT_MISSING")
         if not _valid_wave_audio(candidates[0], ffmpeg_path=ffmpeg_path):
             raise MusicReplyError("ROFORMER_OUTPUT_INVALID")
+        instrumental = sorted(outputs.rglob("*instrumental*.wav"))
+        if accompaniment_path is not None:
+            if len(instrumental) != 1:
+                raise MusicReplyError("ROFORMER_INSTRUMENTAL_MISSING")
+            if not _valid_wave_audio(instrumental[0], ffmpeg_path=ffmpeg_path):
+                raise MusicReplyError("ROFORMER_OUTPUT_INVALID")
+            accompaniment_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(instrumental[0], accompaniment_path)
         vocals_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(candidates[0], vocals_path)
 
@@ -1396,6 +1434,7 @@ def _build_music_stage_manifest(
     minimax_root: Path,
     provider_paths: MusicProviderPathSnapshot,
     voice_performance_plan: VoicePerformancePlan | None,
+    singing_reference: Path | None = None,
 ) -> dict[str, object]:
     """Bind resumable stages to canonical text, inputs, and provider revisions."""
 
@@ -1431,6 +1470,16 @@ def _build_music_stage_manifest(
             "visual_worker": _file_fingerprint(worker_path),
         },
         "providers": {
+            "speech": {
+                "name": "breeze_tts2",
+                "contract": "breeze-effective-cfg1-v1",
+                "cfg_scale": 1.0,
+            },
+            "singing_voice": {
+                "name": "SoulX-Singer-SVC",
+                "reference": _file_fingerprint(singing_reference),
+                "conversion": voice_conversion_fingerprint(provider_paths.environment),
+            },
             "music": {
                 "name": "MiniMax-Music-3",
                 "python": _file_fingerprint(
@@ -1521,10 +1570,15 @@ def _read_compatible_manifest(
         ):
             loaded_artifacts = loaded.get("artifacts")
             if isinstance(loaded_artifacts, dict):
-                for name in ("song_audio", "vocals"):
+                for name in ("song_audio", "vocals", "accompaniment"):
                     record = loaded_artifacts.get(name)
                     if isinstance(record, dict):
                         artifacts[name] = record
+                if loaded.get("providers", {}).get("singing_voice") == expected.get("providers", {}).get("singing_voice"):
+                    for name in ("converted_vocals", "mixed_song"):
+                        record = loaded_artifacts.get(name)
+                        if isinstance(record, dict):
+                            artifacts[name] = record
         return {**expected, "artifacts": artifacts}
     artifacts = loaded.get("artifacts")
     return {**expected, "artifacts": artifacts if isinstance(artifacts, dict) else {}}
@@ -1550,7 +1604,7 @@ def _normal_stage_inputs_match(
                 "visual_worker",
             ),
         ),
-        ("providers", ("face_sync",)),
+        ("providers", ("face_sync", "speech")),
     ):
         old_values = loaded.get(section)
         new_values = expected.get(section)
@@ -1724,6 +1778,17 @@ def render_musical_reply(
     provider_cache_root = provider_paths.provider_cache_root
     if provider_cache_root is None or not provider_cache_root.is_absolute():
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
+    singing_reference = configured_media_path(provider_paths.environment, "OLIVIA_REPLY_VOICE_REFERENCE")
+    try:
+        if singing_reference is not None:
+            validate_voice_reference(singing_reference)
+        else:
+            data_root = configured_media_path(provider_paths.environment, "OLIVIA_LOCAL_DATA_ROOT")
+            if data_root is None:
+                raise ManagedVoiceReferenceError("VOICE_REFERENCE_UNAVAILABLE")
+            singing_reference = resolve_managed_voice_reference(data_root)
+    except ManagedVoiceReferenceError as exc:
+        raise MusicReplyError(str(exc)) from None
     stage_root = output_path.parent / (
         f"{output_path.stem}-music-v2-{duration_seconds}s-stages"
     )
@@ -1754,6 +1819,7 @@ def render_musical_reply(
         minimax_root=minimax_root,
         provider_paths=provider_paths,
         voice_performance_plan=voice_performance_plan,
+        singing_reference=singing_reference,
     )
     try:
         existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1849,6 +1915,7 @@ def render_musical_reply(
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"
+    accompaniment = stage_root / "accompaniment.wav"
     music_stage_minimum = max(1.0, duration_seconds - 5.0)
     audio_gate = {"required_streams": ("0:a:0",), "ffmpeg_path": ffmpeg_path,
                   "minimum_duration_seconds": music_stage_minimum}
@@ -1886,20 +1953,33 @@ def render_musical_reply(
         vocals,
         upstream={"song_audio": song_audio},
         **audio_gate,
+    ) or not _stage_reusable(
+        manifest, "accompaniment", accompaniment,
+        upstream={"song_audio": song_audio, "vocals": vocals}, **audio_gate,
     ):
         partial_vocals = stage_root / "vocals.partial.wav"
+        partial_accompaniment = stage_root / "accompaniment.partial.wav"
         partial_vocals.unlink(missing_ok=True)
-        separate_vocals(
-            song_audio,
-            partial_vocals,
-            executable=provider_paths.roformer_executable,
-            model_path=provider_paths.roformer_model,
-            config_path=provider_paths.roformer_config,
-            environment=provider_paths.environment,
-            ffmpeg_path=ffmpeg_path,
-        )
-        _publish_stage(partial_vocals, vocals, "vocals", ("0:a:0",),
-                       ffmpeg_path, music_stage_minimum)
+        partial_accompaniment.unlink(missing_ok=True)
+        try:
+            separate_vocals(
+                song_audio,
+                partial_vocals,
+                executable=provider_paths.roformer_executable,
+                model_path=provider_paths.roformer_model,
+                config_path=provider_paths.roformer_config,
+                environment=provider_paths.environment,
+                ffmpeg_path=ffmpeg_path,
+                accompaniment_path=partial_accompaniment,
+            )
+            # Validate both stems before replacing either completed output.
+            _require_stage(partial_vocals, "vocals", ("0:a:0",), ffmpeg_path, music_stage_minimum)
+            _require_stage(partial_accompaniment, "accompaniment", ("0:a:0",), ffmpeg_path, music_stage_minimum)
+            partial_vocals.replace(vocals)
+            partial_accompaniment.replace(accompaniment)
+        finally:
+            partial_vocals.unlink(missing_ok=True)
+            partial_accompaniment.unlink(missing_ok=True)
         _record_stage(
             manifest,
             manifest_path,
@@ -1908,12 +1988,41 @@ def render_musical_reply(
             upstream={"song_audio": song_audio},
             **audio_gate,
         )
+        _record_stage(manifest, manifest_path, "accompaniment", accompaniment,
+                      upstream={"song_audio": song_audio, "vocals": vocals}, **audio_gate)
+
+    converted_vocals = stage_root / "converted-vocals.wav"
+    mixed_song = stage_root / "mixed-song.wav"
+    # Each completed stage survives a later conversion/render failure. The original
+    # generated song remains immutable and is never the final delivery audio.
+    for name, destination, upstream, operation in (
+        ("converted_vocals", converted_vocals, {"vocals": vocals, "reference": singing_reference},
+         lambda partial: convert_singing_voice(vocals, singing_reference, partial,
+             environment=provider_paths.environment, ffmpeg_path=ffmpeg_path)),
+        ("mixed_song", mixed_song, {"converted_vocals": converted_vocals, "accompaniment": accompaniment},
+         lambda partial: mix_song_voice(converted_vocals, accompaniment, partial, ffmpeg_path=ffmpeg_path)),
+    ):
+        if _stage_reusable(manifest, name, destination, upstream=upstream, **audio_gate):
+            continue
+        partial = destination.with_name(f"{destination.stem}.partial{destination.suffix}")
+        partial.unlink(missing_ok=True)
+        failure = None
+        try:
+            operation(partial)
+            _publish_stage(partial, destination, name, ("0:a:0",), ffmpeg_path, music_stage_minimum)
+        except VoiceConversionError as exc:
+            failure = _provider_exception_failure("SINGING_VOICE_CONVERSION_FAILED", exc, provider_paths.environment)
+        finally:
+            partial.unlink(missing_ok=True)
+        if failure is not None:
+            raise failure from None
+        _record_stage(manifest, manifest_path, name, destination, upstream=upstream, **audio_gate)
 
     if _stage_reusable(
         manifest,
         "song_video",
         song_video_path,
-        upstream={"song_audio": song_audio, "vocals": vocals},
+        upstream={"song_audio": song_audio, "mixed_song": mixed_song, "converted_vocals": converted_vocals},
         **video_gate,
     ):
         face_metadata = {"performance_stage": "reused"}
@@ -1924,8 +2033,8 @@ def render_musical_reply(
         partial_video.unlink(missing_ok=True)
         face_metadata = render_full_face_performance(
             performance_video_path,
-            vocals,
-            song_audio,
+            converted_vocals,
+            mixed_song,
             partial_video,
             latentsync_python_path=provider_paths.latentsync_python,
             latentsync_root=provider_paths.latentsync_root,
@@ -1940,7 +2049,7 @@ def render_musical_reply(
             manifest_path,
             "song_video",
             song_video_path,
-            upstream={"song_audio": song_audio, "vocals": vocals},
+            upstream={"song_audio": song_audio, "mixed_song": mixed_song, "converted_vocals": converted_vocals},
             **video_gate,
         )
 

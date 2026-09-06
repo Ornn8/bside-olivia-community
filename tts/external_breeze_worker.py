@@ -122,7 +122,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             instruction=str(request["instruction"]),
             ref_audio=None,
             ref_text=str(request["reference_text"]),
-            cfg_scale=float(request.get("cfg_scale", 4.0)),
+            cfg_scale=float(request.get("cfg_scale", 1.0)),
             max_new_tokens=int(request.get("max_new_tokens", 1500)),
             temperature=float(request.get("temperature", 0.9)),
             top_k=int(request.get("top_k", 50)),

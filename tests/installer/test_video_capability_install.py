@@ -123,7 +123,7 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
     }
     assert music.license_review_required is False
     assert "official_video_assets" not in ordinary.dependencies
-    assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer")
+    assert music.dependencies == ("ordinary_video", "minimax_music3", "roformer", "soulx_svc")
     ffmpeg = next(item for item in ordinary.files if item.identifier == "ffmpeg")
     assert ffmpeg.size_bytes == 111_253_802
     assert ffmpeg.sha256 == (
@@ -177,6 +177,8 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
     assert "demucs-htdemucs6s" not in music_file_ids
     assert {"roformer-code", "roformer-checkpoint"} <= music_file_ids
     assert music.runtime_environment == {
+        "OLIVIA_SOULX_SVC_ROOT": "soulx_svc/runtime",
+        "OLIVIA_SOULX_SVC_PYTHON": "soulx_svc/runtime/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_PYTHON": "minimax/runtime/python/python.exe",
         "OLIVIA_MINIMAX_COMFY_ROOT": "minimax/runtime",
         "OLIVIA_MINIMAX_WORKER": "minimax/runtime/tools/minimax_music3_worker.py",
@@ -184,7 +186,7 @@ def test_repository_bom_replaces_cosyvoice_with_fixed_breeze_and_license_boundar
         "OLIVIA_ROFORMER_MODEL_PATH": "roformer/models/MelBandRoformer.ckpt",
         "OLIVIA_ROFORMER_CONFIG_PATH": "roformer/runtime/src/mel_band_roformer/configs/config_vocals_mel_band_roformer.yaml",
     }
-    assert music.runtime_artifacts == (
+    assert music.runtime_artifacts[:2] == (
         VideoRuntimeArtifact(
             "minimax-runtime",
             ("minimax-runtime-part-01", "minimax-runtime-part-02"),
@@ -1584,12 +1586,26 @@ def test_runtime_activation_failure_restores_process_environment_and_profile(
     assert installer.status()["status"] == "UNAVAILABLE"
 
 
+
+def _create_soulx_runtime_fixture(root: Path) -> None:
+    for relative in (
+        "python/python.exe", "source/soulxsinger/models/soulxsinger_svc.py",
+        "models/official/model-svc.pt", "models/preprocess/rmvpe/rmvpe.pt",
+        "models/whisper-base/config.json", "models/whisper-base/model.safetensors",
+        "models/whisper-base/preprocessor_config.json",
+        "source/soulxsinger/config/soulxsinger.yaml", "source/preprocess/tools/f0_extraction.py",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic-runtime-fixture")
+
 def test_production_manifest_persists_managed_worker_and_finishes_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = load_video_manifest(Path("installer/video-capability-manifest.json"))
     data_root = (tmp_path / "data").resolve()
     install_root = _mark_bundle_payloads_ready(data_root, manifest)
+    _create_soulx_runtime_fixture(install_root / "music_video/soulx_svc/runtime")
     for relative in (
         "ordinary_video/breeze/runtime/nodes.py",
         "ordinary_video/breeze/model/LICENSE", "ordinary_video/ffmpeg/runtime/bin/ffmpeg.exe",
@@ -1713,6 +1729,7 @@ def test_split_production_bundles_reach_real_readiness_without_legacy_archive(
             ),
             encoding="utf-8",
         )
+    _create_soulx_runtime_fixture(music / "soulx_svc/runtime")
     directories = (
         ordinary / "breeze/runtime",
         ordinary / "breeze/model/drbaph_Breeze-TTS-2-comfyui/audio_tokenizer",
@@ -3756,49 +3773,6 @@ def test_safe_archive_rejects_traversal_symlink_member_without_writing(
     assert not (tmp_path / "outside.py").exists()
 
 
-@pytest.mark.parametrize("source_matches", [True, False])
-def test_music_bundle_install_applies_seed_patch_or_fails_closed(
-    tmp_path: Path, source_matches: bool
-) -> None:
-    archive = tmp_path / "offline" / "sources" / "seed.zip"
-    archive.parent.mkdir(parents=True)
-    inference = (
-        "    overlap_frame_len = 16\n"
-        '    parser.add_argument("--fp16", type=str2bool, default=True)\n'
-        if source_matches
-        else "# drifted upstream source\n"
-    )
-    with zipfile.ZipFile(archive, "w") as payload:
-        payload.writestr("seed-vc-pinned/inference.py", inference)
-    spec = VideoFile(
-        "seed-vc-code", "sources/seed.zip", archive.stat().st_size,
-        hashlib.sha256(archive.read_bytes()).hexdigest(), "GPL-3.0", {}, True,
-        VideoFileInstall("zip", "seed_vc/runtime", 1),
-    )
-    music = VideoBundle("music_video", "music", "FIXED", False, (), (spec,), True,
-                        {"OLIVIA_SEED_VC_ROOT": "seed_vc/runtime"})
-    installer = VideoCapabilityInstaller(
-        data_root=(tmp_path / "data").resolve(),
-        manifest=VideoManifest("1.0.0", (
-            VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()), music)),
-    )
-
-    assert installer.import_offline(
-        bundle_id="music_video",
-        offline_root=archive.parents[1],
-        accept_licenses=True,
-    ) == "APPLIED"
-    expected = "license_review_required" if source_matches else "failed"
-    assert _wait(installer, 1, expected) == expected
-    installed = installer.install_root / "music_video" / "seed_vc" / "runtime"
-    if source_matches:
-        assert "overlap_frame_len = args.overlap_frames" in (
-            installed / "inference.py"
-        ).read_text(encoding="utf-8")
-        assert (installed / ".olivia-overlap-frames-patched.json").is_file()
-    else:
-        assert not (installer.install_root / "music_video" / ".ready.json").exists()
-
 
 def test_windows_runtime_picker_fails_closed_without_a_system_directory(
     monkeypatch: pytest.MonkeyPatch,
@@ -4369,3 +4343,145 @@ def test_source_fallback_restarts_instead_of_resuming_bytes_from_another_mirror(
     assert _wait(installer, 0, "ready", "failed") == "ready"
     assert len(requests) == 2
     assert requests[1].get_header("Range") is None
+
+
+def test_soulx_svc_python_environment_is_accepted_and_portability_checked(tmp_path):
+    payload = json.loads(Path("installer/video-capability-manifest.json").read_text(encoding="utf-8"))
+    payload["bundles"][1]["runtime_environment"]["OLIVIA_SOULX_SVC_PYTHON"] = "soulx_svc/runtime/python/python.exe"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_video_manifest(path)
+    assert loaded.bundles[1].runtime_environment["OLIVIA_SOULX_SVC_PYTHON"] == "soulx_svc/runtime/python/python.exe"
+    schema = json.loads(Path("contracts/video_capability_manifest.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator(schema).validate(payload)
+    from video_capability_install import _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+    assert "OLIVIA_SOULX_SVC_PYTHON" in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+
+
+def test_soulx_supplement_parts_are_verified_reassembled_and_removed(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    archive = tmp_path / "soulx-svc.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("python/python.exe", b"portable-soulx-svc-python")
+    archive_bytes = archive.read_bytes()
+    split = len(archive_bytes) // 2
+    parts = (archive_bytes[:split], archive_bytes[split:])
+    files: list[VideoFile] = []
+    for index, content in enumerate(parts, start=1):
+        relative = f"runtime/soulx-svc.zip.part{index:02d}"
+        target = artifacts / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        files.append(
+            VideoFile(
+                f"soulx-svc-runtime-part-{index:02d}",
+                relative,
+                len(content),
+                hashlib.sha256(content).hexdigest(),
+                "runtime dependency licenses",
+                {"official": f"https://example.invalid/{target.name}"},
+            )
+        )
+    runtime_artifact = VideoRuntimeArtifact(
+        "soulx-svc-runtime",
+        tuple(item.identifier for item in files),
+        len(archive_bytes),
+        hashlib.sha256(archive_bytes).hexdigest(),
+        "soulx-svc/runtime",
+        0,
+    )
+    manifest = VideoManifest(
+        "fixture",
+        (
+            VideoBundle(
+                "ordinary_video",
+                "ordinary",
+                "FIXED",
+                False,
+                ("soulx-svc",),
+                tuple(files),
+                runtime_environment={
+                    "OLIVIA_SOULX_SVC_PYTHON": "soulx-svc/runtime/python/python.exe"
+                },
+                runtime_artifacts=(runtime_artifact,),
+            ),
+        ),
+    )
+    data_root = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(
+        data_root=data_root,
+        manifest=manifest,
+        opener=lambda *_args, **_kwargs: pytest.fail("offline must not contact network"),
+    )
+
+    old_zip = tmp_path / "old-video.zip"
+    with zipfile.ZipFile(old_zip, "w"):
+        pass
+    for index, item in enumerate(files, 1):
+        with zipfile.ZipFile(tmp_path / f"Olivia-soulx-svc-runtime-offline-{index:02d}.zip", "w") as supplement:
+            supplement.write(artifacts / item.relative_path, item.relative_path)
+    assert installer.import_offline(bundle_id="ordinary_video", offline_root=old_zip) == "APPLIED"
+    assert _wait(installer, 0, "ready", "failed") == "ready"
+
+    installed = installer.install_root / "ordinary_video"
+    assert (installed / "soulx-svc/runtime/python/python.exe").read_bytes() == (
+        b"portable-soulx-svc-python"
+    )
+    assert not any((installed / item.relative_path).exists() for item in files)
+    assert not any(
+        (installer._download_root(manifest.bundles[0]) / item.relative_path).exists()
+        for item in files
+    )
+    assert (
+        installed / ".runtime-artifacts" / "soulx-svc-runtime.json"
+    ).is_file()
+    restarted = VideoCapabilityInstaller(data_root=data_root, manifest=manifest)
+    assert restarted.status()["bundles"][0]["state"] == "ready"
+
+
+def test_production_soulx_runtime_uses_verified_raw_parts_and_root():
+    manifest = load_video_manifest(Path("installer/video-capability-manifest.json"))
+    bundle = manifest.bundles[1]
+    artifact = next(item for item in bundle.runtime_artifacts if item.identifier == "soulx-svc-runtime")
+    assert artifact.archive_size_bytes == 6099714126
+    assert artifact.archive_sha256 == "37358207b82f00a37736241ab478668f95546a3934fafa6550fc71b1b45b714e"
+    assert len(artifact.part_ids) == 5
+    parts = [next(item for item in bundle.files if item.identifier == key) for key in artifact.part_ids]
+    assert sum(item.size_bytes for item in parts) == artifact.archive_size_bytes
+    assert all(item.sources["official"].endswith(Path(item.relative_path).name) for item in parts)
+    assert all("/v0.1.455/" in item.sources["official"] for item in parts)
+    assert bundle.runtime_environment["OLIVIA_SOULX_SVC_ROOT"] == "soulx_svc/runtime"
+
+
+@pytest.mark.parametrize("retired_key", ["OLIVIA_SEED_VC_ROOT", "OLIVIA_SEED_VC_PYTHON"])
+def test_retired_video_keys_do_not_drop_external_python_and_are_removed_on_merge(tmp_path, retired_key):
+    data = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(data_root=data, manifest=VideoManifest("fixture", ()))
+    runtime = (tmp_path / "external-runtime").resolve()
+    runtime.mkdir()
+    python = runtime / "python.exe"
+    python.write_bytes(b"synthetic-python")
+    manifest = runtime / "runtime-manifest.json"
+    manifest.write_bytes(b"synthetic-verified-manifest")
+    environment = {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python), retired_key: "obsolete-path-no-longer-exists"}
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({"schema_version": "olivia.video-runtime-environment.v1", "environment": environment, "external_environment": environment, "runtime_root": str(runtime), "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()}), encoding="utf-8")
+    original = profile.read_bytes()
+    assert load_video_runtime_environment(data) == {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python)}
+    assert profile.read_bytes() == original
+    installer._merge_runtime_environment()
+    saved = json.loads(profile.read_text(encoding="utf-8"))
+    assert saved["environment"] == {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python)}
+    assert saved["external_environment"] == saved["environment"]
+    assert saved["runtime_root"] == str(runtime)
+
+
+def test_unknown_video_environment_key_remains_rejected(tmp_path):
+    data = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(data_root=data, manifest=VideoManifest("fixture", ()))
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({"schema_version": "olivia.video-runtime-environment.v1", "environment": {"OLIVIA_UNKNOWN_RUNTIME": "anything"}}), encoding="utf-8")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ENVIRONMENT_INVALID"):
+        load_video_runtime_environment(data)
