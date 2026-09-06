@@ -264,7 +264,7 @@ class DailyLifeStore:
         tokens = tokens_for(query) - _QUERY_STOP_WORDS
         related_tokens = tokens_for(related_text) - _QUERY_STOP_WORDS
         def relevance(p):
-            text_tokens = tokens_for(p["title"] + " " + p["detail"] + " " + p.get("quote", "")) - _QUERY_STOP_WORDS
+            text_tokens = tokens_for(p["title"] + " " + p.get("quote", p["detail"])) - _QUERY_STOP_WORDS
             # Current question first; earlier letters may introduce an old
             # plan, so disclose that topic's current state in the same budget.
             direct = len(tokens & text_tokens)
@@ -285,7 +285,10 @@ class DailyLifeStore:
             "threads": [],
         }
         for project in projects[:2]:
-            candidate = {**value, "threads": [*value["threads"], project]}
+            # An exchange summary is an extractor's paraphrase, not something
+            # either participant said. Ground later replies in the verified quote.
+            disclosed = {**project, "detail": project["quote"]} if "quote" in project else project
+            candidate = {**value, "threads": [*value["threads"], disclosed]}
             if len(_json(candidate)) <= max_chars:
                 value = candidate
         result = _json(value)

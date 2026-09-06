@@ -35,6 +35,7 @@ _FORBIDDEN_RULES = (
     "生活续写不改写原设的童年、家庭或作品起源。",
 )
 _REPLY_GROUNDING = "陈述和提问都按原文命题核对：区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设仅限原文的人物组合、行动、对象和时间，不外推。未被说明的个人经历保持未知，不把推论说成用户讲过的话。资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知；表达自己的当下看法，不给观点虚构出处。未知就止于未知，不另补外围细节。"
+_AGREEMENT_GROUNDING = "将一句话认定为约定前，要在承诺者自己的原文中核对同一行动、对象和条件；不能用另一人的期待、解释或复述补齐。事项进度与双方是否确认是不同事实；原话没有明确对应时，保持未确认，也不据此催促对方履行。"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _STYLE_EXAMPLE_LIMIT = 2
@@ -474,7 +475,7 @@ def _persona_blocks(
         ))
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
-        (_REPLY_GROUNDING,),
+        (_REPLY_GROUNDING + (_AGREEMENT_GROUNDING if snapshot.status == "READY" else ""),),
     ))
     if snapshot.status != "READY":
         return tuple(blocks)
@@ -522,11 +523,9 @@ def _select_soft_canon(
     recent_context = (*history[-2:], *evidence_summaries[-2:])
     context_query = "\n".join(item.text for item in recent_context)
     current_ranked = _rank_soft_anchors(anchors, user_input)
-    selection_query = user_input
     if current_ranked:
         ranked = current_ranked
     elif _CONTEXT_FOLLOW_UP_RE.fullmatch(user_input) is not None:
-        selection_query = context_query
         ranked = _rank_soft_anchors(anchors, context_query)
     else:
         ranked = []
@@ -537,20 +536,6 @@ def _select_soft_canon(
             ranked, key=lambda item: (-item[0], item[1])
         )[:_SOFT_ANCHOR_LIMIT]
     }
-    if not selected_ids:
-        rejected_ids = _lexically_matching_anchor_ids(anchors, selection_query)
-        ordered = tuple(
-            sorted(
-                item.declaration_id
-                for item in anchors
-                if item.declaration_id not in rejected_ids
-            )
-        )
-        if ordered:
-            digest = hashlib.sha256(user_input.encode("utf-8")).digest()
-            selected_ids = {
-                ordered[int.from_bytes(digest[:4], "big") % len(ordered)]
-            }
     return tuple(
         item
         for item in soft_canon
@@ -576,21 +561,6 @@ def _rank_soft_anchors(
         if matches:
             ranked.append((len(matches), declaration.declaration_id))
     return ranked
-
-
-def _lexically_matching_anchor_ids(
-    anchors: tuple[PersonaDeclaration, ...],
-    query: str,
-) -> frozenset[str]:
-    return frozenset(
-        declaration.declaration_id
-        for declaration in anchors
-        if (
-            pattern := _ANCHOR_DISCLOSURE_PATTERNS.get(declaration.declaration_id)
-        )
-        is not None
-        and pattern.search(query) is not None
-    )
 
 
 def _anchor_match_is_persona_directed(query: str, start: int, end: int) -> bool:

@@ -193,7 +193,7 @@ def test_release_persona_progressively_discloses_relevant_soft_anchors() -> None
     ).system_content
 
     assert '"declaration_id":"style.care_quota"' in ordinary
-    assert ordinary.count('"declaration_id":"anchor.') == 1
+    assert ordinary.count('"declaration_id":"anchor.') == 0
     assert '"declaration_id":"anchor.everyday_taste"' in food
     assert '"declaration_id":"anchor.cat"' not in food
     assert '"declaration_id":"anchor.residence"' in residence
@@ -261,8 +261,8 @@ def test_progressive_disclosure_rejects_idioms_and_prioritizes_current_letter() 
         max_units=GatewayConfig().max_input_chars,
     ).system_content
 
-    assert idioms.count('"declaration_id":"anchor.') == 1
-    assert own_topics.count('"declaration_id":"anchor.') == 1
+    assert idioms.count('"declaration_id":"anchor.') == 0
+    assert own_topics.count('"declaration_id":"anchor.') == 0
     assert '"declaration_id":"anchor.cat"' in current_topic
     assert '"declaration_id":"anchor.everyday_taste"' not in current_topic
     assert '"declaration_id":"anchor.residence"' not in current_topic
@@ -327,7 +327,7 @@ def test_progressive_disclosure_does_not_treat_user_details_as_persona_details()
         for item in named_others
     )
     assert '"declaration_id":"anchor.current_piece"' not in cross_sentence
-    assert bare_name.count('"declaration_id":"anchor.') == 1
+    assert bare_name.count('"declaration_id":"anchor.') == 0
 
 
 def test_current_persona_question_without_known_anchor_does_not_fall_back_to_history() -> None:

@@ -1853,17 +1853,23 @@ class _ValidatedExtractionLLM:
         return response
 
 
-def _guard_extraction_client(provider: object) -> None:
+def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     """Guard this memory-only client before upstream discards response metadata."""
     client = getattr(provider, "client", None)
     completions = getattr(getattr(client, "chat", None), "completions", None)
     create = getattr(completions, "create", None)
     if not callable(create):
         return
-    official_deepseek = urlsplit(str(getattr(client, "base_url", ""))).hostname == "api.deepseek.com"
+    endpoint = urlsplit(str(getattr(client, "base_url", "")))
+    deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
+        endpoint.scheme == "https"
+        and endpoint.hostname == "opencode.ai"
+        and endpoint.path.rstrip("/") == "/zen/go/v1"
+        and model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+    )
 
     def guarded_create(*args: object, **kwargs: object) -> object:
-        if official_deepseek:
+        if deepseek_memory:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
             }
@@ -1884,7 +1890,10 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     backend = memory_type.from_config(dict(config))
     provider = getattr(backend, "llm", None)
     if callable(getattr(provider, "generate_response", None)):
-        _guard_extraction_client(provider)
+        llm_config = config.get("llm")
+        provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None
+        model = provider_config.get("model", "") if isinstance(provider_config, Mapping) else ""
+        _guard_extraction_client(provider, model=model if isinstance(model, str) else "")
         backend.llm = _ValidatedExtractionLLM(provider)
     return backend
 

@@ -11,6 +11,25 @@ from runtime.private_world.daily_life import DailyLifeStore
 NOW = datetime(2026, 9, 5, 10, tzinfo=timezone.utc)
 
 
+def test_exchange_summary_cannot_add_a_motive_to_later_reply_context(tmp_path):
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    quote = "你选一本书吧，有空我翻翻。"
+    summary = "用户必须证明阅读水平，林离随后检查结果。"
+    life.record_exchange("reply:book:1", "聊聊书？", quote, [{
+        "id": "book", "title": "选一本书", "detail": summary,
+        "status": "awaiting_user", "kind": "shared", "actor": "linli", "quote": quote,
+    }], occurred_at=NOW)
+    context = json.loads(life.reply_context("那本书选好了。", now=NOW))
+    item = context["threads"][0]
+    assert item["detail"] == quote
+    assert item["status"] == "awaiting_user"
+    assert item["actor"] == "linli" and item["source_id"] == "reply:book:1"
+    assert summary not in json.dumps(context, ensure_ascii=False)
+    assert json.loads(life.reply_context("阅读水平怎么样？", now=NOW))["threads"] == []
+    # Projection must not rewrite the stored extraction or the visible archive.
+    assert life.snapshot(NOW)["shared"][0]["detail"] == summary
+
+
 def test_history_pages_remain_bounded_and_reach_old_records_after_new_arrivals(tmp_path):
     life = DailyLifeStore(tmp_path / "life.sqlite3")
     for index in range(35):

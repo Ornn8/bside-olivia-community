@@ -5,7 +5,7 @@ import pytest
 from runtime.memory import mem0_memory
 
 
-def _raw_response_backend(monkeypatch, base_url, finish_reason="stop", content='{"memory": []}'):
+def _raw_response_backend(monkeypatch, base_url, finish_reason="stop", content='{"memory": []}', model=""):
     calls = []
     response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish_reason,
         message=SimpleNamespace(content=content, reasoning_content="private reasoning"))])
@@ -19,7 +19,7 @@ def _raw_response_backend(monkeypatch, base_url, finish_reason="stop", content='
     memory = SimpleNamespace(llm=provider)
     monkeypatch.setattr(mem0_memory, "_load_product_mem0_module", lambda: SimpleNamespace(
         Memory=SimpleNamespace(from_config=lambda config: memory)))
-    return mem0_memory._default_factory({}), calls, create
+    return mem0_memory._default_factory({"llm": {"config": {"model": model}}}), calls, create
 
 
 @pytest.mark.parametrize("base_url,disabled", [
@@ -44,6 +44,22 @@ def test_memory_client_rejects_length_even_when_content_is_valid_json(monkeypatc
     backend, _, _ = _raw_response_backend(monkeypatch, "https://other.invalid/v1", "length", content)
     with pytest.raises(mem0_memory.Mem0AdapterError, match="^MEM0_EXTRACTION_RESPONSE_TRUNCATED$"):
         backend.llm.generate_response(messages=[], response_format={"type": "json_object"})
+
+
+@pytest.mark.parametrize("base_url,model,disabled", [
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", True),
+    ("https://opencode.ai/zen/go/v1/", "deepseek-v4-pro", True),
+    ("https://opencode.ai/zen/go/v1", "other-model", False),
+    ("https://opencode.ai/zen/v1", "deepseek-v4-flash", False),
+    ("https://opencode.ai.evil.invalid/zen/go/v1", "deepseek-v4-flash", False),
+])
+def test_go_deepseek_memory_thinking_is_isolated_by_route_and_model(monkeypatch, base_url, model, disabled):
+    backend, calls, original_create = _raw_response_backend(monkeypatch, base_url, model=model)
+    extra = {"thinking": {"type": "enabled"}}
+    backend.llm.generate_response(messages=[], response_format={"type":"json_object"}, extra_body=extra)
+    assert calls[0]["extra_body"]["thinking"]["type"] == ("disabled" if disabled else "enabled")
+    original_create(extra_body=extra)
+    assert calls[-1]["extra_body"]["thinking"]["type"] == "enabled"
 
 
 def test_extraction_request_keeps_grounding_at_system_priority_without_mutating_input(monkeypatch):

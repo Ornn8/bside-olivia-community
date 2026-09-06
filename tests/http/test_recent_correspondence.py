@@ -10,6 +10,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_dialogue_retrieves_original_proposal_instead_of_only_later_reply_claims():
+    from runtime.reply.recent_correspondence import recent_correspondence
+    pairs = [
+        ("周末还没想好做什么。", "露营你有兴趣吗？先想想，不用现在决定。"),
+        ("我得看看安排。", "你已经答应露营了，别忘了。"),
+        ("今天工作有点多。", "早点休息。"),
+    ]
+    rows = [{"letter_id": str(i), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{i}:00+00:00",
+             "content": user, "reply_text": reply} for i, (user, reply) in enumerate(pairs)]
+    packet = json.loads(recent_correspondence(rows, query="露营那件事最初是怎么提的，我同意了吗？"))
+    original = next(item for item in packet["letters"] if item["source_id"] == "reply:0:1")
+    assert original["linli_reply"] == pairs[0][1]
+    assert original["user_letter"] == pairs[0][0]
+    assert any(item["user_letter"] == pairs[1][0] for item in packet["letters"])
+
+
 @pytest.mark.parametrize('query', [
     '我们在青岛一起听过那场建筑讲座吗？',
     '青岛那场建筑讲座是我们的共同经历，还是我编的？',
