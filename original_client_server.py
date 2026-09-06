@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import json
 import os
 import platform
+import re
 from pathlib import Path
 import sys
 import time
@@ -398,6 +399,7 @@ def _diagnostic_source(
     runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    video_capability_installer: VideoCapabilityInstaller | None = None,
 ) -> Callable[[], Mapping[str, object]]:
     """Bind only safe, aggregate collectors for a diagnostic export request."""
 
@@ -509,6 +511,34 @@ def _diagnostic_source(
             "os_release": platform.release() or "unknown",
             "architecture": platform.machine() or "unknown",
         }
+        from original_client_update_api import running_component_version
+        version = running_component_version().get("version")
+        if isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
+            summary["running_version"] = version
+        if video_capability_installer is not None:
+            # status() may start runtime preparation. Export only a nonblocking
+            # snapshot of existing state; never install or probe models here.
+            installer = video_capability_installer
+            if not installer._lock.acquire(blocking=False):
+                checks["video_runtime"] = {"state": "unavailable", "error_code": "VIDEO_DIAGNOSTIC_BUSY"}
+            else:
+                try:
+                    snapshots = {"video_runtime": dict(installer._runtime_import)}
+                    for identifier, name in (("ordinary_video", "video_ordinary"), ("music_video", "video_music")):
+                        if identifier in installer._status:
+                            snapshots[name] = installer._status[identifier].to_dict()
+                finally:
+                    installer._lock.release()
+                for name, snapshot in snapshots.items():
+                    entry = {"state": state(snapshot.get("state"))}
+                    reason = code(snapshot.get("reason_code"))
+                    if reason:
+                        entry["error_code"] = reason
+                    for field in ("downloaded_bytes", "total_bytes", "remaining_bytes", "checked_bytes"):
+                        count = snapshot.get(field)
+                        if type(count) is int and 0 <= count <= 10**15:
+                            entry[field] = count
+                    checks[name] = entry
         if health_profile_provider is not None:
             core_data: Mapping[str, object] | None = None
             for profile_name in _DIAGNOSTIC_PROFILES:
@@ -707,6 +737,7 @@ def create_original_client_server_runtime(
             runtime_tail_provider=runtime_tail_provider,
             health_profile_provider=health_profile_provider,
             task_snapshot_provider=task_snapshot_provider,
+            video_capability_installer=video_capability_installer,
         ),
         trusted_origins=origins,
     )

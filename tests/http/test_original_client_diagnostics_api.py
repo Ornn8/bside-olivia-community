@@ -196,6 +196,37 @@ def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
     )
 
 
+def test_video_diagnostic_reads_existing_state_without_starting_installation(monkeypatch):
+    from threading import Lock
+    from types import SimpleNamespace
+    from runtime.diagnostics.support_bundle import build_diagnostic_bundle
+    import io
+    import zipfile
+    class Backend:
+        def diagnostic_status_history(self): return ()
+        def read_status(self):
+            return CompanionReadStatus(memory=CompanionCapability("available"),
+                private_world=CompanionCapability("available"), candidates=CompanionCapability("available"))
+    def forbidden(): raise AssertionError("diagnostics must not call installer.status")
+    installer = SimpleNamespace(_lock=Lock(), status=forbidden,
+        _runtime_import={"state": "failed", "reason_code": "VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE", "checked_bytes": 42, "private_path": "must-not-leak"},
+        _status={"music_video": SimpleNamespace(to_dict=lambda: {"state": "failed", "reason_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1, "path": "must-not-leak"})})
+    monkeypatch.setattr("original_client_update_api.running_component_version", lambda: {"version": "0.1.455"})
+    collect = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
+        runtime_tail_provider=None, video_capability_installer=installer)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(collect()))) as bundle:
+        checks = json.loads(bundle.read("health.json"))["checks"]
+        assert checks["video_music"] == {"state": "failed", "error_code": "VIDEO_ARCHIVE_INVALID", "downloaded_bytes": 99, "total_bytes": 100, "remaining_bytes": 1}
+        assert checks["video_runtime"]["checked_bytes"] == 42
+        assert json.loads(bundle.read("summary.json"))["running_version"] == "0.1.455"
+        assert all(b"must-not-leak" not in bundle.read(name) for name in bundle.namelist())
+    installer._lock.acquire()
+    try:
+        assert collect()["health"]["checks"]["video_runtime"]["error_code"] == "VIDEO_DIAGNOSTIC_BUSY"
+    finally:
+        installer._lock.release()
+
+
 def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> None:
     class Backend:
         def diagnostic_status_history(self):

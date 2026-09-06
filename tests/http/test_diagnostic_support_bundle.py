@@ -75,6 +75,21 @@ def _contents(bundle: bytes) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+@pytest.mark.parametrize("bad", [-1, True, 10**15 + 1, "private-path"])
+def test_video_progress_rejects_non_count_values(bad):
+    source = _source()
+    source["health"]["checks"]["video_runtime"] = {"state": "checking", "checked_bytes": bad}
+    with pytest.raises(DiagnosticBundleError):
+        build_diagnostic_bundle(source)
+
+
+def test_running_version_only_accepts_version_tokens():
+    source = _source()
+    source["summary"]["running_version"] = "private-token"
+    with pytest.raises(DiagnosticBundleError):
+        build_diagnostic_bundle(source)
+
+
 def test_memory_worker_counters_are_exported_without_private_fields():
     source = _source()
     source['health']['checks']['memory_worker'] = {
