@@ -569,6 +569,29 @@ def test_wrapped_extraction_failure_preserves_only_allowlisted_code(tmp_path, co
     assert "private" not in repr(result)
 
 
+@pytest.mark.parametrize("empty_actors", [{"user"}, {"linli"}, {"user", "linli"}])
+def test_completed_empty_history_extraction_is_durable_and_clearable(tmp_path, empty_actors):
+    class EmptyActorMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs["metadata"]["history_actor"] in empty_actors:
+                self.calls.append(("add", kwargs))
+                return {"results": []}
+            return super().add(messages, **kwargs)
+    backend = EmptyActorMem0()
+    config = _config(tmp_path)
+    arguments = dict(user_message="我喜欢钢琴。", assistant_message="我会继续练琴。",
+        occurred_at=NOW, source_id="history:empty-reviewed", user_id="local-user")
+    adapter = Mem0ConversationMemoryAdapter(backend, config)
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    count = sum(name == "add" for name, _ in backend.calls)
+    adapter = Mem0ConversationMemoryAdapter(backend, config)
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
+    assert sum(name == "add" for name, _ in backend.calls) == count
+    adapter.clear_user(user_id="local-user")
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    assert sum(name == "add" for name, _ in backend.calls) == count + 2
+
+
 def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) -> None:
     backend = FakeMem0()
     backend.fail.add("add")
@@ -584,6 +607,66 @@ def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) 
     assert result.error_code == "MEM0_WRITE_FAILED"
     assert "private user text" not in repr(result)
     assert "private assistant text" not in repr(result)
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_history_audit_write_failure_rolls_back_and_does_not_mark_complete(tmp_path, monkeypatch, rollback_fails):
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    original = adapter._history_audit
+    def fail_write(**kwargs):
+        if kwargs.get("memory_ids") is not None:
+            raise OSError("private path")
+        return original(**kwargs)
+    monkeypatch.setattr(adapter, "_history_audit", fail_write)
+    if rollback_fails:
+        backend.fail.add("delete")
+    result = adapter.remember_exchange(user_message="我喜欢钢琴。", assistant_message="我会练琴。",
+        occurred_at=NOW, source_id="history:audit-write-failure", user_id="local-user")
+    assert result.error_code == ("MEM0_WRITE_ROLLBACK_FAILED" if rollback_fails else "MEM0_WRITE_FAILED")
+    assert not (adapter.config.data_root / "history-extraction-audit.sqlite3").exists()
+    if not rollback_fails:
+        assert backend.rows == []
+
+
+def test_history_audit_does_not_skip_when_saved_memory_ids_disappear(tmp_path):
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    kwargs = dict(user_message="我喜欢钢琴。", assistant_message="我会练琴。",
+        occurred_at=NOW, source_id="history:audit-missing-ids", user_id="local-user")
+    assert adapter.remember_exchange(**kwargs).status is MemoryWriteStatus.WRITTEN
+    backend.rows.clear()
+    before = sum(name == "add" for name, _ in backend.calls)
+    assert adapter.remember_exchange(**kwargs).status is MemoryWriteStatus.WRITTEN
+    assert sum(name == "add" for name, _ in backend.calls) == before + 2
+
+
+@pytest.mark.parametrize("invalidation_fails", [False, True])
+def test_stale_empty_audit_is_invalidated_before_failed_reextraction(tmp_path, monkeypatch, invalidation_fails):
+    class EmptyThenFail(FakeMem0):
+        def add(self, messages, **kwargs):
+            self._raise("add")
+            return {"results": []}
+    backend = EmptyThenFail()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(user_message="我喜欢钢琴。", assistant_message="我会练琴。",
+        occurred_at=NOW, source_id="history:stale-empty", user_id="local-user")
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    FakeMem0.add(backend, "旧记录", user_id=adapter._normalized_user_id("local-user"),
+        agent_id=adapter.config.agent_id, metadata={"domain": "conversation_memory",
+        "source_id": arguments["source_id"], "canonical": True})
+    backend.fail.add("add")
+    if invalidation_fails:
+        def fail_invalidation(**kwargs):
+            raise OSError("private path")
+        monkeypatch.setattr(adapter, "_invalidate_history_audit", fail_invalidation)
+        result = adapter.remember_exchange(**arguments)
+        assert result.error_code == "MEM0_SOURCE_DEDUP_UNAVAILABLE"
+        assert len(backend.rows) == 1
+        return
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.UNAVAILABLE
+    assert backend.rows == []
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.UNAVAILABLE
 
     backend.fail.clear()
     backend.fail.add("get_all")
@@ -779,9 +862,30 @@ def test_historical_linli_fact_uses_provider_compatible_user_shaped_input(
     assert add_calls[1]["metadata"]["history_actor"] == "linli"
 
 
+@pytest.mark.parametrize("fact", ["我（林离）答应下周继续练琴。", "我(林离)答应下周继续练琴。"])
+def test_history_first_person_name_annotation_is_valid_and_deduplicated(tmp_path, fact):
+    class AnnotatedMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            if kwargs["metadata"]["history_actor"] == "linli":
+                self.rows[-1]["memory"] = fact
+                value["results"][0]["memory"] = fact
+            return value
+    backend = AnnotatedMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(user_message="我喜欢钢琴。", assistant_message="我答应下周继续练琴。",
+        occurred_at=NOW, source_id="history:annotated-first-person", user_id="local-user")
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    assert backend.rows[-1]["memory"] == fact
+    calls = len(backend.calls)
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
+    assert len([name for name, _ in backend.calls[calls:] if name == "add"]) == 0
+
+
 @pytest.mark.parametrize(
     "bad_text",
-    ("AI 回复了来信。", "林离说她回复了来信。", "过去曾温柔地回复这封信。"),
+    ("AI 回复了来信。", "林离说她回复了来信。", "过去曾温柔地回复这封信。",
+     "我（林离）是AI助手。", "我听见林离说她回复了来信。"),
 )
 def test_historical_exchange_rejects_non_first_person_new_memory(
     tmp_path: Path, bad_text: str,
