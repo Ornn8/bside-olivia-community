@@ -102,6 +102,19 @@ def _style_snapshot(*exemplars: PersonaStyleExemplar) -> PersonaSnapshot:
     )
 
 
+def test_public_source_identifier_is_not_character_knowledge():
+    snapshot = _style_snapshot()
+    fact = replace(_declaration("public.preference", "PUBLIC_CANON", "BACKGROUND", "林离喜欢黑胶。"),
+                   source_id="PUBLIC.SHUTDOWN.ANNOUNCEMENT.20260811")
+    snapshot = replace(snapshot, declarations=(*snapshot.declarations, fact))
+    context = ReplyContext(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
+    result = assemble_persona(snapshot, context, user_input="你好", max_units=8000)
+    text = "\n".join(message["content"] for message in result.to_messages())
+    assert "林离喜欢黑胶。" in text
+    assert fact.source_id not in text
+    assert snapshot.declarations[-1].source_id == fact.source_id
+
+
 def _scenario_snapshot() -> PersonaSnapshot:
     situations = (
         "brief_greeting", "ordinary_smalltalk", "emotional_acknowledgement",

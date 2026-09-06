@@ -684,7 +684,6 @@ def _declaration_blocks(
             continue
         payload: dict[str, object] = {
             "declaration_id": declaration.declaration_id,
-            "source_id": declaration.source_id,
             "statement": declaration.statement,
         }
         if declaration.facet:
