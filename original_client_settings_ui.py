@@ -1750,9 +1750,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       item.append(install);
     }
-    if (canUninstall && state !== "downloading" && !runtimePreparing) {
-      const uninstall = button("卸载视频组件", async () => {
-        if (!await confirmAction("确认卸载视频回信的全部本地组件？已生成的视频、信件和记忆会保留。")) return;
+    if (canUninstall) {
+      const uninstallBusy = state === "downloading" || runtimePreparing;
+      const uninstall = button("卸载视频模型与运行依赖", async () => {
+        if (uninstallBusy) return;
+        if (!await confirmAction("确认卸载视频模型与运行依赖？已生成的视频、信件和记忆会保留。")) return;
         if (!await confirmAction("重新启用视频回信需要再次下载或导入约 36.8 GiB，仍要继续吗？")) return;
         setButtonsBusy([uninstall], true);
         result.textContent = "正在卸载视频组件……";
@@ -1773,7 +1775,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           setButtonsBusy([uninstall], false);
         }
       });
+      setButtonsBusy([uninstall], uninstallBusy);
       item.append(uninstall);
+      if (uninstallBusy) {
+        item.append(text("p", runtimePreparing || verifyingOnly
+          ? "正在安装或校验视频组件，请等待当前步骤结束后再卸载。"
+          : "请先暂停下载，等待当前安装步骤结束后再卸载。",
+          "text-text-secondary text-caption-m font-regular"));
+      }
     }
     item.append(result);
     const list = stack();

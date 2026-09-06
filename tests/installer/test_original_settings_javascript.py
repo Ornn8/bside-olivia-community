@@ -265,9 +265,60 @@ def test_video_capability_panel_exposes_scoped_uninstall_action() -> None:
     )[1].split("const renderCapabilityPanel", 1)[0]
 
     assert 'const canUninstall = payload && payload.can_uninstall === true;' in video_panel
-    assert 'button("卸载视频组件"' in video_panel
+    assert 'button("卸载视频模型与运行依赖"' in video_panel
     assert '{ action: "uninstall" }' in video_panel
     assert "已生成的视频、信件和记忆会保留" in video_panel
+
+
+def test_video_uninstall_button_remains_visible_but_disabled_during_installation():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable for video panel DOM validation")
+    source = "const videoCapabilityViewState" + BOOTSTRAP_JAVASCRIPT.split(
+        "const videoCapabilityViewState", 1
+    )[1].split("const renderCapabilityPanel", 1)[0]
+    harness = r'''
+const fs = require("fs"), vm = require("vm");
+class Element {
+  constructor(tag, value="") { this.tagName=tag; this.textContent=value; this.children=[]; this.style={}; this.disabled=false; }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children=nodes; }
+  get childElementCount() { return this.children.length; }
+  setAttribute() {}
+}
+const context = {
+  VIDEO_CAPABILITY_BUNDLES:["ordinary_video", "music_video"], VIDEO_CAPABILITY_PATH:"/video",
+  requestJson: async () => context.payload,
+  refreshVideoReplySetting: async () => {},
+  text:(tag,value)=>new Element(tag,value), card:()=>new Element("div"),
+  stack:()=>new Element("div"), actions:()=>new Element("div"),
+  button:(label,listener)=>Object.assign(new Element("button",label),{listener}),
+  formatBytes:String,
+  setButtonsBusy:(buttons,busy)=>buttons.forEach(button=>button.disabled=busy),
+  confirmAction:async()=>{throw new Error("busy uninstall must not prompt or submit");},
+  window:{clearTimeout(){},setTimeout(){return 1;}},
+};
+vm.runInNewContext(fs.readFileSync(0,"utf8")+";globalThis.render=renderVideoCapabilityPanel;",context);
+function flatten(node) { return [node,...node.children.flatMap(flatten)]; }
+(async()=>{
+  const results=[];
+  for (const [state,runtime,can] of [["ready","idle",true],["downloading","idle",true],["verifying","idle",true],["prerequisites_required","extracting",true],["missing","idle",false]]) {
+    context.payload={can_uninstall:can,bundles:context.VIDEO_CAPABILITY_BUNDLES.map(id=>({id,state})),runtime_import:{state:runtime}};
+    const panel=new Element("div"); await context.render(panel);
+    const elements=flatten(panel), uninstall=elements.find(node=>node.tagName==="button" && node.textContent.includes("卸载视频"));
+    if (uninstall && uninstall.disabled) await uninstall.listener();
+    results.push({present:!!uninstall,disabled:uninstall ? uninstall.disabled : null,text:elements.map(node=>node.textContent).join(" ")});
+  }
+  process.stdout.write(JSON.stringify(results));
+})().catch(error=>{console.error(error.stack);process.exitCode=1;});
+'''
+    result = subprocess.run([node, "-e", harness], input=source.encode("utf-8"), capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    cases = json.loads(result.stdout)
+    assert [(item["present"], item["disabled"]) for item in cases] == [
+        (True, False), (True, True), (True, True), (True, True), (False, None)]
+    assert "暂停" in cases[1]["text"]
+    assert "等待" in cases[2]["text"] and "等待" in cases[3]["text"]
 
 
 def test_video_capability_progress_shows_elapsed_time_and_current_file() -> None:
