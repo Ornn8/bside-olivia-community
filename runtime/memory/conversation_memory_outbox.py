@@ -151,6 +151,10 @@ class CanonicalMemoryOutbox:
                         source_id TEXT PRIMARY KEY REFERENCES canonical_memory_deliveries(source_id),
                         failures INTEGER NOT NULL CHECK (failures >= 0)
                     );
+                    CREATE TABLE IF NOT EXISTS canonical_memory_retry_limit (
+                        source_id TEXT PRIMARY KEY REFERENCES canonical_memory_deliveries(source_id),
+                        failure_limit INTEGER NOT NULL CHECK (failure_limit >= 3)
+                    );
                     """
                 )
                 connection.execute(f"PRAGMA user_version={OUTBOX_SCHEMA_VERSION}")
@@ -230,7 +234,8 @@ class CanonicalMemoryOutbox:
                 exhausted = connection.execute(
                     "SELECT COUNT(*) FROM canonical_memory_failure_budget b "
                     "JOIN canonical_memory_deliveries d USING(source_id) "
-                    "WHERE b.failures >= ? AND d.status IN ('pending', 'unavailable')",
+                    "LEFT JOIN canonical_memory_retry_limit r USING(source_id) "
+                    "WHERE b.failures >= COALESCE(r.failure_limit, ?) AND d.status IN ('pending', 'unavailable')",
                     (_MAX_COMPLETED_FAILURES,),
                 ).fetchone()[0]
         except (OSError, sqlite3.Error, ValueError):
@@ -257,16 +262,40 @@ class CanonicalMemoryOutbox:
             result["reason_code"] = "MEMORY_OUTBOX_RETRY_EXHAUSTED"
         return result
 
+    def retry_exhausted_once(self) -> int:
+        """Grant one extra completed failure per exhausted delivery on explicit request."""
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                rows = connection.execute(
+                    "SELECT b.source_id, b.failures + 1 FROM canonical_memory_failure_budget b "
+                    "JOIN canonical_memory_deliveries d USING(source_id) "
+                    "LEFT JOIN canonical_memory_retry_limit r USING(source_id) "
+                    "WHERE b.failures >= COALESCE(r.failure_limit, ?) "
+                    "AND d.status IN ('pending', 'unavailable')",
+                    (_MAX_COMPLETED_FAILURES,),
+                ).fetchall()
+                connection.executemany(
+                    "INSERT INTO canonical_memory_retry_limit VALUES (?, ?) "
+                    "ON CONFLICT(source_id) DO UPDATE SET failure_limit = excluded.failure_limit",
+                    rows,
+                )
+                return len(rows)
+        except (OSError, sqlite3.Error) as exc:
+            raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STORAGE_UNAVAILABLE") from exc
+
     def _budget_exhausted(self, source_id: str) -> bool:
         try:
             with self._connect() as connection:
                 row = connection.execute(
-                    "SELECT failures FROM canonical_memory_failure_budget WHERE source_id = ?",
-                    (source_id,),
+                    "SELECT b.failures >= COALESCE(r.failure_limit, ?) "
+                    "FROM canonical_memory_failure_budget b "
+                    "LEFT JOIN canonical_memory_retry_limit r USING(source_id) WHERE b.source_id = ?",
+                    (_MAX_COMPLETED_FAILURES, source_id),
                 ).fetchone()
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STORAGE_UNAVAILABLE") from exc
-        return row is not None and row[0] >= _MAX_COMPLETED_FAILURES
+        return row is not None and bool(row[0])
 
     def _read_letters(self) -> tuple[Mapping[str, object], ...]:
         try:

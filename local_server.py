@@ -89,6 +89,7 @@ from runtime.video_reply_settings import (
 )
 from conversation_memory_port import ConversationMemoryPort
 from conversation_memory_runtime import (
+    retry_exhausted_conversation_memory,
     conversation_memory_reply_readiness_status,
     conversation_memory_runtime_status,
     ensure_conversation_memory_runtime,
@@ -2711,12 +2712,17 @@ async def route(
             if not started and status.status == "available"
             else None
         )
+        retried = 0
+        if body.get("retry_failed_writes") is True and runtime_status is not None:
+            retried = retry_exhausted_conversation_memory()
+            runtime_status = conversation_memory_runtime_status()
         public_status = "INITIALIZING" if started or status.reason_code == "MEM0_INITIALIZING" else (
             runtime_status.status.upper() if runtime_status is not None else status.status.upper()
         )
         return ok({
             "status": public_status,
             "retryable": public_status in {"INITIALIZING", "DEGRADED", "UNAVAILABLE"},
+            "retried_count": retried,
         })
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")

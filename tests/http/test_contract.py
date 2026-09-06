@@ -680,6 +680,30 @@ def test_memory_retry_reports_runtime_degradation_and_disabled_state(monkeypatch
     assert (result["data"]["status"], result["data"]["retryable"]) == expected
 
 
+@pytest.mark.parametrize("confirmed,explicit", [(False, True), (True, False), (True, True)])
+def test_memory_failed_write_retry_requires_explicit_confirmed_request(monkeypatch, confirmed, explicit):
+    import local_server
+    from conversation_memory_port import ConversationMemoryStatus
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
+    class Adapter:
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+    status = ConversationMemoryRuntimeStatus("degraded", True, "mem0-outbox", True)
+    calls = []
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", Adapter())
+    monkeypatch.setattr(local_server, "_start_conversation_memory_initialization", lambda _: False)
+    monkeypatch.setattr(local_server, "_start_ready_conversation_memory_runtime", lambda: status)
+    monkeypatch.setattr(local_server, "conversation_memory_runtime_status", lambda: status)
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", lambda: calls.append(True) or 1)
+    result = asyncio.run(local_server.route("POST", "/toy/companion/memory/retry",
+        {"retry_failed_writes": explicit}, {}, companion_confirmed=confirmed))
+    assert len(calls) == int(confirmed and explicit)
+    if confirmed:
+        assert result["data"]["retried_count"] == int(explicit)
+    else:
+        assert result["code"] == 403
+
+
 def test_invalid_health_profile_is_a_stable_client_error() -> None:
     import local_server
 

@@ -348,6 +348,20 @@ def ensure_conversation_memory_runtime(
     return runtime.status()
 
 
+def retry_exhausted_conversation_memory() -> int:
+    """Explicit maintenance request; preserve failure history and never call a provider here."""
+    with _RUNTIME_LOCK:
+        runtime = _RUNTIME
+    if runtime is None:
+        return 0
+    status = runtime.status()
+    if status.reason_code != "MEMORY_OUTBOX_RETRY_EXHAUSTED":
+        return 0
+    count = runtime.outbox.retry_exhausted_once()
+    runtime.status()
+    return count
+
+
 def conversation_memory_runtime_status() -> ConversationMemoryRuntimeStatus:
     with _RUNTIME_LOCK:
         runtime = _RUNTIME
