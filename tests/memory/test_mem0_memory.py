@@ -547,6 +547,28 @@ def test_explicit_relationship_and_experience_fallback_store_only_relevant_sente
     assert "这件事" not in stored
 
 
+@pytest.mark.parametrize("code", ["MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED", "private secret"])
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_wrapped_extraction_failure_preserves_only_allowlisted_code(tmp_path, code, rollback_fails):
+    class BrokenExtraction(FakeMem0):
+        def add(self, messages, **kwargs):
+            if not self.rows:
+                return super().add(messages, **kwargs)
+            try:
+                raise Mem0AdapterError(code)
+            except Mem0AdapterError as leaf:
+                raise RuntimeError("private upstream body and key") from leaf
+    backend = BrokenExtraction()
+    if rollback_fails:
+        backend.fail.add("delete")
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message="我住在东京。", assistant_message="我记住了。", occurred_at=NOW,
+        source_id="history:wrapped-failure", user_id="local-user")
+    expected = "MEM0_WRITE_FAILED" if code == "private secret" else code
+    assert result.error_code == ("MEM0_WRITE_ROLLBACK_FAILED" if rollback_fails else expected)
+    assert "private" not in repr(result)
+
+
 def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) -> None:
     backend = FakeMem0()
     backend.fail.add("add")

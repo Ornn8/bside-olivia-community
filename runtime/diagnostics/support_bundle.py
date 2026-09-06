@@ -21,6 +21,11 @@ DIAGNOSTIC_BUNDLE_MEMBERS = (
 )
 MAX_BUNDLE_BYTES = 1 << 20
 MAX_CHECKS = 32
+BREEZE_INSTALL_DIAGNOSTIC_CODES = frozenset({
+    "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
+    "BREEZE_PIP_HASH_MISMATCH", "BREEZE_PIP_WHEEL_UNAVAILABLE", "BREEZE_PIP_ACCESS_DENIED",
+    "BREEZE_PIP_TIMEOUT", "BREEZE_PIP_FAILED",
+})
 MAX_TAIL_RECORDS = 200
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _STATUS_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -109,6 +114,9 @@ def _project_health(value: object) -> dict[str, object]:
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
         if name in {"video_ordinary", "video_music", "video_runtime"}:
+            diagnostic = check.get("diagnostic_code")
+            if isinstance(diagnostic, str) and diagnostic in BREEZE_INSTALL_DIAGNOSTIC_CODES:
+                entry["diagnostic_code"] = diagnostic
             for field in ("downloaded_bytes", "total_bytes", "remaining_bytes", "checked_bytes"):
                 if field in check:
                     count = check[field]

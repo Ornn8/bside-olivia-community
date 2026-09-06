@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from typing import Callable, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
 from runtime.memory.bounded_daemon_call import BoundedDaemonCall
 from .conversation_memory_port import (
@@ -165,6 +166,19 @@ class Mem0AdapterError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _extraction_failure_code(error: BaseException) -> str:
+    # Upstream wraps extraction errors with LLMError; never copy its message.
+    for _ in range(8):
+        if isinstance(error, Mem0AdapterError) and error.code in {
+            "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED",
+        }:
+            return error.code
+        if error.__cause__ is None:
+            break
+        error = error.__cause__
+    return "MEM0_WRITE_FAILED"
 
 
 class Mem0Backend(Protocol):
@@ -1234,7 +1248,7 @@ class Mem0ConversationMemoryAdapter:
                             infer=False,
                         )
                     )
-        except Exception:
+        except Exception as error:
             pending_ids = self._delete_provider_memories(tuple(created_ids))
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -1243,7 +1257,7 @@ class Mem0ConversationMemoryAdapter:
                 error_code=(
                     "MEM0_WRITE_ROLLBACK_FAILED"
                     if pending_ids
-                    else "MEM0_WRITE_FAILED"
+                    else _extraction_failure_code(error)
                 ),
             )
         acknowledgement_groups = tuple(_add_acknowledgements(value) for value in values)
@@ -1694,6 +1708,29 @@ class _ValidatedExtractionLLM:
         return response
 
 
+def _guard_extraction_client(provider: object) -> None:
+    """Guard this memory-only client before upstream discards response metadata."""
+    client = getattr(provider, "client", None)
+    completions = getattr(getattr(client, "chat", None), "completions", None)
+    create = getattr(completions, "create", None)
+    if not callable(create):
+        return
+    official_deepseek = urlsplit(str(getattr(client, "base_url", ""))).hostname == "api.deepseek.com"
+
+    def guarded_create(*args: object, **kwargs: object) -> object:
+        if official_deepseek:
+            kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
+            }
+        response = create(*args, **kwargs)
+        if any(getattr(choice, "finish_reason", None) == "length"
+               for choice in getattr(response, "choices", ())):
+            raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")
+        return response
+
+    completions.create = guarded_create
+
+
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     module = _load_product_mem0_module()
     memory_type = getattr(module, "Memory", None)
@@ -1702,6 +1739,7 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     backend = memory_type.from_config(dict(config))
     provider = getattr(backend, "llm", None)
     if callable(getattr(provider, "generate_response", None)):
+        _guard_extraction_client(provider)
         backend.llm = _ValidatedExtractionLLM(provider)
     return backend
 
