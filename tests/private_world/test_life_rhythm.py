@@ -128,3 +128,30 @@ def test_public_world_name_keeps_existing_route_and_storage_identifiers():
     assert '林离世界' in source
     assert '私人世界' not in source
     assert 'private-world' in source
+
+
+def test_multiple_short_nights_affect_body_and_recover_without_absence_penalty(tmp_path):
+    store = DailyLifeStore(tmp_path / 'life.sqlite3')
+    first = datetime(2026, 9, 7, 17, tzinfo=timezone.utc)
+    # A brief interruption is fatigue, not automatically illness.
+    store.record_exchange('reply:brief:1', '晚安', '晚安', [], occurred_at=first)
+    assert store.snapshot(first + timedelta(hours=8))['rhythm']['wellbeing']['state'] == 'well'
+    for index in range(3):
+        received = first + timedelta(days=index+1)
+        store.record_exchange(f'reply:long{index}:1', '聊一会', '先休息了', [],
+                              received_at=received, occurred_at=received + timedelta(hours=3))
+    morning = first + timedelta(days=3, hours=8)
+    state = store.snapshot(morning)['rhythm']['wellbeing']
+    assert state['state'] == 'unwell'
+    assert state['care'] == 'consider_consultation'
+    assert store.snapshot(morning + timedelta(days=12))['rhythm']['wellbeing']['state'] == 'well'
+    assert DailyLifeStore(store.path).snapshot(morning)['rhythm']['wellbeing'] == state
+
+
+def test_recovery_requires_actual_rest_not_just_a_previous_short_night():
+    start = datetime(2026, 9, 7, 17, tzinfo=timezone.utc)
+    exchanges = [(start, start + timedelta(hours=2))]
+    morning = start + timedelta(hours=8)
+    # Still accumulating sleep loss is not recovery, nor automatically illness.
+    assert rhythm(morning, exchanges)['wellbeing']['state'] == 'well'
+    assert rhythm(morning + timedelta(days=1), exchanges)['wellbeing']['state'] == 'recovering'

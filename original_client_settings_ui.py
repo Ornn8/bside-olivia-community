@@ -1106,6 +1106,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (payload.rhythm) {
         now.append(text("p", payload.rhythm.activity, "text-text-title text-title-s"),
           text("p", payload.rhythm.note, "text-text-secondary text-body-m"));
+        if (payload.rhythm.wellbeing && payload.rhythm.wellbeing.state !== "well") {
+          now.append(text("p", payload.rhythm.wellbeing.summary, "text-text-secondary text-body-m"));
+        }
       }
       if (payload.current) {
         const current = payload.current;

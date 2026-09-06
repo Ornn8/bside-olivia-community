@@ -45,18 +45,22 @@ def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shi
                 awake += overlap
                 wakes += int(start > begin)
         if begin <= now:
-            nights.append({'end': finish, 'awake': awake, 'wakes': wakes})
+            nights.append({'begin': begin, 'end': finish, 'awake': awake, 'wakes': wakes})
         day = tomorrow
-    debt = 0.0
+    debt = peak_debt = 0.0
     for night in nights:
         loss = night['awake'] + 10 * night['wakes'] * (night['wakes'] + 1) / 2
         # Recovery only after later sleep, never from clock time while awake.
         if not loss and night['end'] <= now:
             debt = max(0, debt - 90)
         debt += loss
+        peak_debt = max(peak_debt, debt)
     return {'awake_minutes': sum(n['awake'] for n in nights),
             'interruptions': sum(n['wakes'] for n in nights),
             'load_minutes': debt,
+            'recovering': 0 < debt < peak_debt,
+            'strained_nights': sum(n['awake'] >= 90 and n['begin'] >= now - timedelta(days=7) for n in nights),
+            'previous_strain': any(n['awake'] >= 90 for n in nights),
             'awake_now': bool(merged and merged[-1][0] <= now < merged[-1][1])}
 
 
@@ -81,10 +85,23 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
     if phase == 'sleep' and awake:
         phase = 'interrupted_rest'
     rest = 'depleted' if debt >= 120 else 'tired' if debt > 0 else 'rested'
+    # These thresholds drive fictional continuity, not a disease probability.
+    unwell = debt >= 240 and timeline['strained_nights'] >= 2
+    consult = unwell and debt >= 360 and timeline['strained_nights'] >= 3
+    recovering = timeline['previous_strain'] and timeline['recovering']
+    wellbeing = {
+        'state': 'unwell' if unwell else 'recovering' if recovering else 'well',
+        'care': 'consider_consultation' if consult else 'rest' if debt > 0 else 'none',
+        'summary': ('连续休息不足，身体不太舒服，减少练习；若休息后仍不适，安排门诊咨询。' if consult else
+                    '连续休息不足，身体不太舒服，今天先减少活动、好好休息。' if unwell else
+                    '正在慢慢恢复，先不把日程排满。' if recovering else
+                    '没有持续身体不适的记录。'),
+    }
     labels = {'sleep': '正在休息', 'interrupted_rest': '夜里醒来，准备继续休息',
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
     return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
+            'wellbeing': wellbeing,
             'sleep_shift_minutes': shift,
             'activity': labels[phase],
             'note': ('休息不足，今天减少安排，把休息放在前面。' if rest == 'depleted' else
