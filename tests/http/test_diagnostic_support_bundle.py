@@ -75,16 +75,33 @@ def _contents(bundle: bytes) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+@pytest.mark.parametrize("bad", [-1, True, 10**15 + 1, "private-path"])
+def test_video_progress_rejects_non_count_values(bad):
+    source = _source()
+    source["health"]["checks"]["video_runtime"] = {"state": "checking", "checked_bytes": bad}
+    with pytest.raises(DiagnosticBundleError):
+        build_diagnostic_bundle(source)
+
+
+def test_running_version_only_accepts_version_tokens():
+    source = _source()
+    source["summary"]["running_version"] = "private-token"
+    with pytest.raises(DiagnosticBundleError):
+        build_diagnostic_bundle(source)
+
+
 def test_memory_worker_counters_are_exported_without_private_fields():
     source = _source()
     source['health']['checks']['memory_worker'] = {
         'state': 'degraded', 'pending_count': 2, 'attempt_count': 7,
-        'terminal_count': 1, 'worker_running': True, 'user_id': 'private-id',
+        'terminal_count': 1, 'worker_running': True,
+        'pending_error_counts': {'MEM0_EXTRACTION_RESPONSE_INVALID': 2}, 'user_id': 'private-id',
     }
     result = json.loads(_contents(build_diagnostic_bundle(source))['health.json'])
     assert result['checks']['memory_worker'] == {
         'state': 'degraded', 'pending_count': 2, 'attempt_count': 7,
         'terminal_count': 1, 'worker_running': True,
+        'pending_error_counts': {'MEM0_EXTRACTION_RESPONSE_INVALID': 2},
     }
 
 
@@ -184,4 +201,17 @@ def test_bundle_rejects_invalid_input_without_emitting_partial_archive(
     source: dict[str, object],
 ) -> None:
     with pytest.raises(DiagnosticBundleError, match="DIAGNOSTIC_BUNDLE_INPUT_INVALID"):
+        build_diagnostic_bundle(source)
+
+
+@pytest.mark.parametrize("counts", [
+    {"private/path-or-key": 1}, {"X" * 97: 1},
+    {"MEM0_WRITE_FAILED": True}, {"MEM0_WRITE_FAILED": -1},
+    {"MEM0_WRITE_FAILED": 1_000_000_001},
+    {f"ERROR_{i}": 1 for i in range(17)},
+])
+def test_pending_error_counts_reject_private_or_unbounded_values(counts):
+    source = _source()
+    source["health"]["checks"]["memory_worker"] = {"state": "degraded", "pending_error_counts": counts}
+    with pytest.raises(DiagnosticBundleError):
         build_diagnostic_bundle(source)

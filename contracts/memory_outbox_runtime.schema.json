@@ -12,7 +12,12 @@
     "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,95}$"},
     "terminal_count": {"type": "integer", "minimum": 0},
     "pending_count": {"type": "integer", "minimum": 0},
-    "attempt_count": {"type": "integer", "minimum": 0}
+    "attempt_count": {"type": "integer", "minimum": 0},
+    "pending_error_counts": {
+      "type": "object", "maxProperties": 16,
+      "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]{0,95}$"},
+      "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 1000000000}
+    }
   },
   "oneOf": [
     {

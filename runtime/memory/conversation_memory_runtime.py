@@ -43,12 +43,19 @@ class ConversationMemoryRuntimeStatus:
     attempt_count: int = 0
     # Internal readiness hint; no provider calls or public schema changes.
     delivery_pending: bool = False
+    pending_error_counts: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {"available", "degraded", "unavailable", "disabled"}:
             raise ValueError("conversation memory runtime status is invalid")
         if type(self.enabled) is not bool or type(self.worker_running) is not bool:
             raise ValueError("runtime flags must be boolean")
+        if len(self.pending_error_counts) > 16 or any(
+            not isinstance(code, str) or not _ERROR_RE.fullmatch(code)
+            or type(count) is not int or not 0 <= count <= 1_000_000_000
+            for code, count in self.pending_error_counts
+        ):
+            raise ValueError("pending error counts are invalid")
         if type(self.delivery_pending) is not bool:
             raise ValueError("delivery_pending must be boolean")
         if not isinstance(self.provider, str) or not self.provider:
@@ -70,6 +77,8 @@ class ConversationMemoryRuntimeStatus:
             "pending_count": self.pending_count,
             "attempt_count": self.attempt_count,
         }
+        if self.pending_error_counts:
+            payload["pending_error_counts"] = dict(self.pending_error_counts)
         if self.reason_code is not None:
             payload["reason_code"] = self.reason_code
         return payload
@@ -160,6 +169,7 @@ class ConversationMemoryRuntime:
             pending_count=_count(health.get("pending_count")),
             attempt_count=_count(health.get("attempt_count")),
             delivery_pending=self.outbox.committer.delivery_pending,
+            pending_error_counts=tuple(health.get("pending_error_counts", {}).items()),
         )
         with self._reply_status_lock:
             self._reply_status = resolved
@@ -336,6 +346,20 @@ def ensure_conversation_memory_runtime(
     if start_background:
         runtime.start()
     return runtime.status()
+
+
+def retry_exhausted_conversation_memory() -> int:
+    """Explicit maintenance request; preserve failure counts without calling a provider."""
+    with _RUNTIME_LOCK:
+        runtime = _RUNTIME
+    if runtime is None:
+        return 0
+    status = runtime.status()
+    if status.reason_code != "MEMORY_OUTBOX_RETRY_EXHAUSTED":
+        return 0
+    count = runtime.outbox.retry_exhausted_once()
+    runtime.status()
+    return count
 
 
 def conversation_memory_runtime_status() -> ConversationMemoryRuntimeStatus:

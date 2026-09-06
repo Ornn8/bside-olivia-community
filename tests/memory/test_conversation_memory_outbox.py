@@ -109,12 +109,83 @@ def test_completed_failures_exhaust_persistent_budget_without_dropping_letter(tm
             await box.scan_once()
         assert broken.calls == 3
         assert box.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert box.health()["pending_error_counts"] == {"MEM0_WRITE_FAILED": 1}
         assert box.health()["pending_count"] == 1
         assert box.health()["terminal_count"] == 0
         from runtime.memory.conversation_memory_runtime import ConversationMemoryRuntime
+        assert ConversationMemoryRuntime(box).status().to_dict()["pending_error_counts"] == {"MEM0_WRITE_FAILED": 1}
         assert ConversationMemoryRuntime(box).status().reason_code == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        from jsonschema import Draft202012Validator
+        schema = json.loads(Path("contracts/memory_outbox_runtime.schema.json").read_text(encoding="utf-8"))
+        Draft202012Validator(schema).validate(ConversationMemoryRuntime(box).status().to_dict())
         assert state.read_bytes() == original
     asyncio.run(scenario())
+
+
+def test_explicit_retry_grants_one_failure_without_resetting_history(tmp_path, monkeypatch):
+    class Memory:
+        calls = 0
+        succeeds = False
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def remember_exchange(self, **kwargs):
+            self.calls += 1
+            return MemoryWriteResult(
+                MemoryWriteStatus.WRITTEN if self.succeeds else MemoryWriteStatus.UNAVAILABLE,
+                kwargs["source_id"],
+                error_code=None if self.succeeds else "MEM0_WRITE_FAILED",
+            )
+    async def scenario():
+        _state(tmp_path / "state.json")
+        memory = Memory()
+        box = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory))
+        for _ in range(5):
+            await box.scan_once()
+        assert memory.calls == 3
+        from runtime.memory import conversation_memory_runtime as module
+        class Lifecycle:
+            paused = True
+            def is_paused(self):
+                return self.paused
+        lifecycle = Lifecycle()
+        runtime = module.ConversationMemoryRuntime(box, memory_lifecycle=lifecycle)
+        monkeypatch.setattr(module, "_RUNTIME", runtime)
+        assert module.retry_exhausted_conversation_memory() == 0
+        lifecycle.paused = False
+        assert module.retry_exhausted_conversation_memory() == 1
+        assert box.retry_exhausted_once() == 0
+        assert memory.calls == 3
+        for _ in range(5):
+            box = _outbox(tmp_path, ConversationMemoryDeliveryCommitter(memory))
+            await box.scan_once()
+        assert memory.calls == 4
+        assert box.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        with sqlite3.connect(box.journal_path) as db:
+            assert db.execute("SELECT failures FROM canonical_memory_failure_budget").fetchone()[0] == 4
+        memory.succeeds = True
+        assert box.retry_exhausted_once() == 1
+        await box.scan_once()
+        await box.scan_once()
+        assert memory.calls == 5
+        assert box.health()["terminal_count"] == 1
+        assert box.retry_exhausted_once() == 0
+    asyncio.run(scenario())
+
+
+def test_concurrent_explicit_retries_do_not_stack_allowances(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    _state(tmp_path / "state.json")
+    box = _outbox(tmp_path, SequencedCommitter())
+    asyncio.run(box.scan_once())
+    with sqlite3.connect(box.journal_path) as db:
+        db.execute("UPDATE canonical_memory_deliveries SET status='unavailable'")
+        db.execute("INSERT INTO canonical_memory_failure_budget SELECT source_id, 3 FROM canonical_memory_deliveries")
+    second = _outbox(tmp_path, SequencedCommitter())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda current: current.retry_exhausted_once(), (box, second)))
+    assert sorted(results) == [0, 1]
+    with sqlite3.connect(box.journal_path) as db:
+        assert db.execute("SELECT failure_limit FROM canonical_memory_retry_limit").fetchone()[0] == 4
 
 
 def test_existing_v1_journal_adds_budget_without_reinterpreting_attempts(tmp_path):

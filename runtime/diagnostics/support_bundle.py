@@ -77,6 +77,7 @@ def _project_summary(value: object) -> dict[str, object]:
     source = _mapping(value)
     result: dict[str, object] = {"status": _status(source.get("status"))}
     for name in (
+        "running_version",
         "contract_version",
         "python_version",
         "os_name",
@@ -87,6 +88,8 @@ def _project_summary(value: object) -> dict[str, object]:
             continue
         item = source[name]
         if not isinstance(item, str) or not _TOKEN_RE.fullmatch(item):
+            raise _invalid()
+        if name == "running_version" and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", item):
             raise _invalid()
         result[name] = item
     return result
@@ -105,6 +108,13 @@ def _project_health(value: object) -> dict[str, object]:
         entry: dict[str, object] = {"state": _status(check.get("state"))}
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
+        if name in {"video_ordinary", "video_music", "video_runtime"}:
+            for field in ("downloaded_bytes", "total_bytes", "remaining_bytes", "checked_bytes"):
+                if field in check:
+                    count = check[field]
+                    if type(count) is not int or not 0 <= count <= 10**15:
+                        raise _invalid()
+                    entry[field] = count
         if name == "memory_worker":
             for field in ("pending_count", "attempt_count", "terminal_count"):
                 if field in check:
@@ -112,6 +122,16 @@ def _project_health(value: object) -> dict[str, object]:
                     if type(value) is not int or not 0 <= value <= 1_000_000_000:
                         raise _invalid()
                     entry[field] = value
+            if "pending_error_counts" in check:
+                counts = _mapping(check["pending_error_counts"])
+                if len(counts) > 16:
+                    raise _invalid()
+                safe_counts = {}
+                for error, count in counts.items():
+                    if type(count) is not int or not 0 <= count <= 1_000_000_000:
+                        raise _invalid()
+                    safe_counts[_code(error)] = count
+                entry["pending_error_counts"] = safe_counts
             if "worker_running" in check:
                 if type(check["worker_running"]) is not bool:
                     raise _invalid()

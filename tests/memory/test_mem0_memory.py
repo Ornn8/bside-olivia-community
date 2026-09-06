@@ -142,6 +142,21 @@ def _config(tmp_path: Path) -> Mem0Config:
     )
 
 
+@pytest.mark.parametrize("source_id", ["reply:first-contact:1", "history:first-contact"])
+def test_extraction_keeps_attribution_without_inventing_relationship_history(tmp_path, source_id):
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    adapter.remember_exchange(
+        source_id=source_id, user_id="local-user", user_message="好想你。你或许不知道我已经失去过你一次。",
+        assistant_message="我收到了，你可以说说。", occurred_at=NOW,
+    )
+    prompts = [call["prompt"] for method, call in backend.calls if method == "add"]
+    assert prompts
+    assert all("不得推导持续往来、再次表达、情感依赖" in prompt for prompt in prompts)
+    assert all("用户说过不等于双方经历过" in prompt for prompt in prompts)
+    assert "原文短句逐字引用" in prompts[0]
+
+
 def _write_verified_embedding_cache(config: Mem0Config) -> None:
     files = {
         "1_Pooling/config.json": b"{\"word_embedding_dimension\": 512}",
@@ -1745,6 +1760,69 @@ def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
 
     assert settled.status is MemoryWriteStatus.WRITTEN
     assert settled.memory_ids == ("memory.fixture.1",)
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+@pytest.mark.parametrize("deferred", [False, True])
+def test_history_migration_waits_for_inflight_write_without_retrying_add(tmp_path: Path, write_fails: bool, deferred: bool) -> None:
+    from runtime.imports.historical_memory import HistoricalExchange, migrate_historical_exchanges
+
+    release = threading.Event()
+    entered = threading.Event()
+    results = []
+    started_calls = []
+
+    class SlowMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            started_calls.append(1)
+            entered.set()
+            assert release.wait(3)
+            if write_fails:
+                raise RuntimeError("synthetic completed write failure")
+            return super().add(messages, **kwargs)
+
+    backend = SlowMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, replace(_config(tmp_path), write_timeout_seconds=0.1))
+    if deferred:
+        actual = adapter
+        adapter = mem0_memory.DeferredConversationMemoryAdapter(actual.config, lambda: actual)
+        adapter.start_initialization()
+        deadline = time.monotonic() + 2
+        while adapter.status().status != "available" and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert adapter.status().status == "available"
+    exchanges = (HistoricalExchange("synthetic-import", NOW, "synthetic user input", "synthetic reply"),)
+    def run():
+        results.append(migrate_historical_exchanges(exchanges, memory=adapter,
+            user_id="local-user", require_persisted=True))
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        time.sleep(0.35)
+        assert worker.is_alive(), "inflight history must not be reported as a failed migration"
+        assert results == []
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+        if write_fails:
+            assert results[0].status == "partial"
+            assert results[0].error_code == "MEM0_WRITE_FAILED"
+            assert results[0].processed == 0
+            assert started_calls == [1]
+            assert backend.rows == []
+            return
+        assert results[0].status == "completed"
+        assert results[0].written == 1
+        assert len(backend.rows) == 2
+        repeated = migrate_historical_exchanges(exchanges, memory=adapter,
+            user_id="local-user", require_persisted=True)
+        assert repeated.status == "completed"
+        assert repeated.duplicates == 1
+        assert sum(name == "add" for name, _ in backend.calls) == 2
+    finally:
+        release.set()
+        worker.join(3)
 
 
 def test_outbox_retry_recovers_nested_mem0_timeout(tmp_path: Path) -> None:

@@ -803,9 +803,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (state === "unavailable") {
         const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
         const retry = button("重新准备长期记忆", async () => {
+          const exhausted = capability && capability.reason_code === "MEMORY_OUTBOX_RETRY_EXHAUSTED";
+          if (exhausted && !await confirmAction("为重试耗尽的记忆任务各重试一次？这会调用已配置的大模型并消耗额度，已有记忆会保留。")) return;
           setButtonsBusy([retry], true);
           try {
-            const payload = await requestMutation(MEMORY_RETRY_PATH, {});
+            const payload = await requestMutation(MEMORY_RETRY_PATH, exhausted ? {retry_failed_writes: true} : {});
+            if (payload.retried_count > 0) {
+              resultState.textContent = `已安排 ${payload.retried_count} 项记忆任务重试，请稍后查看。`;
+              return;
+            }
             if (["INITIALIZING", "AVAILABLE"].includes(payload.status)) {
               const status = await requestJson(STATUS_PATH);
               await renderMemoryPanel(panel, status.capabilities.memory);
@@ -941,7 +947,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         setButtonsBusy([toggle, clear], false);
       }
     });
-    lifecycleControls.append(toggle, clear);
+    const retryWrites = button("重试未写入的记忆", async () => {
+      if (!await confirmAction("为重试耗尽的记忆任务各重试一次？这会调用已配置的大模型并消耗额度；已有信件和记忆会保留。")) return;
+      setButtonsBusy([retryWrites], true);
+      try {
+        const payload = await requestMutation(MEMORY_RETRY_PATH, {retry_failed_writes: true});
+        resultState.textContent = payload.retried_count > 0
+          ? `已安排 ${payload.retried_count} 项记忆任务重试，请稍后查看。`
+          : "没有可重试的任务；若长期记忆已暂停，请先恢复。";
+      } catch (_error) {
+        resultState.textContent = "未能安排重试，请导出诊断包。";
+      } finally {
+        setButtonsBusy([retryWrites], false);
+      }
+    });
+    lifecycleControls.append(toggle, clear, retryWrites);
     panel.replaceChildren(heading, summary, lifecycleControls, controls, resultState, list);
     await load();
   };

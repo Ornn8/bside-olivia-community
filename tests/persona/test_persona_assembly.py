@@ -15,10 +15,13 @@ from persona_loader import (
 from runtime.persona.persona_mode import persona_mode_for_reply_mode
 from runtime.reply.prompt_budget import PromptBudgetExceeded
 from runtime.reply.reply_context import (
+    BehaviorLevel,
     IntimacyTier,
+    KnownContinuationFact,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
+    RelationshipStage,
     TrustedTime,
     TrustedWorldFact,
 )
@@ -100,6 +103,19 @@ def _style_snapshot(*exemplars: PersonaStyleExemplar) -> PersonaSnapshot:
     )
 
 
+def test_public_source_identifier_is_not_character_knowledge():
+    snapshot = _style_snapshot()
+    fact = replace(_declaration("public.preference", "PUBLIC_CANON", "BACKGROUND", "林离喜欢黑胶。"),
+                   source_id="PUBLIC.SHUTDOWN.ANNOUNCEMENT.20260811")
+    snapshot = replace(snapshot, declarations=(*snapshot.declarations, fact))
+    context = ReplyContext(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
+    result = assemble_persona(snapshot, context, user_input="你好", max_units=8000)
+    text = "\n".join(message["content"] for message in result.to_messages())
+    assert "林离喜欢黑胶。" in text
+    assert fact.source_id not in text
+    assert snapshot.declarations[-1].source_id == fact.source_id
+
+
 def _scenario_snapshot() -> PersonaSnapshot:
     situations = (
         "brief_greeting", "ordinary_smalltalk", "emotional_acknowledgement",
@@ -112,6 +128,51 @@ def _scenario_snapshot() -> PersonaSnapshot:
         )
         for name in situations
     ))
+
+
+@pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+def test_initial_relationship_guidance_survives_optional_context_trimming(mode) -> None:
+    context = ReplyContext.create(
+        mode, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+    )
+    assembled = assemble_persona(
+        _style_snapshot(), context, user_input="好想你",
+        history=(UntrustedFragment("long", "无关内容" * 2000),), max_units=4000,
+    )
+    system = assembled.to_messages()[0]["content"]
+    assert "尚未建立熟悉关系" in system
+    assert "单方面示好" in system
+    assert "不能据此声称自己已有思念" in system
+    assert "不主动提出失忆、缺记录或曾相识的假设" in system
+    assert "relationship_grounding" in assembled.budget_report.included_ids
+    assert "没有角色已知的身份延续事实" in system
+
+
+@pytest.mark.parametrize("behavior", [
+    PrivateBehaviorView(relationship_stage=RelationshipStage.FAMILIAR),
+    PrivateBehaviorView(familiarity=BehaviorLevel.MEDIUM),
+])
+def test_existing_familiarity_is_not_reset_by_missing_recent_history(behavior) -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+        private_behavior=behavior,
+    )
+    system = assemble_persona(_style_snapshot(), context, user_input="好想你", max_units=4000).system_content
+    assert "尚未建立熟悉关系" not in system
+    assert "不否认已建立的关系" in system
+    assert "旧回信自身的亲密措辞不能反过来证明关系" in system
+
+
+def test_known_continuation_is_not_denied_by_unknown_continuation_guidance():
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)),
+        private_behavior=PrivateBehaviorView(known_continuations=(
+            KnownContinuationFact("continuation.synthetic", "我知道这里保留了书信。"),
+        )),
+    )
+    system = assemble_persona(_style_snapshot(), context, user_input="你好", max_units=8000).system_content
+    assert "没有角色已知的身份延续事实" not in system
+    assert "我知道这里保留了书信。" in system
 
 
 def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> None:
