@@ -517,7 +517,7 @@ def _diagnostic_source(
             summary["running_version"] = version
         if video_capability_installer is not None:
             # status() may start runtime preparation. Export only a nonblocking
-            # snapshot of existing state; never install or probe models here.
+            # copy of existing state; never install or probe models here.
             installer = video_capability_installer
             if not installer._lock.acquire(blocking=False):
                 checks["video_runtime"] = {"state": "unavailable", "error_code": "VIDEO_DIAGNOSTIC_BUSY"}

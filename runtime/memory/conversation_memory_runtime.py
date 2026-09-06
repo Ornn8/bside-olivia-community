@@ -349,7 +349,7 @@ def ensure_conversation_memory_runtime(
 
 
 def retry_exhausted_conversation_memory() -> int:
-    """Explicit maintenance request; preserve failure history and never call a provider here."""
+    """Explicit maintenance request; preserve failure counts without calling a provider."""
     with _RUNTIME_LOCK:
         runtime = _RUNTIME
     if runtime is None:
