@@ -394,7 +394,8 @@ def test_public_install_docs_distinguish_basevideo_from_webplayer_fallback() -> 
     assert "可选的显式 `uid` 本机回退" in readme
     assert "/toy/media/" in readme
     assert "DPAPI 当前用户启动读取修复已合入" in readme
-    assert "发布/真实客户端验收尚未完成" in readme
+    assert "真实客户端验收的范围和结果" in readme
+    assert "不代表所有设备均通过" in readme
     assert "Collection 内的 `BaseVideo`" in installer
     assert "可选的显式 `uid` 本机回退" in installer
     assert "可选的显式 `uid` 本机回退" in contract
