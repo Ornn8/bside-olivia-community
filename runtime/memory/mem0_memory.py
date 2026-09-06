@@ -7,10 +7,11 @@ provider failures collapse to stable, privacy-safe states.
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import errno
 import importlib
 import json
 from numbers import Real
@@ -178,6 +179,18 @@ class Mem0AdapterError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _initialization_error_code(error: BaseException) -> str:
+    if isinstance(error, PermissionError):
+        return "MEM0_STORAGE_PERMISSION_DENIED"
+    if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+        return "MEM0_STORAGE_FULL"
+    if isinstance(error, RuntimeError) and str(error).startswith("Storage folder ") and (
+        " is already accessed by another instance of Qdrant client." in str(error)
+    ):
+        return "MEM0_STORAGE_LOCKED"
+    return "MEM0_INITIALIZATION_FAILED"
 
 
 def _extraction_failure_code(error: BaseException) -> str:
@@ -389,6 +402,9 @@ class DeferredConversationMemoryAdapter:
         self._ready_callbacks: list[Callable[[], None]] = []
         self._closed = False
         self._generation = 0
+        self._retired: list[ConversationMemoryPort] = []
+        self._active_calls = 0
+        self._calls_done = threading.Condition(self._lock)
 
     @property
     def closed(self) -> bool:
@@ -403,6 +419,8 @@ class DeferredConversationMemoryAdapter:
         with self._lock:
             self._generation += 1
             self.config, self._factory = config, factory
+            if self._delegate is not None:
+                self._retired.append(self._delegate)
             self._delegate = None
             self._reason_code, self._closed = "MEM0_INITIALIZING", False
         return True
@@ -430,54 +448,73 @@ class DeferredConversationMemoryAdapter:
         with self._lock:
             self._closed = True
             self._ready_callbacks.clear()
+            if self._delegate is not None:
+                self._retired.append(self._delegate)
+                self._delegate = None
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._initialize, name="olivia-mem0-closer", daemon=True)
+                self._thread.start()
 
     def status(self) -> ConversationMemoryStatus:
-        with self._lock:
-            delegate = self._delegate
-            reason_code = self._reason_code
-        if delegate is not None:
+        with self._using_current() as delegate:
             return delegate.status()
-        return ConversationMemoryStatus(
-            "unavailable",
-            True,
-            "mem0",
-            "qdrant-local",
-            reason_code=reason_code,
-        )
 
     def search_context(self, query: str, *, user_id: str, limit: int):
-        return self._current().search_context(query, user_id=user_id, limit=limit)
+        with self._using_current() as delegate:
+            return delegate.search_context(query, user_id=user_id, limit=limit)
 
     def remember_exchange(self, **kwargs):
-        return self._current().remember_exchange(**kwargs)
+        with self._using_current() as delegate:
+            return delegate.remember_exchange(**kwargs)
 
     @property
     def operation_pending(self) -> bool:
-        return getattr(self._current(), "operation_pending", False) is True
+        with self._using_current() as delegate:
+            return getattr(delegate, "operation_pending", False) is True
 
     def settle_exchange_write(self, *, source_id: str, user_id: str) -> MemoryWriteResult:
-        settle = getattr(self._current(), "settle_exchange_write", None)
-        if callable(settle):
-            return settle(source_id=source_id, user_id=user_id)
+        with self._using_current() as delegate:
+            settle = getattr(delegate, "settle_exchange_write", None)
+            if callable(settle):
+                return settle(source_id=source_id, user_id=user_id)
         return MemoryWriteResult(
             MemoryWriteStatus.UNAVAILABLE, source_id,
             error_code="MEM0_WRITE_UNCERTAIN",
         )
 
     def list_memories(self, *, user_id: str, limit: int = 100):
-        return self._current().list_memories(user_id=user_id, limit=limit)
+        with self._using_current() as delegate:
+            return delegate.list_memories(user_id=user_id, limit=limit)
 
     def add_manual_memory(self, text: str, *, user_id: str, source_id: str):
-        return self._current().add_manual_memory(text, user_id=user_id, source_id=source_id)
+        with self._using_current() as delegate:
+            return delegate.add_manual_memory(text, user_id=user_id, source_id=source_id)
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
-        return self._current().delete_memory(memory_id, user_id=user_id)
+        with self._using_current() as delegate:
+            return delegate.delete_memory(memory_id, user_id=user_id)
 
     def clear_user(self, *, user_id: str) -> int:
-        return self._current().clear_user(user_id=user_id)
+        with self._using_current() as delegate:
+            return delegate.clear_user(user_id=user_id)
 
     def export_user(self, *, user_id: str) -> dict[str, object]:
-        return self._current().export_user(user_id=user_id)
+        with self._using_current() as delegate:
+            return delegate.export_user(user_id=user_id)
+
+    @contextmanager
+    def _using_current(self):
+        with self._lock:
+            delegate = self._delegate
+            if delegate is None:
+                delegate = UnavailableConversationMemoryPort(self._reason_code, config=self.config)
+            self._active_calls += 1
+        try:
+            yield delegate
+        finally:
+            with self._lock:
+                self._active_calls -= 1
+                self._calls_done.notify_all()
 
     def _current(self) -> ConversationMemoryPort:
         with self._lock:
@@ -489,19 +526,44 @@ class DeferredConversationMemoryAdapter:
     def _initialize(self) -> None:
         while True:
             with self._lock:
-                generation, factory = self._generation, self._factory
+                while self._active_calls:
+                    self._calls_done.wait()
+                retired, self._retired = self._retired, []
             try:
-                candidate = factory()
-                status = candidate.status()
-                reason_code = None if status.status == "available" and status.enabled is True else status.reason_code or "MEM0_INITIALIZATION_FAILED"
+                for delegate in retired:
+                    close = getattr(delegate, "close", None)
+                    if callable(close):
+                        close()
             except Exception:
-                candidate, reason_code = None, "MEM0_INITIALIZATION_FAILED"
+                with self._lock:
+                    self._retired.extend(retired)
+                    self._reason_code, self._thread = "MEM0_INITIALIZATION_FAILED", None
+                return
             with self._lock:
                 if self._closed:
                     self._thread = None
                     return
-                if generation != self._generation:
+                generation, factory = self._generation, self._factory
+            candidate = None
+            try:
+                candidate = factory()
+                status = candidate.status()
+                reason_code = None if status.status == "available" and status.enabled is True else status.reason_code or "MEM0_INITIALIZATION_FAILED"
+            except Exception as error:
+                reason_code = _initialization_error_code(error)
+            if reason_code is not None and candidate is not None:
+                close = getattr(candidate, "close", None)
+                try:
+                    if callable(close):
+                        close()
                     candidate = None
+                except Exception:
+                    pass
+            with self._lock:
+                if self._closed or generation != self._generation or reason_code is not None:
+                    if candidate is not None:
+                        self._retired.append(candidate)
+                if self._closed or generation != self._generation:
                     continue
                 if reason_code is not None:
                     self._reason_code, self._thread = reason_code, None
@@ -855,6 +917,19 @@ class Mem0ConversationMemoryAdapter:
             self._provider_call.inflight or self._write_call.inflight
             or self._pending_exchange_key is not None
         )
+
+    def close(self) -> None:
+        """Called after deferred dispatch drains; timeout workers still own resources."""
+        while self._provider_call.inflight or self._write_call.inflight:
+            time.sleep(0.01)
+        for resource in (
+            self.backend,
+            getattr(getattr(self.backend, "vector_store", None), "client", None),
+            getattr(getattr(self.backend, "llm", None), "client", None),
+        ):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
 
     def _filters(self, user_id: str) -> dict[str, object]:
         user_id = self._normalized_user_id(user_id)
@@ -1839,9 +1914,9 @@ def create_mem0_adapter(
         return UnavailableConversationMemoryPort(exc.code, config=active)
     except (ModuleNotFoundError, ImportError):
         return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
         return UnavailableConversationMemoryPort(
-            "MEM0_INITIALIZATION_FAILED", config=active
+            _initialization_error_code(error), config=active
         )
 
 

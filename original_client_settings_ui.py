@@ -481,7 +481,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         || typeof payload.status !== "string"
         || (path === MEM0_CAPABILITY_PATH && payload.capability !== "long_term_memory")
       ) {
-        throw new Error("capability-unavailable");
+        const error = new Error("capability-unavailable");
+        error.code = payload && typeof payload.error_code === "string"
+          && /^[A-Z][A-Z0-9_]{0,95}$/.test(payload.error_code)
+          ? payload.error_code : "CAPABILITY_UNAVAILABLE";
+        throw error;
       }
       return payload;
     } finally {
@@ -1260,44 +1264,66 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         base.input.value = "https://opencode.ai/zen/go/v1";
         model.input.value = "deepseek-v4-flash";
       }
-      save.disabled = true;
+      invalidateTest();
     });
     const state = text("p", setup.llm.key_configured ? "已保存 API key。修改前请先测试连接。" : "请输入 API key 并测试连接。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
+    const currentConfig = () => ({
+      base_url: base.input.value.trim(),
+      model: model.input.value.trim(),
+      api_key: key.input.value.trim(),
+    });
+    let testedConfig = null;
+    let setupBusy = false;
+    const matchesTest = () => {
+      const current = currentConfig();
+      return testedConfig !== null && Object.keys(current).every(name => current[name] === testedConfig[name]);
+    };
+    const invalidateTest = () => {
+      const valid = matchesTest();
+      setButtonsBusy([save], setupBusy || !valid);
+      if (!setupBusy && testedConfig !== null) {
+        state.textContent = valid ? "连接成功，可以保存。" : "配置已变化，请重新测试连接。";
+      }
+    };
     const testConnection = button("测试连接", async () => {
+      const requestedConfig = currentConfig();
+      testedConfig = null;
+      setupBusy = true;
       setButtonsBusy([testConnection, save], true);
       state.textContent = "正在测试连接……";
       try {
-        await requestSetup(LLM_TEST_PATH, {
-          base_url: base.input.value.trim(),
-          model: model.input.value.trim(),
-          api_key: key.input.value.trim(),
-        });
-        state.textContent = "连接成功，可以保存。";
-        setButtonsBusy([save], false);
+        await requestSetup(LLM_TEST_PATH, requestedConfig);
+        testedConfig = requestedConfig;
       } catch (_error) {
         state.textContent = "连接失败，请检查地址、模型和 API key。";
         save.disabled = true;
       } finally {
+        setupBusy = false;
         testConnection.disabled = false;
         testConnection.style.opacity = "1";
         testConnection.style.cursor = "pointer";
+        invalidateTest();
       }
     });
     const save = button("保存", async () => {
+      if (setupBusy || !matchesTest()) {
+        if (!setupBusy) state.textContent = "请重新测试连接后保存。";
+        return;
+      }
+      const requestedConfig = currentConfig();
+      setupBusy = true;
       setButtonsBusy([testConnection, save], true);
       state.textContent = "正在安全保存……";
       try {
-        await requestSetup(LLM_SAVE_PATH, {
-          base_url: base.input.value.trim(),
-          model: model.input.value.trim(),
-          api_key: key.input.value.trim(),
-        });
+        await requestSetup(LLM_SAVE_PATH, requestedConfig);
         key.input.value = "";
         state.textContent = "已保存。下一次发送立即生效。";
       } catch (_error) {
         state.textContent = "保存失败，请重新测试连接。";
       } finally {
+        setupBusy = false;
+        testedConfig = null;
         testConnection.disabled = false;
         testConnection.style.opacity = "1";
         testConnection.style.cursor = "pointer";
@@ -1309,6 +1335,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!await confirmAction("确认删除这台电脑上保存的 API key？")) {
         return;
       }
+      testedConfig = null;
+      setupBusy = true;
       setButtonsBusy([testConnection, save, removeKey], true);
       try {
         await requestSetup(LLM_DELETE_PATH, {});
@@ -1317,13 +1345,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         state.textContent = "API key 删除失败，请重试。";
       } finally {
+        setupBusy = false;
         testConnection.disabled = false;
         removeKey.disabled = false;
         testConnection.style.opacity = "1";
         removeKey.style.opacity = "1";
+        invalidateTest();
       }
     });
-    const invalidateTest = () => { save.disabled = true; };
     base.input.addEventListener("input", invalidateTest);
     model.input.addEventListener("input", invalidateTest);
     key.input.addEventListener("input", invalidateTest);
@@ -1384,7 +1413,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       queued: offlineImport ? "等待导入" : "等待下载",
       downloading: offlineImport ? "正在校验并导入离线包" : "下载中",
       verifying: "校验中",
-      ready: runtimeLoaded ? "已安装并已加载" : "已安装，重启 Olivia 后加载",
+      ready: runtimeLoaded ? "已安装并已加载" : "组件已安装，记忆尚未加载；请查看长期记忆页",
       paused: "已暂停",
       repair: "需修复",
       incompatible: "不兼容",
@@ -1708,14 +1737,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         await renderVideoCapabilityPanel(panel);
       } catch (_error) {
         importFinished = true;
+        const failureMessage = _error && typeof _error.code === "string"
+          && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)
+          ? `离线包导入未完成：${_error.code}。请保留诊断包。`
+          : "离线包导入未完成，请保留诊断包以检查原因。";
         try {
           const failed = await requestJson(VIDEO_CAPABILITY_PATH);
           const progress = failed && failed.runtime_import;
           result.textContent = progress && typeof progress === "object"
-            ? runtimeStepMessage(progress) || "离线包导入失败，请重新选择完整 ZIP。"
-            : "离线包导入失败，请重新选择完整 ZIP。";
+            ? runtimeStepMessage(progress) || failureMessage
+            : failureMessage;
         } catch (_statusError) {
-          result.textContent = "离线包导入失败，请重新选择完整 ZIP。";
+          result.textContent = failureMessage;
         }
       } finally {
         importFinished = true;

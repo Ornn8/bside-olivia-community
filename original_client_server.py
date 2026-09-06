@@ -54,7 +54,7 @@ from original_client_companion_mutation_backend import (
 )
 from original_client_diagnostics_api import mount_original_client_diagnostics_api
 from original_client_capability_api import mount_original_client_capability_api
-from original_client_video_capability_api import mount_original_client_video_capability_api
+from original_client_video_capability_api import mount_original_client_video_capability_api, offline_action_failure
 from video_capability_install import (
     VideoCapabilityInstaller,
     load_video_manifest,
@@ -520,6 +520,9 @@ def _diagnostic_source(
             # status() may start runtime preparation. Export only a nonblocking
             # copy of existing state; never install or probe models here.
             installer = video_capability_installer
+            action_failure = offline_action_failure(installer)
+            if action_failure is not None:
+                checks["video_offline_action"] = {"state": "unavailable", **action_failure}
             if not installer._lock.acquire(blocking=False):
                 checks["video_runtime"] = {"state": "unavailable", "error_code": "VIDEO_DIAGNOSTIC_BUSY"}
             else:

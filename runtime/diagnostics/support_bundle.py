@@ -113,6 +113,11 @@ def _project_health(value: object) -> dict[str, object]:
         entry: dict[str, object] = {"state": _status(check.get("state"))}
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
+        if name == "video_offline_action":
+            from original_client_video_capability_api import OFFLINE_ACTION_ERROR_CODES, OFFLINE_ACTION_STAGES
+            if check.get("error_code") not in OFFLINE_ACTION_ERROR_CODES or check.get("stage") not in OFFLINE_ACTION_STAGES:
+                raise _invalid()
+            entry["stage"] = check["stage"]
         if name in {"video_ordinary", "video_music", "video_runtime"}:
             diagnostic = check.get("diagnostic_code")
             if isinstance(diagnostic, str) and diagnostic in BREEZE_INSTALL_DIAGNOSTIC_CODES:
