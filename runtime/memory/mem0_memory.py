@@ -78,6 +78,13 @@ _MEMORY_FACT_BOUNDARY = (
     "用户报告过往用‘用户说/认为’归属，不改写为林离亲历或双方确认。"
     "更新已有记忆也须遵守这些边界，不把旧摘要的推测当作新事实。"
 )
+_EXTRACTION_SYSTEM_BOUNDARY = (
+    "\n\n# Product factual-grounding override\n"
+    "以下提取边界优先于丰富上下文、隐含偏好和最低长度要求；保持原有 JSON 输出结构。"
+    "疑问中的预设不能作为事实；可以记录用户问了什么，不能将问题改成肯定陈述。"
+    "短原文允许短记忆，不受最低字数或句数限制。原文摘录之后不要附加解释、推断或同义扩写。"
+    "历史摘要只用于去重与指代，不能证明原文没有说明的关系、因果或共同经历。"
+) + _MEMORY_FACT_BOUNDARY
 _HISTORY_USER_FACT_PROMPT = (
     "只从这封用户来信提取用户本人值得在未来回信中继续记住的长期事实。优先保留："
     "用户与林离或其他重要人物的关系和称呼、重要经历及其影响、稳定偏好和边界、"
@@ -1660,6 +1667,15 @@ class _ValidatedExtractionLLM:
         return getattr(self._provider, name)
 
     def generate_response(self, *args: object, **kwargs: object) -> object:
+        if kwargs.get("response_format") == {"type": "json_object"}:
+            messages = kwargs.get("messages")
+            if isinstance(messages, list):
+                kwargs["messages"] = [
+                    {**message, "content": message["content"] + _EXTRACTION_SYSTEM_BOUNDARY}
+                    if isinstance(message, dict) and message.get("role") == "system"
+                    and isinstance(message.get("content"), str) else message
+                    for message in messages
+                ]
         response = self._provider.generate_response(*args, **kwargs)
         if kwargs.get("response_format") == {"type": "json_object"}:
             try:
