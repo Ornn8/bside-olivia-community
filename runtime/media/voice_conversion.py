@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import wave
+from runtime.media.media_paths import configured_media_path
 
 
 class VoiceConversionError(RuntimeError):
@@ -48,9 +49,9 @@ def _worker_path():
 
 
 def _runtime(environment):
-    root = Path(environment.get("OLIVIA_SOULX_SVC_ROOT", ""))
-    python = Path(environment.get("OLIVIA_SOULX_SVC_PYTHON", ""))
-    if not root.is_absolute() or not python.is_file() or not (root / "source/soulxsinger/models/soulxsinger_svc.py").is_file():
+    root = configured_media_path(environment, "OLIVIA_SOULX_SVC_ROOT")
+    python = configured_media_path(environment, "OLIVIA_SOULX_SVC_PYTHON")
+    if root is None or python is None or not python.is_file() or not (root / "source/soulxsinger/models/soulxsinger_svc.py").is_file():
         raise VoiceConversionError("SOULX_SVC_UNAVAILABLE")
     return root, python
 

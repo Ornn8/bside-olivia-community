@@ -504,6 +504,7 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
     performance = write("scenes/performance.mp4")
     minimax_root = tmp_path / "minimax"
     latentsync_root = tmp_path / "latentsync"
+    soulx_root = tmp_path / "soulx"
     env = {
         "OLIVIA_LOCAL_DATA_ROOT": str(data_root),
         "OLIVIA_TTS_CONFIG": write("config/tts.json"),
@@ -518,6 +519,8 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         "OLIVIA_MINIMAX_WORKER": write("workers/minimax.py"),
         "OLIVIA_LATENTSYNC_PYTHON": write("latentsync/python.exe"),
         "OLIVIA_LATENTSYNC_ROOT": str(latentsync_root),
+        "OLIVIA_SOULX_SVC_ROOT": str(soulx_root),
+        "OLIVIA_SOULX_SVC_PYTHON": write("soulx/python.exe"),
         "OLIVIA_SPOKEN_VIDEO_AVAILABLE": "1",
         "OLIVIA_MUSICAL_VIDEO_AVAILABLE": "1",
         "OLIVIA_ORDINARY_ACTION_BASE": scene,
@@ -546,6 +549,15 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         latentsync_root / "scripts/inference.py",
         latentsync_root / "configs/unet/stage2_efficient.yaml",
         latentsync_root / "checkpoints/latentsync_unet.pt",
+        soulx_root / "python.exe",
+        soulx_root / "source/soulxsinger/models/soulxsinger_svc.py",
+        soulx_root / "models/official/model-svc.pt",
+        soulx_root / "models/preprocess/rmvpe/rmvpe.pt",
+        soulx_root / "models/whisper-base/config.json",
+        soulx_root / "models/whisper-base/model.safetensors",
+        soulx_root / "models/whisper-base/preprocessor_config.json",
+        soulx_root / "source/soulxsinger/config/soulxsinger.yaml",
+        soulx_root / "source/preprocess/tools/f0_extraction.py",
     ]
     for path in required:
         path.parent.mkdir(parents=True, exist_ok=True)

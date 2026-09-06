@@ -4453,3 +4453,35 @@ def test_production_soulx_runtime_uses_verified_raw_parts_and_root():
     assert all(item.sources["official"].endswith(Path(item.relative_path).name) for item in parts)
     assert all("/v0.1.455/" in item.sources["official"] for item in parts)
     assert bundle.runtime_environment["OLIVIA_SOULX_SVC_ROOT"] == "soulx_svc/runtime"
+
+
+@pytest.mark.parametrize("retired_key", ["OLIVIA_SEED_VC_ROOT", "OLIVIA_SEED_VC_PYTHON"])
+def test_retired_video_keys_do_not_drop_external_python_and_are_removed_on_merge(tmp_path, retired_key):
+    data = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(data_root=data, manifest=VideoManifest("fixture", ()))
+    runtime = (tmp_path / "external-runtime").resolve()
+    runtime.mkdir()
+    python = runtime / "python.exe"
+    python.write_bytes(b"synthetic-python")
+    manifest = runtime / "runtime-manifest.json"
+    manifest.write_bytes(b"synthetic-verified-manifest")
+    environment = {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python), retired_key: "obsolete-path-no-longer-exists"}
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({"schema_version": "olivia.video-runtime-environment.v1", "environment": environment, "external_environment": environment, "runtime_root": str(runtime), "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()}), encoding="utf-8")
+    original = profile.read_bytes()
+    assert load_video_runtime_environment(data) == {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python)}
+    assert profile.read_bytes() == original
+    installer._merge_runtime_environment()
+    saved = json.loads(profile.read_text(encoding="utf-8"))
+    assert saved["environment"] == {"OLIVIA_MINIMAX_COMFY_PYTHON": str(python)}
+    assert saved["external_environment"] == saved["environment"]
+    assert saved["runtime_root"] == str(runtime)
+
+
+def test_unknown_video_environment_key_remains_rejected(tmp_path):
+    data = (tmp_path / "data").resolve()
+    installer = VideoCapabilityInstaller(data_root=data, manifest=VideoManifest("fixture", ()))
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({"schema_version": "olivia.video-runtime-environment.v1", "environment": {"OLIVIA_UNKNOWN_RUNTIME": "anything"}}), encoding="utf-8")
+    with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ENVIRONMENT_INVALID"):
+        load_video_runtime_environment(data)

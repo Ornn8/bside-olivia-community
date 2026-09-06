@@ -1713,6 +1713,7 @@ class VideoCapabilityInstaller:
         try:
             _load_video_runtime_environment(self.data_root, restore_backups=False)
             payload = json.loads(target.read_text(encoding="utf-8"))
+            _drop_retired_runtime_keys(payload)
             environment = payload["environment"]
             if (
                 payload.get("schema_version")
@@ -2051,6 +2052,7 @@ class VideoCapabilityInstaller:
             payload = json.loads(
                 (self.install_root / _RUNTIME_ENVIRONMENT_FILE).read_text(encoding="utf-8")
             )
+            _drop_retired_runtime_keys(payload)
             if (
                 not isinstance(payload, dict)
                 or not (_PORTABLE_RUNTIME_ENVIRONMENT_KEYS - {"OLIVIA_SOULX_SVC_PYTHON"})
@@ -3397,6 +3399,16 @@ def _extract_runtime_zip_safely(
         raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
 
 
+
+def _drop_retired_runtime_keys(payload: object) -> None:
+    # Migration only: all other unknown keys remain rejected by validation.
+    if isinstance(payload, dict):
+        for field in ("environment", "external_environment"):
+            values = payload.get(field)
+            if isinstance(values, dict):
+                values.pop("OLIVIA_SEED_VC_ROOT", None)
+                values.pop("OLIVIA_SEED_VC_PYTHON", None)
+
 def _load_video_runtime_environment(
     data_root: Path, *, restore_backups: bool = True
 ) -> dict[str, str]:
@@ -3412,6 +3424,7 @@ def _load_video_runtime_environment(
         return {}
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise VideoCapabilityError("VIDEO_RUNTIME_ENVIRONMENT_INVALID") from exc
+    _drop_retired_runtime_keys(payload)
     managed_fields = {"schema_version", "environment"}
     managed_fields_with_host = managed_fields | {"host_status"}
     external_fields = managed_fields | {
