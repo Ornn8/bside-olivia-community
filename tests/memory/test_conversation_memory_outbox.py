@@ -109,10 +109,15 @@ def test_completed_failures_exhaust_persistent_budget_without_dropping_letter(tm
             await box.scan_once()
         assert broken.calls == 3
         assert box.health()["reason_code"] == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        assert box.health()["pending_error_counts"] == {"MEM0_WRITE_FAILED": 1}
         assert box.health()["pending_count"] == 1
         assert box.health()["terminal_count"] == 0
         from runtime.memory.conversation_memory_runtime import ConversationMemoryRuntime
+        assert ConversationMemoryRuntime(box).status().to_dict()["pending_error_counts"] == {"MEM0_WRITE_FAILED": 1}
         assert ConversationMemoryRuntime(box).status().reason_code == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+        from jsonschema import Draft202012Validator
+        schema = json.loads(Path("contracts/memory_outbox_runtime.schema.json").read_text(encoding="utf-8"))
+        Draft202012Validator(schema).validate(ConversationMemoryRuntime(box).status().to_dict())
         assert state.read_bytes() == original
     asyncio.run(scenario())
 

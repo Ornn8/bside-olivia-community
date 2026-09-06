@@ -533,7 +533,7 @@ def _diagnostic_source(
                 worker = conversation.get("runtime", {}) if isinstance(conversation, Mapping) else {}
                 if isinstance(worker, Mapping) and worker:
                     entry = {"state": state(worker.get("status"))}
-                    for field in ("pending_count", "attempt_count", "terminal_count", "worker_running"):
+                    for field in ("pending_count", "attempt_count", "terminal_count", "worker_running", "pending_error_counts"):
                         if field in worker:
                             entry[field] = worker[field]
                     reason = code(worker.get("reason_code"))

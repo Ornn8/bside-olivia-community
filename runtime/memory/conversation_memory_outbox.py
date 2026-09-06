@@ -222,6 +222,11 @@ class CanonicalMemoryOutbox:
                         "FROM canonical_memory_deliveries"
                     ).fetchone()[0]
                 )
+                failures = connection.execute(
+                    "SELECT last_error_code, COUNT(*) FROM canonical_memory_deliveries "
+                    "WHERE status IN ('pending', 'unavailable') "
+                    "GROUP BY last_error_code ORDER BY COUNT(*) DESC, last_error_code LIMIT 16"
+                ).fetchall()
                 exhausted = connection.execute(
                     "SELECT COUNT(*) FROM canonical_memory_failure_budget b "
                     "JOIN canonical_memory_deliveries d USING(source_id) "
@@ -244,6 +249,10 @@ class CanonicalMemoryOutbox:
             "pending_count": pending,
             "attempt_count": attempts,
         }
+        error_counts = {code: min(int(count), 1_000_000_000) for code, count in failures
+                        if isinstance(code, str) and _ERROR_RE.fullmatch(code)}
+        if error_counts:
+            result["pending_error_counts"] = error_counts
         if exhausted:
             result["reason_code"] = "MEMORY_OUTBOX_RETRY_EXHAUSTED"
         return result

@@ -234,6 +234,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
                 "providers": {"memory": {"conversation": {"runtime": {
                     "status": "degraded", "worker_running": True,
                     "pending_count": 2, "attempt_count": 7, "terminal_count": 1,
+                    "pending_error_counts": {"MEM0_EXTRACTION_RESPONSE_INVALID": 2},
                     "private_content": "must-not-leak",
                 }}}},
                 "required_checks": {"example": "available"},
@@ -271,7 +272,8 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
         "candidates": {"state": "available"},
         "memory": {"state": "available"},
         "memory_worker": {"state": "degraded", "worker_running": True,
-                          "pending_count": 2, "attempt_count": 7, "terminal_count": 1},
+                          "pending_count": 2, "attempt_count": 7, "terminal_count": 1,
+                          "pending_error_counts": {"MEM0_EXTRACTION_RESPONSE_INVALID": 2}},
         "native_tts": {"state": "unavailable"},
         "private_world": {
             "state": "degraded",

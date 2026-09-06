@@ -112,6 +112,16 @@ def _project_health(value: object) -> dict[str, object]:
                     if type(value) is not int or not 0 <= value <= 1_000_000_000:
                         raise _invalid()
                     entry[field] = value
+            if "pending_error_counts" in check:
+                counts = _mapping(check["pending_error_counts"])
+                if len(counts) > 16:
+                    raise _invalid()
+                safe_counts = {}
+                for error, count in counts.items():
+                    if type(count) is not int or not 0 <= count <= 1_000_000_000:
+                        raise _invalid()
+                    safe_counts[_code(error)] = count
+                entry["pending_error_counts"] = safe_counts
             if "worker_running" in check:
                 if type(check["worker_running"]) is not bool:
                     raise _invalid()
