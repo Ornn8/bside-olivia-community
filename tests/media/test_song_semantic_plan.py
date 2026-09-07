@@ -128,6 +128,28 @@ def test_full_song_requires_original_110_second_lyrics_instead_of_short_plan():
     assert "24 original Simplified Chinese lyric lines: 12 in Verse and 12 in Chorus" in contract
 
 
+def test_model_writes_only_sung_lines_and_program_builds_empty_intro_outro():
+    from runtime.media.song_content import _plan_from_lyrics_response
+    payload = {'verse': ['窗外的晚风轻轻吹来'] * 12, 'chorus': ['让我把这首歌唱给你'] * 12}
+    plan = _plan_from_lyrics_response(json.dumps(payload, ensure_ascii=False), 110)
+    assert plan.lyrics.startswith('[Intro]\n[Verse]\n')
+    assert plan.lyrics.endswith('让我把这首歌唱给你\n[Outro]')
+    assert plan.lyrics.count('[Verse]') == plan.lyrics.count('[Chorus]') == 1
+    assert plan.ending is SongEnding.LINGERING_PIANO_CADENCE
+
+
+@pytest.mark.parametrize('change', ['extra', 'line_count', 'embedded_tag', 'not_array'])
+def test_structured_lyrics_do_not_allow_model_to_change_arrangement(change):
+    from runtime.media.song_content import _plan_from_lyrics_response
+    payload = {'verse': ['窗外的晚风轻轻吹来'] * 12, 'chorus': ['让我把这首歌唱给你'] * 12}
+    if change == 'extra': payload['outro'] = ['钢琴尾奏']
+    if change == 'line_count': payload['verse'].pop()
+    if change == 'embedded_tag': payload['verse'][0] = '第一句歌词\n[Outro]'
+    if change == 'not_array': payload['verse'] = '不是歌词数组'
+    with pytest.raises(ValueError, match='SONG_SEMANTIC_PLAN_'):
+        _plan_from_lyrics_response(json.dumps(payload, ensure_ascii=False), 110)
+
+
 def test_song_plan_repair_receives_failed_output_for_targeted_correction():
     from types import SimpleNamespace
     from runtime.media.song_content import plan_song_content
@@ -143,7 +165,7 @@ def test_song_plan_repair_receives_failed_output_for_targeted_correction():
     plan = plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
     assert plan.duration_seconds == 110
     assert gateway.calls[1][-2] == {'role': 'assistant', 'content': invalid}
-    assert 'only the lyrics string key' in gateway.calls[1][-1]['content']
+    assert 'only verse and chorus arrays' in gateway.calls[1][-1]['content']
 
 
 @pytest.mark.parametrize('extra', [None, 'piano_texture', 'emotion_arc', 'ending'])
@@ -170,7 +192,7 @@ def test_planner_accepts_only_lyrics_and_fixes_musical_direction_locally(extra):
     assert plan.semantic_plan.dynamic_arc is SongDynamicArc.SOFT_GENTLE_RISE_SETTLE
     assert plan.semantic_plan.ending is SongEnding.LINGERING_PIANO_CADENCE
     assert plan.lyrics == payload['lyrics']
-    assert 'exactly one string key: lyrics' in gateway.calls[0][0]['content']
+    assert 'exactly two keys: verse and chorus' in gateway.calls[0][0]['content']
 
 
 @pytest.mark.parametrize(
