@@ -2102,7 +2102,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         window.cefViewQuery({request: JSON.stringify({action, data}),
           onSuccess: (raw) => {
             clearTimeout(timer);
-            try { resolve(typeof raw === "string" ? JSON.parse(raw) : raw); }
+            try { resolve(typeof raw === "string" && raw ? JSON.parse(raw) : raw); }
             catch (error) { fail(error); }
           },
           onFailure: () => { clearTimeout(timer); fail(new Error("LOCAL_SONG_NATIVE_FAILED")); },
