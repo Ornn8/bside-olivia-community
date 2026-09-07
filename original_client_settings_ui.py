@@ -2093,7 +2093,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
         videoUrl: url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: "",
         duration: song.duration, videoDuration: song.duration, audioDuration: song.duration,
-        videoByTodView: [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: song.duration}], oliviaLocal: true,
+        videoByTodView: [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: Math.round(song.duration)}], oliviaLocal: true,
       };
     });
     if (window.cefViewQuery && imported.length) {
