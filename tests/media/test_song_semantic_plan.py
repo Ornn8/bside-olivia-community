@@ -34,7 +34,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (14, 14)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -95,7 +95,7 @@ def test_short_song_keeps_a_full_verse_and_chorus_without_a_second_verse() -> No
     assert "[Interlude]" not in plan.lyrics
 
 
-@pytest.mark.parametrize("duration", [40, 60])
+@pytest.mark.parametrize("duration", [40, 60, 110])
 def test_parse_song_semantic_plan_accepts_strict_plain_and_fenced_json(
     duration: int,
 ) -> None:
@@ -117,6 +117,15 @@ def test_parse_song_semantic_plan_accepts_strict_plain_and_fenced_json(
     assert plain.dynamic_arc is SongDynamicArc.SOFT_GENTLE_RISE_SETTLE
     assert plain.ending is SongEnding.COMPLETE_SOFT_CADENCE
     assert plain.to_dict() == {**payload, "duration_seconds": duration}
+
+
+def test_full_song_requires_original_110_second_lyrics_instead_of_short_plan():
+    from runtime.media.song_content import _planner_contract
+
+    with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID"):
+        parse_song_semantic_plan(json.dumps(_payload(60), ensure_ascii=False), 110)
+    contract = _planner_contract(110)
+    assert "28 original Simplified Chinese lyric lines: 14 in Verse and 14 in Chorus" in contract
 
 
 @pytest.mark.parametrize(

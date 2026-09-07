@@ -67,6 +67,7 @@
 | 413 | `COMPANION_REQUEST_TOO_LARGE` | FAILED | 否 | body 超限 |
 | 415 | `COMPANION_CONTENT_TYPE_INVALID` | FAILED | 否 | content type 无效 |
 | 409 | `MEMORY_ADMIN_REQUEST_CONFLICT` | FAILED | 否 | request payload 冲突 |
+| 409 | `MEMORY_ADMIN_BUSY` | FAILED | 是 | 记忆导入、写入或清空尚未结束，稍后重试 |
 | 503 | `COMPANION_MUTATION_UNAVAILABLE` | UNAVAILABLE | 是 | transport/backend 不可用 |
 | 503 | `COMPANION_MUTATION_INVALID` | UNAVAILABLE | 是 | backend result 无效 |
 | 503 | `MEMORY_MUTATION_DISABLED` | UNAVAILABLE | 是 | memory mutation 未装配 |

@@ -145,6 +145,7 @@ let timers = new Map(), nextId = 0, attempts = 0;
 const window = { clearTimeout: (id) => timers.delete(id), setTimeout: (fn) => (timers.set(++nextId, fn), nextId) };
 const requestJson = async () => { if (++attempts === 1) throw new Error("transient"); return { capabilities: { memory: {} } }; };
 const renderMemoryPanel = async () => {}; const STATUS_PATH = "/status";
+const renderCompanionStatus = () => {};
 eval("var scheduleMemoryStatusRefresh =" + body);
 const panel = { isConnected: true };
 const run = async () => { const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); };
@@ -153,6 +154,50 @@ const run = async () => { const [id, fn] = timers.entries().next().value; timers
     result = subprocess.run([node, "-e", harness], input=BOOTSTRAP_JAVASCRIPT.encode(), capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert json.loads(result.stdout) == {"failed": 1, "recovered": 0, "detached": 0}
+
+
+def test_clear_busy_message_explains_waiting_and_filters_error_details():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs=require("fs"),source=fs.readFileSync(0,"utf8");
+const body=source.split("  const memoryClearFailureMessage =")[1].split("\n\n  const mutationMessage =")[0];
+eval("var message ="+body);
+process.stdout.write(JSON.stringify([message({code:"MEMORY_ADMIN_BUSY"}),message({code:"C:/private-key.txt"})]));
+'''
+    result = subprocess.run([node, "-e", harness], input=BOOTSTRAP_JAVASCRIPT.encode(), capture_output=True, timeout=20, check=True)
+    busy, invalid = json.loads(result.stdout)
+    assert busy == "正在导入或写入记忆，请完成后再清空；本次未执行清空。"
+    assert "private-key" not in invalid
+
+
+@pytest.mark.parametrize("state,reason,expected", [
+    ("available", None, "本机陪伴服务已连接。"),
+    ("unavailable", "MEM0_INITIALIZATION_FAILED", "本机陪伴服务已连接；长期记忆暂不可用（MEM0_INITIALIZATION_FAILED）。"),
+])
+def test_memory_poll_updates_dialog_status_without_reopening(state, reason, expected):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    harness = r'''
+const fs = require("fs"), source = fs.readFileSync(0, "utf8");
+const section = source.split("  const renderCompanionStatus =")[1].split("\n\n  const renderMemoryPanel =")[0];
+let pending, rendered;
+const window = {clearTimeout: () => {}, setTimeout: fn => {pending = fn;}};
+const STATUS_PATH = "/status";
+const capability = JSON.parse(process.argv[1]);
+const requestJson = async () => ({capabilities: {memory: capability}});
+const renderMemoryPanel = async (_panel, value) => {rendered = value;};
+eval("var renderCompanionStatus =" + section.replace("const scheduleMemoryStatusRefresh", "var scheduleMemoryStatusRefresh"));
+const statusNode = {dataset: {}, textContent: "MEM0_INITIALIZING"};
+const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
+(async () => {scheduleMemoryStatusRefresh(panel); await pending(); process.stdout.write(JSON.stringify({text:statusNode.textContent, state:statusNode.dataset.state, rendered}));})().catch(e => {console.error(e); process.exitCode=1;});
+'''
+    capability = {"state": state, "reason_code": reason}
+    result = subprocess.run([node, "-e", harness, json.dumps(capability)], input=BOOTSTRAP_JAVASCRIPT.encode(), capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert json.loads(result.stdout) == {"text": expected, "state": "available" if state == "available" else "degraded", "rendered": capability}
 
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.

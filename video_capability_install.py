@@ -1412,6 +1412,11 @@ class VideoCapabilityInstaller:
                 self._load_status()
             self._maybe_start_runtime_prepare()
             bundles = [self._status[item.identifier].to_dict() for item in self.manifest.bundles]
+            if self._runtime_import.get("reason_code") == "VIDEO_RUNTIME_PROBE_PENDING":
+                for item in bundles:
+                    if item["state"] == "ready":
+                        item["state"] = "verifying"
+                        item["current_file"] = "检查视频运行依赖"
             if self._hardware is not None and self._hardware["status"] != "READY":
                 for item, bundle in zip(bundles, self.manifest.bundles, strict=True):
                     if bundle.requires_gpu and item["state"] not in {
@@ -1682,7 +1687,11 @@ class VideoCapabilityInstaller:
             previous = _load_video_runtime_environment(
                 self.data_root, restore_backups=False
             )
-        except (OSError, VideoCapabilityError):
+        except (OSError, VideoCapabilityError) as exc:
+            if isinstance(exc, PermissionError) or isinstance(exc.__cause__, PermissionError):
+                # An unreadable existing profile is not an empty profile. Let
+                # the caller retry rather than discard its inherited paths.
+                raise
             previous = {}
         music_bundle = next(
             (bundle for bundle in self.manifest.bundles if bundle.identifier == "music_video"),
@@ -2084,8 +2093,8 @@ class VideoCapabilityInstaller:
             _drop_retired_runtime_keys(payload)
             if (
                 not isinstance(payload, dict)
-                or not (_PORTABLE_RUNTIME_ENVIRONMENT_KEYS - {"OLIVIA_SOULX_SVC_PYTHON"})
-                <= set(payload.get("external_environment", {})) <= _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
+                or not isinstance(payload.get("external_environment"), dict)
+                or not set(payload["external_environment"]) <= _PORTABLE_RUNTIME_ENVIRONMENT_KEYS
                 or payload.get("host_status") not in (None, {
                     "status": "READY",
                     "reason_code": None,
@@ -2105,6 +2114,12 @@ class VideoCapabilityInstaller:
                 "failed", reason_code="VIDEO_RUNTIME_WORKER_UNAVAILABLE"
             )
             return True
+        if not (_PORTABLE_RUNTIME_ENVIRONMENT_KEYS - {"OLIVIA_SOULX_SVC_PYTHON"}) <= set(
+            payload["external_environment"]
+        ):
+            # A valid profile can mix imported and bundled interpreters. Probe
+            # the validated merged paths, not just its external subset.
+            return self._probe_and_activate_runtime(environment)
         try:
             if self._runtime_environment_applier is not None:
                 self._runtime_environment_applier(environment)
@@ -2139,6 +2154,9 @@ class VideoCapabilityInstaller:
             return True
         except (OSError, UnicodeError, json.JSONDecodeError):
             return False
+        return self._probe_and_activate_runtime(environment)
+
+    def _probe_and_activate_runtime(self, environment: Mapping[str, str]) -> bool:
         if not all(
             key in environment and Path(environment[key]).is_file()
             for key in _PORTABLE_RUNTIME_ENVIRONMENT_KEYS

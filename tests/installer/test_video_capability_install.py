@@ -763,6 +763,57 @@ def test_manifest_rejects_windows_unsafe_paths(tmp_path: Path, unsafe: str) -> N
         load_video_manifest(path)
 
 
+def test_runtime_environment_permission_error_preserves_existing_profile(tmp_path, monkeypatch):
+    installer = object.__new__(VideoCapabilityInstaller)
+    installer.data_root = (tmp_path / "data").resolve()
+    installer.install_root = installer.data_root / "capabilities/video"
+    installer.install_root.mkdir(parents=True)
+    installer.manifest = VideoManifest("1", (
+        VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()),
+        VideoBundle("music_video", "music", "FIXED", False, (), ()),
+    ))
+    legacy_file = installer.install_root / "legacy-ffmpeg.exe"
+    legacy_file.write_bytes(b"synthetic legacy runtime")
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({
+        "schema_version": "olivia.video-runtime-environment.v1",
+        "environment": {"OLIVIA_FFMPEG_EXE": str(legacy_file)},
+    }), encoding="utf-8")
+    original = profile.read_bytes()
+    real_read = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == profile:
+            raise PermissionError("synthetic sharing violation")
+        return real_read(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", denied)
+        with pytest.raises(VideoCapabilityError, match="VIDEO_RUNTIME_ENVIRONMENT_INVALID"):
+            installer._write_runtime_environment()
+    assert profile.read_bytes() == original
+    installer._write_runtime_environment()
+    assert load_video_runtime_environment(installer.data_root)["OLIVIA_FFMPEG_EXE"] == str(legacy_file)
+
+
+@pytest.mark.parametrize("previous", [None, "{invalid json"])
+def test_runtime_environment_still_builds_missing_or_invalid_profile(tmp_path, previous):
+    installer = object.__new__(VideoCapabilityInstaller)
+    installer.data_root = (tmp_path / "data").resolve()
+    installer.install_root = installer.data_root / "capabilities/video"
+    installer.install_root.mkdir(parents=True)
+    installer.manifest = VideoManifest("1", (
+        VideoBundle("ordinary_video", "ordinary", "FIXED", False, (), ()),
+        VideoBundle("music_video", "music", "FIXED", False, (), ()),
+    ))
+    profile = installer.install_root / "runtime-environment.json"
+    if previous is not None:
+        profile.write_text(previous, encoding="utf-8")
+    installer._write_runtime_environment()
+    assert load_video_runtime_environment(installer.data_root) == {}
+    assert json.loads(profile.read_text(encoding="utf-8"))["schema_version"] == "olivia.video-runtime-environment.v1"
+
+
 def _wait(installer: VideoCapabilityInstaller, index: int, *states: str) -> str:
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
@@ -2511,6 +2562,64 @@ def test_complete_download_reports_missing_runtime_archive_instead_of_idle(
         )
     )
     Draft202012Validator(status_schema).validate(status)
+
+
+@pytest.mark.parametrize("invalid", [None, "manifest", "file", "probe", "pending"])
+def test_mixed_verified_runtime_resumes_without_requiring_an_archive(tmp_path, invalid):
+    data_root = (tmp_path / "data").resolve()
+    manifest = _runtime_ready_manifest()
+    _prepare_runtime_dependencies(data_root, manifest)
+    pending = [invalid == "pending"]
+    installer = VideoCapabilityInstaller(
+        data_root=data_root, manifest=manifest,
+        readiness_probe=lambda _env: {
+            "ordinary_missing_dependencies": [], "music_ready": invalid != "probe",
+            "dependencies": [{"id": "ffmpeg", "state": "missing"}] if invalid == "probe" else [],
+            "runtime_probe_pending": pending[0],
+        },
+    )
+    external_root = (tmp_path / "external-runtime").resolve()
+    external_root.mkdir()
+    external_python = external_root / "python.exe"
+    external_python.write_bytes(b"synthetic external python")
+    external_manifest = external_root / "runtime-manifest.json"
+    external_manifest.write_bytes(b"synthetic manifest")
+    environment = {"OLIVIA_MINIMAX_COMFY_PYTHON": str(external_python)}
+    for key in video_capability_install._PORTABLE_RUNTIME_ENVIRONMENT_KEYS - environment.keys():
+        path = installer.install_root / "ordinary_video" / key / "python.exe"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"synthetic bundled python")
+        environment[key] = str(path)
+    for bundle in manifest.bundles:
+        for key, relative in bundle.runtime_environment.items():
+            path = installer.install_root / bundle.identifier / relative
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic worker")
+            environment[key] = str(path)
+    profile = installer.install_root / "runtime-environment.json"
+    profile.write_text(json.dumps({
+        "schema_version": "olivia.video-runtime-environment.v1", "environment": environment,
+        "external_environment": {"OLIVIA_MINIMAX_COMFY_PYTHON": str(external_python)},
+        "runtime_root": str(external_root),
+        "manifest_sha256": hashlib.sha256(external_manifest.read_bytes()).hexdigest(),
+    }), encoding="utf-8")
+    if invalid == "manifest":
+        external_manifest.write_bytes(b"changed manifest")
+    elif invalid == "file":
+        external_python.unlink()
+    status = installer.status()
+    if invalid in {"manifest", "file", "probe"}:
+        assert status["runtime_import"]["state"] != "ready"
+    elif invalid == "pending":
+        assert status["runtime_import"]["reason_code"] == "VIDEO_RUNTIME_PROBE_PENDING"
+        assert status["status"] == "UNAVAILABLE"
+        assert all(bundle["state"] != "ready" for bundle in status["bundles"])
+        pending[0] = False
+        assert installer.status()["runtime_import"]["state"] == "ready"
+    else:
+        assert status["runtime_import"]["state"] == "ready"
+        assert installer.status()["status"] == "READY"
 
 
 def test_disappeared_runtime_archive_reports_required_instead_of_idle(

@@ -27,6 +27,7 @@ from patch_feapp import (
     MAILBOX_WRITE_ANCHOR_0627,
     MAILBOX_WRITE_REPLACEMENT_0627,
     MAIN_JS_0627,
+    _repair_mailbox_waiting_footer,
 )
 
 
@@ -337,6 +338,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    source = _repair_mailbox_waiting_footer(source)
     # Keep the native sealed-letter animation; only specialize its caption.
     source = source.replace(
         'letterStatus:e.letterStatus,auditStatus:e.auditStatus,',

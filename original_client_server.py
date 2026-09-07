@@ -40,7 +40,7 @@ from mem0_embedding_install import Mem0EmbeddingInstaller
 from mem0_memory import Mem0Config
 from music_reply import video_reply_dependency_status
 from runtime.media.background_video_readiness import BackgroundVideoReadiness
-from runtime.diagnostics.support_bundle import BREEZE_INSTALL_DIAGNOSTIC_CODES
+from runtime.diagnostics.support_bundle import BREEZE_INSTALL_DIAGNOSTIC_CODES, project_history_import
 from original_client_companion_api import mount_original_companion_read_api
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
@@ -400,6 +400,7 @@ def _diagnostic_source(
     runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    history_import_provider: Callable[[], Mapping[str, object]] | None = None,
     video_capability_installer: VideoCapabilityInstaller | None = None,
 ) -> Callable[[], Mapping[str, object]]:
     """Bind only safe, aggregate collectors for a diagnostic export request."""
@@ -495,6 +496,11 @@ def _diagnostic_source(
         if not isinstance(capabilities, Mapping):
             raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
         checks: dict[str, object] = {}
+        if history_import_provider is not None:
+            try:
+                checks["history_import"] = project_history_import(history_import_provider())
+            except Exception:
+                checks["history_import"] = {"state": "unavailable", "stage": "unknown", "error_code": "HISTORY_IMPORT_DIAGNOSTIC_UNAVAILABLE"}
         for name in ("memory", "private_world", "candidates"):
             value = capabilities.get(name)
             if not isinstance(value, Mapping):
@@ -658,6 +664,7 @@ def create_original_client_server_runtime(
     runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    history_import_provider: Callable[[], Mapping[str, object]] | None = None,
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
 
@@ -744,6 +751,7 @@ def create_original_client_server_runtime(
             runtime_tail_provider=runtime_tail_provider,
             health_profile_provider=health_profile_provider,
             task_snapshot_provider=task_snapshot_provider,
+            history_import_provider=history_import_provider,
             video_capability_installer=video_capability_installer,
         ),
         trusted_origins=origins,
@@ -924,6 +932,7 @@ def _configured_memory_admin(
             memory,
             root / "memory" / _MEMORY_ADMIN_FILENAME,
             user_id=str(user_id),
+            operation_gate=getattr(server_module, "_history_memory_admin_gate", None),
         )
     except (
         ConversationMemoryAdminError,
@@ -1053,6 +1062,25 @@ def create_configured_original_client_server_runtime(
             if isinstance(item, Mapping)
         )
 
+    def history_import_snapshot() -> Mapping[str, object]:
+        snapshot = getattr(server_module, "_official_import_progress_snapshot", None)
+        progress = snapshot() if callable(snapshot) else {}
+        progress = progress if isinstance(progress, Mapping) else {}
+        task = getattr(server_module, "_local_import_task", None)
+        running = task is not None and not task.done()
+        result = getattr(server_module, "_local_import_result", None)
+        result = result if isinstance(result, Mapping) else {}
+        data = result.get("data")
+        data = data if isinstance(data, Mapping) else {}
+        status = "RUNNING" if running else data.get("status", "FAILED" if result.get("code") else progress.get("status", "IDLE"))
+        state = {"IDLE": "idle", "RUNNING": "running", "COMPLETED": "completed", "APPLIED": "completed", "READY": "completed", "FAILED": "failed", "UNAVAILABLE": "unavailable"}.get(status, "unknown") if isinstance(status, str) else "unknown"
+        safe = {"state": state, "stage": progress.get("stage"), "total": progress.get("total"), "processed": progress.get("processed"), "task_running": running}
+        if not running:
+            migration = data.get("memory_migration")
+            migration = migration if isinstance(migration, Mapping) else {}
+            safe["error_code"] = migration.get("error_code") or data.get("error_code") or result.get("message")
+        return project_history_import(safe)
+
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -1071,6 +1099,7 @@ def create_configured_original_client_server_runtime(
         runtime_tail_provider=runtime_tail if callable(runtime_tail) else None,
         health_profile_provider=health_profile if callable(health_profile) else None,
         task_snapshot_provider=task_snapshot,
+        history_import_provider=history_import_snapshot,
     )
     install_reply_task_lifecycle = getattr(
         server_module,

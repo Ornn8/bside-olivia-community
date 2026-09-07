@@ -282,13 +282,13 @@ class ConversationMemoryDeliveryCommitter:
                 if status is CanonicalMemoryDeliveryStatus.UNAVAILABLE
                 else None
             ),
-            completed_failure=status is CanonicalMemoryDeliveryStatus.UNAVAILABLE and error_code in {
+            completed_failure=status is CanonicalMemoryDeliveryStatus.UNAVAILABLE and (error_code in {
                 "MEM0_WRITE_FAILED", "MEM0_WRITE_ROLLBACK_FAILED",
                 "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED",
                 "MEM0_LANGUAGE_MISMATCH",
                 "MEM0_LANGUAGE_MISMATCH_ROLLBACK_FAILED", "MEM0_CHARACTER_IDENTITY_MISMATCH",
                 "MEM0_CHARACTER_IDENTITY_MISMATCH_ROLLBACK_FAILED",
-            },
+            } or (error_code or "").startswith("MEM0_EXTRACTION_RESPONSE_INVALID_")),
         )
 
 

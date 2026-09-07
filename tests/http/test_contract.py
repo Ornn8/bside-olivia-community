@@ -428,8 +428,9 @@ def test_memory_readiness_recovered_before_restart_dispatches_old_pending_letter
 
 
 @pytest.mark.parametrize("expired_before_start", [False, True])
+@pytest.mark.parametrize("exhausted_warning", [False, True])
 def test_busy_outbox_keeps_next_letter_pending_until_memory_is_committed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expired_before_start: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expired_before_start: bool, exhausted_warning: bool,
 ) -> None:
     import local_server
     from conversation_memory_port import ConversationMemoryStatus, MemoryWriteResult, MemoryWriteStatus
@@ -473,7 +474,13 @@ def test_busy_outbox_keeps_next_letter_pending_until_memory_is_committed(
     local_server.store.letters[:] = [letter]
     monkeypatch.setattr(local_server.letters_adapter.memory_prompt_builder,
                         "conversation_runtime_status", {"status": "available", "provider": "mem0-outbox"})
-    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", runtime.reply_readiness_status)
+    def readiness():
+        from dataclasses import replace
+        status = runtime.reply_readiness_status()
+        if exhausted_warning and status.delivery_pending:
+            return replace(status, reason_code="MEMORY_OUTBOX_RETRY_EXHAUSTED")
+        return status
+    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", readiness)
     monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
 
     async def generate(*args, **kwargs):
@@ -520,7 +527,6 @@ def test_busy_outbox_keeps_next_letter_pending_until_memory_is_committed(
 
 
 @pytest.mark.parametrize("status,worker,reason", [
-    ("degraded", True, "MEMORY_OUTBOX_RETRY_EXHAUSTED"),
     ("unavailable", True, "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"),
     ("degraded", False, "MEMORY_OUTBOX_WORKER_NOT_RUNNING"),
 ])
@@ -1075,8 +1081,10 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     assert detail["data"]["read_only"] is False
 
 
-def test_send_accepts_only_the_sixty_second_video_music_duration(
+@pytest.mark.parametrize("material", [{}, {"music_duration_seconds": 110}])
+def test_send_accepts_only_the_110_second_video_music_duration(
     monkeypatch: pytest.MonkeyPatch,
+    material: dict,
 ) -> None:
     import local_server
 
@@ -1106,7 +1114,7 @@ def test_send_accepts_only_the_sixty_second_video_music_duration(
         local_server.route(
             "POST",
             "/toy/letter/send",
-            {"content": "synthetic input", "material": {"music_duration_seconds": 60}},
+            {"content": "synthetic input", "material": material},
             {},
         )
     )
@@ -1117,11 +1125,12 @@ def test_send_accepts_only_the_sixty_second_video_music_duration(
         "data": {
             "status": "FAILED",
             "error_code": "MUSIC_DURATION_INVALID",
-            "allowed": [60],
+            "allowed": [110],
         },
     }
     assert rejected_legacy_short == rejected
     assert accepted["code"] == 0
+    assert local_server.store.letters[-1]["music_duration_seconds"] == 110
 
 
 def test_http_send_acknowledges_before_slow_reply_finishes(
@@ -2066,8 +2075,9 @@ def test_resend_restarts_failed_memory_initialization_once(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("provider_recovers", [False, True])
-def test_memory_failed_resend_grants_bounded_outbox_recovery_before_reply(tmp_path, monkeypatch, provider_recovers):
+def test_memory_failed_resend_does_not_replay_exhausted_old_delivery(tmp_path, monkeypatch, provider_recovers):
     import local_server
+    from conversation_memory_runtime import ConversationMemoryRuntimeStatus
     from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
     from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
     from conversation_memory_port import ConversationMemoryStatus, MemoryWriteResult, MemoryWriteStatus
@@ -2090,8 +2100,12 @@ def test_memory_failed_resend_grants_bounded_outbox_recovery_before_reply(tmp_pa
         "content": "synthetic recovery", "material": {}}
     local_server.store.letters[:] = [original]
     monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", box.retry_exhausted_once)
+    monkeypatch.setattr(local_server, "_start_conversation_memory_initialization", lambda *args: None)
+    monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", lambda:
+        ConversationMemoryRuntimeStatus("degraded", True, "mem0-outbox", True,
+            reason_code="MEMORY_OUTBOX_RETRY_EXHAUSTED"))
     monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
-    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: box.health()["status"] == "available")
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: provider_recovers)
     monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *a, **k: None)
     generated = []
     async def generate(*a, **k):
@@ -2108,7 +2122,7 @@ def test_memory_failed_resend_grants_bounded_outbox_recovery_before_reply(tmp_pa
         assert generated == []
         for _ in range(4):
             await box.scan_once()
-        assert memory.calls == 4
+        assert memory.calls == 3
         replacement = resent["data"]["letter_id"]
         assert await local_server._run_reply_when_memory_ready(replacement, "synthetic", idempotency_key=None,
             ready_timeout_seconds=0) is provider_recovers
@@ -2132,15 +2146,15 @@ def test_ineligible_resend_does_not_grant_memory_retries(monkeypatch, status, su
     assert calls == []
 
 
-def test_resend_retry_storage_error_preserves_original_letter(monkeypatch):
+def test_resend_initializer_error_preserves_original_letter(monkeypatch):
     import local_server
     original = {"letter_id": "retry-storage-error", "letter_status": "FAILED",
         "error_code": "MEMORY_UNAVAILABLE", "content": "synthetic"}
     local_server.store.letters[:] = [original]
     before = dict(original)
-    def fail():
+    def fail(*args):
         raise RuntimeError("private storage detail")
-    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", fail)
+    monkeypatch.setattr(local_server, "_start_conversation_memory_initialization", fail)
     response = asyncio.run(local_server.route("POST", "/toy/letter/resend", {"letter_id": original["letter_id"]}, {}))
     assert response["code"] == 503
     assert response["data"]["error_code"] == "MEMORY_UNAVAILABLE"

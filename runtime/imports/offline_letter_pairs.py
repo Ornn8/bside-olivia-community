@@ -209,7 +209,12 @@ def _parse_source(path: Path) -> tuple[bytes, tuple[tuple[str, str], ...]]:
     if len(raw) > _MAX_SOURCE_BYTES:
         raise ValueError("OFFLINE_LETTER_SOURCE_TOO_LARGE")
     try:
-        loaded = json.loads(raw.decode("utf-8-sig"))
+        text = raw.decode("utf-8-sig")
+        # Some backups contain literal line breaks/tabs inside JSON strings.
+        # Permit those without accepting other raw C0 controls or altering raw SHA.
+        if any(ord(char) < 32 and char not in "\r\n\t" for char in text):
+            raise ValueError("OFFLINE_LETTER_SOURCE_INVALID")
+        loaded = json.loads(text, strict=False)
     except (UnicodeError, ValueError) as exc:
         raise ValueError("OFFLINE_LETTER_SOURCE_INVALID") from exc
     if not isinstance(loaded, list) or not loaded:

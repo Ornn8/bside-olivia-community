@@ -91,6 +91,14 @@ _MEMORY_FACT_BOUNDARY = (
     "只有原文明示才可记录这些内容。不要用‘很可能’‘表明’补解释，不把比喻具体化为事件。"
     "用户报告过往用‘用户说/认为’归属，不改写为林离亲历或双方确认。"
     "更新已有记忆也须遵守这些边界，不把旧摘要的推测当作新事实。"
+    "称呼须区分谁称呼谁；当前原文的说话者决定我/你指代，旧记忆和历史消息不得改变说话者。"
+    "用户来信的我指用户、你指林离；林离回信的我指林离、你指用户。"
+    "保留明确姓名、昵称、称呼偏好及拒绝；称呼事实不等于双方认可关系或授予亲密权限。"
+    "第三人引语、假设和询问不得变成双方已经使用或同意的称呼。"
+    "摘录外指代林离时用‘她’；引号内逐字保留原文，不纠正原文用字。"
+    "用户性别未明时用‘用户’或姓名，不猜测性别。"
+    "姓名和昵称逐字保留原文用字，不转换简繁或改写专名。"
+    "想做、准备中、正在做、已完成不得互换；玩笑、比喻或安慰不得升级为承诺、权限或事实。"
 )
 _EXTRACTION_SYSTEM_BOUNDARY = (
     "\n\n# Product factual-grounding override\n"
@@ -105,16 +113,27 @@ _HISTORY_USER_FACT_PROMPT = (
     "已经作出的约定或未来计划、反复出现的情绪需要。每条只写一个完整事实，"
     "保留人物、地点、时间和承诺对象；不要只概括为用户写信、用户表达情绪或用户想聊天。"
     "保留用户姓名、称呼和原意；"
+    "称呼摘录须在引语外写明称呼对象是用户还是林离，避免摘录中的我/你失去归属；"
     "不要把用户提到的 AI、助手或林离改写成角色自述；"
     "必须使用与输入相同的语言，中文原文的每条记忆必须为中文，不得翻译为英文。"
     "用户事实采用‘用户说：原文短句’的摘录形式，原文短句逐字引用；相邻但没有明确因果的陈述分开存，"
+    "只选能独立承载该事实的最短完整片段，保留必要条件与否定；不要整段照抄，"
+    "不要把同一事实的反复抒情拆成多条。摘录外只补必要说话者和对象。"
     "不要为了概括而添加连接词、心理解释或关系结论。重要偏好、条件、否定和具体口味不得省略。"
 ) + _MEMORY_FACT_BOUNDARY
 _HISTORY_LINLI_FACT_PROMPT = (
     "只从林离的这封回信提取未来必须履行或保持一致的长期事实。优先保留："
     "我对用户作出的承诺、约定、后续行动、关系定位、明确记住的偏好与边界；"
+    "我明确表达的喜欢、拒绝、关系变化属于应保留的关系里程碑，不因只有一句就当寒暄丢弃；"
+    "按原话强度记录，不把单方表达写成双方确立关系。"
+    "也保留我明确如何称呼用户、允许或拒绝用户如何称呼我，不把明确称呼约定当普通寒暄丢弃。"
+    "称呼事实保留原文的条件与不确定性，并在摘录外写明称呼对象。"
     "不要保存通用安慰、寒暄、一次性的措辞或没有具体对象的陪伴表达。"
+    "上述明确关系里程碑不属于应忽略的一次性措辞。"
     "每条事实必须包含第一人称‘我’，并保留承诺对象、条件和时间；"
+    "采用‘我对用户说：原文短句’的逐字摘录，选取承载事实的最短完整片段；"
+    "摘录外仅可补必要的称呼对象，不得添加‘表明’‘意味着’等解释，"
+    "不得将留灯、开门等比喻概括成无条件承诺或不限边界的许可。"
     "不得称为助手、AI、assistant 或第三人称林离；"
     "必须使用与输入相同的语言，中文原文的每条记忆必须为中文，不得翻译为英文。"
 ) + _MEMORY_FACT_BOUNDARY
@@ -141,6 +160,34 @@ _CONTROL_INSTRUCTION_RE = re.compile(
     r"覆盖.{0,12}(?:规则|约束|设定)",
     re.IGNORECASE,
 )
+
+# Deliberately narrow: only standalone explicit statements, never guess a name
+# from a salutation or resolve a quoted third person's pronouns locally.
+_ADDRESSING_SENTENCE_RE = re.compile(
+    r"(?P<form>你可以叫我|你可以称呼我|(?:以后)?我(?:以后)?(?:就)?叫你|我称呼你)"
+    r"(?:(?P<quote>[‘“\"])(?P<quoted>[\w\u3400-\u9fff· -]{1,32})[’”\"]|"
+    r"(?P<plain>[\w\u3400-\u9fff· -]{1,32}))(?:吧)?$"
+)
+
+
+def _explicit_addressing_facts(user_message: str, assistant_message: str) -> tuple[str, ...]:
+    facts = []
+    for speaker, other, text in (
+        ("用户", "林离", user_message), ("林离", "用户", assistant_message),
+    ):
+        for sentence in re.split(r"[。！!\n]", text):
+            sentence = sentence.strip()
+            match = _ADDRESSING_SENTENCE_RE.fullmatch(sentence)
+            if match is None or _CONTROL_INSTRUCTION_RE.search(sentence):
+                continue
+            # Unquoted '叫你去医院' is an action, not a reliable nickname.
+            if match["plain"] is not None and "称呼" not in match["form"]:
+                continue
+            target = speaker if match["form"].startswith("你") else other
+            fact = f"称呼原文（说话者：{speaker}；称呼对象：{target}）：{sentence}"
+            if fact not in facts:
+                facts.append(fact)
+    return tuple(facts)
 
 
 def _explicit_user_memory_fact(value: str) -> str | None:
@@ -193,10 +240,17 @@ def _initialization_error_code(error: BaseException) -> str:
     return "MEM0_INITIALIZATION_FAILED"
 
 
+_EXTRACTION_INVALID_CODES = frozenset(
+    "MEM0_EXTRACTION_RESPONSE_INVALID_" + suffix
+    for suffix in ("NOT_TEXT", "EMPTY", "JSON", "ROOT", "MEMORY_MISSING", "MEMORY_LIST",
+                   "ITEM", "TEXT_TYPE", "TEXT_EMPTY")
+)
+
+
 def _extraction_failure_code(error: BaseException) -> str:
     # Upstream wraps extraction errors with LLMError; never copy its message.
     for _ in range(8):
-        if isinstance(error, Mem0AdapterError) and error.code in {
+        if isinstance(error, Mem0AdapterError) and error.code in _EXTRACTION_INVALID_CODES | {
             "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED",
         }:
             return error.code
@@ -223,7 +277,7 @@ class Mem0Backend(Protocol):
     ) -> object: ...
 
 
-def _flash_memory_max_reasoning(base_url: str, model: str) -> bool:
+def _flash_memory_reasoning(base_url: str, model: str) -> bool:
     endpoint = urlsplit(base_url)
     return (
         endpoint.scheme == "https"
@@ -359,7 +413,7 @@ class Mem0Config:
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
-        flash_max = _flash_memory_max_reasoning(self.llm_base_url, self.llm_model)
+        flash_reasoning = _flash_memory_reasoning(self.llm_base_url, self.llm_model)
         return {
             "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
             "vector_store": {
@@ -379,7 +433,7 @@ class Mem0Config:
                     "openai_base_url": self.llm_base_url,
                     "temperature": 0.1,
                     # This budget includes reasoning; final extraction guards remain separate.
-                    **({"max_tokens": 32768} if flash_max else {}),
+                    **({"max_tokens": 32768} if flash_reasoning else {}),
                 },
             },
             "embedder": {
@@ -1203,6 +1257,57 @@ class Mem0ConversationMemoryAdapter:
         source_id: str,
         user_id: str,
     ) -> MemoryWriteResult:
+        result = self._remember_content_transaction(
+            user_message=user_message, assistant_message=assistant_message,
+            occurred_at=occurred_at, source_id=source_id, user_id=user_id,
+        )
+        if result.status not in {
+            MemoryWriteStatus.WRITTEN, MemoryWriteStatus.DUPLICATE, MemoryWriteStatus.SKIPPED,
+        }:
+            return result
+        # Separate stable sources let already audited imports gain explicit
+        # address facts without invalidating their paid extraction audit.
+        added = []
+        user_id = self._normalized_user_id(user_id)
+        for fact in _explicit_addressing_facts(user_message, assistant_message):
+            address_source = "addressing:" + hashlib.sha256(
+                f"{source_id}\n{fact}".encode("utf-8")
+            ).hexdigest()
+            try:
+                response = self.backend.get_all(
+                    filters={**self._provider_filters(user_id), "source_id": address_source},
+                    top_k=64,
+                )
+                records = self._source_id_records_in_exact_response(
+                    response, user_id=user_id, source_id=address_source,
+                )
+                if records is None:
+                    raise Mem0AdapterError("MEM0_SOURCE_DEDUP_UNAVAILABLE")
+                if records:
+                    continue
+                value = self.backend.add(
+                    fact, user_id=user_id, agent_id=self.config.agent_id, infer=False,
+                    metadata={"source_id": address_source, "domain": _DOMAIN,
+                              "occurred_at": occurred_at.isoformat(), "canonical": True,
+                              "category": "explicit_addressing"},
+                )
+                acknowledgements = _add_acknowledgements(value)
+                if not acknowledgements:
+                    raise Mem0AdapterError("MEM0_WRITE_FAILED")
+                added.extend(memory_id for memory_id, _ in acknowledgements)
+            except Exception:
+                return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source_id,
+                                         (*result.memory_ids, *added),
+                                         error_code="MEM0_ADDRESSING_WRITE_FAILED")
+        if added:
+            return MemoryWriteResult(MemoryWriteStatus.WRITTEN, source_id,
+                                     (*result.memory_ids, *added))
+        return result
+
+    def _remember_content_transaction(
+        self, *, user_message: str, assistant_message: str, occurred_at: datetime,
+        source_id: str, user_id: str,
+    ) -> MemoryWriteResult:
         user_id = self._normalized_user_id(user_id)
         content_sha = hashlib.sha256(json.dumps(
             [self.config.agent_id, user_message, assistant_message], ensure_ascii=False,
@@ -1839,6 +1944,35 @@ def _load_product_mem0_module() -> object:
         return module
 
 
+def _extraction_response_invalid_kind(response: object) -> str | None:
+    """Return a fixed structural category, never provider text or decoder details."""
+    if not isinstance(response, str):
+        return "NOT_TEXT"
+    text = response.strip()
+    if not text:
+        return "EMPTY"
+    if text.startswith("```") and text.endswith("```"):
+        text = text.partition("\n")[2].rsplit("```", 1)[0]
+    try:
+        parsed = json.loads(text, strict=False)
+    except (ValueError, RecursionError):
+        return "JSON"
+    if not isinstance(parsed, dict):
+        return "ROOT"
+    if "memory" not in parsed:
+        return "MEMORY_MISSING"
+    if not isinstance(parsed["memory"], list):
+        return "MEMORY_LIST"
+    for item in parsed["memory"]:
+        if not isinstance(item, dict):
+            return "ITEM"
+        if not isinstance(item.get("text"), str):
+            return "TEXT_TYPE"
+        if not item["text"].strip():
+            return "TEXT_EMPTY"
+    return None
+
+
 class _ValidatedExtractionLLM:
     """Fail before Mem0 converts malformed extraction output into an empty result."""
 
@@ -1860,19 +1994,9 @@ class _ValidatedExtractionLLM:
                 ]
         response = self._provider.generate_response(*args, **kwargs)
         if kwargs.get("response_format") == {"type": "json_object"}:
-            try:
-                text = response.strip()
-                if text.startswith("```") and text.endswith("```"):
-                    text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-                parsed = json.loads(text, strict=False)
-                memories = parsed["memory"]
-                if not isinstance(memories, list) or any(
-                    not isinstance(item, dict) or not isinstance(item.get("text"), str)
-                    for item in memories
-                ):
-                    raise ValueError("invalid extraction shape")
-            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-                raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_INVALID") from None
+            invalid_kind = _extraction_response_invalid_kind(response)
+            if invalid_kind is not None:
+                raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_INVALID_" + invalid_kind)
         return response
 
 
@@ -1884,8 +2008,8 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     if not callable(create):
         return
     endpoint = urlsplit(str(getattr(client, "base_url", "")))
-    flash_max = _flash_memory_max_reasoning(endpoint.geturl(), model)
-    go_flash = flash_max and endpoint.hostname == "opencode.ai"
+    flash_reasoning = _flash_memory_reasoning(endpoint.geturl(), model)
+    go_flash = flash_reasoning and endpoint.hostname == "opencode.ai"
     deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
         endpoint.scheme == "https"
         and endpoint.hostname == "opencode.ai"
@@ -1894,11 +2018,11 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     )
 
     def guarded_create(*args: object, **kwargs: object) -> object:
-        if flash_max:
+        if flash_reasoning:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "enabled"},
             }
-            kwargs["reasoning_effort"] = "max"
+            kwargs["reasoning_effort"] = "low"
             # This route's JSON mode was less reliable in paired extraction
             # replays. Keep the SDK's JSON instructions and outer validator;
             # omit only the wire-level mode, not the extraction contract.
@@ -1955,7 +2079,8 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
         _guard_extraction_client(provider, model=model if isinstance(model, str) else "")
         backend.llm = _ValidatedExtractionLLM(provider)
     from runtime.memory.mem0_observation_time import bind_observation_time
-    return bind_observation_time(backend)
+    from runtime.memory.mem0_history_attribution import bind_history_attribution
+    return bind_history_attribution(bind_observation_time(backend))
 
 
 def create_mem0_adapter(

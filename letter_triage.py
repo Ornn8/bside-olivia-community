@@ -31,9 +31,13 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 
 不存在只说话的普通视频回信；只需要声音而不需要音乐时选择 text_letter。
 
-总原则：能直接说的话，优先直接说。高情绪、提到音乐、讨论音乐、请求演奏、
-唱歌或改编，都不能单独触发 musical_video。林离可以拒绝、推迟、只讨论，
-也可以认为这次直接说更自然。
+优先规则：用户本轮明确要求你用视频回信，或实际唱歌、演奏、改编给用户听，
+且 musical_video_available=true 时，必须选择 musical_video 并 fulfill。
+先独立识别用户实际请求，再选择模式；不能因为文字足够、情绪不高或个人表达偏好而拒绝视频。
+没有明确请求时才遵循：能直接说的话，优先直接说。高情绪、提到或讨论音乐不单独触发视频。
+否定请求、引用他人的请求、转述过去的请求、纯假设、询问功能是否支持，都不是本轮实际请求。
+例如“不要录视频”“朋友说‘给我唱首歌’”“如果以后能录视频就好了”“支持视频吗”不是请求；
+“请录一封视频回信”“能唱首歌给我听吗”“我想听你把这段话唱出来”是请求。
 
 音乐候选上下文仅允许：
 - melody_idea：林离在规划这次回应时确实形成了具体旋律构想；
@@ -41,6 +45,12 @@ ROUTER_SYSTEM_PROMPT = """你负责决定林离这一封回信采用哪一种表
 - current_work_relevance：来信与 routing_context.current_music_work 中已知作品强相关；
 - emotion_music_fit：情绪确实更适合通过音乐承载；
 - explicit_performance_or_adaptation_request：用户明确请求演奏、唱、改编或作品化表达。
+- explicit_video_reply_request：用户本轮明确要求收到视频回信，无须额外要求音乐。
+
+这两个 explicit_* 上下文描述用户的请求事实，与组件可用性、最终 mode 和 request_disposition 独立。
+即使 musical_video_available=false，也必须保留对应的 explicit_* 在 music_contexts 中，
+再输出 mode=text_letter、request_disposition=defer、music_role=none、music_intent=none。
+不得因无法执行而把明确请求的 music_contexts 清空；没有明确请求则不得仅因组件不可用而 defer。
 
 music_role 表示音乐在“本次实际回应”中的作用：
 - none：不用音乐；
@@ -50,10 +60,10 @@ music_role 表示音乐在“本次实际回应”中的作用：
 - adaptation：实际改编；
 - spontaneous_motif：把这次真正想到的旋律作为回应。
 
-request_disposition 只描述明确音乐请求：none、discuss、fulfill、refuse、defer。
-用户提出请求时，林离仍可以 discuss、refuse 或 defer；请求不等于服从。
+request_disposition 描述明确视频或音乐请求：none、discuss、fulfill、refuse、defer。
+明确请求且媒体可用时必须 fulfill；媒体不可用时 defer，不能假装已经完成视频。
 
-只有同时满足以下条件才可选择 musical_video：
+没有明确请求时，只有同时满足以下条件才可主动选择 musical_video：
 1. routing_context.musical_video_available=true；
 2. 至少存在一个允许的音乐候选上下文；
 3. direct_response_sufficient=false；
@@ -99,6 +109,7 @@ _ALLOWED_MUSIC_CONTEXTS = frozenset(
         "current_work_relevance",
         "emotion_music_fit",
         "explicit_performance_or_adaptation_request",
+        "explicit_video_reply_request",
     }
 )
 _ALLOWED_MUSIC_ROLES = frozenset(
@@ -319,11 +330,25 @@ def _validated_result(
     if None in {direct, voice_better, music_better, willing}:
         return None
 
-    explicit_request = "explicit_performance_or_adaptation_request" in contexts
+    explicit_request = bool({
+        "explicit_performance_or_adaptation_request",
+        "explicit_video_reply_request",
+    }.intersection(contexts))
+    # The model identifies intent; product policy, not its expression preference,
+    # determines the medium for an explicit request. Never override readiness.
     if explicit_request:
-        if disposition == "none":
-            return None
-    elif disposition in {"fulfill", "refuse", "defer"}:
+        available = context.musical_video_available
+        return TriageResult(
+            emotion,
+            "musical_video" if available else "text_letter",
+            "explicit_video_requested" if available else "video_components_required",
+            "completed", True, contexts,
+            "adapt" if available and intent == "adapt" else "perform" if available else "none",
+            not available, False, available, True,
+            "adaptation" if available and intent == "adapt" else "performance" if available else "none",
+            "fulfill" if available else "defer",
+        )
+    if disposition in {"fulfill", "refuse", "defer"}:
         return None
 
     if "current_work_relevance" in contexts and not context.current_music_work:
@@ -335,13 +360,7 @@ def _validated_result(
         return None
 
     if mode == "text_letter":
-        if (
-            role in _ACTIVE_MUSIC_ROLES
-            or (
-                explicit_request
-                and disposition not in {"discuss", "refuse", "defer"}
-            )
-        ):
+        if role in _ACTIVE_MUSIC_ROLES:
             return None
     else:
         if (
@@ -353,8 +372,7 @@ def _validated_result(
             or not contexts
             or role not in _ACTIVE_MUSIC_ROLES
             or intent not in {"perform", "adapt", "compose"}
-            or (explicit_request and disposition != "fulfill")
-            or (not explicit_request and disposition not in {"none", "discuss"})
+            or disposition not in {"none", "discuss"}
         ):
             return None
 

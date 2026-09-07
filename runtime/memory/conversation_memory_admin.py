@@ -158,6 +158,7 @@ class ConversationMemoryAdminService:
         audit_path: Path,
         *,
         user_id: str = _DEFAULT_USER_ID,
+        operation_gate: object | None = None,
     ) -> None:
         path = Path(audit_path)
         if str(path) in {"", "."} or path.exists() and path.is_dir():
@@ -169,6 +170,7 @@ class ConversationMemoryAdminService:
         self.user_id = user_id
         self._lock = threading.RLock()
         self._lifecycle_lock = _lifecycle_lock(path)
+        self._operation_gate = operation_gate
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -547,6 +549,20 @@ class ConversationMemoryAdminService:
             )
 
     def clear(
+        self, *, request_id: str, reason: str, confirmed: bool,
+    ) -> MemoryAdminMutationResult:
+        gate = self._operation_gate
+        if gate is not None and not gate.acquire(blocking=False):
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_BUSY")
+        try:
+            if getattr(self.memory, "operation_pending", False) is True:
+                raise ConversationMemoryAdminError("MEMORY_ADMIN_BUSY")
+            return self._clear(request_id=request_id, reason=reason, confirmed=confirmed)
+        finally:
+            if gate is not None:
+                gate.release()
+
+    def _clear(
         self,
         *,
         request_id: str,
@@ -910,6 +926,8 @@ class ConversationMemoryAdminService:
         return self._records_for_clear()
 
     def _records_for_clear(self) -> tuple[ConversationMemoryRecord, ...]:
+        if getattr(self.memory, "operation_pending", False) is True:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_BUSY")
         self._require_provider_available()
         try:
             return self.memory.list_memories(

@@ -134,7 +134,7 @@ def test_music_discussion_remains_text_when_words_are_enough():
     assert result.status == "completed"
 
 
-def test_explicit_request_can_be_refused_even_if_music_would_add_value():
+def test_explicit_request_overrides_model_refusal_when_video_is_available():
     result, _ = _route(
         reason_code="not_willing_to_perform_now",
         music_contexts=["explicit_performance_or_adaptation_request"],
@@ -144,11 +144,11 @@ def test_explicit_request_can_be_refused_even_if_music_would_add_value():
         music_materially_better=True,
         character_willing=False,
     )
-    assert result.reply_mode == "text_letter"
-    assert result.request_disposition == "refuse"
+    assert result.reply_mode == "musical_video"
+    assert result.request_disposition == "fulfill"
 
 
-def test_text_reply_cannot_claim_it_is_actively_performing():
+def test_explicit_request_overrides_model_deferral_when_video_is_available():
     result, _ = _route(
         reason_code="text_cannot_perform",
         music_contexts=["explicit_performance_or_adaptation_request"],
@@ -158,11 +158,11 @@ def test_text_reply_cannot_claim_it_is_actively_performing():
         music_materially_better=True,
         character_willing=False,
     )
-    assert result.reply_mode == "text_letter"
-    assert result.status == "unavailable"
+    assert result.reply_mode == "musical_video"
+    assert result.status == "completed"
 
 
-def test_explicit_request_alone_cannot_trigger_musical_video():
+def test_explicit_request_alone_triggers_available_musical_video():
     result, _ = _route(
         mode="musical_video",
         reason_code="request_only_is_not_enough",
@@ -173,8 +173,8 @@ def test_explicit_request_alone_cannot_trigger_musical_video():
         direct_response_sufficient=False,
         music_materially_better=False,
     )
-    assert result.reply_mode == "text_letter"
-    assert result.status == "unavailable"
+    assert result.reply_mode == "musical_video"
+    assert result.status == "completed"
 
 
 def test_media_unavailable_blocks_otherwise_valid_musical_choice():
@@ -190,7 +190,61 @@ def test_media_unavailable_blocks_otherwise_valid_musical_choice():
         music_materially_better=True,
     )
     assert result.reply_mode == "text_letter"
+    assert result.reason_code == "video_components_required"
+    assert result.request_disposition == "defer"
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_explicit_video_request_does_not_require_separate_music_request(available):
+    result, gateway = _route(
+        context=RoutingContext(available),
+        music_contexts=["explicit_video_reply_request"],
+        request_disposition="defer",
+        character_willing=False,
+    )
+    assert result.reply_mode == ("musical_video" if available else "text_letter")
+    assert result.request_disposition == ("fulfill" if available else "defer")
+    assert gateway.requests[0]["tools"][0]["function"]["parameters"]["properties"]["music_contexts"]["items"]["enum"].count("explicit_video_reply_request") == 1
+
+
+def test_unavailable_video_prompt_preserves_request_context_independently_of_readiness():
+    result, gateway = _route(
+        context=RoutingContext(False),
+        music_contexts=["explicit_video_reply_request"],
+        request_disposition="defer",
+    )
+    prompt = gateway.messages[0]["content"]
+    assert "与组件可用性、最终 mode 和 request_disposition 独立" in prompt
+    assert "不得因无法执行而把明确请求的 music_contexts 清空" in prompt
+    assert result.music_contexts == ("explicit_video_reply_request",)
+    assert result.reply_mode == "text_letter"
+    assert result.reason_code == "video_components_required"
+    assert result.request_disposition == "defer"
+
+
+def test_deferred_result_without_request_context_is_still_invalid():
+    result, _ = _route(
+        context=RoutingContext(False),
+        reason_code="explicit_video_request_deferred",
+        music_contexts=[],
+        request_disposition="defer",
+    )
     assert result.reason_code == "router_invalid_result"
+    assert result.status == "unavailable"
+
+
+@pytest.mark.parametrize("content", [
+    "不要录视频，写信就好。", "朋友说‘给我唱首歌’，我只是转述。",
+    "如果以后能录视频就好了。", "支持视频吗？", "今天看了一个视频。",
+])
+def test_nonrequest_classification_is_not_overridden_by_video_keywords(content):
+    gateway = _Gateway(_route_arguments())
+    result = asyncio.run(LetterReplyRouter(
+        gateway, routing_context=RoutingContext(True),
+    ).classify(content))
+    assert result.reply_mode == "text_letter"
+    assert json.loads(gateway.messages[1]["content"])["current_letter"] == content
+    assert "否定请求、引用他人的请求" in gateway.messages[0]["content"]
 
 
 def test_all_musical_gates_allow_character_choice():

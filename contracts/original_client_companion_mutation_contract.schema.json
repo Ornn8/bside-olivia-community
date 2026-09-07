@@ -59,7 +59,7 @@
         "COMPANION_REQUEST_TOO_LARGE", "COMPANION_CONTENT_TYPE_INVALID",
         "MEMORY_ADMIN_REQUEST_CONFLICT", "COMPANION_MUTATION_UNAVAILABLE",
         "COMPANION_MUTATION_INVALID", "MEMORY_MUTATION_DISABLED",
-        "MEMORY_ADMIN_DISABLED", "MEMORY_ADMIN_UNAVAILABLE",
+        "MEMORY_ADMIN_DISABLED", "MEMORY_ADMIN_UNAVAILABLE", "MEMORY_ADMIN_BUSY",
         "MEMORY_ADMIN_READ_FAILED", "MEMORY_ADMIN_CLEAR_FAILED",
         "MEMORY_ADMIN_AUDIT_UNAVAILABLE", "MEMORY_MUTATION_RESULT_INVALID"
       ],
@@ -80,6 +80,7 @@
         "MEMORY_MUTATION_DISABLED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
         "MEMORY_ADMIN_DISABLED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
         "MEMORY_ADMIN_UNAVAILABLE": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
+        "MEMORY_ADMIN_BUSY": {"const": {"http_status": 409, "status": "FAILED", "retryable": true}},
         "MEMORY_ADMIN_READ_FAILED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
         "MEMORY_ADMIN_CLEAR_FAILED": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
         "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"const": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true}},
