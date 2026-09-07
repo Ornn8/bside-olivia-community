@@ -347,6 +347,18 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'e.value=h.songs,t.value=h.musicStyles,s.value=h.performanceModes;'
         'window.dispatchEvent(new Event("olivia-local-catalog-ready"))}',
     )
+    # Imported media is already owned locally, so the native song-storage scan
+    # must not mark it missing merely because it lives outside its download tree.
+    local_status = 'if(window.__oliviaLocalSongCatalog?.songs.value.some(q=>q.oliviaLocal&&q.id===U.songId))U.exist=true;'
+    if local_status not in source:
+        source = source.replace(
+            'const L=await Gn($);for(const U of L.songs){',
+            'const L=await Gn($);for(const U of L.songs){' + local_status,
+        )
+    source = source.replace(
+        '_e(()=>w.value&&oe.loaded,q=>{q&&Ra()},{immediate:!0})',
+        '_e(()=>w.value&&oe.loaded&&oe.songs,q=>{q&&Ra()},{immediate:!0})',
+    )
     source = _repair_mailbox_waiting_footer(source)
     # Keep the native sealed-letter animation; only specialize its caption.
     source = source.replace(
