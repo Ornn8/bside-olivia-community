@@ -1,4 +1,4 @@
-"""Keep historical speaker attribution authoritative at vector persistence."""
+"""Preserve canonical source speakers at vector persistence."""
 from functools import wraps
 from collections.abc import Mapping
 
