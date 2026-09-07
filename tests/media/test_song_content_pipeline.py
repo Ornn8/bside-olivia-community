@@ -120,7 +120,7 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
     assert request_id is None
     assert [message["role"] for message in messages] == ["system", "user"]
     system = messages[0]["content"]
-    assert "exactly one string key: lyrics" in system
+    assert "exactly two keys: verse and chorus" in system
     assert "Allowed emotion_arc" not in system
     assert "Allowed piano_texture" not in system
     assert "caption" in system

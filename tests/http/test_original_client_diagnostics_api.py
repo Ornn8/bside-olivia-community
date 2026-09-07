@@ -123,6 +123,19 @@ def test_launcher_tail_reads_recent_events_from_large_append_only_log(
     assert all(record["event"] == "backend_ready" for record in records)
 
 
+def test_media_provider_tail_reads_bounded_running_data_and_skips_partial_lines(tmp_path):
+    from original_client_server import _media_provider_tail
+
+    log = tmp_path / 'logs' / 'media-provider.jsonl'
+    log.parent.mkdir()
+    assert _media_provider_tail(tmp_path) == ()
+    record = {'error_code': 'LATENTSYNC_FAILED', 'diagnostic': 'returncode=unknown;stderr_category=process_timeout'}
+    log.write_text((json.dumps(record) + '\n') * 12000 + '{partial', encoding='utf-8')
+    records = _media_provider_tail(tmp_path)
+    assert 0 < len(records) <= 200
+    assert all(item == record for item in records)
+
+
 def test_diagnostic_export_is_registered_in_the_machine_contract_and_docs() -> None:
     from http_contract import contract_document, route_spec
 
@@ -289,6 +302,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
         launcher_tail_provider=None,
         runtime_tail_provider=None,
         health_profile_provider=health,
+        media_provider_tail_provider=lambda: ({'error_code': 'LATENTSYNC_FAILED'},),
         task_snapshot_provider=lambda: (
             {
                 "letter_status": "FAILED",
@@ -304,6 +318,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
     )
 
     source = collect()
+    assert source['media_provider_tail'] == [{'error_code': 'LATENTSYNC_FAILED'}]
     assert "backend_id" not in source["summary"]  # type: ignore[operator]
     assert source["summary"]["contract_version"] == "2.0"  # type: ignore[index]
     assert source["health"]["checks"] == {  # type: ignore[index]
