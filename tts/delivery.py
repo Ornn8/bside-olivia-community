@@ -96,13 +96,6 @@ def _validated_quality_report(
     return dict(value)
 
 
-def validate_delivery_duration(duration_seconds: float) -> None:
-    """Reject undersized speech; motion frames follow its natural upper duration."""
-
-    if float(duration_seconds) < 40.0:
-        raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
-
-
 def _normalized_instruct_text(value: str) -> str:
     """Leave the model control token exclusively at the instruction tail."""
 
@@ -227,6 +220,8 @@ def _validate_wav(path: Path) -> tuple[int, int]:
     try:
         with wave.open(str(path), "rb") as source:
             if source.getnchannels() != 1 or source.getsampwidth() != 2:
+                raise DeliveryAudioError("TTS_EXTERNAL_AUDIO_INVALID")
+            if source.getframerate() <= 0 or source.getnframes() <= 0:
                 raise DeliveryAudioError("TTS_EXTERNAL_AUDIO_INVALID")
             return source.getframerate(), source.getnframes()
     except (OSError, EOFError, wave.Error) as exc:
@@ -504,7 +499,6 @@ def render_delivery_wav(
             )
 
         quality_report: dict[str, object] | None = None
-        quality_rejection_count = 0
         synthesis_attempts = max(1, min(3, int(request.get("max_attempts", 1))))
         for attempt in range(synthesis_attempts):
             candidate = dict(request)
@@ -512,12 +506,6 @@ def render_delivery_wav(
             candidate["max_attempts"] = 1
             run_worker(candidate)
             sample_rate, frame_count = _validate_wav(temporary_output)
-            try:
-                validate_delivery_duration(frame_count / sample_rate)
-            except DeliveryAudioError as exc:
-                if str(exc) != "TTS_DELIVERY_DURATION_OUT_OF_RANGE":
-                    raise
-                continue
             if require_quality_gate:
                 quality_report = run_quality_gate(candidate)
                 quality_report.update(
@@ -527,13 +515,10 @@ def render_delivery_wav(
                 )
                 if quality_report["passed"] is True:
                     break
-                quality_rejection_count += 1
             else:
                 break
         else:
-            if quality_rejection_count == synthesis_attempts:
-                raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
-            raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
+            raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
         temporary_output.replace(output_path)
         return DeliveryAudioResult(
             duration_seconds=frame_count / sample_rate,
@@ -551,5 +536,4 @@ __all__ = [
     "DeliveryAudioResult",
     "build_external_delivery_request",
     "render_delivery_wav",
-    "validate_delivery_duration",
 ]
