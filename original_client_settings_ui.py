@@ -2221,12 +2221,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       document.querySelector('[data-olivia-local-songs-entry]')?.remove(); return;
     }
     if (document.querySelector('[data-olivia-local-songs-entry]')) return;
-    const title = Array.from(document.querySelectorAll("h1,h2")).find((node) => node.textContent.trim() === "曲库");
-    if (!title) return;
+    const navigation = document.querySelector('[data-olivia-main-navigation]');
+    if (!navigation) return;
     const entry = button("导入本地演奏", openLocalSongs);
     entry.dataset.oliviaLocalSongsEntry = "";
-    entry.style.marginLeft = "16px";
-    title.insertAdjacentElement("afterend", entry);
+    Object.assign(entry.style, {whiteSpace: "nowrap", flexShrink: "0", minHeight: "36px"});
+    navigation.append(entry);
   };
 
   const isSettingsRoute = () => {
