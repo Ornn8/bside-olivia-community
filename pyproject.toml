@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx==0.28.1",
+    "openai==3.5.0",
     "jsonschema>=4.26,<5",
     "pytest>=8,<9",
     "numpy>=1.26,<3",
