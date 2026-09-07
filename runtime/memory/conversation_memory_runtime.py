@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Mapping
 
 from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
@@ -43,6 +44,7 @@ class ConversationMemoryRuntimeStatus:
     attempt_count: int = 0
     # Internal readiness hint; no provider calls or public schema changes.
     delivery_pending: bool = False
+    reply_ready: bool = False
     pending_error_counts: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
@@ -56,7 +58,7 @@ class ConversationMemoryRuntimeStatus:
             for code, count in self.pending_error_counts
         ):
             raise ValueError("pending error counts are invalid")
-        if type(self.delivery_pending) is not bool:
+        if type(self.delivery_pending) is not bool or type(self.reply_ready) is not bool:
             raise ValueError("delivery_pending must be boolean")
         if not isinstance(self.provider, str) or not self.provider:
             raise ValueError("runtime provider is invalid")
@@ -105,6 +107,8 @@ class ConversationMemoryRuntime:
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
         self._reply_status_lock = threading.Lock()
+        self._reply_provider_ready = False
+        self._reply_provider_checked_at = 0.0
         self._reply_status = ConversationMemoryRuntimeStatus(
             "unavailable",
             True,
@@ -169,6 +173,14 @@ class ConversationMemoryRuntime:
             pending_count=_count(health.get("pending_count")),
             attempt_count=_count(health.get("attempt_count")),
             delivery_pending=self.outbox.committer.delivery_pending,
+            reply_ready=(
+                worker_running and status == "degraded"
+                and reason_code == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+                and 0 < _count(health.get("pending_count")) == _count(health.get("exhausted_count"))
+                and not self.outbox.committer.delivery_pending
+                and self._reply_provider_ready
+                and time.monotonic() - self._reply_provider_checked_at <= 15.0
+            ),
             pending_error_counts=tuple(health.get("pending_error_counts", {}).items()),
         )
         with self._reply_status_lock:
@@ -196,14 +208,30 @@ class ConversationMemoryRuntime:
         # A scan can start a write before publishing its next health result.
         # Keep waiting until publication confirms that the journal is persisted.
         pending = cached.delivery_pending or self.outbox.committer.delivery_pending
-        if pending and cached.reason_code is None:
-            return replace(cached, status="degraded", delivery_pending=True)
+        if pending:
+            return replace(cached, status="degraded", delivery_pending=True, reply_ready=False)
+        if cached.reply_ready and (not self._reply_provider_ready
+                or time.monotonic() - self._reply_provider_checked_at > 15.0):
+            return replace(cached, reply_ready=False)
         return cached
+
+    def _refresh_reply_provider(self) -> None:
+        """Probe only on the maintenance worker, never in UI/readiness requests."""
+        self._reply_provider_ready = False
+        health = self.outbox.health()
+        if (health.get("reason_code") == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
+                and 0 < _count(health.get("pending_count")) == _count(health.get("exhausted_count"))
+                and not self.outbox.committer.delivery_pending):
+            self._reply_provider_ready = _provider_status(self.outbox.committer.memory)[0] == "available"
+        self._reply_provider_checked_at = time.monotonic()
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                asyncio.run(self.outbox.scan_once())
+                scan = asyncio.run(self.outbox.scan_once())
+                self._reply_provider_ready = False
+                if scan.status != "unavailable":
+                    self._refresh_reply_provider()
                 self.status()
             except Exception:
                 with self._reply_status_lock:

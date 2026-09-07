@@ -69,7 +69,7 @@ class EmbeddingInstallService(Protocol):
 
 def _memory_error(exc: ConversationMemoryAdminError) -> OriginalClientCompanionMutationError:
     code = exc.code
-    if code == "MEMORY_ADMIN_REQUEST_CONFLICT":
+    if code in {"MEMORY_ADMIN_REQUEST_CONFLICT", "MEMORY_ADMIN_BUSY"}:
         status = 409
     elif "INVALID" in code or "REQUIRED" in code:
         status = 400

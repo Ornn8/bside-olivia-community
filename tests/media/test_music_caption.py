@@ -38,7 +38,7 @@ def _lyrics(duration: int, marker: str = "不会进入音乐描述") -> str:
 
 
 def _short_lyrics(duration: int, marker: str = "不会进入音乐描述") -> str:
-    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
     verse = [f"主歌第{index}句轻轻落下" for index in range(1, verse_count + 1)]
     verse[0] = marker
     chorus = [f"副歌第{index}句慢慢收好" for index in range(1, chorus_count + 1)]
@@ -110,7 +110,7 @@ def test_short_caption_describes_one_full_verse_chorus_and_fade_ready_ending() -
     assert "interlude" not in caption
 
 
-@pytest.mark.parametrize("duration", [40, 60])
+@pytest.mark.parametrize("duration", [40, 60, 110])
 def test_render_minimax_caption_is_deterministic_positive_and_caption_only(
     duration: int,
 ) -> None:
@@ -130,6 +130,14 @@ def test_render_minimax_caption_is_deterministic_positive_and_caption_only(
     assert len(first.split()) <= 300
 
 
+def test_full_song_timeline_covers_110_seconds_with_balanced_vocal_sections():
+    caption = render_minimax_caption(_plan(duration=110))
+    assert "0-6 seconds piano opening" in caption
+    assert "6-54 seconds one verse" in caption
+    assert "54-102 seconds one chorus" in caption
+    assert "102-110 seconds closing cadence" in caption
+
+
 def test_render_minimax_caption_snapshot() -> None:
     caption = render_minimax_caption(_plan())
     assert caption == """### Global Metadata
@@ -144,7 +152,7 @@ The complete instrumental arrangement is performed by one acoustic grand piano f
 
 def test_all_audited_enum_combinations_render_and_validate() -> None:
     for duration, emotion, texture, vocal, dynamic, ending in product(
-        (40, 60),
+        (40, 60, 110),
         SongEmotionArc,
         PianoTexture,
         VocalDelivery,

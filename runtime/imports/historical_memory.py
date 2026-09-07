@@ -313,7 +313,12 @@ def migrate_historical_exchanges(
     require_persisted: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> HistoricalMigrationResult:
-    """Write one exchange at a time; never advance after a failed write."""
+    """Keep completed exchanges as retry checkpoints; stop at the first failure.
+
+    Strict persistence settles an in-flight write and cleans up only that failed
+    exchange's newly created IDs. Previously verified memory/audit progress stays
+    committed; callers still gate archive publication on full completion.
+    """
 
     normalized_user_id = normalize_conversation_memory_user_id(user_id)
     supplied = tuple(exchanges)
@@ -330,7 +335,6 @@ def migrate_historical_exchanges(
         raise ValueError("historical source ids must be unique")
 
     written = duplicates = skipped = processed = 0
-    created_memory_ids: list[str] = []
     if on_progress is not None:
         on_progress(0, len(ordered))
     for exchange in ordered:
@@ -350,13 +354,6 @@ def migrate_historical_exchanges(
             )
         if not isinstance(result, MemoryWriteResult):
             failure_code = "MEM0_WRITE_RESULT_INVALID"
-            if require_persisted:
-                failure_code = _rollback_created_memories(
-                    memory,
-                    created_memory_ids,
-                    user_id=normalized_user_id,
-                    failure_code=failure_code,
-                )
             return _partial(
                 ordered,
                 processed,
@@ -404,14 +401,9 @@ def migrate_historical_exchanges(
         if result.status is MemoryWriteStatus.UNAVAILABLE:
             failure_code = result.error_code or "MEM0_WRITE_FAILED"
             if require_persisted:
-                created_memory_ids.extend(
-                    memory_id
-                    for memory_id in result.memory_ids
-                    if memory_id not in created_memory_ids
-                )
                 failure_code = _rollback_created_memories(
                     memory,
-                    created_memory_ids,
+                    dict.fromkeys(result.memory_ids),
                     user_id=normalized_user_id,
                     failure_code=failure_code,
                 )
@@ -426,7 +418,6 @@ def migrate_historical_exchanges(
         processed += 1
         if result.status is MemoryWriteStatus.WRITTEN:
             written += 1
-            created_memory_ids.extend(result.memory_ids)
         elif result.status is MemoryWriteStatus.DUPLICATE:
             duplicates += 1
         else:

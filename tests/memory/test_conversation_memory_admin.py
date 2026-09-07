@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import threading
+import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,123 @@ from conversation_memory_port import (
 NOW = datetime(2026, 8, 23, 7, 0, tzinfo=timezone.utc)
 SECRET_OLD = "用户以前住在大阪。"
 SECRET_NEW = "用户现在住在东京。"
+
+
+def test_clear_rejects_pending_write_before_read_or_audit(tmp_path):
+    memory = FakeMemory(provider_status="degraded")
+    memory.add_manual_memory("合成记忆", user_id="local-user", source_id="synthetic")
+    memory.operations.clear()
+    memory.operation_pending = True
+    service = _service(tmp_path, memory)
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_BUSY"):
+        service.clear(request_id="busy-clear", reason="test", confirmed=True)
+    assert len(memory.records) == 1 and memory.operations == []
+    assert service._audit_row("busy-clear") is None
+    memory.operation_pending = False
+    assert service.clear(request_id="busy-clear", reason="test", confirmed=True).affected_count == 1
+
+
+def test_clear_and_whole_history_import_exclude_each_other(tmp_path, monkeypatch):
+    import local_server
+    gate = threading.Lock()
+    monkeypatch.setattr(local_server, "_history_memory_admin_gate", gate)
+    monkeypatch.setattr(local_server, "_local_import_task", None)
+    monkeypatch.setattr(local_server, "_default_offline_letter_pair_source", lambda: tmp_path / "synthetic.json")
+    monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: SimpleNamespace(enabled=True))
+    monkeypatch.setattr(local_server, "_official_history_preflight_error", lambda: None)
+    monkeypatch.setattr(local_server, "offline_letter_pair_exchanges", lambda source: ())
+    memory = FakeMemory()
+    memory.add_manual_memory("合成记忆", user_id="local-user", source_id="synthetic")
+    service = ConversationMemoryAdminService(memory, tmp_path / "admin.sqlite3", operation_gate=gate)
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def migration(exchanges):
+            entered.set()
+            await release.wait()  # Includes idle gaps between writes/relationship work.
+            return SimpleNamespace(status="partial", error_code="SYNTHETIC_FAILURE", to_dict=lambda: {})
+        monkeypatch.setattr(local_server, "_migrate_historical_history", migration)
+        task = asyncio.create_task(local_server.route("POST", "/toy/letter/legacy/local-import", {}, {}, companion_confirmed=True))
+        await entered.wait()
+        with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_BUSY"):
+            await asyncio.to_thread(service.clear, request_id="during-import", reason="test", confirmed=True)
+        assert len(memory.records) == 1
+        release.set()
+        await task
+        assert not gate.locked()
+
+        deleting, finish = threading.Event(), threading.Event()
+        original_delete = memory.delete_memory
+        def blocked_delete(memory_id, *, user_id):
+            deleting.set()
+            assert finish.wait(3)
+            return original_delete(memory_id, user_id=user_id)
+        monkeypatch.setattr(memory, "delete_memory", blocked_delete)
+        clear = asyncio.create_task(asyncio.to_thread(service.clear, request_id="clear-first", reason="test", confirmed=True))
+        assert await asyncio.to_thread(deleting.wait, 1)
+        try:
+            result = await local_server.route("POST", "/toy/letter/legacy/local-import", {}, {}, companion_confirmed=True)
+            assert result["message"] == "MEMORY_ADMIN_BUSY" and result["code"] == 409
+        finally:
+            finish.set()
+        assert (await clear).affected_count == 1
+        assert not gate.locked()
+        entered.clear()
+        thread_release = threading.Event()
+        async def threaded_migration(exchanges):
+            entered.set()
+            assert await asyncio.to_thread(thread_release.wait, 3)
+            return SimpleNamespace(status="partial", error_code="SYNTHETIC_FAILURE", to_dict=lambda: {})
+        monkeypatch.setattr(local_server, "_migrate_historical_history", threaded_migration)
+        cancelled_import = asyncio.create_task(local_server.route("POST", "/toy/letter/legacy/local-import", {}, {}, companion_confirmed=True))
+        await entered.wait()
+        cancelled_import.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_import
+        assert gate.locked()  # Cancellation must not admit clear while work survives.
+        thread_release.set()
+        for _ in range(100):
+            if not gate.locked():
+                break
+            await asyncio.sleep(.01)
+        assert not gate.locked()  # Completion releases the gate without restarting.
+    asyncio.run(scenario())
+
+
+def test_pending_clear_audit_blocks_new_import_until_clear_resumes(tmp_path, monkeypatch):
+    import local_server
+    gate = threading.Lock()
+    memory = FakeMemory()
+    memory.add_manual_memory("合成记忆", user_id="local-user", source_id="synthetic")
+    service = ConversationMemoryAdminService(memory, tmp_path / "admin.sqlite3", operation_gate=gate)
+    memory.delete_failures = 1
+    with pytest.raises(ConversationMemoryAdminError, match="MEMORY_ADMIN_CLEAR_FAILED"):
+        service.clear(request_id="partial-clear", reason="test", confirmed=True)
+    assert service._has_pending_clear() and not gate.locked()
+    monkeypatch.setattr(local_server, "_history_memory_admin_gate", gate)
+    monkeypatch.setattr(local_server, "_local_import_task", None)
+    monkeypatch.setattr(local_server.letters_adapter.memory_prompt_builder, "memory_lifecycle", service)
+    reached = []
+    monkeypatch.setattr(local_server, "_default_offline_letter_pair_source", lambda: reached.append(True))
+    async def scenario():
+        result = await local_server.route("POST", "/toy/letter/legacy/local-import", {}, {}, companion_confirmed=True)
+        assert result["message"] == "MEMORY_ADMIN_CLEAR_PENDING"
+        assert reached == [] and len(memory.records) == 1 and not gate.locked()
+        service.clear(request_id="partial-clear", reason="test", confirmed=True)
+        result = await local_server.route("POST", "/toy/letter/legacy/local-import", {}, {}, companion_confirmed=True)
+        assert result["message"] == "OFFLINE_LETTER_BACKUP_REQUIRED"
+        assert reached == [True] and not gate.locked()
+    asyncio.run(scenario())
+
+
+def test_configured_admin_uses_the_import_gate(tmp_path):
+    from original_client_server import _configured_memory_admin
+    from conversation_memory_port import NullConversationMemoryPort
+    gate = threading.Lock()
+    module = SimpleNamespace(_history_memory_admin_gate=gate, letters_adapter=SimpleNamespace(
+        memory_prompt_builder=SimpleNamespace(conversation_memory=NullConversationMemoryPort(), conversation_memory_user_id="local-user")))
+    service = _configured_memory_admin(module, {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)})
+    assert service is not None and service._operation_gate is gate
 
 
 class FakeMemory:

@@ -20,6 +20,21 @@ from urllib.parse import urlsplit
 
 
 MAIN_JS = "assets/main-917d29fc.js"
+
+
+def hide_uid_watermark(root: Path) -> bool:
+    """Hide the client UID overlay while preserving other visual assets."""
+    changed = False
+    selector = '.watermark-overlay{'
+    replacement = selector + 'display:none!important;'
+    for path in (root / 'assets').glob('*.css'):
+        original = path.read_text(encoding='utf-8')
+        if selector in original and replacement not in original:
+            path.write_text(original.replace(selector, replacement), encoding='utf-8')
+            changed = True
+    return changed
+
+
 HE_ANCHOR = "He=e=>new Promise((t,n)=>{try{"
 INJECT_ANCHOR = ',"query.response":no(a)}}),t(c)},onFailure:'
 MAILBOX_LOGIN_ANCHOR = (
@@ -46,6 +61,29 @@ MAILBOX_LOGIN_REPLACEMENT_0627 = (
 )
 MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
 MAILBOX_WRITE_REPLACEMENT_0627 = '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))'
+
+
+def _repair_mailbox_waiting_footer(javascript: str) -> str:
+    """Keep the native compose card visible while its existing gate is active."""
+    return javascript.replace(
+        'm.hideWrite?Y("",!0):(r(),F(U4,{key:0,"remaining-count":m.remainingCount,onWrite:l,class:"flex-shrink-0"},null,8,["remaining-count"]))',
+        '(r(),F(U4,{key:0,waiting:m.hideWrite,"remaining-count":m.remainingCount,onWrite:l,class:"flex-shrink-0"},null,8,["remaining-count","waiting"]))',
+    ).replace(
+        '__name:"MailBoxFooter",props:{remainingCount:{}}',
+        '__name:"MailBoxFooter",props:{waiting:{type:Boolean},remainingCount:{}}',
+    ).replace(
+        'const{t:s}=fe(),i=t,l=()=>{i("write")};return(a,c)=>',
+        'const{t:s}=fe(),i=t,l=()=>{if(!e.waiting)i("write")};return(a,c)=>',
+    ).replace(
+        'disabled:a.remainingCount<=0,onClick:l',
+        'disabled:a.waiting||a.remainingCount<=0,onClick:l',
+    ).replace(
+        'v(o(s)("mailbox_write_mail_remaing",{count:a.remainingCount}))',
+        'v(a.waiting?"收到回信后可以继续写信":o(s)("mailbox_write_mail_remaing",{count:a.remainingCount}))',
+    ).replace(
+        'v(o(s)("mailbox_write_mail")),9,B4',
+        'v(a.waiting?"等待林离回信":o(s)("mailbox_write_mail")),9,B4',
+    )
 WEB_PLAYER_PLAYLIST_EVENT_ANCHOR_0627 = 'const W=K?"":Nt();if(t.value===Se.PRO)'
 WEB_PLAYER_PLAYLIST_EVENT_BROKEN_INTEGER_0627 = (
     'const W=K?0:Date.now()%2147483647;if(t.value===Se.PRO)'
@@ -212,11 +250,11 @@ def _patch_mailbox_write_access(
         return javascript
     if javascript.count(profile.mailbox_write_anchor) != 1:
         raise ValueError("mailbox write visibility anchor is missing or not unique")
-    return javascript.replace(
+    return _repair_mailbox_waiting_footer(javascript.replace(
         profile.mailbox_write_anchor,
         profile.mailbox_write_replacement,
         1,
-    )
+    ))
 
 
 def _patch_web_player_event_ids(javascript: str, profile: _PatchProfile) -> str:
@@ -305,7 +343,8 @@ def repair_web_player_event_ids(
         main_path = root / Path(*profile.main_js.split("/"))
         javascript = main_path.read_text(encoding="utf-8")
         patched = _patch_web_player_event_ids(javascript, profile)
-        if patched == javascript:
+        watermark_changed = hide_uid_watermark(root)
+        if patched == javascript and not watermark_changed:
             return "ALREADY_PATCHED"
         main_path.write_text(patched, encoding="utf-8")
         output_archive = temporary_root / "patched.dat"
@@ -369,6 +408,7 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 encoding="utf-8",
             )
             output_archive = temporary_root / "patched.dat"
+            hide_uid_watermark(root)
             _repack(root, output_archive)
             _validate_zip(output_archive)
             os.replace(output_archive, feapp)

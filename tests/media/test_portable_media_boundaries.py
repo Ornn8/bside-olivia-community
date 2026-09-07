@@ -81,7 +81,7 @@ def test_delivery_plan_preserves_spoken_text_and_duration_options():
     plan = plan_reply_delivery("我听见了。慢慢来，好吗？")
     assert plan.spoken_text == "我听见了。慢慢来，好吗？"
     assert plan.duration_target_seconds == (40.0, 50.0)
-    assert MUSIC_DURATION_OPTIONS == (40, 60)
+    assert MUSIC_DURATION_OPTIONS == (40, 60, 110)
     assert normalize_music_duration(40) == 40
 
 

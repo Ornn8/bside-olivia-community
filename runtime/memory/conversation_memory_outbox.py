@@ -259,6 +259,7 @@ class CanonicalMemoryOutbox:
         if error_counts:
             result["pending_error_counts"] = error_counts
         if exhausted:
+            result["exhausted_count"] = int(exhausted)
             result["reason_code"] = "MEMORY_OUTBOX_RETRY_EXHAUSTED"
         return result
 

@@ -202,7 +202,7 @@ def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
 
 
 PORT = int(_os.environ.get("OLIVIA_PORT", "8899"))
-VIDEO_REPLY_MUSIC_DURATION_SECONDS = 60
+VIDEO_REPLY_MUSIC_DURATION_SECONDS = 110
 LLM_TIMEOUT_SECONDS = 30
 LETTER_RETRY_DEDUP_SECONDS = 60
 MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
@@ -210,6 +210,8 @@ MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
 _official_import_progress_lock = threading.Lock()
 _local_import_task: asyncio.Task | None = None
 _local_import_result: dict | None = None
+_history_memory_admin_gate = threading.Lock()
+_history_import_operations: set[asyncio.Task] = set()
 
 
 def _local_import_snapshot():
@@ -1353,7 +1355,7 @@ def _conversation_memory_ready_for_reply() -> bool:
     return (
         runtime.enabled is True
         and runtime.worker_running is True
-        and runtime.status == "available"
+        and (runtime.status == "available" or runtime.reply_ready)
     )
 
 
@@ -2648,8 +2650,12 @@ def _recent_active_duplicate(
 
 
 def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
+    from original_client_letter_contract import _video_pending
+
     current_time = time.time() if now is None else now
     for letter in store.letters:
+        if _video_pending(letter):
+            return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
         if (
@@ -2669,6 +2675,7 @@ async def route(
     defer_reply: bool = False,
     companion_confirmed: bool = False,
     _local_import_worker: bool = False,
+    _history_gate_owned: bool = False,
 ):
     canonical_path = contract.canonical_route_path(path)
     p = (
@@ -2755,6 +2762,31 @@ async def route(
                 _update_official_import_progress(status="RUNNING", stage="preflight", total=0, processed=0)
                 _local_import_task = asyncio.create_task(_run_local_import())
                 return _local_import_snapshot()
+        if method == "POST" and not _history_gate_owned:
+            gate = _history_memory_admin_gate
+            if not gate.acquire(blocking=False):
+                return err(409, "MEMORY_ADMIN_BUSY", {"status": "UNAVAILABLE", "error_code": "MEMORY_ADMIN_BUSY", "retryable": True})
+            async def guarded_import():
+                try:
+                    lifecycle = letters_adapter.memory_prompt_builder.memory_lifecycle
+                    pending_clear = getattr(lifecycle, "_has_pending_clear", None)
+                    if callable(pending_clear) and pending_clear():
+                        return err(409, "MEMORY_ADMIN_CLEAR_PENDING", {"status": "UNAVAILABLE", "error_code": "MEMORY_ADMIN_CLEAR_PENDING", "retryable": True})
+                    return await route(method, path, body, query,
+                                       defer_reply=defer_reply, companion_confirmed=companion_confirmed,
+                                       _local_import_worker=True, _history_gate_owned=True)
+                finally:
+                    gate.release()
+            # Keep ownership with the actual work: cancelling the request must
+            # not unlock a still-running to_thread write or strand the lock.
+            operation = asyncio.create_task(guarded_import())
+            _history_import_operations.add(operation)
+            def settled(task):
+                _history_import_operations.discard(task)
+                if not task.cancelled():
+                    task.exception()
+            operation.add_done_callback(settled)
+            return await asyncio.shield(operation)
         source = _default_offline_letter_pair_source()
         if source is None:
             return err(404, "OFFLINE_LETTER_BACKUP_REQUIRED", {
@@ -3303,7 +3335,7 @@ async def route(
             return _invalid_field_type("material", "object")
         if not isinstance(content, str) or not content.strip():
             return err(400, 'INVALID_CONTENT', {'status': 'FAILED', 'error_code': 'INVALID_CONTENT'})
-        duration = material.get("music_duration_seconds", 60)
+        duration = material.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS)
         if (
             isinstance(duration, bool)
             or duration != VIDEO_REPLY_MUSIC_DURATION_SECONDS
@@ -3434,7 +3466,6 @@ async def route(
             })
         if original.get("error_code") == "MEMORY_UNAVAILABLE":
             try:
-                retry_exhausted_conversation_memory()
                 # A failed initializer has no outbox to retry. The explicit
                 # resend must restart it; an already-running initializer is
                 # single-flight and is left alone by the adapter.
@@ -3643,7 +3674,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 stage = "voice_plan"
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
                 stage = "prepare"
-                music_duration_seconds = int(letter.get("music_duration_seconds", 60))
+                music_duration_seconds = int(letter.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS))
                 performance_scene = _current_music_performance(environment)
                 if performance_scene is None or not performance_scene.is_file():
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
@@ -3813,7 +3844,7 @@ async def _run_reply_when_memory_ready(
                 runtime.enabled and runtime.worker_running
                 and runtime.delivery_pending
                 and runtime.status == "degraded"
-                and runtime.reason_code is None
+                and runtime.reason_code in {None, "MEMORY_OUTBOX_RETRY_EXHAUSTED"}
             )
             if not busy:
                 _fail_pending_reply_for_memory_timeout(letter_id)

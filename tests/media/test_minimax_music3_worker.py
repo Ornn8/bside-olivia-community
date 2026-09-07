@@ -43,7 +43,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -114,6 +114,21 @@ def test_worker_graph_uses_current_profile_and_zeroed_negative_conditioning() ->
         "inputs": {"conditioning": ["4", 0]},
     }
     assert graph["7"]["inputs"]["negative"] == ["5", 0]
+
+
+@pytest.mark.parametrize("duration", [40, 60, 110])
+def test_worker_passes_complete_duration_and_original_lyrics_to_comfy(duration):
+    request = _request(duration)
+    graph = worker._graph(request, filename_prefix="audio/duration")
+    assert graph["4"]["inputs"]["max_duration"] == duration
+    assert graph["4"]["inputs"]["lyrics"] == request["lyrics"]
+
+
+def test_worker_rejects_short_lyrics_for_110_seconds_instead_of_repeating_them():
+    request = _request(110)
+    request["lyrics"] = _short_lyrics(40)
+    with pytest.raises(RuntimeError, match="MINIMAX_MUSIC3_LYRICS_INVALID"):
+        worker._graph(request, filename_prefix="audio/short")
 
 
 def test_worker_graph_accepts_official_comfy_profile_without_making_it_default() -> None:

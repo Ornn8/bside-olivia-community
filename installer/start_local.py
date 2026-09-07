@@ -25,6 +25,7 @@ from patch_companion_settings import (
     patch_companion_settings,
 )
 from patch_feapp import repair_web_player_event_ids
+from patch_webplayer import WebPlayerPatchError, patch_webplayer
 from installer.native_window_layout import LayoutStatus, guard_native_window_layout
 from installer.patch_native_navigation import (
     COMPATIBILITY_MANIFEST_NAME,
@@ -506,6 +507,12 @@ def _repair_client_frontend(root: Path, port: int) -> str:
         f"http://127.0.0.1:{port}/",
         work_root=feapp.parent,
     )
+    webplayer = client.parent / "resources" / "webplayer.dat"
+    if webplayer.is_file():
+        try:
+            patch_webplayer(webplayer, work_root=webplayer.parent)
+        except WebPlayerPatchError as exc:
+            raise CompanionSettingsPatchError("COMPANION_PLAYER_PATCH_FAILED") from exc
     return result["status"]
 
 

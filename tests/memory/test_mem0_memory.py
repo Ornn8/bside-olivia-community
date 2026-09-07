@@ -142,6 +142,100 @@ def _config(tmp_path: Path) -> Mem0Config:
     )
 
 
+@pytest.mark.parametrize("source_id", ["history:addressing", "letter:addressing"])
+def test_addressing_backfills_audited_source_without_reextracting(tmp_path, source_id):
+    from companion_memory_context import CompanionMemoryPromptBuilder
+    from memory_port import NullMemoryPort
+
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(source_id=source_id, user_id="local-user", occurred_at=NOW,
+                     user_message="我以后叫你“阿离”。", assistant_message="以后我叫你“小禾”。")
+    # Existing releases committed and audited content without an address lane.
+    assert adapter._remember_content_transaction(**arguments).status is MemoryWriteStatus.WRITTEN
+    backend.calls.clear()
+    result = adapter.remember_exchange(**arguments)
+    assert result.status is MemoryWriteStatus.WRITTEN
+    adds = [call for method, call in backend.calls if method == "add"]
+    assert len(adds) == 2 and all(call["infer"] is False for call in adds)
+    assert all(call["metadata"]["category"] == "explicit_addressing" for call in adds)
+    assert "说话者：用户；称呼对象：林离" in adds[0]["messages"]
+    assert "说话者：林离；称呼对象：用户" in adds[1]["messages"]
+
+    context = CompanionMemoryPromptBuilder(NullMemoryPort(), adapter).build("称呼", max_chars=2400)
+    assert "阿离" in context.text and "小禾" in context.text
+    assert "说话者：用户；称呼对象：林离" in context.text
+    assert "说话者：林离；称呼对象：用户" in context.text
+    backend.calls.clear()
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
+    assert not any(method == "add" for method, _ in backend.calls)
+
+
+def test_addressing_failed_supplement_retries_without_paid_reextraction(tmp_path):
+    class AddressFailure(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs.get("infer") is False and "address" in self.fail:
+                raise RuntimeError("synthetic address failure")
+            return super().add(messages, **kwargs)
+
+    backend = AddressFailure()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(source_id="history:retry-address", user_id="local-user", occurred_at=NOW,
+                     user_message="你可以叫我“小禾”。", assistant_message="我收到了。")
+    backend.fail.add("address")
+    result = adapter.remember_exchange(**arguments)
+    assert result.error_code == "MEM0_ADDRESSING_WRITE_FAILED"
+    backend.calls.clear()
+    backend.fail.clear()
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    adds = [call for method, call in backend.calls if method == "add"]
+    assert len(adds) == 1 and adds[0]["infer"] is False
+
+
+@pytest.mark.parametrize("content_already_present", [False, True])
+def test_addressing_failure_returns_only_this_attempts_created_ids(tmp_path, content_already_present):
+    class SecondAddressFailure(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs.get("infer") is False and "说话者：林离" in messages:
+                raise RuntimeError("synthetic second address failure")
+            return super().add(messages, **kwargs)
+
+    backend = SecondAddressFailure()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(source_id="history:address-rollback", user_id="local-user", occurred_at=NOW,
+                     user_message="我以后叫你“阿离”。", assistant_message="以后我叫你“小禾”。")
+    if content_already_present:
+        assert adapter._remember_content_transaction(**arguments).status is MemoryWriteStatus.WRITTEN
+    old_ids = {row["id"] for row in backend.rows}
+    result = adapter.remember_exchange(**arguments)
+    assert result.status is MemoryWriteStatus.UNAVAILABLE
+    assert result.error_code == "MEM0_ADDRESSING_WRITE_FAILED"
+    assert set(result.memory_ids) == {row["id"] for row in backend.rows} - old_ids
+    assert len(result.memory_ids) == (1 if content_already_present else 3)
+    # A duplicate retry must never offer old records for import rollback.
+    retried = adapter.remember_exchange(**arguments)
+    assert retried.status is MemoryWriteStatus.UNAVAILABLE
+    assert retried.memory_ids == ()
+
+
+def test_address_only_reply_survives_empty_model_extraction(tmp_path):
+    class EmptyExtraction(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs.get("infer") is not False:
+                self.calls.append(("add", {"messages": messages, **kwargs}))
+                return {"results": []}
+            return super().add(messages, **kwargs)
+
+    backend = EmptyExtraction()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    result = adapter.remember_exchange(
+        source_id="letter:only-address", user_id="local-user", occurred_at=NOW,
+        user_message="今天还好吗？", assistant_message="以后我叫你“小禾”。",
+    )
+    assert result.status is MemoryWriteStatus.WRITTEN
+    assert len(backend.rows) == 1 and "称呼对象：用户" in backend.rows[0]["memory"]
+
+
 @pytest.mark.parametrize("source_id", ["reply:first-contact:1", "history:first-contact"])
 def test_extraction_keeps_attribution_without_inventing_relationship_history(tmp_path, source_id):
     backend = FakeMem0()

@@ -1,6 +1,7 @@
 const fs=require('fs'), vm=require('vm'), assert=require('assert');
 const source=fs.readFileSync(process.argv[2],'utf8');
-const code=source.slice(source.indexOf('  const loadDialogData ='), source.indexOf('  const isSettingsRoute ='));
+const code=source.slice(source.indexOf('  const renderCompanionStatus ='), source.indexOf('  const scheduleMemoryStatusRefresh ='))+
+ source.slice(source.indexOf('  const loadDialogData ='), source.indexOf('  const isSettingsRoute ='));
 const calls=[];
 const context={STATUS_PATH:'status',
  renderLlmSetupPanel:async()=>{},renderCapabilityPanel:async()=>{},renderLocalUpdatePanel:()=>{},

@@ -202,7 +202,7 @@ def test_official_history_strict_migration_accepts_uninformative_skips() -> None
     assert result.error_code is None
 
 
-def test_official_history_strict_migration_rolls_back_new_writes_on_failure() -> None:
+def test_official_history_strict_migration_keeps_completed_writes_on_failure() -> None:
     memory = RecordingMemory(
         [MemoryWriteStatus.WRITTEN, MemoryWriteStatus.UNAVAILABLE]
     )
@@ -216,7 +216,7 @@ def test_official_history_strict_migration_rolls_back_new_writes_on_failure() ->
 
     assert result.status == "partial"
     assert result.error_code == "MEM0_WRITE_FAILED"
-    assert memory.deleted == ["memory.1"]
+    assert memory.deleted == []
 
 
 def test_official_history_strict_migration_reconciles_a_timed_out_write() -> None:
@@ -289,7 +289,7 @@ def test_official_history_does_not_rollback_a_timed_out_duplicate() -> None:
     assert memory.deleted == []
 
 
-def test_official_history_strict_migration_rolls_back_after_invalid_result() -> None:
+def test_official_history_strict_migration_keeps_progress_after_invalid_result() -> None:
     class InvalidSecondResultMemory(RecordingMemory):
         def remember_exchange(self, **kwargs: object):
             if len(self.events) == 1:
@@ -308,14 +308,20 @@ def test_official_history_strict_migration_rolls_back_after_invalid_result() -> 
 
     assert result.status == "partial"
     assert result.error_code == "MEM0_WRITE_RESULT_INVALID"
-    assert memory.deleted == ["memory.1"]
+    assert memory.deleted == []
 
 
-def test_official_history_rollback_attempts_every_new_memory_id() -> None:
+def test_official_history_rollback_attempts_every_current_failed_memory_id() -> None:
     class PartlyFailingDeleteMemory(RecordingMemory):
+        def remember_exchange(self, **kwargs):
+            result = super().remember_exchange(**kwargs)
+            if result.status is MemoryWriteStatus.UNAVAILABLE:
+                return replace(result, memory_ids=("memory.pending.1", "memory.pending.2"))
+            return result
+
         def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
             super().delete_memory(memory_id, user_id=user_id)
-            return memory_id != "memory.2"
+            return memory_id != "memory.pending.2"
 
     memory = PartlyFailingDeleteMemory(
         [
@@ -333,7 +339,70 @@ def test_official_history_rollback_attempts_every_new_memory_id() -> None:
     )
 
     assert result.error_code == "MEM0_ROLLBACK_FAILED"
-    assert memory.deleted == ["memory.2", "memory.1"]
+    assert memory.deleted == ["memory.pending.2", "memory.pending.1"]
+
+
+class ResumableMemory(RecordingMemory):
+    def __init__(self):
+        super().__init__([])
+        self.persisted = {}
+        self.extracted = []
+        self.fail_second = True
+
+    def remember_exchange(self, **kwargs):
+        source = kwargs["source_id"]
+        if source in self.persisted:
+            return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source)
+        self.extracted.append(kwargs["user_message"])
+        memory_id = f"memory.{len(self.extracted)}"
+        self.persisted[source] = memory_id
+        if kwargs["user_message"] == "user-second" and self.fail_second:
+            return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source, (memory_id,),
+                                     "MEM0_EXTRACTION_RESPONSE_INVALID")
+        return MemoryWriteResult(MemoryWriteStatus.WRITTEN, source, (memory_id,))
+
+    def delete_memory(self, memory_id, *, user_id):
+        self.persisted = {key: value for key, value in self.persisted.items() if value != memory_id}
+        return super().delete_memory(memory_id, user_id=user_id)
+
+
+def test_partial_history_retries_only_failed_exchange_and_retains_completed_progress():
+    memory = ResumableMemory()
+    exchanges = (_exchange("first", 10), _exchange("second", 20))
+    finalized = []
+    kwargs = dict(memory=memory, user_id="local-user", require_persisted=True,
+                  finalize_private_world=lambda rows: finalized.append(rows) or "initialized")
+    first = migrate_historical_exchanges(exchanges, **kwargs)
+    assert first.status == "partial" and first.processed == first.written == 1
+    assert first.error_code == "MEM0_EXTRACTION_RESPONSE_INVALID"
+    assert memory.deleted == ["memory.2"]
+    assert memory.persisted == {exchanges[0].memory_source_id: "memory.1"}
+    assert finalized == []
+    memory.fail_second = False
+    retry = migrate_historical_exchanges(exchanges, **kwargs)
+    assert retry.status == "completed" and retry.duplicates == retry.written == 1
+    assert memory.extracted == ["user-first", "user-second", "user-second"]
+    assert finalized == [exchanges]
+
+
+def test_relationship_failure_keeps_memory_progress_for_retry():
+    memory = ResumableMemory()
+    memory.fail_second = False
+    exchanges = (_exchange("first", 10), _exchange("second", 20))
+    def fail_relationship(_rows):
+        raise RuntimeError("synthetic relationship failure")
+    first = migrate_historical_exchanges(
+        exchanges, memory=memory, user_id="local-user", require_persisted=True,
+        finalize_private_world=fail_relationship,
+    )
+    assert first.status == "partial" and first.processed == first.written == 2
+    assert first.error_code == "PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED"
+    retry = migrate_historical_exchanges(
+        exchanges, memory=memory, user_id="local-user", require_persisted=True,
+        finalize_private_world=lambda _: "initialized",
+    )
+    assert retry.status == "completed" and retry.duplicates == 2
+    assert memory.deleted == [] and memory.extracted == ["user-first", "user-second"]
 
 
 def test_official_history_rolls_back_pending_ids_from_failed_current_write() -> None:

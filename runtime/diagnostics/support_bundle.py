@@ -21,6 +21,9 @@ DIAGNOSTIC_BUNDLE_MEMBERS = (
 )
 MAX_BUNDLE_BYTES = 1 << 20
 MAX_CHECKS = 32
+HISTORY_IMPORT_STAGES = frozenset({
+    "idle", "preflight", "listing", "memory", "relationship", "importing", "completed", "failed", "unknown",
+})
 BREEZE_INSTALL_DIAGNOSTIC_CODES = frozenset({
     "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
     "BREEZE_PIP_HASH_MISMATCH", "BREEZE_PIP_WHEEL_UNAVAILABLE", "BREEZE_PIP_ACCESS_DENIED",
@@ -110,6 +113,9 @@ def _project_health(value: object) -> dict[str, object]:
         if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
             raise _invalid()
         check = _mapping(checks[name])
+        if name == "history_import":
+            projected[name] = project_history_import(check)
+            continue
         entry: dict[str, object] = {"state": _status(check.get("state"))}
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
@@ -151,6 +157,27 @@ def _project_health(value: object) -> dict[str, object]:
                 entry["worker_running"] = check["worker_running"]
         projected[name] = entry
     return {"checks": projected, "status": _status(source.get("status"))}
+
+
+def project_history_import(value: object) -> dict[str, object]:
+    """Discard unknown or malformed import metadata at both export boundaries."""
+    source = value if isinstance(value, Mapping) else {}
+    state = source.get("state")
+    stage = source.get("stage")
+    result = {
+        "state": state if isinstance(state, str) and state in {"idle", "running", "completed", "failed", "unavailable", "unknown"} else "unknown",
+        "stage": stage if isinstance(stage, str) and stage in HISTORY_IMPORT_STAGES else "unknown",
+    }
+    for field in ("total", "processed"):
+        count = source.get(field)
+        if type(count) is int and 0 <= count <= 1_000_000_000:
+            result[field] = count
+    if type(source.get("task_running")) is bool:
+        result["task_running"] = source["task_running"]
+    error = source.get("error_code")
+    if isinstance(error, str) and _CODE_RE.fullmatch(error):
+        result["error_code"] = error
+    return result
 
 
 def _project_install(value: object) -> dict[str, object]:

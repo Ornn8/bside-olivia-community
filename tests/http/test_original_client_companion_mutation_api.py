@@ -77,6 +77,22 @@ async def _client(backend: RecordingBackend | None = None):
     return client, backend, origin
 
 
+def test_busy_clear_returns_fixed_code_without_running_delete():
+    class BusyBackend(RecordingBackend):
+        def clear_memory(self, **kwargs):
+            raise OriginalClientCompanionMutationError("MEMORY_ADMIN_BUSY", status=409)
+    async def scenario():
+        client, backend, origin = await _client(BusyBackend())
+        try:
+            response = await client.post(MEMORY_CLEAR_PATH, headers=_headers(origin), json={"request_id": "busy-clear", "reason": "synthetic", "confirmed": True})
+            assert response.status == 409
+            assert (await response.json())["error_code"] == "MEMORY_ADMIN_BUSY"
+            assert backend.calls == []
+        finally:
+            await client.close()
+    asyncio.run(scenario())
+
+
 def _headers(origin: str) -> dict[str, str]:
     return {
         "Origin": origin,

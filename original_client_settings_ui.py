@@ -529,6 +529,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  const memoryClearFailureMessage = (error) => {
+    if (error && error.code === "MEMORY_ADMIN_BUSY") {
+      return "正在导入或写入记忆，请完成后再清空；本次未执行清空。";
+    }
+    const code = error && typeof error.code === "string" && /^MEMORY_[A-Z0-9_]{1,80}$/.test(error.code)
+      ? `（${error.code}）` : "";
+    return `长期记忆清空未完成${code}，原始信件和林离世界保持不变。`;
+  };
+
   const mutationMessage = (payload, appliedText) => {
     if (!payload || typeof payload.status !== "string") {
       return "操作结果无法确认。";
@@ -681,12 +690,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  const renderCompanionStatus = (statusNode, capabilities) => {
+    if (!statusNode) return;
+    statusNode.textContent = "本机陪伴服务已连接。";
+    statusNode.dataset.state = "available";
+    const failed = Object.entries(capabilities).filter(([, value]) =>
+      value && (value.state === "unavailable" || value.state === "degraded"));
+    if (failed.length) {
+      const labels = {memory: "长期记忆", private_world: "林离世界", candidates: "记忆候选"};
+      statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
+        const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
+          ? `（${value.reason_code}）` : "";
+        return `${labels[name] || "部分功能"}暂不可用${code}`;
+      }).join("；") + "。";
+      statusNode.dataset.state = "degraded";
+    }
+  };
+
   const scheduleMemoryStatusRefresh = (panel, delay = 1000) => {
     window.clearTimeout(panel.__oliviaMemoryStatusTimer);
     panel.__oliviaMemoryStatusTimer = window.setTimeout(async () => {
       if (!panel.isConnected) return;
       try {
         const status = await requestJson(STATUS_PATH);
+        renderCompanionStatus(panel.__oliviaCompanionStatusNode, status.capabilities);
         await renderMemoryPanel(panel, status.capabilities.memory);
       } catch (_error) {
         scheduleMemoryStatusRefresh(panel, Math.min(delay * 2, 5000));
@@ -726,7 +753,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             const status = await requestJson(STATUS_PATH);
             await renderMemoryPanel(panel, status.capabilities.memory);
           } catch (_error) {
-            resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
+            resultState.textContent = memoryClearFailureMessage(_error);
           } finally {
             setButtonsBusy([resume], false);
           }
@@ -946,7 +973,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         );
         await refreshLifecyclePanel();
       } catch (_error) {
-        resultState.textContent = "长期记忆清空失败，原始信件和林离世界保持不变。";
+        resultState.textContent = memoryClearFailureMessage(_error);
       } finally {
         setButtonsBusy([toggle, clear], false);
       }
@@ -2008,6 +2035,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const loadDialogData = async (statusNode, panels, initialMode) => {
+    if (panels.memory) panels.memory.__oliviaCompanionStatusNode = statusNode;
     const tasks = [
       renderLlmSetupPanel(panels.llm, initialMode),
       renderCapabilityPanel(panels.capability),
@@ -2024,19 +2052,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const capabilities = payload.capabilities && typeof payload.capabilities === "object"
         ? payload.capabilities
         : {};
-      statusNode.textContent = "本机陪伴服务已连接。";
-      statusNode.dataset.state = "available";
-      const failed = Object.entries(capabilities).filter(([, value]) =>
-        value && (value.state === "unavailable" || value.state === "degraded"));
-      if (failed.length) {
-        const labels = {memory: "长期记忆", private_world: "林离世界", candidates: "记忆候选"};
-        statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
-          const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
-            ? `（${value.reason_code}）` : "";
-          return `${labels[name] || "部分功能"}暂不可用${code}`;
-        }).join("；") + "。";
-        statusNode.dataset.state = "degraded";
-      }
+      renderCompanionStatus(statusNode, capabilities);
       await Promise.allSettled(tasks.concat([
         renderMemoryPanel(panels.memory, capabilities.memory),
         renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),

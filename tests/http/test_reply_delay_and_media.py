@@ -474,9 +474,11 @@ def test_public_detail_projects_every_legacy_internal_media_status(
     assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == expected
 
 
+@pytest.mark.parametrize("saved_duration", [None, 60, 110])
 def test_internal_spoken_segment_and_complete_musical_renderers(
     tmp_path: Path,
     monkeypatch,
+    saved_duration,
 ):
     reply_text = "I hear you, and I am staying with you through this."
     plan = VoicePerformancePlan(
@@ -503,7 +505,7 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
             "content": "spoken plus music request",
             "reply_text": reply_text,
             "reply_mode": "musical_video",
-            "music_duration_seconds": 60,
+            **({"music_duration_seconds": saved_duration} if saved_duration is not None else {}),
         },
     ]
     local_server.store.letters[:] = letters
@@ -543,6 +545,7 @@ def test_internal_spoken_segment_and_complete_musical_renderers(
         Path(output).write_bytes(b"spoken-video")
 
     def render_musical(content, _text, output, **kwargs):
+        assert kwargs["duration_seconds"] == (saved_duration if saved_duration is not None else 110)
         received[content] = (
             kwargs["voice_performance_plan"],
             kwargs["spoken_action_base_path"],

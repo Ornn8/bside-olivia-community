@@ -28,6 +28,7 @@
     "MEMORY_MUTATION_DISABLED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_DISABLED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
+    "MEMORY_ADMIN_BUSY": {"http_status": 409, "status": "FAILED", "retryable": true},
     "MEMORY_ADMIN_READ_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_CLEAR_FAILED": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},
     "MEMORY_ADMIN_AUDIT_UNAVAILABLE": {"http_status": 503, "status": "UNAVAILABLE", "retryable": true},

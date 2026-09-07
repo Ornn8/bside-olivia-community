@@ -8,7 +8,7 @@ import pytest
 from runtime.media.song_content import SongContentPlan, parse_song_semantic_plan
 from runtime.media.music_caption import render_minimax_caption
 from runtime.media.song_plan_cache import cached_song_plan
-from tests.media.test_song_content_pipeline import _payload
+from tests.media.test_song_semantic_plan import _payload
 
 
 def plan(duration=40):
@@ -25,6 +25,18 @@ def test_retry_reuses_verified_plan_before_planner(tmp_path):
     assert second == first
     assert calls == [1]
     assert "caption" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize('duration,replans', [(60, False), (110, True)])
+def test_lyrics_only_version_invalidates_only_new_duration_cache(tmp_path, duration, replans):
+    path = tmp_path / 'song-plan.private.json'
+    cached_song_plan(path, 'letter', 'reply', duration, lambda: plan(duration))
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['planner_version'] = 1
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    calls = []
+    cached_song_plan(path, 'letter', 'reply', duration, lambda: calls.append(1) or plan(duration))
+    assert bool(calls) is replans
 
 
 @pytest.mark.parametrize("change", ["content", "reply", "duration", "broken", "lyrics", "caption", "oversized", "version", "deep"])

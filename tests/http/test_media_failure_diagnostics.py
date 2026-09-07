@@ -35,6 +35,7 @@ def test_media_failure_logs_only_stage_type_and_safe_code(tmp_path, failure_stag
     env = {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)}
     namespace = {
         "Mapping": dict, "Path": Path, "json": json, "_re": re,
+        "VIDEO_REPLY_MUSIC_DURATION_SECONDS": 110,
         "_persist_provider_failure": _persist_provider_failure,
         "asyncio": asyncio, "store": SimpleNamespace(letters=[letter]),
         "media_semaphore": asyncio.Semaphore(1), "_persist_media_state": lambda: None,
