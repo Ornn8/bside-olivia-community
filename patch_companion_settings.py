@@ -337,6 +337,42 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    # Keep the native sealed-letter animation; only specialize its caption.
+    source = source.replace(
+        'letterStatus:e.letterStatus,auditStatus:e.auditStatus,',
+        'letterStatus:e.letterStatus,videoPending:e.videoPending===true,auditStatus:e.auditStatus,',
+    ).replace(
+        '__name:"MailBoxReplyContent",props:{modelValue:{},',
+        '__name:"MailBoxReplyContent",props:{videoPending:{type:Boolean},modelValue:{},',
+    ).replace(
+        'v(o(i)("mailbox_waiting_for_reply"))',
+        'v(A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply"))',
+    ).replace(
+        'F(ks,{key:1,"model-value":',
+        'F(ks,{key:1,videoPending:i.mail.videoPending,"model-value":',
+    ).replace(
+        'F(ks,{key:0,ref_key:"replyContentRef",',
+        'F(ks,{key:0,videoPending:i.mail.videoPending,ref_key:"replyContentRef",',
+    ).replace(
+        '["model-value","videoUrl","timestamp","type"]',
+        '["model-value","videoUrl","timestamp","type","videoPending"]',
+    ).replace(
+        '["modelValue","videoUrl","timestamp","type"]',
+        '["modelValue","videoUrl","timestamp","type","videoPending"]',
+    )
+    source = source.replace(
+        're.isUnread!==Ee.isUnread)',
+        're.isUnread!==Ee.isUnread||re.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)',
+    ).replace(
+        're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)',
+        're.isUnread!==Ee.isUnread||re.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)',
+    )
+    # A list row has no reply body/video URL. Reload an open detail on delivery
+    # instead of marking the empty summary as an already-loaded reply.
+    source = source.replace(
+        't.value[ye]=re)}}N()',
+        't.value[ye]=re,Ee.detailLoaded&&await z(re.id))}}N()',
+    )
     offline_guard = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode)throw new Ol(e);'
     if offline_guard in source:
         source = source.replace(

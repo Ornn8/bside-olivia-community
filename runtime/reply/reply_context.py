@@ -49,6 +49,15 @@ class RelationshipStage(str, Enum):
     COMMITTED = "committed"
 
 
+# Share the meaning of this state between the writer and quality decisions.
+# A conversational feeling does not mutate the stage or grant an action.
+RELATIONSHIP_FACT_AUTHORITY = (
+    "关系阶段与动作许可记录已经确认的关系身份和对应行为权限，不是对每次交流感受的评级。"
+    "当下觉得聊得来、更亲近、开心或接受赞美，不等于确立恋爱关系、排他承诺、授权私人称呼或身体接触；"
+    "不声称未经确认的具体关系身份、权限和共同经历；已确认的感情与边界仍按记录保留，不得撤回或改写。"
+)
+
+
 _STAGE_ORDER = (
     RelationshipStage.UNKNOWN,
     RelationshipStage.ACQUAINTANCE,

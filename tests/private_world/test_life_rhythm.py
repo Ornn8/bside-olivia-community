@@ -6,6 +6,63 @@ import asyncio
 import json
 from types import SimpleNamespace
 from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+import pytest
+
+
+@pytest.mark.parametrize("now,shifts,start,end", [
+    ("2026-09-07T20:00:00+08:00", {}, "2026-09-07T23:00:00+08:00", "2026-09-08T07:00:00+08:00"),
+    ("2026-09-08T00:30:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T01:00:00+08:00", "2026-09-08T09:00:00+08:00"),
+    ("2026-09-08T08:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T01:00:00+08:00", "2026-09-08T09:00:00+08:00"),
+    ("2026-09-08T09:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T22:00:00+08:00", "2026-09-09T06:00:00+08:00"),
+    ("2026-09-08T00:00:00+08:00", {"2026-09-07":-60}, "2026-09-07T22:00:00+08:00", "2026-09-08T06:00:00+08:00"),
+    ("2026-09-11T23:00:00+08:00", {}, "2026-09-11T23:00:00+08:00", "2026-09-12T08:00:00+08:00"),
+    ("2026-09-13T23:00:00+08:00", {}, "2026-09-13T23:00:00+08:00", "2026-09-14T07:00:00+08:00"),
+])
+def test_planned_rest_window_is_current_or_next_and_preserves_night_shift(now, shifts, start, end):
+    now = datetime.fromisoformat(now)
+    plan = rhythm(now, [], shifts)['planned_rest_window']
+    assert plan == {'kind':'current_plan','start':start,'end':end}
+    assert datetime.fromisoformat(plan['end']) > now
+    # Input timezone does not change the plan's Shanghai civil-time representation.
+    assert rhythm(now.astimezone(timezone.utc), [], shifts)['planned_rest_window'] == plan
+
+
+def test_interrupted_rest_does_not_turn_planned_window_into_execution_history():
+    now = datetime.fromisoformat('2026-09-08T02:00:00+08:00')
+    event = [(now-timedelta(minutes=5), now)]
+    actual = rhythm(now, event)
+    assert actual['phase'] == 'interrupted_rest'
+    assert actual['planned_rest_window'] == rhythm(now, [])['planned_rest_window']
+    assert set(actual['planned_rest_window']) == {'start','end','kind'}
+
+
+def test_schedule_and_exchange_intervals_do_not_observe_who_woke_her():
+    now = datetime.fromisoformat('2026-09-08T02:00:00+08:00')
+    resting = rhythm(now, [])
+    corresponding = rhythm(now, [(now-timedelta(minutes=5), now)])
+    assert resting['phase'] == 'sleep' and resting['rest'] == 'rested'
+    assert corresponding['phase'] == 'interrupted_rest' and corresponding['rest'] == 'rested'
+    for state in (resting, corresponding):
+        assert state['phase_basis'] == 'schedule_and_correspondence'
+        assert state['wake_cause'] == 'unknown'
+        assert '醒来' not in state['activity']
+    assert resting['activity'] == '计划休息的时段'
+
+
+def test_brief_night_correspondence_does_not_immediately_claim_sleep_deficit():
+    start = datetime.fromisoformat('2026-09-08T02:00:00+08:00')
+    exchange = [(start, start + timedelta(minutes=2))]
+    brief = rhythm(start + timedelta(minutes=5), exchange)
+    assert brief['phase'] == 'interrupted_rest'
+    assert brief['rest'] == 'rested'
+    assert brief['wellbeing']['care'] == 'none'
+    assert '补觉' not in brief['note']
+    # Quiet settling still contributes to the simulation, but is not charged
+    # in advance. Persisted intervals eventually accumulate real modeled load.
+    later = rhythm(start + timedelta(hours=1), exchange)
+    assert later['rest'] == 'tired'
+    assert later['wellbeing']['care'] == 'rest'
+    assert rest_timeline(start + timedelta(hours=1), exchange)['load_minutes'] == 42
 
 
 def test_night_exchange_survives_restart_recovers_and_does_not_count_each_letter(tmp_path):

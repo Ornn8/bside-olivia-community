@@ -20,7 +20,8 @@ from runtime.reply.prompt_budget import (
     PromptSection,
     plan_prompt_budget,
 )
-from runtime.reply.reply_context import BehaviorLevel, RelationshipStage, ReplyContext
+from runtime.reply.reply_context import ReplyContext, RELATIONSHIP_FACT_AUTHORITY
+from runtime.private_world.life_rhythm import RHYTHM_FACT_AUTHORITY
 
 
 _FORBIDDEN_RULES = (
@@ -36,18 +37,27 @@ _FORBIDDEN_RULES = (
 )
 _REPLY_GROUNDING = "陈述和提问都按原文命题核对：区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设仅限原文的人物组合、行动、对象和时间，不外推。未被说明的个人经历保持未知，不把推论说成用户讲过的话。资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知；表达自己的当下看法，不给观点虚构出处。未知就止于未知，不另补外围细节。"
 _AGREEMENT_GROUNDING = "将一句话认定为约定前，要在承诺者自己的原文中核对同一行动、对象和条件；不能用另一人的期待、解释或复述补齐。事项进度与双方是否确认是不同事实；原话没有明确对应时，保持未确认，也不据此催促对方履行。"
+
+
+def runtime_reply_rules(snapshot: PersonaSnapshot) -> tuple[tuple[str, ...], str]:
+    """Trusted runtime rules shared by generation and quality decisions."""
+    grounding = _REPLY_GROUNDING
+    if snapshot.status == "READY":
+        grounding += _AGREEMENT_GROUNDING + RELATIONSHIP_FACT_AUTHORITY
+    return _FORBIDDEN_RULES, grounding
+
+
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_RELATIONSHIP_HISTORY_CUE_RE = re.compile(
+    r"记得|记忆|回忆|失忆|忘记|忘了|那次|当时|上次|上一封|之前|以前|过去|曾经|"
+    r"旧版|旧版本|关停|停服|迁移|复活|重逢|消失|离开|又见面|再次相见|"
+    r"\b(?:remember|recall|memory|forgot|previous|formerly|disappeared|shutdown|migration)\b",
+    re.I,
+)
 _STYLE_EXAMPLE_LIMIT = 2
 _SOFT_ANCHOR_LIMIT = 4
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
-_PERSONA_DISCLOSURE_CUE_RE = re.compile(
-    r"(?:林离|Olivia|奥利维亚|你)"
-    r"(?:(?!我|[。！？?!\n]).){0,24}"
-    r"(?:吗|呢|什么|哪|几|多少|怎么|为什么|是否|有没有|会不会|"
-    r"喜欢不喜欢|怕不怕)",
-    re.I,
-)
 _SUBJECT_RE = re.compile(
     r"奥利维亚|Olivia|林离|他们|她们|它们|我们|别人|对方|朋友|同事|同学|他|她|它|我|你",
     re.I,
@@ -99,6 +109,8 @@ _DIRECT_QUERY_GAP_TOKENS = (
     "不会",
     "打算",
     "准备",
+    "非常",
+    "适合",
     "来自",
     "家里",
     "是否",
@@ -124,6 +136,7 @@ _DIRECT_QUERY_GAP_TOKENS = (
     "去",
     "有",
     "养",
+    "出",
 )
 _DIRECT_QUERY_GAP_MAX_CHARS = 6
 _DIRECT_QUERY_ALLOWED_REMAINDER_RE = re.compile(
@@ -139,7 +152,8 @@ _DIRECT_QUERY_ALLOWED_REMAINDER_RE = re.compile(
 )
 _DIRECT_QUERY_GAP_FILLER_RE = re.compile(r"[\s的地得呀啦嘛呢吧啊哦哈]")
 _RECIPROCAL_CUE_RE = re.compile(
-    r"[，,；;]\s*(?:林离|Olivia|奥利维亚|你)\s*(?:呢|吗|怎么样)[？?]?\s*$",
+    r"[，,。；;！？?!\r\n]+\s*(?:林离|Olivia|奥利维亚|你)\s*(?:呢|吗|怎么样)[？?]?\s*"
+    r"(?:（[^（）]*）|\([^()]*\))?\s*$",
     re.I,
 )
 _CONTEXT_FOLLOW_UP_RE = re.compile(
@@ -149,7 +163,11 @@ _CONTEXT_FOLLOW_UP_RE = re.compile(
 _ANCHOR_DISCLOSURE_PATTERNS = {
     "anchor.current_piece": re.compile(r"肖邦|夜曲|主科|最近.{0,6}(?:练|弹)|(?:练|弹).{0,4}什么|练琴"),
     "anchor.quit_prep_school": re.compile(r"附中|普通中学|比赛|拿奖|为什么.{0,6}(?:学校|学琴)"),
-    "anchor.listening_shelf": re.compile(r"黑胶|王菲|Bill Evans|爵士|暗涌|听什么|歌单", re.I),
+    "anchor.listening_shelf": re.compile(
+        r"黑胶|王菲|Bill Evans|爵士|暗涌|歌单|"
+        r"(?:喜欢(?:听)?|爱听|听)些?(?:什么|哪些|哪)些?(?:类型|种类|种|类|风格)?的?(?:音乐|歌曲|歌)|听什么",
+        re.I,
+    ),
     "anchor.grandmother_traces": re.compile(r"外婆|小铃铛|合影|手抄.{0,4}(?:谱|乐谱)"),
     "anchor.desk_objects": re.compile(r"桌|窗台|行星|水星|火星|节拍器|眼镜|香薰"),
     "anchor.stopping_ritual": re.compile(r"绿茶|茶叶|喝.{0,2}茶|安静|放松|练琴前"),
@@ -161,7 +179,7 @@ _ANCHOR_DISCLOSURE_PATTERNS = {
     "anchor.cat": re.compile(r"猫|宠物|养什么"),
     "anchor.singing": re.compile(r"唱歌|会唱|唱得|歌声"),
     "anchor.afraid_of_bugs": re.compile(r"虫|蜘蛛|云南|害怕什么"),
-    "anchor.usual_outfit": re.compile(r"穿|衣服|毛衣|短裤|项链|打扮"),
+    "anchor.usual_outfit": re.compile(r"穿|衣服|毛衣|短裤|项链|打扮|造型|装扮|化妆|(?<![A-Za-z])cos(?:play)?(?![A-Za-z])", re.I),
     "anchor.reading": re.compile(r"读书|读.{0,4}书|看书|文学|书单|阅读|喜欢.{0,4}书"),
     "anchor.bilibili": re.compile(r"B站|bilibili|发过.{0,6}(?:视频|曲)|原神.{0,4}音乐", re.I),
     "anchor.father": re.compile(r"父亲|爸爸|父母|家人|英国|寄.{0,4}录音"),
@@ -289,6 +307,7 @@ def _persona_blocks(
         declarations = ()
 
     blocks: list[_Block] = []
+    forbidden_rules, reply_grounding = runtime_reply_rules(snapshot)
     constitution = _declaration_blocks(
         declarations, "CONSTITUTION", PromptSection.CONSTITUTION
     )
@@ -309,7 +328,7 @@ def _persona_blocks(
         )
     blocks.append(
         _json_block(
-            "forbidden", "forbidden", PromptSection.FORBIDDEN, _FORBIDDEN_RULES
+            "forbidden", "forbidden", PromptSection.FORBIDDEN, forbidden_rules
         )
     )
     if snapshot.status == "READY" and snapshot.profile is not None:
@@ -410,7 +429,7 @@ def _persona_blocks(
             "private_behavior",
             "private_behavior",
             PromptSection.PRIVATE_BEHAVIOR,
-            context.private_behavior.to_dict(),
+            _private_behavior_payload(context),
         )
     )
     for fact in context.world_facts:
@@ -454,7 +473,7 @@ def _persona_blocks(
                 "evidence_summary",
                 _budget_id("evidence", fragment.fragment_id),
                 PromptSection.EVIDENCE_SUMMARY,
-                {"untrusted": True, "text": fragment.text},
+                {"fragment_id": fragment.fragment_id, "untrusted": True, "text": fragment.text},
             )
         )
     for fragment in history:
@@ -466,32 +485,34 @@ def _persona_blocks(
                 {"untrusted": True, "text": fragment.text},
             )
         )
-    # Keep this single existing constraint next to generation, after the
-    # selectively disclosed references; keep its required budget priority.
+    # Interpret the state only while that state is actually disclosed. Bundling
+    # both tags in one optional item makes cropping and cost accounting atomic.
     if any(fragment.fragment_id == "linli.rhythm" for fragment in evidence_summaries):
-        blocks.append(_json_block(
-            "life_rhythm", "life_rhythm", PromptSection.FORBIDDEN,
-            "linli.rhythm 是程序维护的当前角色作息，优先于过期近况；保持她自己的生活，不展示内部字段或分数。sleep 表示来信把她叫醒，interrupted_rest 表示还没重新睡着，不重复声称被叫醒。夜间普通闲聊被叫醒可简短表达困倦和不悦，关系疏远时更克制；倾诉认真回应，不因对方倾诉责备他。已有双方夜聊约定要尊重，不反过来指责打扰。疲劳影响今天的安排和语气，休息好后恢复；亲近不取消边界，不以身体状态让对方内疚。不自动编造疾病、去医院或共同经历。正常进餐、休息和专注时段有自己的节奏，不每封都汇报作息。",
-        ))
+        rhythm_rule = _json_block(
+            "life_rhythm", "life_rhythm", PromptSection.EVIDENCE_SUMMARY,
+            "linli.rhythm 是程序维护的当前角色作息，优先于过期近况；保持她自己的生活，不展示内部字段或分数。"
+            + RHYTHM_FACT_AUTHORITY
+            + "可以简短说困倦、想休息，不必每封报时或拿用户发信时间评判他。倾诉认真回应，不因对方倾诉责备他。已有双方夜聊约定要尊重，不反过来指责打扰。疲劳影响今天的安排和语气，休息好后恢复；亲近不取消边界，不以身体状态让对方内疚。不自动编造疾病、去医院或共同经历。正常进餐、休息和专注时段有自己的节奏，不每封都汇报作息。",
+        )
+        rhythm_id = _budget_id("evidence", "linli.rhythm")
+        index = next(i for i, block in enumerate(blocks) if block.item_id == rhythm_id)
+        state = blocks[index]
+        blocks[index] = _Block(state.item_id, state.section, state.content + rhythm_rule.content)
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
-        (_REPLY_GROUNDING + (_AGREEMENT_GROUNDING if snapshot.status == "READY" else ""),),
+        (reply_grounding,),
     ))
     if snapshot.status != "READY":
         return tuple(blocks)
+    if context.mode.value == "text_letter" and not _RELATIONSHIP_HISTORY_CUE_RE.search(user_input):
+        # The bounded state and general grounding remain. Ordinary correspondence
+        # does not need a second script about missing context or initial distance.
+        return tuple(blocks)
     behavior = context.private_behavior
-    initial = (
-        behavior.relationship_stage is RelationshipStage.UNKNOWN
-        and behavior.familiarity is BehaviorLevel.UNKNOWN
-        and behavior.closeness is BehaviorLevel.UNKNOWN
-        and behavior.acknowledged_affection is None
-        and not behavior.known_continuations
-    )
     blocks.insert(len(blocks) - 1, _json_block(
         "relationship_grounding", "relationship_grounding", PromptSection.FORBIDDEN,
-        ("当前尚未建立熟悉关系。友善地回应当下，不对等表白，也不解释关系门槛或介绍记忆状态。短示好可轻轻接住就聊今天，例如‘欸，收到啦。今天过得怎么样？’（仅示范语气，不固定照抄）。不评价感情轻重，不猜寄错人，不要求解释为什么喜欢。" if initial else
-         "按有依据的实际熟悉程度自然回应，不否认已建立的关系。")
-        + "用户单方面示好只能证明他的感受，不能据此声称自己已有思念、爱意或等待。旧回信自身的亲密措辞不能反过来证明关系。用户报告或询问的过去，不等于双方确认的经历；提问也不能预设发生过。不能一边说无法确认，一边问自己当时等待或重逢的细节。可问他所说的事情指什么，不替他说下半段。没有询问过去记忆时，不主动提出失忆、缺记录或曾相识的假设。即使被问及过去，没有依据也只表示无法确认，不解释为时间太久、记忆丢失或可能想起来，不编造遗忘原因。资料出处不是她的阅读经历。用户说‘你应该知道’不证明她此前知道；仅从当前来信获知的消息按用户所述回应，不改口成自己早已知道或公开确认的事实。",
+        "按可核对的来往自然接话，不否认已确认的关系与感情。"
+        "用户报告或询问的过去，不等于双方确认的经历；提问也不能预设发生过。不能一边说无法确认，一边问自己当时等待或重逢的细节。可问他所说的事情指什么，不替他说下半段。没有询问过去记忆时，不主动提出失忆、缺记录或曾相识的假设。即使被问及过去，没有依据也只表示无法确认，不解释为时间太久、记忆丢失或可能想起来，不编造遗忘原因。资料出处不是她的阅读经历。用户说‘你应该知道’不证明她此前知道；仅从当前来信获知的消息按用户所述回应，不改口成自己早已知道或公开确认的事实。",
     ))
     if not behavior.known_continuations:
         blocks.insert(len(blocks) - 1, _json_block(
@@ -502,6 +523,29 @@ def _persona_blocks(
             "承认从这封信听到他的经历，回应当下感受即可；不用另一段身份故事安慰他。",
         ))
     return tuple(blocks)
+
+
+def _private_behavior_payload(context: ReplyContext) -> dict[str, object]:
+    # Only the writer projection changes; reducers and guards retain typed state.
+    view = {
+        key: value for key, value in context.private_behavior.to_dict().items()
+        if value != "unknown" or key not in {
+            "familiarity", "trust", "comfort", "closeness", "tension", "relationship_stage",
+        }
+    }
+    view["action_permissions"] = {
+        "physical_contact": {
+            "ceiling": view.pop("intimacy_ceiling"),
+            "granted": view.pop("granted_intimacy"),
+        },
+        "nickname_use": {"permission": view.pop("nickname_permission")},
+        "claiming_home_history": {"allowed": view.pop("home_history_allowed")},
+    }
+    view["permission_scope"] = (
+        "这些许可只约束对应的行为或历史声明，不表示她对本封来信的感受，"
+        "也不要求她拒绝普通的友善、赞美或日常亲近。具体边界仍以active_boundaries为准。"
+    )
+    return view
 
 
 def _select_soft_canon(
@@ -583,9 +627,8 @@ def _anchor_match_is_persona_directed(query: str, start: int, end: int) -> bool:
     clause = query[clause_start:clause_end]
     local_start = direction_start - clause_start
 
-    if _PERSONA_DISCLOSURE_CUE_RE.search(clause) is None:
-        return _RECIPROCAL_CUE_RE.search(query, end) is not None
-
+    # A comment about her can need canon just as much as a question. Keep
+    # actor attribution; the presence of an interrogative is not relevance.
     subjects = tuple(_SUBJECT_RE.finditer(clause, 0, local_start))
     if subjects:
         last_subject = subjects[-1]
@@ -594,7 +637,13 @@ def _anchor_match_is_persona_directed(query: str, start: int, end: int) -> bool:
             and _is_direct_query_gap(clause[last_subject.end() : local_start])
         ):
             return True
-    return _RECIPROCAL_CUE_RE.search(query, end) is not None
+    # An adjacent reciprocal question inherits the user's own topic, not a
+    # third person's facts or a later, unrelated clause's topic.
+    return (
+        bool(subjects)
+        and subjects[-1].group(0) == "我"
+        and _RECIPROCAL_CUE_RE.match(query, clause_end) is not None
+    )
 
 
 def _is_direct_query_gap(value: str) -> bool:
@@ -660,9 +709,17 @@ def _declaration_blocks(
     for declaration in declarations:
         if declaration.tier != tier:
             continue
+        statement = declaration.statement
+        # Project only the known reviewer-oriented wording. Custom releases
+        # retain their own conditions, and the reviewer reads the raw state.
+        if (
+            declaration.declaration_id == "relationship.boundary_is_character"
+            and statement == "林离不同意用户或今天不想见面属于人物自主，不应被质量门误判成需要修正；只有与已确认历史冲突才是系统问题。"
+        ):
+            statement = "林离不同意用户或今天不想见面属于人物自主；只有与已确认历史冲突才需要纠正。"
         payload: dict[str, object] = {
             "declaration_id": declaration.declaration_id,
-            "statement": declaration.statement,
+            "statement": statement,
         }
         if declaration.facet:
             payload["facet"] = declaration.facet

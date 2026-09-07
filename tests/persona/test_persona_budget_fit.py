@@ -327,7 +327,10 @@ def test_progressive_disclosure_does_not_treat_user_details_as_persona_details()
         for item in named_others
     )
     assert '"declaration_id":"anchor.current_piece"' not in cross_sentence
-    assert bare_name.count('"declaration_id":"anchor.') == 0
+    # This clause explicitly describes Olivia's schooling. Its existing canon
+    # is relevant even though the user did not phrase it as a question.
+    assert '"declaration_id":"anchor.school_timeline"' in bare_name
+    assert bare_name.count('"declaration_id":"anchor.') == 1
 
 
 def test_current_persona_question_without_known_anchor_does_not_fall_back_to_history() -> None:

@@ -223,6 +223,19 @@ class Mem0Backend(Protocol):
     ) -> object: ...
 
 
+def _flash_memory_max_reasoning(base_url: str, model: str) -> bool:
+    endpoint = urlsplit(base_url)
+    return (
+        endpoint.scheme == "https"
+        and model.casefold() == "deepseek-v4-flash"
+        and (endpoint.hostname, endpoint.path.rstrip("/")) in {
+            ("opencode.ai", "/zen/go/v1"),
+            ("api.deepseek.com", ""),
+            ("api.deepseek.com", "/v1"),
+        }
+    )
+
+
 @dataclass(frozen=True)
 class Mem0Config:
     enabled: bool
@@ -346,6 +359,7 @@ class Mem0Config:
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
+        flash_max = _flash_memory_max_reasoning(self.llm_base_url, self.llm_model)
         return {
             "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
             "vector_store": {
@@ -364,6 +378,8 @@ class Mem0Config:
                     "api_key": environment.get(self.llm_api_key_env, ""),
                     "openai_base_url": self.llm_base_url,
                     "temperature": 0.1,
+                    # This budget includes reasoning; final extraction guards remain separate.
+                    **({"max_tokens": 32768} if flash_max else {}),
                 },
             },
             "embedder": {
@@ -1769,6 +1785,13 @@ class Mem0ConversationMemoryAdapter:
         }
 
     def status(self) -> ConversationMemoryStatus:
+        if self._write_call.inflight or self._pending_exchange_key is not None:
+            # The write owns the provider lock; probing it would manufacture a
+            # read timeout and block the outbox's next settlement attempt.
+            return ConversationMemoryStatus(
+                "degraded", True, "mem0", "qdrant-local",
+                reason_code="MEM0_WRITE_PENDING",
+            )
         if self._provider_call.inflight:
             return ConversationMemoryStatus(
                 "unavailable",
@@ -1861,6 +1884,8 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     if not callable(create):
         return
     endpoint = urlsplit(str(getattr(client, "base_url", "")))
+    flash_max = _flash_memory_max_reasoning(endpoint.geturl(), model)
+    go_flash = flash_max and endpoint.hostname == "opencode.ai"
     deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
         endpoint.scheme == "https"
         and endpoint.hostname == "opencode.ai"
@@ -1869,7 +1894,17 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     )
 
     def guarded_create(*args: object, **kwargs: object) -> object:
-        if deepseek_memory:
+        if flash_max:
+            kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}), "thinking": {"type": "enabled"},
+            }
+            kwargs["reasoning_effort"] = "max"
+            # This route's JSON mode was less reliable in paired extraction
+            # replays. Keep the SDK's JSON instructions and outer validator;
+            # omit only the wire-level mode, not the extraction contract.
+            if go_flash and kwargs.get("response_format") == {"type": "json_object"}:
+                kwargs.pop("response_format")
+        elif deepseek_memory:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
             }
@@ -1887,15 +1922,40 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
         raise ImportError("Mem0 Memory.from_config is unavailable")
-    backend = memory_type.from_config(dict(config))
+    llm_config = config.get("llm")
+    provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None
+    keyless = (
+        isinstance(provider_config, Mapping)
+        and provider_config.get("api_key") == ""
+        and urlsplit(str(provider_config.get("openai_base_url", ""))).hostname
+        not in {None, "api.deepseek.com", "opencode.ai", "api.openai.com"}
+    )
+    factory_config = dict(config)
+    if keyless:
+        # Mem0 treats an empty key as an ambient credential; prevent that fallback.
+        factory_config["llm"] = {**llm_config, "config": {**provider_config, "api_key": "olivia-no-auth"}}
+    backend = memory_type.from_config(factory_config)
     provider = getattr(backend, "llm", None)
+    if keyless and provider is not None:
+        import httpx
+        from openai import OpenAI
+        def omit_auth(request):
+            request.headers.pop("Authorization", None)
+        previous_client = provider.client
+        provider.client = OpenAI(
+            api_key="olivia-no-auth",
+            base_url=str(provider_config["openai_base_url"]),
+            http_client=httpx.Client(event_hooks={"request": [omit_auth]}),
+        )
+        previous_client.close()
     if callable(getattr(provider, "generate_response", None)):
         llm_config = config.get("llm")
         provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None
         model = provider_config.get("model", "") if isinstance(provider_config, Mapping) else ""
         _guard_extraction_client(provider, model=model if isinstance(model, str) else "")
         backend.llm = _ValidatedExtractionLLM(provider)
-    return backend
+    from runtime.memory.mem0_observation_time import bind_observation_time
+    return bind_observation_time(backend)
 
 
 def create_mem0_adapter(

@@ -189,6 +189,32 @@ def _write_verified_embedding_cache(config: Mem0Config) -> None:
     )
 
 
+@pytest.mark.parametrize("base_url,model,expected", [
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", 32768),
+    ("https://opencode.ai/zen/go/v1/", "deepseek-v4-flash", 32768),
+    ("https://opencode.ai/zen/go/v1", "other-model", None),
+    ("https://opencode.ai/zen/v1", "deepseek-v4-flash", None),
+    ("https://api.deepseek.com", "deepseek-v4-flash", 32768),
+    ("https://api.deepseek.com/", "deepseek-v4-flash", 32768),
+    ("https://api.deepseek.com/v1", "deepseek-v4-flash", 32768),
+    ("https://api.deepseek.com/v1/", "deepseek-v4-flash", 32768),
+    ("https://api.deepseek.com/v1", "deepseek-chat", None),
+    ("https://api.deepseek.com/v1", "deepseek-reasoner", None),
+    ("https://api.deepseek.com/v1", "deepseek-v4-pro", None),
+    ("http://api.deepseek.com/v1", "deepseek-v4-flash", None),
+    ("https://api.deepseek.com/other", "deepseek-v4-flash", None),
+    ("https://api.deepseek.com.evil.invalid/v1", "deepseek-v4-flash", None),
+    ("https://opencode.ai.evil.invalid/zen/go/v1", "deepseek-v4-flash", None),
+    ("http://opencode.ai/zen/go/v1", "deepseek-v4-flash", None),
+])
+def test_flash_extraction_has_bounded_reasoning_budget(tmp_path, base_url, model, expected):
+    config = replace(_config(tmp_path), llm_base_url=base_url, llm_model=model)
+    mapping = config.provider_config({})
+    assert mapping["llm"]["config"].get("max_tokens") == expected
+    assert config.write_timeout_seconds == 30
+    assert config.search_timeout_seconds == 8
+
+
 def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> None:
     assert MEM0_OSS_VERSION == "2.0.18"
     config = _config(tmp_path)
@@ -1985,6 +2011,51 @@ def test_outbox_retry_recovers_nested_mem0_timeout(tmp_path: Path) -> None:
             assert sum(name == "add" for name, _ in backend.calls) == 1
         finally:
             release.set()
+    asyncio.run(scenario())
+
+
+def test_status_during_late_write_preserves_outbox_settlement(tmp_path: Path) -> None:
+    release = threading.Event()
+
+    class SlowMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            assert release.wait(3)
+            return super().add(messages, **kwargs)
+
+    backend = SlowMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, replace(
+        _config(tmp_path), write_timeout_seconds=0.1, search_timeout_seconds=0.1,
+    ))
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"letters": [{
+        "letter_id": "late-letter", "reply_revision": 1, "letter_status": "COMPLETED",
+        "content": "synthetic user", "reply_text": "synthetic reply",
+        "created_at": NOW.isoformat(),
+    }]}), encoding="utf-8")
+    outbox = CanonicalMemoryOutbox(state, tmp_path / "delivery.sqlite3",
+        ConversationMemoryDeliveryCommitter(adapter, timeout_seconds=0.3), user_id="local-user")
+
+    async def scenario():
+        try:
+            assert (await outbox.scan_once()).pending == 1
+            # A write owns the provider lock. Health polling must not queue a
+            # read behind it and then prevent the outbox from settling the write.
+            for _ in range(3):
+                status = adapter.status()
+                assert status.status == "degraded"
+                assert status.reason_code == "MEM0_WRITE_PENDING"
+            assert (await outbox.scan_once()).pending == 1
+            release.set()
+            for _ in range(3):
+                await outbox.scan_once()
+            assert outbox.health()["terminal_count"] == 1
+            assert outbox.health()["pending_count"] == 0
+            assert sum(name == "add" for name, _ in backend.calls) == 1
+            assert adapter.status().status == "available"
+        finally:
+            release.set()
+            adapter.close()
+
     asyncio.run(scenario())
 
 

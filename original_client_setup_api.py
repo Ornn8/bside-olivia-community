@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -189,7 +190,7 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
             async with session.post(
                 f"{base_url}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
                     "User-Agent": PROVIDER_USER_AGENT,
                 },
                 json={
@@ -338,6 +339,8 @@ class LLMSetupService:
         candidate = _api_key(supplied, allow_empty=True)
         if candidate:
             return candidate
+        if not _managed_config(base_url, model).is_preset:
+            return ""
         configured = self._config()
         if (
             configured.base_url != base_url
@@ -374,7 +377,8 @@ class LLMSetupService:
         )
         if self._tested_digest != self._digest(config.base_url, config.model, api_key):
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
-        protected_bytes = (self._protect(api_key) + "\n").encode("utf-8")
+        config = replace(config, requires_api_key=bool(api_key))
+        protected_bytes = (self._protect(api_key) + "\n").encode("utf-8") if api_key else b""
         self._config_root.mkdir(parents=True, exist_ok=True)
         try:
             previous_config = (
@@ -386,14 +390,17 @@ class LLMSetupService:
         key_path = self._config_root / f"deepseek_api_key.{generation}.dpapi"
         key_staging = key_path.with_suffix(key_path.suffix + ".staging")
         try:
-            key_staging.write_bytes(protected_bytes)
-            key_staging.replace(key_path)
+            if api_key:
+                key_staging.write_bytes(protected_bytes)
+                key_staging.replace(key_path)
             _atomic_json(
                 self._config_path,
                 {
                     **config.to_mapping(),
-                    "key_file": key_path.name,
-                    "key_sha256": hashlib.sha256(protected_bytes).hexdigest(),
+                    **({
+                        "key_file": key_path.name,
+                        "key_sha256": hashlib.sha256(protected_bytes).hexdigest(),
+                    } if api_key else {}),
                 },
             )
         except OSError as exc:
@@ -477,7 +484,7 @@ class LLMSetupService:
     def complete(self, *, skipped: object) -> bool:
         if type(skipped) is not bool:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
-        if not skipped and self._active_key_path() is None:
+        if not skipped and self._config().requires_api_key and self._active_key_path() is None:
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=409)
         _atomic_json(
             self._complete_path,

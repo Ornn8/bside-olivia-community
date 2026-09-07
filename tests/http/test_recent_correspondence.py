@@ -10,6 +10,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize('query', [
+    '我去读你推荐的小说了，今天也买到了新的画笔。',
+    '你问我的那个问题，我想好了，周末可以。',
+    'I tried what you suggested. The new brushes arrived too.',
+])
+def test_mentioning_a_reply_preserves_dialogue_without_assigning_a_dispute_task(query):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    pairs = [('读什么好？', '可以看看那本短篇小说。'),
+             ('周末还没安排。', '周末画画怎么样？')]
+    rows = [{"letter_id": str(i), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{i}:00+00:00",
+             "content": user, "reply_text": reply} for i, (user, reply) in enumerate(pairs)]
+    packet = json.loads(recent_correspondence(rows, query=query))
+    assert packet['purpose'] == 'dialogue_continuity'
+    assert [item['user_letter'] for item in packet['letters']] == [p[0] for p in pairs]
+    assert '直接回答本次询问' not in packet['meaning']
+
+
 def test_dialogue_retrieves_original_proposal_instead_of_only_later_reply_claims():
     from runtime.reply.recent_correspondence import recent_correspondence
     pairs = [
@@ -25,6 +43,17 @@ def test_dialogue_retrieves_original_proposal_instead_of_only_later_reply_claims
     assert original["linli_reply"] == pairs[0][1]
     assert original["user_letter"] == pairs[0][0]
     assert any(item["user_letter"] == pairs[1][0] for item in packet["letters"])
+
+
+def test_reply_reference_keeps_the_users_later_withdrawal():
+    from runtime.reply.recent_correspondence import recent_correspondence
+    pairs = [('周末可以一起聊画画。', '那就周末聊画画，我等你。'),
+             ('周末临时有事，取消吧，不用等我。', '好，取消。')]
+    rows = [{"letter_id": str(i), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{i}:00+00:00",
+             "content": user, "reply_text": reply} for i, (user, reply) in enumerate(pairs)]
+    packet = json.loads(recent_correspondence(rows, query='你之前说周末聊画画，你还在等我吗？'))
+    assert [item['user_letter'] for item in packet['letters']] == [p[0] for p in pairs]
 
 
 @pytest.mark.parametrize('query', [
@@ -70,9 +99,28 @@ def test_explicit_reference_can_retrieve_an_older_reply_without_treating_it_as_u
              "reply_text": '我说过你是在试探，但这只是我的猜测。' if index == 0 else '晚安。'}
             for index in range(4)]
     context = json.loads(recent_correspondence(rows, query='你前面说我在试探，是什么意思？'))
-    assert context['purpose'] == 'reply_reference'
+    assert context['purpose'] == 'dialogue_continuity'
     assert any(item.get('linli_reply') == rows[0]['reply_text'] for item in context['letters'])
-    assert len(context['letters']) == 1  # Later chatter is not evidence for that earlier judgment.
+    assert len(context['letters']) <= 4
+    assert '用户的否定、假设和更正优先于旧回信猜测' in context['meaning']
+
+
+def test_reply_reference_reserves_budget_for_the_requested_exchange():
+    from runtime.reply.recent_correspondence import recent_correspondence
+    pairs = [
+        ('你愿意和我去观鸟吗？', '我想下周六一起去湿地观鸟，但还没有约好。' + '附近有水鸟，可以带望远镜慢慢看看。' * 21),
+        ('今天做饭。' + '切菜煮汤，味道不错。' * 40, '慢慢吃。' + '早饭之后我去散步，附近很安静。' * 30),
+        ('花开了。' + '窗台的花今天终于开了，我浇了水。' * 30, '开花啦。' + '阳光照着窗台，叶子看起来亮亮的。' * 30),
+    ]
+    rows = [{"letter_id": str(i), "reply_revision": 1, "letter_status": "COMPLETED",
+             "private_world_occurred_at": f"2026-09-05T01:0{i}:00+00:00",
+             "content": user, "reply_text": reply} for i, (user, reply) in enumerate(pairs)]
+    text = recent_correspondence(rows, query='你之前说下周六去湿地观鸟，具体怎么说的？')
+    packet = json.loads(text)
+    assert packet['purpose'] == 'dialogue_continuity'
+    assert any(item['linli_reply'] == pairs[0][1] for item in packet['letters'])
+    assert len(packet['letters']) > 1  # Retain surrounding dialogue when it fits.
+    assert len(text) <= 2800
 
 
 def test_older_recall_does_not_reinforce_historical_assistant_inventions():

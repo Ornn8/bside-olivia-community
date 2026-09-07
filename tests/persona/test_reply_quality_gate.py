@@ -564,7 +564,7 @@ def test_video_length_with_unavailable_reviewer_is_not_delivery_repairable() -> 
     assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
 
 
-def test_final_soft_review_issue_is_accepted_with_warnings_after_one_rewrite() -> None:
+def test_final_unresolved_letter_style_is_blocked_after_one_rewrite() -> None:
     first = ReviewResult(
         ReviewStatus.COMPLETED,
         ReviewVerdict.REWRITE,
@@ -589,8 +589,8 @@ def test_final_soft_review_issue_is_accepted_with_warnings_after_one_rewrite() -
         rewriter=_Rewriter("Final candidate."),
     )
 
-    assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
-    assert result.accepted is True
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.accepted is False
     assert result.violation_codes == ("STYLE_DRIFT",)
     assert result.rewrite_calls == 1
 
@@ -640,6 +640,8 @@ def test_quality_status_matrix_matches_frozen_base_across_modes(
         rewriter=_Rewriter("y" * 190),
     )
 
+    if mode is ReplyMode.TEXT_LETTER and final_verdict is ReviewVerdict.REWRITE:
+        expected_status = QualityGateStatus.BLOCKED
     assert result.status is expected_status
     assert result.violation_codes == ("STYLE_DRIFT",)
     assert result.rewrite_calls == (0 if final_verdict is None else 1)

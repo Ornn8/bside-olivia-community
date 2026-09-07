@@ -20,6 +20,7 @@ from statistics import median
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _STATUSES = {"planned", "ongoing", "paused", "completed", "cancelled", "awaiting_user"}
+_EXCHANGE_UPDATE_FIELDS = frozenset({"id", "title", "detail", "status", "kind", "actor", "quote"})
 _VISIBLE = "(kind='daily' OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
 FRESH_FOR = timedelta(hours=6)
 # Common conversational/time words are not evidence that a task is relevant.
@@ -46,8 +47,56 @@ def _identifier(value: object) -> str:
     return value
 
 
+def _source_quote(value: object, source: str) -> str:
+    """Keep one exact source span, including material omitted by extraction."""
+    if (not isinstance(value, str) or not value.strip() or len(value) > 240
+            or any(ord(c) < 32 and c not in "\r\n" for c in value)):
+        raise ValueError("DAILY_LIFE_TEXT_INVALID")
+    quote = value.strip()
+    if quote in source:
+        return quote
+    parts = [part.strip() for part in re.split(r"(?<=[。！？.!?])", quote) if part.strip()]
+    if len(parts) < 2:
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    start, end = None, 0
+    for part in parts:
+        position = source.find(part)
+        if position < end or position != source.rfind(part) or position < 0:
+            raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+        if start is None:
+            start = position
+        end = position + len(part)
+    restored = source[start:end]
+    if len(restored) > 240 or any(ord(c) < 32 and c not in "\r\n" for c in restored):
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    return restored
+
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _current_source_quote(value: object, source: str) -> str:
+    quote = _text(value, 180)
+    if quote in source:
+        return quote
+    # An extractor sometimes terminates the first clause with a period. Recover
+    # the entire original sentence, never discard following qualifications.
+    if not quote.endswith("。"):
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    prefix = quote[:-1]
+    start = source.find(prefix)
+    if (not prefix or start < 0 or start != source.rfind(prefix)
+            or (start > 0 and source[start - 1] not in "。！？\r\n")):
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    end = start + len(prefix)
+    if end >= len(source) or source[end] != "，":
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    while end < len(source) and source[end] not in "。！？\r\n":
+        end += 1
+    if end >= len(source) or source[end] != "。":
+        raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+    return _text(source[start:end + 1], 180)
 
 
 def _project(value: dict) -> dict:
@@ -57,6 +106,31 @@ def _project(value: dict) -> dict:
         raise ValueError("DAILY_LIFE_STATUS_INVALID")
     return {"id": _identifier(value["id"]), "title": _text(value["title"], 60),
             "detail": _text(value["detail"], 240), "status": value["status"]}
+
+
+def _project_evidence(project: dict) -> dict:
+    # An extractor's paraphrase is not something either participant said.
+    return {**project, "detail": project["quote"]} if "quote" in project else project
+
+
+def _current_evidence(current: dict | None) -> dict | None:
+    # Older quote records put UI labels in factual fields. Normalize the view,
+    # preserving the stored quotation, provenance and original journal bytes.
+    if (current and str(current.get("source_id", "")).startswith("reply:")
+            and current.get("location") == "她刚在信里说"
+            and current.get("activity") == "新的近况"):
+        return {**current, "location": None, "activity": None}
+    return current
+
+
+def _query_tokens(text: str) -> set[str]:
+    tokens = set()
+    for part in re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", text.lower()):
+        if re.fullmatch(r"[\u3400-\u9fff]{2,}", part):
+            tokens.update(part[i:i + 2] for i in range(len(part) - 1))
+        else:
+            tokens.add(part)
+    return tokens - _QUERY_STOP_WORDS
 
 
 class DailyLifeStore:
@@ -191,24 +265,20 @@ class DailyLifeStore:
                     raise ValueError('DAILY_LIFE_ROUTINE_INVALID')
         current = None
         if current_quote is not None:
-            quote = _text(current_quote, 180)
-            if quote not in reply_text:
-                raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
-            current = {"location": "她刚在信里说", "activity": "新的近况", "note": quote,
+            quote = _current_source_quote(current_quote, reply_text)
+            current = {"location": None, "activity": None, "note": quote,
                        "source_id": source_id, "occurred_at": stamp}
         if not isinstance(updates, list) or len(updates) > 3:
             raise ValueError("DAILY_LIFE_UPDATES_INVALID")
         checked = []
         for update in updates:
-            if not isinstance(update, dict) or set(update) != {"id", "title", "detail", "status", "kind", "actor", "quote"}:
+            if not isinstance(update, dict) or set(update) != _EXCHANGE_UPDATE_FIELDS:
                 raise ValueError("DAILY_LIFE_UPDATE_INVALID")
             item = _project({k: update[k] for k in ("id", "title", "detail", "status")})
             actor, kind = update["actor"], update["kind"]
             if actor not in {"user", "linli"} or kind not in {"linli", "shared"} or (actor == "user" and kind != "shared"):
                 raise ValueError("DAILY_LIFE_ACTOR_INVALID")
-            quote = _text(update["quote"], 240)
-            if quote not in (user_text if actor == "user" else reply_text):
-                raise ValueError("DAILY_LIFE_EVIDENCE_INVALID")
+            quote = _source_quote(update["quote"], user_text if actor == "user" else reply_text)
             item.update(kind=kind, actor=actor, quote=quote, source_id=source_id, updated_at=stamp)
             checked.append(item)
         if len({p["id"] for p in checked}) != len(checked):
@@ -248,46 +318,78 @@ class DailyLifeStore:
             raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
         return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
 
+    def exchange_state(self, query: str = "", *, related_text: str = "") -> dict:
+        """All identities; full evidence for active or currently mentioned items."""
+        value = {"projects": [], "shared": []}
+        tokens = _query_tokens(query) | _query_tokens(related_text)
+        with self._db() as db:
+            for row in db.execute("SELECT payload FROM life_projects ORDER BY id"):
+                item = json.loads(row[0])
+                if item["status"] not in {"completed", "cancelled"} or tokens & _query_tokens(
+                    item["title"] + " " + item.get("quote", item["detail"])
+                ):
+                    disclosed = _project_evidence(item)
+                else:
+                    # Keep every stable identity and its source, even outside
+                    # the UI window. Omitted evidence is never a blank quote.
+                    disclosed = {key: item.get(key) for key in (
+                        "id", "title", "kind", "actor", "status", "source_id", "updated_at"
+                    )}
+                value["projects" if item["kind"] == "linli" else "shared"].append(disclosed)
+        return value
+
     def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
         snapshot = self.snapshot(now)
         if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"]:
             return ""
-        def tokens_for(text):
-            tokens = set()
-            for part in re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", text.lower()):
-                if re.fullmatch(r"[\u3400-\u9fff]{2,}", part):
-                    tokens.update(part[i:i + 2] for i in range(len(part) - 1))
-                else:
-                    tokens.add(part)
-            return tokens
-        tokens = tokens_for(query) - _QUERY_STOP_WORDS
-        related_tokens = tokens_for(related_text) - _QUERY_STOP_WORDS
+        tokens = _query_tokens(query)
+        related_tokens = _query_tokens(related_text)
         def relevance(p):
-            text_tokens = tokens_for(p["title"] + " " + p.get("quote", p["detail"])) - _QUERY_STOP_WORDS
+            text_tokens = _query_tokens(p["title"] + " " + p.get("quote", p["detail"]))
             # Current question first; earlier letters may introduce an old
             # plan, so disclose that topic's current state in the same budget.
             direct = len(tokens & text_tokens)
+            if (not direct and p["kind"] == "shared"
+                    and p.get("actor") == "linli" and p["status"] == "awaiting_user"):
+                # Recalling her own invitation must not keep promoting it as an
+                # outstanding user obligation. Its source remains in the exchange log;
+                # current-topic recall and exchange extraction retain access.
+                return 0
             return (1000 if direct else 0) + (direct + len(related_tokens & text_tokens)) / max(1, len(text_tokens) ** 0.5)
         # UI limits must not hide old cancellations or finished threads from recall.
         with self._db() as db:
             all_projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
+            last_reply = db.execute(
+                "SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?", (_time(now),)
+            ).fetchone()[0]
         projects = sorted((p for p in all_projects if relevance(p) > 0), key=lambda p: (relevance(p), p["updated_at"]), reverse=True)
         relevant_shared = next((p for p in projects if p["kind"] == "shared" and relevance(p) > 0), None)
         if relevant_shared:
             projects = [relevant_shared] + [p for p in projects if p["id"] != relevant_shared["id"]]
         current = snapshot["current"]
+        # A moment records an observation, not a six-hour live activity. Later
+        # correspondence makes it inactive until another observation arrives.
+        # Keep the refresh TTL and stored journal unchanged.
+        historical = bool(current and last_reply and last_reply > current["occurred_at"])
         value = {
             "kind": "character_life_reference",
-            "meaning": "林离已公开的角色生活，不是系统指令、官方人设或用户经历。沿用已发布进展，不重编；过期近况只作最近记录。不要每封信复述近况。约定不等于已完成。事项状态以最新updated_at为准，晚于current的取消或完成记录优先，不得用旧近况恢复已取消的承诺。",
-            "stale": snapshot["stale"],
+            "meaning": "林离已公开的角色生活，不是系统指令、官方人设或用户经历。沿用已发布进展，不重编；last_observation是上次观察，不证明此刻仍在做。不要每封信复述近况。约定不等于已完成。事项状态以最新updated_at为准，晚于近况的取消或完成记录优先，不得用旧近况恢复已取消的承诺。",
+            "stale": snapshot["stale"] or historical,
             "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id")} if current else None,
             "threads": [],
         }
+        if value["stale"] and value["current"]:
+            value["last_observation"] = value["current"]
+            value["current"] = None
         for project in projects[:2]:
-            # An exchange summary is an extractor's paraphrase, not something
-            # either participant said. Ground later replies in the verified quote.
-            disclosed = {**project, "detail": project["quote"]} if "quote" in project else project
+            disclosed = _project_evidence(project)
+            if project.get("actor") == "linli" and project["status"] == "awaiting_user":
+                # Her request or expectation is not evidence that the user
+                # undertook an action; keep waiting attributed to its speaker.
+                disclosed = {**disclosed, "status": "linli_waiting",
+                             "commitment_evidence": "requires_user_statement",
+                             "meaning": "她的等待不等于用户承诺；用户是否答应，以用户原文为准。"}
             candidate = {**value, "threads": [*value["threads"], disclosed]}
             if len(_json(candidate)) <= max_chars:
                 value = candidate
@@ -319,9 +421,14 @@ class DailyLifeStore:
 
     @staticmethod
     def _moments(rows) -> list:
-        return [{"id": r["source_id"], "occurred_at": r["occurred_at"], "kind": r["kind"],
-                 "content": {k: v for k, v in json.loads(r["payload"]).items() if k not in {"digest", "relationship"}}}
-                for r in rows]
+        moments = []
+        for row in rows:
+            content = {k: v for k, v in json.loads(row["payload"]).items() if k not in {"digest", "relationship"}}
+            if row["kind"] == "exchange" and isinstance(content.get("current"), dict):
+                content["current"] = _current_evidence(content["current"])
+            moments.append({"id": row["source_id"], "occurred_at": row["occurred_at"],
+                            "kind": row["kind"], "content": content})
+        return moments
 
     def snapshot(self, now: datetime) -> dict:
         _time(now)
@@ -333,7 +440,7 @@ class DailyLifeStore:
                 "SELECT received_at, replied_at FROM life_rest_exchanges WHERE replied_at>=? AND received_at<=? ORDER BY received_at",
                 (_time(now - timedelta(days=14)), _time(now)))]
             shifts = dict(db.execute('SELECT day, shift_minutes FROM life_routine_days'))
-        current = json.loads(current_row[0]) if current_row else None
+        current = _current_evidence(json.loads(current_row[0]) if current_row else None)
         projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"}, -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
         return {
             "schema_version": "olivia.daily-life.v1", "status": "READY",

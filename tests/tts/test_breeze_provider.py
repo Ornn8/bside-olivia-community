@@ -135,6 +135,21 @@ def test_breeze_provider_is_selectable_and_missing_assets_fall_back_before_gener
     assert invalid_license["reason_code"] == "TTS_LICENSE_UNVERIFIED"
 
 
+def test_sentence_directions_stay_out_of_frozen_spoken_text(tmp_path: Path) -> None:
+    instruction = "第1句：自然语速，轻松叙述，后半句带一点惊喜。第2句：语速稍缓，真诚好奇地询问，句尾轻轻上扬。"
+    plan = VoicePerformancePlan(
+        reply_text="今天遇到一只橘猫。你今天过得怎么样？",
+        overall_emotion="自然对话", global_speed=1.0, energy=0.55,
+        breath_before_sentences=(), emphasize_sentences=(), short_instruction=instruction,
+    )
+    request = BreezeTTS2Provider(_breeze_config(tmp_path)).performance_request(VoicePerformancePlan.from_dict(plan.to_dict()))
+    assert request["text"] == plan.reply_text
+    assert instruction in request["instruction"]
+    assert "保持中等能量" not in request["instruction"]
+    assert request["quality_forbidden_text"] == request["instruction"]
+    assert len(plan.speech_units()) == 1
+
+
 def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
     tmp_path: Path,
 ) -> None:
@@ -154,11 +169,11 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
 
     assert request["text"] == reply
     assert request["text"] == plan.spoken_text
-    assert request["instruction"] == (
-        "声音柔软自然地承接，再缓缓托起给到力量，"
-        "整体语速略快但保持自然对话感，能量饱满但不喊叫，"
-        "在第2句前自然换气，轻轻强调第1句"
-    )
+    assert request["instruction"].startswith(plan.short_instruction)
+    assert "自然实声" not in request["instruction"]
+    assert "保持自然语速，句间自然停顿" in request["instruction"]
+    assert "能量饱满" not in request["instruction"]
+    assert "第2句" not in request["instruction"]
     assert request["voice_plan"] == {
         "emotion": plan.overall_emotion,
         "speed": 1.06,
@@ -168,7 +183,7 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
     }
     assert request["cfg_scale"] == 1.0
     assert request["model_variant"] == "int8_hybrid"
-    assert request["max_new_tokens"] == 600
+    assert request["max_new_tokens"] == 650
     assert request["quality_gate_required"] is True
     assert request["quality_forbidden_text"] == request["instruction"]
 
@@ -191,6 +206,13 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
     monkeypatch,
 ) -> None:
     calls: dict[str, object] = {}
+    import contextlib
+    import torch
+
+    cuda_events = []
+    monkeypatch.setattr(torch.cuda, "device", lambda _device: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: cuda_events.append("synchronize"))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: cuda_events.append("release"))
 
     class Waveform:
         def detach(self):
@@ -213,9 +235,19 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
         @staticmethod
         def load_breeze_bundle(*args):
             calls["load"] = args
-            return SimpleNamespace(codec="codec")
+            bundle = SimpleNamespace(codec="codec", model=object(), patchers=[object()])
+            calls["bundle"] = bundle
+            return bundle
 
     class Runtime:
+        @staticmethod
+        def decode_codes(codec, codes):
+            assert cuda_events == ["synchronize", "release"]
+            assert calls["bundle"].model is None
+            assert calls["bundle"].patchers == []
+            calls["decode_status"] = json.loads(status.read_text(encoding="utf-8"))
+            return Waveform()
+
         @staticmethod
         def comfy_audio_to_tensor(audio):
             calls["reference"] = audio
@@ -233,7 +265,10 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
                 status.read_text(encoding="utf-8")
             )
             calls["generation"] = kwargs
-            return {"waveform": Waveform(), "sample_rate": 24000}
+            kwargs["progress_callback"](32, 600)
+            calls["progress"] = json.loads(status.read_text(encoding="utf-8"))
+            waveform = Runtime.decode_codes("codec", SimpleNamespace(device=SimpleNamespace(type="cuda")))
+            return {"waveform": waveform, "sample_rate": 24000}
 
     monkeypatch.setattr(
         external_breeze_worker,
@@ -277,6 +312,11 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
     else:
         request["cfg_scale"] = cfg_scale
     external_breeze_worker._synthesize(request, output, status)
+    assert calls["progress"]["generated_frames"] == 32
+    assert calls["progress"]["max_frames"] == 600
+    assert calls["progress"]["audio_started"] is False
+    assert "text" not in calls["progress"]
+    assert calls["decode_status"]["phase"] == "decoding"
     assert calls["generation"]["cfg_scale"] == (1.0 if cfg_scale is None else cfg_scale)
 
     assert calls["load"] == (
@@ -312,8 +352,10 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
     monkeypatch,
 ) -> None:
     observed: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(delivery.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
 
     def fake_run(command, **_kwargs):
+        assert _kwargs.get("creationflags", 0) & 0x08000000
         command = [str(item) for item in command]
         request_path = Path(command[command.index("--request") + 1])
         output_path = Path(command[command.index("--output") + 1])
@@ -342,6 +384,7 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
 
     monkeypatch.setattr(delivery, "delivery_configured", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    monkeypatch.setattr(delivery, "_run_breeze_worker", fake_run)
     output = tmp_path / "reply.wav"
 
     result = delivery.render_delivery_wav(_breeze_config(tmp_path), _plan(), output)
@@ -364,6 +407,7 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
 @pytest.mark.parametrize("durations,success,attempts", [
     ([36.8, 43.0], True, 3), ([36.8, 36.8, 36.8], False, 3),
     ([36.8], False, 0), ([36.8, 36.8, 36.8], False, 99),
+    ([51.76], True, 3), ([61.0], True, 3),
 ])
 def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path, monkeypatch, durations, success, attempts):
     observed = []
@@ -380,6 +424,7 @@ def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path,
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(delivery, "delivery_configured", lambda *args, **kwargs: True)
     monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    monkeypatch.setattr(delivery, "_run_breeze_worker", fake_run)
     config, plan = _breeze_config(tmp_path), _plan()
     expected = delivery.build_external_delivery_request(config, plan)
     expected["max_attempts"] = attempts
@@ -387,7 +432,7 @@ def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path,
     output = tmp_path / "reply.wav"
     if success:
         result = delivery.render_delivery_wav(config, plan, output, enforce_content_gate=False)
-        assert result.duration_seconds == 43.0
+        assert result.duration_seconds == durations[-1]
         assert result.quality_report is None
     else:
         with pytest.raises(delivery.DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
@@ -429,6 +474,7 @@ def test_breeze_failure_never_runs_a_second_tts_model(
 
     monkeypatch.setattr(delivery, "delivery_configured", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(delivery.subprocess, "run", fake_run)
+    monkeypatch.setattr(delivery, "_run_breeze_worker", fake_run)
 
     with pytest.raises(delivery.DeliveryAudioError, match="TTS_EXTERNAL_PROCESS_FAILED"):
         delivery.render_delivery_wav(

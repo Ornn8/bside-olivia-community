@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import hashlib
+import json
 import re
 import sqlite3
 
@@ -122,11 +123,22 @@ class PrivateWorldRelationshipCommitter:
         signal = validate_exchange_relationship(signal, user_text, reply_text)
         if signal is None:
             return RelationshipFactStatus.REJECTED
-        semantic_key = "canonical-interaction:" + signal["kind"]
+        # Same category is not the same interaction. Only repeated, validated
+        # evidence shares the cooldown; delivery identity still handles retries.
+        semantic_key = "canonical-interaction:" + hashlib.sha256(json.dumps(
+            [signal["kind"], signal["user_quote"], signal["reply_quote"]],
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        # Old ledgers kept only the kind, so their evidence cannot be recovered.
+        # Preserve that existing cooldown until it expires instead of bypassing it.
+        equivalent_keys = {semantic_key, "canonical-interaction:" + signal["kind"]}
         try:
+            if not isinstance(occurred_at, datetime) or occurred_at.utcoffset() is None:
+                raise ValueError("relationship exchange time must be timezone-aware")
+            occurred_at = occurred_at.astimezone(timezone.utc)
             previous = [datetime.fromisoformat(event.occurred_at.replace("Z", "+00:00"))
                         for event in self.ledger.events()
-                        if event.payload.get("semantic_key") == semantic_key
+                        if event.payload.get("semantic_key") in equivalent_keys
                         and event.payload.get("applied") is True]
             last_equivalent = max(previous, default=None)
             return self.commit(RelationshipFactCommand(

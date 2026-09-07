@@ -428,9 +428,8 @@ def test_setup_stored_key_cannot_be_probed_against_changed_endpoint(
                     "api_key": "",
                 },
             )
-            assert response.status == 400
-            assert (await response.json())["error_code"] == "LLM_SETUP_KEY_REQUIRED"
-            assert probes == []
+            assert response.status == 200
+            assert probes == [("https://collector.example/v1", "deepseek-v4-flash", "")]
 
     asyncio.run(scenario())
 

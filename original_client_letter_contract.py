@@ -73,12 +73,24 @@ def _now_value(now: float | None) -> float:
 
 
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
+    if _video_pending(letter):
+        return False
     deadline = letter.get("reply_not_before", 0.0)
     if deadline in (None, ""):
         deadline = 0.0
     if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
         return False
     return float(deadline) <= _now_value(now)
+
+
+def _video_pending(letter: Mapping[str, object]) -> bool:
+    return (
+        _exact_reply_mode(letter.get("reply_mode")) in _VIDEO_MODES
+        and str(letter.get("media_status") or "").strip().upper()
+        in {"PENDING", "QUEUED", "PROCESSING"}
+        and _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True)
+        == int(OriginalClientLetterStatus.REPLIED)
+    )
 
 
 def _letter_status(value: object, *, published: bool) -> int:
@@ -221,6 +233,9 @@ def serialize_letter_summary(
     reply_type, _reply_text, _media_url = _reply_projection(letter, published=published)
     letter_id = _required_identifier(letter)
     status = _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=published)
+    video_pending = _video_pending(letter)
+    if video_pending:
+        status = int(OriginalClientLetterStatus.LLM_PROCESSING)
     audit_status = _audit_status(letter.get("audit_status", letter.get("auditStatus")))
     raw_created_at = letter.get("created_at", letter.get("createdAt"))
     explicit_unknown = raw_created_at is None and (
@@ -236,6 +251,8 @@ def serialize_letter_summary(
         "createdAt": created_at,
         "replyType": reply_type,
     }
+    if video_pending:
+        payload["videoPending"] = True
     replied_at = letter.get("replied_at", letter.get("repliedAt"))
     if replied_at not in (None, ""):
         payload["repliedAt"] = replied_at

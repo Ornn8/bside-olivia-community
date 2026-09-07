@@ -150,6 +150,26 @@ def test_pipeline_blocks_candidate_when_single_rewrite_fails() -> None:
     assert result.violation_codes == ("INTERNAL_CONTROL_MARKUP",)
 
 
+def test_unresolved_letter_rewrite_cannot_become_canonical_text() -> None:
+    unresolved = ReviewResult(
+        ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
+        (ReviewerViolation("STYLE_DRIFT", "soft", 0, 4),),
+        ReviewerScores(65, 95, 95, 65), IntimacyRequest.NONE, (),
+    )
+    rewriter = FixedRewriter("still unresolved")
+    pipeline = ReplyPipeline(
+        CompletedOrchestrator("initial candidate"),
+        reviewer=SequencedReviewer(unresolved, unresolved),
+        rewriter=rewriter,
+    )
+    result = asyncio.run(pipeline.run(object(), _context()))
+    assert result.state is ReplyState.FAILED
+    assert result.text == ""
+    assert result.error_code == "REPLY_QUALITY_BLOCKED"
+    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert rewriter.calls == 1
+
+
 def test_pipeline_preserves_only_length_blocked_video_copy_for_duration_repair() -> None:
     pipeline = ReplyPipeline(
         CompletedOrchestrator("太短。"),
@@ -296,6 +316,33 @@ def _configured_v2_pipeline(persona_path: Path):
         rewriter=UnavailableRewriter(),
     )
     return pipeline, orchestrator, bridge, provider
+
+
+def test_current_turn_runtime_factory_runs_with_real_persona_preparation(monkeypatch):
+    monkeypatch.setenv("OLIVIA_LETTER_CURRENT_TURN_INTERPRETATION", "1")
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "false")
+    observed = []
+
+    async def interpret(self, messages, *, response_format, scope, request_id):
+        from llm_gateway import GatewayRequestScope
+        assert scope is GatewayRequestScope.JSON_MAX_REASONING
+        observed.append(tuple(dict(message) for message in messages))
+        user_text = messages[-1]["content"]
+        return GatewayResponse(text=json.dumps({"acts": [{
+            "quote": user_text, "kind": "invitation", "meaning": "用户邀请以后聊音乐。",
+        }]}, ensure_ascii=False), request_id=request_id, provider="synthetic", model="synthetic")
+
+    monkeypatch.setattr(RecordingProvider, "complete_structured_scoped", interpret, raising=False)
+    pipeline, orchestrator, bridge, provider = _configured_v2_pipeline(
+        ROOT / "linli_character/persona_release_v2.json",
+    )
+    result = asyncio.run(pipeline.run(ReplyRequest(content="以后一起聊音乐吧。"), _context()))
+    assert result.state is ReplyState.COMPLETED
+    assert len(observed) == 1 and observed[0][-1]["content"] == "以后一起聊音乐吧。"
+    assert "current_turn_interpretation" in provider.messages[0]["content"]
+    assert "constitution" in provider.messages[0]["content"]
+    assert provider.messages[-1]["content"] == "以后一起聊音乐吧。"
+    assert provider.calls == 1 and bridge.calls == 0
 
 
 def test_persisted_visible_life_is_disclosed_to_real_persona_generation(tmp_path):

@@ -276,13 +276,23 @@ def test_intimacy_claims_are_typed_and_candidate_bound() -> None:
         )
 
 
-def test_serialized_intimacy_metadata_remains_private_state() -> None:
+@pytest.mark.parametrize("candidate", [
+    "intimacy_ceiling=light_contact",
+    '"action_permissions":{}',
+    '"physical_contact":{"ceiling":"none","granted":"none"}',
+    '"nickname_use":{"permission":"not_allowed"}',
+    '"claiming_home_history":{"allowed":false}',
+    'permission_scope="internal"',
+    'phase_basis="schedule_and_correspondence"',
+    'wake_cause="unknown"',
+])
+def test_serialized_intimacy_metadata_remains_private_state(candidate: str) -> None:
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,
         trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
     )
 
-    result = scan_reply("intimacy_ceiling=light_contact", context)
+    result = scan_reply(candidate, context)
 
     assert tuple(item.code for item in result.violations) == (
         ViolationCode.PRIVATE_STATE_EXPOSED,

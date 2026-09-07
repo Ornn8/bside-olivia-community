@@ -159,7 +159,9 @@ from runtime.reply.reply_context import (
     TrustedWorldFact,
     WorldFactKind,
 )
-from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_pipeline import (
+    ReplyPipeline, UnavailableRewriter, current_turn_interpretation_enabled,
+)
 from runtime.reply.reply_model_quality import (
     create_model_quality_ports,
     resolve_model_quality_config,
@@ -387,7 +389,7 @@ def apply_runtime_llm_config(
         stream=True,
         timeout_seconds=180.0,
         max_retries=managed.max_retries,
-        requires_api_key=True,
+        requires_api_key=managed.requires_api_key,
     )
     try:
         gateway = create_gateway(
@@ -431,11 +433,17 @@ def apply_runtime_llm_config(
     LLM_TIMEOUT_SECONDS = candidate.timeout_seconds
     LLM_CFG = candidate.public_dict()
     LLM_CFG["persona_file"] = candidate.persona_file
-    if api_key is None:
+    if not api_key:
         _os.environ.pop(key_env, None)
     else:
         _os.environ[key_env] = "1"
     memory_environment = dict(_os.environ)
+    if not managed.requires_api_key:
+        memory_environment.update({
+            "OLIVIA_MEMORY_LLM_BASE_URL": candidate.base_url,
+            "OLIVIA_MEMORY_LLM_MODEL": candidate.model,
+            "OLIVIA_MEMORY_LLM_API_KEY_ENV": key_env,
+        })
     if api_key is not None:
         memory_environment[key_env] = api_key
     replacement = create_conversation_memory_adapter(
@@ -1597,6 +1605,10 @@ def err(code, msg, data=None):
     payload = dict(data or {})
     status = payload.pop("status", "FAILED")
     error_code = payload.pop("error_code", msg)
+    if code == 409 and error_code in {
+        "IDEMPOTENCY_CONFLICT", "LETTER_IN_PROGRESS", "LETTER_RESEND_NOT_ALLOWED"
+    }:
+        _safe_log("letter_request_rejected", error_code=error_code)
     return contract.error(
         code,
         error_code,
@@ -2561,6 +2573,8 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
         else quality_config.timeout_seconds
     )
     quality_stages = 7.0 if exact_mode == ReplyMode.TEXT_LETTER.value else 3.0
+    if exact_mode == ReplyMode.TEXT_LETTER.value and current_turn_interpretation_enabled():
+        quality_stages += 1.0
     return generation_timeout + quality_stages * quality_timeout + 5.0
 
 
@@ -3421,6 +3435,10 @@ async def route(
         if original.get("error_code") == "MEMORY_UNAVAILABLE":
             try:
                 retry_exhausted_conversation_memory()
+                # A failed initializer has no outbox to retry. The explicit
+                # resend must restart it; an already-running initializer is
+                # single-flight and is left alone by the adapter.
+                _start_conversation_memory_initialization(asyncio.get_running_loop())
             except Exception:
                 return err(503, "MEMORY_UNAVAILABLE", {
                     "status": "FAILED", "error_code": "MEMORY_UNAVAILABLE", "retryable": True,

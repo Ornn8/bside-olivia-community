@@ -178,13 +178,21 @@ class BreezeTTS2Provider:
         energy = float(getattr(plan, "energy", 0.55))
         breaths = tuple(getattr(plan, "breath_before_sentences", ()) or ())
         emphasis = tuple(getattr(plan, "emphasize_sentences", ()) or ())
-        instruction_parts = [emotion, _pace_direction(speed), _energy_direction(energy)]
-        breath_direction = _sentence_marks_direction("在", breaths)
-        if breath_direction:
-            instruction_parts.append(breath_direction + "前自然换气")
-        emphasis_direction = _sentence_marks_direction("轻轻强调", emphasis)
-        if emphasis_direction:
-            instruction_parts.append(emphasis_direction)
+        if emotion.startswith("第1句："):
+            instruction_parts = ["按正文的完整句子依次调整音调和语速，句间自然停顿", str(plan.short_instruction)]
+        elif getattr(plan, "short_instruction", ""):
+            instruction_parts = [
+                emotion,
+                "保持自然语速，句间自然停顿",
+            ]
+        else:
+            instruction_parts = [emotion, _pace_direction(speed), _energy_direction(energy)]
+            breath_direction = _sentence_marks_direction("在", breaths)
+            if breath_direction:
+                instruction_parts.append(breath_direction + "前自然换气")
+            emphasis_direction = _sentence_marks_direction("轻轻强调", emphasis)
+            if emphasis_direction:
+                instruction_parts.append(emphasis_direction)
         instruction = "，".join(part for part in instruction_parts if part)
         options = self.config.provider_options
         units = tuple(getattr(plan, "speech_units")())
@@ -210,11 +218,10 @@ class BreezeTTS2Provider:
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
             "cfg_scale": float(options.get("cfg_scale", 1.0)),
             "seed": int(options.get("seed", 200717)),
-            # Breeze emits 12.5 frames/s. Cap generation at 48 seconds so the
-            # result stays inside the 40-50 second delivery contract without
-            # spending another slow-GPU pass on an overlong candidate.
+            # Leave room for EOS in a naturally paced performance; the content
+            # and delivery-duration gates still decide whether it is usable.
             "max_new_tokens": max(
-                64, min(600, int(options.get("max_new_tokens", 600)))
+                64, min(650, int(options.get("max_new_tokens", 650)))
             ),
             "temperature": float(options.get("temperature", 0.9)),
             "top_k": int(options.get("top_k", 50)),

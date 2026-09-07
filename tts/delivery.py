@@ -9,12 +9,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from runtime.media.latentsync_reply import LatentSyncReplyError, resolve_ffmpeg_executable
 from runtime.reply.reply_delivery import ReplyDeliveryPlan
 from voice_direction import VoiceDirectionError, validate_short_instruction
 
@@ -25,6 +25,38 @@ from .external_audio_quality_worker import assess_transcript
 
 class DeliveryAudioError(RuntimeError):
     """Stable ordinary-reply audio rendering failure."""
+
+
+def _run_breeze_worker(command, *, timeout, check=False, progress_timeout=300.0, **kwargs):
+    """Reap a stalled worker without treating slow, advancing inference as stalled."""
+    status_path = Path(command[command.index("--status") + 1])
+    started = advanced = time.monotonic()
+    marker = None
+    with subprocess.Popen(command, **kwargs) as process:
+        try:
+            while True:
+                now = time.monotonic()
+                try:
+                    status = json.loads(status_path.read_text(encoding="utf-8"))
+                    current = (status.get("phase"), status.get("generated_frames"))
+                    if current != marker:
+                        marker, advanced = current, now
+                except (OSError, ValueError, AttributeError):
+                    pass
+                idle_limit = progress_timeout if marker and marker[0] == "generation" else 600.0
+                if now - started >= timeout:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                if now - advanced >= idle_limit:
+                    raise DeliveryAudioError("TTS_GENERATION_STALLED")
+                try:
+                    stdout, stderr = process.communicate(timeout=min(5.0, progress_timeout / 4, timeout - (now - started)))
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
 
 
 _INSTRUCT_PREFIX = "You are a helpful assistant. "
@@ -64,21 +96,10 @@ def _validated_quality_report(
     return dict(value)
 
 
-def delivery_tempo_factor(duration_seconds: float) -> float | None:
-    """Allow only a tiny whole-utterance correction; never rescue bad copy."""
-
-    duration = float(duration_seconds)
-    if duration <= 50.0:
-        return None
-    if duration > 52.0:
-        return None
-    return round(duration / 50.0, 4)
-
-
 def validate_delivery_duration(duration_seconds: float) -> None:
-    """Fail closed rather than producing a rushed or half-speed reply."""
+    """Reject undersized speech; motion frames follow its natural upper duration."""
 
-    if not 40.0 <= float(duration_seconds) <= 50.0:
+    if float(duration_seconds) < 40.0:
         raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
 
 
@@ -210,57 +231,6 @@ def _validate_wav(path: Path) -> tuple[int, int]:
             return source.getframerate(), source.getnframes()
     except (OSError, EOFError, wave.Error) as exc:
         raise DeliveryAudioError("TTS_EXTERNAL_AUDIO_INVALID") from exc
-
-
-def _ffmpeg() -> str:
-    try:
-        return str(resolve_ffmpeg_executable())
-    except LatentSyncReplyError as exc:
-        raise DeliveryAudioError("FFMPEG_UNAVAILABLE") from exc
-
-
-def _fit_overlong_wav(path: Path, duration_seconds: float) -> tuple[int, int]:
-    duration = float(duration_seconds)
-    if duration > 52.0:
-        raise DeliveryAudioError("TTS_DELIVERY_DURATION_OUT_OF_RANGE")
-
-    factor = delivery_tempo_factor(duration)
-    if factor is None:
-        return _validate_wav(path)
-    fitted = path.with_name("speech-fitted.wav")
-    try:
-        completed = subprocess.run(
-            [
-                _ffmpeg(),
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(path),
-                "-filter:a",
-                f"atempo={factor:.4f}",
-                "-ac",
-                "1",
-                "-c:a",
-                "pcm_s16le",
-                str(fitted),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=300.0,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise DeliveryAudioError("TTS_DURATION_FIT_FAILED") from exc
-    if completed.returncode != 0 or not fitted.is_file():
-        raise DeliveryAudioError("TTS_DURATION_FIT_FAILED")
-    sample_rate, frame_count = _validate_wav(fitted)
-    fitted_duration = frame_count / sample_rate
-    validate_delivery_duration(fitted_duration)
-    fitted.replace(path)
-    return sample_rate, frame_count
 
 
 @lru_cache(maxsize=16)
@@ -469,8 +439,10 @@ def render_delivery_wav(
             if config.provider == "breeze_tts2":
                 command.extend(("--status", str(worker_status_path)))
             try:
-                completed = subprocess.run(
+                run = _run_breeze_worker if config.provider == "breeze_tts2" else subprocess.run
+                completed = run(
                     command,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -508,6 +480,7 @@ def render_delivery_wav(
             try:
                 completed = subprocess.run(
                     [str(quality_executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -540,9 +513,6 @@ def render_delivery_wav(
             run_worker(candidate)
             sample_rate, frame_count = _validate_wav(temporary_output)
             try:
-                sample_rate, frame_count = _fit_overlong_wav(
-                    temporary_output, frame_count / sample_rate
-                )
                 validate_delivery_duration(frame_count / sample_rate)
             except DeliveryAudioError as exc:
                 if str(exc) != "TTS_DELIVERY_DURATION_OUT_OF_RANGE":
@@ -580,7 +550,6 @@ __all__ = [
     "DeliveryAudioError",
     "DeliveryAudioResult",
     "build_external_delivery_request",
-    "delivery_tempo_factor",
     "render_delivery_wav",
     "validate_delivery_duration",
 ]

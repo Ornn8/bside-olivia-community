@@ -47,7 +47,7 @@ def test_memory_client_rejects_length_even_when_content_is_valid_json(monkeypatc
 
 
 @pytest.mark.parametrize("base_url,model,disabled", [
-    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", True),
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", False),
     ("https://opencode.ai/zen/go/v1/", "deepseek-v4-pro", True),
     ("https://opencode.ai/zen/go/v1", "other-model", False),
     ("https://opencode.ai/zen/v1", "deepseek-v4-flash", False),
@@ -56,10 +56,94 @@ def test_memory_client_rejects_length_even_when_content_is_valid_json(monkeypatc
 def test_go_deepseek_memory_thinking_is_isolated_by_route_and_model(monkeypatch, base_url, model, disabled):
     backend, calls, original_create = _raw_response_backend(monkeypatch, base_url, model=model)
     extra = {"thinking": {"type": "enabled"}}
-    backend.llm.generate_response(messages=[], response_format={"type":"json_object"}, extra_body=extra)
+    backend.llm.generate_response(messages=[], response_format={"type":"json_object"},
+        extra_body=extra, reasoning_effort="low")
     assert calls[0]["extra_body"]["thinking"]["type"] == ("disabled" if disabled else "enabled")
+    assert calls[0]["reasoning_effort"] == (
+        "max" if base_url == "https://opencode.ai/zen/go/v1" and model == "deepseek-v4-flash" else "low"
+    )
     original_create(extra_body=extra)
     assert calls[-1]["extra_body"]["thinking"]["type"] == "enabled"
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1/",
+    "https://api.deepseek.com", "https://api.deepseek.com/",
+    "https://api.deepseek.com/v1", "https://api.deepseek.com/v1/",
+])
+def test_flash_memory_explicitly_uses_max_reasoning_without_mutating_other_params(monkeypatch, base_url):
+    backend, calls, _ = _raw_response_backend(monkeypatch, base_url, model="deepseek-v4-flash")
+    extra = {"thinking": {"type": "disabled"}, "other": "preserved"}
+    result = backend.llm.generate_response(messages=[], response_format={"type": "json_object"},
+        extra_body=extra, reasoning_effort="low", max_tokens=2000, timeout=30)
+    assert calls[0]["extra_body"] == {"thinking": {"type": "enabled"}, "other": "preserved"}
+    assert calls[0]["reasoning_effort"] == "max"
+    assert calls[0]["max_tokens"] == 2000 and calls[0]["timeout"] == 30
+    assert extra["thinking"]["type"] == "disabled"
+    assert result == '{"memory": []}' and "private reasoning" not in result
+
+
+@pytest.mark.parametrize("base_url,model,expected_thinking", [
+    ("https://api.deepseek.com/v1", "deepseek-chat", "disabled"),
+    ("https://api.deepseek.com/v1", "deepseek-reasoner", "disabled"),
+    ("https://api.deepseek.com/v1", "deepseek-v4-pro", "disabled"),
+    ("https://api.deepseek.com/v1", "other-model", "disabled"),
+    ("http://api.deepseek.com/v1", "deepseek-v4-flash", "disabled"),
+    ("https://api.deepseek.com/other", "deepseek-v4-flash", "disabled"),
+    ("https://api.deepseek.com.evil.invalid/v1", "deepseek-v4-flash", "enabled"),
+])
+def test_official_flash_reasoning_preserves_other_routes_and_models(
+    monkeypatch, base_url, model, expected_thinking,
+):
+    backend, calls, _ = _raw_response_backend(monkeypatch, base_url, model=model)
+    backend.llm.generate_response(messages=[], extra_body={"thinking": {"type": "enabled"}},
+        reasoning_effort="low")
+    assert calls[0]["extra_body"]["thinking"]["type"] == expected_thinking
+    assert calls[0]["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("content", ["", '{"memory": []}'])
+def test_go_flash_max_reasoning_still_rejects_truncated_extraction(monkeypatch, content):
+    backend, calls, _ = _raw_response_backend(monkeypatch, "https://opencode.ai/zen/go/v1",
+        finish_reason="length", content=content, model="deepseek-v4-flash")
+    with pytest.raises(mem0_memory.Mem0AdapterError, match="^MEM0_EXTRACTION_RESPONSE_TRUNCATED$"):
+        backend.llm.generate_response(messages=[], response_format={"type": "json_object"})
+    assert calls[0]["extra_body"]["thinking"]["type"] == "enabled"
+    assert calls[0]["reasoning_effort"] == "max"
+
+
+@pytest.mark.parametrize("base_url,model,omit_mode", [
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", True),
+    ("https://opencode.ai/zen/go/v1/", "deepseek-v4-flash", True),
+    ("https://api.deepseek.com", "deepseek-v4-flash", False),
+    ("https://api.deepseek.com/v1", "deepseek-v4-flash", False),
+    ("https://opencode.ai/zen/v1", "deepseek-v4-flash", False),
+    ("https://opencode.ai.evil.invalid/zen/go/v1", "deepseek-v4-flash", False),
+    ("https://other.invalid/v1", "other-model", False),
+])
+def test_memory_json_wire_mode_is_compatible_without_removing_extraction_validation(
+    monkeypatch, base_url, model, omit_mode,
+):
+    backend, calls, _ = _raw_response_backend(monkeypatch, base_url,
+        content='{"unexpected": []}', model=model)
+    requested = {"type": "json_object"}
+    with pytest.raises(mem0_memory.Mem0AdapterError, match="^MEM0_EXTRACTION_RESPONSE_INVALID$"):
+        backend.llm.generate_response(messages=[{"role":"system", "content":"Return memory JSON."}],
+            response_format=requested)
+    assert ("response_format" not in calls[0]) is omit_mode
+    assert requested == {"type":"json_object"}
+    assert "Return memory JSON." in calls[0]["messages"][0]["content"]
+    if omit_mode:
+        assert calls[0]["reasoning_effort"] == "max"
+        assert calls[0]["extra_body"]["thinking"] == {"type":"enabled"}
+
+
+def test_memory_wire_compatibility_does_not_rewrite_other_response_formats(monkeypatch):
+    backend, calls, _ = _raw_response_backend(monkeypatch, "https://opencode.ai/zen/go/v1",
+        model="deepseek-v4-flash")
+    requested = {"type":"json_schema", "json_schema":{"name":"synthetic", "schema":{"type":"object"}}}
+    backend.llm.generate_response(messages=[], response_format=requested)
+    assert calls[0]["response_format"] == requested
 
 
 def test_extraction_request_keeps_grounding_at_system_priority_without_mutating_input(monkeypatch):

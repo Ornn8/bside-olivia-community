@@ -13,7 +13,7 @@ from private_world_port import (
 from private_world_reducer import (
     ReducerEventKind,
 )
-from private_world_ledger import SQLitePrivateWorldLedger
+from private_world_ledger import LedgerEvent, SQLitePrivateWorldLedger
 from runtime.memory.private_world_delivery import (
     DeliveryEvent,
     DeliveryStatus,
@@ -62,13 +62,90 @@ def test_canonical_interaction_evidence_moves_affection_not_permissions(tmp_path
         assert current.nickname_permissions == ()
 
 
+@pytest.mark.parametrize("offset_hours", [8, -5])
+def test_exchange_accepts_same_instant_in_local_timezone_and_remains_idempotent(tmp_path, offset_hours):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
+    deliveries = PrivateWorldDeliveryCommitter(ledger)
+    relationships = PrivateWorldRelationshipCommitter(ledger)
+    user, reply = "不用赶，按你自己的节奏练。", "听到你这么说我轻松多了。"
+    signal = {"kind": "support_received", "user_quote": user, "reply_quote": reply}
+    deliveries.commit(DeliveryEvent(delivery_id="letter:offset", occurred_at=NOW,
+        semantic_key="letter:offset", canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+    local = NOW.astimezone(timezone(timedelta(hours=offset_hours)))
+    assert relationships.commit_exchange("letter:offset", user, reply, signal,
+        occurred_at=local - timedelta(seconds=1)) is RelationshipFactStatus.REJECTED
+    assert relationships.commit_exchange("letter:offset", user, reply, signal,
+        occurred_at=local) is RelationshipFactStatus.COMMITTED
+    first = ledger.snapshot()
+    assert (first.familiarity, first.trust, first.comfort) == (1, 1, 1)
+    assert relationships.commit_exchange("letter:offset", user, reply, signal,
+        occurred_at=NOW) is RelationshipFactStatus.DUPLICATE
+    assert ledger.snapshot() == first
+    assert datetime.fromisoformat(ledger.events()[-1].occurred_at) == NOW
+    assert datetime.fromisoformat(ledger.events()[-1].occurred_at).utcoffset() == timedelta(0)
+
+
+def test_distinct_support_evidence_is_not_a_same_day_duplicate(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
+    deliveries = PrivateWorldDeliveryCommitter(ledger)
+    relationships = PrivateWorldRelationshipCommitter(ledger)
+    first = ("今天身体不舒服就先休息。", "谢谢关心，我安心多了。")
+    second = ("你的画我认真看了，颜色选得很好。", "你仔细看过我很开心，谢谢鼓励。")
+    for index, (evidence, when, expected) in enumerate([
+        (first, NOW, 1),
+        (second, NOW + timedelta(minutes=1), 2),
+        (first, NOW + timedelta(minutes=2), 2),
+        (first, NOW + timedelta(hours=24), 3),
+    ]):
+        user, reply = evidence
+        delivery_id = f"letter:{index}"
+        deliveries.commit(DeliveryEvent(delivery_id=delivery_id, occurred_at=when,
+            semantic_key=delivery_id, canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+        signal = {"kind": "support_received", "user_quote": user, "reply_quote": reply}
+        assert relationships.commit_exchange(delivery_id, user, reply, signal,
+            occurred_at=when) is RelationshipFactStatus.COMMITTED
+        snapshot = ledger.snapshot()
+        assert (snapshot.familiarity, snapshot.trust, snapshot.comfort) == (expected,) * 3
+        assert relationships.commit_exchange(delivery_id, user, reply, signal,
+            occurred_at=when) is RelationshipFactStatus.DUPLICATE
+        assert ledger.snapshot() == snapshot
+        assert snapshot.relationship_stage == "unknown"
+        assert snapshot.intimacy_grants == () and snapshot.nickname_permissions == ()
+    assert ledger.events()[5].payload["reason_code"] == "SEMANTIC_DUPLICATE"
+    # Semantic identifiers must not expose either participant's private words.
+    assert all(first[0] not in str(event.payload) and second[0] not in str(event.payload)
+               for event in ledger.events())
+
+
+def test_legacy_kind_only_cooldown_expires_without_rewriting_old_events(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
+    ledger.apply_once(LedgerEvent(event_id="legacy", delivery_id="legacy",
+        event_type="support_received", occurred_at=NOW.isoformat(),
+        payload={"semantic_key": "canonical-interaction:support_received", "applied": True}),
+        PrivateWorldSnapshot(version=2, familiarity=1, trust=1, comfort=1))
+    deliveries = PrivateWorldDeliveryCommitter(ledger)
+    relationships = PrivateWorldRelationshipCommitter(ledger)
+    user, reply = "不舒服就先休息。", "谢谢关心，我安心多了。"
+    for index, (when, expected) in enumerate([(NOW + timedelta(minutes=1), 1),
+                                             (NOW + timedelta(hours=24), 2)]):
+        delivery_id = f"new:{index}"
+        deliveries.commit(DeliveryEvent(delivery_id=delivery_id, occurred_at=when,
+            semantic_key=delivery_id, canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+        relationships.commit_exchange(delivery_id, user, reply,
+            {"kind": "support_received", "user_quote": user, "reply_quote": reply}, occurred_at=when)
+        assert ledger.snapshot().trust == expected
+    assert ledger.events()[0].payload["semantic_key"] == "canonical-interaction:support_received"
+
+
 @pytest.mark.parametrize("field,value", [("user_quote", "她说的话"), ("reply_quote", "编造的原文"), ("kind", "stage_confirmed")])
 def test_canonical_interaction_rejects_wrong_evidence_or_permission_kind(tmp_path, field, value):
-    committer = PrivateWorldRelationshipCommitter(SQLitePrivateWorldLedger(tmp_path / "world.sqlite3"))
+    ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
+    committer = PrivateWorldRelationshipCommitter(ledger)
     with pytest.raises(ValueError):
         committer.commit_exchange("letter:1", "不用赶", "谢谢理解", {
             **{"kind":"support_received", "user_quote":"不用赶", "reply_quote":"谢谢理解"}, field:value,
         }, occurred_at=NOW)
+    assert ledger.events() == ()
 
 
 def test_projection_authorizes_only_ledger_backed_character_statements() -> None:

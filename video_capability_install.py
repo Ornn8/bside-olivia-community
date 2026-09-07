@@ -1592,9 +1592,11 @@ class VideoCapabilityInstaller:
                                 "model_license_path": str(model_license),
                                 "quality_gate_python": str(external_python),
                                 "quality_gate_cache_root": str(
-                                    self.data_root
-                                    / "provider-cache"
-                                    / "breeze-quality-gate"
+                                    self._managed_runtime_path(
+                                        environment,
+                                        "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT",
+                                        directory=True,
+                                    )
                                 ),
                                 "dtype": "bf16",
                                 "device": "cuda",
@@ -2978,6 +2980,11 @@ class VideoCapabilityInstaller:
     def _install_breeze_runtime_packages(
         python_path: Path, site_packages: Path, requirements: Path
     ) -> None:
+        # pip moves wheel contents (including deeper __pycache__ files) into
+        # this staging tree. Extended paths work even with LongPathsEnabled=0.
+        target = os.path.abspath(site_packages)
+        if os.name == "nt" and not target.startswith("\\\\?\\"):
+            target = "\\\\?\\UNC\\" + target[2:] if target.startswith("\\\\") else "\\\\?\\" + target
         environment = dict(os.environ)
         for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"):
             environment.pop(key, None)
@@ -3003,7 +3010,7 @@ class VideoCapabilityInstaller:
                     "--find-links",
                     str(python_path.parent.parent / "wheels"),
                     "--target",
-                    str(site_packages),
+                    target,
                     "--requirement",
                     str(requirements),
                 ],

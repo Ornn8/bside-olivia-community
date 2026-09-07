@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Mapping, Protocol, Sequence
 
-from runtime.reply.reply_context import ReplyContext
+from runtime.reply.reply_context import ReplyContext, ReplyMode
 from runtime.reply.reply_policy import IntimacyClaim, scan_reply
 from runtime.reply.reply_reviewer import (
     ReviewerViolation,
@@ -312,7 +312,7 @@ def run_reply_quality_gate(
         )
         status = (
             QualityGateStatus.BLOCKED
-            if has_hard_review
+            if has_hard_review or context.mode is ReplyMode.TEXT_LETTER
             else QualityGateStatus.ACCEPTED_WITH_WARNINGS
         )
     else:

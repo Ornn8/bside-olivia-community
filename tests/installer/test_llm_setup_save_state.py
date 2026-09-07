@@ -46,7 +46,8 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.render=renderLlmSetupP
   const [base,model,key]=inputs;
   const test=elements.find(el=>el.textContent==='测试连接');
   const save=elements.find(el=>el.textContent==='保存');
-  const status=elements.find(el=>el.textContent==='请输入 API key 并测试连接。');
+  const status=elements.find(el=>el.tag==='p' && el.textContent.startsWith('请先测试连接。'));
+  assert.ok(status);
   key.value=' synthetic-key ';
   const pending=test.click();
   if(process.argv[1]==='inflight') {model.value='changed';model.listeners.input();}

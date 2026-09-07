@@ -357,7 +357,7 @@ def test_available_sqlite_private_world_reaches_gateway_only_as_character_view(
         if message["role"] == "system"
     )
 
-    assert '"home_history_allowed":true' in system_message
+    assert '"claiming_home_history":{"allowed":true}' in system_message
     assert "合成称呼" in system_message
     assert "角色已知的合成课程调整。" in system_message
     private_behavior = re.search(
