@@ -35,7 +35,8 @@ def test_configured_diagnostic_collector_reads_live_history_progress_without_imp
         expected["error_code"] = "MEM0_SOURCE_DEDUP_UNAVAILABLE"
     assert source["health"]["checks"]["history_import"] == expected
     with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
-        assert len(archive.namelist()) == 7
+        assert len(archive.namelist()) == 8
+        assert "media-provider-tail.jsonl" in archive.namelist()
         assert json.loads(archive.read("health.json"))["checks"]["history_import"] == expected
         assert all(b"private-" not in archive.read(name) for name in archive.namelist())
     module._local_import_task = None
