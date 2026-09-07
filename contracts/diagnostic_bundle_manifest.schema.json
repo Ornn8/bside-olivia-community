@@ -15,7 +15,8 @@
         "install.json",
         "tasks.json",
         "launcher-tail.jsonl",
-        "runtime-tail.jsonl"
+        "runtime-tail.jsonl",
+        "media-provider-tail.jsonl"
       ]
     }
   }

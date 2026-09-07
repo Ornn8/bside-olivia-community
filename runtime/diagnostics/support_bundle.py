@@ -18,6 +18,7 @@ DIAGNOSTIC_BUNDLE_MEMBERS = (
     "tasks.json",
     "launcher-tail.jsonl",
     "runtime-tail.jsonl",
+    "media-provider-tail.jsonl",
 )
 MAX_BUNDLE_BYTES = 1 << 20
 MAX_CHECKS = 32
@@ -37,7 +38,7 @@ _EVENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TOKEN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,159}$")
 _METHODS = frozenset({"GET", "HEAD", "OPTIONS", "POST"})
 _REPLY_MODES = frozenset(
-    {"text", "video", "text_letter", "normal_video", "music_video", "live"}
+    {"text", "video", "text_letter", "normal_video", "music_video", "spoken_video", "musical_video", "live"}
 )
 _TASK_STAGES = frozenset(
     {
@@ -301,6 +302,66 @@ def _json_bytes(value: Mapping[str, object]) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _project_media_tail(value: object) -> bytes:
+    """Extract structured failure evidence; never export diagnostic strings."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise _invalid()
+    categories = {
+        'process_timeout', 'process_start_failure', 'process_management_failure',
+        'cuda_out_of_memory', 'runtime_dependency_missing', 'python_module_missing',
+        'configured_path_missing', 'cuda_runtime_failure', 'external_process_failure',
+    }
+    exceptions = {
+        'ReplyMediaError', 'LatentSyncReplyError', 'MusicReplyError', 'VoiceDirectionError',
+        'GatewayError', 'TimeoutExpired', 'TimeoutError', 'ValueError', 'TypeError',
+        'OSError', 'FileNotFoundError', 'PermissionError', 'CalledProcessError',
+        'RuntimeError', 'ProcessManagementError',
+    }
+    records = []
+    for source in value[-MAX_TAIL_RECORDS:]:
+        if not isinstance(source, Mapping):
+            continue
+        record = {}
+        code = source.get('error_code')
+        if isinstance(code, str) and _CODE_RE.fullmatch(code):
+            record['error_code'] = code
+        timestamp = source.get('timestamp')
+        if type(timestamp) is int and 0 <= timestamp <= 10_000_000_000:
+            record['timestamp'] = timestamp
+        if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg'}:
+            record['provider'] = source['provider']
+        raw = source.get('diagnostic')
+        if isinstance(raw, str) and len(raw) <= 4096:
+            try:
+                detail = json.loads(raw)
+            except (ValueError, TypeError):
+                detail = dict(part.strip().split('=', 1) for part in raw.split(';') if '=' in part)
+            if isinstance(detail, Mapping):
+                if isinstance(detail.get('stage'), str) and detail['stage'] in {'prepare', 'voice_plan', 'render', 'publish'}:
+                    record['stage'] = detail['stage']
+                for field in ('candidate_code', 'cause_candidate_code'):
+                    code = detail.get(field)
+                    if isinstance(code, str) and _CODE_RE.fullmatch(code):
+                        record[field] = code
+                for field in ('exception_type', 'cause_exception_type'):
+                    if isinstance(detail.get(field), str) and detail[field] in exceptions:
+                        record[field] = detail[field]
+                chain = detail.get('exception_types')
+                if isinstance(chain, str):
+                    record['exception_types'] = [name for name in chain.split('>')[:8] if name in exceptions]
+                category = detail.get('stderr_category')
+                if isinstance(category, str) and category in categories:
+                    record['stderr_category'] = category
+                elif detail.get('stderr') == 'process timeout':
+                    record['stderr_category'] = 'process_timeout'
+                returncode = str(detail.get('returncode', ''))
+                if re.fullmatch(r'-?[0-9]{1,10}', returncode):
+                    record['returncode'] = int(returncode)
+        if record:
+            records.append(record)
+    return b''.join(_json_bytes(record) + b'\n' for record in records)
+
+
 def _zip_member(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
     member = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     member.compress_type = zipfile.ZIP_DEFLATED
@@ -330,6 +391,7 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
         "tasks.json": _json_bytes(tasks),
         "launcher-tail.jsonl": _project_tail(values["launcher_tail"], runtime=False),
         "runtime-tail.jsonl": _project_tail(values["runtime_tail"], runtime=True),
+        "media-provider-tail.jsonl": _project_media_tail(values.get("media_provider_tail", ())),
     }
     if tuple(payloads) != DIAGNOSTIC_BUNDLE_MEMBERS or sum(map(len, payloads.values())) > MAX_BUNDLE_BYTES:
         raise DiagnosticBundleError("DIAGNOSTIC_BUNDLE_TOO_LARGE")

@@ -392,12 +392,38 @@ def _launcher_tail(data_root: Path | None) -> tuple[Mapping[str, object], ...]:
     return records
 
 
+def _media_provider_tail(data_root: Path | None) -> tuple[Mapping[str, object], ...]:
+    """Read a bounded tail from the active installation, tolerating an in-flight append."""
+    if data_root is None:
+        return ()
+    try:
+        with (data_root / 'logs' / 'media-provider.jsonl').open('rb') as stream:
+            stream.seek(0, 2)
+            start = max(0, stream.tell() - _DIAGNOSTIC_LOG_MAX_BYTES)
+            stream.seek(start)
+            raw = stream.read(_DIAGNOSTIC_LOG_MAX_BYTES)
+        if start:
+            raw = raw.partition(b'\n')[2]
+        records = []
+        for line in raw.splitlines()[-_DIAGNOSTIC_TAIL_LIMIT:]:
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if isinstance(record, Mapping):
+                records.append(record)
+        return tuple(records)
+    except OSError:
+        return ()
+
+
 def _diagnostic_source(
     backend: OriginalClientCompanionServiceBackend,
     *,
     setup_service: LLMSetupService | None,
     launcher_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
     runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None,
+    media_provider_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
@@ -481,6 +507,8 @@ def _diagnostic_source(
             "text_letter",
             "normal_video",
             "music_video",
+            "musical_video",
+            "spoken_video",
             "live",
         }:
             item["reply_mode"] = reply_mode
@@ -636,6 +664,7 @@ def _diagnostic_source(
                 "items": task_items,
             },
             "launcher_tail": list(launcher_tail_provider() if launcher_tail_provider else ()),
+            "media_provider_tail": list(media_provider_tail_provider() if media_provider_tail_provider else ()),
             "runtime_tail": (
                 list(runtime_tail_provider() if runtime_tail_provider else ())[-110:]
                 + list(backend.diagnostic_status_history())
@@ -662,6 +691,7 @@ def create_original_client_server_runtime(
     trusted_origins: Sequence[str] = (),
     launcher_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     runtime_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
+    media_provider_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
@@ -749,6 +779,7 @@ def create_original_client_server_runtime(
             setup_service=setup_service,
             launcher_tail_provider=launcher_tail_provider,
             runtime_tail_provider=runtime_tail_provider,
+            media_provider_tail_provider=media_provider_tail_provider,
             health_profile_provider=health_profile_provider,
             task_snapshot_provider=task_snapshot_provider,
             history_import_provider=history_import_provider,
@@ -1097,6 +1128,7 @@ def create_configured_original_client_server_runtime(
         trusted_origins=origins,
         launcher_tail_provider=lambda: _launcher_tail(data_root),
         runtime_tail_provider=runtime_tail if callable(runtime_tail) else None,
+        media_provider_tail_provider=lambda: _media_provider_tail(data_root),
         health_profile_provider=health_profile if callable(health_profile) else None,
         task_snapshot_provider=task_snapshot,
         history_import_provider=history_import_snapshot,

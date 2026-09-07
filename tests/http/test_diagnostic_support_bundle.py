@@ -70,6 +70,37 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_media_provider_tail_projects_failure_chain_without_private_diagnostics():
+    source = _source()
+    source['media_provider_tail'] = [
+        {'provider': 'latentsync', 'error_code': 'LATENTSYNC_FAILED',
+         'diagnostic': 'returncode=unknown;stderr_category=process_timeout', 'key': 'sk-private'},
+        {'error_code': 'MUSIC_REPLY_NORMAL_VIDEO_FAILED', 'timestamp': 1788793193,
+         'diagnostic': 'returncode=unavailable; stderr=process timeout; exception_types=ReplyMediaError>LatentSyncReplyError>TimeoutExpired; exception_codes=LATENTSYNC_FAILED>LATENTSYNC_FAILED'},
+        {'error_code': 'MEDIA_JOB_FAILED', 'diagnostic': json.dumps({
+            'stage': 'render', 'candidate_code': 'MUSIC_REPLY_NORMAL_VIDEO_FAILED',
+            'exception_type': 'MusicReplyError', 'private': 'C:/Users/private sk-secret'})},
+        {'error_code': 'MEDIA_JOB_FAILED', 'diagnostic': 'private reply C:/Users/private sk-secret'},
+    ]
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+        records = [json.loads(line) for line in raw.splitlines()]
+    assert records[0]['stderr_category'] == 'process_timeout'
+    assert records[1]['exception_types'][-1] == 'TimeoutExpired'
+    assert records[2]['stage'] == 'render'
+    assert records[2]['candidate_code'] == 'MUSIC_REPLY_NORMAL_VIDEO_FAILED'
+    assert records[3] == {'error_code': 'MEDIA_JOB_FAILED'}
+    assert not any(secret in raw for secret in (b'sk-', b'C:/Users', b'private reply'))
+
+
+@pytest.mark.parametrize('mode', ['musical_video', 'spoken_video'])
+def test_media_task_diagnostic_retains_exact_video_route(mode):
+    source = _source()
+    source['tasks']['items'][0]['reply_mode'] = mode
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        assert json.loads(archive.read('tasks.json'))['items'][0]['reply_mode'] == mode
+
+
 @pytest.mark.parametrize("diagnostic", [
     "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
     "BREEZE_PIP_HASH_MISMATCH", "BREEZE_PIP_WHEEL_UNAVAILABLE", "BREEZE_PIP_ACCESS_DENIED",
@@ -137,6 +168,7 @@ def test_bundle_has_only_fixed_deterministic_members_and_safe_projection() -> No
         "tasks.json",
         "launcher-tail.jsonl",
         "runtime-tail.jsonl",
+        "media-provider-tail.jsonl",
     ]
     joined = b"\n".join(contents.values()).decode("utf-8")
     for forbidden in (
