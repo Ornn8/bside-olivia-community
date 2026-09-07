@@ -552,6 +552,19 @@ def test_video_length_with_hard_reviewer_finding_is_not_delivery_repairable() ->
     assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
 
 
+def test_video_length_with_disabled_reviewer_keeps_delivery_repair() -> None:
+    result = run_reply_quality_gate(
+        "Too short.",
+        _video_context(),
+        reviewer=NullReviewer(),
+        rewriter=_Rewriter("Still short."),
+    )
+
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
+    assert result.delivery_repair_disposition is DeliveryRepairDisposition.VIDEO_LENGTH
+
+
 def test_video_length_with_unavailable_reviewer_is_not_delivery_repairable() -> None:
     result = run_reply_quality_gate(
         "Too short.",

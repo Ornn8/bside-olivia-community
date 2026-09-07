@@ -79,8 +79,11 @@ def _delivery_repair_disposition(
         frozenset(deterministic_codes)
         == frozenset({"VIDEO_REPLY_LENGTH_OUT_OF_RANGE"})
         and not any(item.severity == "hard" for item in review.violations)
-        and review.verdict
-        not in {ReviewVerdict.BLOCK, ReviewVerdict.UNAVAILABLE}
+        and review.verdict is not ReviewVerdict.BLOCK
+        and (
+            review.verdict is not ReviewVerdict.UNAVAILABLE
+            or review.status is ReviewStatus.DISABLED
+        )
     ):
         return DeliveryRepairDisposition.VIDEO_LENGTH
     return DeliveryRepairDisposition.NONE
