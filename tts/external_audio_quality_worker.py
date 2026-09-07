@@ -7,6 +7,7 @@ import difflib
 import hashlib
 import json
 import re
+import sys
 import wave
 from pathlib import Path
 
@@ -14,7 +15,27 @@ from pathlib import Path
 _WHISPER_BASE_SHA256 = "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
 
 def normalize_transcript(text: str) -> str:
-    return re.sub(r"[^\u3400-\u9fffA-Za-z0-9]+", "", str(text)).casefold()
+    value = str(text)
+    if sys.platform == "win32" and value:
+        # Whisper can emit traditional Chinese for a simplified script. Use
+        # Windows' offline character mapping for all three compared texts.
+        import ctypes
+        from ctypes import wintypes
+
+        mapping = ctypes.WinDLL("kernel32", use_last_error=True).LCMapStringEx
+        mapping.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR,
+                            ctypes.c_int, wintypes.LPWSTR, ctypes.c_int,
+                            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ssize_t]
+        mapping.restype = ctypes.c_int
+        simplified = 0x02000000  # LCMAP_SIMPLIFIED_CHINESE
+        size = mapping("zh-CN", simplified, value, -1, None, 0, None, None, 0)
+        if not size:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_unicode_buffer(size)
+        if not mapping("zh-CN", simplified, value, -1, buffer, size, None, None, 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        value = buffer.value
+    return re.sub(r"[^\u3400-\u9fffA-Za-z0-9]+", "", value).casefold()
 
 def _edit_distance(left: str, right: str) -> int:
     if len(left) < len(right):

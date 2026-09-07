@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.460 - 2026-09-07
+
+合并人格收尾候选 42、自然语速视频管线、空 key 自定义接口和记忆/寄信修复。详细范围、安装方式及已知限制见 [发布说明](docs/releases/v0.1.460.md)。
+
 ## Unreleased
 
 仓库已公开，当前仍处于开发者预览阶段。GitHub 已发布 [v0.1.0](https://github.com/Ornn8/bside-olivia-community/releases/tag/v0.1.0) 与 [v0.1.2](https://github.com/Ornn8/bside-olivia-community/releases/tag/v0.1.2) 两个预发布版；以下主干改动尚未形成新的 Release。

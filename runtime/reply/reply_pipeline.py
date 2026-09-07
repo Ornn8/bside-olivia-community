@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 import hashlib
+import os
 from typing import Any, Mapping, Protocol
 
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
-from reply_model_quality import create_model_quality_ports
-from runtime.reply.reply_context import ReplyContext
+from reply_model_quality import create_model_quality_ports, resolve_model_quality_config
+from runtime.reply.reply_context import ReplyContext, ReplyMode
+from runtime.reply.current_turn_interpretation import (
+    CurrentTurnInterpreter, projection_messages,
+)
 from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from runtime.reply.reply_quality_gate import (
     DeliveryRepairDisposition,
@@ -37,6 +41,30 @@ class _PersonaNotReadyError(RuntimeError):
 
 class OrchestratorPort(Protocol):
     async def run(self, request: object) -> ReplyResult: ...
+
+
+class CurrentTurnInterpreterPort(Protocol):
+    async def interpret(self, user_text: str) -> dict[str, Any]: ...
+
+
+def current_turn_interpretation_enabled() -> bool:
+    return os.environ.get("OLIVIA_LETTER_CURRENT_TURN_INTERPRETATION", "").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _runtime_current_turn_interpreter(orchestrator: object) -> CurrentTurnInterpreter | None:
+    if not current_turn_interpretation_enabled():
+        return None
+    bridge = getattr(orchestrator, "gateway", None)
+    adapter = getattr(bridge, "adapter", None)
+    gateway = getattr(adapter, "gateway", None)
+    if gateway is None:
+        raise RuntimeError("CURRENT_TURN_INTERPRETATION_UNAVAILABLE")
+    config = resolve_model_quality_config(getattr(adapter, "config", None))
+    return CurrentTurnInterpreter(
+        gateway, timeout_seconds=config.reasoning_timeout_seconds or config.timeout_seconds,
+    )
 
 
 class UnavailableRewriter:
@@ -85,8 +113,12 @@ class ReplyPipeline:
         reviewer: ReviewerPort,
         rewriter: RewriterPort,
         discover_runtime_ports: bool = True,
+        current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
     ) -> None:
         self.orchestrator = orchestrator
+        self.current_turn_interpreter = current_turn_interpreter or (
+            _runtime_current_turn_interpreter(orchestrator) if discover_runtime_ports else None
+        )
         runtime_reviewer, runtime_rewriter = (
             create_model_quality_ports(orchestrator)
             if discover_runtime_ports
@@ -122,6 +154,22 @@ class ReplyPipeline:
                 retryable=False,
             )
         prepared = preparation.request
+        if self.current_turn_interpreter is not None and context.mode is ReplyMode.TEXT_LETTER:
+            try:
+                if not isinstance(prepared, ReplyRequest) or not isinstance(request, ReplyRequest) or not isinstance(request.content, str):
+                    raise ValueError("current user input unavailable")
+                interpretation = await self.current_turn_interpreter.interpret(request.content)
+                messages = projection_messages(
+                    _generation_messages(prepared), request.content, interpretation,
+                )
+                if sum(len(str(message.get("content", ""))) for message in messages) > prepared.max_input_chars:
+                    raise ValueError("interpretation exceeds request budget")
+                prepared = replace(prepared, messages=messages)
+            except Exception:
+                return PipelineResult(
+                    request.request_id if isinstance(request, ReplyRequest) else "",
+                    ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
+                )
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(

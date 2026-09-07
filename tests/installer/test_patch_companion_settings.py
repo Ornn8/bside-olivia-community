@@ -165,7 +165,7 @@ def test_patch_supports_original_client_0_0_9_627_main_module(
 
     after = _members(path)
     assert result["status"] == "PATCHED"
-    assert after[main_member] == b'synthetic-0.0.9.627-main-module"hide-write":!1'
+    assert after[main_member] == b'synthetic-0.0.9.627-main-module"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))'
     assert PATCH_MARKER in after[INDEX_MEMBER].decode()
     assert BOOTSTRAP_MEMBER in after
 
@@ -258,7 +258,7 @@ def test_repository_owned_bootstrap_upgrade_restores_0627_mailbox_write_access(
     assert result["status"] == "PATCHED"
     assert after[BOOTSTRAP_MEMBER].decode() == BOOTSTRAP_JAVASCRIPT
     main = after[main_member].decode()
-    assert '"hide-write":!1' in main
+    assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))' in main
     assert '"hide-write":o(p)||!o(N3)' not in main
 
 

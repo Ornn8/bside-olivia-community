@@ -25,9 +25,12 @@ class Model:
     async def complete(self, messages, **kwargs): return await self.complete_scoped(messages, **kwargs)
     async def complete_scoped(self, messages, request_id=None, **kwargs):
         if request_id and request_id.startswith('life:'):
-            schema = json.loads(re.search(r'JSON (\{[^\n]+\})', messages[0]['content']).group(1))
-            assert 'relationship' in schema, 'relationship classification must not be an optional afterthought'
             data = json.loads(messages[-1]['content'])
+            if ':conduct' in request_id:
+                assert 'linli_reply' not in data
+                assert data['user_letter'] == cases[0][0]
+                return SimpleNamespace(text=json.dumps({'conduct':'pressure', 'quote':cases[0][0]}))
+            assert '每封都判断 relationship' in messages[0]['content']
             case = next(c for c in cases if c[0] == data['user_letter'])
             assert data['linli_reply'] == case[1], (data['user_letter'], data['linli_reply'], case[1])
             signal = {'kind':case[2], 'user_quote':case[0], 'reply_quote':case[1]} if case[2] else None

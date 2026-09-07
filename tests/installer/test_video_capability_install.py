@@ -1910,6 +1910,7 @@ def _managed_tts_config_fixture(
     installer._requires_breeze_hardware = True
 
     directories = {
+        "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": installer.install_root / "ordinary/quality/whisper",
         "OLIVIA_BREEZE_TTS_ROOT": installer.install_root / "ordinary/breeze/runtime",
         "OLIVIA_BREEZE_TTS_MODEL_ROOT": installer.install_root / "ordinary/breeze/model",
     }
@@ -1964,6 +1965,13 @@ def _managed_tts_config_fixture(
         **{key: str(value) for key, value in directories.items()},
         **{key: str(value) for key, value in files.items()},
     }
+
+
+def test_managed_tts_config_uses_installed_quality_checkpoint_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    installer._generate_managed_tts_config(environment)
+    config = json.loads(Path(environment["OLIVIA_TTS_CONFIG"]).read_text(encoding="utf-8"))
+    assert config["settings"]["provider_options"]["quality_gate_cache_root"] == environment["OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")

@@ -79,10 +79,10 @@ def test_action_phrasing_selects_the_relevant_anchor(
     "user_input",
     ("今天下雨了。", "今天买的面包有点难吃。", "在吗？"),
 )
-def test_ordinary_letters_receive_exactly_one_anchor(user_input: str) -> None:
+def test_ordinary_letters_do_not_receive_unrelated_biography(user_input: str) -> None:
     assembled = _assemble(user_input)
 
-    assert assembled.system_content.count('"declaration_id":"anchor.') == 1
+    assert assembled.system_content.count('"declaration_id":"anchor.') == 0
 
 
 @pytest.mark.parametrize(
@@ -120,7 +120,7 @@ def test_anchor_disclosure_never_exceeds_the_limit(user_input: str) -> None:
 def test_short_gap_does_not_reassign_other_people_to_persona(user_input: str) -> None:
     anchor_ids = _anchor_ids(user_input)
 
-    assert len(anchor_ids) == 1
+    assert set(anchor_ids) <= {"anchor.father"}
     assert "anchor.current_piece" not in anchor_ids
 
 
@@ -141,20 +141,18 @@ def test_follow_up_fallback_does_not_restore_rejected_history_anchor() -> None:
         if item_id.startswith("declaration.anchor.")
     )
 
-    assert len(anchor_ids) == 1
+    assert len(anchor_ids) == 0
     assert "anchor.cat" not in anchor_ids
 
 
 def test_baseline_anchor_is_deterministic_for_the_same_letter() -> None:
-    assert _anchor_ids("今天下雨了。") == ("anchor.everyday_taste",)
+    assert _anchor_ids("今天下雨了。") == ()
 
 
-def test_baseline_anchor_rotates_across_different_letters() -> None:
+def test_unrelated_letters_never_trigger_random_biography() -> None:
     inputs = tuple(f"普通日常来信第{index}封。" for index in range(8))
 
-    selected = {_anchor_ids(user_input)[0] for user_input in inputs}
-
-    assert len(selected) > 1
+    assert all(_anchor_ids(user_input) == () for user_input in inputs)
 
 
 def test_anchor_disclosure_fits_default_budget_with_full_history() -> None:
@@ -169,5 +167,5 @@ def test_anchor_disclosure_fits_default_budget_with_full_history() -> None:
         max_units=GatewayConfig().max_input_chars,
     )
 
-    assert assembled.system_content.count('"declaration_id":"anchor.') == 1
+    assert assembled.system_content.count('"declaration_id":"anchor.') == 0
     assert assembled.budget_report.dropped_ids == ()

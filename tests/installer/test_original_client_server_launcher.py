@@ -105,7 +105,7 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
         bootstrap = archive.read("assets/olivia-companion-settings.js").decode()
         main = archive.read("assets/main-31595bd3.js").decode()
     assert bootstrap == BOOTSTRAP_JAVASCRIPT
-    assert '"hide-write":!1' in main
+    assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))' in main
 
 
 def test_launcher_rejects_missing_frontend_archive(tmp_path: Path) -> None:
@@ -787,15 +787,18 @@ def test_native_settings_failure_is_path_free_and_does_not_block_client(
     assert str(root.resolve()) not in launcher_log
 
 
+@pytest.mark.parametrize("existing_profile", [False, True])
 def test_fresh_profile_returns_second_failure_without_third_attempt(
     tmp_path: Path,
     monkeypatch,
+    existing_profile,
 ) -> None:
     _root, result, client_runs, client_events, _launcher_log = (
         _run_launcher_with_client_results(
             tmp_path,
             monkeypatch,
             (0x0E000003, 23),
+            existing_profile=existing_profile,
         )
     )
 
@@ -808,7 +811,7 @@ def test_fresh_profile_returns_second_failure_without_third_attempt(
     }
 
 
-def test_existing_profile_never_retries_known_exit(
+def test_existing_profile_retries_known_exit_once(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -816,33 +819,43 @@ def test_existing_profile_never_retries_known_exit(
         _run_launcher_with_client_results(
             tmp_path,
             monkeypatch,
-            (0x0E000003,),
+            (0x0E000003, 0),
             existing_profile=True,
         )
     )
 
-    assert result == 0x0E000003
-    assert len(client_runs) == 1
+    assert result == 0
+    assert len(client_runs) == 2
     assert [event["event"] for event in client_events] == [
         "client_start",
         "client_layout",
         "client_exit",
+        "client_retry",
+        "client_start",
+        "client_layout",
+        "client_exit",
     ]
+    assert client_events[3]["reason"] == "known_client_exit"
 
 
+@pytest.mark.parametrize("existing_profile", [False, True])
+@pytest.mark.parametrize("exit_code", [0, 19])
 def test_fresh_profile_does_not_retry_other_exit(
     tmp_path: Path,
     monkeypatch,
+    existing_profile,
+    exit_code,
 ) -> None:
     _root, result, client_runs, client_events, _launcher_log = (
         _run_launcher_with_client_results(
             tmp_path,
             monkeypatch,
-            (19,),
+            (exit_code,),
+            existing_profile=existing_profile,
         )
     )
 
-    assert result == 19
+    assert result == exit_code
     assert len(client_runs) == 1
     assert [event["event"] for event in client_events] == [
         "client_start",

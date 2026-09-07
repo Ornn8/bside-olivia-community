@@ -78,7 +78,7 @@ def test_text_reply_uses_original_text_type() -> None:
     assert detail["replyVideoUrl"] == ""
 
 
-def test_video_modes_fall_back_to_durable_text_until_media_is_complete() -> None:
+def test_video_modes_wait_until_media_is_complete() -> None:
     for mode in ("spoken_video", "musical_video"):
         detail = serialize_letter_detail(
             _letter(
@@ -88,10 +88,32 @@ def test_video_modes_fall_back_to_durable_text_until_media_is_complete() -> None
             ),
             now=NOW,
         )
-        assert detail["letterStatus"] == 4
-        assert detail["replyType"] == 1
-        assert detail["replyText"] == "这是已经通过质量门的合成回复。"
+        assert detail["letterStatus"] == 3
+        assert detail["replyType"] == 0
+        assert detail["replyText"] == ""
+        assert detail["videoPending"] is True
         assert detail["replyVideoUrl"] == ""
+
+
+@pytest.mark.parametrize("state", ["PENDING", "QUEUED", "PROCESSING"])
+def test_waiting_video_list_and_detail_agree_without_changing_canonical_reply(state):
+    letter = _letter(reply_mode="musical_video", media_status=state)
+    for serialize in (serialize_letter_summary, serialize_letter_detail):
+        result = serialize(letter, now=NOW, include_legacy_aliases=True)
+        assert result["letterStatus"] == result["letter_status"] == 3
+        assert result["videoPending"] is True
+        assert result["replyType"] == 0
+        assert result.get("reply_text", "") == ""
+    assert letter["letter_status"] == "COMPLETED"
+    assert letter["reply_text"]
+
+
+def test_failed_video_still_delivers_durable_text():
+    result = serialize_letter_detail(_letter(reply_mode="musical_video", media_status="FAILED"), now=NOW)
+    assert result["letterStatus"] == 4
+    assert result["replyType"] == 1
+    assert result["replyText"]
+    assert not result.get("videoPending")
 
 
 def test_completed_legacy_spoken_video_is_projected_as_the_musical_video() -> None:

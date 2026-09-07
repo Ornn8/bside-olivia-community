@@ -72,9 +72,7 @@ from runtime.reply.reply_media import (
 from runtime.media.song_content import SongContentPlan
 from tts.delivery import (
     DeliveryAudioError,
-    _fit_overlong_wav,
     build_external_delivery_request,
-    delivery_tempo_factor,
 )
 from tts import external_cosyvoice_worker
 
@@ -756,33 +754,6 @@ def test_delivery_request_excludes_reference_text_and_instruct_controls():
     assert "instruct_text" not in request
     assert request["blocks"] == ["第一句。第二句。"]
     assert request["seed"] == 200717
-
-
-def test_delivery_tempo_allows_only_modest_whole_utterance_fit():
-    assert delivery_tempo_factor(50.0) is None
-    assert delivery_tempo_factor(51.0) == 1.02
-    assert delivery_tempo_factor(52.0) == 1.04
-    assert delivery_tempo_factor(52.01) is None
-
-
-def test_delivery_fit_rejects_audio_over_52_seconds(tmp_path):
-    sample_rate = 8_000
-    path = tmp_path / "overlong.wav"
-    samples = array(
-        "h",
-        (
-            3_000 if index < 53 * sample_rate else 0
-            for index in range(61 * sample_rate)
-        ),
-    )
-    with wave.open(str(path), "wb") as target:
-        target.setnchannels(1)
-        target.setsampwidth(2)
-        target.setframerate(sample_rate)
-        target.writeframes(samples.tobytes())
-
-    with pytest.raises(DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
-        _fit_overlong_wav(path, 61.0)
 
 
 def test_external_worker_renders_delivery_blocks_with_one_model_load(

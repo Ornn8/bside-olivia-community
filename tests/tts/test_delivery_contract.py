@@ -21,11 +21,9 @@ from tts import TTSConfig, external_cosyvoice_worker
 from tts.external_audio_quality_worker import assess_transcript, normalize_transcript
 from tts.delivery import (
     DeliveryAudioError,
-    _fit_overlong_wav,
     _validated_quality_report,
     build_external_delivery_request,
     delivery_configured,
-    delivery_tempo_factor,
     render_delivery_wav,
 )
 from voice_direction import VoicePerformancePlan
@@ -147,48 +145,6 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     assert request["max_attempts"] == 3
     assert "blocks" not in request
     assert "reference_text" not in request
-
-
-def test_delivery_tempo_allows_only_modest_whole_utterance_fit() -> None:
-    assert delivery_tempo_factor(50.0) is None
-    assert delivery_tempo_factor(51.0) == 1.02
-    assert delivery_tempo_factor(52.0) == 1.04
-    assert delivery_tempo_factor(52.01) is None
-
-
-def test_delivery_fit_rejects_audio_over_52_seconds(tmp_path) -> None:
-    sample_rate = 8_000
-    path = tmp_path / "overlong.wav"
-    samples = array("h", [3_000] * (53 * sample_rate))
-    with wave.open(str(path), "wb") as target:
-        target.setnchannels(1)
-        target.setsampwidth(2)
-        target.setframerate(sample_rate)
-        target.writeframes(samples.tobytes())
-
-    with pytest.raises(DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
-        _fit_overlong_wav(path, 53.0)
-
-
-def test_delivery_fit_uses_canonical_explicit_ffmpeg_override(tmp_path, monkeypatch) -> None:
-    source = tmp_path / "overlong.wav"
-    source.write_bytes(b"synthetic")
-    executable = tmp_path / "ffmpeg.exe"
-    executable.write_bytes(b"synthetic")
-    monkeypatch.setenv("OLIVIA_FFMPEG_EXE", str(executable))
-    observed = []
-
-    def fake_run(command, **_kwargs):
-        observed.append(command[0])
-        fitted = tmp_path / "speech-fitted.wav"
-        with wave.open(str(fitted), "wb") as target:
-            target.setnchannels(1); target.setsampwidth(2); target.setframerate(8000)
-            target.writeframes(array("h", [0] * 8000 * 50).tobytes())
-        return type("Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(delivery.subprocess, "run", fake_run)
-    _fit_overlong_wav(source, 51.0)
-    assert observed == [str(executable.resolve())]
 
 
 def test_external_worker_renders_blocks_with_one_cross_lingual_model_load(
@@ -530,6 +486,18 @@ def test_empty_asr_report_keeps_the_complete_rejection_schema() -> None:
     assert _validated_quality_report(
         report, expected_text="完整冻结正文", forbidden_text="声音柔软自然地承接"
     )["error_code"] == "TTS_CONTENT_EMPTY"
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows offline ASR normalization")
+def test_content_gate_normalizes_chinese_script_without_weakening_checks():
+    expected = "这只猫还在窗边。谢谢你告诉我这件事。"
+    actual = "這隻貓還在窗邊。謝謝你告訴我這件事。"
+    instruction = "语速稍慢，句尾音调回落"
+    assert assess_transcript(expected, actual, instruction)["passed"] is True
+    assert assess_transcript(actual, expected, instruction)["passed"] is True
+    assert not assess_transcript(expected, actual.replace("貓", ""), instruction)["passed"]
+    assert not assess_transcript(expected, actual + "謝謝你", instruction)["passed"]
+    assert not assess_transcript(expected, "語速稍慢" + actual, instruction)["checks"]["instruction_overlap"]
 
 
 @pytest.mark.parametrize(

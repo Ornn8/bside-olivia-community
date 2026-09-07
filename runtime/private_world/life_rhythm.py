@@ -7,10 +7,27 @@ from datetime import datetime, timedelta, timezone
 
 LOCAL = timezone(timedelta(hours=8))
 SETTLE = timedelta(minutes=30)
+# Fictional state threshold: a brief exchange is activity, not yet fatigue.
+FATIGUE_LOAD_MINUTES = 30
+RHYTHM_FACT_AUTHORITY = (
+    "phase 来自计划时段与通信记录；sleep 是计划休息时段，interrupted_rest 是夜间通信后的休息阶段。"
+    "它们不证明她此前已经睡着，也不证明用户把她叫醒；wake_cause 未知时不编造叫醒原因或据此责备发信人。"
+    "planned_rest_window 只支持她目前给自己定的休息安排，不证明长期习惯、实际入睡起床时刻、睡前活动或过去如何调整作息。"
+)
 
 
 def _shift(day, shifts):
     return next((shifts[key] for key in sorted(shifts, reverse=True) if key <= day.isoformat()), 0)
+
+
+def _rest_window(day, shifts):
+    """One simulated night plan, not a verified character fact or recorded sleep."""
+    offset = timedelta(minutes=_shift(day, shifts))
+    begin = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23) + offset
+    tomorrow = day + timedelta(days=1)
+    wake = 8 if tomorrow.weekday() >= 5 else 7
+    finish = datetime.combine(tomorrow, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=wake) + offset
+    return begin, finish
 
 
 def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None) -> dict:
@@ -33,11 +50,8 @@ def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shi
     day = local.date() - timedelta(days=14)
     nights = []
     while day <= local.date():
-        offset = timedelta(minutes=_shift(day, shifts or {}))
-        begin = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23) + offset
+        begin, finish = _rest_window(day, shifts or {})
         tomorrow = day + timedelta(days=1)
-        wake = 8 if tomorrow.weekday() >= 5 else 7
-        finish = datetime.combine(tomorrow, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=wake) + offset
         awake, wakes = 0.0, 0
         for start, end in merged:
             overlap = (min(end, finish, now) - max(start, begin)).total_seconds() / 60
@@ -84,23 +98,28 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
     debt, awake = timeline['load_minutes'], timeline['awake_now']
     if phase == 'sleep' and awake:
         phase = 'interrupted_rest'
-    rest = 'depleted' if debt >= 120 else 'tired' if debt > 0 else 'rested'
+    rest = 'depleted' if debt >= 120 else 'tired' if debt >= FATIGUE_LOAD_MINUTES else 'rested'
     # These thresholds drive fictional continuity, not a disease probability.
     unwell = debt >= 240 and timeline['strained_nights'] >= 2
     consult = unwell and debt >= 360 and timeline['strained_nights'] >= 3
     recovering = timeline['previous_strain'] and timeline['recovering']
     wellbeing = {
         'state': 'unwell' if unwell else 'recovering' if recovering else 'well',
-        'care': 'consider_consultation' if consult else 'rest' if debt > 0 else 'none',
+        'care': 'consider_consultation' if consult else 'rest' if rest != 'rested' else 'none',
         'summary': ('连续休息不足，身体不太舒服，减少练习；若休息后仍不适，安排门诊咨询。' if consult else
                     '连续休息不足，身体不太舒服，今天先减少活动、好好休息。' if unwell else
                     '正在慢慢恢复，先不把日程排满。' if recovering else
                     '没有持续身体不适的记录。'),
     }
-    labels = {'sleep': '正在休息', 'interrupted_rest': '夜里醒来，准备继续休息',
+    labels = {'sleep': '计划休息的时段', 'interrupted_rest': '夜间通信后，准备继续休息',
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
+    begin, finish = _rest_window(local.date() - timedelta(days=1), shifts)
+    if finish <= local:
+        begin, finish = _rest_window(local.date(), shifts)
     return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
+            'phase_basis': 'schedule_and_correspondence', 'wake_cause': 'unknown',
+            'planned_rest_window': {'kind': 'current_plan', 'start': begin.isoformat(), 'end': finish.isoformat()},
             'wellbeing': wellbeing,
             'sleep_shift_minutes': shift,
             'activity': labels[phase],

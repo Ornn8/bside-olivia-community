@@ -1990,6 +1990,81 @@ def test_handler_rejects_malformed_json_and_wrong_methods() -> None:
     assert asyncio.run(exercise()) == (400, "INVALID_JSON", 405, "METHOD_NOT_ALLOWED")
 
 
+@pytest.mark.parametrize("conflict", ["IDEMPOTENCY_CONFLICT", "LETTER_IN_PROGRESS", "LETTER_RESEND_NOT_ALLOWED"])
+def test_letter_conflict_is_exported_without_letter_content(monkeypatch, conflict):
+    import local_server
+    original = {"letter_id": "private-letter-id", "letter_status": "PENDING" if conflict == "LETTER_IN_PROGRESS" else "COMPLETED", "content": "private original text", "material": {}}
+    local_server.store.letters[:] = [original]
+    local_server.store.request_keys["private-request-key"] = original["letter_id"]
+    local_server._RUNTIME_DIAGNOSTIC_EVENTS.clear()
+    if conflict == "LETTER_RESEND_NOT_ALLOWED":
+        path, body = "/toy/letter/resend", {"letter_id": original["letter_id"]}
+    else:
+        path, body = "/toy/letter/send", {"content": "private changed text"}
+        if conflict == "IDEMPOTENCY_CONFLICT":
+            body["idempotency_key"] = "private-request-key"
+    response = asyncio.run(local_server.route("POST", path, body, {}))
+    assert response["code"] == 409
+    events = local_server.runtime_diagnostic_event_snapshot()
+    assert {"event": "letter_request_rejected", "error_code": conflict} in events
+    assert "private" not in repr(events)
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_resend_restarts_failed_memory_initialization_once(tmp_path, monkeypatch, recovers):
+    import local_server
+    from runtime.memory.mem0_memory import DeferredConversationMemoryAdapter, Mem0Config
+    from conversation_memory_port import ConversationMemoryStatus
+
+    attempts = []
+    class ReadyMemory:
+        def status(self):
+            return ConversationMemoryStatus("available", True, "mem0", "qdrant-local")
+        def close(self):
+            pass
+    def factory():
+        attempts.append(True)
+        if len(attempts) == 1 or not recovers:
+            raise RuntimeError("synthetic initialization failure")
+        return ReadyMemory()
+    memory = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), factory)
+    monkeypatch.setattr(local_server, "conversation_memory_adapter", memory)
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", lambda: 0)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *a, **k: None)
+    started_runtime = []
+    monkeypatch.setattr(local_server, "_start_ready_conversation_memory_runtime", lambda: started_runtime.append(True))
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: bool(started_runtime))
+    generated = []
+    async def generate(*a, **k):
+        generated.append(True)
+        return True
+    monkeypatch.setattr(local_server, "_run_reply_job", generate)
+    original = {"letter_id": "init-failed", "letter_status": "FAILED", "error_code": "MEMORY_UNAVAILABLE", "content": "synthetic", "material": {}}
+    local_server.store.letters[:] = [original]
+    async def scenario():
+        assert memory.start_initialization()
+        await asyncio.to_thread(memory._thread.join, 2)
+        assert memory.status().reason_code == "MEM0_INITIALIZATION_FAILED"
+        response = await local_server.route("POST", "/toy/letter/resend", {"letter_id": "init-failed"}, {}, defer_reply=True)
+        assert response["code"] == 0
+        for _ in range(100):
+            if len(attempts) == 2 and memory.status().reason_code != "MEM0_INITIALIZING":
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
+        assert len(attempts) == 2
+        assert generated == []
+        lid = response["data"]["letter_id"]
+        assert await local_server._run_reply_when_memory_ready(lid, "synthetic", idempotency_key=None, ready_timeout_seconds=0) is recovers
+        assert generated == ([True] if recovers else [])
+        assert len(attempts) == 2
+    try:
+        asyncio.run(scenario())
+    finally:
+        memory.close()
+
+
 @pytest.mark.parametrize("provider_recovers", [False, True])
 def test_memory_failed_resend_grants_bounded_outbox_recovery_before_reply(tmp_path, monkeypatch, provider_recovers):
     import local_server
@@ -2071,6 +2146,32 @@ def test_resend_retry_storage_error_preserves_original_letter(monkeypatch):
     assert response["data"]["error_code"] == "MEMORY_UNAVAILABLE"
     assert "private" not in repr(response)
     assert local_server.store.letters == [before]
+
+
+@pytest.mark.parametrize("same_request", [False, True])
+def test_parallel_letter_admission_is_atomic_and_idempotent(monkeypatch, same_request):
+    import local_server
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
+    monkeypatch.setattr(local_server, "_schedule_reply_job", lambda *a, **k: None)
+    monkeypatch.setattr(local_server, "_conversation_memory_ready_for_reply", lambda: False)
+    async def scenario():
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", local_server.handler)
+        async with TestClient(TestServer(app, access_log=None)) as client:
+            async def send(index):
+                response = await client.post("/toy/letter/send", json={
+                    "content": "synthetic concurrent" if same_request else f"synthetic concurrent {index}",
+                    "idempotency_key": "same" if same_request else f"request-{index}",
+                })
+                return await response.json()
+            return await asyncio.gather(send(0), send(1))
+    results = asyncio.run(scenario())
+    assert len(local_server.store.letters) == 1
+    assert sorted(result["code"] for result in results) == ([0, 0] if same_request else [0, 409])
+    if same_request:
+        assert results[0]["data"]["letter_id"] == results[1]["data"]["letter_id"]
 
 
 def test_llm_failure_can_be_retried_through_the_resend_route(

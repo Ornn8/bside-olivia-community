@@ -218,7 +218,7 @@ def _persisted_plan(
             value["emphasize_sentences"], sentence_count=sentence_count, minimum=1, maximum_items=1
         ),
         short_instruction=(
-            validate_short_instruction(value["short_instruction"])
+            validate_performance_instruction(value["short_instruction"], sentence_count)
             if profile == _PROFILE
             else ""
         ),
@@ -237,7 +237,7 @@ _TOOL = {
     "type": "function",
     "function": {
         "name": "apply_voice_performance",
-        "description": "Choose one short, non-spoken direction for a frozen utterance.",
+        "description": "Direct tone and pace for each numbered sentence in one continuous performance.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -246,9 +246,8 @@ _TOOL = {
                 "short_instruction": {
                     "type": "string",
                     "minLength": 12,
-                    "maxLength": 24,
-                    "pattern": "^[\\u3400-\\u9fff，。！？、；：…—]+$",
-                    "description": "一条正向具体的中文表演指令，不复述正文。",
+                    "maxLength": 4000,
+                    "description": "按第1句：……第2句：……逐句编排。只写音调升降、语速快慢、重音和句间停顿；禁止音色、气息、共鸣、发声方式、距离感及情绪比喻。",
                 },
             },
         },
@@ -411,11 +410,44 @@ def validate_short_instruction(value: object) -> str:
         "提示词",
     )
     if (
-        not 12 <= han_count <= 24
+        # Retain support for already persisted short directions.
+        not 12 <= han_count <= 60
         or _ALLOWED_INSTRUCTION_RE.fullmatch(instruction) is None
         or any(token in instruction for token in forbidden)
     ):
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    return instruction
+
+
+def validate_performance_instruction(value: object, sentence_count: int) -> str:
+    """Read legacy directions or a complete, ordered sentence performance."""
+    if not isinstance(value, str):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    instruction = value.strip()
+    if not re.search(r"第\d+句", instruction):
+        return validate_short_instruction(instruction)
+    matches = list(re.finditer(r"第([1-9]\d*)句：", instruction))
+    if (
+        len(instruction) > 4000
+        or not matches
+        or matches[0].start() != 0
+        or [int(match[1]) for match in matches] != list(range(1, sentence_count + 1))
+    ):
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(instruction)
+        direction = instruction[match.end():end].strip()
+        if (
+            not 8 <= len(direction) <= 160
+            or re.fullmatch(r"[\u3400-\u9fff，。！？、；：…—“”‘’]+", direction) is None
+            or any(token in direction for token in (
+                "朗读", "提示词", "音色", "声线", "声音", "气息", "呼吸", "气声",
+                "耳语", "轻声", "低声", "嗓", "共鸣", "发声", "上颚", "胸腔",
+                "鼻腔", "口腔", "喉", "沙哑", "清亮", "明亮", "浑厚", "磁性",
+                "柔软", "通透", "距离", "靠近", "远近", "悄悄", "音量", "语气",
+            ))
+        ):
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
     return instruction
 
 
@@ -432,7 +464,7 @@ def _validate_plan(plan: VoicePerformancePlan) -> None:
     ):
         raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
     if plan.profile == _PROFILE:
-        validate_short_instruction(plan.short_instruction)
+        validate_performance_instruction(plan.short_instruction, len(_sentences(plan.reply_text)))
         _number(plan.global_speed, minimum=1.0, maximum=1.08)
     else:
         if plan.short_instruction:
@@ -492,10 +524,15 @@ async def direct_voice_performance(
         {
             "role": "system",
             "content": (
-                "你是 Olivia 普通视频回信的声音导演。正文已定稿，禁止改字、补字或复述台词。"
-                "必须调用 apply_voice_performance，并结合原始来信与完整回信判断声音情绪。"
-                "short_instruction 只写一条正向、具体、12至24个汉字的表演指令，最多一次平滑转折；"
-                "语速固定为自然对话 1.0，停顿只由正文标点决定。"
+                "你只编排 Olivia 视频回信的音调和语速。正文已定稿，禁止改字、补字或复述台词。"
+                "必须调用 apply_voice_performance，根据句子语义选择音调升降和语速快慢。"
+                "short_instruction 必须逐句编排语调和语速，按第1句：……第2句：……格式依次覆盖全部句子。"
+                "每句用八至六十个中文字符，简短描述句头、句中或句尾的音调升降，以及自然、稍快或稍慢的语速；可注明重音和句间停顿。"
+                "不要引用或复述正文，不用引号，不写语气肯定、温柔、真诚、惊喜等表演或情绪词。"
+                "使用中文全角标点，句号或问号分句，逗号不是新的句子。"
+                "只允许音调、语速、重音、停顿四类控制。禁止描述音色、声线、气息、音量、共鸣、发声位置、远近距离，禁止情绪形容或表演比喻。"
+                "例如：第1句：句头音调稍上扬，句尾回落，语速自然，句间自然停顿。"
+                "这些指令只用于同一次完整音频生成，不拆句生成，不改参考音色、模型或采样参数。"
             ),
         },
         {
@@ -517,10 +554,10 @@ async def direct_voice_performance(
         _TOOL_FIELDS,
         request_id,
     )
-    short_instruction = validate_short_instruction(arguments["short_instruction"])
+    short_instruction = validate_performance_instruction(arguments["short_instruction"], len(sentences))
     return VoicePerformancePlan(
         reply_text=reply_text,
-        overall_emotion=short_instruction,
+        overall_emotion=(short_instruction if len(short_instruction) <= 80 else "根据正文逐句编排语调和自然语速"),
         global_speed=1.0,
         energy=0.55,
         breath_before_sentences=(),

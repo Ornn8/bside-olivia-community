@@ -189,8 +189,9 @@ def test_original_collection_list_and_unread_use_camel_case_numeric_contract() -
             assert rows["letter.pending"]["replyType"] == 0
             assert rows["letter.spoken"]["letterStatus"] == 4
             assert rows["letter.spoken"]["replyType"] == 4
-            assert rows["letter.musical"]["letterStatus"] == 4
-            assert rows["letter.musical"]["replyType"] == 1
+            assert rows["letter.musical"]["letterStatus"] == 3
+            assert rows["letter.musical"]["replyType"] == 0
+            assert rows["letter.musical"]["videoPending"] is True
             assert rows["letter.failed"]["letterStatus"] == 5
             assert rows["letter.failed"]["replyType"] == 0
 
@@ -228,9 +229,10 @@ def test_original_collection_detail_keeps_text_and_only_exposes_completed_local_
                 "/toy/letter/detail?letter_id=letter.musical"
             )
             musical_data = (await musical.json())["data"]
-            assert musical_data["letterStatus"] == 4
-            assert musical_data["replyType"] == 1
-            assert musical_data["replyText"] == "歌曲仍在生成，但正文已经完成。"
+            assert musical_data["letterStatus"] == 3
+            assert musical_data["replyType"] == 0
+            assert musical_data["replyText"] == ""
+            assert musical_data["videoPending"] is True
             assert musical_data["replyVideoUrl"] == ""
             assert musical_data["media_status"] == "PENDING"
 

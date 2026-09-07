@@ -1138,7 +1138,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const current = payload.current;
         const el = card();
         if (payload.rhythm) el.append(text("small", "最近一次分享（不是实时活动）", "text-text-secondary text-caption-m"));
-        el.append(text("p", `${current.location} · ${current.activity}`, "text-text-title text-title-s"),
+        el.append(text("p", [current.location, current.activity].filter(Boolean).join(" · ") || "她的近况", "text-text-title text-title-s"),
           text("p", current.note, "text-text-body text-body-m"),
           text("small", when(current.occurred_at), "text-text-secondary text-caption-m"));
         topic(el, current);
@@ -1243,7 +1243,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     );
     const base = setupInput("接口地址");
     const model = setupInput("模型");
-    const key = setupInput(setup.llm.key_configured ? "API key（留空则沿用已保存的 key）" : "API key", "password");
+    const key = setupInput("API key（自定义接口留空表示无需鉴权；预设接口留空沿用已保存的 key）", "password");
     base.input.maxLength = 512;
     model.input.maxLength = 128;
     key.input.maxLength = 512;
@@ -1266,7 +1266,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       invalidateTest();
     });
-    const state = text("p", setup.llm.key_configured ? "已保存 API key。修改前请先测试连接。" : "请输入 API key 并测试连接。", "text-text-secondary text-body-m font-regular");
+    const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     const currentConfig = () => ({
       base_url: base.input.value.trim(),

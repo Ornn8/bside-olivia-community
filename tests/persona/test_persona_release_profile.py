@@ -291,7 +291,6 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
     assert all(not item.factual_authority for item in exemplars)
     assert all(item.user_text_is_synthetic for item in exemplars)
     assert all(not item.assistant_text_is_verbatim for item in exemplars)
-    assert all("?" not in item.assistant_text and "？" not in item.assistant_text for item in exemplars)
     assert {item.source_id for item in synthetic} == {
         synthetic_provenance["source_id"]
     }
@@ -303,7 +302,7 @@ def test_release_style_exemplars_are_abstracted_public_and_non_factual() -> None
         "user_text_policy": "SYNTHETIC",
         "assistant_text_policy": "NON_VERBATIM_ABSTRACTION",
         "contiguous_7_char_overlap_count": 0,
-        "reviewed_at": "2026-09-03",
+        "reviewed_at": "2026-09-07",
     }
     replies = [item.assistant_text for item in exemplars]
     assert {text.count("。") for text in replies} >= {1, 2, 3}

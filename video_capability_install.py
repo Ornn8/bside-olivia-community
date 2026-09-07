@@ -8,6 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -149,6 +150,7 @@ def _breeze_pip_diagnostic(stderr: str) -> str:
         ("HASH_MISMATCH", ("do not match the hashes",)),
         ("WHEEL_UNAVAILABLE", ("no matching distribution found",)),
         ("ACCESS_DENIED", ("[winerror 5]", "[errno 13]", "permission denied")),
+        ("PATH_TOO_LONG", ("[winerror 206]", "[errno 36]", "filename or extension is too long", "enable long path support")),
     ):
         if any(pattern in text for pattern in patterns):
             return f"BREEZE_PIP_{category}"
@@ -1590,9 +1592,11 @@ class VideoCapabilityInstaller:
                                 "model_license_path": str(model_license),
                                 "quality_gate_python": str(external_python),
                                 "quality_gate_cache_root": str(
-                                    self.data_root
-                                    / "provider-cache"
-                                    / "breeze-quality-gate"
+                                    self._managed_runtime_path(
+                                        environment,
+                                        "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT",
+                                        directory=True,
+                                    )
                                 ),
                                 "dtype": "bf16",
                                 "device": "cuda",
@@ -2976,6 +2980,11 @@ class VideoCapabilityInstaller:
     def _install_breeze_runtime_packages(
         python_path: Path, site_packages: Path, requirements: Path
     ) -> None:
+        # pip moves wheel contents (including deeper __pycache__ files) into
+        # this staging tree. Extended paths work even with LongPathsEnabled=0.
+        target = os.path.abspath(site_packages)
+        if os.name == "nt" and not target.startswith("\\\\?\\"):
+            target = "\\\\?\\UNC\\" + target[2:] if target.startswith("\\\\") else "\\\\?\\" + target
         environment = dict(os.environ)
         for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"):
             environment.pop(key, None)
@@ -3001,7 +3010,7 @@ class VideoCapabilityInstaller:
                     "--find-links",
                     str(python_path.parent.parent / "wheels"),
                     "--target",
-                    str(site_packages),
+                    target,
                     "--requirement",
                     str(requirements),
                 ],
@@ -3017,7 +3026,7 @@ class VideoCapabilityInstaller:
         except subprocess.TimeoutExpired:
             raise _BreezeRuntimeInstallError("BREEZE_PIP_TIMEOUT") from None
         if completed.returncode != 0:
-            raise _BreezeRuntimeInstallError(_breeze_pip_diagnostic(completed.stderr or ""))
+            raise _BreezeRuntimeInstallError(_breeze_pip_diagnostic((completed.stderr or "") + "\n" + (completed.stdout or "")))
 
     @staticmethod
     def _verify_breeze_runtime_process(python_path: Path, runtime_root: Path) -> bool:
@@ -3331,7 +3340,18 @@ def _extract_zip_safely(
             if progress is not None:
                 progress("verifying", verified_bytes, total)
         return expected
-    except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
+    except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
+        if exc.errno == errno.ENOSPC or winerror == 112:
+            code = "VIDEO_ARCHIVE_DISK_FULL"
+        elif exc.errno in {errno.EACCES, errno.EPERM} or winerror == 5:
+            code = "VIDEO_ARCHIVE_ACCESS_DENIED"
+        elif exc.errno == errno.ENAMETOOLONG or winerror == 206:
+            code = "VIDEO_ARCHIVE_PATH_TOO_LONG"
+        else:
+            code = "VIDEO_ARCHIVE_IO_FAILED"
+        raise VideoCapabilityError(code) from exc
+    except (zipfile.BadZipFile, ComponentUpdateError) as exc:
         raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID") from exc
 
 

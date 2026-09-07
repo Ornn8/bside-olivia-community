@@ -2,6 +2,19 @@ import asyncio
 
 import pytest
 
+
+@pytest.mark.parametrize("direction", [
+    "声音变得更深更轻，语速稍慢",
+    "气息放轻，语速自然放缓",
+    "共鸣位置在上颚，语速自然",
+    "声音更靠近，句尾音调回落",
+    "音色清亮，句间自然停顿",
+])
+def test_sentence_direction_rejects_timbre_and_voice_production(direction):
+    from runtime.media.voice_direction import validate_performance_instruction, VoiceDirectionError
+    with pytest.raises(VoiceDirectionError):
+        validate_performance_instruction("第1句：" + direction + "。", 1)
+
 from persona_loader import PersonaDeclaration, PersonaProfile, PersonaSnapshot
 from voice_direction import (
     VoiceDirectionError,
@@ -36,6 +49,17 @@ def _valid_direction() -> dict[str, object]:
     }
 
 
+def test_director_preserves_full_natural_language_emotional_arc() -> None:
+    instruction = "先带着会心的暖意接住回忆，再以明亮而充足的力量表达陪伴，最后笃定温暖地收住"
+    plan = asyncio.run(direct_voice_performance(
+        "这是已经定稿的合成回信。", _FakeVoiceDirector({"short_instruction": instruction})
+    ))
+    restored = VoicePerformancePlan.from_dict(plan.to_dict())
+    assert restored.short_instruction == instruction
+    assert len(restored.speech_units()) == 1
+    assert restored.spoken_text == "这是已经定稿的合成回信。"
+
+
 def _valid_music_direction() -> dict[str, object]:
     return {
         "overall_emotion": "restrained empathy becoming reassurance",
@@ -44,6 +68,26 @@ def _valid_music_direction() -> dict[str, object]:
         "breath_before_sentences": [2],
         "emphasize_sentences": [1],
     }
+
+
+def test_sentence_direction_survives_restart_without_splitting_or_changing_text() -> None:
+    reply = "今天遇到一只橘猫。你今天过得怎么样？"
+    instruction = "第1句：自然语速，带一点“惊喜”的轻松叙述。第2句：语速稍缓，真诚好奇地询问，句尾轻轻上扬。"
+    plan = asyncio.run(direct_voice_performance(reply, _FakeVoiceDirector({"short_instruction": instruction})))
+    restored = VoicePerformancePlan.from_dict(plan.to_dict())
+    assert restored.short_instruction == instruction
+    assert [unit.text for unit in restored.speech_units()] == [reply]
+
+
+@pytest.mark.parametrize("instruction", [
+    "第1句：自然语速，轻松讲述这段见闻。",
+    "第2句：自然语速，轻松讲述这段见闻。第1句：语速稍缓，真诚好奇地询问。",
+    "第1句：自然语速，轻松讲述这段见闻。第1句：语速稍缓，真诚好奇地询问。",
+    "第1句：自然语速，<speak>念出正文。</speak>第2句：语速稍缓，真诚好奇地询问。",
+])
+def test_sentence_direction_rejects_missing_reordered_duplicate_or_markup(instruction: str) -> None:
+    with pytest.raises(VoiceDirectionError):
+        asyncio.run(direct_voice_performance("合成第一句。合成第二句。", _FakeVoiceDirector({"short_instruction": instruction})))
 
 
 def _persona_snapshot(*, mode: str, statement: str) -> PersonaSnapshot:

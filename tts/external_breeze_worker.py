@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import importlib.util
 import json
 import os
 import sys
+import time
 import wave
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,12 @@ def _write_status(path: Path, value: dict[str, object]) -> None:
         json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    try:
+        os.replace(temporary, path)
+    except PermissionError:
+        # Windows readers can briefly prevent replacement. Telemetry must not
+        # abort synthesis; the next progress event publishes fresh status.
+        temporary.unlink(missing_ok=True)
 
 
 def _load_package(runtime_root: Path):
@@ -84,6 +91,17 @@ def _write_wav(path: Path, waveform: Any, sample_rate: int, gain_db: float) -> N
 
 def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
     ready = False
+    decode = None
+    phase = "preflight"
+    started = time.monotonic()
+
+    def progress(current: int, total: int) -> None:
+        _write_status(status, {
+            "status": "ready", "phase": "generation", "audio_started": False,
+            "generated_frames": current, "max_frames": total,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        })
+
     try:
         _write_status(
             status,
@@ -92,6 +110,28 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         runtime_root = Path(str(request["runtime_root"]))
         model_root = Path(str(request["model_dir"]))
         loader, nodes, runtime = _load_package(runtime_root)
+        decode = runtime.decode_codes
+
+        def decode_audio(codec, codes):
+            nonlocal phase
+            phase = "decoding"
+            _write_status(status, {
+                "status": "ready", "phase": phase, "audio_started": False,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            })
+            if codes.device.type == "cuda":
+                import torch
+                # This worker renders once. The generator is no longer needed,
+                # and retaining it competes with the codec for device memory.
+                with torch.cuda.device(codes.device):
+                    torch.cuda.synchronize()
+                    bundle.model = None
+                    bundle.patchers.clear()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            return decode(codec, codes)
+
+        runtime.decode_codes = decode_audio
         loader.model_dirs = lambda: [model_root]
         variant = str(request.get("model_variant", "int8_hybrid") or "int8_hybrid")
         try:
@@ -112,6 +152,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             bundle.codec, reference_waveform, reference_rate
         )
         ready = True
+        phase = "generation"
         _write_status(
             status,
             {"status": "ready", "phase": "generation", "audio_started": False},
@@ -133,7 +174,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             depth_top_p=float(request.get("depth_top_p", 1.0)),
             seed=int(request.get("seed", 200717)),
             ref_codes=reference_codes,
-            progress_callback=None,
+            progress_callback=progress,
             progress_label=None,
         )
         _write_wav(
@@ -146,16 +187,21 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             status,
             {"status": "completed", "phase": "completed", "audio_started": True},
         )
-    except Exception:
+    except Exception as exc:
         _write_status(
             status,
             {
                 "status": "failed",
-                "phase": "generation" if ready else "preflight",
+                "phase": phase,
                 "audio_started": ready,
+                "error_type": type(exc).__name__,
             },
         )
         raise
+
+    finally:
+        if decode is not None:
+            runtime.decode_codes = decode
 
 
 def main() -> int:

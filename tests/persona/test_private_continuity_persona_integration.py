@@ -67,7 +67,7 @@ def test_private_continuity_reaches_persona_without_control_only_state() -> None
 
     assert "小河豚" in system
     assert '"trust":"high"' in system
-    assert '"home_history_allowed":true' in system
+    assert '"claiming_home_history":{"allowed":true}' in system
     assert "visit_access" not in system
     assert "林离已经知道下周课程时间会调整。" in system
     assert '"trust":81' not in system

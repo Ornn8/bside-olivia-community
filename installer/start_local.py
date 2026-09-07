@@ -137,6 +137,7 @@ def _load_llm_environment(
     model = "deepseek-v4-flash"
     provider = "openai_compatible"
     max_retries = 2
+    requires_api_key = True
     key_path = data_root / "config" / "deepseek_api_key.dpapi"
     config_path = data_root / "config" / "llm.json"
     saved_key_binding = False
@@ -149,6 +150,7 @@ def _load_llm_environment(
         model = managed.model
         provider = managed.provider
         max_retries = managed.max_retries
+        requires_api_key = managed.requires_api_key
         if payload.get("schema_version") in {2, 3}:
             managed_key_authoritative = True
             has_key_binding = "key_file" in payload or "key_sha256" in payload
@@ -191,7 +193,7 @@ def _load_llm_environment(
             values["OLIVIA_LLM_API_KEY"] = configured_key
         else:
             provider = "none"
-    elif managed_key_absent and not values.get("OLIVIA_LLM_API_KEY"):
+    elif managed_key_absent and requires_api_key and not values.get("OLIVIA_LLM_API_KEY"):
         provider = "none"
     for name, value in {
         "OLIVIA_LLM_PROVIDER": provider,
@@ -207,7 +209,16 @@ def _load_llm_environment(
         "OLIVIA_LLM_REQUIRES_API_KEY": "1",
     }.items():
         values.setdefault(name, value)
-    values["OLIVIA_LLM_REQUIRES_API_KEY"] = "1"
+    values["OLIVIA_LLM_REQUIRES_API_KEY"] = "1" if requires_api_key else "0"
+    if not requires_api_key:
+        for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+            values.pop(name, None)
+        values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
+        values.update({
+            "OLIVIA_MEMORY_LLM_BASE_URL": base_url,
+            "OLIVIA_MEMORY_LLM_MODEL": model,
+            "OLIVIA_MEMORY_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
+        })
     if values.get("OLIVIA_LLM_API_KEY"):
         values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
     generic_key_present = any(
@@ -843,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     client_environment = _load_llm_environment(client_environment, data_root)
     _configure_memory_environment(backend_environment, data_root)
-    if not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
+    if backend_environment.get("OLIVIA_LLM_REQUIRES_API_KEY") != "0" and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
     server = None
     try:
@@ -940,12 +951,12 @@ def main(argv: list[str] | None = None) -> int:
             attempt=1,
             exit_code=exit_code,
         )
-        if fresh_profile and exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
+        if exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
             _append_launcher_event(
                 data_root,
                 "client_retry",
                 attempt=2,
-                reason="known_fresh_profile_exit",
+                reason="known_fresh_profile_exit" if fresh_profile else "known_client_exit",
             )
             _prepare_native_user_settings(roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)
