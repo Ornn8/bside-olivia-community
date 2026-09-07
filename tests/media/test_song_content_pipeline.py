@@ -36,7 +36,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -279,7 +279,7 @@ def test_planner_requests_exact_balanced_lyric_count(duration: int) -> None:
     plan_song_content("synthetic", "synthetic", duration, gateway=gateway)
 
     system = gateway.calls[0][0][0]["content"]
-    expected = {40: 12, 60: 16, 110: 16}[duration]
+    expected = {40: 12, 60: 16, 110: 24}[duration]
     assert f"exactly {expected} original Simplified Chinese lyric lines" in system
     assert f"{expected // 2} in Verse" in system
     assert f"{expected // 2} in Chorus" in system

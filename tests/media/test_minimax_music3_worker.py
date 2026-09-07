@@ -43,7 +43,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
     return "\n".join(
         (
             "[Intro]",

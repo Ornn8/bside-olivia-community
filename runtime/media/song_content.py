@@ -113,8 +113,8 @@ class SongContentPlan:
     semantic_plan: SongSemanticPlan | None = field(default=None, repr=False, compare=False)
 
 
-_LINE_COUNTS = {40: 12, 60: 16, 110: 16}
-_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (8, 8)}
+_LINE_COUNTS = {40: 12, 60: 16, 110: 24}
+_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (12, 12)}
 _SEMANTIC_PLAN_FIELDS = frozenset(
     {
         "schema_version",

@@ -34,7 +34,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -125,7 +125,7 @@ def test_full_song_requires_original_110_second_lyrics_instead_of_short_plan():
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID"):
         parse_song_semantic_plan(json.dumps(_payload(40), ensure_ascii=False), 110)
     contract = _planner_contract(110)
-    assert "16 original Simplified Chinese lyric lines: 8 in Verse and 8 in Chorus" in contract
+    assert "24 original Simplified Chinese lyric lines: 12 in Verse and 12 in Chorus" in contract
 
 
 def test_song_plan_repair_receives_failed_output_for_targeted_correction():
