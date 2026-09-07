@@ -405,11 +405,12 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
 
 
 @pytest.mark.parametrize("durations,success,attempts", [
-    ([36.8, 43.0], True, 3), ([36.8, 36.8, 36.8], False, 3),
-    ([36.8], False, 0), ([36.8, 36.8, 36.8], False, 99),
+    ([36.8], True, 3), ([12.0], True, 3),
+    ([36.8], True, 0), ([36.8], True, 99),
     ([51.76], True, 3), ([61.0], True, 3),
+    ([0.0], False, 3),
 ])
-def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path, monkeypatch, durations, success, attempts):
+def test_breeze_natural_duration_without_asr_generates_once(tmp_path, monkeypatch, durations, success, attempts):
     observed = []
     def fake_run(command, **kwargs):
         assert Path(command[1]).name == "external_breeze_worker.py", "no ASR or time stretching"
@@ -432,10 +433,10 @@ def test_breeze_duration_retries_without_asr_preserve_complete_request(tmp_path,
     output = tmp_path / "reply.wav"
     if success:
         result = delivery.render_delivery_wav(config, plan, output, enforce_content_gate=False)
-        assert result.duration_seconds == durations[-1]
+        assert result.duration_seconds == pytest.approx(durations[-1], abs=1 / 24000)
         assert result.quality_report is None
     else:
-        with pytest.raises(delivery.DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
+        with pytest.raises(delivery.DeliveryAudioError, match="TTS_EXTERNAL_AUDIO_INVALID"):
             delivery.render_delivery_wav(config, plan, output, enforce_content_gate=False)
         assert not output.exists()
     assert len(observed) == len(durations)

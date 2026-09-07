@@ -709,7 +709,7 @@ def test_three_rejected_candidates_never_replace_existing_output(
     assert output.read_bytes() == b"existing-output"
 
 
-def test_mixed_duration_failures_do_not_fabricate_three_quality_rejections(
+def test_short_audio_still_runs_content_gate_and_preserves_output(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -754,10 +754,10 @@ def test_mixed_duration_failures_do_not_fabricate_three_quality_rejections(
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
 
-    with pytest.raises(DeliveryAudioError, match="TTS_DELIVERY_DURATION_OUT_OF_RANGE"):
+    with pytest.raises(DeliveryAudioError, match="TTS_CONTENT_GATE_REJECTED"):
         render_delivery_wav(config, plan, output)
 
-    assert calls == {"tts": 3, "quality": 1}
+    assert calls == {"tts": 3, "quality": 3}
     assert output.read_bytes() == b"existing-output"
 
 
