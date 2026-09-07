@@ -2093,9 +2093,35 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
         videoUrl: url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: "",
         duration: song.duration, videoDuration: song.duration, audioDuration: song.duration,
-        videoByTodView: [{url, tod: "TOD12", view: "NI"}], oliviaLocal: true,
+        videoByTodView: [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: song.duration}], oliviaLocal: true,
       };
     });
+    if (window.cefViewQuery && imported.length) {
+      const native = (action, data) => new Promise((resolve, fail) => {
+        const timer = setTimeout(() => fail(new Error("LOCAL_SONG_NATIVE_TIMEOUT")), 15000);
+        window.cefViewQuery({request: JSON.stringify({action, data}),
+          onSuccess: (raw) => {
+            clearTimeout(timer);
+            try { resolve(typeof raw === "string" ? JSON.parse(raw) : raw); }
+            catch (error) { fail(error); }
+          },
+          onFailure: () => { clearTimeout(timer); fail(new Error("LOCAL_SONG_NATIVE_FAILED")); },
+        });
+      });
+      const check = () => native("checkLocalSongs", {songs: imported.map((song, index) => ({...song, eventId: String(index + 1)}))});
+      const status = await check();
+      const missing = imported.filter((song) => !status.songs?.some((item) => String(item.songId) === song.id && item.exist));
+      if (missing.length) {
+        await native("startSongDownload", {songs: missing});
+        let ready = false;
+        for (let attempt = 0; attempt < 120; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const current = await check();
+          if (imported.every((song) => current.songs?.some((item) => String(item.songId) === song.id && item.exist))) { ready = true; break; }
+        }
+        if (!ready) throw new Error("LOCAL_SONG_NATIVE_CACHE_NOT_READY");
+      }
+    }
     catalog.songs.value = [...catalog.songs.value.filter((song) => !song.oliviaLocal), ...imported];
     catalog.musicStyles.value = [...catalog.musicStyles.value.filter((style) => style.type !== "Local Performance"),
       {type: "Local Performance", displayName: "本地演奏"}];
