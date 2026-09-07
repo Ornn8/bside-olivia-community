@@ -63,6 +63,7 @@ from letter_triage import (
     _musical_video_configured,
 )
 from runtime.media.media_paths import configured_media_path
+from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
 from music_reply import (
     _persist_provider_failure,
     MusicReplyError,
@@ -1739,6 +1740,21 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
 
 
 async def handler(request: web.Request):
+    if request.path.startswith("/toy/local-songs/media/"):
+        if request.method not in {"GET", "HEAD"}:
+            return web.Response(status=405)
+        if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
+            return web.Response(status=403)
+        try:
+            root = _local_data_root()
+            if root is None:
+                return web.Response(status=503)
+            library = LocalSongLibrary(root, _os.environ)
+            name = request.path.rsplit('/', 1)[-1]
+            target = library.media_path(name.removesuffix('.mp4'))
+            return web.FileResponse(target, headers={"Content-Type": "video/mp4", **CORS_HEADERS(request)})
+        except LocalSongError:
+            return web.Response(status=404)
     if request.path.startswith("/toy/media/"):
         return await _media_handler(request)
     path = request.path  # /toy/xxx
@@ -2717,6 +2733,28 @@ async def route(
         _require_store_state_available()
     if p == "/health":
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
+    if p == "/toy/local-songs" or p.startswith("/toy/local-songs/"):
+        if method == "POST" and companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
+        root = _local_data_root()
+        if root is None:
+            return err(503, "LOCAL_SONG_STORAGE_UNAVAILABLE", {"status": "FAILED"})
+        library = LocalSongLibrary(root, _os.environ)
+        try:
+            if p.endswith("/import"):
+                return ok(await asyncio.to_thread(library.import_path, body.get("path")))
+            if p.endswith("/rename"):
+                await asyncio.to_thread(library.rename, body.get("id"), body.get("name"))
+            elif p.endswith("/delete"):
+                await asyncio.to_thread(library.delete, body.get("id"))
+            songs = await asyncio.to_thread(library.songs)
+            return ok({"songs": songs, "credit": "芙桃"})
+        except LocalSongError as exc:
+            code = str(exc)
+            status = 404 if code == "LOCAL_SONG_NOT_FOUND" else 400
+            if code == "LOCAL_SONG_CATALOG_INVALID":
+                status = 503
+            return err(status, code, {"status": "FAILED", "error_code": code})
     if p == "/toy/companion/memory/retry":
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {

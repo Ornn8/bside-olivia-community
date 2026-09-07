@@ -62,6 +62,7 @@ PAYLOAD_EXTRA_FILES = (
 )
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 PAYLOAD_ROOT_FILES = {
+    "THIRD_PARTY_NOTICES.md",
     "local_server.py",
     "mem0_capability_install.py",
     "original_client_capability_api.py",

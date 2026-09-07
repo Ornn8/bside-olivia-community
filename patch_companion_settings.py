@@ -338,6 +338,15 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    # 芙桃's local catalog integration: expose only the existing reactive catalog.
+    source = source.replace(
+        'return{songs:e,musicStyles:t,performanceModes:s,loaded:i,',
+        'return window.__oliviaLocalSongCatalog={songs:e,musicStyles:t,performanceModes:s,loaded:i,',
+    ).replace(
+        'e.value=h.songs,t.value=h.musicStyles,s.value=h.performanceModes}',
+        'e.value=h.songs,t.value=h.musicStyles,s.value=h.performanceModes;'
+        'window.dispatchEvent(new Event("olivia-local-catalog-ready"))}',
+    )
     source = _repair_mailbox_waiting_footer(source)
     # Keep the native sealed-letter animation; only specialize its caption.
     source = source.replace(

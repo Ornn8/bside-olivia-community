@@ -73,6 +73,7 @@ _BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
     const mediaPath = url.pathname.startsWith("/toy/media/") ||
+      /^\/toy\/local-songs\/media\/[0-9a-f]{64}\.mp4$/.test(url.pathname) ||
       url.pathname.startsWith("/media/");
     if (
       url.protocol !== "http:" ||
