@@ -43,7 +43,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (14, 14)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -126,7 +126,7 @@ def test_worker_passes_complete_duration_and_original_lyrics_to_comfy(duration):
 
 def test_worker_rejects_short_lyrics_for_110_seconds_instead_of_repeating_them():
     request = _request(110)
-    request["lyrics"] = _short_lyrics(60)
+    request["lyrics"] = _short_lyrics(40)
     with pytest.raises(RuntimeError, match="MINIMAX_MUSIC3_LYRICS_INVALID"):
         worker._graph(request, filename_prefix="audio/short")
 

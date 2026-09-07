@@ -36,7 +36,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = ((6, 6) if duration == 40 else (8, 8))
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -51,12 +51,6 @@ def _short_lyrics(duration: int) -> str:
 
 def _payload(duration: int = 40) -> dict[str, str]:
     return {
-        "schema_version": SONG_SEMANTIC_PLAN_SCHEMA_VERSION,
-        "emotion_arc": "gentle_reassurance",
-        "piano_texture": "transparent_broken_chords",
-        "vocal_delivery": "clear_legato",
-        "dynamic_arc": "soft_gentle_rise_settle",
-        "ending": "complete_soft_cadence",
         "lyrics": _short_lyrics(duration),
     }
 
@@ -115,7 +109,7 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
     )
 
     assert isinstance(result, SongContentPlan)
-    assert result.emotion == "gentle_reassurance"
+    assert result.emotion == "warm_gratitude"
     assert result.lyrics == _short_lyrics(40)
     assert validate_minimax_caption(result.caption, 40) == result.caption
     assert "heritage" not in result.caption.casefold()
@@ -126,9 +120,9 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
     assert request_id is None
     assert [message["role"] for message in messages] == ["system", "user"]
     system = messages[0]["content"]
-    assert SONG_SEMANTIC_PLAN_SCHEMA_VERSION in system
-    assert "emotion_arc" in system
-    assert "piano_texture" in system
+    assert "exactly one string key: lyrics" in system
+    assert "Allowed emotion_arc" not in system
+    assert "Allowed piano_texture" not in system
     assert "caption" in system
     assert "Traditional East Asian" not in system
     assert '"mode":"musical_video"' in system
@@ -279,13 +273,13 @@ def test_song_persona_failure_stops_before_provider_call(config) -> None:
     assert gateway.calls == []
 
 
-@pytest.mark.parametrize("duration", [40, 60])
+@pytest.mark.parametrize("duration", [40, 60, 110])
 def test_planner_requests_exact_balanced_lyric_count(duration: int) -> None:
     gateway = RecordingGateway(json.dumps(_payload(duration), ensure_ascii=False))
     plan_song_content("synthetic", "synthetic", duration, gateway=gateway)
 
     system = gateway.calls[0][0][0]["content"]
-    expected = 12 if duration == 40 else 16
+    expected = {40: 12, 60: 16, 110: 16}[duration]
     assert f"exactly {expected} original Simplified Chinese lyric lines" in system
     assert f"{expected // 2} in Verse" in system
     assert f"{expected // 2} in Chorus" in system

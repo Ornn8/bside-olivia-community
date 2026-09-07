@@ -20,6 +20,21 @@ from urllib.parse import urlsplit
 
 
 MAIN_JS = "assets/main-917d29fc.js"
+
+
+def hide_uid_watermark(root: Path) -> bool:
+    """Hide the client UID overlay while preserving other visual assets."""
+    changed = False
+    selector = '.watermark-overlay{'
+    replacement = selector + 'display:none!important;'
+    for path in (root / 'assets').glob('*.css'):
+        original = path.read_text(encoding='utf-8')
+        if selector in original and replacement not in original:
+            path.write_text(original.replace(selector, replacement), encoding='utf-8')
+            changed = True
+    return changed
+
+
 HE_ANCHOR = "He=e=>new Promise((t,n)=>{try{"
 INJECT_ANCHOR = ',"query.response":no(a)}}),t(c)},onFailure:'
 MAILBOX_LOGIN_ANCHOR = (
@@ -328,7 +343,8 @@ def repair_web_player_event_ids(
         main_path = root / Path(*profile.main_js.split("/"))
         javascript = main_path.read_text(encoding="utf-8")
         patched = _patch_web_player_event_ids(javascript, profile)
-        if patched == javascript:
+        watermark_changed = hide_uid_watermark(root)
+        if patched == javascript and not watermark_changed:
             return "ALREADY_PATCHED"
         main_path.write_text(patched, encoding="utf-8")
         output_archive = temporary_root / "patched.dat"
@@ -392,6 +408,7 @@ def patch_feapp(feapp_path: str | os.PathLike[str], new_ws: str | None,
                 encoding="utf-8",
             )
             output_archive = temporary_root / "patched.dat"
+            hide_uid_watermark(root)
             _repack(root, output_archive)
             _validate_zip(output_archive)
             os.replace(output_archive, feapp)

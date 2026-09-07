@@ -34,7 +34,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (14, 14)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -123,9 +123,54 @@ def test_full_song_requires_original_110_second_lyrics_instead_of_short_plan():
     from runtime.media.song_content import _planner_contract
 
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID"):
-        parse_song_semantic_plan(json.dumps(_payload(60), ensure_ascii=False), 110)
+        parse_song_semantic_plan(json.dumps(_payload(40), ensure_ascii=False), 110)
     contract = _planner_contract(110)
-    assert "28 original Simplified Chinese lyric lines: 14 in Verse and 14 in Chorus" in contract
+    assert "16 original Simplified Chinese lyric lines: 8 in Verse and 8 in Chorus" in contract
+
+
+def test_song_plan_repair_receives_failed_output_for_targeted_correction():
+    from types import SimpleNamespace
+    from runtime.media.song_content import plan_song_content
+    invalid = json.dumps({'lyrics': _short_lyrics(40)}, ensure_ascii=False)
+    valid = json.dumps({'lyrics': _short_lyrics(110)}, ensure_ascii=False)
+    class Gateway:
+        def __init__(self):
+            self.calls = []
+        async def complete(self, messages):
+            self.calls.append(messages)
+            return SimpleNamespace(text=invalid if len(self.calls) == 1 else valid)
+    gateway = Gateway()
+    plan = plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
+    assert plan.duration_seconds == 110
+    assert gateway.calls[1][-2] == {'role': 'assistant', 'content': invalid}
+    assert 'only the lyrics string key' in gateway.calls[1][-1]['content']
+
+
+@pytest.mark.parametrize('extra', [None, 'piano_texture', 'emotion_arc', 'ending'])
+def test_planner_accepts_only_lyrics_and_fixes_musical_direction_locally(extra):
+    from types import SimpleNamespace
+    from runtime.media.song_content import plan_song_content
+    payload = {'lyrics': _short_lyrics(110)}
+    if extra:
+        payload[extra] = _payload()[extra]
+    class Gateway:
+        calls = []
+        async def complete(self, messages):
+            self.calls.append(messages)
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+    gateway = Gateway()
+    if extra:
+        with pytest.raises(ValueError, match='SONG_SEMANTIC_PLAN_FIELDS_INVALID'):
+            plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
+        return
+    plan = plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
+    assert plan.semantic_plan.emotion_arc is SongEmotionArc.WARM_GRATITUDE
+    assert plan.semantic_plan.piano_texture is PianoTexture.LYRICAL_ARPEGGIOS
+    assert plan.semantic_plan.vocal_delivery is VocalDelivery.GENTLE_NARRATIVE
+    assert plan.semantic_plan.dynamic_arc is SongDynamicArc.SOFT_GENTLE_RISE_SETTLE
+    assert plan.semantic_plan.ending is SongEnding.LINGERING_PIANO_CADENCE
+    assert plan.lyrics == payload['lyrics']
+    assert 'exactly one string key: lyrics' in gateway.calls[0][0]['content']
 
 
 @pytest.mark.parametrize(

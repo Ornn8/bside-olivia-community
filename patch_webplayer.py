@@ -21,6 +21,8 @@ import shutil
 import tempfile
 import zipfile
 
+from patch_feapp import hide_uid_watermark
+
 
 INDEX_MEMBER = "index.html"
 BOOTSTRAP_MEMBER = "assets/olivia-local-media-bootstrap.js"
@@ -377,6 +379,8 @@ def patch_webplayer(
             with zipfile.ZipFile(webplayer) as archive:
                 _safe_extract(archive, extracted)
             status = _patch_index(extracted)
+            if hide_uid_watermark(extracted):
+                status = "PATCHED"
             if status == "PATCHED":
                 output = temporary_root / "patched.dat"
                 _repack(extracted, output)

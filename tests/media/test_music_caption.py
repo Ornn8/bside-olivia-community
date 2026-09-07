@@ -38,7 +38,7 @@ def _lyrics(duration: int, marker: str = "不会进入音乐描述") -> str:
 
 
 def _short_lyrics(duration: int, marker: str = "不会进入音乐描述") -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (14, 14)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (8, 8)}[duration]
     verse = [f"主歌第{index}句轻轻落下" for index in range(1, verse_count + 1)]
     verse[0] = marker
     chorus = [f"副歌第{index}句慢慢收好" for index in range(1, chorus_count + 1)]

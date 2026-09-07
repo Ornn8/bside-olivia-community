@@ -27,7 +27,7 @@ from tools.minimax_profile import (  # noqa: E402
 
 _ALLOWED_DURATIONS = frozenset({40, 60, 110})
 _INFERENCE_TIMEOUT_SECONDS = 14400.0
-_EXPECTED_LYRIC_LINES = {40: 12, 60: 16, 110: 28}
+_EXPECTED_LYRIC_LINES = {40: 12, 60: 16, 110: 16}
 _SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
 _CAPTION_HEADINGS = ("### Global Metadata", "### Vocal Details", "### Arrangement")
