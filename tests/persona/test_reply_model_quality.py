@@ -380,7 +380,7 @@ def test_shared_runtime_grounding_preserves_persona_readiness(status: str) -> No
     forbidden, grounding = assembly.runtime_reply_rules(snapshot)
     assert forbidden == assembly._FORBIDDEN_RULES
     assert grounding == assembly._REPLY_GROUNDING + (
-        assembly._AGREEMENT_GROUNDING + assembly.RELATIONSHIP_FACT_AUTHORITY
+        assembly._AGREEMENT_GROUNDING + assembly.RELATIONSHIP_FACT_AUTHORITY + assembly._TIME_GROUNDING
         if status == "READY" else ""
     )
     generated = assembly.assemble_persona(snapshot, _context(), user_input="Synthetic.", max_units=40000)

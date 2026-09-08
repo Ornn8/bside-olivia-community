@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v20"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v22"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1729,12 +1729,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const failureLabels = {http: "下载服务器返回错误", network: "网络连接失败", timeout: "连接或操作超时", disk_full: "磁盘空间不足", permission: "文件访问权限不足", path_too_long: "安装路径过长", file_missing: "所需文件不存在", file_locked: "文件被其他程序占用", io: "文件读写失败", archive: "压缩包无法读取", validation: "文件校验失败", unexpected: "安装步骤异常"};
     const stageLabels = {prepare: "准备安装", download: "下载", offline_copy: "读取离线包", verify_file: "校验文件", stage_copy: "复制文件", extract: "解压", verify_tree: "校验安装目录", dependencies: "安装运行依赖", activate: "启用组件", cleanup: "整理缓存"};
+    const failedComponentLabels = {tts_runtime: "语音运行目录", tts_model: "语音模型", tts_license: "语音模型许可文件", tts_python: "语音 Python 环境", voice_reference: "音色参考文件", tts_quality_model: "语音校验模型", tts_config: "语音配置文件"};
     for (const bundle of bundles) {
       const detail = bundle.failure_details;
       if (bundle.state !== "failed" || !detail || !failureLabels[detail.kind]) continue;
       const component = bundle.id === "ordinary_video" ? "说话视频" : "音乐视频";
       const http = Number.isInteger(detail.http_status) ? `（HTTP ${detail.http_status}）` : "";
-      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
+      const failedComponent = failedComponentLabels[detail.component];
+      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"}${failedComponent ? "（" + failedComponent + "）" : ""} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
     }
     item.append(sourceControls);
     const runtimeStatusText = text(
@@ -2147,7 +2149,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     path.type = "text";
     path.placeholder = "粘贴视频文件或演奏文件夹的完整路径";
     path.setAttribute("aria-label", "本地演奏路径");
-    Object.assign(path.style, {width: "100%", padding: "10px", background: "#111827", color: "#fff", border: "1px solid #6b7280", borderRadius: "8px"});
+    Object.assign(path.style, {width: "100%", padding: "10px", background: "#202123", color: "inherit", border: "1px solid #606164", borderRadius: "8px"});
     const state = text("p", "支持 MP4、MOV、MKV 等视频；每个原版 midi_* 文件夹恢复主视频。", "text-text-secondary");
     state.setAttribute("aria-live", "polite");
     const list = stack();
@@ -2156,10 +2158,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       list.replaceChildren();
       for (const song of result.songs) {
         const row = card();
+        row.style.background = "#202123";
         const name = document.createElement("input");
         name.value = song.name; name.maxLength = 120;
         name.setAttribute("aria-label", "曲名");
-        Object.assign(name.style, {background: "#111827", color: "#fff", padding: "8px"});
+        Object.assign(name.style, {background: "transparent", color: "inherit", padding: "8px", border: "1px solid #606164", borderRadius: "8px"});
         const controls = actions();
         controls.append(button("播放", () => {
           let video = row.querySelector("video");
@@ -2200,7 +2203,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         const result = await pending;
         state.textContent = `已导入 ${result.added} 段，跳过重复 ${result.skipped} 段，失败 ${result.failed} 段。`;
-        if (result.errors.length) state.textContent += result.errors.map((error) => `${error.name}：${error.code}`).join("；");
+        if (result.errors.length) {
+          state.textContent += result.errors.slice(0, 3).map((error) => `${error.name}：${error.code}`).join("；");
+          if (result.errors.length > 3) state.textContent += `；另有 ${result.errors.length - 3} 项失败。`;
+          state.textContent += " 请导出诊断包以查看具体原因。";
+        }
         await reload(); await refreshLocalSongCatalog();
       } catch (_error) { state.textContent = "导入失败，请检查路径、媒体工具和磁盘空间后重试。"; }
       finally { if (localSongImportPending === pending) localSongImportPending = null; importButton.disabled = false; }
@@ -2243,7 +2250,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true");
     dialog.setAttribute("aria-label", "本地演奏");
     Object.assign(dialog.style, {width: "min(720px,calc(100vw - 80px))", maxHeight: "85vh",
-      overflow: "auto", padding: "28px", borderRadius: "16px", background: "#18191c", color: "#f9fafb"});
+      overflow: "auto", padding: "28px", borderRadius: "16px", background: "#18191b", color: "#dcd7cf"});
     const close = button("关闭", () => backdrop.remove());
     const header = actions(); header.style.justifyContent = "flex-end"; header.append(close);
     const panel = stack(); dialog.append(header, panel); backdrop.append(dialog);

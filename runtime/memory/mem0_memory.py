@@ -65,17 +65,15 @@ _DOMAIN = "conversation_memory"
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE = re.compile(
-    r"助手|assistant|(?<![A-Za-z])AI(?![A-Za-z])|林离",
+    r"助手|assistant|(?<![A-Za-z])AI(?![A-Za-z])",
     re.IGNORECASE,
 )
 _HISTORY_FIRST_PERSON_RE = re.compile(r"我")
 
 
 def _valid_history_character_identity(fact: str) -> bool:
-    # A first-person name annotation is not a third-person narrator.
-    identity_text = fact.replace("我（林离）", "我").replace("我(林离)", "我")
-    return bool(_HISTORY_FIRST_PERSON_RE.search(identity_text)) and not bool(
-        _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(identity_text)
+    return bool(_HISTORY_FIRST_PERSON_RE.search(fact)) and not bool(
+        _HISTORY_CHARACTER_IDENTITY_MISMATCH_RE.search(fact)
     )
 
 
@@ -134,7 +132,8 @@ _HISTORY_LINLI_FACT_PROMPT = (
     "采用‘我对用户说：原文短句’的逐字摘录，选取承载事实的最短完整片段；"
     "摘录外仅可补必要的称呼对象，不得添加‘表明’‘意味着’等解释，"
     "不得将留灯、开门等比喻概括成无条件承诺或不限边界的许可。"
-    "不得称为助手、AI、assistant 或第三人称林离；"
+    "不得把角色身份改写成助手、AI 或 assistant；"
+    "名字‘林离’可以正常出现，不要为避开名字而改写或丢弃原话；记忆仍以第一人称归属。"
     "必须使用与输入相同的语言，中文原文的每条记忆必须为中文，不得翻译为英文。"
 ) + _MEMORY_FACT_BOUNDARY
 _HISTORY_LINLI_INPUT_PREFIX = (

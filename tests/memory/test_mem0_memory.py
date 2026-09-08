@@ -1002,10 +1002,33 @@ def test_history_first_person_name_annotation_is_valid_and_deduplicated(tmp_path
     assert len([name for name, _ in backend.calls[calls:] if name == "add"]) == 0
 
 
+@pytest.mark.parametrize('fact', ['我对用户说：你可以叫我林离。', '我对用户说：“你可以叫我林离。”',
+                                 '我的名字是林离。', '用户称呼我为林离。', '我听见用户念出了林离这个名字。'])
+def test_history_identity_allows_character_name(fact):
+    from runtime.memory.mem0_memory import _valid_history_character_identity
+    assert _valid_history_character_identity(fact)
+
+
+def test_history_name_excerpt_is_written_and_deduplicated(tmp_path):
+    fact = '我对用户说：“你可以叫我林离。”'
+    class NamedExcerptMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            value = super().add(messages, **kwargs)
+            self.rows[-1]['memory'] = fact
+            value['results'][0]['memory'] = fact
+            return value
+    backend = NamedExcerptMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(user_message='我想知道怎么称呼你。', assistant_message='你好。你可以叫我林离。',
+                     occurred_at=NOW, source_id='history:name-excerpt', user_id='local-user')
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
+
+
 @pytest.mark.parametrize(
     "bad_text",
     ("AI 回复了来信。", "林离说她回复了来信。", "过去曾温柔地回复这封信。",
-     "我（林离）是AI助手。", "我听见林离说她回复了来信。"),
+     "我（林离）是AI助手。"),
 )
 def test_historical_exchange_rejects_non_first_person_new_memory(
     tmp_path: Path, bad_text: str,

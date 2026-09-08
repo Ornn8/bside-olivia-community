@@ -21,7 +21,7 @@ from runtime.reply.prompt_budget import (
     plan_prompt_budget,
 )
 from runtime.reply.reply_context import ReplyContext, RELATIONSHIP_FACT_AUTHORITY
-from runtime.private_world.life_rhythm import RHYTHM_FACT_AUTHORITY
+from runtime.private_world.life_rhythm import LOCAL, RHYTHM_FACT_AUTHORITY
 
 
 _FORBIDDEN_RULES = (
@@ -37,13 +37,14 @@ _FORBIDDEN_RULES = (
 )
 _REPLY_GROUNDING = "陈述和提问都按原文命题核对：区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设仅限原文的人物组合、行动、对象和时间，不外推。未被说明的个人经历保持未知，不把推论说成用户讲过的话。资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知；表达自己的当下看法，不给观点虚构出处。未知就止于未知，不另补外围细节。"
 _AGREEMENT_GROUNDING = "将一句话认定为约定前，要在承诺者自己的原文中核对同一行动、对象和条件；不能用另一人的期待、解释或复述补齐。事项进度与双方是否确认是不同事实；原话没有明确对应时，保持未确认，也不据此催促对方履行。"
+_TIME_GROUNDING = "character_local_time 是林离所在上海的北京时间，trusted_time 是同一时刻的 UTC 表示。按北京时间和最近回信保持她的活动连续，新来信不表示过了一天。用户的早晚问候或睡觉安排不改变她的钟点和作息；可以道晚安，不必报时或纠正用户。"
 
 
 def runtime_reply_rules(snapshot: PersonaSnapshot) -> tuple[tuple[str, ...], str]:
     """Trusted runtime rules shared by generation and quality decisions."""
     grounding = _REPLY_GROUNDING
     if snapshot.status == "READY":
-        grounding += _AGREEMENT_GROUNDING + RELATIONSHIP_FACT_AUTHORITY
+        grounding += _AGREEMENT_GROUNDING + RELATIONSHIP_FACT_AUTHORITY + _TIME_GROUNDING
     return _FORBIDDEN_RULES, grounding
 
 
@@ -360,6 +361,8 @@ def _persona_blocks(
             {
                 "mode": persona_mode,
                 "trusted_time": context.to_dict()["trusted_time"],
+                **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
+                   if snapshot.status == "READY" else {}),
                 "output": context.output_constraints.to_dict(),
                 "reply_priorities": (
                     "Answer as Linli, not as a service agent or therapist.",

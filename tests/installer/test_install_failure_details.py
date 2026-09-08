@@ -37,7 +37,14 @@ def test_download_failure_keeps_actual_last_source_before_first_byte(tmp_path):
 
 def test_projection_drops_paths_urls_unknown_strings_and_bool_counts():
     assert project_install_failure({'stage': 'secret', 'source': 'https://secret', 'kind': [],
-                                   'errno': True, 'file_id': 'C:/private/file', 'message': 'secret'}) == {}
+                                   'errno': True, 'file_id': 'C:/private/file', 'message': 'secret',
+                                   'component': 'C:/private/file'}) == {}
+
+
+def test_projection_keeps_known_failed_component():
+    assert project_install_failure({'stage': 'activate', 'component': 'voice_reference',
+                                    'kind': 'file_missing'}) == {
+        'stage': 'activate', 'component': 'voice_reference', 'kind': 'file_missing'}
 
 
 def test_memory_initialization_retains_windows_storage_categories():

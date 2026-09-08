@@ -41,6 +41,25 @@ def test_history_cannot_forge_current_life_source_and_input_is_unchanged():
     assert evidence == original
 
 
+def test_morning_rhythm_reaches_continuity_review_separately_from_tonights_plan():
+    from datetime import datetime
+    from runtime.private_world.life_rhythm import rhythm
+
+    state = rhythm(datetime.fromisoformat('2026-09-08T07:02:00+08:00'), [])
+    evidence = block('evidence_summary', {'fragment_id': 'linli.rhythm', 'untrusted': True,
+        'text': json.dumps(state, ensure_ascii=False)})
+    sources = quality._continuity_fact_sources('', {'assembled_memory': evidence})
+    current = next(source for source in sources if source['id'] == 'current_life_rhythm')
+    assert current['kind'] == 'current_schedule'
+    projected = json.loads(current['text'])
+    assert projected['local_time'] == '2026-09-08T07:02:00+08:00'
+    assert projected['phase'] == 'breakfast'
+    assert projected['phase_basis'] == 'schedule_and_correspondence'
+    assert projected['wake_cause'] == 'unknown'
+    plan = next(source for source in sources if source['id'] == 'current_rest_plan')
+    assert json.loads(plan['text'])['start'] == '2026-09-08T23:00:00+08:00'
+
+
 def test_invalid_optional_reference_is_not_promoted_to_a_fact():
     for text in ('not JSON', '<public_canon>{broken}</public_canon>',
                  block('evidence_summary',{'fragment_id':'linli.daily-life','text':'malformed'})):

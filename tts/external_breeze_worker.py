@@ -21,6 +21,62 @@ _VARIANT_LABEL_ATTR = {
     "int8_convrot": "INT8_LABEL",
     "int8_text_encoder": "TE_INT8_LABEL",
 }
+_WORKER_PHASES = frozenset({"request", "preflight", "package_load", "model_load",
+    "reference_read", "reference_encode", "generation", "decoding", "audio_write", "completed"})
+_WORKER_ERRORS = frozenset({"BREEZE_RUNTIME_INVALID", "BREEZE_REFERENCE_AUDIO_INVALID",
+    "BREEZE_EMPTY_AUDIO", "BREEZE_MODEL_VARIANT_UNSUPPORTED", "BREEZE_CUDA_OUT_OF_MEMORY",
+    "BREEZE_CUDA_RUNTIME_FAILED", "BREEZE_MODULE_MISSING", "BREEZE_IMPORT_FAILED",
+    "BREEZE_FILE_MISSING", "BREEZE_PERMISSION_DENIED", "BREEZE_DISK_FULL",
+    "BREEZE_IO_FAILED", "BREEZE_REQUEST_INVALID", "BREEZE_RUNTIME_FAILED"})
+_WORKER_EXCEPTION_TYPES = frozenset({"Exception", "RuntimeError", "ValueError", "TypeError",
+    "KeyError", "AttributeError", "OSError", "FileNotFoundError", "PermissionError",
+    "ImportError", "ModuleNotFoundError", "MemoryError", "OutOfMemoryError", "JSONDecodeError"})
+
+
+def project_worker_status(value: object) -> dict[str, str]:
+    """Strict shared projection for the local log and exported support bundle."""
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key, allowed in (
+        ("phase", _WORKER_PHASES), ("error_code", _WORKER_ERRORS),
+        ("error_type", _WORKER_EXCEPTION_TYPES),
+    ) if isinstance(value.get(key), str) and value[key] in allowed}
+
+
+def _worker_error_code(error: Exception) -> str:
+    # Inspect locally; only fixed categories ever cross the process boundary.
+    message = str(error)
+    if message in _WORKER_ERRORS:
+        return message
+    lowered = message.casefold()
+    if "cuda" in lowered and "out of memory" in lowered:
+        return "BREEZE_CUDA_OUT_OF_MEMORY"
+    if "cuda" in lowered:
+        return "BREEZE_CUDA_RUNTIME_FAILED"
+    if isinstance(error, ModuleNotFoundError):
+        return "BREEZE_MODULE_MISSING"
+    if isinstance(error, ImportError) or "dll load failed" in lowered:
+        return "BREEZE_IMPORT_FAILED"
+    if isinstance(error, FileNotFoundError):
+        return "BREEZE_FILE_MISSING"
+    if isinstance(error, PermissionError):
+        return "BREEZE_PERMISSION_DENIED"
+    if isinstance(error, OSError):
+        return "BREEZE_DISK_FULL" if error.errno == 28 or getattr(error, "winerror", None) == 112 else "BREEZE_IO_FAILED"
+    if isinstance(error, (ValueError, TypeError, KeyError)):
+        return "BREEZE_REQUEST_INVALID"
+    return "BREEZE_RUNTIME_FAILED"
+
+
+def _write_failure(status: Path, phase: str, error: Exception) -> None:
+    kind = type(error).__name__
+    try:
+        _write_status(status, {"status": "failed", **project_worker_status({
+            "phase": phase, "error_code": _worker_error_code(error),
+            "error_type": kind if kind in _WORKER_EXCEPTION_TYPES else "Exception",
+        })})
+    except OSError:
+        pass  # Preserve the original process failure when telemetry cannot be written.
 
 
 def _write_status(path: Path, value: dict[str, object]) -> None:
@@ -90,7 +146,6 @@ def _write_wav(path: Path, waveform: Any, sample_rate: int, gain_db: float) -> N
 
 
 def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
-    ready = False
     decode = None
     phase = "preflight"
     started = time.monotonic()
@@ -109,6 +164,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         )
         runtime_root = Path(str(request["runtime_root"]))
         model_root = Path(str(request["model_dir"]))
+        phase = "package_load"
         loader, nodes, runtime = _load_package(runtime_root)
         decode = runtime.decode_codes
 
@@ -138,6 +194,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             label = getattr(loader, _VARIANT_LABEL_ATTR[variant])
         except (KeyError, AttributeError) as exc:
             raise RuntimeError("BREEZE_MODEL_VARIANT_UNSUPPORTED") from exc
+        phase = "model_load"
         bundle = loader.load_breeze_bundle(
             label,
             str(request.get("dtype", "bf16") or "bf16"),
@@ -146,12 +203,13 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             False,
             str(request.get("decode_mode", "eager") or "eager"),
         )
+        phase = "reference_read"
         reference = _read_reference_audio(Path(str(request["reference_audio"])))
+        phase = "reference_encode"
         reference_waveform, reference_rate = runtime.comfy_audio_to_tensor(reference)
         reference_codes = runtime.encode_reference_audio(
             bundle.codec, reference_waveform, reference_rate
         )
-        ready = True
         phase = "generation"
         _write_status(
             status,
@@ -177,6 +235,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             progress_callback=progress,
             progress_label=None,
         )
+        phase = "audio_write"
         _write_wav(
             output,
             result["waveform"],
@@ -188,15 +247,7 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             {"status": "completed", "phase": "completed", "audio_started": True},
         )
     except Exception as exc:
-        _write_status(
-            status,
-            {
-                "status": "failed",
-                "phase": phase,
-                "audio_started": ready,
-                "error_type": type(exc).__name__,
-            },
-        )
+        _write_failure(status, phase, exc)
         raise
 
     finally:
@@ -214,6 +265,10 @@ def main() -> int:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         if not isinstance(request, dict):
             raise ValueError("request must be an object")
+    except Exception as exc:
+        _write_failure(args.status, "request", exc)
+        return 2
+    try:
         _synthesize(request, args.output, args.status)
     except Exception:
         return 2

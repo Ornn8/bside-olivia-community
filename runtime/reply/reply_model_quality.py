@@ -2364,6 +2364,14 @@ def _continuity_fact_sources(
             continue
         fragment_id = outer.get("fragment_id")
         if fragment_id == "linli.rhythm":
+            if isinstance(value.get("local_time"), str) and isinstance(value.get("phase"), str):
+                # The next rest window alone cannot describe whether it is
+                # morning now. Keep the simulated schedule distinct from sleep facts.
+                current = {key: value[key] for key in (
+                    "local_time", "phase", "phase_basis", "wake_cause", "activity", "rest",
+                ) if key in value}
+                sources.append({"id": "current_life_rhythm", "kind": "current_schedule",
+                                "text": json.dumps(current, ensure_ascii=False)})
             plan = value.get("planned_rest_window")
             if isinstance(plan, dict):
                 sources.append({"id": "current_rest_plan", "kind": "plan",

@@ -459,6 +459,7 @@ def test_breeze_failure_never_runs_a_second_tts_model(
     audio_started: bool,
 ) -> None:
     calls: list[str] = []
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path / "data"))
 
     def fake_run(command, **_kwargs):
         command = [str(item) for item in command]
@@ -467,7 +468,9 @@ def test_breeze_failure_never_runs_a_second_tts_model(
         status = Path(command[command.index("--status") + 1])
         status.write_text(
             json.dumps(
-                {"status": "failed", "phase": phase, "audio_started": audio_started}
+                {"status": "failed", "phase": phase, "audio_started": audio_started,
+                 "error_code": "BREEZE_MODULE_MISSING", "error_type": "ModuleNotFoundError",
+                 "private": "private letter sk-secret"}
             ),
             encoding="utf-8",
         )
@@ -486,6 +489,12 @@ def test_breeze_failure_never_runs_a_second_tts_model(
         )
 
     assert calls == ["external_breeze_worker.py"]
+    assert not list(tmp_path.glob("olivia-delivery-*"))
+    log = (tmp_path / "data/logs/media-provider.jsonl").read_text()
+    detail = json.loads(json.loads(log)["diagnostic"])
+    assert detail["worker"] == {"phase": phase, "error_code": "BREEZE_MODULE_MISSING",
+                                "error_type": "ModuleNotFoundError"}
+    assert "sk-secret" not in log
 
 
 def test_breeze_profile_persists_selection_without_exposing_paths(

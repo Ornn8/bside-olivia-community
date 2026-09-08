@@ -87,10 +87,85 @@ def test_media_provider_tail_projects_failure_chain_without_private_diagnostics(
         records = [json.loads(line) for line in raw.splitlines()]
     assert records[0]['stderr_category'] == 'process_timeout'
     assert records[1]['exception_types'][-1] == 'TimeoutExpired'
+    assert records[1]['exception_codes'] == ['LATENTSYNC_FAILED', 'LATENTSYNC_FAILED']
     assert records[2]['stage'] == 'render'
     assert records[2]['candidate_code'] == 'MUSIC_REPLY_NORMAL_VIDEO_FAILED'
     assert records[3] == {'error_code': 'MEDIA_JOB_FAILED'}
     assert not any(secret in raw for secret in (b'sk-', b'C:/Users', b'private reply'))
+
+
+@pytest.mark.parametrize('code', ['TTS_UNAVAILABLE', 'LATENTSYNC_INPUT_UNAVAILABLE', 'REPLY_VIDEO_ENCODE_FAILED'])
+def test_media_failure_local_log_survives_bundle_export(tmp_path, code):
+    from runtime.media.music_reply import _provider_exception_failure, ReplyMediaError
+    from original_client_server import _media_provider_tail
+
+    _provider_exception_failure('MUSIC_REPLY_NORMAL_VIDEO_FAILED', ReplyMediaError(code),
+                                {'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)})
+    source = _source()
+    source['media_provider_tail'] = _media_provider_tail(tmp_path)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        records = [json.loads(line) for line in archive.read('media-provider-tail.jsonl').splitlines()]
+    assert records[0]['exception_codes'] == [code]
+
+
+def test_media_exception_codes_reject_private_text_and_bound_chain():
+    source = _source()
+    source['media_provider_tail'] = [{'error_code': 'MEDIA_JOB_FAILED',
+        'diagnostic': 'exception_codes=C:/Users/private.wav>sk-secret>private reply>' + '> '.join(['TTS_UNAVAILABLE'] * 20)}]
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+        record = json.loads(raw)
+    assert record['exception_codes'] == ['TTS_UNAVAILABLE'] * 5
+    assert not any(value in raw for value in (b'C:/Users', b'sk-secret', b'private reply'))
+
+
+@pytest.mark.parametrize(('stderr', 'category'), [
+    ('CUDA out of memory', 'cuda_out_of_memory'),
+    ('ModuleNotFoundError: No module named secret_module', 'python_module_missing'),
+    ('DLL load failed', 'runtime_dependency_missing'),
+    ('FileNotFoundError: C:/Users/private.wav', 'configured_path_missing'),
+])
+def test_tts_worker_failure_export_contains_only_category(tmp_path, stderr, category):
+    from tts.delivery import _record_worker_failure
+    from original_client_server import _media_provider_tail
+
+    _record_worker_failure({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)},
+                           'TTS_EXTERNAL_PROCESS_FAILED', returncode=1,
+                           stderr=(stderr + ' private letter sk-secret').encode())
+    source = _source()
+    source['media_provider_tail'] = _media_provider_tail(tmp_path)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+    record = json.loads(raw)
+    assert record['stderr_category'] == category
+    assert record['returncode'] == 1
+    local_log = (tmp_path / 'logs/media-provider.jsonl').read_bytes()
+    assert all(secret not in raw + local_log for secret in
+               (b'C:/Users', b'secret_module', b'private letter', b'sk-secret'))
+
+
+def test_tts_worker_status_survives_local_log_and_bundle_projection(tmp_path):
+    from tts.delivery import _record_worker_failure
+    from original_client_server import _media_provider_tail
+    status = tmp_path / 'status.json'
+    status.write_text(json.dumps({'phase': 'model_load', 'error_type': 'ModuleNotFoundError',
+        'error_code': 'BREEZE_MODULE_MISSING', 'private': 'private letter sk-secret'}))
+    _record_worker_failure({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)},
+        'TTS_EXTERNAL_PROCESS_FAILED', returncode=2, status_path=status)
+    status.unlink()
+    source = _source()
+    source['media_provider_tail'] = list(_media_provider_tail(tmp_path))
+    source['media_provider_tail'].append({'error_code': 'TTS_EXTERNAL_PROCESS_FAILED',
+        'diagnostic': json.dumps({'worker': {'phase': 'private-path', 'error_type': 'sk-secret',
+                                            'error_code': 'PRIVATE_LETTER'}})})
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+    records = [json.loads(line) for line in raw.splitlines()]
+    assert records[0]['worker'] == {'phase': 'model_load', 'error_type': 'ModuleNotFoundError',
+                                   'error_code': 'BREEZE_MODULE_MISSING'}
+    assert records[0]['returncode'] == 2
+    assert 'worker' not in records[1]
+    assert all(secret not in raw for secret in (b'private', b'sk-secret', b'PRIVATE_LETTER'))
 
 
 @pytest.mark.parametrize('mode', ['musical_video', 'spoken_video'])
@@ -135,6 +210,15 @@ def test_install_failure_details_survive_zip_without_raw_exception():
         details = json.loads(raw)['checks']['video_ordinary']['failure_details']
         assert details['http_status'] == 403 and details['file_id'] == 'weights'
         assert b'private' not in raw
+
+
+def test_tts_install_component_survives_support_bundle():
+    source = _source()
+    source['health']['checks']['video_ordinary'] = {'state': 'failed', 'failure_details': {
+        'stage': 'activate', 'component': 'voice_reference', 'kind': 'file_missing'}}
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        details = json.loads(archive.read('health.json'))['checks']['video_ordinary']['failure_details']
+    assert details == {'stage': 'activate', 'component': 'voice_reference', 'kind': 'file_missing'}
 
 
 def test_memory_initialization_stage_survives_support_bundle():
