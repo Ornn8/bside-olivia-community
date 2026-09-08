@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .contracts import AudioChunk, TTSConfig, TTSRequest, TTSUnavailable
+from .breeze_adapter import adapter_metadata
 
 
 BREEZE_LICENSE_ID = "BreezeBlue-Research-and-Non-Commercial-1.0"
@@ -95,6 +96,10 @@ class BreezeTTS2Provider:
 
     def _missing_files(self) -> list[str]:
         missing: list[str] = []
+        try:
+            adapter_metadata(self.config.provider_options.get('adapter_dir', ''))
+        except ValueError:
+            missing.append('adapter')
         for relative in ("__init__.py", "loader.py", "nodes.py", "int8.py", "LICENSE"):
             if not (self.runtime_root / relative).is_file():
                 missing.append(f"runtime:{relative}")
@@ -199,6 +204,8 @@ class BreezeTTS2Provider:
         gain_db = float(getattr(units[0], "gain_db", 0.0)) if units else 0.0
         return {
             "runtime_root": str(self.runtime_root),
+            "adapter_dir": str(options.get('adapter_dir', '') or ''),
+            "adapter": adapter_metadata(options.get('adapter_dir', '') or ''),
             "model_dir": str(self.model_root),
             "reference_audio": self.config.reference_audio,
             "reference_text": self.config.reference_text,

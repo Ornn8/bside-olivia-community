@@ -1596,6 +1596,15 @@ class VideoCapabilityInstaller:
                 ):
                     raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
             _reject_reparse_tree(generated_root)
+            adapter_options = {}
+            if generated_config.is_file():
+                try:
+                    previous = json.loads(generated_config.read_text(encoding='utf-8'))
+                    adapter_dir = previous.get('settings', {}).get('provider_options', {}).get('adapter_dir')
+                    if isinstance(adapter_dir, str) and adapter_dir.strip():
+                        adapter_options['adapter_dir'] = adapter_dir
+                except (OSError, ValueError, AttributeError):
+                    raise VideoCapabilityError('VIDEO_BUNDLE_INSTALL_FAILED')
             generated_temporary.write_text(
                 json.dumps(
                     {
@@ -1613,6 +1622,7 @@ class VideoCapabilityInstaller:
                             "fallback": "text",
                             "fp16": True,
                             "provider_options": {
+                                **adapter_options,
                                 "external_python": str(external_python),
                                 "model_variant": "int8_hybrid",
                                 "model_license_path": str(model_license),

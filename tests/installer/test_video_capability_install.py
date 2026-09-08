@@ -2025,6 +2025,17 @@ def test_managed_tts_config_uses_installed_quality_checkpoint_directory(tmp_path
     assert config["settings"]["provider_options"]["quality_gate_cache_root"] == environment["OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"]
 
 
+def test_managed_tts_config_keeps_selected_local_adapter(tmp_path, monkeypatch):
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    installer._generate_managed_tts_config(environment)
+    path = Path(environment['OLIVIA_TTS_CONFIG'])
+    config = json.loads(path.read_text(encoding='utf-8'))
+    config['settings']['provider_options']['adapter_dir'] = str(tmp_path / 'private-adapter')
+    path.write_text(json.dumps(config), encoding='utf-8')
+    installer._generate_managed_tts_config(environment)
+    assert json.loads(path.read_text(encoding='utf-8'))['settings']['provider_options']['adapter_dir'] == str(tmp_path / 'private-adapter')
+
+
 @pytest.mark.parametrize(('key', 'component'), [
     ('OLIVIA_BREEZE_TTS_PYTHON', 'tts_python'),
     ('OLIVIA_REPLY_VOICE_REFERENCE', 'voice_reference'),

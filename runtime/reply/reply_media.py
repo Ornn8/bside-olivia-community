@@ -134,6 +134,7 @@ def _tts_config(
         }
     )
     for key in (
+        "adapter_dir",
         "model_license_path",
         "numba_cache_dir",
         "quality_gate_cache_root",

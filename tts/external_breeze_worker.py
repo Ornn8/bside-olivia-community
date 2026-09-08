@@ -24,6 +24,7 @@ _VARIANT_LABEL_ATTR = {
 _WORKER_PHASES = frozenset({"request", "preflight", "package_load", "model_load",
     "reference_read", "reference_encode", "generation", "decoding", "audio_write", "completed"})
 _WORKER_ERRORS = frozenset({"BREEZE_RUNTIME_INVALID", "BREEZE_REFERENCE_AUDIO_INVALID",
+    "BREEZE_ADAPTER_INVALID",
     "BREEZE_EMPTY_AUDIO", "BREEZE_MODEL_VARIANT_UNSUPPORTED", "BREEZE_CUDA_OUT_OF_MEMORY",
     "BREEZE_CUDA_RUNTIME_FAILED", "BREEZE_MODULE_MISSING", "BREEZE_IMPORT_FAILED",
     "BREEZE_FILE_MISSING", "BREEZE_PERMISSION_DENIED", "BREEZE_DISK_FULL",
@@ -147,6 +148,8 @@ def _write_wav(path: Path, waveform: Any, sample_rate: int, gain_db: float) -> N
 
 def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
     decode = None
+    register = None
+    adapter_receipt = {}
     phase = "preflight"
     started = time.monotonic()
 
@@ -195,6 +198,22 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         except (KeyError, AttributeError) as exc:
             raise RuntimeError("BREEZE_MODEL_VARIANT_UNSUPPORTED") from exc
         phase = "model_load"
+        if request.get('adapter_dir'):
+            spec = importlib.util.spec_from_file_location(
+                'olivia_breeze_adapter', Path(__file__).with_name('breeze_adapter.py'))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            register = loader.register_runtime_module
+
+            def register_with_adapter(model, device, **kwargs):
+                nonlocal adapter_receipt
+                if hasattr(model, 'backbone_model'):
+                    adapter_receipt = module.apply_adapter(
+                        model, request['adapter_dir'], loader.int8.ConvRotInt8Linear,
+                        request.get('adapter', {}).get('sha256'))
+                return register(model, device, **kwargs)
+
+            loader.register_runtime_module = register_with_adapter
         bundle = loader.load_breeze_bundle(
             label,
             str(request.get("dtype", "bf16") or "bf16"),
@@ -203,6 +222,8 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             False,
             str(request.get("decode_mode", "eager") or "eager"),
         )
+        if request.get('adapter_dir') and not adapter_receipt:
+            raise ValueError('BREEZE_ADAPTER_INVALID')
         phase = "reference_read"
         reference = _read_reference_audio(Path(str(request["reference_audio"])))
         phase = "reference_encode"
@@ -244,13 +265,16 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         )
         _write_status(
             status,
-            {"status": "completed", "phase": "completed", "audio_started": True},
+            {"status": "completed", "phase": "completed", "audio_started": True,
+             **({'adapter': adapter_receipt} if adapter_receipt else {})},
         )
     except Exception as exc:
         _write_failure(status, phase, exc)
         raise
 
     finally:
+        if register is not None:
+            loader.register_runtime_module = register
         if decode is not None:
             runtime.decode_codes = decode
 

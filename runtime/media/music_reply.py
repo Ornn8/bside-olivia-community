@@ -25,7 +25,8 @@ from runtime.media.latentsync_reply import (
     render_latentsync_video,
     resolve_ffmpeg_executable,
 )
-from runtime.media.media_paths import configured_media_path
+from runtime.media.media_paths import configured_media_path, resolve_media_path
+from tts.breeze_adapter import adapter_metadata
 from runtime.media.managed_subprocess import run_managed_process
 from runtime.media.managed_voice_reference import (
     ManagedVoiceReferenceError,
@@ -1395,6 +1396,21 @@ def _completed_stage(path: Path, *, required_streams: tuple[str, ...], ffmpeg_pa
         return False
 
 
+def _speech_adapter_fingerprint(config_path: Path, environment: Mapping[str, str]) -> dict[str, object]:
+    try:
+        value = json.loads(config_path.read_text(encoding='utf-8'))
+        directory = value.get('settings', value).get('provider_options', {}).get('adapter_dir', '')
+        if not directory:
+            return {}
+        resolved = resolve_media_path(directory, environment)
+        if resolved is None:
+            raise ValueError
+        return adapter_metadata(resolved)
+    except (OSError, ValueError, TypeError, AttributeError):
+        # An invalid input can never match a previously completed LoRA stage.
+        return {'status': 'invalid'}
+
+
 def _file_fingerprint(path: Path | None) -> dict[str, object]:
     """Return a content-bound fingerprint without retaining local path names."""
 
@@ -1474,6 +1490,7 @@ def _build_music_stage_manifest(
                 "name": "breeze_tts2",
                 "contract": "breeze-effective-cfg1-v1",
                 "cfg_scale": 1.0,
+                "adapter": _speech_adapter_fingerprint(tts_config_path, provider_paths.environment),
             },
             "singing_voice": {
                 "name": "SoulX-Singer-SVC",
