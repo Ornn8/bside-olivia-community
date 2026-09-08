@@ -40,6 +40,57 @@ from runtime.media.managed_voice_reference import (
 
 _SHA256 = 64
 _PUBLIC_BUNDLES = {"ordinary_video", "music_video"}
+_LINLI_2250_SHA256 = '6d1e48b0494c2fe6971e316e5e5aefb81ae6cfda6e5434641d444cdf95720ffb'
+
+
+def restore_combined_supplements(data_root: Path, archive_path: Path) -> Path | None:
+    """Restore bounded, validated supplements embedded in a complete offline ZIP."""
+    from tts.breeze_adapter import adapter_metadata
+    names = {'adapter_config.json', 'adapter.safetensors', 'base-model-assets.json',
+             'provenance.json', 'LICENSE', 'NOTICE'}
+    selected = None
+    try:
+        with zipfile.ZipFile(archive_path) as outer, tempfile.TemporaryDirectory(prefix='olivia-supplement-') as temporary:
+            work = Path(temporary)
+            for name in ('Olivia-voice-reference-offline.zip', 'Olivia-breeze-2250-offline.zip'):
+                entries = [entry for entry in outer.infolist() if entry.filename == name]
+                if not entries:
+                    continue
+                if len(entries) != 1 or not 0 < entries[0].file_size <= 32 * 1024 * 1024:
+                    raise ValueError('invalid supplement')
+                nested = work / name
+                nested.write_bytes(outer.read(entries[0]))
+                if name == 'Olivia-voice-reference-offline.zip':
+                    restore_voice_reference_supplement(data_root, nested)
+                    continue
+                staged = work / 'adapter'
+                staged.mkdir()
+                with zipfile.ZipFile(nested) as inner:
+                    entries = inner.infolist()
+                    if len(entries) != len(names) or {entry.filename for entry in entries} != names:
+                        raise ValueError('invalid adapter members')
+                    if sum(entry.file_size for entry in entries) > 32 * 1024 * 1024:
+                        raise ValueError('invalid adapter size')
+                    for entry in entries:
+                        (staged / entry.filename).write_bytes(inner.read(entry))
+                if adapter_metadata(staged)['sha256'] != _LINLI_2250_SHA256:
+                    raise ValueError('invalid adapter digest')
+                video = _checked_install_root(data_root.resolve(), create=True)
+                shared = _inside(video, video / 'shared')
+                shared.mkdir(exist_ok=True)
+                _reject_reparse_tree(shared)
+                target = _inside(video, shared / 'linli-2250')
+                if target.exists():
+                    if adapter_metadata(target)['sha256'] != _LINLI_2250_SHA256:
+                        raise ValueError('existing adapter differs')
+                else:
+                    staging = shared / ('linli-2250-' + uuid.uuid4().hex + '.tmp')
+                    shutil.copytree(staged, staging)
+                    os.replace(staging, target)
+                selected = target
+        return selected
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise VideoCapabilityError('VIDEO_ADAPTER_SUPPLEMENT_INVALID') from exc
 
 
 def restore_voice_reference_supplement(data_root: Path, archive_path: Path) -> None:
@@ -1597,6 +1648,13 @@ class VideoCapabilityInstaller:
                     raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
             _reject_reparse_tree(generated_root)
             adapter_options = {}
+            managed_adapter = _inside(self.install_root, self.install_root / 'shared/linli-2250')
+            if managed_adapter.is_dir():
+                _reject_reparse_tree(managed_adapter)
+                from tts.breeze_adapter import adapter_metadata
+                if adapter_metadata(managed_adapter)['sha256'] != _LINLI_2250_SHA256:
+                    raise VideoCapabilityError('VIDEO_ADAPTER_SUPPLEMENT_INVALID')
+                adapter_options['adapter_dir'] = str(managed_adapter)
             if generated_config.is_file():
                 try:
                     previous = json.loads(generated_config.read_text(encoding='utf-8'))
@@ -1929,7 +1987,21 @@ class VideoCapabilityInstaller:
         return self.start(bundle_id=bundle_id, source_mode=source_mode, accept_licenses=accept_licenses)
 
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str:
-        return self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
+        adapter = None
+        if bundle_id == 'ordinary_video' and offline_root.is_file():
+            with self._lock:
+                if any(thread.is_alive() for thread in self._threads.values()):
+                    return 'NOOP'
+                adapter = restore_combined_supplements(self.data_root, offline_root)
+                config = _inside(self.install_root, self.install_root / 'generated/tts_local.json')
+                if adapter is not None and config.is_file():
+                    value = json.loads(config.read_text(encoding='utf-8'))
+                    value['settings'].setdefault('provider_options', {})['adapter_dir'] = str(adapter)
+                    temporary = config.with_name(config.name + '.' + uuid.uuid4().hex + '.tmp')
+                    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+                    os.replace(temporary, config)
+        result = self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
+        return 'APPLIED' if adapter is not None and result == 'NOOP' else result
 
     def import_runtime_root(
         self,

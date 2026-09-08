@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -210,6 +211,45 @@ def test_runtime_temp_component_requires_containment(tmp_path, relative, expecte
         {"runtime_root": tmp_path})
     assert result == {"phase": "inference", "missing_component": expected}
     assert "private name" not in json.dumps(result)
+
+
+def test_worker_reports_only_safe_exception_location(tmp_path):
+    _write(tmp_path / "scripts/__init__.py", b"")
+    _write(tmp_path / "scripts/inference.py", b"open('private letter secret.wav', 'rb')\n")
+    worker = Path(latentsync_reply.__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"
+    result = subprocess.run([sys.executable, str(worker)], cwd=tmp_path, capture_output=True)
+    assert result.returncode != 0
+    projected = latentsync_reply._failure_context("inference", result.stderr, {})
+    assert projected["exception_type"] == "FileNotFoundError"
+    assert projected["frames"] == [{"module": "scripts.inference", "line": 1}]
+    assert "secret" not in json.dumps(projected)
+    assert str(tmp_path) not in json.dumps(projected)
+
+
+def test_worker_marker_cannot_export_arguments_or_foreign_frames():
+    raw = 'OLIVIA_LATENTSYNC_FAILURE=' + json.dumps({
+        'exception_type': 'FileNotFoundError', 'missing_component': 'ffmpeg',
+        'frames': [{'module': 'subprocess', 'line': 99, 'args': 'private'},
+                   {'module': 'C:/private/letter.py', 'line': 1}],
+        'inputs': {'audio': {'exists': False}}, 'phase': 'source_prepare',
+        'filename': 'private',
+    })
+    projected = latentsync_reply._failure_context('inference', raw, {})
+    assert projected == {'phase': 'inference', 'missing_component': 'ffmpeg',
+                         'exception_type': 'FileNotFoundError',
+                         'frames': [{'module': 'subprocess', 'line': 99}]}
+
+
+def test_worker_identifies_subprocess_executable_without_filename(tmp_path):
+    _write(tmp_path / "scripts/__init__.py", b"")
+    # Force the Windows-style failure without depending on host PATH contents.
+    _write(tmp_path / "scripts/inference.py", b"import subprocess\nexec(compile('def fail():\\n executable = \\\"ffmpeg\\\"\\n raise FileNotFoundError(2, \\\"missing\\\")', 'synthetic.py', 'exec'), subprocess.__dict__)\nsubprocess.fail()\n")
+    worker = Path(latentsync_reply.__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"
+    result = subprocess.run([sys.executable, str(worker)], cwd=tmp_path, capture_output=True)
+    projected = latentsync_reply._failure_context("inference", result.stderr, {})
+    assert projected["missing_component"] == "ffmpeg"
+    assert projected["exception_type"] == "FileNotFoundError"
+    assert projected["frames"][-1]["module"] == "subprocess"
 
 
 @pytest.mark.parametrize(('relative', 'expected'), [

@@ -27,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 _FAILURE_PHASES = frozenset({"source_prepare", "inference", "output_validate"})
 _INPUT_NAMES = frozenset({"video", "audio", "output_parent"})
 _MISSING_COMPONENTS = frozenset({
-    "unknown", "video", "audio", "output_parent", "ffmpeg", "scheduler",
+    "unknown", "video", "audio", "output_parent", "ffmpeg", "ffprobe", "scheduler",
     "unet_config", "unet_weights", "whisper_weights", "whisper_mel_filters",
     "face_detection", "face_landmarks", "mask_image", "vae_config", "vae_weights", "runtime_temp",
 })
@@ -52,6 +52,20 @@ def project_failure_context(source: Mapping[str, object]) -> dict[str, object]:
                     projected[name] = fields
         if projected:
             result["inputs"] = projected
+    exception_type = source.get("exception_type")
+    if isinstance(exception_type, str) and exception_type in {"FileNotFoundError", "PermissionError", "RuntimeError", "OSError", "ValueError", "ImportError", "ModuleNotFoundError"}:
+        result["exception_type"] = exception_type
+    frames = source.get("frames")
+    if isinstance(frames, list):
+        safe_frames = []
+        for frame in frames[-8:]:
+            if not isinstance(frame, Mapping):
+                continue
+            module, line = frame.get("module"), frame.get("line")
+            if isinstance(module, str) and len(module) <= 160 and re.fullmatch(r"(?:latentsync|scripts|ffmpeg)(?:\.[A-Za-z_][A-Za-z_0-9]*)+|subprocess", module) and type(line) is int and 0 < line < 100000:
+                safe_frames.append({"module": module, "line": line})
+        if safe_frames:
+            result["frames"] = safe_frames
     return result
 
 
@@ -99,6 +113,15 @@ def _failure_context(phase: str, stderr: bytes | str | None, paths: Mapping[str,
             if label in _MISSING_COMPONENTS:
                 component = label
         result["missing_component"] = component
+    for line in raw[-65536:].splitlines():
+        if line.startswith("OLIVIA_LATENTSYNC_FAILURE=") and len(line) <= 4096:
+            try:
+                worker = json.loads(line.partition("=")[2])
+            except ValueError:
+                continue
+            if isinstance(worker, Mapping):
+                safe = project_failure_context(worker)
+                result.update({key: value for key, value in safe.items() if key in {"frames", "exception_type", "missing_component"}})
     return project_failure_context(result)
 
 
@@ -465,8 +488,7 @@ def render_latentsync_video(
         )
         command = [
             str(python_path),
-            "-m",
-            "scripts.inference",
+            str(Path(__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"),
             "--unet_config_path",
             str(config_path),
             "--inference_ckpt_path",
