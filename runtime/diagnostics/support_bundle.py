@@ -334,6 +334,9 @@ def _project_media_tail(value: object) -> bytes:
             record['timestamp'] = timestamp
         if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg'}:
             record['provider'] = source['provider']
+        if source.get('provider') == 'latentsync':
+            from runtime.media.latentsync_reply import project_failure_context
+            record.update(project_failure_context(source))
         raw = source.get('diagnostic')
         if isinstance(raw, str) and len(raw) <= 4096:
             try:

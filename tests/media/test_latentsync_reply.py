@@ -166,3 +166,59 @@ def test_prepare_process_failure_is_reported(tmp_path: Path, monkeypatch, failur
     record = json.loads((data_root / "logs/media-provider.jsonl").read_text())
     assert str(caught.value) == "LATENTSYNC_FAILED"
     assert f"stderr_category={category}" in record["diagnostic"]
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_missing_job_audio_is_reported_without_paths(tmp_path, monkeypatch, known):
+    fixture = _fixture(tmp_path / "private folder")
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
+    def fail(command, **kwargs):
+        fixture.audio.unlink()
+        missing = str(fixture.audio) if known else "C:/private folder/secret letter.wav"
+        return subprocess.CompletedProcess(command, 1, b"", f"FileNotFoundError: [Errno 2] No such file or directory: '{missing}'")
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", fail)
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError):
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    raw = (data_root / "logs/media-provider.jsonl").read_text()
+    record = json.loads(raw)
+    assert record["phase"] == "inference"
+    assert record["missing_component"] == ("audio" if known else "unknown")
+    assert record["inputs"] == {
+        "audio": {"exists": False, "readable": False},
+        "video": {"exists": True, "readable": True},
+        "output_parent": {"exists": True, "readable": True},
+    }
+    assert "private folder" not in raw and "speech.wav" not in raw and "secret letter" not in raw
+
+
+def test_missing_component_relative_path_is_mapped_without_scanning(tmp_path):
+    result = latentsync_reply._failure_context("inference",
+        "FileNotFoundError: [Errno 2] No such file or directory: 'configs/scheduler_config.json'",
+        {"runtime_root": tmp_path, "scheduler": tmp_path / "configs/scheduler_config.json"})
+    assert result == {"phase": "inference", "missing_component": "scheduler"}
+
+
+@pytest.mark.parametrize(("relative", "expected"), [
+    ("temp/private name.mp4", "runtime_temp"),
+    ("temp/../private name.mp4", "unknown"),
+    ("temporary/private name.mp4", "unknown"),
+])
+def test_runtime_temp_component_requires_containment(tmp_path, relative, expected):
+    result = latentsync_reply._failure_context("inference",
+        f"FileNotFoundError: [Errno 2] No such file or directory: '{relative}'",
+        {"runtime_root": tmp_path})
+    assert result == {"phase": "inference", "missing_component": expected}
+    assert "private name" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(('relative', 'expected'), [
+    ('checkpoints/whisper/tiny.pt', 'whisper_weights'),
+    ('checkpoints/whisper/small.pt', 'whisper_weights'),
+    ('stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.bin', 'vae_weights'),
+    ('ffmpeg.exe', 'ffmpeg'),
+])
+def test_missing_runtime_alternatives_are_classified(tmp_path, relative, expected):
+    result = latentsync_reply._failure_context('inference',
+        f"FileNotFoundError: No such file or directory: '{relative}'", {'runtime_root': tmp_path})
+    assert result == {'phase': 'inference', 'missing_component': expected}

@@ -70,6 +70,25 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_lipsync_context_strictly_projects_labels_and_booleans():
+    source = _source()
+    source['media_provider_tail'] = [
+        {'provider': 'latentsync', 'phase': 'inference', 'missing_component': 'audio',
+         'inputs': {'audio': {'exists': False, 'readable': False, 'path': 'private-secret'},
+                    'video': {'exists': True, 'readable': 'private-secret'},
+                    'private-secret': {'exists': True}}},
+        {'provider': 'latentsync', 'phase': ['private-secret'], 'missing_component': 'private-secret',
+         'inputs': {'audio': {'exists': 1, 'readable': 'true'}}},
+    ]
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+    records = [json.loads(line) for line in raw.splitlines()]
+    assert records[0] == {'provider': 'latentsync', 'phase': 'inference', 'missing_component': 'audio',
+                          'inputs': {'audio': {'exists': False, 'readable': False}, 'video': {'exists': True}}}
+    assert records[1] == {'provider': 'latentsync'}
+    assert b'private-secret' not in raw
+
+
 def test_media_provider_tail_projects_failure_chain_without_private_diagnostics():
     source = _source()
     source['media_provider_tail'] = [
