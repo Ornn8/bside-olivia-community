@@ -2054,7 +2054,7 @@ def test_resend_restarts_failed_memory_initialization_once(tmp_path, monkeypatch
     async def scenario():
         assert memory.start_initialization()
         await asyncio.to_thread(memory._thread.join, 2)
-        assert memory.status().reason_code == "MEM0_INITIALIZATION_FAILED"
+        assert memory.status().reason_code == "MEM0_INIT_FACTORY_APP_RUNTIME"
         response = await local_server.route("POST", "/toy/letter/resend", {"letter_id": "init-failed"}, {}, defer_reply=True)
         assert response["code"] == 0
         for _ in range(100):
