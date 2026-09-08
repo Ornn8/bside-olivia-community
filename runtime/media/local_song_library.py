@@ -162,7 +162,7 @@ class LocalSongLibrary:
                 dirs[:] = [x for x in dirs if not (Path(directory) / x).is_symlink()
                            and not (Path(directory) / x).is_junction()]
                 if Path(directory).name.startswith('midi_'):
-                    # One historical performance can contain several camera/time variants.
+                    # One imported performance can contain several camera/time variants.
                     # Restore its primary video as one song, as in 芙桃's auto-list builder.
                     candidates = [Path(directory) / name for name in sorted(names)
                                   if Path(name).suffix.lower() in _VIDEO
