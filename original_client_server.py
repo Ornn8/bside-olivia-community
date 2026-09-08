@@ -509,6 +509,9 @@ def _diagnostic_source(
             "music_video",
             "musical_video",
             "spoken_video",
+            "voice_reply",
+            "singing_video",
+            "voice_song_video",
             "live",
         }:
             item["reply_mode"] = reply_mode

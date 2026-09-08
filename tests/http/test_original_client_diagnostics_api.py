@@ -247,7 +247,8 @@ def test_video_diagnostic_reads_existing_state_without_starting_installation(mon
         installer._lock.release()
 
 
-def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> None:
+@pytest.mark.parametrize("route", ["text_letter", "voice_reply", "singing_video", "voice_song_video"])
+def test_diagnostic_source_projects_profiles_setup_and_recent_task_states(route) -> None:
     class Backend:
         def diagnostic_status_history(self):
             return ()
@@ -308,7 +309,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
                 "letter_status": "FAILED",
                 "error_code": "LLM_TIMEOUT",
                 "media_status": "NOT_REQUESTED",
-                "reply_mode": "text_letter",
+                "reply_mode": route,
                 "retryable": True,
                 "created_at": 0,
                 "letter_id": "must-not-leak",
@@ -318,6 +319,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
     )
 
     source = collect()
+    assert source["tasks"]["items"][0]["reply_mode"] == route
     assert source['media_provider_tail'] == [{'error_code': 'LATENTSYNC_FAILED'}]
     assert "backend_id" not in source["summary"]  # type: ignore[operator]
     assert source["summary"]["contract_version"] == "2.0"  # type: ignore[index]
@@ -351,7 +353,7 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states() -> N
                 "status": "failed",
                 "error_code": "LLM_TIMEOUT",
                 "media_status": "not_requested",
-                "reply_mode": "text_letter",
+                "reply_mode": route,
                 "retryable": True,
                 "stage": "failed",
                 "elapsed_bucket": "over_6h",

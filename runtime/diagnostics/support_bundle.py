@@ -38,7 +38,8 @@ _EVENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TOKEN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,159}$")
 _METHODS = frozenset({"GET", "HEAD", "OPTIONS", "POST"})
 _REPLY_MODES = frozenset(
-    {"text", "video", "text_letter", "normal_video", "music_video", "spoken_video", "musical_video", "live"}
+    {"text", "video", "text_letter", "normal_video", "music_video", "spoken_video", "musical_video", "live",
+     "voice_reply", "singing_video", "voice_song_video"}
 )
 _TASK_STAGES = frozenset(
     {

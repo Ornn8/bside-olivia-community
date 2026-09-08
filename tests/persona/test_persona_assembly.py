@@ -406,7 +406,13 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     ].index("<public_canon")
 
 
-def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
+@pytest.mark.parametrize("mode, persona_mode", [
+    (ReplyMode.MUSICAL_VIDEO, "musical_video"),
+    (ReplyMode.VOICE_REPLY, "spoken_video"),
+    (ReplyMode.SINGING_VIDEO, "musical_video"),
+    (ReplyMode.VOICE_SONG_VIDEO, "musical_video"),
+])
+def test_reply_mode_mapping_selects_only_the_matching_mode_style(mode, persona_mode) -> None:
     snapshot = PersonaSnapshot(
         schema_version="p02.persona.v2",
         persona_id="synthetic.persona",
@@ -429,7 +435,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
                 "MODE_STYLE",
                 "MODE_STYLE",
                 "Use the synthetic musical direction.",
-                "musical_video",
+                persona_mode,
             ),
         ),
         status="READY",
@@ -437,7 +443,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
         profile=_profile(),
     )
     context = ReplyContext.create(
-        ReplyMode.MUSICAL_VIDEO,
+        mode,
         trusted_time=TrustedTime(datetime(2026, 9, 3, tzinfo=timezone.utc)),
     )
 
@@ -448,7 +454,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
         max_units=4_000,
     )
 
-    assert persona_mode_for_reply_mode(ReplyMode.MUSICAL_VIDEO) == "musical_video"
+    assert persona_mode_for_reply_mode(mode) == persona_mode
     assert "Use the synthetic musical direction." in assembly.system_content
     assert "Use the synthetic letter direction." not in assembly.system_content
 

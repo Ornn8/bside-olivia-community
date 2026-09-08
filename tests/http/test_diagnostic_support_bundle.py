@@ -187,7 +187,7 @@ def test_tts_worker_status_survives_local_log_and_bundle_projection(tmp_path):
     assert all(secret not in raw for secret in (b'private', b'sk-secret', b'PRIVATE_LETTER'))
 
 
-@pytest.mark.parametrize('mode', ['musical_video', 'spoken_video'])
+@pytest.mark.parametrize('mode', ['musical_video', 'spoken_video', 'voice_reply', 'singing_video', 'voice_song_video'])
 def test_media_task_diagnostic_retains_exact_video_route(mode):
     source = _source()
     source['tasks']['items'][0]['reply_mode'] = mode
