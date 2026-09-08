@@ -1988,6 +1988,12 @@ class VideoCapabilityInstaller:
 
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str:
         adapter = None
+        voice_upgrade_only = False
+        if offline_root.is_file():
+            with zipfile.ZipFile(offline_root) as archive:
+                voice_upgrade_only = archive.namelist() == ['Olivia-breeze-2250-offline.zip']
+        if voice_upgrade_only and bundle_id != 'ordinary_video':
+            return 'NOOP'
         if bundle_id == 'ordinary_video' and offline_root.is_file():
             with self._lock:
                 if any(thread.is_alive() for thread in self._threads.values()):
@@ -2000,6 +2006,8 @@ class VideoCapabilityInstaller:
                     temporary = config.with_name(config.name + '.' + uuid.uuid4().hex + '.tmp')
                     temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
                     os.replace(temporary, config)
+        if voice_upgrade_only:
+            return 'APPLIED' if adapter is not None else 'REJECTED'
         result = self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
         return 'APPLIED' if adapter is not None and result == 'NOOP' else result
 

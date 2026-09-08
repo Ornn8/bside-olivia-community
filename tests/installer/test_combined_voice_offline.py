@@ -75,3 +75,17 @@ def test_already_installed_models_still_select_new_adapter(tmp_path, monkeypatch
     assert settings['provider_options']['adapter_dir'] == str(video / 'shared/linli-2250')
     assert settings['provider_options']['seed'] == 200717
     assert settings['reference_text'] == 'synthetic reference'
+
+
+def test_voice_only_upgrade_never_starts_model_downloads(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    archive = make_archive(tmp_path, monkeypatch)
+    data = tmp_path / 'data'
+    def forbidden(**kwargs):
+        pytest.fail('voice upgrade must not start full model installation')
+    fixture = SimpleNamespace(_lock=threading.RLock(), _threads={}, data_root=data,
+        install_root=data / 'capabilities/video', start=forbidden)
+    assert install.VideoCapabilityInstaller.import_offline(fixture, bundle_id='ordinary_video', offline_root=archive) == 'APPLIED'
+    assert install.VideoCapabilityInstaller.import_offline(fixture, bundle_id='music_video', offline_root=archive) == 'NOOP'
+    assert not (data / 'capabilities/video/.downloads').exists()
