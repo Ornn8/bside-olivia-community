@@ -2993,9 +2993,9 @@ def test_install_fully_verifies_staged_payload_before_writing_ready_marker(
     marker_presence_during_verification: list[bool] = []
     original_verify_staged_tree = video_capability_install._verify_staged_tree
 
-    def observe_verification(root: Path, expected: list[dict[str, object]]) -> None:
+    def observe_verification(root: Path, expected: list[dict[str, object]], **kwargs) -> None:
         marker_presence_during_verification.append((root / ".ready.json").exists())
-        original_verify_staged_tree(root, expected)
+        original_verify_staged_tree(root, expected, **kwargs)
 
     monkeypatch.setattr(
         video_capability_install, "_verify_staged_tree", observe_verification

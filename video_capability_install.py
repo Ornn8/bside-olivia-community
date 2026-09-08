@@ -2770,7 +2770,22 @@ class VideoCapabilityInstaller:
                 raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
             if _is_reparse_point(root):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
-            _verify_staged_tree(root, expected)
+            last_verification_progress = 0.0
+
+            def verification_progress(done: int, total: int) -> None:
+                nonlocal last_verification_progress
+                if self._pause.is_set():
+                    raise InterruptedError
+                now = time.monotonic()
+                if done != total and now - last_verification_progress < 0.5:
+                    return
+                last_verification_progress = now
+                with self._lock:
+                    self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
+                              current=f"校验安装文件 {done / 1048576:.1f} / {total / 1048576:.1f} MiB",
+                              source=source_used)
+
+            _verify_staged_tree(root, expected, workers=4, progress=verification_progress)
             if "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {}):
                 self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
                           current="安装本地运行依赖（无需联网）", source=source_used)
@@ -2997,6 +3012,7 @@ class VideoCapabilityInstaller:
                 destination,
                 strip_components=item.install.strip_components,
                 progress=progress,
+                verify_written=False,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
         file_by_id = {item.identifier: item for item in bundle.files}
@@ -3026,6 +3042,7 @@ class VideoCapabilityInstaller:
                     strip_components=artifact.strip_components,
                     maximum_expanded_bytes=_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES,
                     progress=progress,
+                    verify_written=False,
                 )
                 expected.extend(
                     {
@@ -3431,6 +3448,7 @@ def _extract_zip_safely(
     strip_components: int,
     maximum_expanded_bytes: int | None = None,
     progress: Callable[[str, int, int], None] | None = None,
+    verify_written: bool = True,
 ) -> list[dict[str, object]]:
     if maximum_expanded_bytes is None:
         maximum_expanded_bytes = _MAX_ARCHIVE_EXPANDED_BYTES
@@ -3487,13 +3505,16 @@ def _extract_zip_safely(
                         if progress is not None:
                             progress("extracting", extracted_bytes, total)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
-        verified_bytes = 0
-        for item in expected:
-            if _tree_entry(destination, str(item["path"])) != item:
-                raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
-            verified_bytes += int(item["size_bytes"])
-            if progress is not None:
-                progress("verifying", verified_bytes, total)
+        # Bundle installation verifies the complete on-disk tree before promotion.
+        # Standalone extraction retains its own read-back verification.
+        if verify_written:
+            verified_bytes = 0
+            for item in expected:
+                if _tree_entry(destination, str(item["path"])) != item:
+                    raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
+                verified_bytes += int(item["size_bytes"])
+                if progress is not None:
+                    progress("verifying", verified_bytes, total)
         return expected
     except OSError as exc:
         winerror = getattr(exc, "winerror", None)
