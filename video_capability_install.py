@@ -1493,19 +1493,34 @@ class VideoCapabilityInstaller:
     def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None, diagnostic: str | None = None, failure_details: dict | None = None) -> None:
         self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason, diagnostic, failure_details)
 
+    @staticmethod
+    def _tts_config_failure(component: str, cause: Exception) -> VideoCapabilityError:
+        from runtime.diagnostics.install_failure import install_failure
+        error = VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+        error.failure_details = {**install_failure(cause, stage="activate"), "component": component}
+        return error
+
     def _managed_runtime_path(
         self, environment: Mapping[str, str], key: str, *, directory: bool
     ) -> Path:
+        component = {
+            "OLIVIA_BREEZE_TTS_ROOT": "tts_runtime",
+            "OLIVIA_BREEZE_TTS_MODEL_ROOT": "tts_model",
+            "OLIVIA_BREEZE_TTS_MODEL_LICENSE": "tts_license",
+            "OLIVIA_BREEZE_TTS_PYTHON": "tts_python",
+            "OLIVIA_REPLY_VOICE_REFERENCE": "voice_reference",
+            "OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT": "tts_quality_model",
+        }.get(key, "tts_config")
         raw = environment.get(key)
         if not isinstance(raw, str) or not raw:
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+            raise self._tts_config_failure(component, FileNotFoundError())
         try:
             candidate = _inside(self.install_root, Path(raw))
-        except (OSError, VideoCapabilityError):
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
+        except (OSError, VideoCapabilityError) as exc:
+            raise self._tts_config_failure(component, exc) from None
         if (candidate.is_dir() if directory else candidate.is_file()):
             return candidate
-        raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
+        raise self._tts_config_failure(component, FileNotFoundError())
 
     def _generate_managed_tts_config(
         self,
@@ -1533,13 +1548,16 @@ class VideoCapabilityInstaller:
         )
         try:
             reference = resolve_managed_voice_reference(self.data_root)
-        except (ManagedVoiceReferenceError, OSError):
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
+        except (ManagedVoiceReferenceError, OSError) as exc:
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            if not isinstance(cause, OSError):
+                cause = FileNotFoundError() if str(exc) == "VOICE_REFERENCE_UNAVAILABLE" else ValueError()
+            raise self._tts_config_failure("voice_reference", cause) from None
         try:
             if reference.resolve() != configured_reference.resolve():
-                raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE")
-        except OSError:
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from None
+                raise self._tts_config_failure("voice_reference", ValueError())
+        except OSError as exc:
+            raise self._tts_config_failure("voice_reference", exc) from None
         external_python = self._managed_runtime_path(
             environment, "OLIVIA_BREEZE_TTS_PYTHON", directory=False
         )
@@ -1664,7 +1682,9 @@ class VideoCapabilityInstaller:
             ):
                 raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
         except (OSError, VideoCapabilityError) as exc:
-            raise VideoCapabilityError("VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE") from exc
+            if getattr(exc, "failure_details", None):
+                raise
+            raise self._tts_config_failure("tts_config", exc) from exc
         finally:
             if generated_temporary is not None:
                 try:
@@ -2704,7 +2724,7 @@ class VideoCapabilityInstaller:
                 self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_used)
         except Exception as exc:
             with self._lock:
-                details = getattr(exc, 'failure_details', None) or install_failure(exc, stage=stage, source=source_used, file_id=file_id)
+                details = {'source': source_used, **(getattr(exc, 'failure_details', None) or install_failure(exc, stage=stage, source=source_used, file_id=file_id))}
                 previous = self._status.get(bundle.identifier)
                 reason = (
                     str(exc)

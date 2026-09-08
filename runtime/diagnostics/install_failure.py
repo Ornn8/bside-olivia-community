@@ -7,12 +7,13 @@ import zipfile
 STAGES = frozenset({'prepare', 'download', 'offline_copy', 'verify_file', 'stage_copy', 'extract', 'verify_tree', 'dependencies', 'activate', 'cleanup'})
 SOURCES = frozenset({'auto', 'domestic', 'official', 'local', 'offline-package'})
 KINDS = frozenset({'http', 'network', 'timeout', 'disk_full', 'permission', 'path_too_long', 'file_missing', 'file_locked', 'io', 'archive', 'validation', 'unexpected'})
+COMPONENTS = frozenset({'tts_runtime', 'tts_model', 'tts_license', 'tts_python', 'voice_reference', 'tts_quality_model', 'tts_config'})
 
 def project_install_failure(value):
     if not isinstance(value, dict):
         return {}
     result = {}
-    for name, allowed in [('stage', STAGES), ('source', SOURCES), ('kind', KINDS)]:
+    for name, allowed in [('stage', STAGES), ('source', SOURCES), ('kind', KINDS), ('component', COMPONENTS)]:
         if isinstance(value.get(name), str) and value[name] in allowed:
             result[name] = value[name]
     for name in ('errno', 'winerror', 'http_status'):

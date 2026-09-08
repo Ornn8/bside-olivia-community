@@ -2025,6 +2025,28 @@ def test_managed_tts_config_uses_installed_quality_checkpoint_directory(tmp_path
     assert config["settings"]["provider_options"]["quality_gate_cache_root"] == environment["OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT"]
 
 
+@pytest.mark.parametrize(('key', 'component'), [
+    ('OLIVIA_BREEZE_TTS_PYTHON', 'tts_python'),
+    ('OLIVIA_REPLY_VOICE_REFERENCE', 'voice_reference'),
+    ('OLIVIA_TTS_QUALITY_GATE_CACHE_ROOT', 'tts_quality_model'),
+])
+def test_managed_tts_config_reports_missing_component(tmp_path, monkeypatch, key, component):
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    environment.pop(key)
+    with pytest.raises(VideoCapabilityError, match='VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE') as caught:
+        installer._generate_managed_tts_config(environment)
+    assert caught.value.failure_details == {'stage': 'activate', 'kind': 'file_missing', 'component': component}
+
+
+def test_managed_tts_config_reports_invalid_voice_reference(tmp_path, monkeypatch):
+    installer, environment = _managed_tts_config_fixture(tmp_path, monkeypatch)
+    Path(environment['OLIVIA_REPLY_VOICE_REFERENCE']).write_bytes(b'corrupt')
+    with pytest.raises(VideoCapabilityError) as caught:
+        installer._generate_managed_tts_config(environment)
+    assert caught.value.failure_details['component'] == 'voice_reference'
+    assert caught.value.failure_details['kind'] == 'validation'
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
 def test_managed_tts_config_rejects_generated_directory_junction_without_external_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

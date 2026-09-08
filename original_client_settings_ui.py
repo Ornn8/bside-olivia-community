@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v20"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v21"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1729,12 +1729,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const failureLabels = {http: "下载服务器返回错误", network: "网络连接失败", timeout: "连接或操作超时", disk_full: "磁盘空间不足", permission: "文件访问权限不足", path_too_long: "安装路径过长", file_missing: "所需文件不存在", file_locked: "文件被其他程序占用", io: "文件读写失败", archive: "压缩包无法读取", validation: "文件校验失败", unexpected: "安装步骤异常"};
     const stageLabels = {prepare: "准备安装", download: "下载", offline_copy: "读取离线包", verify_file: "校验文件", stage_copy: "复制文件", extract: "解压", verify_tree: "校验安装目录", dependencies: "安装运行依赖", activate: "启用组件", cleanup: "整理缓存"};
+    const failedComponentLabels = {tts_runtime: "语音运行目录", tts_model: "语音模型", tts_license: "语音模型许可文件", tts_python: "语音 Python 环境", voice_reference: "音色参考文件", tts_quality_model: "语音校验模型", tts_config: "语音配置文件"};
     for (const bundle of bundles) {
       const detail = bundle.failure_details;
       if (bundle.state !== "failed" || !detail || !failureLabels[detail.kind]) continue;
       const component = bundle.id === "ordinary_video" ? "说话视频" : "音乐视频";
       const http = Number.isInteger(detail.http_status) ? `（HTTP ${detail.http_status}）` : "";
-      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
+      const failedComponent = failedComponentLabels[detail.component];
+      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"}${failedComponent ? "（" + failedComponent + "）" : ""} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
     }
     item.append(sourceControls);
     const runtimeStatusText = text(

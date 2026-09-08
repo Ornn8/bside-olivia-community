@@ -188,6 +188,15 @@ def test_install_failure_details_survive_zip_without_raw_exception():
         assert b'private' not in raw
 
 
+def test_tts_install_component_survives_support_bundle():
+    source = _source()
+    source['health']['checks']['video_ordinary'] = {'state': 'failed', 'failure_details': {
+        'stage': 'activate', 'component': 'voice_reference', 'kind': 'file_missing'}}
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        details = json.loads(archive.read('health.json'))['checks']['video_ordinary']['failure_details']
+    assert details == {'stage': 'activate', 'component': 'voice_reference', 'kind': 'file_missing'}
+
+
 def test_memory_initialization_stage_survives_support_bundle():
     source = _source()
     code = 'MEM0_INIT_BACKEND_VECTOR_STORE_VALUE'

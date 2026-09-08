@@ -725,6 +725,40 @@ def test_rhythm_state_and_its_interpretation_leave_budget_together(cost_counter)
     assert limited.budget_report.used_units == cost_counter(limited.system_content) + cost_counter(kwargs["user_input"])
 
 
+@pytest.mark.parametrize("stamp", [
+    "2026-09-08T07:02:00+08:00", "2026-09-07T23:02:00+00:00", "2026-09-08T08:02:00+09:00",
+])
+def test_user_goodnight_keeps_morning_clock_and_previous_character_reply_in_prompt(stamp):
+    from runtime.private_world.life_rhythm import RHYTHM_FACT_AUTHORITY, rhythm
+    from runtime.reply.recent_correspondence import recent_correspondence
+
+    now = datetime.fromisoformat(stamp)
+    query = "我想了你一会儿，决定跟你说声晚安，才睡。"
+    previous = "早，已经起来泡茶了，待会儿有早课。"
+    history = recent_correspondence([{
+        "letter_id": "morning", "reply_revision": 1, "letter_status": "COMPLETED",
+        "content": "早安，昨晚睡得怎么样？", "reply_text": previous,
+        "private_world_occurred_at": "2026-09-07T22:53:00+00:00",
+    }], query=query)
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(now))
+    assembled = assemble_persona(_style_snapshot(), context, user_input=query,
+        history=(UntrustedFragment("letters.recent", history),),
+        evidence_summaries=(UntrustedFragment("linli.rhythm", json.dumps(rhythm(now, []), ensure_ascii=False)),),
+        max_units=10_000)
+    system = assembled.system_content
+    mode = json.loads(re.search(r"<mode_constraints>\s*(.*?)\s*</mode_constraints>", system, re.S).group(1))
+    assert mode["character_local_time"] == "2026-09-08T07:02:00+08:00"
+    assert previous in system
+    assert "2026-09-08T07:02:00+08:00" in system
+    assert RHYTHM_FACT_AUTHORITY in system
+    assert assembled.budget_report.dropped_ids == ()
+    assert assembled.to_messages()[-1]["content"] == query
+
+    # The timezone anchor is required even if optional life evidence is absent.
+    bare = assemble_persona(_style_snapshot(), context, user_input=query, max_units=10_000)
+    assert '"character_local_time":"2026-09-08T07:02:00+08:00"' in bare.system_content
+
+
 def test_style_block_drops_after_evidence_and_history() -> None:
     context = ReplyContext.create(
         ReplyMode.TEXT_LETTER,
