@@ -184,7 +184,7 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
     assert request["cfg_scale"] == 1.0
     assert request["model_variant"] == "int8_hybrid"
     assert request["max_new_tokens"] == 650
-    assert request["quality_gate_required"] is True
+    assert request["quality_gate_required"] is False
     assert request["quality_forbidden_text"] == request["instruction"]
 
     limited = TTSConfig.from_mapping(
@@ -391,12 +391,10 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
 
     assert result.provider == "breeze_tts2"
     assert result.duration_seconds == 43.0
-    assert result.quality_report is not None
-    assert result.quality_report["passed"] is True
+    assert result.quality_report is None
     assert output.is_file()
     assert [name for name, _request in observed] == [
         "external_breeze_worker.py",
-        "external_audio_quality_worker.py",
     ]
     synthesis_request = observed[0][1]
     assert synthesis_request["text"] == _plan().spoken_text

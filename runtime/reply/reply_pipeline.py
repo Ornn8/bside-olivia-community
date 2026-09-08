@@ -20,7 +20,6 @@ from runtime.reply.reply_quality_gate import (
     DeliveryRepairDisposition,
     ReviewerPort,
     RewriterPort,
-    run_reply_quality_gate,
 )
 from runtime.reply.reply_reviewer import (
     NullReviewer,
@@ -178,45 +177,13 @@ class ReplyPipeline:
                 error_code=candidate.error_code,
                 retryable=candidate.retryable,
             )
-        gate = await asyncio.to_thread(
-            run_reply_quality_gate,
-            candidate.text,
-            context,
-            reviewer=self.reviewer,
-            rewriter=self.rewriter,
-            generation_messages=_generation_messages(prepared),
-            trusted_evidence=preparation.trusted_evidence,
-        )
-        if not gate.accepted:
-            repairable_text = (
-                gate.text
-                if gate.delivery_repair_disposition
-                is DeliveryRepairDisposition.VIDEO_LENGTH
-                else ""
-            )
-            return PipelineResult(
-                candidate.request_id,
-                ReplyState.FAILED,
-                text=repairable_text,
-                error_code=gate.error_code or "REPLY_QUALITY_BLOCKED",
-                quality_status=gate.status.value,
-                violation_codes=gate.violation_codes,
-                reviewer_calls=gate.reviewer_calls,
-                rewrite_calls=gate.rewrite_calls,
-                delivery_repair_disposition=(
-                    gate.delivery_repair_disposition
-                ),
-            )
         return PipelineResult(
             candidate.request_id,
             ReplyState.COMPLETED,
-            text=gate.text,
-            quality_status=gate.status.value,
-            violation_codes=gate.violation_codes,
-            reviewer_calls=gate.reviewer_calls,
-            rewrite_calls=gate.rewrite_calls,
-            delivery_repair_disposition=gate.delivery_repair_disposition,
+            text=candidate.text,
+            quality_status="not_checked",
         )
+
 
 
 def _prepare_generation_request(

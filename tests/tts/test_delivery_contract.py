@@ -142,7 +142,7 @@ def test_llm_voice_plan_builds_one_non_spoken_instruct2_request() -> None:
     )
     assert request["performance_control_mode"] == "single_pass_llm_short_instruct"
     assert request["duration_target_seconds"] == [40.0, 50.0]
-    assert request["max_attempts"] == 3
+    assert request["max_attempts"] == 1
     assert "blocks" not in request
     assert "reference_text" not in request
 
@@ -658,7 +658,7 @@ def test_quality_runtime_preflight_enforces_pinned_distribution_version(
     assert "20250625" in observed[0][-1]
 
 
-def test_three_rejected_candidates_never_replace_existing_output(
+def test_delivery_generates_once_without_content_review(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -702,14 +702,14 @@ def test_three_rejected_candidates_never_replace_existing_output(
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
 
-    with pytest.raises(DeliveryAudioError, match="TTS_CONTENT_GATE_REJECTED"):
-        render_delivery_wav(config, plan, output)
+    result = render_delivery_wav(config, plan, output)
 
-    assert calls == {"tts": 3, "quality": 3}
-    assert output.read_bytes() == b"existing-output"
+    assert calls == {"tts": 1, "quality": 0}
+    assert result.quality_report is None
+    assert output.read_bytes().startswith(b"RIFF")
 
 
-def test_short_audio_still_runs_content_gate_and_preserves_output(
+def test_delivery_does_not_regenerate_for_duration(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -754,14 +754,14 @@ def test_short_audio_still_runs_content_gate_and_preserves_output(
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
 
-    with pytest.raises(DeliveryAudioError, match="TTS_CONTENT_GATE_REJECTED"):
-        render_delivery_wav(config, plan, output)
+    result = render_delivery_wav(config, plan, output)
 
-    assert calls == {"tts": 3, "quality": 3}
-    assert output.read_bytes() == b"existing-output"
+    assert calls == {"tts": 1, "quality": 0}
+    assert result.quality_report is None
+    assert output.read_bytes().startswith(b"RIFF")
 
 
-def test_quality_request_write_failure_is_sanitized_and_atomic(
+def test_delivery_does_not_write_a_quality_request(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -803,9 +803,6 @@ def test_quality_request_write_failure_is_sanitized_and_atomic(
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
 
-    with pytest.raises(DeliveryAudioError) as exc_info:
-        render_delivery_wav(config, plan, output)
-
-    assert str(exc_info.value) == "TTS_CONTENT_GATE_UNAVAILABLE"
-    assert "private-path" not in str(exc_info.value)
-    assert output.read_bytes() == b"existing-output"
+    result = render_delivery_wav(config, plan, output)
+    assert result.quality_report is None
+    assert output.read_bytes().startswith(b"RIFF")

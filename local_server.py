@@ -75,7 +75,6 @@ from music_reply import (
 from runtime.reply.reply_media import ReplyMediaError, render_reply_video
 from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
-    build_ordinary_video_repair_content,
     ordinary_video_reply_length_ok,
 )
 from voice_direction import (
@@ -4331,27 +4330,6 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
             exact_mode,
             idempotency_key=idempotency_key,
         )
-        from runtime.reply.reply_quality_gate import DeliveryRepairDisposition
-
-        if (
-            exact_mode
-            in {
-                ReplyMode.SPOKEN_VIDEO.value,
-                ReplyMode.MUSICAL_VIDEO.value,
-            }
-            and result.text
-            and not ordinary_video_reply_length_ok(result.text)
-            and result.delivery_repair_disposition
-            is DeliveryRepairDisposition.VIDEO_LENGTH
-        ):
-            result = await _run_reply_pipeline_for_letter(
-                letter,
-                content,
-                exact_mode,
-                idempotency_key=idempotency_key,
-                reply_input_override=build_ordinary_video_repair_content(result.text),
-                request_suffix=":duration-repair",
-            )
     except asyncio.CancelledError:
         letter["letter_status"] = "FAILED"
         letter["error_code"] = "LLM_INTERRUPTED"

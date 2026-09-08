@@ -114,131 +114,25 @@ def test_pipeline_accepts_clean_candidate_with_disabled_reviewer() -> None:
 
     assert result.state is ReplyState.COMPLETED
     assert result.text == "clean canonical reply"
-    assert result.quality_status == "accepted_degraded"
+    assert result.quality_status == "not_checked"
     assert result.rewrite_calls == 0
 
 
-def test_pipeline_exposes_only_rewritten_canonical_text() -> None:
-    rewriter = FixedRewriter("safe canonical reply")
-    pipeline = ReplyPipeline(
-        CompletedOrchestrator("candidate <CONTROL>private</CONTROL>"),
-        reviewer=PassingReviewer(),
-        rewriter=rewriter,
-    )
-
-    result = asyncio.run(pipeline.run(object(), _context()))
-
-    assert result.state is ReplyState.COMPLETED
-    assert result.text == "safe canonical reply"
-    assert "candidate" not in repr(result)
-    assert rewriter.calls == 1
-
-
-def test_pipeline_blocks_candidate_when_single_rewrite_fails() -> None:
-    pipeline = ReplyPipeline(
-        CompletedOrchestrator("<CONTROL>private</CONTROL>"),
-        reviewer=PassingReviewer(),
-        rewriter=UnavailableRewriter(),
-    )
-
-    result = asyncio.run(pipeline.run(object(), _context()))
-
-    assert result.state is ReplyState.FAILED
-    assert result.text == ""
-    assert result.error_code == "REWRITE_FAILED"
-    assert result.quality_status == "blocked"
-    assert result.violation_codes == ("INTERNAL_CONTROL_MARKUP",)
-
-
-def test_unresolved_letter_rewrite_cannot_become_canonical_text() -> None:
-    unresolved = ReviewResult(
-        ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
-        (ReviewerViolation("STYLE_DRIFT", "soft", 0, 4),),
-        ReviewerScores(65, 95, 95, 65), IntimacyRequest.NONE, (),
-    )
-    rewriter = FixedRewriter("still unresolved")
-    pipeline = ReplyPipeline(
-        CompletedOrchestrator("initial candidate"),
-        reviewer=SequencedReviewer(unresolved, unresolved),
-        rewriter=rewriter,
-    )
-    result = asyncio.run(pipeline.run(object(), _context()))
-    assert result.state is ReplyState.FAILED
-    assert result.text == ""
-    assert result.error_code == "REPLY_QUALITY_BLOCKED"
-    assert result.violation_codes == ("STYLE_DRIFT",)
-    assert rewriter.calls == 1
-
-
-def test_pipeline_preserves_only_length_blocked_video_copy_for_duration_repair() -> None:
-    pipeline = ReplyPipeline(
-        CompletedOrchestrator("太短。"),
-        reviewer=PassingReviewer(),
-        rewriter=UnavailableRewriter(),
-    )
-
-    result = asyncio.run(pipeline.run(object(), _context(ReplyMode.SPOKEN_VIDEO)))
-
-    assert result.state is ReplyState.FAILED
-    assert result.text == "太短。"
-    assert result.error_code == "REWRITE_FAILED"
-    assert result.violation_codes == ("VIDEO_REPLY_LENGTH_OUT_OF_RANGE",)
-    assert (
-        result.delivery_repair_disposition
-        is DeliveryRepairDisposition.VIDEO_LENGTH
-    )
-
-
-@pytest.mark.parametrize(
-    ("severity", "expected_text", "expected_disposition"),
-    (
-        (
-            "soft",
-            "Too short.",
-            DeliveryRepairDisposition.VIDEO_LENGTH,
-        ),
-        ("hard", "", DeliveryRepairDisposition.NONE),
-    ),
-)
-def test_pipeline_forwards_only_typed_video_length_repair_candidates(
-    severity: str,
-    expected_text: str,
-    expected_disposition: DeliveryRepairDisposition,
-) -> None:
-    candidate = "Too short."
-    passing = PassingReviewer().review(candidate, _context())
-    finding = ReviewResult(
-        ReviewStatus.COMPLETED,
-        ReviewVerdict.REWRITE,
-        (
-            ReviewerViolation(
-                "MEMORY_FABRICATION",
-                severity,
-                0,
-                len(candidate),
-            ),
-        ),
-        ReviewerScores(90, 30, 90, 90),
-        IntimacyRequest.NONE,
-        (),
-    )
+@pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+@pytest.mark.parametrize("candidate", ["太短。", "initial candidate"])
+def test_pipeline_publishes_first_candidate_without_review_or_rewrite(mode, candidate):
+    rewriter = FixedRewriter("replacement must not be used")
     pipeline = ReplyPipeline(
         CompletedOrchestrator(candidate),
-        reviewer=SequencedReviewer(passing, finding),
-        rewriter=FixedRewriter(candidate),
+        reviewer=PassingReviewer(),
+        rewriter=rewriter,
     )
-
-    result = asyncio.run(
-        pipeline.run(object(), _context(ReplyMode.MUSICAL_VIDEO))
-    )
-
-    assert result.state is ReplyState.FAILED
-    assert result.text == expected_text
-    assert result.violation_codes == (
-        "VIDEO_REPLY_LENGTH_OUT_OF_RANGE",
-        "MEMORY_FABRICATION",
-    )
-    assert result.delivery_repair_disposition is expected_disposition
+    result = asyncio.run(pipeline.run(object(), _context(mode)))
+    assert result.state is ReplyState.COMPLETED
+    assert result.text == candidate
+    assert result.quality_status == "not_checked"
+    assert result.reviewer_calls == result.rewrite_calls == rewriter.calls == 0
+    assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
 
 
 class RecordingProvider:
@@ -694,7 +588,7 @@ def test_explicitly_disabled_persona_v2_preserves_legacy_provider_path() -> None
     assert provider.messages[-1]["content"] == "synthetic legacy letter"
 
 
-def test_letter_pipeline_exposes_only_selected_linli_history_to_reviewer(
+def test_letter_pipeline_does_not_send_history_to_disabled_reviewer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The production Letter path must not treat prior user text as Linli evidence."""
@@ -737,16 +631,9 @@ def test_letter_pipeline_exposes_only_selected_linli_history_to_reviewer(
     )
 
     assert result.state is ReplyState.COMPLETED
-    identity = next(
-        request
-        for request in review_gateway.requests
-        if request["layer"] == "identity_boundary"
-    )
-    assert identity["character_reply_history"] == (
-        "我曾在回信里说，下雨时会把窗户留一条缝。"
-    )
-    assert "用户曾说" not in str(identity["character_reply_history"])
-    assert "没有可靠角色来源" not in str(identity["character_reply_history"])
+    assert review_gateway.requests == []
+    assert generation.calls == 1
+    assert "<untrusted_history>" in str(generation.messages)
 
 
 def test_letter_pipeline_uses_empty_character_history_without_reliable_actor(
@@ -789,12 +676,8 @@ def test_letter_pipeline_uses_empty_character_history_without_reliable_actor(
     )
 
     assert result.state is ReplyState.COMPLETED
-    identity = next(
-        request
-        for request in review_gateway.requests
-        if request["layer"] == "identity_boundary"
-    )
-    assert identity["character_reply_history"] == ""
+    assert review_gateway.requests == []
+    assert generation.calls == 1
 
 
 class FakeTriage:

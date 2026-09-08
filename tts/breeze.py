@@ -238,13 +238,13 @@ class BreezeTTS2Provider:
             "depth_top_k": int(options.get("depth_top_k", 50)),
             "depth_top_p": float(options.get("depth_top_p", 1.0)),
             "gain_db": max(-1.5, min(1.5, gain_db)),
-            "quality_gate_required": True,
+            "quality_gate_required": False,
             "quality_forbidden_text": instruction,
             "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
             "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
             "quality_max_cer": 0.18,
             "duration_target_seconds": [40.0, 50.0],
-            "max_attempts": 3,
+            "max_attempts": 1,
             "performance_control_mode": "single_pass_llm_breeze_direction",
         }
 
