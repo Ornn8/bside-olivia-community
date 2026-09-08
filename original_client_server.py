@@ -569,6 +569,10 @@ def _diagnostic_source(
                     installer._lock.release()
                 for name, snapshot in snapshots.items():
                     entry = {"state": state(snapshot.get("state"))}
+                    from runtime.diagnostics.install_failure import project_install_failure
+                    details = project_install_failure(snapshot.get('failure_details'))
+                    if details:
+                        entry['failure_details'] = details
                     reason = code(snapshot.get("reason_code"))
                     if reason:
                         entry["error_code"] = reason
