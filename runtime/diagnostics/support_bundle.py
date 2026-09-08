@@ -353,6 +353,12 @@ def _project_media_tail(value: object) -> bytes:
                 chain = detail.get('exception_types')
                 if isinstance(chain, str):
                     record['exception_types'] = [name for name in chain.split('>')[:8] if name in exceptions]
+                codes = detail.get('exception_codes')
+                if isinstance(codes, str):
+                    record['exception_codes'] = [
+                        code.strip() for code in codes.split('>')[:8]
+                        if _CODE_RE.fullmatch(code.strip())
+                    ]
                 category = detail.get('stderr_category')
                 if isinstance(category, str) and category in categories:
                     record['stderr_category'] = category

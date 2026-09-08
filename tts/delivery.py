@@ -27,6 +27,25 @@ class DeliveryAudioError(RuntimeError):
     """Stable ordinary-reply audio rendering failure."""
 
 
+def _record_worker_failure(environment, error_code, *, returncode=None, stderr=None, timed_out=False, start_failed=False):
+    from runtime.media.latentsync_reply import _process_diagnostic
+    from runtime.media.media_paths import configured_media_path
+
+    root = configured_media_path(environment, "OLIVIA_LOCAL_DATA_ROOT")
+    if root is None:
+        return
+    diagnostic = _process_diagnostic(returncode=returncode, stderr=stderr,
+                                     timed_out=timed_out, start_failed=start_failed)
+    try:
+        log = root / "logs" / "media-provider.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"timestamp": int(time.time()), "error_code": error_code,
+                                     "diagnostic": diagnostic}) + "\n")
+    except OSError:
+        pass
+
+
 def _run_breeze_worker(command, *, timeout, check=False, progress_timeout=300.0, **kwargs):
     """Reap a stalled worker without treating slow, advancing inference as stalled."""
     status_path = Path(command[command.index("--status") + 1])
@@ -435,19 +454,31 @@ def render_delivery_wav(
                 command.extend(("--status", str(worker_status_path)))
             try:
                 run = _run_breeze_worker if config.provider == "breeze_tts2" else subprocess.run
-                completed = run(
-                    command,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=environment,
-                    check=False,
-                    timeout=timeout_seconds,
-                )
+                with tempfile.TemporaryFile() as stderr_file:
+                    completed = run(
+                        command,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=stderr_file,
+                        env=environment,
+                        check=False,
+                        timeout=timeout_seconds,
+                    )
+                    stderr_file.seek(0, os.SEEK_END)
+                    stderr_file.seek(max(0, stderr_file.tell() - 65536))
+                    stderr_tail = stderr_file.read(65536)
+            except DeliveryAudioError:
+                _record_worker_failure(environment, "TTS_GENERATION_STALLED", timed_out=True)
+                raise
             except (OSError, subprocess.TimeoutExpired) as exc:
+                _record_worker_failure(environment, "TTS_EXTERNAL_PROCESS_UNAVAILABLE",
+                                       timed_out=isinstance(exc, subprocess.TimeoutExpired),
+                                       start_failed=isinstance(exc, OSError))
                 raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_UNAVAILABLE") from exc
             if completed.returncode != 0 or not temporary_output.is_file():
+                _record_worker_failure(environment, "TTS_EXTERNAL_PROCESS_FAILED",
+                                       returncode=completed.returncode, stderr=stderr_tail)
                 raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_FAILED")
 
         def run_quality_gate(payload: dict[str, object]) -> dict[str, object]:
