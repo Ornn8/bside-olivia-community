@@ -125,6 +125,18 @@ def _contents(bundle: bytes) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+def test_install_failure_details_survive_zip_without_raw_exception():
+    source = _source()
+    source['health']['checks']['video_ordinary'] = {'state': 'failed', 'failure_details': {
+        'stage': 'download', 'source': 'official', 'file_id': 'weights', 'kind': 'http',
+        'http_status': 403, 'message': 'private token and path', 'url': 'https://private'}}
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('health.json')
+        details = json.loads(raw)['checks']['video_ordinary']['failure_details']
+        assert details['http_status'] == 403 and details['file_id'] == 'weights'
+        assert b'private' not in raw
+
+
 @pytest.mark.parametrize("bad", [-1, True, 10**15 + 1, "private-path"])
 def test_video_progress_rejects_non_count_values(bad):
     source = _source()

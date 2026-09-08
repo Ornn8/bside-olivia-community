@@ -309,6 +309,10 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/midi/batchGetResult": _route(["GET"], "music.midi_jobs", read_only=True),
     "/toy/midi/cancelGenerate": _route(["POST"], "music.midi_jobs"),
     "/toy/midi/deleteJob": _route(["POST"], "music.midi_jobs"),
+    "/toy/local-songs": _route(["GET"], "music.local_library"),
+    "/toy/local-songs/import": _route(["POST"], "music.local_library"),
+    "/toy/local-songs/rename": _route(["POST"], "music.local_library"),
+    "/toy/local-songs/delete": _route(["POST"], "music.local_library"),
     "/toy/midi/importShareCode": _route(
         ["POST"],
         "music.midi_import",

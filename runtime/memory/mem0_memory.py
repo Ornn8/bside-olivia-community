@@ -229,9 +229,15 @@ class Mem0AdapterError(RuntimeError):
 
 
 def _initialization_error_code(error: BaseException) -> str:
+    if getattr(error, 'winerror', None) in (32, 33):
+        return "MEM0_STORAGE_LOCKED"
+    if getattr(error, 'winerror', None) == 206 or getattr(error, 'errno', None) == errno.ENAMETOOLONG:
+        return "MEM0_STORAGE_PATH_TOO_LONG"
+    if isinstance(error, FileNotFoundError):
+        return "MEM0_INITIALIZATION_FILE_MISSING"
     if isinstance(error, PermissionError):
         return "MEM0_STORAGE_PERMISSION_DENIED"
-    if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+    if isinstance(error, OSError) and (error.errno == errno.ENOSPC or getattr(error, 'winerror', None) == 112):
         return "MEM0_STORAGE_FULL"
     if isinstance(error, RuntimeError) and str(error).startswith("Storage folder ") and (
         " is already accessed by another instance of Qdrant client." in str(error)

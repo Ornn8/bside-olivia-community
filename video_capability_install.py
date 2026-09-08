@@ -375,6 +375,7 @@ class VideoBundleStatus:
     source: str | None = None
     reason_code: str | None = None
     diagnostic_code: str | None = None
+    failure_details: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -392,6 +393,8 @@ class VideoBundleStatus:
             value["reason_code"] = self.reason_code
         if self.diagnostic_code:
             value["diagnostic_code"] = self.diagnostic_code
+        if self.failure_details:
+            value["failure_details"] = dict(self.failure_details)
         return value
 
 
@@ -1487,8 +1490,8 @@ class VideoCapabilityInstaller:
             }
         self._report_runtime_progress("checking", checked_bytes, total_bytes)
 
-    def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None, diagnostic: str | None = None) -> None:
-        self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason, diagnostic)
+    def _set(self, bundle: VideoBundle, state: VideoCapabilityState, downloaded: int, *, current: str | None = None, source: str | None = None, reason: str | None = None, diagnostic: str | None = None, failure_details: dict | None = None) -> None:
+        self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, downloaded, sum(item.size_bytes for item in bundle.files), current, source, reason, diagnostic, failure_details)
 
     def _managed_runtime_path(
         self, environment: Mapping[str, str], key: str, *, directory: bool
@@ -2588,8 +2591,10 @@ class VideoCapabilityInstaller:
         return "APPLIED"
 
     def _run(self, bundle: VideoBundle, source_mode: str, offline_root: Path | None) -> None:
+        from runtime.diagnostics.install_failure import install_failure
         root = self._staging_root(bundle)
         source_used = "offline-package" if offline_root is not None else source_mode
+        stage, file_id = 'prepare', None
         try:
             if bundle.identifier == "ordinary_video" and offline_root is not None:
                 parent = offline_root.parent if offline_root.is_file() else offline_root
@@ -2605,6 +2610,8 @@ class VideoCapabilityInstaller:
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
             downloaded = 0
             for item in bundle.files:
+                file_id = item.identifier
+                stage = 'offline_copy' if offline_root is not None else 'download'
                 if self._pause.is_set():
                     raise InterruptedError
                 self._set(bundle, VideoCapabilityState.DOWNLOADING, downloaded, current=item.relative_path, source=source_used)
@@ -2626,7 +2633,9 @@ class VideoCapabilityInstaller:
                             source=source,
                         ),
                     )
+                stage = 'verify_file'
                 _verify(cached, item)
+                stage = 'stage_copy'
                 target = _inside(root, root / item.relative_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(cached, target)
@@ -2641,7 +2650,9 @@ class VideoCapabilityInstaller:
             ]
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
                       current="解压运行环境", source=source_used)
+            stage, file_id = 'extract', None
             expected.extend(self._assemble_archives(root, bundle))
+            stage = 'verify_tree'
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
                       current="校验安装文件", source=source_used)
             final = self._final_root(bundle)
@@ -2653,7 +2664,9 @@ class VideoCapabilityInstaller:
             if "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {}):
                 self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
                           current="安装本地运行依赖（无需联网）", source=source_used)
+            stage = 'dependencies'
             self._bootstrap_breeze_runtime(root, bundle)
+            stage = 'activate'
             (root / ".ready.json").write_text(
                 json.dumps(
                     {
@@ -2665,6 +2678,7 @@ class VideoCapabilityInstaller:
                 encoding="utf-8",
             )
             self._promote_directory(root, final, refresh_environment=True)
+            stage = 'cleanup'
             for artifact in bundle.runtime_artifacts:
                 for part_id in artifact.part_ids:
                     cached_part = _inside(
@@ -2690,13 +2704,20 @@ class VideoCapabilityInstaller:
                 self._set(bundle, VideoCapabilityState.PAUSED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.PAUSED, 0, 0)).downloaded_bytes, source=source_used)
         except Exception as exc:
             with self._lock:
+                details = getattr(exc, 'failure_details', None) or install_failure(exc, stage=stage, source=source_used, file_id=file_id)
+                previous = self._status.get(bundle.identifier)
                 reason = (
                     str(exc)
                     if isinstance(exc, VideoCapabilityError)
                     else "VIDEO_BUNDLE_INSTALL_FAILED"
                 )
                 self._set(bundle, VideoCapabilityState.FAILED, self._status.get(bundle.identifier, VideoBundleStatus(bundle.identifier, VideoCapabilityState.FAILED, 0, 0)).downloaded_bytes, source=source_used, reason=reason,
-                          diagnostic=exc.diagnostic_code if isinstance(exc, _BreezeRuntimeInstallError) else None)
+                          diagnostic=exc.diagnostic_code if isinstance(exc, _BreezeRuntimeInstallError) else None,
+                          current=previous.current_file if previous else None,
+                          failure_details=details)
+                if details.get('source'):
+                    from dataclasses import replace
+                    self._status[bundle.identifier] = replace(self._status[bundle.identifier], source=details['source'])
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -3193,6 +3214,9 @@ class VideoCapabilityInstaller:
         progress: Callable[[int, str], None] | None = None,
     ) -> str:
         sources = [source_mode] if source_mode == "official" else ["domestic", "official"]
+        from runtime.diagnostics.install_failure import install_failure
+        failure = VideoCapabilityError("VIDEO_DOWNLOAD_FAILED")
+        failure.failure_details = {'stage': 'download', 'kind': 'validation', 'file_id': item.identifier}
         part = target.with_name(target.name + ".part")
         for source_index, source_id in enumerate(sources):
             url = item.sources.get(source_id)
@@ -3224,11 +3248,14 @@ class VideoCapabilityInstaller:
                 return source_id
             except InterruptedError:
                 raise
-            except (HTTPError, URLError, OSError, TimeoutError, VideoCapabilityError):
+            except (HTTPError, URLError, OSError, TimeoutError, VideoCapabilityError) as exc:
+                failure.failure_details = install_failure(exc, stage='download', source=source_id, file_id=item.identifier)
+                if isinstance(exc, VideoCapabilityError):
+                    failure.failure_details['kind'] = 'validation'
                 if any(item.sources.get(candidate) for candidate in sources[source_index + 1 :]):
                     part.unlink(missing_ok=True)
                 continue
-        raise VideoCapabilityError("VIDEO_DOWNLOAD_FAILED")
+        raise failure from None
 
 
 def _verify_and_true(path: Path, item: VideoFile) -> bool:

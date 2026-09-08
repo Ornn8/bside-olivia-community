@@ -126,6 +126,10 @@ def _project_health(value: object) -> dict[str, object]:
                 raise _invalid()
             entry["stage"] = check["stage"]
         if name in {"video_ordinary", "video_music", "video_runtime"}:
+            from runtime.diagnostics.install_failure import project_install_failure
+            details = project_install_failure(check.get('failure_details'))
+            if details:
+                entry['failure_details'] = details
             diagnostic = check.get("diagnostic_code")
             if isinstance(diagnostic, str) and diagnostic in BREEZE_INSTALL_DIAGNOSTIC_CODES:
                 entry["diagnostic_code"] = diagnostic

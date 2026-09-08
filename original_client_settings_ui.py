@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v19"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v20"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1727,6 +1727,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (hardwareMessage) {
       item.append(text("div", hardwareMessage, "text-text-secondary text-caption-m font-regular"));
     }
+    const failureLabels = {http: "下载服务器返回错误", network: "网络连接失败", timeout: "连接或操作超时", disk_full: "磁盘空间不足", permission: "文件访问权限不足", path_too_long: "安装路径过长", file_missing: "所需文件不存在", file_locked: "文件被其他程序占用", io: "文件读写失败", archive: "压缩包无法读取", validation: "文件校验失败", unexpected: "安装步骤异常"};
+    const stageLabels = {prepare: "准备安装", download: "下载", offline_copy: "读取离线包", verify_file: "校验文件", stage_copy: "复制文件", extract: "解压", verify_tree: "校验安装目录", dependencies: "安装运行依赖", activate: "启用组件", cleanup: "整理缓存"};
+    for (const bundle of bundles) {
+      const detail = bundle.failure_details;
+      if (bundle.state !== "failed" || !detail || !failureLabels[detail.kind]) continue;
+      const component = bundle.id === "ordinary_video" ? "说话视频" : "音乐视频";
+      const http = Number.isInteger(detail.http_status) ? `（HTTP ${detail.http_status}）` : "";
+      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
+    }
     item.append(sourceControls);
     const runtimeStatusText = text(
       "div",
@@ -2067,6 +2076,192 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         renderPrivateWorldPanel(panels.privateWorld, {state: "available"}),
       ]));
     }
+  };
+
+  // Local performance import/catalog design: 芙桃, used with permission.
+  const localSongRequest = async (action = "", body = null) => {
+    const response = await fetch(new URL("/toy/local-songs" + action, apiBase), {
+      method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",
+      headers: {"Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE},
+      ...(body ? {body: JSON.stringify(body)} : {}),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || "LOCAL_SONG_UNAVAILABLE");
+    return result.data;
+  };
+  const refreshLocalSongCatalog = async () => {
+    const catalog = window.__oliviaLocalSongCatalog;
+    if (!catalog) return;
+    const result = await localSongRequest();
+    const imported = result.songs.map((song) => {
+      const url = new URL(`/toy/local-songs/media/${song.id}.mp4`, apiBase).href;
+      return {
+        id: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)),
+        itemId: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)), itemType: 3, name: song.name,
+        nameKey: "local_" + song.id, styleType: "Local Performance",
+        styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
+        videoUrl: url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: "",
+        duration: song.duration, videoDuration: song.duration, audioDuration: song.duration,
+        videoByTodView: [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: Math.round(song.duration)}], oliviaLocal: true,
+      };
+    });
+    if (window.cefViewQuery && imported.length) {
+      const native = (action, data) => new Promise((resolve, fail) => {
+        const timer = setTimeout(() => fail(new Error("LOCAL_SONG_NATIVE_TIMEOUT")), 15000);
+        window.cefViewQuery({request: JSON.stringify({action, data}),
+          onSuccess: (raw) => {
+            clearTimeout(timer);
+            try { resolve(typeof raw === "string" && raw ? JSON.parse(raw) : raw); }
+            catch (error) { fail(error); }
+          },
+          onFailure: () => { clearTimeout(timer); fail(new Error("LOCAL_SONG_NATIVE_FAILED")); },
+        });
+      });
+      const check = () => native("checkLocalSongs", {songs: imported.map((song, index) => ({...song, eventId: String(index + 1)}))});
+      const status = await check();
+      const missing = imported.filter((song) => !status.songs?.some((item) => String(item.songId) === song.id && item.exist));
+      if (missing.length) {
+        await native("startSongDownload", {songs: missing});
+        let ready = false;
+        for (let attempt = 0; attempt < 120; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const current = await check();
+          if (imported.every((song) => current.songs?.some((item) => String(item.songId) === song.id && item.exist))) { ready = true; break; }
+        }
+        if (!ready) throw new Error("LOCAL_SONG_NATIVE_CACHE_NOT_READY");
+      }
+    }
+    catalog.songs.value = [...catalog.songs.value.filter((song) => !song.oliviaLocal), ...imported];
+    catalog.musicStyles.value = [...catalog.musicStyles.value.filter((style) => style.type !== "Local Performance"),
+      {type: "Local Performance", displayName: "本地演奏"}];
+  };
+  window.addEventListener("olivia-local-catalog-ready", () => {
+    refreshLocalSongCatalog().catch(() => {});
+  });
+  let localSongImportPending = null;
+  const renderLocalSongs = async (panel) => {
+    panel.replaceChildren();
+    panel.append(text("h3", "本地演奏", "text-text-title text-title-m"),
+      text("p", "恢复以前的 MIDI 演奏视频，或导入本地视频到曲库。", "text-text-secondary"));
+    const path = document.createElement("input");
+    path.type = "text";
+    path.placeholder = "粘贴视频文件或演奏文件夹的完整路径";
+    path.setAttribute("aria-label", "本地演奏路径");
+    Object.assign(path.style, {width: "100%", padding: "10px", background: "#111827", color: "#fff", border: "1px solid #6b7280", borderRadius: "8px"});
+    const state = text("p", "支持 MP4、MOV、MKV 等视频；每个原版 midi_* 文件夹恢复主视频。", "text-text-secondary");
+    state.setAttribute("aria-live", "polite");
+    const list = stack();
+    const reload = async () => {
+      const result = await localSongRequest();
+      list.replaceChildren();
+      for (const song of result.songs) {
+        const row = card();
+        const name = document.createElement("input");
+        name.value = song.name; name.maxLength = 120;
+        name.setAttribute("aria-label", "曲名");
+        Object.assign(name.style, {background: "#111827", color: "#fff", padding: "8px"});
+        const controls = actions();
+        controls.append(button("播放", () => {
+          let video = row.querySelector("video");
+          if (!video) {
+            video = document.createElement("video"); video.controls = true;
+            video.src = new URL(`/toy/local-songs/media/${song.id}.mp4`, apiBase).href;
+            video.style.width = "100%"; row.append(video);
+          }
+          video.play().catch(() => {});
+        }), button("保存曲名", async () => {
+          try {
+            await localSongRequest("/rename", {id: song.id, name: name.value});
+            await refreshLocalSongCatalog(); state.textContent = "曲名已保存。";
+          } catch (_error) { state.textContent = "曲名保存失败，请重试。"; }
+        }), button("删除", async () => {
+          if (!await confirmAction("从本地曲库删除这段演奏？原始文件会保留。")) return;
+          const video = row.querySelector("video");
+          if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
+          try {
+            await localSongRequest("/delete", {id: song.id});
+            await reload(); await refreshLocalSongCatalog(); state.textContent = "已删除。";
+          } catch (_error) { state.textContent = "删除失败；若正在播放，请停止播放后重试。"; }
+        }));
+        row.append(name, text("span", `${Math.round(song.duration)} 秒`), controls); list.append(row);
+      }
+      if (!result.songs.length) list.append(text("p", "还没有导入演奏。"));
+    };
+    const importButton = button("导入到曲库", async () => {
+      if (localSongImportPending) return;
+      const value = path.value.trim().replace(/^"|"$/g, "");
+      if (!value) { state.textContent = "请填写文件或文件夹路径。"; return; }
+      localSongImportPending = localSongRequest("/import", {path: value});
+      await waitForImport();
+    });
+    const waitForImport = async () => {
+      importButton.disabled = true; state.textContent = "正在导入，必要时会转换视频格式，请稍候……";
+      const pending = localSongImportPending;
+      try {
+        const result = await pending;
+        state.textContent = `已导入 ${result.added} 段，跳过重复 ${result.skipped} 段，失败 ${result.failed} 段。`;
+        if (result.errors.length) state.textContent += result.errors.map((error) => `${error.name}：${error.code}`).join("；");
+        await reload(); await refreshLocalSongCatalog();
+      } catch (_error) { state.textContent = "导入失败，请检查路径、媒体工具和磁盘空间后重试。"; }
+      finally { if (localSongImportPending === pending) localSongImportPending = null; importButton.disabled = false; }
+    };
+    const pickButton = button("选择文件夹", async () => {
+      if (!window.cefViewQuery) {
+        state.textContent = "请在上方粘贴文件夹的完整路径。"; return;
+      }
+      pickButton.disabled = true;
+      try {
+        const picked = await new Promise((resolve, fail) => window.cefViewQuery({
+          request: JSON.stringify({action: "showFileDirectoryPicker", data: {type: "directory", needAvailableSpace: false}}),
+          onSuccess: (raw) => {
+            try { resolve(typeof raw === "string" ? JSON.parse(raw) : raw); }
+            catch (error) { fail(error); }
+          },
+          onFailure: fail,
+        }));
+        const selected = picked && (picked.path || picked.dir || picked.folder);
+        if (typeof selected === "string" && selected) {
+          path.value = selected; state.textContent = "已选择文件夹，点击导入到曲库开始导入。";
+        } else { state.textContent = "已取消选择。"; }
+      } catch (_error) { state.textContent = "无法打开文件夹选择窗口，请粘贴完整路径。"; }
+      finally { pickButton.disabled = false; }
+    });
+    const importActions = actions(); importActions.append(pickButton, importButton);
+    panel.append(path, importActions, state, list,
+      text("p", "本地演奏导入功能参考：芙桃（已授权）。", "text-text-secondary"));
+    try { await reload(); } catch (_error) { state.textContent = "曲库读取失败，请稍后重试。"; }
+    if (localSongImportPending) await waitForImport();
+  };
+
+  const openLocalSongs = () => {
+    if (document.querySelector('[data-olivia-local-songs-dialog]')) return;
+    const backdrop = document.createElement("div");
+    backdrop.dataset.oliviaLocalSongsDialog = "";
+    Object.assign(backdrop.style, {position: "fixed", inset: "0", zIndex: "2147483000",
+      display: "grid", placeItems: "center", background: "rgba(0,0,0,.62)", WebkitAppRegion: "no-drag"});
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "本地演奏");
+    Object.assign(dialog.style, {width: "min(720px,calc(100vw - 80px))", maxHeight: "85vh",
+      overflow: "auto", padding: "28px", borderRadius: "16px", background: "#18191c", color: "#f9fafb"});
+    const close = button("关闭", () => backdrop.remove());
+    const header = actions(); header.style.justifyContent = "flex-end"; header.append(close);
+    const panel = stack(); dialog.append(header, panel); backdrop.append(dialog);
+    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
+    backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") backdrop.remove(); });
+    document.body.append(backdrop); close.focus(); renderLocalSongs(panel);
+  };
+  const mountLocalSongEntry = () => {
+    if (window.location.hash.split("?")[0] !== "#/studio") {
+      document.querySelector('[data-olivia-local-songs-entry]')?.remove(); return;
+    }
+    if (document.querySelector('[data-olivia-local-songs-entry]')) return;
+    const navigation = document.querySelector('[data-olivia-main-navigation]');
+    if (!navigation) return;
+    const entry = button("导入本地演奏", openLocalSongs);
+    entry.dataset.oliviaLocalSongsEntry = "";
+    Object.assign(entry.style, {whiteSpace: "nowrap", flexShrink: "0", minHeight: "36px"});
+    navigation.append(entry);
   };
 
   const isSettingsRoute = () => {
@@ -2657,6 +2852,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       scheduled = false;
       constrainLetterInputs();
       mountMainNavigation();
+      mountLocalSongEntry();
       mountShell();
       maybeOpenInitialSetup();
     });
