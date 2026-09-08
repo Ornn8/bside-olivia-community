@@ -354,6 +354,27 @@ def test_song_content_scope_keeps_protocol_fail_closed(monkeypatch, content, fin
         run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT))
 
 
+@pytest.mark.parametrize("style", ["chat_completions", "responses"])
+def test_song_content_requests_json_once_without_changing_other_scopes(monkeypatch, style):
+    adapter = OpenAICompatibleAdapter(make_config("http://127.0.0.1:1/v1", api_style=style))
+    seen = []
+
+    async def response(body, request_id, **kwargs):
+        seen.append(body)
+        if style == "chat_completions":
+            assert body["response_format"] == {"type": "json_object"}
+            return {"choices": [{"finish_reason": "stop", "message": {"content": '{"verse":[],"chorus":[]}'}}]}
+        assert body["text"] == {"format": {"type": "json_object"}}
+        return {"output_text": '{"verse":[],"chorus":[]}'}
+
+    monkeypatch.setattr(adapter, "_post_json", response)
+    result = run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT))
+    assert result.text == '{"verse":[],"chorus":[]}'
+    assert len(seen) == 1
+    ordinary = adapter._body(ROOT_MESSAGES, stream=False)
+    assert "response_format" not in ordinary and "text" not in ordinary
+
+
 @pytest.mark.parametrize("scope", [GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING])
 @pytest.mark.parametrize("finish_reason,retryable", [("stop", True), ("length", False), (None, False)])
 def test_text_reasoning_empty_final_is_retryable_only_after_clean_stop(monkeypatch, finish_reason, retryable, scope):

@@ -449,3 +449,19 @@ def render_reply_video(
         "visual_provider": "LiveTalking",
         **delivery_metadata,
     }
+
+
+def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
+                       voice_performance_plan: VoicePerformancePlan,
+                       environment: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Generate speech directly, without video dependencies or a video VRAM gate."""
+    if voice_performance_plan.spoken_text != text:
+        raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="olivia-voice-", dir=output_path.parent) as temporary:
+        config = _tts_config(tts_config_path, Path(temporary), ordinary_video=True, env=environment)
+        try:
+            result = render_delivery_wav(config, voice_performance_plan, output_path)
+        except DeliveryAudioError as exc:
+            raise ReplyMediaError(str(exc)) from exc
+    return {"duration_seconds": result.duration_seconds, "audio_provider": result.provider}

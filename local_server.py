@@ -60,7 +60,8 @@ from letter_triage import (
     LetterEmotionTriage,
     TriageResult,
     _current_music_performance,
-    _musical_video_configured,
+    _voice_reply_configured,
+    _singing_video_configured,
 )
 from runtime.media.media_paths import configured_media_path
 from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
@@ -72,7 +73,7 @@ from music_reply import (
     video_reply_dependency_status,
     video_reply_source_url,
 )
-from runtime.reply.reply_media import ReplyMediaError, render_reply_video
+from runtime.reply.reply_media import ReplyMediaError, render_reply_video, render_reply_audio
 from runtime.reply.reply_delivery import (
     build_ordinary_video_llm_content,
     ordinary_video_reply_length_ok,
@@ -190,8 +191,9 @@ def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
     result: dict[str, object] = {}
     if value.get("audio_provider") == "breeze_tts2":
         result["audio_provider"] = "breeze_tts2"
-    if value.get("reply_structure") == _PUBLIC_MUSIC_REPLY_STRUCTURE:
-        result["reply_structure"] = _PUBLIC_MUSIC_REPLY_STRUCTURE
+    structure = value.get("reply_structure")
+    if isinstance(structure, str) and structure in {_PUBLIC_MUSIC_REPLY_STRUCTURE, "singing_only", "voice_then_singing"}:
+        result["reply_structure"] = structure
     emotion = value.get("song_emotion")
     if isinstance(emotion, str) and emotion in _PUBLIC_SONG_EMOTIONS:
         result["song_emotion"] = emotion
@@ -290,10 +292,13 @@ def _exact_reply_mode(value: object) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"text", ReplyMode.TEXT_LETTER.value}:
         return ReplyMode.TEXT_LETTER.value
+    if normalized in {"voice_reply", "singing_video", "voice_song_video"}:
+        return normalized
     if normalized in {
         "video",
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
+        "voice_reply", "singing_video", "voice_song_video",
     }:
         # The product has one video format: spoken reply plus music. Preserve
         # old persisted/wire values by upgrading them to that canonical mode.
@@ -310,7 +315,7 @@ _RUNTIME_DIAGNOSTIC_EVENTS: deque[dict[str, object]] = deque(maxlen=200)
 _RUNTIME_DIAGNOSTIC_EVENT_RE = _re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _RUNTIME_DIAGNOSTIC_CODE_RE = _re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _RUNTIME_DIAGNOSTIC_REPLY_MODES = frozenset(
-    {"text", "video", "text_letter", "normal_video", "music_video", "live"}
+    {"text", "video", "text_letter", "normal_video", "music_video", "live", "voice_reply", "singing_video", "voice_song_video"}
 )
 
 
@@ -1023,6 +1028,7 @@ def _mark_media_not_requested(letter: dict) -> None:
     if _exact_reply_mode(letter.get("reply_mode")) not in {
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
+        "voice_reply", "singing_video", "voice_song_video",
     }:
         return
     letter["media_status"] = "NOT_REQUESTED"
@@ -1240,7 +1246,7 @@ def _open_video_capability_source(capability: object, source: object) -> bool:
 def _video_reply_dependencies_ready() -> bool:
     environment = MappingProxyType(dict(_os.environ))
     try:
-        return _musical_video_configured(environment)
+        return _voice_reply_configured(environment) or _singing_video_configured(environment)
     except Exception:
         return False
 
@@ -1713,7 +1719,7 @@ def _offline_media(value):
 # ---------------------------------------------------------------------------
 # 路由处理
 # ---------------------------------------------------------------------------
-_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.mp4$")
+_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav)$")
 
 
 def _media_root() -> Path | None:
@@ -1735,7 +1741,7 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
     if not target.is_file():
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
-    return web.FileResponse(target, headers={"Content-Type": "video/mp4", "Cache-Control": "no-store"})
+    return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", "Cache-Control": "no-store"})
 
 
 async def handler(request: web.Request):
@@ -1751,7 +1757,7 @@ async def handler(request: web.Request):
             library = LocalSongLibrary(root, _os.environ)
             name = request.path.rsplit('/', 1)[-1]
             target = library.media_path(name.removesuffix('.mp4'))
-            return web.FileResponse(target, headers={"Content-Type": "video/mp4", **CORS_HEADERS(request)})
+            return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", **CORS_HEADERS(request)})
         except LocalSongError:
             return web.Response(status=404)
     if request.path.startswith("/toy/media/"):
@@ -3679,7 +3685,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         stage = "prepare"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            require_breeze_hardware()
+            if reply_mode != "voice_reply":
+                require_breeze_hardware()
             def runtime_path(name: str) -> Path:
                 configured = configured_media_path(environment, name)
                 if configured is None and environment.get(name, "").strip():
@@ -3687,7 +3694,23 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 return configured if configured is not None else Path()
 
             tts_config = runtime_path("OLIVIA_TTS_CONFIG")
+            if reply_mode in {"voice_reply", "voice_song_video"}:
+                audio_path = output_dir / f"{letter_id}.wav"
+                if not (letter.get("reply_audio_url") and audio_path.is_file()):
+                    stage = "voice_plan"
+                    voice_plan = await _voice_plan_for_letter(letter, reply_text)
+                    stage = "speech"
+                    metadata = await asyncio.to_thread(render_reply_audio, reply_text, audio_path,
+                        tts_config_path=tts_config, voice_performance_plan=voice_plan, environment=environment)
+                    letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{audio_path.name}"
+                    letter["reply_audio_duration"] = metadata["duration_seconds"]
+                    _persist_media_state()
+                if reply_mode == "voice_reply":
+                    letter.update(media_status="COMPLETED", media_error_code=None, media_retryable=False)
+                    _persist_media_state()
+                    return
             if reply_mode == ReplyMode.SPOKEN_VIDEO.value:
+
                 stage = "voice_plan"
                 voice_plan = await _voice_plan_for_letter(letter, reply_text)
                 stage = "prepare"
@@ -3707,9 +3730,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     voice_performance_plan=voice_plan,
                     environment=environment,
                 )
-            elif reply_mode == ReplyMode.MUSICAL_VIDEO.value:
+            elif reply_mode in {ReplyMode.MUSICAL_VIDEO.value, "singing_video", "voice_song_video"}:
                 stage = "voice_plan"
-                voice_plan = await _music_voice_plan_for_letter(letter, reply_text)
+                voice_plan = await _music_voice_plan_for_letter(letter, reply_text) if reply_mode == ReplyMode.MUSICAL_VIDEO.value else None
                 stage = "prepare"
                 music_duration_seconds = int(letter.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS))
                 performance_scene = _current_music_performance(environment)
@@ -3719,16 +3742,16 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     environment, "OLIVIA_ORDINARY_ACTION_BASE"
                 )
                 if (
-                    spoken_action_base is None
-                    or not spoken_action_base.is_file()
+                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (spoken_action_base is None
+                    or not spoken_action_base.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
                 official_reply_reference = configured_media_path(
                     environment, "OLIVIA_OFFICIAL_REPLY_REFERENCE"
                 )
                 if (
-                    official_reply_reference is None
-                    or not official_reply_reference.is_file()
+                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (official_reply_reference is None
+                    or not official_reply_reference.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
                 stage = "render"
@@ -3740,7 +3763,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     song_video_path=output_dir / (
                         f"{letter_id}-song-v2-{music_duration_seconds}s.mp4"
                     ),
-                    official_reply_reference_path=official_reply_reference,
+                    official_reply_reference_path=official_reply_reference or Path(),
                     tts_config_path=tts_config,
                     visual_config_path=runtime_path("OLIVIA_VISUAL_CONFIG"),
                     worker_path=runtime_path("OLIVIA_LIVETALKING_WORKER"),
@@ -3750,8 +3773,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     voice_performance_plan=voice_plan,
                     gateway=letters_adapter.gateway,
                     environment=environment,
+                    include_spoken=reply_mode == ReplyMode.MUSICAL_VIDEO.value,
                 )
                 letter.update(_sanitized_music_render_metadata(render_metadata))
+                if reply_mode == "voice_song_video":
+                    letter["reply_structure"] = "voice_then_singing"
             stage = "publish"
             letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
@@ -3969,7 +3995,7 @@ def _schedule_pending_media_jobs() -> int:
             or not content.strip()
             or not isinstance(reply_text, str)
             or not reply_text.strip()
-            or reply_mode not in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+            or reply_mode not in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value, "voice_reply", "singing_video", "voice_song_video"}
         ):
             continue
         active = media_jobs.get(letter_id)
@@ -4240,7 +4266,7 @@ async def _run_reply_pipeline_for_letter(
             reply_input = (
                 build_ordinary_video_llm_content(content)
                 if exact_mode
-                in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+                in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value, "voice_reply", "singing_video", "voice_song_video"}
                 else content
             )
         request = ReplyRequest(
@@ -4316,6 +4342,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
+        "voice_reply", "singing_video", "voice_song_video",
     }:
         letter["media_status"] = "PENDING"
         letter.pop("media_error_code", None)
@@ -4394,6 +4421,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,
+        "voice_reply", "singing_video", "voice_song_video",
     }:
         letter["media_status"] = "PENDING"
         _persist_media_state()

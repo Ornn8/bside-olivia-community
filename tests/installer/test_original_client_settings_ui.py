@@ -202,7 +202,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v22"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v23"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -659,7 +659,7 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         "清空当前用户记忆",
     ):
         assert required in source
-    assert "http://" not in source
+    assert "http://" not in source.replace("http://www.w3.org/2000/svg", "")
     assert "setup.llm.api_key" not in source
     assert 'key.input.value = ""' in source
     assert "https://api.deepseek.com" in source

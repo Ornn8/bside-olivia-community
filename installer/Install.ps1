@@ -571,6 +571,7 @@ function Get-ExpectedOfflineWheels {
     $expected.Add('wheelhouse/attrs-26.1.0-py3-none-any.whl', 'c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309')
     $expected.Add('wheelhouse/frozenlist-1.8.0-cp312-cp312-win_amd64.whl', '34187385b08f866104f0c0617404c8eb08165ab1272e884abc89c112e9c00746')
     $expected.Add('wheelhouse/idna-3.18-py3-none-any.whl', '7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2')
+    $expected.Add('wheelhouse/imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl', '02fa47c83703c37df6bfe4896aab339013f62bf02c5ebf2dce6da56af04ffc0a')
     $expected.Add('wheelhouse/jsonschema-4.26.0-py3-none-any.whl', 'd489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce')
     $expected.Add('wheelhouse/jsonschema_specifications-2025.9.1-py3-none-any.whl', '98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe')
     $expected.Add('wheelhouse/multidict-6.7.1-cp312-cp312-win_amd64.whl', 'fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19')

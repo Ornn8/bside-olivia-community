@@ -1049,7 +1049,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
-    def render():
+    def render(include_spoken=True):
         return music_reply.render_musical_reply(
         "synthetic letter", "synthetic canonical reply", output,
         normal_video_path=normal,
@@ -1062,6 +1062,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         duration_seconds=40,
         spoken_action_base_path=spoken_action_base,
         gateway=active_gateway,
+        include_spoken=include_spoken,
     )
 
     with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_SPOKEN_REFERENCE_FAILED"):
@@ -1175,6 +1176,13 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply, "convert_singing_voice", fake_convert)
     render()
     assert order == ["convert", "mix", "performance", "concat"]
+    order.clear()
+    normal.unlink()
+    official_reference.unlink()
+    result = render(include_spoken=False)
+    assert "spoken" not in order and "concat" not in order
+    assert output.read_bytes() == song_video.read_bytes()
+    assert result["reply_structure"] == "singing_only"
 
 
 def test_render_musical_reply_fails_closed_without_official_transition(

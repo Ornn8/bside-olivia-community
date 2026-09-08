@@ -234,7 +234,8 @@ def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
             raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
         executable = configured_path
     else:
-        executable = shutil.which("ffmpeg")
+        bundled = Path(__file__).resolve().parents[2] / "media-tools" / "ffmpeg.exe"
+        executable = str(bundled) if bundled.is_file() else shutil.which("ffmpeg")
     if executable is None:
         try:
             import imageio_ffmpeg

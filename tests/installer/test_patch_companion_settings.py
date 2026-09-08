@@ -135,7 +135,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     assert "innerHTML" not in bootstrap
     assert 'method: "PUT"' not in bootstrap
     assert 'method: "DELETE"' not in bootstrap
-    assert "http://" not in bootstrap
+    assert "http://" not in bootstrap.replace("http://www.w3.org/2000/svg", "")
     without_provider_presets = bootstrap.replace(
         "https://api.deepseek.com", ""
     ).replace("https://opencode.ai/zen/go/v1", "")

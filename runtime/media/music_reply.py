@@ -257,6 +257,7 @@ def musical_reply_configured(
     env: Mapping[str, str],
     *,
     performance_video_path: Path | None,
+    include_spoken: bool = True,
 ) -> bool:
     """Return whether the renderer's complete musical delivery closure exists."""
 
@@ -271,18 +272,17 @@ def musical_reply_configured(
         configured_path("OLIVIA_TTS_CONFIG"),
         configured_path("OLIVIA_LOCAL_DATA_ROOT"),
     )
-    if minimax_root is None or latentsync_root is None or any(
-        path is None for path in delivery_paths
-    ):
+    if minimax_root is None or latentsync_root is None or delivery_paths[1] is None or (include_spoken and delivery_paths[0] is None):
         return False
-    try:
-        delivery = assemble_latentsync_video_delivery(
-            delivery_paths[0],
-            delivery_paths[1],
-            env,
-        )
-    except ReplyMediaError:
-        return False
+    if include_spoken:
+        try:
+            delivery = assemble_latentsync_video_delivery(
+                delivery_paths[0],
+                delivery_paths[1],
+                env,
+            )
+        except ReplyMediaError:
+            return False
     roformer_executable = configured_path("OLIVIA_ROFORMER_PYTHON") or configured_path(
         "OLIVIA_ROFORMER_EXE"
     )
@@ -295,13 +295,12 @@ def musical_reply_configured(
         configured_path("OLIVIA_LATENTSYNC_PYTHON"),
     )
     if (
-        ordinary_scene is None
-        or transition_reference is None
+        (include_spoken and (ordinary_scene is None or transition_reference is None))
         or any(path is None for path in configured_files)
     ):
         return False
     required = (
-        transition_reference,
+        *((transition_reference,) if include_spoken else ()),
         *configured_files[:6],
         minimax_root / "main.py",
         minimax_root / "comfy_extras" / "nodes_minimax_music.py",
@@ -317,7 +316,8 @@ def musical_reply_configured(
         and
         performance_video_path is not None
         and performance_video_path.is_file()
-        and ordinary_scene.is_file()
+        and (not include_spoken or (
+            ordinary_scene.is_file()
         and str(getattr(delivery.tts, "provider", "")).casefold()
         == "breeze_tts2"
         and (
@@ -325,6 +325,7 @@ def musical_reply_configured(
             / "drbaph_Breeze-TTS-2-comfyui"
             / "Breeze-TTS-2-int8-hybrid.safetensors"
         ).is_file()
+        ))
         and minimax_root.is_dir()
         and latentsync_root.is_dir()
         and all(path.is_file() for path in required)
@@ -1771,6 +1772,7 @@ def render_musical_reply(
     voice_performance_plan: VoicePerformancePlan | None = None,
     gateway: Gateway | None = None,
     environment: Mapping[str, str] | None = None,
+    include_spoken: bool = True,
 ) -> dict[str, object]:
     """Render the ordinary reply, append an original-view song performance."""
 
@@ -1778,7 +1780,7 @@ def render_musical_reply(
     duration_seconds = normalize_music_duration(duration_seconds)
     provider_paths = _music_provider_path_snapshot(environment)
     transition_reference = Path(official_reply_reference_path)
-    if not transition_reference.is_file():
+    if include_spoken and not transition_reference.is_file():
         raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
     minimax_python = provider_paths.minimax_python
     minimax_root = provider_paths.minimax_root
@@ -1850,85 +1852,87 @@ def render_musical_reply(
     if not manifest_compatible:
         _write_stage_manifest(manifest_path, manifest)
 
-    spoken_base = (
-        Path(spoken_action_base_path)
-        if spoken_action_base_path is not None
-        else stage_root / "official-spoken-000-035s.mp4"
-    )
-    if spoken_action_base_path is not None and not spoken_base.is_file():
-        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
-    spoken_gate = {"required_streams": ("0:v:0",), "ffmpeg_path": ffmpeg_path,
-                   "minimum_duration_seconds": 30.0, "forbidden_streams": ("0:a:0",)}
-    normal_gate = {"required_streams": ("0:v:0", "0:a:0"),
-                   "ffmpeg_path": ffmpeg_path, "minimum_duration_seconds": 1.0}
-    spoken_ready = _completed_stage(spoken_base, **spoken_gate)
-    if spoken_action_base_path is not None and not spoken_ready:
-        raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_FAILED")
-    if spoken_ready and _stage_reusable(
-        manifest,
-        "normal_video",
-        normal_video_path,
-        upstream={"spoken_base": spoken_base},
-        **normal_gate,
-    ):
-        normal_metadata = {"spoken_stage": "reused"}
-        normal_record = manifest.get("artifacts", {}).get("normal_video", {})
-        if (
-            isinstance(normal_record, dict)
-            and normal_record.get("audio_provider") == "breeze_tts2"
-        ):
-            normal_metadata["audio_provider"] = "breeze_tts2"
-    else:
-        if (
-            spoken_action_base_path is None
-            and not _stage_reusable(manifest, "spoken_base", spoken_base, **spoken_gate)
-        ):
-            spoken_base.unlink(missing_ok=True)
-            prepare_official_spoken_base(
-                official_reply_reference_path,
-                spoken_base,
-                ffmpeg_path=ffmpeg_path,
-            )
-            _record_stage(manifest, manifest_path, "spoken_base", spoken_base, **spoken_gate)
-        partial_normal = normal_video_path.with_name(f"{normal_video_path.stem}.partial{normal_video_path.suffix}")
-        partial_normal.unlink(missing_ok=True)
-        normal_failure = None
-        try:
-            normal_metadata = render_reply_video(
-                reply_text,
-                partial_normal,
-                tts_config_path=tts_config_path,
-                visual_config_path=visual_config_path,
-                worker_path=worker_path,
-                scene_path=spoken_base,
-                latentsync_python_path=latentsync_python,
-                latentsync_root=latentsync_root,
-                adaptive_delivery=True,
-                voice_performance_plan=voice_performance_plan,
-                environment=provider_paths.environment,
-                ffmpeg_path=ffmpeg_path,
-                provider_cache_root=provider_cache_root,
-            )
-        except ReplyMediaError as exc:
-            normal_failure = _provider_exception_failure("MUSIC_REPLY_NORMAL_VIDEO_FAILED", exc, provider_paths.environment)
-        if normal_failure is not None:
-            try: partial_normal.unlink(missing_ok=True)
-            except OSError: pass
-            raise normal_failure from None
-        _publish_stage(partial_normal, normal_video_path, "normal_video", ("0:v:0", "0:a:0"), ffmpeg_path, 1.0)
-        _record_stage(
+    normal_metadata = {}
+    if include_spoken:
+        spoken_base = (
+            Path(spoken_action_base_path)
+            if spoken_action_base_path is not None
+            else stage_root / "official-spoken-000-035s.mp4"
+        )
+        if spoken_action_base_path is not None and not spoken_base.is_file():
+            raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
+        spoken_gate = {"required_streams": ("0:v:0",), "ffmpeg_path": ffmpeg_path,
+                       "minimum_duration_seconds": 30.0, "forbidden_streams": ("0:a:0",)}
+        normal_gate = {"required_streams": ("0:v:0", "0:a:0"),
+                       "ffmpeg_path": ffmpeg_path, "minimum_duration_seconds": 1.0}
+        spoken_ready = _completed_stage(spoken_base, **spoken_gate)
+        if spoken_action_base_path is not None and not spoken_ready:
+            raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_FAILED")
+        if spoken_ready and _stage_reusable(
             manifest,
-            manifest_path,
             "normal_video",
             normal_video_path,
             upstream={"spoken_base": spoken_base},
             **normal_gate,
-        )
-        if normal_metadata.get("audio_provider") == "breeze_tts2":
-            normal_record = manifest.get("artifacts", {}).get("normal_video")
-            if isinstance(normal_record, dict):
-                normal_record["audio_provider"] = "breeze_tts2"
-                _write_stage_manifest(manifest_path, manifest)
+        ):
+            normal_metadata = {"spoken_stage": "reused"}
+            normal_record = manifest.get("artifacts", {}).get("normal_video", {})
+            if (
+                isinstance(normal_record, dict)
+                and normal_record.get("audio_provider") == "breeze_tts2"
+            ):
+                normal_metadata["audio_provider"] = "breeze_tts2"
+        else:
+            if (
+                spoken_action_base_path is None
+                and not _stage_reusable(manifest, "spoken_base", spoken_base, **spoken_gate)
+            ):
+                spoken_base.unlink(missing_ok=True)
+                prepare_official_spoken_base(
+                    official_reply_reference_path,
+                    spoken_base,
+                    ffmpeg_path=ffmpeg_path,
+                )
+                _record_stage(manifest, manifest_path, "spoken_base", spoken_base, **spoken_gate)
+            partial_normal = normal_video_path.with_name(f"{normal_video_path.stem}.partial{normal_video_path.suffix}")
+            partial_normal.unlink(missing_ok=True)
+            normal_failure = None
+            try:
+                normal_metadata = render_reply_video(
+                    reply_text,
+                    partial_normal,
+                    tts_config_path=tts_config_path,
+                    visual_config_path=visual_config_path,
+                    worker_path=worker_path,
+                    scene_path=spoken_base,
+                    latentsync_python_path=latentsync_python,
+                    latentsync_root=latentsync_root,
+                    adaptive_delivery=True,
+                    voice_performance_plan=voice_performance_plan,
+                    environment=provider_paths.environment,
+                    ffmpeg_path=ffmpeg_path,
+                    provider_cache_root=provider_cache_root,
+                )
+            except ReplyMediaError as exc:
+                normal_failure = _provider_exception_failure("MUSIC_REPLY_NORMAL_VIDEO_FAILED", exc, provider_paths.environment)
+            if normal_failure is not None:
+                try: partial_normal.unlink(missing_ok=True)
+                except OSError: pass
+                raise normal_failure from None
+            _publish_stage(partial_normal, normal_video_path, "normal_video", ("0:v:0", "0:a:0"), ffmpeg_path, 1.0)
+            _record_stage(
+                manifest,
+                manifest_path,
+                "normal_video",
+                normal_video_path,
+                upstream={"spoken_base": spoken_base},
+                **normal_gate,
+            )
+            if normal_metadata.get("audio_provider") == "breeze_tts2":
+                normal_record = manifest.get("artifacts", {}).get("normal_video")
+                if isinstance(normal_record, dict):
+                    normal_record["audio_provider"] = "breeze_tts2"
+                    _write_stage_manifest(manifest_path, manifest)
 
     song_audio = stage_root / "song.flac"
     vocals = stage_root / "vocals.wav"
@@ -2069,6 +2073,12 @@ def render_musical_reply(
             upstream={"song_audio": song_audio, "mixed_song": mixed_song, "converted_vocals": converted_vocals},
             **video_gate,
         )
+
+    if not include_spoken:
+        partial_output = output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
+        shutil.copyfile(song_video_path, partial_output)
+        _publish_stage(partial_output, output_path, "final_output", ("0:v:0", "0:a:0"), ffmpeg_path, music_stage_minimum)
+        return {**song_metadata, **face_metadata, "song_title": "回信里的歌", "reply_structure": "singing_only"}
 
     partial_output = output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
     partial_output.unlink(missing_ok=True)

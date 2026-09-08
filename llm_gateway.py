@@ -828,12 +828,17 @@ class OpenAICompatibleAdapter(Gateway):
                 {"role": message["role"], "content": message["content"]}
                 for message in normalized
             ]
-            return {"model": self.config.model, "input": request_input, "stream": stream}
+            body = {"model": self.config.model, "input": request_input, "stream": stream}
+            if scope is GatewayRequestScope.SONG_CONTENT:
+                body["text"] = {"format": {"type": "json_object"}}
+            return body
         body: dict[str, Any] = {
             "model": self.config.model,
             "messages": list(normalized),
             "stream": stream,
         }
+        if scope is GatewayRequestScope.SONG_CONTENT:
+            body["response_format"] = {"type": "json_object"}
         endpoint = urlsplit(self.config.base_url)
         if (
             scope is GatewayRequestScope.JSON_MAX_REASONING

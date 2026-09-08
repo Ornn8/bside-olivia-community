@@ -108,18 +108,18 @@ def test_spoken_only_video_mode_fails_closed_to_text():
     assert result.music_contexts == ()
 
 
-def test_router_offers_only_text_or_spoken_plus_music_video() -> None:
+def test_router_offers_three_media_modes_and_text() -> None:
     _, gateway = _route()
 
     mode_schema = gateway.requests[0]["tools"][0]["function"]["parameters"]["properties"]["mode"]
-    assert mode_schema["enum"] == ["musical_video", "text_letter"]
+    assert mode_schema["enum"] == ["singing_video", "text_letter", "voice_reply", "voice_song_video"]
 
 
-def test_router_prompt_marks_voice_only_flag_obsolete_for_complete_video() -> None:
+def test_router_prompt_requires_both_benefits_for_combined_reply() -> None:
     _, gateway = _route()
 
     system_prompt = gateway.requests[0]["messages"][0]["content"]
-    assert "完整视频时 voice_materially_better=false" in system_prompt
+    assert "组合两项 materially_better 都为 true" in system_prompt
 
 
 def test_music_discussion_remains_text_when_words_are_enough():
@@ -144,7 +144,7 @@ def test_explicit_request_overrides_model_refusal_when_video_is_available():
         music_materially_better=True,
         character_willing=False,
     )
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.request_disposition == "fulfill"
 
 
@@ -158,7 +158,7 @@ def test_explicit_request_overrides_model_deferral_when_video_is_available():
         music_materially_better=True,
         character_willing=False,
     )
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.status == "completed"
 
 
@@ -173,7 +173,7 @@ def test_explicit_request_alone_triggers_available_musical_video():
         direct_response_sufficient=False,
         music_materially_better=False,
     )
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.status == "completed"
 
 
@@ -190,19 +190,19 @@ def test_media_unavailable_blocks_otherwise_valid_musical_choice():
         music_materially_better=True,
     )
     assert result.reply_mode == "text_letter"
-    assert result.reason_code == "video_components_required"
+    assert result.reason_code == "media_components_required"
     assert result.request_disposition == "defer"
 
 
 @pytest.mark.parametrize("available", [True, False])
 def test_explicit_video_request_does_not_require_separate_music_request(available):
     result, gateway = _route(
-        context=RoutingContext(available),
+        context=RoutingContext(False, voice_reply_available=available),
         music_contexts=["explicit_video_reply_request"],
         request_disposition="defer",
         character_willing=False,
     )
-    assert result.reply_mode == ("musical_video" if available else "text_letter")
+    assert result.reply_mode == ("voice_reply" if available else "text_letter")
     assert result.request_disposition == ("fulfill" if available else "defer")
     assert gateway.requests[0]["tools"][0]["function"]["parameters"]["properties"]["music_contexts"]["items"]["enum"].count("explicit_video_reply_request") == 1
 
@@ -214,11 +214,11 @@ def test_unavailable_video_prompt_preserves_request_context_independently_of_rea
         request_disposition="defer",
     )
     prompt = gateway.messages[0]["content"]
-    assert "与组件可用性、最终 mode 和 request_disposition 独立" in prompt
-    assert "不得因无法执行而把明确请求的 music_contexts 清空" in prompt
+    assert "保留请求事实" in prompt
+    assert "不假装生成成功" in prompt
     assert result.music_contexts == ("explicit_video_reply_request",)
     assert result.reply_mode == "text_letter"
-    assert result.reason_code == "video_components_required"
+    assert result.reason_code == "media_components_required"
     assert result.request_disposition == "defer"
 
 
@@ -244,7 +244,7 @@ def test_nonrequest_classification_is_not_overridden_by_video_keywords(content):
     ).classify(content))
     assert result.reply_mode == "text_letter"
     assert json.loads(gateway.messages[1]["content"])["current_letter"] == content
-    assert "否定请求、引用他人的请求" in gateway.messages[0]["content"]
+    assert "否定、引用别人的请求" in gateway.messages[0]["content"]
 
 
 def test_all_musical_gates_allow_character_choice():
@@ -258,7 +258,7 @@ def test_all_musical_gates_allow_character_choice():
         direct_response_sufficient=False,
         music_materially_better=True,
     )
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.status == "completed"
 
 
@@ -286,7 +286,7 @@ def test_router_accepts_one_offline_structured_musical_tool_call():
         ).classify("请把这段心事唱给我听。")
     )
 
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.status == "completed"
     assert gateway.requests[0]["tool_choice"] == "required"
     assert gateway.requests[0]["request_id"] == "letter-reply-mode-router"
@@ -358,7 +358,7 @@ def test_public_mock_gateway_routes_configured_tool_result(
         ).classify("synthetic current letter")
     )
 
-    assert result.reply_mode == expected_mode
+    assert result.reply_mode == ("singing_video" if expected_mode == "musical_video" else expected_mode)
     assert result.status == "completed"
     assert gateway.network_call_count == 0
 
@@ -417,7 +417,7 @@ def test_deepseek_flash_thinking_omits_tool_choice_and_routes_valid_structured_c
 
     result, body = asyncio.run(exercise())
 
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
     assert result.status == "completed"
     assert body["model"] == "deepseek-v4-flash"
     assert "thinking" not in body
@@ -453,7 +453,7 @@ def test_current_work_relevance_accepts_bounded_trusted_work():
         direct_response_sufficient=False,
         music_materially_better=True,
     )
-    assert result.reply_mode == "musical_video"
+    assert result.reply_mode == "singing_video"
 
 
 def test_melody_idea_requires_spontaneous_motif_and_compose():
@@ -479,7 +479,7 @@ def test_melody_idea_requires_spontaneous_motif_and_compose():
         direct_response_sufficient=False,
         music_materially_better=True,
     )
-    assert valid.reply_mode == "musical_video"
+    assert valid.reply_mode == "singing_video"
 
 
 def test_router_receives_trusted_context_separately_from_letter():
@@ -512,7 +512,7 @@ def test_routing_context_does_not_wait_for_the_full_runtime_probe(monkeypatch):
 
     monkeypatch.setattr(
         letter_triage,
-        "_musical_video_configured",
+        "_singing_video_configured",
         lambda _environment: True,
     )
 
@@ -680,12 +680,12 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
         lambda _self: {"status": "available"},
     )
 
-    assert routing_context_from_environment(env) == RoutingContext(True)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is True
 
     # LiveTalking is optional and is not part of the LatentSync video-reply path.
     Path(env["OLIVIA_VISUAL_CONFIG"]).unlink()
     Path(env["OLIVIA_LIVETALKING_WORKER"]).unlink()
-    assert routing_context_from_environment(env) == RoutingContext(True)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is True
     Path(env["OLIVIA_VISUAL_CONFIG"]).write_bytes(b"synthetic")
     Path(env["OLIVIA_LIVETALKING_WORKER"]).write_bytes(b"synthetic")
 
@@ -700,23 +700,23 @@ def test_complete_video_readiness_fails_closed_for_every_missing_renderer_depend
             env[name] = Path(value).relative_to(tmp_path).as_posix()
         except (TypeError, ValueError):
             pass
-    assert routing_context_from_environment(env) == RoutingContext(True)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is True
 
     quality_checkpoint.unlink()
-    assert routing_context_from_environment(env) == RoutingContext(True)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is True
     quality_checkpoint.write_bytes(b"synthetic")
 
     for missing in required:
         original = missing.read_bytes()
         missing.unlink()
-        assert routing_context_from_environment(env) == RoutingContext(False), missing
+        assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is False, missing
         missing.write_bytes(original)
 
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
-    assert routing_context_from_environment(env) == RoutingContext(True)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is True
 
     env["OLIVIA_FFMPEG_EXE"] = str(tmp_path / "missing-ffmpeg.exe")
-    assert routing_context_from_environment(env) == RoutingContext(False)
+    assert music_reply.musical_reply_configured(env, performance_video_path=_current_music_performance(env)) is False
 
     acceptance_document = Path("docs/P03_06_END_TO_END_ACCEPTANCE.md").read_text(
         encoding="utf-8"

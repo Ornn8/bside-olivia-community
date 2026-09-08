@@ -150,7 +150,7 @@ def test_structured_lyrics_do_not_allow_model_to_change_arrangement(change):
         _plan_from_lyrics_response(json.dumps(payload, ensure_ascii=False), 110)
 
 
-def test_song_plan_repair_receives_failed_output_for_targeted_correction():
+def test_song_plan_invalid_output_does_not_request_rewritten_content():
     from types import SimpleNamespace
     from runtime.media.song_content import plan_song_content
     invalid = json.dumps({'lyrics': _short_lyrics(40)}, ensure_ascii=False)
@@ -162,10 +162,9 @@ def test_song_plan_repair_receives_failed_output_for_targeted_correction():
             self.calls.append(messages)
             return SimpleNamespace(text=invalid if len(self.calls) == 1 else valid)
     gateway = Gateway()
-    plan = plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
-    assert plan.duration_seconds == 110
-    assert gateway.calls[1][-2] == {'role': 'assistant', 'content': invalid}
-    assert 'only verse and chorus arrays' in gateway.calls[1][-1]['content']
+    with pytest.raises(ValueError, match='SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID'):
+        plan_song_content('合成来信', '合成回信', 110, gateway=gateway)
+    assert len(gateway.calls) == 1
 
 
 @pytest.mark.parametrize('extra', [None, 'piano_texture', 'emotion_arc', 'ending'])

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v22"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v23"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2544,7 +2544,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     copy.className = "flex flex-col gap-0 flex-1 min-w-0";
     const state = text("div", "正在检测视频运行环境，第一次可能需要几分钟…", "text-text-secondary text-caption-m font-regular");
     state.setAttribute("aria-live", "polite");
-    copy.append(text("div", "允许视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
+    copy.append(text("div", "允许语音与视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
     let enabled = null;
     let ready = false;
     let missingDependencies = [];
@@ -2588,7 +2588,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           : !ready
           ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`
           : enabled
-          ? "新信默认可参与视频路由。"
+          ? "新信默认可参与语音与视频路由。"
           : "新信将直接使用文字回信。";
       } catch (_error) {
         enabled = null;
@@ -2606,7 +2606,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const payload = await requestMutation(VIDEO_REPLY_SETTINGS_PATH, { enabled: !previous, request_id: videoReplyRequestId() });
         if (!["APPLIED", "NOOP", "DUPLICATE"].includes(payload.status) || typeof payload.enabled !== "boolean") throw new Error("mutation-unavailable");
         enabled = payload.enabled;
-        message = enabled ? "新信默认可参与视频路由。" : "新信将直接使用文字回信。";
+        message = enabled ? "新信默认可参与语音与视频路由。" : "新信将直接使用文字回信。";
       } catch (error) {
         enabled = previous;
         if (error && error.code === "VIDEO_REPLY_DEPENDENCIES_MISSING") {
@@ -2876,5 +2876,64 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 })();
 '''
 
+
+BOOTSTRAP_JAVASCRIPT = r'''
+(() => {
+  if (!window.customElements || customElements.get('olivia-letter-audio')) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
+    .mail-box-reply-content-text:has(olivia-letter-audio){height:auto;min-height:290px}
+    .mail-box-reply-content-text:has(olivia-letter-audio) .mail-box-reply-content-textarea{height:180px;margin-top:10px}
+    olivia-letter-audio .voice-controls{display:flex;align-items:center;gap:12px;min-height:32px;border-bottom:1px solid currentColor;padding-bottom:10px}
+    olivia-letter-audio button{appearance:none;border:0;background:none;color:inherit;padding:6px;cursor:pointer;flex-shrink:0;line-height:1}
+    olivia-letter-audio button:focus-visible,olivia-letter-audio input:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+    olivia-letter-audio svg{width:18px;height:18px;fill:currentColor;display:block}
+    olivia-letter-audio input{min-width:20px;flex:1;height:3px;accent-color:var(--tp-grey-0,#333);cursor:pointer}
+    olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+    olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
+    olivia-letter-audio video{width:100%;max-height:260px;margin-top:12px;display:block}
+  `;
+  document.head.append(style);
+  const icon=(button,paused)=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',paused?'M7 4v16l13-8z':'M6 4h4v16H6zm8 0h4v16h-4z');svg.append(path);button.replaceChildren(svg)};
+  const safe=value=>{try{const u=new URL(value);return u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\/toy\/media\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(wav|mp4)$/.test(u.pathname)?u.href:''}catch{return ''}};
+  let current=null;
+  class LetterAudio extends HTMLElement {
+    static get observedAttributes(){return ['audio-url','audio-status','song-url']}
+    connectedCallback(){this.render()}
+    disconnectedCallback(){this.audio?.pause();this.video?.pause();if(current===this.audio||current===this.video)current=null}
+    attributeChangedCallback(){if(this.isConnected)this.render()}
+    render(){
+      const url=safe(this.getAttribute('audio-url')||''), song=safe(this.getAttribute('song-url')||''), state=this.getAttribute('audio-status')||'';
+      const key=JSON.stringify([url,song,state]);if(this.key===key)return;
+      this.key=key;const sameAudio=this.audio?.src===url,oldTime=sameAudio?this.audio.currentTime:0,wasPlaying=sameAudio&&!this.audio.paused;
+      this.audio?.pause();this.video?.pause();this.replaceChildren();this.audio=null;this.video=null;
+      const status=document.createElement('div');status.className='voice-status';status.setAttribute('role','status');
+      if(url){
+        const audio=new Audio(url);this.audio=audio;audio.preload='metadata';
+        const row=document.createElement('div');row.className='voice-controls';
+        const button=document.createElement('button');button.type='button';icon(button,true);button.setAttribute('aria-label','播放语音');
+        const seek=document.createElement('input');seek.type='range';seek.min='0';seek.max='0';seek.step='0.1';seek.value='0';seek.setAttribute('aria-label','语音播放进度');
+        const stamp=document.createElement('time');stamp.textContent='0:00';
+        const fmt=x=>Math.floor(x/60)+':'+String(Math.floor(x%60)).padStart(2,'0');
+        const sync=()=>{icon(button,audio.paused);button.setAttribute('aria-label',audio.paused?'播放语音':'暂停语音');seek.max=String(audio.duration||0);seek.value=String(audio.currentTime);stamp.textContent=fmt(audio.currentTime)+' / '+fmt(audio.duration||0)};
+        button.onclick=()=>{if(audio.paused)audio.play().catch(()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'});else audio.pause()};
+        seek.oninput=()=>{audio.currentTime=Number(seek.value)};
+        audio.onplay=()=>{if(current&&current!==audio)current.pause();document.querySelectorAll('video').forEach(v=>v.pause());current=audio;sync()};audio.onpause=sync;audio.ontimeupdate=sync;
+        audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);sync();if(wasPlaying)audio.play().catch(()=>{})};
+        audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
+        audio.onended=()=>{sync();if(this.video)this.video.play().catch(()=>{})};
+        row.append(button,seek,stamp);this.append(row);
+      }
+      if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次语音未能录好，文字回信已保留。':'林离正在录语音…';
+      else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';
+      else if(state!=='COMPLETED')status.textContent='语音已录好，歌曲制作中…';
+      this.append(status);
+      if(song){const video=document.createElement('video');video.src=song;video.controls=true;video.preload='metadata';video.setAttribute('playsinline','');video.setAttribute('aria-label','林离的唱歌视频');video.onplay=()=>{if(current&&current!==video)current.pause();current=video};this.video=video;this.append(video)}
+    }
+  }
+  customElements.define('olivia-letter-audio',LetterAudio);
+})();
+''' + BOOTSTRAP_JAVASCRIPT
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

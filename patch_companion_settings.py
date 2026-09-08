@@ -428,6 +428,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
         're.isUnread!==Ee.isUnread)&&',
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)&&',
     )
+    source = _repair_native_letter_audio(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
@@ -621,3 +622,27 @@ __all__ = [
     "sha256_file",
     "validate_api_base",
 ]
+
+
+def _repair_native_letter_audio(source: str) -> str:
+    """Extend native props and paper content; keep original imagery and type."""
+    if 'olivia-letter-audio' in source:
+        return source
+    source = source.replace('letterStatus:e.letterStatus,',
+        'audioStatus:e.audioStatus||"",audioRevision:e.audioRevision||"",letterStatus:e.letterStatus,')
+    source = source.replace('videoUrl:e.replyVideoUrl||void 0',
+        'audioUrl:e.replyAudioUrl||"",songUrl:e.replySongUrl||"",videoUrl:e.replyVideoUrl||void 0')
+    source = source.replace('__name:"MailBoxReplyContent",props:{',
+        '__name:"MailBoxReplyContent",props:{audioUrl:{},audioStatus:{},songUrl:{},')
+    source = source.replace('F(ks,{key:',
+        'F(ks,{audioUrl:i.mail.received?.audioUrl,audioStatus:i.mail.audioStatus,songUrl:i.mail.received?.songUrl,key:')
+    source = source.replace('["modelValue","videoUrl","timestamp","type"',
+        '["audioUrl","audioStatus","songUrl","modelValue","videoUrl","timestamp","type"')
+    source = source.replace('["model-value","videoUrl","timestamp","type"',
+        '["audioUrl","audioStatus","songUrl","model-value","videoUrl","timestamp","type"')
+    source = source.replace('re.isUnread!==Ee.isUnread',
+        're.audioRevision!==Ee.audioRevision||re.audioStatus!==Ee.audioStatus||re.isUnread!==Ee.isUnread')
+    anchor='[A.type==="error"?'
+    replacement='[A.type==="text"&&(A.audioUrl||A.audioStatus)?n("olivia-letter-audio",{"audio-url":A.audioUrl||"","audio-status":A.audioStatus||"","song-url":A.songUrl||""},null,8,["audio-url","audio-status","song-url"]):Y("",!0),A.type==="error"?'
+    source = source.replace(anchor,replacement,1)
+    return source

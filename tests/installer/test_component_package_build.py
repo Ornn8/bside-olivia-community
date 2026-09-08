@@ -129,6 +129,31 @@ def test_builds_release_ready_component_package_that_the_updater_accepts(
     assert second.read_bytes() == package.read_bytes()
 
 
+def test_media_tool_is_in_update_manifest_and_installed(tmp_path, monkeypatch):
+    from installer import bundle_media_tool
+    source, _ = _clean_payload_repo(tmp_path)
+    module = source / 'runtime/media/local_song_library.py'
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text('# fixture\n', encoding='utf-8')
+    _run_git(source, 'add', '.')
+    _run_git(source, 'commit', '-m', 'local song fixture')
+    commit = _run_git(source, 'rev-parse', 'HEAD')
+    def stage(payload):
+        target = payload / 'media-tools/ffmpeg.exe'
+        target.parent.mkdir()
+        target.write_bytes(b'fixture-ffmpeg')
+    monkeypatch.setattr(bundle_media_tool, 'bundle_media_tool', stage)
+    package = tmp_path / 'media.oliviapatch'
+    result = build_component_package(source, package, version='0.1.2', expected_source_commit=commit)
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+        assert any(x['path'] == 'media-tools/ffmpeg.exe' for x in manifest['files'])
+    install = _managed_installation(tmp_path)
+    apply_component_update(install, package, expected_manifest_sha256=result['manifest_sha256'])
+    files = list((install / 'versions').rglob('media-tools/ffmpeg.exe'))
+    assert len(files) == 1 and files[0].read_bytes() == b'fixture-ffmpeg'
+
+
 def test_rejects_dirty_or_wrong_source_before_writing_outputs(tmp_path: Path) -> None:
     source, commit = _clean_payload_repo(tmp_path)
     package = tmp_path / "update.oliviapatch"
