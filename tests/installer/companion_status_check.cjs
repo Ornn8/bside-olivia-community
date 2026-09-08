@@ -3,7 +3,7 @@ const source=fs.readFileSync(process.argv[2],'utf8');
 const code=source.slice(source.indexOf('  const renderCompanionStatus ='), source.indexOf('  const scheduleMemoryStatusRefresh ='))+
  source.slice(source.indexOf('  const loadDialogData ='), source.indexOf('  const isSettingsRoute ='));
 const calls=[];
-const context={STATUS_PATH:'status',
+const context={STATUS_PATH:'status',window:{addEventListener:()=>{}},
  renderLlmSetupPanel:async()=>{},renderCapabilityPanel:async()=>{},renderLocalUpdatePanel:()=>{},
  renderMemoryPanel:async(p,c)=>calls.push(['memory',c]),
  renderPrivateWorldPanel:async(p,c)=>calls.push(['world',c]),
