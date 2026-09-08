@@ -75,3 +75,33 @@ def test_invalid_catalog_does_not_silently_reset(library):
     (library.root / 'catalog.json').write_text('broken')
     with pytest.raises(LocalSongError, match='LOCAL_SONG_CATALOG_INVALID'):
         library.songs()
+
+
+def test_import_with_bundled_ffmpeg_without_ffprobe(tmp_path, monkeypatch):
+    import imageio_ffmpeg
+    from runtime.media.managed_subprocess import run_managed_process
+    import runtime.media.local_song_library as module
+    ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    monkeypatch.setattr(module, 'resolve_ffmpeg_executable', lambda env: ffmpeg)
+    assert not ffmpeg.with_name('ffprobe.exe' if ffmpeg.suffix == '.exe' else 'ffprobe').exists()
+    source = tmp_path / '演奏.mp4'
+    result = run_managed_process([str(ffmpeg), '-y', '-f', 'lavfi', '-i',
+        'color=c=black:s=64x64:r=10', '-f', 'lavfi', '-i', 'sine=frequency=440',
+        '-t', '1', '-c:v', 'libx264', '-c:a', 'aac', str(source)], timeout_seconds=30)
+    assert result.returncode == 0
+    library = LocalSongLibrary(tmp_path / 'data', {})
+    assert library.import_path(str(source))['added'] == 1
+    assert 0.9 <= library.songs()[0]['duration'] <= 1.2
+
+
+def test_import_failure_logs_safe_specific_code(library, tmp_path, monkeypatch):
+    source = tmp_path / 'private-title.mp4'
+    source.write_bytes(b'video')
+    def fail(*args):
+        raise PermissionError('private path and content')
+    monkeypatch.setattr(library, '_prepare', fail)
+    result = library.import_path(str(source))
+    assert result['errors'][0]['code'] == 'LOCAL_SONG_PERMISSION_DENIED'
+    log = (library.root.parent / 'logs/media-provider.jsonl').read_text()
+    assert 'LOCAL_SONG_PERMISSION_DENIED' in log
+    assert 'private' not in log

@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import subprocess
+import time
 
 from runtime.media.latentsync_reply import resolve_ffmpeg_executable
 from runtime.media.managed_subprocess import run_managed_process
@@ -93,8 +95,29 @@ class LocalSongLibrary:
                 raise LocalSongError('LOCAL_SONG_FILE_IN_USE') from None
 
     def _prepare(self, source, output):
-        ffmpeg = resolve_ffmpeg_executable(self.environment)
+        try:
+            ffmpeg = resolve_ffmpeg_executable(self.environment)
+        except RuntimeError as exc:
+            raise LocalSongError('LOCAL_SONG_FFMPEG_UNAVAILABLE') from exc
         probe = ffmpeg.with_name('ffprobe.exe' if ffmpeg.suffix.lower() == '.exe' else 'ffprobe')
+        if not probe.is_file():
+            # The base application's imageio-ffmpeg wheel ships FFmpeg only.
+            # Convert to a known playable format and use its output timeline.
+            result = run_managed_process(
+                [str(ffmpeg), '-v', 'info', '-nostdin', '-y', '-i', str(source),
+                 '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264',
+                 '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+                 '-c:a', 'aac', '-movflags', '+faststart', '-progress', 'pipe:1',
+                 '-nostats', str(output)], timeout_seconds=1800)
+            times = re.findall(rb'^out_time_us=(\d+)\s*$', result.stdout, re.MULTILINE)
+            duration = max((int(value) for value in times), default=0) / 1_000_000
+            header = re.search(rb'Duration: (\d+):(\d+):(\d+(?:\.\d+)?)', result.stderr)
+            if header:
+                hours, minutes, seconds = map(float, header.groups())
+                duration = hours * 3600 + minutes * 60 + seconds
+            if result.returncode or duration <= 0 or not output.is_file() or not output.stat().st_size:
+                raise LocalSongError('LOCAL_SONG_VIDEO_INVALID')
+            return duration
         result = run_managed_process(
             [str(probe), '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(source)],
             timeout_seconds=30)
@@ -215,7 +238,26 @@ class LocalSongLibrary:
                 if isinstance(exc, LocalSongError) and str(exc) == 'LOCAL_SONG_CATALOG_INVALID':
                     raise
                 report['failed'] += 1
-                report['errors'].append({'name': path.name, 'code': str(exc) if isinstance(exc, LocalSongError) else 'LOCAL_SONG_IMPORT_FAILED'})
+                code = 'LOCAL_SONG_IMPORT_FAILED'
+                if isinstance(exc, LocalSongError):
+                    code = str(exc)
+                elif isinstance(exc, PermissionError):
+                    code = 'LOCAL_SONG_PERMISSION_DENIED'
+                elif isinstance(exc, FileNotFoundError):
+                    code = 'LOCAL_SONG_FILE_MISSING'
+                elif isinstance(exc, (subprocess.TimeoutExpired, TimeoutError)):
+                    code = 'LOCAL_SONG_PROCESS_TIMEOUT'
+                elif isinstance(exc, OSError) and (exc.errno == 28 or getattr(exc, 'winerror', None) == 112):
+                    code = 'LOCAL_SONG_DISK_FULL'
+                report['errors'].append({'name': path.name, 'code': code})
+                try:
+                    log = self.root.parent / 'logs' / 'media-provider.jsonl'
+                    log.parent.mkdir(parents=True, exist_ok=True)
+                    with log.open('a', encoding='utf-8') as stream:
+                        stream.write(json.dumps({'timestamp': int(time.time()), 'provider': 'ffmpeg',
+                                                 'error_code': code}) + '\n')
+                except OSError:
+                    pass
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
