@@ -87,7 +87,7 @@ def test_reconfigure_keeps_delegate_open_until_dispatched_call_returns(tmp_path)
     (PermissionError("private path"), "MEM0_STORAGE_PERMISSION_DENIED"),
     (OSError(errno.ENOSPC, "private path"), "MEM0_STORAGE_FULL"),
     (RuntimeError("Storage folder private path is already accessed by another instance of Qdrant client."), "MEM0_STORAGE_LOCKED"),
-    (RuntimeError("private key and content"), "MEM0_INITIALIZATION_FAILED"),
+    (RuntimeError("private key and content"), "MEM0_INIT_FACTORY_APP_RUNTIME"),
 ])
 def test_initialization_failures_expose_only_fixed_metadata(tmp_path, error, code):
     def fail():

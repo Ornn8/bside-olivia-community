@@ -2439,7 +2439,7 @@ def test_factory_is_lazy_and_returns_stable_disabled_or_unavailable_ports(tmp_pa
         memory_factory=failing_factory,
     )
     assert isinstance(unavailable, UnavailableConversationMemoryPort)
-    assert unavailable.reason_code == "MEM0_INITIALIZATION_FAILED"
+    assert unavailable.reason_code == "MEM0_INIT_FACTORY_APP_RUNTIME"
     assert unavailable.config.data_root == _config(tmp_path).data_root
 
 

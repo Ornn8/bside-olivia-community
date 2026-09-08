@@ -137,6 +137,14 @@ def test_install_failure_details_survive_zip_without_raw_exception():
         assert b'private' not in raw
 
 
+def test_memory_initialization_stage_survives_support_bundle():
+    source = _source()
+    code = 'MEM0_INIT_BACKEND_VECTOR_STORE_VALUE'
+    source['health']['checks']['memory'] = {'state': 'unavailable', 'error_code': code}
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        assert json.loads(archive.read('health.json'))['checks']['memory']['error_code'] == code
+
+
 @pytest.mark.parametrize("bad", [-1, True, 10**15 + 1, "private-path"])
 def test_video_progress_rejects_non_count_values(bad):
     source = _source()
