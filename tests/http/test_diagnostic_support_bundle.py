@@ -144,6 +144,30 @@ def test_tts_worker_failure_export_contains_only_category(tmp_path, stderr, cate
                (b'C:/Users', b'secret_module', b'private letter', b'sk-secret'))
 
 
+def test_tts_worker_status_survives_local_log_and_bundle_projection(tmp_path):
+    from tts.delivery import _record_worker_failure
+    from original_client_server import _media_provider_tail
+    status = tmp_path / 'status.json'
+    status.write_text(json.dumps({'phase': 'model_load', 'error_type': 'ModuleNotFoundError',
+        'error_code': 'BREEZE_MODULE_MISSING', 'private': 'private letter sk-secret'}))
+    _record_worker_failure({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)},
+        'TTS_EXTERNAL_PROCESS_FAILED', returncode=2, status_path=status)
+    status.unlink()
+    source = _source()
+    source['media_provider_tail'] = list(_media_provider_tail(tmp_path))
+    source['media_provider_tail'].append({'error_code': 'TTS_EXTERNAL_PROCESS_FAILED',
+        'diagnostic': json.dumps({'worker': {'phase': 'private-path', 'error_type': 'sk-secret',
+                                            'error_code': 'PRIVATE_LETTER'}})})
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+    records = [json.loads(line) for line in raw.splitlines()]
+    assert records[0]['worker'] == {'phase': 'model_load', 'error_type': 'ModuleNotFoundError',
+                                   'error_code': 'BREEZE_MODULE_MISSING'}
+    assert records[0]['returncode'] == 2
+    assert 'worker' not in records[1]
+    assert all(secret not in raw for secret in (b'private', b'sk-secret', b'PRIVATE_LETTER'))
+
+
 @pytest.mark.parametrize('mode', ['musical_video', 'spoken_video'])
 def test_media_task_diagnostic_retains_exact_video_route(mode):
     source = _source()

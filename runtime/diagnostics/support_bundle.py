@@ -341,6 +341,11 @@ def _project_media_tail(value: object) -> bytes:
             except (ValueError, TypeError):
                 detail = dict(part.strip().split('=', 1) for part in raw.split(';') if '=' in part)
             if isinstance(detail, Mapping):
+                if "worker" in detail:
+                    from tts.external_breeze_worker import project_worker_status
+                    worker = project_worker_status(detail["worker"])
+                    if worker:
+                        record["worker"] = worker
                 if isinstance(detail.get('stage'), str) and detail['stage'] in {'prepare', 'voice_plan', 'render', 'publish'}:
                     record['stage'] = detail['stage']
                 for field in ('candidate_code', 'cause_candidate_code'):
