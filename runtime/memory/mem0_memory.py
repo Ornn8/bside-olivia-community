@@ -228,7 +228,9 @@ class Mem0AdapterError(RuntimeError):
         super().__init__(code)
 
 
-def _initialization_error_code(error: BaseException) -> str:
+def _initialization_error_code(error: BaseException, stage: str | None = None) -> str:
+    if isinstance(error, Mem0AdapterError):
+        return error.code
     if getattr(error, 'winerror', None) in (32, 33):
         return "MEM0_STORAGE_LOCKED"
     if getattr(error, 'winerror', None) == 206 or getattr(error, 'errno', None) == errno.ENAMETOOLONG:
@@ -243,7 +245,37 @@ def _initialization_error_code(error: BaseException) -> str:
         " is already accessed by another instance of Qdrant client." in str(error)
     ):
         return "MEM0_STORAGE_LOCKED"
-    return "MEM0_INITIALIZATION_FAILED"
+    if stage is None:
+        return "MEM0_INITIALIZATION_FAILED"
+    # Only constant classifications leave the process. No exception text, module
+    # names, filesystem paths, provider URLs or credentials enter diagnostics.
+    kind = next((label for cls, label in (
+        (ModuleNotFoundError, 'MODULE_MISSING'), (ImportError, 'IMPORT'),
+        (TimeoutError, 'TIMEOUT'), (TypeError, 'TYPE'), (ValueError, 'VALUE'),
+        (AttributeError, 'ATTRIBUTE'), (KeyError, 'KEY'),
+        (OSError, 'IO'), (RuntimeError, 'RUNTIME'),
+    ) if isinstance(error, cls)), 'UNEXPECTED')
+    component = 'APP'
+    trace = error.__traceback__
+    while trace is not None:
+        module = trace.tb_frame.f_globals.get('__name__', '')
+        for prefixes, label in (
+            (('qdrant_client',), 'VECTOR_STORE'),
+            (('sentence_transformers', 'transformers', 'torch', 'huggingface_hub'), 'EMBEDDING'),
+            (('openai', 'httpx', 'httpcore'), 'LLM_CLIENT'),
+            (('sqlite3',), 'SQLITE'), (('mem0',), 'MEM0'),
+        ):
+            if isinstance(module, str) and any(module == p or module.startswith(p+'.') for p in prefixes):
+                component = label
+        trace = trace.tb_next
+    return f'MEM0_INIT_{stage}_{component}_{kind}'
+
+
+def _initialization_step(stage, operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except Exception as error:
+        raise Mem0AdapterError(_initialization_error_code(error, stage)) from None
 
 
 _EXTRACTION_INVALID_CODES = frozenset(
@@ -610,10 +642,10 @@ class DeferredConversationMemoryAdapter:
                     close = getattr(delegate, "close", None)
                     if callable(close):
                         close()
-            except Exception:
+            except Exception as error:
                 with self._lock:
                     self._retired.extend(retired)
-                    self._reason_code, self._thread = "MEM0_INITIALIZATION_FAILED", None
+                    self._reason_code, self._thread = _initialization_error_code(error, 'CLOSE'), None
                 return
             with self._lock:
                 if self._closed:
@@ -622,8 +654,8 @@ class DeferredConversationMemoryAdapter:
                 generation, factory = self._generation, self._factory
             candidate = None
             try:
-                candidate = factory()
-                status = candidate.status()
+                candidate = _initialization_step('FACTORY', factory)
+                status = _initialization_step('STATUS', candidate.status)
                 reason_code = None if status.status == "available" and status.enabled is True else status.reason_code or "MEM0_INITIALIZATION_FAILED"
             except Exception as error:
                 reason_code = _initialization_error_code(error)
@@ -2048,7 +2080,7 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
 
 
 def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
-    module = _load_product_mem0_module()
+    module = _initialization_step('IMPORT', _load_product_mem0_module)
     memory_type = getattr(module, "Memory", None)
     if memory_type is None or not hasattr(memory_type, "from_config"):
         raise ImportError("Mem0 Memory.from_config is unavailable")
@@ -2064,7 +2096,7 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
     if keyless:
         # Mem0 treats an empty key as an ambient credential; prevent that fallback.
         factory_config["llm"] = {**llm_config, "config": {**provider_config, "api_key": "olivia-no-auth"}}
-    backend = memory_type.from_config(factory_config)
+    backend = _initialization_step('BACKEND', memory_type.from_config, factory_config)
     provider = getattr(backend, "llm", None)
     if keyless and provider is not None:
         import httpx
@@ -2086,7 +2118,8 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
         backend.llm = _ValidatedExtractionLLM(provider)
     from runtime.memory.mem0_observation_time import bind_observation_time
     from runtime.memory.mem0_history_attribution import bind_history_attribution
-    return bind_history_attribution(bind_observation_time(backend))
+    return _initialization_step('ATTRIBUTION', bind_history_attribution,
+                                _initialization_step('OBSERVATION', bind_observation_time, backend))
 
 
 def create_mem0_adapter(
@@ -2105,18 +2138,19 @@ def create_mem0_adapter(
             "MEM0_EMBEDDING_CACHE_UNAVAILABLE", config=active
         )
     try:
-        _require_safe_mem0_import_state()
-        active.qdrant_path.parent.mkdir(parents=True, exist_ok=True)
-        active.history_path.parent.mkdir(parents=True, exist_ok=True)
-        backend = (memory_factory or _default_factory)(active.provider_config(environ))
-        return Mem0ConversationMemoryAdapter(backend, active)
+        _initialization_step('IMPORT_CHECK', _require_safe_mem0_import_state)
+        _initialization_step('STORAGE', active.qdrant_path.parent.mkdir, parents=True, exist_ok=True)
+        _initialization_step('STORAGE', active.history_path.parent.mkdir, parents=True, exist_ok=True)
+        provider_config = _initialization_step('CONFIG', active.provider_config, environ)
+        backend = _initialization_step('FACTORY', memory_factory or _default_factory, provider_config)
+        return _initialization_step('ADAPTER', Mem0ConversationMemoryAdapter, backend, active)
     except Mem0AdapterError as exc:
         return UnavailableConversationMemoryPort(exc.code, config=active)
     except (ModuleNotFoundError, ImportError):
         return UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED", config=active)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         return UnavailableConversationMemoryPort(
-            _initialization_error_code(error), config=active
+            _initialization_error_code(error, 'CONFIGURE'), config=active
         )
 
 
