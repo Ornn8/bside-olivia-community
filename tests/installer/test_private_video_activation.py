@@ -252,7 +252,12 @@ def test_clean_private_activation_uses_real_split_installer_without_archive(
             return self._alive
 
     manifest, offline, manifest_sha256 = _manifest_fixture(tmp_path)
-    monkeypatch.setattr("video_capability_install.threading.Thread", InlineThread)
+    import threading
+    from types import SimpleNamespace
+
+    # Keep the verifier's real thread pool independent of this installer stub.
+    installer_threads = dict(vars(threading), Thread=InlineThread)
+    monkeypatch.setattr("video_capability_install.threading", SimpleNamespace(**installer_threads))
     monkeypatch.setattr(
         VideoCapabilityInstaller, "_runtime_artifacts_ready", lambda *_: True
     )
