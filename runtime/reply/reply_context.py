@@ -18,6 +18,9 @@ class UnsupportedReplyMode(ReplyContextError):
 
 class ReplyMode(str, Enum):
     TEXT_LETTER = "text_letter"
+    VOICE_REPLY = "voice_reply"
+    SINGING_VIDEO = "singing_video"
+    VOICE_SONG_VIDEO = "voice_song_video"
     SPOKEN_VIDEO = "spoken_video"
     MUSICAL_VIDEO = "musical_video"
     FUTURE_IM = "future_im"
@@ -376,7 +379,7 @@ class OutputConstraints:
     def for_mode(cls, mode: ReplyMode) -> "OutputConstraints":
         if mode is ReplyMode.TEXT_LETTER:
             return cls(OutputChannel.LETTER, max_characters=1_200)
-        if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO}:
+        if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO, ReplyMode.VOICE_REPLY, ReplyMode.SINGING_VIDEO, ReplyMode.VOICE_SONG_VIDEO}:
             return cls(OutputChannel.SPOKEN_TEXT)
         if mode is ReplyMode.FUTURE_IM:
             return cls(OutputChannel.INSTANT_MESSAGE)
@@ -403,7 +406,7 @@ class ReplyModeAdapter:
     def to_wire(self, mode: ReplyMode) -> str:
         if mode is ReplyMode.TEXT_LETTER:
             return "text"
-        if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO}:
+        if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO, ReplyMode.VOICE_REPLY, ReplyMode.SINGING_VIDEO, ReplyMode.VOICE_SONG_VIDEO}:
             return "video"
         raise UnsupportedReplyMode()
 

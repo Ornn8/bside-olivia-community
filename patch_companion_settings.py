@@ -404,6 +404,9 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'He(()=>{p.value||d.fetchMailList(!0)})',
         'He(()=>{d.fetchMailList(!0),d.startPolling()})',
     )
+    route_anchor = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))'
+    source = source.replace(route_anchor,
+        'Te.interceptors.request.use(async e=>{if(oliviaLocalMailboxRequest(e)&&window.__oliviaPrepareLetterRoute)e=await window.__oliviaPrepareLetterRoute(e);const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))')
     source = source.replace(
         'timestamp:e.createdAt*1e3',
         'timestamp:e.createdAt==null?null:e.createdAt*1e3',
@@ -428,6 +431,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
         're.isUnread!==Ee.isUnread)&&',
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)&&',
     )
+    source = _repair_native_letter_audio(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
@@ -621,3 +625,47 @@ __all__ = [
     "sha256_file",
     "validate_api_base",
 ]
+
+
+def _repair_native_letter_audio(source: str) -> str:
+    """Extend native props and paper content; keep original imagery and type."""
+    source = source.replace(
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
+        'const replyAudio=M.value?.received?.audioUrl;'
+        'if(replyAudio){yt.hide();await d.startVideoDownload(replyAudio,R);return}'
+        'yt.hide(),Ds(R)',
+    )
+    source = source.replace(
+        'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")',
+        'A.videoPending?"林离录视频中":["PENDING","QUEUED","PROCESSING"].includes(A.audioStatus)?"林离正在录语音…":o(i)("mailbox_waiting_for_reply")',
+    )
+    def cover_progress(value):
+        if 'coverId:e.coverId' in value:
+            return value
+        value = value.replace('audioStatus:e.audioStatus||"",', 'coverId:e.coverId||"",audioStatus:e.audioStatus||"",')
+        value = value.replace('props:{audioUrl:{},', 'props:{coverId:{},audioUrl:{},')
+        value = value.replace('F(ks,{audioUrl:', 'F(ks,{coverId:i.mail.coverId,audioUrl:')
+        value = value.replace('["audioUrl","audioStatus","songUrl",', '["coverId","audioUrl","audioStatus","songUrl",')
+        value = value.replace('{"audio-url":A.audioUrl', '{"cover-id":A.coverId||"","audio-url":A.audioUrl')
+        return value.replace('["audio-url","audio-status","song-url"]', '["cover-id","audio-url","audio-status","song-url"]')
+    if 'olivia-letter-audio' in source:
+        return cover_progress(source)
+    source = source.replace('letterStatus:e.letterStatus,',
+        'audioStatus:e.audioStatus||"",audioRevision:e.audioRevision||"",letterStatus:e.letterStatus,')
+    source = source.replace('videoUrl:e.replyVideoUrl||void 0',
+        'audioUrl:e.replyAudioUrl||"",songUrl:e.replySongUrl||"",videoUrl:e.replyVideoUrl||void 0')
+    source = source.replace('__name:"MailBoxReplyContent",props:{',
+        '__name:"MailBoxReplyContent",props:{audioUrl:{},audioStatus:{},songUrl:{},')
+    source = source.replace('F(ks,{key:',
+        'F(ks,{audioUrl:i.mail.received?.audioUrl,audioStatus:i.mail.audioStatus,songUrl:i.mail.received?.songUrl,key:')
+    source = source.replace('["modelValue","videoUrl","timestamp","type"',
+        '["audioUrl","audioStatus","songUrl","modelValue","videoUrl","timestamp","type"')
+    source = source.replace('["model-value","videoUrl","timestamp","type"',
+        '["audioUrl","audioStatus","songUrl","model-value","videoUrl","timestamp","type"')
+    source = source.replace('re.isUnread!==Ee.isUnread',
+        're.audioRevision!==Ee.audioRevision||re.audioStatus!==Ee.audioStatus||re.isUnread!==Ee.isUnread')
+    anchor='[A.type==="error"?'
+    replacement='[A.type==="text"&&(A.audioUrl||A.audioStatus)?n("olivia-letter-audio",{"audio-url":A.audioUrl||"","audio-status":A.audioStatus||"","song-url":A.songUrl||""},null,8,["audio-url","audio-status","song-url"]):Y("",!0),A.type==="error"?'
+    source = source.replace(anchor,replacement,1)
+    return cover_progress(source)

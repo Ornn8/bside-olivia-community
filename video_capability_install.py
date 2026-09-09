@@ -40,6 +40,57 @@ from runtime.media.managed_voice_reference import (
 
 _SHA256 = 64
 _PUBLIC_BUNDLES = {"ordinary_video", "music_video"}
+_LINLI_2250_SHA256 = '6d1e48b0494c2fe6971e316e5e5aefb81ae6cfda6e5434641d444cdf95720ffb'
+
+
+def restore_combined_supplements(data_root: Path, archive_path: Path) -> Path | None:
+    """Restore bounded, validated supplements embedded in a complete offline ZIP."""
+    from tts.breeze_adapter import adapter_metadata
+    names = {'adapter_config.json', 'adapter.safetensors', 'base-model-assets.json',
+             'provenance.json', 'LICENSE', 'NOTICE'}
+    selected = None
+    try:
+        with zipfile.ZipFile(archive_path) as outer, tempfile.TemporaryDirectory(prefix='olivia-supplement-') as temporary:
+            work = Path(temporary)
+            for name in ('Olivia-voice-reference-offline.zip', 'Olivia-breeze-2250-offline.zip'):
+                entries = [entry for entry in outer.infolist() if entry.filename == name]
+                if not entries:
+                    continue
+                if len(entries) != 1 or not 0 < entries[0].file_size <= 32 * 1024 * 1024:
+                    raise ValueError('invalid supplement')
+                nested = work / name
+                nested.write_bytes(outer.read(entries[0]))
+                if name == 'Olivia-voice-reference-offline.zip':
+                    restore_voice_reference_supplement(data_root, nested)
+                    continue
+                staged = work / 'adapter'
+                staged.mkdir()
+                with zipfile.ZipFile(nested) as inner:
+                    entries = inner.infolist()
+                    if len(entries) != len(names) or {entry.filename for entry in entries} != names:
+                        raise ValueError('invalid adapter members')
+                    if sum(entry.file_size for entry in entries) > 32 * 1024 * 1024:
+                        raise ValueError('invalid adapter size')
+                    for entry in entries:
+                        (staged / entry.filename).write_bytes(inner.read(entry))
+                if adapter_metadata(staged)['sha256'] != _LINLI_2250_SHA256:
+                    raise ValueError('invalid adapter digest')
+                video = _checked_install_root(data_root.resolve(), create=True)
+                shared = _inside(video, video / 'shared')
+                shared.mkdir(exist_ok=True)
+                _reject_reparse_tree(shared)
+                target = _inside(video, shared / 'linli-2250')
+                if target.exists():
+                    if adapter_metadata(target)['sha256'] != _LINLI_2250_SHA256:
+                        raise ValueError('existing adapter differs')
+                else:
+                    staging = shared / ('linli-2250-' + uuid.uuid4().hex + '.tmp')
+                    shutil.copytree(staged, staging)
+                    os.replace(staging, target)
+                selected = target
+        return selected
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise VideoCapabilityError('VIDEO_ADAPTER_SUPPLEMENT_INVALID') from exc
 
 
 def restore_voice_reference_supplement(data_root: Path, archive_path: Path) -> None:
@@ -82,6 +133,8 @@ _SOURCE_MODES = {"auto", "official"}
 _SOURCE_IDS = {"domestic", "official"}
 _RUNTIME_ENVIRONMENT_FILE = "runtime-environment.json"
 _RUNTIME_ENVIRONMENT_KEYS = {
+    "OLIVIA_ACE_ROOT", "OLIVIA_ACE_PYTHON", "OLIVIA_ACE_VOICE_LORA",
+    "OLIVIA_ACE_REFERENCE", "OLIVIA_ACE_ASR_MODEL",
     "OLIVIA_FFMPEG_EXE",
     "OLIVIA_COSYVOICE_ROOT",
     "OLIVIA_COSYVOICE_PYTHON",
@@ -1155,6 +1208,8 @@ class VideoCapabilityInstaller:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
         self.data_root = data_root.resolve()
+        from runtime.media.component_packages import MediaComponents
+        self.media_components = MediaComponents(self.data_root)
         self.install_root = _checked_install_root(self.data_root, create=True)
         self.manifest = manifest
         self._opener = opener
@@ -1451,6 +1506,11 @@ class VideoCapabilityInstaller:
             }
             if self._hardware is not None:
                 result["hardware"] = dict(self._hardware)
+            try:
+                existing = _load_video_runtime_environment(self.data_root)
+            except VideoCapabilityError:
+                existing = {}
+            result["components"] = self.media_components.status(existing)
             return result
 
     def _set_runtime_import_state(
@@ -1596,6 +1656,22 @@ class VideoCapabilityInstaller:
                 ):
                     raise VideoCapabilityError("VIDEO_REPARSE_POINT_FORBIDDEN")
             _reject_reparse_tree(generated_root)
+            adapter_options = {}
+            managed_adapter = _inside(self.install_root, self.install_root / 'shared/linli-2250')
+            if managed_adapter.is_dir():
+                _reject_reparse_tree(managed_adapter)
+                from tts.breeze_adapter import adapter_metadata
+                if adapter_metadata(managed_adapter)['sha256'] != _LINLI_2250_SHA256:
+                    raise VideoCapabilityError('VIDEO_ADAPTER_SUPPLEMENT_INVALID')
+                adapter_options['adapter_dir'] = str(managed_adapter)
+            if generated_config.is_file():
+                try:
+                    previous = json.loads(generated_config.read_text(encoding='utf-8'))
+                    adapter_dir = previous.get('settings', {}).get('provider_options', {}).get('adapter_dir')
+                    if isinstance(adapter_dir, str) and adapter_dir.strip():
+                        adapter_options['adapter_dir'] = adapter_dir
+                except (OSError, ValueError, AttributeError):
+                    raise VideoCapabilityError('VIDEO_BUNDLE_INSTALL_FAILED')
             generated_temporary.write_text(
                 json.dumps(
                     {
@@ -1613,6 +1689,7 @@ class VideoCapabilityInstaller:
                             "fallback": "text",
                             "fp16": True,
                             "provider_options": {
+                                **adapter_options,
                                 "external_python": str(external_python),
                                 "model_variant": "int8_hybrid",
                                 "model_license_path": str(model_license),
@@ -1919,7 +1996,29 @@ class VideoCapabilityInstaller:
         return self.start(bundle_id=bundle_id, source_mode=source_mode, accept_licenses=accept_licenses)
 
     def import_offline(self, *, bundle_id: str, offline_root: Path, source_mode: str = "official", accept_licenses: bool = False) -> str:
-        return self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
+        adapter = None
+        voice_upgrade_only = False
+        if offline_root.is_file():
+            with zipfile.ZipFile(offline_root) as archive:
+                voice_upgrade_only = archive.namelist() == ['Olivia-breeze-2250-offline.zip']
+        if voice_upgrade_only and bundle_id != 'ordinary_video':
+            return 'NOOP'
+        if bundle_id == 'ordinary_video' and offline_root.is_file():
+            with self._lock:
+                if any(thread.is_alive() for thread in self._threads.values()):
+                    return 'NOOP'
+                adapter = restore_combined_supplements(self.data_root, offline_root)
+                config = _inside(self.install_root, self.install_root / 'generated/tts_local.json')
+                if adapter is not None and config.is_file():
+                    value = json.loads(config.read_text(encoding='utf-8'))
+                    value['settings'].setdefault('provider_options', {})['adapter_dir'] = str(adapter)
+                    temporary = config.with_name(config.name + '.' + uuid.uuid4().hex + '.tmp')
+                    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+                    os.replace(temporary, config)
+        if voice_upgrade_only:
+            return 'APPLIED' if adapter is not None else 'REJECTED'
+        result = self.start(bundle_id=bundle_id, source_mode=source_mode, offline_root=offline_root, accept_licenses=accept_licenses)
+        return 'APPLIED' if adapter is not None and result == 'NOOP' else result
 
     def import_runtime_root(
         self,
@@ -2680,7 +2779,22 @@ class VideoCapabilityInstaller:
                 raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
             if _is_reparse_point(root):
                 raise VideoCapabilityError("VIDEO_STAGING_INVALID")
-            _verify_staged_tree(root, expected)
+            last_verification_progress = 0.0
+
+            def verification_progress(done: int, total: int) -> None:
+                nonlocal last_verification_progress
+                if self._pause.is_set():
+                    raise InterruptedError
+                now = time.monotonic()
+                if done != total and now - last_verification_progress < 0.5:
+                    return
+                last_verification_progress = now
+                with self._lock:
+                    self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
+                              current=f"校验安装文件 {done / 1048576:.1f} / {total / 1048576:.1f} MiB",
+                              source=source_used)
+
+            _verify_staged_tree(root, expected, workers=4, progress=verification_progress)
             if "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {}):
                 self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
                           current="安装本地运行依赖（无需联网）", source=source_used)
@@ -2907,6 +3021,7 @@ class VideoCapabilityInstaller:
                 destination,
                 strip_components=item.install.strip_components,
                 progress=progress,
+                verify_written=False,
             )
             expected.extend({**entry, "path": f"{item.install.destination}/{entry['path']}"} for entry in extracted)
         file_by_id = {item.identifier: item for item in bundle.files}
@@ -2936,6 +3051,7 @@ class VideoCapabilityInstaller:
                     strip_components=artifact.strip_components,
                     maximum_expanded_bytes=_MAX_RUNTIME_ARCHIVE_EXPANDED_BYTES,
                     progress=progress,
+                    verify_written=False,
                 )
                 expected.extend(
                     {
@@ -3341,6 +3457,7 @@ def _extract_zip_safely(
     strip_components: int,
     maximum_expanded_bytes: int | None = None,
     progress: Callable[[str, int, int], None] | None = None,
+    verify_written: bool = True,
 ) -> list[dict[str, object]]:
     if maximum_expanded_bytes is None:
         maximum_expanded_bytes = _MAX_ARCHIVE_EXPANDED_BYTES
@@ -3397,13 +3514,16 @@ def _extract_zip_safely(
                         if progress is not None:
                             progress("extracting", extracted_bytes, total)
                 expected.append({"path": relative, "size_bytes": written_bytes, "sha256": digest.hexdigest()})
-        verified_bytes = 0
-        for item in expected:
-            if _tree_entry(destination, str(item["path"])) != item:
-                raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
-            verified_bytes += int(item["size_bytes"])
-            if progress is not None:
-                progress("verifying", verified_bytes, total)
+        # Bundle installation verifies the complete on-disk tree before promotion.
+        # Standalone extraction retains its own read-back verification.
+        if verify_written:
+            verified_bytes = 0
+            for item in expected:
+                if _tree_entry(destination, str(item["path"])) != item:
+                    raise VideoCapabilityError("VIDEO_ARCHIVE_INVALID")
+                verified_bytes += int(item["size_bytes"])
+                if progress is not None:
+                    progress("verifying", verified_bytes, total)
         return expected
     except OSError as exc:
         winerror = getattr(exc, "winerror", None)
@@ -3622,7 +3742,15 @@ def _load_video_runtime_environment(
 
 def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     with _PROMOTION_LOCK:
-        return _load_video_runtime_environment(data_root)
+        from runtime.media.component_packages import MediaComponents
+        try:
+            result = _load_video_runtime_environment(data_root)
+        except VideoCapabilityError:
+            result = {}
+            if not (data_root / 'capabilities/media-components/installed.json').exists():
+                raise
+        result.update(MediaComponents(data_root).environment())
+        return result
 
 
 def apply_runtime_text_patch(

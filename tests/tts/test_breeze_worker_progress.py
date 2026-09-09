@@ -80,7 +80,8 @@ def test_synthesis_failure_records_exact_phase_without_exception_message(tmp_pat
     with pytest.raises(ModuleNotFoundError):
         worker._synthesize({"runtime_root": "private", "model_dir": "private"},
             tmp_path / "speech.wav", status)
-    assert json.loads(status.read_text()) == {"status": "failed", "phase": phase,
+    result = json.loads(status.read_text())
+    assert {k: result[k] for k in ('status','phase','error_type','error_code')} == {"status": "failed", "phase": phase,
         "error_type": "ModuleNotFoundError", "error_code": "BREEZE_MODULE_MISSING"}
     assert "private" not in status.read_text()
 

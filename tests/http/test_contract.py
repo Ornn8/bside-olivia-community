@@ -202,6 +202,10 @@ def test_http_startup_exposes_core_health_while_mem0_initializes(
         local_server.install_reply_task_lifecycle(restarted)
         async with TestClient(TestServer(restarted, access_log=None)):
             pass
+        # Shutdown closes Mem0 asynchronously; wait for that generation to exit
+        # before testing an explicit fresh initialization, independent of timing.
+        if memory._thread is not None:
+            await asyncio.to_thread(memory._thread.join, 2)
         failure = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), lambda: UnavailableConversationMemoryPort("MEM0_IMPORT_FAILED"))
         assert memory.reconfigure_from(failure) and memory.start_initialization()
         await asyncio.sleep(0.05)
@@ -2668,6 +2672,11 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "UNAVAILABLE",
         ],
         "error_codes": {
+            "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
+            "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
+            "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+            "COVER_GENERATION_FAILED": {"status": "FAILED", "retryable": True},
+            "COVER_GENERATION_TIMEOUT": {"status": "FAILED", "retryable": True},
             "BREEZE_TTS_10GB_VRAM_REQUIRED": {
                 "status": "UNAVAILABLE",
                 "retryable": True,

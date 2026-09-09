@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from llm_gateway import (
     GatewayConfig,
+    GatewayError,
     GatewayRequestScope,
     InvalidGatewayInput,
     ManagedLLMConfig,
@@ -51,6 +52,34 @@ ROOT_MESSAGES = (
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status,code", [(402, ""), (429, "insufficient_quota"), (403, "insufficient_balance")])
+def test_provider_quota_is_sanitized_and_never_retried(monkeypatch, stream, status, code):
+    async def exercise():
+        calls = []
+
+        async def handler(request):
+            calls.append(1)
+            return web.json_response({"error": {"code": code, "message": "private billing detail"}}, status=status)
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), max_retries=2))
+            with pytest.raises(GatewayError) as caught:
+                if stream:
+                    _ = [delta async for delta in adapter.stream(ROOT_MESSAGES)]
+                else:
+                    await adapter.complete(ROOT_MESSAGES)
+        assert caught.value.code == "PROVIDER_QUOTA_EXHAUSTED"
+        assert caught.value.retryable is False
+        assert "private billing detail" not in str(caught.value)
+        assert len(calls) == 1
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
 
 
 def make_config(base_url: str, **overrides) -> GatewayConfig:
@@ -352,6 +381,27 @@ def test_song_content_scope_keeps_protocol_fail_closed(monkeypatch, content, fin
     monkeypatch.setattr(adapter, "_post_json", response)
     with pytest.raises(ProviderProtocolError):
         run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT))
+
+
+@pytest.mark.parametrize("style", ["chat_completions", "responses"])
+def test_song_content_requests_json_once_without_changing_other_scopes(monkeypatch, style):
+    adapter = OpenAICompatibleAdapter(make_config("http://127.0.0.1:1/v1", api_style=style))
+    seen = []
+
+    async def response(body, request_id, **kwargs):
+        seen.append(body)
+        if style == "chat_completions":
+            assert body["response_format"] == {"type": "json_object"}
+            return {"choices": [{"finish_reason": "stop", "message": {"content": '{"verse":[],"chorus":[]}'}}]}
+        assert body["text"] == {"format": {"type": "json_object"}}
+        return {"output_text": '{"verse":[],"chorus":[]}'}
+
+    monkeypatch.setattr(adapter, "_post_json", response)
+    result = run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.SONG_CONTENT))
+    assert result.text == '{"verse":[],"chorus":[]}'
+    assert len(seen) == 1
+    ordinary = adapter._body(ROOT_MESSAGES, stream=False)
+    assert "response_format" not in ordinary and "text" not in ordinary
 
 
 @pytest.mark.parametrize("scope", [GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING])

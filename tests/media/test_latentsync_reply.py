@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -166,3 +167,98 @@ def test_prepare_process_failure_is_reported(tmp_path: Path, monkeypatch, failur
     record = json.loads((data_root / "logs/media-provider.jsonl").read_text())
     assert str(caught.value) == "LATENTSYNC_FAILED"
     assert f"stderr_category={category}" in record["diagnostic"]
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_missing_job_audio_is_reported_without_paths(tmp_path, monkeypatch, known):
+    fixture = _fixture(tmp_path / "private folder")
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
+    def fail(command, **kwargs):
+        fixture.audio.unlink()
+        missing = str(fixture.audio) if known else "C:/private folder/secret letter.wav"
+        return subprocess.CompletedProcess(command, 1, b"", f"FileNotFoundError: [Errno 2] No such file or directory: '{missing}'")
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", fail)
+    data_root = tmp_path / "data"
+    with pytest.raises(latentsync_reply.LatentSyncReplyError):
+        _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
+    raw = (data_root / "logs/media-provider.jsonl").read_text()
+    record = json.loads(raw)
+    assert record["phase"] == "inference"
+    assert record["missing_component"] == ("audio" if known else "unknown")
+    assert record["inputs"] == {
+        "audio": {"exists": False, "readable": False},
+        "video": {"exists": True, "readable": True},
+        "output_parent": {"exists": True, "readable": True},
+    }
+    assert "private folder" not in raw and "speech.wav" not in raw and "secret letter" not in raw
+
+
+def test_missing_component_relative_path_is_mapped_without_scanning(tmp_path):
+    result = latentsync_reply._failure_context("inference",
+        "FileNotFoundError: [Errno 2] No such file or directory: 'configs/scheduler_config.json'",
+        {"runtime_root": tmp_path, "scheduler": tmp_path / "configs/scheduler_config.json"})
+    assert result == {"phase": "inference", "missing_component": "scheduler"}
+
+
+@pytest.mark.parametrize(("relative", "expected"), [
+    ("temp/private name.mp4", "runtime_temp"),
+    ("temp/../private name.mp4", "unknown"),
+    ("temporary/private name.mp4", "unknown"),
+])
+def test_runtime_temp_component_requires_containment(tmp_path, relative, expected):
+    result = latentsync_reply._failure_context("inference",
+        f"FileNotFoundError: [Errno 2] No such file or directory: '{relative}'",
+        {"runtime_root": tmp_path})
+    assert result == {"phase": "inference", "missing_component": expected}
+    assert "private name" not in json.dumps(result)
+
+
+def test_worker_reports_only_safe_exception_location(tmp_path):
+    _write(tmp_path / "scripts/__init__.py", b"")
+    _write(tmp_path / "scripts/inference.py", b"open('private letter secret.wav', 'rb')\n")
+    worker = Path(latentsync_reply.__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"
+    result = subprocess.run([sys.executable, str(worker)], cwd=tmp_path, capture_output=True)
+    assert result.returncode != 0
+    projected = latentsync_reply._failure_context("inference", result.stderr, {})
+    assert projected["exception_type"] == "FileNotFoundError"
+    assert projected["frames"] == [{"module": "scripts.inference", "line": 1}]
+    assert "secret" not in json.dumps(projected)
+    assert str(tmp_path) not in json.dumps(projected)
+
+
+def test_worker_marker_cannot_export_arguments_or_foreign_frames():
+    raw = 'OLIVIA_LATENTSYNC_FAILURE=' + json.dumps({
+        'exception_type': 'FileNotFoundError', 'missing_component': 'ffmpeg',
+        'frames': [{'module': 'subprocess', 'line': 99, 'args': 'private'},
+                   {'module': 'C:/private/letter.py', 'line': 1}],
+        'inputs': {'audio': {'exists': False}}, 'phase': 'source_prepare',
+        'filename': 'private',
+    })
+    projected = latentsync_reply._failure_context('inference', raw, {})
+    assert projected == {'phase': 'inference', 'missing_component': 'ffmpeg',
+                         'exception_type': 'FileNotFoundError',
+                         'frames': [{'module': 'subprocess', 'line': 99}]}
+
+
+def test_worker_identifies_subprocess_executable_without_filename(tmp_path):
+    _write(tmp_path / "scripts/__init__.py", b"")
+    # Force the Windows-style failure without depending on host PATH contents.
+    _write(tmp_path / "scripts/inference.py", b"import subprocess\nexec(compile('def fail():\\n executable = \\\"ffmpeg\\\"\\n raise FileNotFoundError(2, \\\"missing\\\")', 'synthetic.py', 'exec'), subprocess.__dict__)\nsubprocess.fail()\n")
+    worker = Path(latentsync_reply.__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"
+    result = subprocess.run([sys.executable, str(worker)], cwd=tmp_path, capture_output=True)
+    projected = latentsync_reply._failure_context("inference", result.stderr, {})
+    assert projected["missing_component"] == "ffmpeg"
+    assert projected["exception_type"] == "FileNotFoundError"
+    assert projected["frames"][-1]["module"] == "subprocess"
+
+
+@pytest.mark.parametrize(('relative', 'expected'), [
+    ('checkpoints/whisper/tiny.pt', 'whisper_weights'),
+    ('checkpoints/whisper/small.pt', 'whisper_weights'),
+    ('stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.bin', 'vae_weights'),
+    ('ffmpeg.exe', 'ffmpeg'),
+])
+def test_missing_runtime_alternatives_are_classified(tmp_path, relative, expected):
+    result = latentsync_reply._failure_context('inference',
+        f"FileNotFoundError: No such file or directory: '{relative}'", {'runtime_root': tmp_path})
+    assert result == {'phase': 'inference', 'missing_component': expected}

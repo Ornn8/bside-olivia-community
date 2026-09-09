@@ -399,6 +399,8 @@ def test_letter_send_does_not_wait_for_the_full_video_runtime_probe(
     tmp_path, monkeypatch
 ):
     import local_server
+    from runtime.media import ace_cover
+    monkeypatch.setattr(ace_cover, "cover_configured", lambda _environment: True)
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -407,7 +409,7 @@ def test_letter_send_does_not_wait_for_the_full_video_runtime_probe(
     monkeypatch.setattr(local_server, "video_reply_settings_store", settings)
     monkeypatch.setattr(
         local_server,
-        "_musical_video_configured",
+        "_singing_video_configured",
         lambda _environment: True,
         raising=False,
     )

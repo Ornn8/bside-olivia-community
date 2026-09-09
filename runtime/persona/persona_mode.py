@@ -7,6 +7,9 @@ from runtime.reply.reply_context import ReplyMode
 
 _PERSONA_MODE_BY_REPLY_MODE = {
     ReplyMode.TEXT_LETTER: "text_letter",
+    ReplyMode.VOICE_REPLY: "spoken_video",
+    ReplyMode.SINGING_VIDEO: "musical_video",
+    ReplyMode.VOICE_SONG_VIDEO: "musical_video",
     ReplyMode.SPOKEN_VIDEO: "spoken_video",
     ReplyMode.MUSICAL_VIDEO: "musical_video",
     ReplyMode.FUTURE_IM: "future_im",

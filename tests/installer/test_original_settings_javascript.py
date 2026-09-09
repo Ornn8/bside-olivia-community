@@ -172,14 +172,10 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "API key" in source
     assert "OpenCode Go" in source
     assert "DeepSeek 官方" in source
-    assert "自动选择（国内源优先）" in source
-    assert "仅官方源" in source
     assert "导入离线包（暂不可用）" not in source
     assert "等待可信签名与受限导入校验完成" not in source
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
     assert "暂停下载" in source
-    assert "继续下载" in source
-    assert "约 317 MiB" in source
     assert "无需 GPU" in source
     assert "完成初始设置" in source
     assert "未配置大模型时无法进行真实对话" in source
@@ -195,15 +191,6 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "innerHTML" not in source
 
 
-def test_paused_memory_download_keeps_its_original_source_selection() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    memory_panel = source.split(
-        "const renderMem0CapabilityPanel = async (panel) => {", 1
-    )[1].split("const videoCapabilityViewState", 1)[0]
-
-    assert 'stateValue === "paused"' in memory_panel
-    assert '["auto", "official"].includes(payload.source)' in memory_panel
-    assert "source.value = payload.source" in memory_panel
 
 
 def test_memory_capability_offers_direct_offline_zip_import() -> None:
@@ -212,19 +199,11 @@ def test_memory_capability_offers_direct_offline_zip_import() -> None:
         "const renderMem0CapabilityPanel = async (panel) => {", 1
     )[1].split("const videoCapabilityViewState", 1)[0]
 
-    assert 'button("断网恢复：导入离线包（ZIP）"' in memory_panel
+    assert 'button("导入记忆离线包（ZIP）"' in memory_panel
     assert '{ action: "import_offline" }' in memory_panel
     assert "无需解压" in memory_panel
 
 
-def test_paused_offline_memory_import_cannot_fall_through_to_online_resume() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    memory_panel = source.split(
-        "const renderMem0CapabilityPanel = async (panel) => {", 1
-    )[1].split("const videoCapabilityViewState", 1)[0]
-
-    assert "const onlineInstallAvailable = !offlineImport && (" in memory_panel
-    assert '|| stateValue === "paused"' in memory_panel
 
 
 def test_memory_offline_import_progress_is_not_described_as_a_download() -> None:
@@ -258,115 +237,12 @@ def test_memory_runtime_preparation_shows_live_elapsed_time() -> None:
     assert "mem0RuntimeProgressStartedAt = Date.now();" in memory_panel
 
 
-def test_video_capability_panel_exposes_scoped_uninstall_action() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel", 1)[0]
-
-    assert 'const canUninstall = payload && payload.can_uninstall === true;' in video_panel
-    assert 'button("卸载视频模型与运行依赖"' in video_panel
-    assert '{ action: "uninstall" }' in video_panel
-    assert "已生成的视频、信件和记忆会保留" in video_panel
 
 
-def test_video_uninstall_button_remains_visible_but_disabled_during_installation():
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("Node.js is unavailable for video panel DOM validation")
-    source = "const videoCapabilityViewState" + BOOTSTRAP_JAVASCRIPT.split(
-        "const videoCapabilityViewState", 1
-    )[1].split("const renderCapabilityPanel", 1)[0]
-    harness = r'''
-const fs = require("fs"), vm = require("vm");
-class Element {
-  constructor(tag, value="") { this.tagName=tag; this.textContent=value; this.children=[]; this.style={}; this.disabled=false; }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children=nodes; }
-  get childElementCount() { return this.children.length; }
-  setAttribute() {}
-}
-const context = {
-  VIDEO_CAPABILITY_BUNDLES:["ordinary_video", "music_video"], VIDEO_CAPABILITY_PATH:"/video",
-  requestJson: async () => context.payload,
-  refreshVideoReplySetting: async () => {},
-  text:(tag,value)=>new Element(tag,value), card:()=>new Element("div"),
-  stack:()=>new Element("div"), actions:()=>new Element("div"),
-  button:(label,listener)=>Object.assign(new Element("button",label),{listener}),
-  formatBytes:String,
-  setButtonsBusy:(buttons,busy)=>buttons.forEach(button=>button.disabled=busy),
-  confirmAction:async()=>{throw new Error("busy uninstall must not prompt or submit");},
-  window:{clearTimeout(){},setTimeout(){return 1;}},
-};
-vm.runInNewContext(fs.readFileSync(0,"utf8")+";globalThis.render=renderVideoCapabilityPanel;",context);
-function flatten(node) { return [node,...node.children.flatMap(flatten)]; }
-(async()=>{
-  const results=[];
-  for (const [state,runtime,can] of [["ready","idle",true],["downloading","idle",true],["verifying","idle",true],["prerequisites_required","extracting",true],["missing","idle",false]]) {
-    context.payload={can_uninstall:can,bundles:context.VIDEO_CAPABILITY_BUNDLES.map(id=>({id,state})),runtime_import:{state:runtime}};
-    const panel=new Element("div"); await context.render(panel);
-    const elements=flatten(panel), uninstall=elements.find(node=>node.tagName==="button" && node.textContent.includes("卸载视频"));
-    if (uninstall && uninstall.disabled) await uninstall.listener();
-    results.push({present:!!uninstall,disabled:uninstall ? uninstall.disabled : null,text:elements.map(node=>node.textContent).join(" ")});
-  }
-  process.stdout.write(JSON.stringify(results));
-})().catch(error=>{console.error(error.stack);process.exitCode=1;});
-'''
-    result = subprocess.run([node, "-e", harness], input=source.encode("utf-8"), capture_output=True, timeout=20)
-    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    cases = json.loads(result.stdout)
-    assert [(item["present"], item["disabled"]) for item in cases] == [
-        (True, False), (True, True), (True, True), (True, True), (False, None)]
-    assert "暂停" in cases[1]["text"]
-    assert "等待" in cases[2]["text"] and "等待" in cases[3]["text"]
 
 
-def test_video_capability_progress_shows_elapsed_time_and_current_file() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel", 1)[0]
-
-    assert "const progressStartedAt = Date.now();" in video_panel
-    assert "const elapsedSeconds =" in video_panel
-    assert "activeFile.current_file" in video_panel
-    assert "已用时 ${elapsedSeconds} 秒" in video_panel
-    assert 'const verifyingOnly = bundles.some((item) => item.state === "verifying")' in video_panel
-    assert "正在校验安装文件" in video_panel
 
 
-def test_initial_and_later_settings_share_the_complete_optional_capability_panel() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    active_video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert "renderCapabilityPanel(panels.capability)" in source
-    assert "renderMem0CapabilityPanel(panels.capability)" not in source
-    for label in (
-        "长期记忆（Mem0 + BGE）",
-        "视频回信（说话 + 音乐）",
-    ):
-        assert label in source
-    assert "普通视频" not in active_video_panel
-    assert "音乐视频扩展" not in active_video_panel
-    assert "已有自动安装" in source
-    assert "下载并安装" in source
-    assert "失败重试" in source
-    assert "导入官方素材" not in active_video_panel
-    assert "可用组件优先使用国内源" in source
-    assert "LiveTalking 保持独立可选" not in active_video_panel
-    assert "重新检测" in source
-    assert 'const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";' in source
-    assert 'const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";' in source
-    assert "requestMutation(VIDEO_CAPABILITY_ACTION_PATH" not in active_video_panel
-    assert "requestCapability(VIDEO_CAPABILITY_ACTION_PATH" in active_video_panel
-    assert "downloadLink.href" not in source
-    assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
-    assert "missing_dependencies" in source
-    assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source
-    assert 'button("下载缺失组件", () => openDialog(false, "capability"))' in source
-    assert source.index('states.some((value) => ["queued", "downloading", "verifying"].includes(value))') < source.index('states.some((value) => value === "failed")')
 
 
 def test_video_capability_first_probe_has_truthful_progress_and_timeout() -> None:
@@ -385,32 +261,11 @@ def test_video_capability_first_probe_has_truthful_progress_and_timeout() -> Non
     initial_guard = video_panel.index(
         "if (panel.videoCapabilityGeneration !== renderGeneration) return;"
     )
-    assert initial_request < initial_guard < video_panel.index("const known = new Map")
+    assert initial_request < initial_guard < video_panel.index("renderMediaComponents(panel, payload)")
 
 
-def test_video_capability_progress_is_readable_and_does_not_replace_the_panel_each_tick() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert "formatBytes(downloadedBytes)" in video_panel
-    assert "formatBytes(totalBytes)" in video_panel
-    assert "${downloadedBytes} / ${totalBytes} 字节" not in video_panel
-    assert "window.setTimeout(() => renderVideoCapabilityPanel(panel), 1000)" not in video_panel
-    assert "progressText.textContent" in video_panel
-    assert "value >= 1024 * 1024 * 1024" in source
-    assert ".toFixed(1)} GiB" in source
 
 
-def test_video_capability_refresh_shows_busy_and_completion_feedback() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert 'refreshButton.textContent = "检测中…"' in video_panel
-    assert "重新检测完成，上方已显示最新结果。" in video_panel
 
 
 def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> None:
@@ -425,10 +280,9 @@ def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> No
     )
     assert "? 300000" in source
     assert ": 5000;" in source
-    assert "正在检测视频运行环境，第一次可能需要几分钟" in setting
-    assert setting.index("正在检测视频运行环境") < setting.index(
-        "await requestJson(VIDEO_REPLY_SETTINGS_PATH)"
-    )
+    assert "正在读取设置" in setting
+    assert 'await routeRequest("/toy/settings/reply-routes")' in setting
+    assert "selected=result.tier" in setting
 
 
 def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value() -> None:
@@ -443,73 +297,26 @@ def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value()
     assert "path === VIDEO_REPLY_SETTINGS_PATH" in mutation
     assert "? 300000" in mutation
     assert ": 8000;" in mutation
-    assert "enabled = payload.enabled;" in setting
+    assert "tier:selected" in setting
 
 
-def test_video_reply_setting_shows_private_voice_repair_only_when_reported() -> None:
+def test_reply_route_settings_show_individual_readiness_without_claiming_private_repair() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
         "const mountOfficialLetterImport", 1
     )[0]
 
     assert '["voice_reference", "受管林离音色"]' in source
-    assert 'item.id === "voice_reference"' in setting
-    assert 'voiceReference.install_mode === "managed"' in setting
-    assert 'voiceReference.reason_code === "VOICE_REFERENCE_UNAVAILABLE"' in setting
-    assert 'voiceReference.reason_code === "VOICE_REFERENCE_INVALID"' in setting
-    assert "请重新运行提供此私有版本的安装程序修复" in setting
+    assert '文字＋声音＋视频' in setting
+    assert '不代表每封信都会使用' in setting
+    assert 'button("离线组件"' in setting
     assert "随 Olivia 安装包提供" not in source
 
 
-def test_video_capability_offers_one_offline_zip_entry_for_components_or_runtime() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert video_panel.count('button("断网恢复：导入离线包（ZIP）"') == 1
-    assert '{ action: "import_offline" }' in video_panel
-    assert "正常下载会自动安装并启用" in video_panel
-    assert "select_runtime_archive" not in video_panel
-    assert "import_runtime_archive" not in video_panel
-    assert "选择视频运行环境离线包（ZIP）" not in video_panel
-    assert "校验并启用" not in video_panel
-    assert 'source: videoSourceMode' in source
-    assert "国内源优先" in source
-    assert "仅官方源" in source
-    assert "runtime_import" in source
-    assert "VIDEO_RUNTIME_ARCHIVE_REQUIRED" in video_panel
-    assert "reason_code" in video_panel
-    assert "正在解压" in video_panel
-    assert "正在检查" in video_panel
-    assert "正在测试" in video_panel
-    assert 'accept_licenses: dependency.id === "music_video"' in source
 
 
-def test_video_capability_offers_direct_offline_zip_import() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert 'button("断网恢复：导入离线包（ZIP）"' in video_panel
-    assert '{ action: "import_offline" }' in video_panel
-    assert "无需解压" in video_panel
-    assert "选择解压后的离线包" not in video_panel
 
 
-def test_video_capability_explains_breeze_hardware_gate_before_download() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert "BREEZE_TTS_NVIDIA_GPU_REQUIRED" in video_panel
-    assert "BREEZE_TTS_10GB_VRAM_REQUIRED" in video_panel
-    assert "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED" in video_panel
-    assert "Breeze TTS 2 需要 NVIDIA 显卡；CPU 和其他显卡尚未验证" in video_panel
-    assert "Breeze TTS 2 实测要求至少 10GB NVIDIA 显存；8GB 尚未验证" in video_panel
-    assert "无法确认 NVIDIA 显卡与显存，暂不允许下载或启用" in video_panel
 
 
 def test_partial_video_install_still_offers_missing_bundle_download() -> None:
@@ -554,11 +361,6 @@ process.stdout.write(JSON.stringify(context.videoCapabilityViewState([
     }
 
 
-def test_video_download_copy_only_promises_available_domestic_mirrors() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-
-    assert "可用组件优先使用国内源；没有国内镜像的组件会直接使用官方源。" in source
-    assert "下载默认国内源优先，失败自动回退官方源。" not in source
 
 
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:
@@ -605,3 +407,27 @@ process.stdout.write(JSON.stringify({ dialogRemoved }));
     output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
     assert completed.returncode == 0, output
     assert json.loads(completed.stdout)["dialogRemoved"] is False
+
+
+def test_components_are_offline_scoped_and_shared_between_setup_and_settings():
+    source = BOOTSTRAP_JAVASCRIPT
+    assert "renderCapabilityPanel(panels.capability)" in source
+    assert "renderMediaComponents(panel, payload)" in source
+    assert 'action:"import_component",component_id:item.id' in source
+    assert 'button("导入旧版离线整包"' in source
+    assert 'button("卸载旧版视频组件"' in source
+    assert 'uninstall.disabled = busy' in source
+    assert 'install.disabled=busy' in source
+    assert 'const onlineInstallAvailable' not in source
+    assert '仅官方源' not in source
+    assert '下载并启用' not in source
+
+
+def test_component_progress_preserves_controls_until_terminal_state():
+    source = BOOTSTRAP_JAVASCRIPT.split('const renderMediaComponents =', 1)[1].split('const renderVideoCapabilityPanel =', 1)[0]
+    poll = source.split('const update = async () => {', 1)[1]
+    assert 'result.textContent' in poll
+    assert 'panel.replaceChildren' not in poll
+    assert 'if (!panel.isConnected) return' in poll
+    assert 'if (!["queued", "extracting", "checking", "testing"].includes(current.state))' in poll
+    assert '歌词识别为可选' in source

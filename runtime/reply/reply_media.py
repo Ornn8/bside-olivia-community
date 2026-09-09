@@ -31,6 +31,21 @@ class ReplyMediaError(RuntimeError):
     pass
 
 
+def concatenate_reply_audio(speech: Path, song: Path, output: Path, environment: Mapping[str, str]) -> None:
+    partial = output.with_name(output.stem + ".partial.wav")
+    try:
+        result = subprocess.run([str(resolve_ffmpeg_executable(environment)), "-y", "-v", "error",
+            "-i", str(speech), "-i", str(song), "-filter_complex",
+            "[0:a]aresample=48000,aformat=channel_layouts=stereo[a];[1:a]aresample=48000,aformat=channel_layouts=stereo[b];[a][b]concat=n=2:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le", str(partial)], capture_output=True, timeout=120)
+        if result.returncode or not partial.is_file(): raise ReplyMediaError("REPLY_AUDIO_CONCAT_FAILED")
+        os.replace(partial, output)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReplyMediaError("REPLY_AUDIO_CONCAT_FAILED") from None
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 @dataclass(frozen=True)
 class CompleteVideoDelivery:
     tts: TTSConfig
@@ -134,6 +149,7 @@ def _tts_config(
         }
     )
     for key in (
+        "adapter_dir",
         "model_license_path",
         "numba_cache_dir",
         "quality_gate_cache_root",
@@ -448,3 +464,21 @@ def render_reply_video(
         "visual_provider": "LiveTalking",
         **delivery_metadata,
     }
+
+
+def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
+                       voice_performance_plan: VoicePerformancePlan,
+                       environment: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Generate speech directly, without video dependencies or a video VRAM gate."""
+    if voice_performance_plan.spoken_text != text:
+        raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="olivia-voice-", dir=output_path.parent) as temporary:
+        config = _tts_config(tts_config_path, Path(temporary), ordinary_video=True, env=environment)
+        from dataclasses import replace
+        config = replace(config, provider_options={**config.provider_options, "audio_only_unbounded": True})
+        try:
+            result = render_delivery_wav(config, voice_performance_plan, output_path)
+        except DeliveryAudioError as exc:
+            raise ReplyMediaError(str(exc)) from exc
+    return {"duration_seconds": result.duration_seconds, "audio_provider": result.provider}

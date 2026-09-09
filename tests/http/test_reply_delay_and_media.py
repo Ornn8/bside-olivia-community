@@ -1027,7 +1027,7 @@ def test_generate_reply_preserves_the_router_selected_video_route(
     "video_mode",
     (ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value),
 )
-def test_generate_reply_repairs_then_rechecks_video_copy_length(
+def test_generate_reply_does_not_regenerate_legacy_length_failure(
     monkeypatch,
     video_mode,
 ):
@@ -1086,15 +1086,11 @@ def test_generate_reply_repairs_then_rechecks_video_copy_length(
     monkeypatch.setattr(local_server, "_schedule_media_job", lambda *_args: None)
     monkeypatch.setattr(local_server.letters_adapter, "remember_conversation", lambda *_args: None)
 
-    assert asyncio.run(local_server.generate_reply(letter_id, letter["content"]))
+    assert not asyncio.run(local_server.generate_reply(letter_id, letter["content"]))
     assert [request.request_id for request in requests] == [
         f"letter-reply:{letter_id}",
-        f"letter-reply:{letter_id}:duration-repair",
     ]
-    assert "180到200个非空白字符" in requests[1].content
-    assert "汉字、标点、数字和英文字母均计入" in requests[1].content
-    assert "空格和换行不计入" in requests[1].content
-    assert letter["reply_text"] == "林" * 190
+    assert letter["reply_text"] == ""
 
 
 def test_generate_reply_does_not_repair_hard_memory_video_failure(

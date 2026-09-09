@@ -190,6 +190,8 @@ def _explicit_addressing_facts(user_message: str, assistant_message: str) -> tup
 
 
 def _explicit_user_memory_fact(value: str) -> str | None:
+    if re.search(r"[?？]|如果|假如|假设|假使|倘若|要是|\b(?:if|suppose|supposing|hypothetically)\b", value, re.I):
+        return None
     match = _EXPLICIT_MEMORY_FACT_RE.search(value)
     if match is not None:
         fact = f"{match.group(1)}：{match.group(2).strip()}"
@@ -2029,12 +2031,22 @@ class _ValidatedExtractionLLM:
                     and isinstance(message.get("content"), str) else message
                     for message in messages
                 ]
-        response = self._provider.generate_response(*args, **kwargs)
-        if kwargs.get("response_format") == {"type": "json_object"}:
+        if kwargs.get("response_format") != {"type": "json_object"}:
+            return self._provider.generate_response(*args, **kwargs)
+        # Retry extraction before Mem0 can perform any writes. Never repeat a
+        # whole add operation, which may already have persisted some memories.
+        for attempt in range(3):
+            try:
+                response = self._provider.generate_response(*args, **kwargs)
+            except Mem0AdapterError as exc:
+                if exc.code != "MEM0_EXTRACTION_RESPONSE_TRUNCATED" or attempt == 2:
+                    raise
+                continue
             invalid_kind = _extraction_response_invalid_kind(response)
-            if invalid_kind is not None:
+            if invalid_kind is None:
+                return response
+            if attempt == 2:
                 raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_INVALID_" + invalid_kind)
-        return response
 
 
 def _guard_extraction_client(provider: object, *, model: str = "") -> None:

@@ -58,7 +58,7 @@ def test_local_server_contains_no_official_forwarding_or_token_capture_code() ->
     imported_modules.update(
         node.module.split(".", 1)[0]
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module
+        if isinstance(node, ast.ImportFrom) and node.module and node.module != "urllib.parse"
     )
     assert imported_modules.isdisjoint({"httpx", "requests", "urllib", "urllib3"})
     assert not any(

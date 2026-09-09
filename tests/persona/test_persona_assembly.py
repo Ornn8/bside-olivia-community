@@ -195,7 +195,7 @@ def test_history_grounding_survives_optional_context_trimming_without_initial_em
     assert "不否认已确认的关系与感情" in system
     assert "不主动提出失忆、缺记录或曾相识的假设" in system
     assert "relationship_grounding" in assembled.budget_report.included_ids
-    assert "没有角色已知的身份延续事实" in system
+    assert "<continuation_grounding>" not in system
 
 
 def test_history_evidence_rules_do_not_turn_unknown_scores_into_an_emotional_veto():
@@ -305,12 +305,17 @@ def test_existing_familiarity_is_not_reset_by_missing_recent_history(behavior) -
     assert payload.get("familiarity") == (behavior.familiarity.value if behavior.familiarity is not BehaviorLevel.UNKNOWN else None)
 
 
-@pytest.mark.parametrize("query", ["还记得那次一起去公园吗？", "你上次答应了什么？", "你是旧版的林离吗？", "Do you remember our previous conversation?"])
-def test_history_specific_coaching_remains_for_history_questions(query):
+@pytest.mark.parametrize("query, identity_question", [
+    ("还记得那次一起去公园吗？", False),
+    ("你上次答应了什么？", False),
+    ("你是旧版的林离吗？", True),
+    ("Do you remember our previous conversation?", False),
+])
+def test_history_specific_coaching_remains_for_history_questions(query, identity_question):
     context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
     system = assemble_persona(_style_snapshot(), context, user_input=query, max_units=8000).system_content
     assert "<relationship_grounding>" in system
-    assert "<continuation_grounding>" in system
+    assert ("<continuation_grounding>" in system) is identity_question
     assert "用户报告或询问的过去，不等于双方确认的经历" in system
 
 
@@ -406,7 +411,13 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
     ].index("<public_canon")
 
 
-def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
+@pytest.mark.parametrize("mode, persona_mode", [
+    (ReplyMode.MUSICAL_VIDEO, "musical_video"),
+    (ReplyMode.VOICE_REPLY, "spoken_video"),
+    (ReplyMode.SINGING_VIDEO, "musical_video"),
+    (ReplyMode.VOICE_SONG_VIDEO, "musical_video"),
+])
+def test_reply_mode_mapping_selects_only_the_matching_mode_style(mode, persona_mode) -> None:
     snapshot = PersonaSnapshot(
         schema_version="p02.persona.v2",
         persona_id="synthetic.persona",
@@ -429,7 +440,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
                 "MODE_STYLE",
                 "MODE_STYLE",
                 "Use the synthetic musical direction.",
-                "musical_video",
+                persona_mode,
             ),
         ),
         status="READY",
@@ -437,7 +448,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
         profile=_profile(),
     )
     context = ReplyContext.create(
-        ReplyMode.MUSICAL_VIDEO,
+        mode,
         trusted_time=TrustedTime(datetime(2026, 9, 3, tzinfo=timezone.utc)),
     )
 
@@ -448,7 +459,7 @@ def test_reply_mode_mapping_selects_only_the_matching_mode_style() -> None:
         max_units=4_000,
     )
 
-    assert persona_mode_for_reply_mode(ReplyMode.MUSICAL_VIDEO) == "musical_video"
+    assert persona_mode_for_reply_mode(mode) == persona_mode
     assert "Use the synthetic musical direction." in assembly.system_content
     assert "Use the synthetic letter direction." not in assembly.system_content
 
@@ -856,3 +867,23 @@ def test_maximum_length_public_identifiers_remain_valid_budget_items() -> None:
     )
 
     assert fact_id in assembly.system_content
+
+
+@pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
+@pytest.mark.parametrize("query", ["我的杯子你还记得是什么颜色吗？", "你上次答应了什么？", "今天冒出一片新叶子了。",
+    "我想离开这家公司。", "我想和朋友重逢。", "那部电影里的人最后消失了吗？",
+    "你离开这座城后，过得怎么样？", "The birds started their migration."])
+def test_ordinary_recall_does_not_inject_identity_continuation(mode, query):
+    context = ReplyContext.create(mode, trusted_time=TrustedTime(datetime.now(timezone.utc)))
+    result = assemble_persona(_style_snapshot(), context, user_input=query, max_units=8000)
+    assert "<continuation_grounding>" not in result.system_content
+    assert "Do not invent private facts or shared history." in result.system_content
+    if "记得" in query or "上次" in query:
+        assert "<relationship_grounding>" in result.system_content
+
+
+@pytest.mark.parametrize("query", ["你是旧版的林离吗？", "关停以后你去了哪里？", "你迁移到这里后还是同一个人吗？", "Do you remember the shutdown?", "系统迁移之后你还是原来的你吗？", "Do you remember the system migration?"])
+def test_identity_question_retains_continuation_guard(query):
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
+    result = assemble_persona(_style_snapshot(), context, user_input=query, max_units=8000)
+    assert "<continuation_grounding>" in result.system_content

@@ -5,6 +5,62 @@ import pytest
 from runtime.memory import mem0_memory
 
 
+@pytest.mark.parametrize("failure", ["", '{"memory": [broken}',
+    mem0_memory.Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")])
+def test_extraction_retries_only_current_llm_call_and_recovers(failure):
+    calls = []
+    valid = '{"memory": [{"text": "synthetic fact"}]}'
+    def generate(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return valid
+    messages = [{"role": "system", "content": "Extract memory JSON."},
+                {"role": "user", "content": "synthetic input"}]
+    llm = mem0_memory._ValidatedExtractionLLM(SimpleNamespace(generate_response=generate))
+    assert llm.generate_response(messages=messages, response_format={"type": "json_object"}) == valid
+    assert len(calls) == 3
+    assert all(call["messages"][1] == messages[1] for call in calls)
+    assert messages[0]["content"] == "Extract memory JSON."
+
+
+def test_extraction_stops_after_two_retries_with_safe_last_error():
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return "private malformed output" if len(calls) < 3 else ""
+    llm = mem0_memory._ValidatedExtractionLLM(SimpleNamespace(generate_response=generate))
+    with pytest.raises(mem0_memory.Mem0AdapterError) as caught:
+        llm.generate_response(messages=[], response_format={"type": "json_object"})
+    assert len(calls) == 3
+    assert caught.value.code == "MEM0_EXTRACTION_RESPONSE_INVALID_EMPTY"
+    assert "private" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("extraction", [False, True])
+def test_extraction_wrapper_does_not_retry_unrelated_provider_failures(extraction):
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("synthetic transport failure")
+    llm = mem0_memory._ValidatedExtractionLLM(SimpleNamespace(generate_response=generate))
+    with pytest.raises(RuntimeError, match="synthetic transport failure"):
+        llm.generate_response(messages=[], response_format={"type": "json_object"} if extraction else None)
+    assert len(calls) == 1
+
+
+def test_non_extraction_response_is_not_validated_or_retried():
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return "ordinary response"
+    llm = mem0_memory._ValidatedExtractionLLM(SimpleNamespace(generate_response=generate))
+    assert llm.generate_response(messages=[]) == "ordinary response"
+    assert len(calls) == 1
+
+
 def test_memory_extraction_overrides_high_effort_with_low_only_on_memory_client(monkeypatch):
     backend, calls, original = _raw_response_backend(
         monkeypatch, "https://api.deepseek.com", model="deepseek-v4-flash")

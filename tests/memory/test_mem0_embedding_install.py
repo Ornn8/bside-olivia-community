@@ -627,14 +627,12 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
 ) -> None:
     assert 'const MEMORY_EMBEDDING_INSTALL_PATH = "/toy/companion/memory/embedding/install";' not in BOOTSTRAP_JAVASCRIPT
     assert "requestCapability(MEM0_CAPABILITY_ACTION_PATH" in BOOTSTRAP_JAVASCRIPT
-    assert 'source: "auto"' in BOOTSTRAP_JAVASCRIPT
+    assert 'source: "auto"' not in BOOTSTRAP_JAVASCRIPT
     assert "MEM0_EMBEDDING_CACHE_UNAVAILABLE" in BOOTSTRAP_JAVASCRIPT
-    assert "安装 Embedding" in BOOTSTRAP_JAVASCRIPT
-    assert "正在安装 Embedding" in BOOTSTRAP_JAVASCRIPT
-    assert "Embedding 安装失败，请重试。" in BOOTSTRAP_JAVASCRIPT
+    assert "导入长期记忆离线包" in BOOTSTRAP_JAVASCRIPT
     assert "capability.embedding" in BOOTSTRAP_JAVASCRIPT
     assert "window.setTimeout(refresh, 1000);" in BOOTSTRAP_JAVASCRIPT
-    assert "http://" not in BOOTSTRAP_JAVASCRIPT
+    assert "http://" not in BOOTSTRAP_JAVASCRIPT.replace("http://www.w3.org/2000/svg", "")
     without_provider_presets = BOOTSTRAP_JAVASCRIPT.replace(
         "https://api.deepseek.com", ""
     ).replace("https://opencode.ai/zen/go/v1", "")

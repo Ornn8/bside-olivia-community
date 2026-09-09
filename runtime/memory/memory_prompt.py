@@ -228,6 +228,10 @@ class MemoryPromptBuilder:
                     truncated = True
                     break
                 rendered, was_truncated = _safe_json_text(record.text, remaining)
+                # Current facts need their trailing conditions and negations.
+                if domain == CONVERSATION_MEMORY and was_truncated:
+                    truncated = True
+                    continue
                 candidate = f"{prefix}{rendered}"
                 final_length = len("\n".join([*lines, *section, candidate, MEMORY_CONTEXT_END]))
                 if final_length > budget:

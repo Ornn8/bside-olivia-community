@@ -376,29 +376,7 @@ def plan_song_content(
             return asyncio.run(complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT))
         return asyncio.run(active_gateway.complete(plan_messages))
     response = complete_plan(messages)
-    try:
-        semantic_plan = _plan_from_lyrics_response(response.text, duration)
-    except ValueError as exc:
-        error_code = str(exc)
-        if not error_code.startswith("SONG_SEMANTIC_PLAN_"):
-            raise
-        verse_count, chorus_count = _SECTION_LINE_COUNTS[duration]
-        repair_messages = (
-            *messages,
-            {"role": "assistant", "content": response.text},
-            {
-                "role": "user",
-                "content": (
-                    f"Your previous JSON failed local validation with {error_code}. "
-                    "Return the corrected JSON object with only verse and chorus arrays. "
-                    f"Use exactly {verse_count} Verse lines and {chorus_count} "
-                    "Chorus lines, one string per line. Do not output tags, Intro, Outro, "
-                    "instrumental notes, or arrangement controls; the application adds those."
-                ),
-            },
-        )
-        repaired = complete_plan(repair_messages)
-        semantic_plan = _plan_from_lyrics_response(repaired.text, duration)
+    semantic_plan = _plan_from_lyrics_response(response.text, duration)
 
     # Imported lazily because music_caption imports the typed plan definitions
     # from this module. The production output remains compatible with the

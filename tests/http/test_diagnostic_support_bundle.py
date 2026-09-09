@@ -70,6 +70,45 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_lipsync_context_strictly_projects_labels_and_booleans():
+    source = _source()
+    source['media_provider_tail'] = [
+        {'provider': 'latentsync', 'phase': 'inference', 'missing_component': 'audio',
+         'inputs': {'audio': {'exists': False, 'readable': False, 'path': 'private-secret'},
+                    'video': {'exists': True, 'readable': 'private-secret'},
+                    'private-secret': {'exists': True}}},
+        {'provider': 'latentsync', 'phase': ['private-secret'], 'missing_component': 'private-secret',
+         'inputs': {'audio': {'exists': 1, 'readable': 'true'}}},
+    ]
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('media-provider-tail.jsonl')
+    records = [json.loads(line) for line in raw.splitlines()]
+    assert records[0] == {'provider': 'latentsync', 'phase': 'inference', 'missing_component': 'audio',
+                          'inputs': {'audio': {'exists': False, 'readable': False}, 'video': {'exists': True}}}
+    assert records[1] == {'provider': 'latentsync'}
+    assert b'private-secret' not in raw
+
+
+def test_route_diagnostics_keep_switches_and_request_facts_without_text():
+    source = _source()
+    task = source['tasks']['items'][0]
+    task.update(video_reply_enabled=True, reply_video_enabled=False,
+        reply_routes={'voice_reply':True, 'secret':'private-secret'},
+        reply_route_videos={'voice_reply':False, 'singing_video':'private-secret'},
+        explicit_requests=['explicit_video_reply_request','private-secret'],
+        route_reason='explicit_media_requested', request_disposition='fulfill')
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('tasks.json')
+    item = json.loads(raw)['items'][0]
+    assert item['reply_video_enabled'] is False
+    assert item['reply_route_videos'] == {'voice_reply':False}
+    assert item['explicit_requests'] == ['explicit_video_reply_request']
+    assert item['route_reason'] == 'explicit_media_requested'
+    assert b'private-secret' not in raw and b'private reply' not in raw
+    task.update(route_reason=['private-secret'], request_disposition={'private-secret':1})
+    build_diagnostic_bundle(source)
+
+
 def test_media_provider_tail_projects_failure_chain_without_private_diagnostics():
     source = _source()
     source['media_provider_tail'] = [
@@ -168,7 +207,7 @@ def test_tts_worker_status_survives_local_log_and_bundle_projection(tmp_path):
     assert all(secret not in raw for secret in (b'private', b'sk-secret', b'PRIVATE_LETTER'))
 
 
-@pytest.mark.parametrize('mode', ['musical_video', 'spoken_video'])
+@pytest.mark.parametrize('mode', ['musical_video', 'spoken_video', 'voice_reply', 'singing_video', 'voice_song_video'])
 def test_media_task_diagnostic_retains_exact_video_route(mode):
     source = _source()
     source['tasks']['items'][0]['reply_mode'] = mode

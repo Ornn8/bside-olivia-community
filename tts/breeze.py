@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .contracts import AudioChunk, TTSConfig, TTSRequest, TTSUnavailable
+from .breeze_adapter import adapter_metadata
 
 
 BREEZE_LICENSE_ID = "BreezeBlue-Research-and-Non-Commercial-1.0"
@@ -95,6 +96,10 @@ class BreezeTTS2Provider:
 
     def _missing_files(self) -> list[str]:
         missing: list[str] = []
+        try:
+            adapter_metadata(self.config.provider_options.get('adapter_dir', ''))
+        except ValueError:
+            missing.append('adapter')
         for relative in ("__init__.py", "loader.py", "nodes.py", "int8.py", "LICENSE"):
             if not (self.runtime_root / relative).is_file():
                 missing.append(f"runtime:{relative}")
@@ -195,10 +200,14 @@ class BreezeTTS2Provider:
                 instruction_parts.append(emphasis_direction)
         instruction = "，".join(part for part in instruction_parts if part)
         options = self.config.provider_options
+        if options.get('enable_direction') is not True:
+            instruction = ''
         units = tuple(getattr(plan, "speech_units")())
         gain_db = float(getattr(units[0], "gain_db", 0.0)) if units else 0.0
         return {
             "runtime_root": str(self.runtime_root),
+            "adapter_dir": str(options.get('adapter_dir', '') or ''),
+            "adapter": adapter_metadata(options.get('adapter_dir', '') or ''),
             "model_dir": str(self.model_root),
             "reference_audio": self.config.reference_audio,
             "reference_text": self.config.reference_text,
@@ -218,11 +227,11 @@ class BreezeTTS2Provider:
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
             "cfg_scale": float(options.get("cfg_scale", 1.0)),
             "seed": int(options.get("seed", 200717)),
-            # Leave room for EOS in a naturally paced performance; the content
-            # and delivery-duration gates still decide whether it is usable.
-            "max_new_tokens": max(
-                64, min(650, int(options.get("max_new_tokens", 650)))
-            ),
+            # Audio-only replies get a text-sized EOS budget; video keeps its
+            # existing bounded budget. Neither path regenerates the content.
+            "max_new_tokens": (max(650, len(text) * 8)
+                if options.get("audio_only_unbounded") is True
+                else max(64, min(650, int(options.get("max_new_tokens", 650))))),
             "temperature": float(options.get("temperature", 0.9)),
             "top_k": int(options.get("top_k", 50)),
             "top_p": float(options.get("top_p", 1.0)),
@@ -231,13 +240,14 @@ class BreezeTTS2Provider:
             "depth_top_k": int(options.get("depth_top_k", 50)),
             "depth_top_p": float(options.get("depth_top_p", 1.0)),
             "gain_db": max(-1.5, min(1.5, gain_db)),
-            "quality_gate_required": True,
+            "quality_gate_required": False,
             "quality_forbidden_text": instruction,
             "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
             "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
             "quality_max_cer": 0.18,
-            "duration_target_seconds": [40.0, 50.0],
-            "max_attempts": 3,
+            "duration_target_seconds": None if options.get("audio_only_unbounded") is True else [40.0, 50.0],
+            "audio_only_unbounded": options.get("audio_only_unbounded") is True,
+            "max_attempts": 1,
             "performance_control_mode": "single_pass_llm_breeze_direction",
         }
 

@@ -10,6 +10,8 @@ import tempfile
 import threading
 import subprocess
 import time
+import shutil
+import wave
 
 from runtime.media.latentsync_reply import resolve_ffmpeg_executable
 from runtime.media.managed_subprocess import run_managed_process
@@ -64,7 +66,8 @@ class LocalSongLibrary:
     def media_path(self, song_id):
         if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
             raise LocalSongError('LOCAL_SONG_NOT_FOUND')
-        path = self.root / (song_id + '.mp4')
+        row = next((x for x in self._read() if x['id'] == song_id), {})
+        path = self.root / (song_id + ('.wav' if row.get('media_type') == 'audio' else '.mp4'))
         if path.is_symlink() or path.resolve().parent != self.root or not path.is_file():
             raise LocalSongError('LOCAL_SONG_NOT_FOUND')
         return path
@@ -158,6 +161,34 @@ class LocalSongLibrary:
             except (OSError, ValueError, TypeError, AttributeError):
                 continue
         return titles
+
+    def import_audio(self, source: Path, title: str):
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+            raise LocalSongError('LOCAL_SONG_NAME_INVALID')
+        with wave.open(str(source), 'rb') as audio:
+            duration = audio.getnframes() / audio.getframerate()
+            if duration <= 0:
+                raise LocalSongError('LOCAL_SONG_AUDIO_INVALID')
+        with source.open('rb') as stream:
+            song_id = hashlib.file_digest(stream, 'sha256').hexdigest()
+        with _LOCK:
+            rows = self._read()
+            if any(x['id'] == song_id for x in rows):
+                return {'id': song_id, 'added': False}
+            self.root.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(dir=self.root, suffix='.wav.tmp')
+            os.close(fd)
+            destination = self.root / (song_id + '.wav')
+            try:
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, destination)
+                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration, 'media_type': 'audio'}])
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        return {'id': song_id, 'added': True}
 
     def import_path(self, value):
         if not _IMPORT_LOCK.acquire(blocking=False):

@@ -38,7 +38,8 @@ _EVENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TOKEN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,159}$")
 _METHODS = frozenset({"GET", "HEAD", "OPTIONS", "POST"})
 _REPLY_MODES = frozenset(
-    {"text", "video", "text_letter", "normal_video", "music_video", "spoken_video", "musical_video", "live"}
+    {"text", "video", "text_letter", "normal_video", "music_video", "spoken_video", "musical_video", "live",
+     "voice_reply", "singing_video", "voice_song_video"}
 )
 _TASK_STAGES = frozenset(
     {
@@ -125,7 +126,7 @@ def _project_health(value: object) -> dict[str, object]:
             if check.get("error_code") not in OFFLINE_ACTION_ERROR_CODES or check.get("stage") not in OFFLINE_ACTION_STAGES:
                 raise _invalid()
             entry["stage"] = check["stage"]
-        if name in {"video_ordinary", "video_music", "video_runtime"}:
+        if name in {"video_ordinary", "video_music", "video_runtime", "media_component_install"}:
             from runtime.diagnostics.install_failure import project_install_failure
             details = project_install_failure(check.get('failure_details'))
             if details:
@@ -213,6 +214,16 @@ def _project_tasks(value: object) -> dict[str, object]:
     for index, value in enumerate(raw_items, start=1):
         item = _mapping(value)
         projected: dict[str, object] = {"index": index, "status": _status(item.get("status"))}
+        if item.get('reply_capability_tier') in ('text', 'audio', 'video'):
+            projected['reply_capability_tier'] = item['reply_capability_tier']
+        if type(item.get('display_status')) is int and -1 <= item['display_status'] <= 10:
+            projected['display_status'] = item['display_status']
+        for field in ('audio_available', 'video_available', 'text_available'):
+            if type(item.get(field)) is bool:
+                projected[field] = item[field]
+        duration = item.get('audio_duration_seconds')
+        if type(duration) in (int, float) and 0 <= duration <= 86400:
+            projected['audio_duration_seconds'] = duration
         if "error_code" in item:
             projected["error_code"] = _code(item["error_code"])
         if "media_status" in item:
@@ -224,6 +235,21 @@ def _project_tasks(value: object) -> dict[str, object]:
             if reply_mode not in _REPLY_MODES:
                 raise _invalid()
             projected["reply_mode"] = reply_mode
+        for name in ("video_reply_enabled", "reply_video_enabled"):
+            if type(item.get(name)) is bool:
+                projected[name] = item[name]
+        for name in ("reply_routes", "reply_route_videos"):
+            flags = item.get(name)
+            if isinstance(flags, Mapping):
+                projected[name] = {key: flags[key] for key in ("voice_reply", "singing_video", "voice_song_video") if type(flags.get(key)) is bool}
+        contexts = item.get("explicit_requests")
+        if isinstance(contexts, (list, tuple)):
+            projected["explicit_requests"] = [key for key in ("explicit_voice_reply_request", "explicit_video_reply_request", "explicit_video_output_request",
+                "explicit_performance_or_adaptation_request", "explicit_voice_and_song_request") if key in contexts]
+        if isinstance(item.get("route_reason"), str) and item["route_reason"] in {"explicit_media_requested", "media_components_required", "reply_route_disabled", "media_not_warranted"}:
+            projected["route_reason"] = item["route_reason"]
+        if isinstance(item.get("request_disposition"), str) and item["request_disposition"] in {"none", "discuss", "fulfill", "refuse", "defer"}:
+            projected["request_disposition"] = item["request_disposition"]
         stage = item.get("stage")
         if stage not in _TASK_STAGES:
             raise _invalid()
@@ -332,8 +358,11 @@ def _project_media_tail(value: object) -> bytes:
         timestamp = source.get('timestamp')
         if type(timestamp) is int and 0 <= timestamp <= 10_000_000_000:
             record['timestamp'] = timestamp
-        if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg'}:
+        if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg', 'ace_step_xl', 'whisper'}:
             record['provider'] = source['provider']
+        if source.get('provider') == 'latentsync':
+            from runtime.media.latentsync_reply import project_failure_context
+            record.update(project_failure_context(source))
         raw = source.get('diagnostic')
         if isinstance(raw, str) and len(raw) <= 4096:
             try:
@@ -399,6 +428,9 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
         "manifest.json": _json_bytes({
             "members": list(DIAGNOSTIC_BUNDLE_MEMBERS),
             "schema_version": DIAGNOSTIC_BUNDLE_SCHEMA,
+            "revision": 2,
+            "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
+                         "natural_voice_chunks", "worker_progress", "waveform_styles"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),

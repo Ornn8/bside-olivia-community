@@ -7,6 +7,8 @@ import json
 import logging
 import math
 import os
+import posixpath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +23,106 @@ from runtime.media.media_paths import resolve_media_path
 _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS = 1800.0
 _MAX_LATENTSYNC_TIMEOUT_SECONDS = 3600.0
 _LOGGER = logging.getLogger(__name__)
+
+_FAILURE_PHASES = frozenset({"source_prepare", "inference", "output_validate"})
+_INPUT_NAMES = frozenset({"video", "audio", "output_parent"})
+_MISSING_COMPONENTS = frozenset({
+    "unknown", "video", "audio", "output_parent", "ffmpeg", "ffprobe", "scheduler",
+    "unet_config", "unet_weights", "whisper_weights", "whisper_mel_filters",
+    "face_detection", "face_landmarks", "mask_image", "vae_config", "vae_weights", "runtime_temp",
+})
+
+
+def project_failure_context(source: Mapping[str, object]) -> dict[str, object]:
+    """Only fixed labels and actual booleans may leave the machine."""
+    result: dict[str, object] = {}
+    if isinstance(source.get("phase"), str) and source["phase"] in _FAILURE_PHASES:
+        result["phase"] = source["phase"]
+    component = source.get("missing_component")
+    if isinstance(component, str) and component in _MISSING_COMPONENTS:
+        result["missing_component"] = component
+    inputs = source.get("inputs")
+    if isinstance(inputs, Mapping):
+        projected = {}
+        for name in _INPUT_NAMES:
+            value = inputs.get(name)
+            if isinstance(value, Mapping):
+                fields = {key: value[key] for key in ("exists", "readable") if type(value.get(key)) is bool}
+                if fields:
+                    projected[name] = fields
+        if projected:
+            result["inputs"] = projected
+    exception_type = source.get("exception_type")
+    if isinstance(exception_type, str) and exception_type in {"FileNotFoundError", "PermissionError", "RuntimeError", "OSError", "ValueError", "ImportError", "ModuleNotFoundError"}:
+        result["exception_type"] = exception_type
+    frames = source.get("frames")
+    if isinstance(frames, list):
+        safe_frames = []
+        for frame in frames[-8:]:
+            if not isinstance(frame, Mapping):
+                continue
+            module, line = frame.get("module"), frame.get("line")
+            if isinstance(module, str) and len(module) <= 160 and re.fullmatch(r"(?:latentsync|scripts|ffmpeg)(?:\.[A-Za-z_][A-Za-z_0-9]*)+|subprocess", module) and type(line) is int and 0 < line < 100000:
+                safe_frames.append({"module": module, "line": line})
+        if safe_frames:
+            result["frames"] = safe_frames
+    return result
+
+
+def _failure_context(phase: str, stderr: bytes | str | None, paths: Mapping[str, Path]) -> dict[str, object]:
+    inputs = {}
+    for name in _INPUT_NAMES:
+        path = paths.get(name)
+        if path is None:
+            continue
+        exists = readable = False
+        try:
+            exists = path.is_dir() if name == "output_parent" else path.is_file()
+            if name == "output_parent":
+                readable = exists and os.access(path, os.R_OK)
+            elif exists:
+                with path.open("rb"):
+                    readable = True
+        except OSError:
+            pass
+        inputs[name] = {"exists": exists, "readable": readable}
+    result: dict[str, object] = {"phase": phase, "inputs": inputs}
+    raw = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else str(stderr or "")
+    # Match only missing-file error lines, never arbitrary traceback source text.
+    lines = [line for line in raw[-65536:].splitlines() if "filenotfounderror" in line.casefold() or "no such file" in line.casefold()]
+    if lines:
+        component = "unknown"
+        normalize = lambda value: posixpath.normpath(value.replace("\\", "/")).casefold().rstrip("/")
+        known = {normalize(str(path)): name for name, path in paths.items()}
+        known.update({'ffmpeg': 'ffmpeg', 'ffmpeg.exe': 'ffmpeg'})
+        if 'runtime_root' in paths:
+            for relative, name in (
+                ('checkpoints/whisper/tiny.pt', 'whisper_weights'),
+                ('checkpoints/whisper/small.pt', 'whisper_weights'),
+                ('stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.bin', 'vae_weights'),
+            ):
+                known[normalize(str(paths['runtime_root'] / relative))] = name
+        for candidate in re.findall(r"['\"]([^'\"]+)['\"]", lines[-1]):
+            label = known.get(normalize(candidate))
+            if label is None and "runtime_root" in paths:
+                label = known.get(normalize(str(paths["runtime_root"] / candidate)))
+                resolved = normalize(str(paths["runtime_root"] / candidate))
+                temp_root = normalize(str(paths["runtime_root"] / "temp"))
+                if resolved == temp_root or resolved.startswith(temp_root + "/"):
+                    label = "runtime_temp"
+            if label in _MISSING_COMPONENTS:
+                component = label
+        result["missing_component"] = component
+    for line in raw[-65536:].splitlines():
+        if line.startswith("OLIVIA_LATENTSYNC_FAILURE=") and len(line) <= 4096:
+            try:
+                worker = json.loads(line.partition("=")[2])
+            except ValueError:
+                continue
+            if isinstance(worker, Mapping):
+                safe = project_failure_context(worker)
+                result.update({key: value for key, value in safe.items() if key in {"frames", "exception_type", "missing_component"}})
+    return project_failure_context(result)
 
 
 class LatentSyncReplyError(RuntimeError):
@@ -75,6 +177,7 @@ def _reported_process_failure(
     environment: Mapping[str, str], *, returncode: int | None,
     stderr: bytes | str | None, timed_out: bool = False, start_failed: bool = False,
     management_failed: bool = False,
+    phase: str = "inference", paths: Mapping[str, Path] | None = None,
 ) -> LatentSyncReplyError:
     diagnostic = _process_diagnostic(
         returncode=returncode, stderr=stderr,
@@ -92,6 +195,7 @@ def _reported_process_failure(
                 "error_code": "LATENTSYNC_FAILED",
                 "diagnostic": diagnostic,
             }
+            record.update(_failure_context(phase, stderr, paths or {}))
             with (log_root / "media-provider.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:
@@ -130,7 +234,8 @@ def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
             raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
         executable = configured_path
     else:
-        executable = shutil.which("ffmpeg")
+        bundled = Path(__file__).resolve().parents[2] / "media-tools" / "ffmpeg.exe"
+        executable = str(bundled) if bundled.is_file() else shutil.which("ffmpeg")
     if executable is None:
         try:
             import imageio_ffmpeg
@@ -195,6 +300,8 @@ def _prepare_source_clip(
 ) -> None:
     """Decode only the needed span into a stable LatentSync input."""
 
+    paths = {"video": source_video, "audio": audio_path, "output_parent": prepared_video.parent}
+
     ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
     if ffmpeg is None:
         raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
@@ -237,14 +344,17 @@ def _prepare_source_clip(
     except subprocess.TimeoutExpired as exc:
         raise _reported_process_failure(
             environment, returncode=None, stderr=exc.stderr, timed_out=True,
+            phase="source_prepare", paths=paths,
         ) from exc
     except OSError as exc:
         raise _reported_process_failure(
             environment, returncode=None, stderr=str(exc), management_failed=True,
+            phase="source_prepare", paths=paths,
         ) from exc
     if result.returncode != 0:
         raise _reported_process_failure(
             environment, returncode=result.returncode, stderr=result.stderr,
+            phase="source_prepare", paths=paths,
         )
     if not prepared_video.is_file():
         raise LatentSyncReplyError("LATENTSYNC_SOURCE_PREPARE_FAILED")
@@ -256,6 +366,7 @@ def _validate_rendered_video(
     environment: dict[str, str],
     deadline: float,
 ) -> None:
+    paths = {"video": video_path, "output_parent": video_path.parent}
     ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
     if ffmpeg is None:
         raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
@@ -271,14 +382,17 @@ def _validate_rendered_video(
     except subprocess.TimeoutExpired as exc:
         raise _reported_process_failure(
             environment, returncode=None, stderr=exc.stderr, timed_out=True,
+            phase="output_validate", paths=paths,
         ) from exc
     except OSError as exc:
         raise _reported_process_failure(
             environment, returncode=None, stderr=str(exc), management_failed=True,
+            phase="output_validate", paths=paths,
         ) from exc
     if result.returncode != 0:
         raise _reported_process_failure(
             environment, returncode=result.returncode, stderr=result.stderr,
+            phase="output_validate", paths=paths,
         )
     progress = dict(
         line.split("=", 1)
@@ -293,6 +407,7 @@ def _validate_rendered_video(
     if progress.get("progress") != "end" or frames <= 0 or duration_us <= 0:
         raise _reported_process_failure(
             environment, returncode=result.returncode, stderr="decoded_video_invalid",
+            phase="output_validate", paths=paths,
         )
 
 
@@ -374,8 +489,7 @@ def render_latentsync_video(
         )
         command = [
             str(python_path),
-            "-m",
-            "scripts.inference",
+            str(Path(__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"),
             "--unet_config_path",
             str(config_path),
             "--inference_ckpt_path",
@@ -396,6 +510,19 @@ def render_latentsync_video(
             "1247",
             "--enable_deepcache",
         ]
+        diagnostic_paths = {
+            "video": prepared_video, "audio": audio_path,
+            "output_parent": working_output.parent, "runtime_root": latentsync_root,
+            "unet_config": config_path, "unet_weights": checkpoint_path,
+            "ffmpeg": Path(shutil.which("ffmpeg", path=runtime_environment["PATH"]) or "ffmpeg"),
+            "scheduler": latentsync_root / "configs/scheduler_config.json",
+            "mask_image": latentsync_root / "latentsync/utils/mask.png",
+            "whisper_mel_filters": latentsync_root / "latentsync/whisper/whisper/assets/mel_filters.npz",
+            "face_detection": latentsync_root / "checkpoints/auxiliary/models/buffalo_l/det_10g.onnx",
+            "face_landmarks": latentsync_root / "checkpoints/auxiliary/models/buffalo_l/2d106det.onnx",
+            "vae_config": latentsync_root / "stabilityai/sd-vae-ft-mse/config.json",
+            "vae_weights": latentsync_root / "stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
+        }
         try:
             result = run_managed_process(
                 command,
@@ -409,6 +536,7 @@ def render_latentsync_video(
                 returncode=None,
                 stderr=exc.stderr,
                 timed_out=True,
+                paths=diagnostic_paths,
             )
             raise failure from exc
         except OSError as exc:
@@ -417,11 +545,13 @@ def render_latentsync_video(
                 returncode=None,
                 stderr=str(exc),
                 management_failed=True,
+                paths=diagnostic_paths,
             )
             raise failure from exc
         if result.returncode != 0:
             raise _reported_process_failure(
                 source_environment, returncode=result.returncode, stderr=result.stderr,
+                paths=diagnostic_paths,
             )
         if not working_output.is_file() or working_output.stat().st_size == 0:
             raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")

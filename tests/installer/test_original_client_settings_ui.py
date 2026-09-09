@@ -202,7 +202,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v22"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v26"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -222,7 +222,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
     assert (
-        "matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;"
+        "input.maxLength = LETTER_CHARACTER_LIMIT;"
     ) in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
@@ -659,7 +659,7 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
         "清空当前用户记忆",
     ):
         assert required in source
-    assert "http://" not in source
+    assert "http://" not in source.replace("http://www.w3.org/2000/svg", "")
     assert "setup.llm.api_key" not in source
     assert 'key.input.value = ""' in source
     assert "https://api.deepseek.com" in source
@@ -846,12 +846,12 @@ const statusPayload = (status) => ({
           list: [], total: 0, scope: "legacy", read_only: true,
         } }) };
       }
-      if (endpoint.pathname === "/toy/settings/video-reply") {
+      if (endpoint.pathname === "/toy/settings/reply-routes") {
         videoMethods.push(options.method);
-        if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
+        if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", routes: {voice_reply:true, singing_video:true, voice_song_video:true}, ready:{} } }) };
         videoWrites += 1;
         return videoWrites === 1
-          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
+          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", routes: JSON.parse(options.body).routes } }) }
           : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
       }
       if (endpoint.pathname === "/toy/capabilities/video") {
@@ -918,11 +918,11 @@ vm.runInNewContext(source, context);
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
       await open.click();
       await flush();
-      await findButton("已开启").click();
+      await findButton("保存").click();
       await flush();
-      await findButton("已关闭").click();
+      await findButton("保存").click();
       await flush();
-      if (!body.querySelectorAll("div").some((item) => item.textContent.includes("原设置保持不变"))) throw new Error("video mutation error was hidden");
+      if (!body.querySelectorAll("p").some((item) => item.textContent.includes("保存失败"))) throw new Error("route mutation error was hidden");
           await clickConfirmed(findButton("暂停长期记忆"));
   await flush();
   const resume = findButton("恢复长期记忆");
@@ -976,7 +976,7 @@ const run = (spec) => {
   const makeDialog = (item) => {
     let areas = item.shared ? sharedAreas.get(item.shared) : null;
     if (!areas) {
-      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null }));
+      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null, closest: () => null }));
       if (item.shared) sharedAreas.set(item.shared, areas);
     }
     const nodes = (values) => values.map((textContent) => ({ textContent }));

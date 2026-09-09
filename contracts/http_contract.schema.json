@@ -4,11 +4,27 @@
   "title": "B02 local HTTP contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "contract_version", "base_path", "routes", "capabilities", "profiles", "letter_detail_generation", "letter_detail_media", "privacy"],
+  "required": [
+    "schema_version",
+    "contract_version",
+    "base_path",
+    "routes",
+    "capabilities",
+    "profiles",
+    "letter_detail_generation",
+    "letter_detail_media",
+    "privacy"
+  ],
   "properties": {
-    "schema_version": {"const": 2},
-    "contract_version": {"const": "b02.v2"},
-    "base_path": {"const": "/toy"},
+    "schema_version": {
+      "const": 2
+    },
+    "contract_version": {
+      "const": "b02.v2"
+    },
+    "base_path": {
+      "const": "/toy"
+    },
     "routes": {
       "type": "object",
       "additionalProperties": {
@@ -19,15 +35,40 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["status", "provider"],
+        "required": [
+          "status",
+          "provider"
+        ],
         "properties": {
-          "status": {"enum": ["available", "unavailable", "degraded", "not_implemented"]},
-          "provider": {"type": "string"},
-          "reason_code": {"type": "string"},
-          "probe": {"type": "string"},
-          "required_for": {"type": "array", "items": {"type": "string"}},
-          "empty_data_is_valid": {"type": "boolean"},
-          "mode": {"type": "string"}
+          "status": {
+            "enum": [
+              "available",
+              "unavailable",
+              "degraded",
+              "not_implemented"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "probe": {
+            "type": "string"
+          },
+          "required_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "empty_data_is_valid": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }
@@ -36,10 +77,23 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["required_capabilities", "optional_capabilities"],
+        "required": [
+          "required_capabilities",
+          "optional_capabilities"
+        ],
         "properties": {
-          "required_capabilities": {"type": "array", "items": {"type": "string"}},
-          "optional_capabilities": {"type": "array", "items": {"type": "string"}}
+          "required_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "optional_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
         "additionalProperties": false
       }
@@ -47,25 +101,75 @@
     "letter_detail_generation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "error_codes"],
+      "required": [
+        "fields",
+        "error_codes"
+      ],
       "properties": {
         "fields": {
-          "const": ["letter_status", "error_code", "retryable"]
+          "const": [
+            "letter_status",
+            "error_code",
+            "retryable"
+          ]
         },
         "error_codes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["MEMORY_UNAVAILABLE", "LLM_UNAVAILABLE", "LLM_TIMEOUT", "LLM_INTERRUPTED", "LLM_PROVIDER_REJECTED", "LLM_PROTOCOL_ERROR", "LLM_REPLY_LENGTH_INVALID", "REPLY_QUALITY_BLOCKED", "PERSONA_NOT_READY"],
+          "required": [
+            "MEMORY_UNAVAILABLE",
+            "LLM_UNAVAILABLE",
+            "LLM_TIMEOUT",
+            "LLM_INTERRUPTED",
+            "LLM_PROVIDER_REJECTED",
+            "LLM_PROTOCOL_ERROR",
+            "LLM_REPLY_LENGTH_INVALID",
+            "REPLY_QUALITY_BLOCKED",
+            "PERSONA_NOT_READY"
+          ],
           "properties": {
-            "MEMORY_UNAVAILABLE": {"$ref": "#/$defs/generation_error"},
-            "LLM_UNAVAILABLE": {"$ref": "#/$defs/generation_error"},
-            "LLM_TIMEOUT": {"$ref": "#/$defs/generation_error"},
-            "LLM_INTERRUPTED": {"$ref": "#/$defs/generation_error"},
-            "LLM_PROVIDER_REJECTED": {"$ref": "#/$defs/generation_error"},
-            "LLM_PROTOCOL_ERROR": {"$ref": "#/$defs/generation_error"},
-            "LLM_REPLY_LENGTH_INVALID": {"$ref": "#/$defs/generation_error"},
-            "REPLY_QUALITY_BLOCKED": {"$ref": "#/$defs/generation_error"},
-            "PERSONA_NOT_READY": {"$ref": "#/$defs/generation_error"}
+            "MEMORY_UNAVAILABLE": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_UNAVAILABLE": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_TIMEOUT": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_INTERRUPTED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_PROVIDER_REJECTED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_PROTOCOL_ERROR": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_REPLY_LENGTH_INVALID": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "REPLY_QUALITY_BLOCKED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "PERSONA_NOT_READY": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "COVER_GENERATION_FAILED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "COVER_GENERATION_TIMEOUT": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "COVER_LYRICS_REQUIRED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "COVER_RUNTIME_UNAVAILABLE": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "COVER_SOURCE_REQUIRED": {
+              "$ref": "#/$defs/generation_error"
+            }
           }
         }
       }
@@ -73,7 +177,11 @@
     "letter_detail_media": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fields", "statuses", "error_codes"],
+      "required": [
+        "fields",
+        "statuses",
+        "error_codes"
+      ],
       "properties": {
         "fields": {
           "const": [
@@ -89,23 +197,60 @@
         "statuses": {
           "type": "array",
           "items": {
-            "enum": ["NOT_REQUESTED", "PENDING", "PROCESSING", "COMPLETED", "FAILED", "UNAVAILABLE"]
+            "enum": [
+              "NOT_REQUESTED",
+              "PENDING",
+              "PROCESSING",
+              "COMPLETED",
+              "FAILED",
+              "UNAVAILABLE"
+            ]
           },
           "uniqueItems": true
         },
         "error_codes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["BREEZE_TTS_10GB_VRAM_REQUIRED", "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED", "BREEZE_TTS_NVIDIA_GPU_REQUIRED", "MEDIA_PROVIDER_UNAVAILABLE", "TTS_CONTENT_GATE_UNAVAILABLE", "TTS_CONTENT_GATE_REJECTED"],
+          "required": [
+            "BREEZE_TTS_10GB_VRAM_REQUIRED",
+            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED",
+            "BREEZE_TTS_NVIDIA_GPU_REQUIRED",
+            "MEDIA_PROVIDER_UNAVAILABLE",
+            "TTS_CONTENT_GATE_UNAVAILABLE",
+            "TTS_CONTENT_GATE_REJECTED"
+          ],
           "properties": {
-            "BREEZE_TTS_10GB_VRAM_REQUIRED": {"$ref": "#/$defs/media_error"},
-            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"$ref": "#/$defs/media_error"},
-            "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"$ref": "#/$defs/media_error"},
-            "MEDIA_PROVIDER_UNAVAILABLE": {"$ref": "#/$defs/media_error"},
+            "BREEZE_TTS_10GB_VRAM_REQUIRED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "MEDIA_PROVIDER_UNAVAILABLE": {
+              "$ref": "#/$defs/media_error"
+            },
             "TTS_CONTENT_GATE_UNAVAILABLE": {
               "$ref": "#/$defs/media_error"
             },
             "TTS_CONTENT_GATE_REJECTED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "COVER_GENERATION_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "COVER_GENERATION_TIMEOUT": {
+              "$ref": "#/$defs/media_error"
+            },
+            "COVER_LYRICS_REQUIRED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "COVER_RUNTIME_UNAVAILABLE": {
+              "$ref": "#/$defs/media_error"
+            },
+            "COVER_SOURCE_REQUIRED": {
               "$ref": "#/$defs/media_error"
             }
           }
@@ -115,12 +260,25 @@
     "privacy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["logs_include_request_body", "logs_include_query_values", "legacy_import_mode", "original_assets_in_response"],
+      "required": [
+        "logs_include_request_body",
+        "logs_include_query_values",
+        "legacy_import_mode",
+        "original_assets_in_response"
+      ],
       "properties": {
-        "logs_include_request_body": {"const": false},
-        "logs_include_query_values": {"const": false},
-        "legacy_import_mode": {"const": "read-only-atomic-import"},
-        "original_assets_in_response": {"const": false}
+        "logs_include_request_body": {
+          "const": false
+        },
+        "logs_include_query_values": {
+          "const": false
+        },
+        "legacy_import_mode": {
+          "const": "read-only-atomic-import"
+        },
+        "original_assets_in_response": {
+          "const": false
+        }
       }
     }
   },
@@ -128,36 +286,90 @@
     "generation_error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "retryable"],
+      "required": [
+        "status",
+        "retryable"
+      ],
       "properties": {
-        "status": {"const": "FAILED"},
-        "retryable": {"type": "boolean"}
+        "status": {
+          "const": "FAILED"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
       }
     },
     "media_error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "retryable"],
+      "required": [
+        "status",
+        "retryable"
+      ],
       "properties": {
-        "status": {"enum": ["FAILED", "UNAVAILABLE"]},
-        "retryable": {"type": "boolean"}
+        "status": {
+          "enum": [
+            "FAILED",
+            "UNAVAILABLE"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
       }
     },
     "route": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["methods", "capability", "state", "read_only", "error_code", "evidence"],
+      "required": [
+        "methods",
+        "capability",
+        "state",
+        "read_only",
+        "error_code",
+        "evidence"
+      ],
       "properties": {
         "methods": {
           "type": "array",
           "minItems": 1,
-          "items": {"enum": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]}
+          "items": {
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "DELETE",
+              "OPTIONS"
+            ]
+          }
         },
-        "capability": {"type": "string"},
-        "state": {"enum": ["available", "unavailable", "not_implemented", "degraded"]},
-        "read_only": {"type": "boolean"},
-        "error_code": {"type": ["string", "null"]},
-        "evidence": {"enum": ["protocol", "local", "local-extension"]}
+        "capability": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "not_implemented",
+            "degraded"
+          ]
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            "protocol",
+            "local",
+            "local-extension"
+          ]
+        }
       }
     }
   }

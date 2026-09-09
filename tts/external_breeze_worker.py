@@ -7,6 +7,7 @@ import gc
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import wave
@@ -15,6 +16,46 @@ from typing import Any
 
 
 _PACKAGE_NAME = "olivia_breeze_tts2_runtime"
+
+
+def _audio_text_chunks(text: str) -> list[str]:
+    """Keep full text while fitting the model context, preferably at punctuation."""
+    chunks = []
+    while len(text) > 180:
+        breaks = list(re.finditer(r'[。！？!?；;\n][”’」』）]*', text[:180]))
+        if not breaks:
+            breaks = list(re.finditer(r'[，,、\s]', text[:180]))
+        end = breaks[-1].end() if breaks else 180
+        chunks.append(text[:end])
+        text = text[end:]
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=False, **kwargs):
+    # Reuse one loaded model and reference; each text span is synthesized once.
+    chunks = _audio_text_chunks(text) if audio_only_unbounded else [text]
+    results = []
+    offset = 0
+    directions = list(re.finditer(r'第(\d+)句：(.*?)(?=第\d+句：|$)', kwargs.get('instruction', ''), re.S))
+    for chunk in chunks:
+        options = dict(kwargs)
+        if len(chunks) > 1 and directions:
+            first = len(re.findall(r'[。！？!?；;]', text[:offset])) + 1
+            last = first + len(re.findall(r'[。！？!?；;]', chunk.rstrip('。！？!?；;')))
+            selected = [match.group(2) for match in directions if first <= int(match.group(1)) <= last]
+            if selected:
+                options['instruction'] = ''.join(f'第{i}句：{direction}' for i, direction in enumerate(selected, 1))
+        results.append(generate(bundle, text=chunk, **options))
+        offset += len(chunk)
+    if len(results) == 1:
+        return results[0]
+    import torch
+    if len({item['sample_rate'] for item in results}) != 1:
+        raise ValueError('BREEZE_REQUEST_INVALID')
+    return {'sample_rate': results[0]['sample_rate'],
+            'waveform': torch.cat([item['waveform'] for item in results], dim=-1)}
 _VARIANT_LABEL_ATTR = {
     "int8_hybrid": "HYBRID_LABEL",
     "bf16": "BF16_LABEL",
@@ -24,6 +65,7 @@ _VARIANT_LABEL_ATTR = {
 _WORKER_PHASES = frozenset({"request", "preflight", "package_load", "model_load",
     "reference_read", "reference_encode", "generation", "decoding", "audio_write", "completed"})
 _WORKER_ERRORS = frozenset({"BREEZE_RUNTIME_INVALID", "BREEZE_REFERENCE_AUDIO_INVALID",
+    "BREEZE_ADAPTER_INVALID",
     "BREEZE_EMPTY_AUDIO", "BREEZE_MODEL_VARIANT_UNSUPPORTED", "BREEZE_CUDA_OUT_OF_MEMORY",
     "BREEZE_CUDA_RUNTIME_FAILED", "BREEZE_MODULE_MISSING", "BREEZE_IMPORT_FAILED",
     "BREEZE_FILE_MISSING", "BREEZE_PERMISSION_DENIED", "BREEZE_DISK_FULL",
@@ -33,14 +75,25 @@ _WORKER_EXCEPTION_TYPES = frozenset({"Exception", "RuntimeError", "ValueError", 
     "ImportError", "ModuleNotFoundError", "MemoryError", "OutOfMemoryError", "JSONDecodeError"})
 
 
-def project_worker_status(value: object) -> dict[str, str]:
+def project_worker_status(value: object) -> dict[str, object]:
     """Strict shared projection for the local log and exported support bundle."""
     if not isinstance(value, dict):
         return {}
-    return {key: value[key] for key, allowed in (
+    result = {key: value[key] for key, allowed in (
         ("phase", _WORKER_PHASES), ("error_code", _WORKER_ERRORS),
         ("error_type", _WORKER_EXCEPTION_TYPES),
     ) if isinstance(value.get(key), str) and value[key] in allowed}
+    for key in ('chunk_count', 'chunk_index', 'generated_frames', 'max_frames', 'context_limit'):
+        if type(value.get(key)) is int and 0 <= value[key] <= 1000000:
+            result[key] = value[key]
+    if type(value.get('elapsed_seconds')) in (int, float) and 0 <= value['elapsed_seconds'] <= 604800:
+        result['elapsed_seconds'] = value['elapsed_seconds']
+    for key in ('instruction_enabled', 'limit_reached'):
+        if type(value.get(key)) is bool:
+            result[key] = value[key]
+    if value.get('segmentation') in ('natural_sentences_v1', 'single'):
+        result['segmentation'] = value['segmentation']
+    return result
 
 
 def _worker_error_code(error: Exception) -> str:
@@ -80,6 +133,11 @@ def _write_failure(status: Path, phase: str, error: Exception) -> None:
 
 
 def _write_status(path: Path, value: dict[str, object]) -> None:
+    try:
+        previous = project_worker_status(json.loads(path.read_text(encoding='utf-8')))
+    except (OSError, ValueError):
+        previous = {}
+    value = {**previous, **value}
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(
@@ -147,29 +205,45 @@ def _write_wav(path: Path, waveform: Any, sample_rate: int, gain_db: float) -> N
 
 def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
     decode = None
+    register = None
+    adapter_receipt = {}
     phase = "preflight"
     started = time.monotonic()
+    chunk_count = len(_audio_text_chunks(str(request.get('text', '')))) if request.get('audio_only_unbounded') is True else 1
+    remaining_chunks = chunk_count
+    limit_reached = False
 
     def progress(current: int, total: int) -> None:
+        nonlocal limit_reached
+        limit_reached = limit_reached or current >= total
         _write_status(status, {
             "status": "ready", "phase": "generation", "audio_started": False,
             "generated_frames": current, "max_frames": total,
             "elapsed_seconds": round(time.monotonic() - started, 3),
+            "chunk_index": chunk_count - remaining_chunks + 1,
+            "limit_reached": limit_reached,
         })
 
     try:
         _write_status(
             status,
-            {"status": "initializing", "phase": "preflight", "audio_started": False},
+            {"status": "initializing", "phase": "preflight", "audio_started": False,
+             "chunk_count": chunk_count, "chunk_index": 0,
+             "instruction_enabled": bool(request.get('instruction')),
+             "segmentation": 'natural_sentences_v1' if chunk_count > 1 else 'single'},
         )
         runtime_root = Path(str(request["runtime_root"]))
         model_root = Path(str(request["model_dir"]))
         phase = "package_load"
         loader, nodes, runtime = _load_package(runtime_root)
+        _write_status(status, {"status": "initializing", "phase": phase,
+                               "context_limit": int(getattr(runtime, 'MAX_SEQ_LEN', 2048))})
         decode = runtime.decode_codes
+        remaining_chunks = len(_audio_text_chunks(str(request['text']))) if request.get('audio_only_unbounded') is True else 1
 
         def decode_audio(codec, codes):
-            nonlocal phase
+            nonlocal phase, remaining_chunks
+            remaining_chunks -= 1
             phase = "decoding"
             _write_status(status, {
                 "status": "ready", "phase": phase, "audio_started": False,
@@ -177,15 +251,22 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             })
             if codes.device.type == "cuda":
                 import torch
-                # This worker renders once. The generator is no longer needed,
-                # and retaining it competes with the codec for device memory.
+                # Free GPU space for the codec, but retain weights on CPU
+                # until the final text span has been synthesized.
                 with torch.cuda.device(codes.device):
                     torch.cuda.synchronize()
-                    bundle.model = None
-                    bundle.patchers.clear()
+                    if remaining_chunks:
+                        bundle.model.to('cpu')
+                    else:
+                        bundle.model = None
+                        bundle.patchers.clear()
                     gc.collect()
                     torch.cuda.empty_cache()
-            return decode(codec, codes)
+            try:
+                return decode(codec, codes)
+            finally:
+                if remaining_chunks and codes.device.type == 'cuda':
+                    bundle.model.to(codes.device)
 
         runtime.decode_codes = decode_audio
         loader.model_dirs = lambda: [model_root]
@@ -195,6 +276,22 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         except (KeyError, AttributeError) as exc:
             raise RuntimeError("BREEZE_MODEL_VARIANT_UNSUPPORTED") from exc
         phase = "model_load"
+        if request.get('adapter_dir'):
+            spec = importlib.util.spec_from_file_location(
+                'olivia_breeze_adapter', Path(__file__).with_name('breeze_adapter.py'))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            register = loader.register_runtime_module
+
+            def register_with_adapter(model, device, **kwargs):
+                nonlocal adapter_receipt
+                if hasattr(model, 'backbone_model'):
+                    adapter_receipt = module.apply_adapter(
+                        model, request['adapter_dir'], loader.int8.ConvRotInt8Linear,
+                        request.get('adapter', {}).get('sha256'))
+                return register(model, device, **kwargs)
+
+            loader.register_runtime_module = register_with_adapter
         bundle = loader.load_breeze_bundle(
             label,
             str(request.get("dtype", "bf16") or "bf16"),
@@ -203,6 +300,8 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             False,
             str(request.get("decode_mode", "eager") or "eager"),
         )
+        if request.get('adapter_dir') and not adapter_receipt:
+            raise ValueError('BREEZE_ADAPTER_INVALID')
         phase = "reference_read"
         reference = _read_reference_audio(Path(str(request["reference_audio"])))
         phase = "reference_encode"
@@ -215,9 +314,11 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
             status,
             {"status": "ready", "phase": "generation", "audio_started": False},
         )
-        result = nodes._generate_audio(
+        result = _generate_complete_audio(
+            nodes._generate_audio,
             bundle,
             text=str(request["text"]),
+            audio_only_unbounded=request.get('audio_only_unbounded') is True,
             instruction=str(request["instruction"]),
             ref_audio=None,
             ref_text=str(request["reference_text"]),
@@ -244,13 +345,17 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
         )
         _write_status(
             status,
-            {"status": "completed", "phase": "completed", "audio_started": True},
+            {"status": "completed", "phase": "completed", "audio_started": True,
+             "elapsed_seconds": round(time.monotonic() - started, 3),
+             **({'adapter': adapter_receipt} if adapter_receipt else {})},
         )
     except Exception as exc:
         _write_failure(status, phase, exc)
         raise
 
     finally:
+        if register is not None:
+            loader.register_runtime_module = register
         if decode is not None:
             runtime.decode_codes = decode
 
