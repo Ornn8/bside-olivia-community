@@ -8,6 +8,8 @@ from typing import Callable, Mapping
 
 _KEY, _SCHEMA, _UNAVAILABLE = "video_reply_enabled", 1, "VIDEO_REPLY_SETTING_UNAVAILABLE"
 _ID = re.compile(r"^video_reply_setting:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+REPLY_ROUTES = ("voice_reply", "singing_video", "voice_song_video")
+DEFAULT_ROUTE_VIDEOS = {"voice_reply": False, "singing_video": True, "voice_song_video": True}
 
 class VideoReplySettingsError(RuntimeError):
     def __init__(self, code: str, *, status: int = 503) -> None:
@@ -54,6 +56,41 @@ class VideoReplySettingsStore:
     def unavailable(cls) -> "VideoReplySettingsStore":
         item = cls.__new__(cls); item.path = item.marker = item._writer = None; item._lock, item._document = threading.Lock(), {}; item._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); return item
     def snapshot(self) -> VideoReplySettingsSnapshot: return self._committed
+    def routes_configured(self) -> bool:
+        return "routes" in self._document.get("settings", {})
+    def routes_snapshot(self) -> dict[str, bool]:
+        with self._lock:
+            if self._committed.state != "available":
+                raise VideoReplySettingsError(_UNAVAILABLE)
+            saved = self._document.get("settings", {}).get("routes")
+            return dict(saved) if saved is not None else dict.fromkeys(REPLY_ROUTES, self._committed.enabled is True)
+    def videos_snapshot(self) -> dict[str, bool]:
+        with self._lock:
+            if self._committed.state != "available": raise VideoReplySettingsError(_UNAVAILABLE)
+            return dict(self._document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS))
+    def mutate_routes(self, request_id: object, routes: object, videos: object = None) -> dict[str, object]:
+        request = self._request(request_id)
+        if not isinstance(routes, dict) or set(routes) != set(REPLY_ROUTES) or any(type(v) is not bool for v in routes.values()):
+            raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
+        if videos is not None and (not isinstance(videos, dict) or set(videos) != set(REPLY_ROUTES) or any(type(v) is not bool for v in videos.values())):
+            raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
+        with self._lock:
+            if self._committed.state != "available": raise VideoReplySettingsError(_UNAVAILABLE)
+            ledger = self._ledger(self._document)
+            old = ledger.get(request)
+            videos = dict(videos) if videos is not None else dict(self._document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS))
+            if old is not None:
+                if old.get("routes") != routes or old.get("videos", DEFAULT_ROUTE_VIDEOS) != videos: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
+                return {"status": "DUPLICATE", "routes": dict(routes), "videos": videos}
+            candidate = deepcopy(self._document)
+            candidate["settings"].update(routes=dict(routes), video_reply_enabled=any(routes.values()))
+            candidate["settings"]["videos"] = videos
+            candidate.setdefault("ledger", {})[request] = {"enabled": any(routes.values()), "routes": dict(routes), "result": {"status": "APPLIED"}}
+            candidate["ledger"][request]["videos"] = videos
+            try: self._writer(self.path, self._encode(candidate))
+            except (OSError, UnicodeError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
+            self._document, self._committed = candidate, VideoReplySettingsSnapshot("available", enabled=any(routes.values()))
+            return {"status": "APPLIED", "routes": dict(routes), "videos": videos}
     def receive_snapshot(self) -> VideoReplyReceiveEligibility: return VideoReplyReceiveEligibility(self._committed.enabled is True)
     def reload(self) -> None:
         with self._lock: self._open()
@@ -68,6 +105,7 @@ class VideoReplySettingsStore:
             ledger = self._ledger(self._document); old = ledger.get(request)
             if old is not None:
                 if not isinstance(old, Mapping) or type(old.get("enabled")) is not bool: raise VideoReplySettingsError(_UNAVAILABLE)
+                if "routes" in old: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 if old["enabled"] is not enabled: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 result = old.get("result")
                 if not isinstance(result, Mapping): raise VideoReplySettingsError(_UNAVAILABLE)
@@ -75,6 +113,7 @@ class VideoReplySettingsStore:
             status = "NOOP" if self._committed.enabled is enabled else "APPLIED"; candidate = deepcopy(self._document); settings, ledger = candidate.setdefault("settings", {}), candidate.setdefault("ledger", {})
             if not isinstance(settings, dict) or not isinstance(ledger, dict): raise VideoReplySettingsError(_UNAVAILABLE)
             settings[_KEY] = enabled; ledger[request] = {"enabled": enabled, "result": {"status": status}}
+            if "routes" in settings: settings["routes"] = dict.fromkeys(REPLY_ROUTES, enabled)
             try: self._writer(self.path, self._encode(candidate))
             except (OSError, UnicodeError, TypeError, ValueError):
                 self._committed = VideoReplySettingsSnapshot("unavailable", reason_code=_UNAVAILABLE); raise VideoReplySettingsError(_UNAVAILABLE) from None
@@ -99,6 +138,12 @@ class VideoReplySettingsStore:
         return ledger
     @classmethod
     def _validate(cls, document: Mapping[str, object]) -> None:
+        videos = document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS)
+        if not isinstance(videos, dict) or set(videos) != set(REPLY_ROUTES) or any(type(v) is not bool for v in videos.values()):
+            raise VideoReplySettingsError(_UNAVAILABLE)
+        routes = document.get("settings", {}).get("routes")
+        if routes is not None and (not isinstance(routes, dict) or set(routes) != set(REPLY_ROUTES) or any(type(v) is not bool for v in routes.values())):
+            raise VideoReplySettingsError(_UNAVAILABLE)
         for request, record in cls._ledger(document).items():
             cls._request(request); result = record.get("result") if isinstance(record, Mapping) else None
             if not isinstance(record, Mapping) or type(record.get("enabled")) is not bool or not isinstance(result, Mapping) or result.get("status") not in {"APPLIED", "NOOP", "DUPLICATE"}: raise VideoReplySettingsError(_UNAVAILABLE)

@@ -404,6 +404,9 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'He(()=>{p.value||d.fetchMailList(!0)})',
         'He(()=>{d.fetchMailList(!0),d.startPolling()})',
     )
+    route_anchor = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))'
+    source = source.replace(route_anchor,
+        'Te.interceptors.request.use(async e=>{if(oliviaLocalMailboxRequest(e)&&window.__oliviaPrepareLetterRoute)e=await window.__oliviaPrepareLetterRoute(e);const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))')
     source = source.replace(
         'timestamp:e.createdAt*1e3',
         'timestamp:e.createdAt==null?null:e.createdAt*1e3',
@@ -626,8 +629,17 @@ __all__ = [
 
 def _repair_native_letter_audio(source: str) -> str:
     """Extend native props and paper content; keep original imagery and type."""
+    def cover_progress(value):
+        if 'coverId:e.coverId' in value:
+            return value
+        value = value.replace('audioStatus:e.audioStatus||"",', 'coverId:e.coverId||"",audioStatus:e.audioStatus||"",')
+        value = value.replace('props:{audioUrl:{},', 'props:{coverId:{},audioUrl:{},')
+        value = value.replace('F(ks,{audioUrl:', 'F(ks,{coverId:i.mail.coverId,audioUrl:')
+        value = value.replace('["audioUrl","audioStatus","songUrl",', '["coverId","audioUrl","audioStatus","songUrl",')
+        value = value.replace('{"audio-url":A.audioUrl', '{"cover-id":A.coverId||"","audio-url":A.audioUrl')
+        return value.replace('["audio-url","audio-status","song-url"]', '["cover-id","audio-url","audio-status","song-url"]')
     if 'olivia-letter-audio' in source:
-        return source
+        return cover_progress(source)
     source = source.replace('letterStatus:e.letterStatus,',
         'audioStatus:e.audioStatus||"",audioRevision:e.audioRevision||"",letterStatus:e.letterStatus,')
     source = source.replace('videoUrl:e.replyVideoUrl||void 0',
@@ -645,4 +657,4 @@ def _repair_native_letter_audio(source: str) -> str:
     anchor='[A.type==="error"?'
     replacement='[A.type==="text"&&(A.audioUrl||A.audioStatus)?n("olivia-letter-audio",{"audio-url":A.audioUrl||"","audio-status":A.audioStatus||"","song-url":A.songUrl||""},null,8,["audio-url","audio-status","song-url"]):Y("",!0),A.type==="error"?'
     source = source.replace(anchor,replacement,1)
-    return source
+    return cover_progress(source)

@@ -68,3 +68,53 @@ def test_native_audio_patch_is_idempotent_and_binds_props():
     assert 'audioUrl:i.mail.received?.audioUrl' in patched
     assert 'olivia-letter-audio' in patched
     assert _repair_native_letter_audio(patched)==patched
+
+
+@pytest.mark.parametrize('mode', ['voice_reply', 'singing_video', 'voice_song_video'])
+@pytest.mark.parametrize('video', [False, True])
+def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeypatch, mode, video):
+    import local_server as server
+    import runtime.reply.reply_media as media
+    calls = []
+    letter = dict(letter_id='matrix', reply_mode=mode, reply_video_enabled=video,
+                  letter_status='COMPLETED', reply_text='synthetic')
+    monkeypatch.setattr(server.store, 'letters', [letter])
+    monkeypatch.setattr(server, 'media_semaphore', asyncio.Semaphore(1))
+    monkeypatch.setattr(server, '_local_data_root', lambda *a: tmp_path)
+    monkeypatch.setattr(server, '_persist_media_state', lambda: None)
+    monkeypatch.setattr(server, 'require_breeze_hardware', lambda: calls.append('video_gate'))
+    scene = tmp_path/'scene.mp4'; scene.write_bytes(b'synthetic')
+    monkeypatch.setattr(server, '_current_music_performance', lambda env: scene)
+    monkeypatch.setattr(server, 'configured_media_path', lambda *a: scene)
+    async def plan(*a): return SimpleNamespace(spoken_text='synthetic')
+    monkeypatch.setattr(server, '_voice_plan_for_letter', plan)
+    monkeypatch.setattr(server, '_music_voice_plan_for_letter', plan)
+    def speech(text, output, **kw):
+        calls.append('speech_audio'); output.write_bytes(b'speech'); return {'duration_seconds':1}
+    def speech_video(text, output, **kw):
+        calls.append('speech_video'); output.write_bytes(b'video')
+    def song(content, text, output, **kw):
+        calls.append(('music', kw['include_spoken'], kw.get('render_video', True)))
+        output.write_bytes(b'song'); return {}
+    def concat(speech, song, output, env):
+        calls.append('audio_concat'); output.write_bytes(b'joined')
+    monkeypatch.setattr(server, 'render_reply_audio', speech)
+    monkeypatch.setattr(server, 'render_reply_video', speech_video)
+    monkeypatch.setattr(server, 'render_musical_reply', song)
+    monkeypatch.setattr(media, 'concatenate_reply_audio', concat)
+    asyncio.run(server._render_media_job('matrix', 'synthetic', 'synthetic', mode))
+    assert letter['media_status'] == 'COMPLETED', letter
+    assert ('video_gate' in calls) is video
+    if mode == 'voice_reply':
+        assert calls == (['video_gate', 'speech_video'] if video else ['speech_audio'])
+    else:
+        assert ('music', video and mode == 'voice_song_video', video) in calls
+        assert ('audio_concat' in calls) is (not video and mode == 'voice_song_video')
+        assert ('speech_audio' in calls) is (not video and mode == 'voice_song_video')
+    projected = serialize_letter_detail(letter)
+    if video:
+        assert projected['replyVideoUrl'].endswith('.mp4')
+        assert 'replyAudioUrl' not in projected
+    else:
+        assert projected['replyAudioUrl'].endswith('.wav')
+        assert projected['replyType'] == 1

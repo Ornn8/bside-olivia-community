@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v23"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v24"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2537,99 +2537,193 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return null;
   };
 
+  const REPLY_ROUTE_LABELS = {
+    voice_reply: "说话",
+    singing_video: "唱歌",
+    voice_song_video: "说话＋唱歌",
+  };
+  const routeRequest = async (path, body) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 300000);
+    try {
+      const response = await fetch(new URL(path, apiBase), {
+        method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}), signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.code !== 0) throw new Error(payload.data?.error_code || "设置读取失败，请重试");
+      return payload.data;
+    } finally { window.clearTimeout(timeout); }
+  };
+  const confirmReplyRoute = (route, ready, video = false) => new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("aria-label", "确认回信形式");
+    dialog.setAttribute("data-olivia-route-confirm", "");
+    dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#191a1c;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:480px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
+    const title = text("h3", ready ? "本次开启回信形式？" : "需要准备回信组件", "text-title-m");
+    title.style.marginBottom = "12px";
+    const explanation = text("p", ready
+      ? `这封信请求了${REPLY_ROUTE_LABELS[route]}${video ? "视频" : ""}，但你已关闭该形式。可以仅为这封信开启，长期设置保持不变。`
+      : `这封信请求了${REPLY_ROUTE_LABELS[route]}，当前缺少所需组件。请先在本地能力与下载中准备好，再发送。`, "text-body-m font-regular");
+    explanation.style.cssText = "margin-bottom:20px;line-height:1.7;";
+    const shade = document.createElement("style");
+    shade.textContent = "dialog[data-olivia-route-confirm]::backdrop{background:rgba(0,0,0,.6)}";
+    dialog.append(shade, title, explanation);
+    const previous = document.activeElement;
+    const finish = (accepted) => { dialog.close(); dialog.remove(); previous?.focus(); resolve(accepted); };
+    const controls = actions();
+    controls.append(button("返回修改", () => finish(false)));
+    if (ready) controls.append(button("仅本次开启并发送", () => finish(true)));
+    dialog.append(controls);
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
+    document.body.append(dialog); dialog.showModal();
+  });
+  const selectCoverAudio = () => new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("aria-label", "选择翻唱音频");
+    dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#191a1c;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:520px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
+    const file = document.createElement("input"); file.type = "file";
+    file.style.cssText = "display:block;width:100%;max-width:100%;margin:12px 0;color:inherit;color-scheme:dark;";
+    file.accept = ".wav,.flac,.mp3,.m4a,.ogg"; file.setAttribute("aria-label", "原曲音频");
+    const lyrics = document.createElement("textarea"); lyrics.maxLength = 30000;
+    lyrics.placeholder = "原曲歌词（可选，留空时本地识别；识别结果可能有误）";
+    lyrics.setAttribute("aria-label", "原曲歌词");
+    lyrics.style.cssText = "width:100%;min-height:96px;background:#232427;color:inherit;border:1px solid #66696f;margin:16px 0;padding:10px;box-sizing:border-box;";
+    const language = document.createElement("select"); language.setAttribute("aria-label", "歌词语言");
+    language.style.cssText = "display:block;background:#232427;color:inherit;border:1px solid #66696f;border-radius:6px;padding:6px 10px;margin-bottom:16px;color-scheme:dark;";
+    for (const [value, label] of [["unknown","随原曲"],["zh","中文"],["en","英语"],["ja","日语"],["ko","韩语"]]) {
+      const option = document.createElement("option"); option.value = value; option.textContent = label; language.append(option);
+    }
+    const status = text("p", "选择原曲后，林离会按原曲完整时长翻唱。最大 256 MiB。", "text-body-m font-regular");
+    status.setAttribute("aria-live", "polite");
+    const player = document.createElement("audio"); player.controls = true; player.style.cssText = "width:100%;color-scheme:dark;";
+    let objectUrl, busy = false;
+    file.onchange = () => { if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = file.files[0] ? URL.createObjectURL(file.files[0]) : ""; player.src = objectUrl; };
+    const previous = document.activeElement;
+    const finish = (value) => { if (objectUrl) URL.revokeObjectURL(objectUrl); dialog.close(); dialog.remove(); previous?.focus(); resolve(value); };
+    const cancel = button("返回修改", () => { if (!busy) finish(null); });
+    const submit = button("上传并继续寄信", async () => {
+      const audio = file.files[0];
+      if (!audio || audio.size > 256 * 1024 * 1024) { status.textContent = "请选择不超过 256 MiB 的音频文件。"; return; }
+      busy = true; submit.disabled = cancel.disabled = file.disabled = true;
+      status.textContent = "正在上传并检查音频…";
+      try {
+        const response = await fetch(new URL("/toy/cover/upload", apiBase), {method:"POST", credentials:"omit",
+          headers:{"Content-Type":"application/octet-stream", [CONFIRM_HEADER]:CONFIRM_VALUE}, body:audio});
+        const result = await response.json();
+        if (!response.ok || result.code !== 0) throw new Error(result.data?.error_code || "upload");
+        if (result.data.asr_available === false && !lyrics.value.trim()) {
+          status.textContent = "本地歌词识别模型尚未准备好，请填写原曲歌词后继续。"; lyrics.focus(); return;
+        }
+        finish({cover_source_id:result.data.source_id, cover_lyrics:lyrics.value, cover_language:language.value});
+      } catch (error) { status.textContent = error.message === "COVER_FFMPEG_UNAVAILABLE"
+          ? "本地音频工具未准备好，请修复媒体工具后重试。信件尚未寄出。"
+          : "音频上传或解码失败，请确认文件可以播放后重试。信件尚未寄出。"; }
+      finally { busy = false; submit.disabled = cancel.disabled = file.disabled = false; }
+    });
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); if (!busy) finish(null); });
+    const controls = actions(); controls.append(cancel, submit);
+    dialog.append(text("h3", "让林离翻唱这首歌", "text-title-m"), status, file, player, lyrics, language, controls);
+    document.body.append(dialog); dialog.showModal();
+  });
+  window.__oliviaPrepareLetterRoute = async (config) => {
+    const endpoint = new URL(config.url, config.baseURL || apiBase);
+    if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/send$/.test(endpoint.pathname)) return config;
+    const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
+    if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
+    let preview;
+    try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content}); }
+    catch (error) { error.config = config; error.message = "回信形式检测失败，请稍后重试。信件尚未寄出。"; throw error; }
+    let once;
+    let videoOnce;
+    if (preview.requested_route && (!preview.ready || preview.needs_confirmation || preview.needs_video_confirmation)) {
+      if (!await confirmReplyRoute(preview.requested_route, preview.ready, preview.needs_video_confirmation)) {
+        const error = new Error("已取消发送，信件内容保留"); error.name = "CanceledError"; error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error;
+      }
+      if (preview.needs_confirmation) once = preview.requested_route;
+      if (preview.needs_video_confirmation) videoOnce = preview.requested_route;
+    }
+    const material = {...(body.material || {}), route_preview_token: preview.token};
+    if (preview.requires_cover_audio && !material.cover_source_id) {
+      const cover = await selectCoverAudio();
+      if (!cover) { const error = new Error("已取消发送"); error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error; }
+      Object.assign(material, cover);
+    }
+    delete material.route_allow_once;
+    delete material.route_video_once;
+    if (once) material.route_allow_once = once;
+    if (videoOnce) material.route_video_once = videoOnce;
+    config.data = {...body, material};
+    return config;
+  };
   const mountVideoReplySetting = (section) => {
-    const row = document.createElement("div");
-    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
-    const copy = document.createElement("div");
-    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
-    const state = text("div", "正在检测视频运行环境，第一次可能需要几分钟…", "text-text-secondary text-caption-m font-regular");
-    state.setAttribute("aria-live", "polite");
-    copy.append(text("div", "允许语音与视频回信", "text-text-body text-label-l"), text("div", "已接收的信件不会因设置变化被取消。", "text-text-secondary text-body-m font-regular"), state);
-    let enabled = null;
-    let ready = false;
-    let missingDependencies = [];
-    let message = "正在检测视频运行环境，第一次可能需要几分钟…";
-    let toggle = null;
-    let downloads = null;
+    const container = document.createElement("div");
+    container.setAttribute("data-olivia-reply-routes", "true");
+    container.style.cssText = "display:grid;gap:12px;";
+    container.append(text("div", "回信形式管理", "text-text-body text-title-m"),
+      text("p", "文字回信始终可用。开启的形式可由林离自动选择；明确请求已关闭的形式时，发送前询问是否仅本次开启。已接收的信件不受后续设置变化影响。", "text-text-secondary text-body-m font-regular"));
+    const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular");
+    status.setAttribute("aria-live", "polite");
+    let routes = null, videos = {voice_reply:false, singing_video:true, voice_song_video:true}, ready = {}, busy = false;
+    const toggles = {};
+    const descriptions = {
+      voice_reply: "视频开启：说话口型视频；关闭：纯语音。",
+      singing_video: "视频开启：唱歌视频；关闭：纯歌曲音频。",
+      voice_song_video: "视频开启：传统说话加唱歌视频；关闭：说话加歌曲音频。",
+    };
     const render = () => {
-      if (!toggle || !downloads) return;
-      const settingAvailable = typeof enabled === "boolean";
-      toggle.disabled = !settingAvailable || (!ready && !enabled);
-      toggle.textContent = settingAvailable ? (enabled ? "已开启" : "已关闭") : "暂不可用";
-      toggle.setAttribute("aria-pressed", settingAvailable ? String(enabled) : "false");
-      downloads.textContent = ready ? "管理下载" : "下载缺失组件";
-      state.textContent = message;
+      for (const [route, nodes] of Object.entries(toggles)) {
+        nodes.toggle.disabled = busy || !routes;
+        nodes.toggle.textContent = !routes ? "读取中…" : routes[route] ? "已开启" : "已关闭";
+        nodes.toggle.setAttribute("aria-pressed", String(!!routes?.[route]));
+        nodes.video.disabled = busy || !routes;
+        nodes.video.textContent = videos[route] ? "视频：开" : "视频：关";
+        nodes.video.setAttribute("aria-pressed", String(videos[route]));
+        nodes.state.textContent = !routes ? "" : ready[route] ? "组件已就绪" : "组件未就绪，请先准备所需组件";
+      }
     };
     const hydrate = async () => {
       try {
-        const payload = await requestJson(VIDEO_REPLY_SETTINGS_PATH);
-        if (payload.state !== "available") throw new Error("setting-unavailable");
-        enabled = payload.enabled;
-        ready = payload.ready === true;
-        const byId = VIDEO_REPLY_DEPENDENCY_LABELS;
-        missingDependencies = Array.isArray(payload.dependencies)
-          ? payload.dependencies
-            .filter((item) => item && item.state !== "ready" && byId.has(item.id))
-            .map((item) => byId.get(item.id))
-          : [];
-        const voiceReference = Array.isArray(payload.dependencies)
-          ? payload.dependencies.find((item) => item && item.id === "voice_reference")
-          : null;
-        const voiceNeedsPrivateRepair = voiceReference
-          && voiceReference.install_mode === "managed"
-          && (
-            voiceReference.reason_code === "VOICE_REFERENCE_UNAVAILABLE"
-            || voiceReference.reason_code === "VOICE_REFERENCE_INVALID"
-          );
-        message = voiceNeedsPrivateRepair
-          ? `受管林离音色不可用（${byId.get("voice_reference")}），请重新运行提供此私有版本的安装程序修复。`
-          : !ready && enabled
-          ? `视频回信偏好已开启，但当前缺少依赖，不会生效：${missingDependencies.join("、") || "请检查本地能力"}`
-          : !ready
-          ? `缺少依赖，无法开启视频回信：${missingDependencies.join("、") || "请检查本地能力"}`
-          : enabled
-          ? "新信默认可参与语音与视频路由。"
-          : "新信将直接使用文字回信。";
-      } catch (_error) {
-        enabled = null;
-        ready = false;
-        missingDependencies = [];
-        message = "设置暂不可用，已安全禁用。";
-      }
+        const payload = await routeRequest("/toy/settings/reply-routes");
+        if (!payload.routes || Object.keys(REPLY_ROUTE_LABELS).some(key => typeof payload.routes[key] !== "boolean")) throw new Error("invalid settings");
+        routes = payload.routes; videos = payload.videos || videos; ready = payload.ready || {}; status.textContent = "模式与视频选项独立保存，关闭视频不会关闭该模式。";
+      } catch (_) { routes = null; status.textContent = "设置读取失败，请点击重新读取。"; }
       render();
     };
-    const apply = async () => {
-      if (!toggle || typeof enabled !== "boolean") return;
-      const previous = enabled;
-      setButtonsBusy([toggle], true);
-      try {
-        const payload = await requestMutation(VIDEO_REPLY_SETTINGS_PATH, { enabled: !previous, request_id: videoReplyRequestId() });
-        if (!["APPLIED", "NOOP", "DUPLICATE"].includes(payload.status) || typeof payload.enabled !== "boolean") throw new Error("mutation-unavailable");
-        enabled = payload.enabled;
-        message = enabled ? "新信默认可参与语音与视频路由。" : "新信将直接使用文字回信。";
-      } catch (error) {
-        enabled = previous;
-        if (error && error.code === "VIDEO_REPLY_DEPENDENCIES_MISSING") {
-          const byId = VIDEO_REPLY_DEPENDENCY_LABELS;
-          const labels = (error.missingDependencies || []).flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
-          message = `缺少依赖，无法开启视频回信：${labels.join("、") || "请检查本地能力"}`;
-        } else {
-          message = error && error.code === "VIDEO_REPLY_SETTING_REQUEST_CONFLICT" ? "设置请求冲突，原设置保持不变。" : "设置暂不可用，原设置保持不变。";
-        }
-      } finally {
-        setButtonsBusy([toggle], false);
-        render();
-      }
-    };
-    toggle = button("已开启", apply);
-    toggle.setAttribute("aria-label", "切换视频回信");
-    downloads = button("下载缺失组件", () => openDialog(false, "capability"));
-    const controls = actions();
-    controls.append(toggle, downloads);
-    row.append(copy, controls);
-    section.append(text("div", "视频回信", "text-text-body text-title-m"), row);
-    refreshVideoReplySetting = () => row.isConnected ? hydrate() : Promise.resolve();
-    render();
+    for (const [route, label] of Object.entries(REPLY_ROUTE_LABELS)) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid #303135;";
+      const copy = document.createElement("div"); copy.style.cssText = "flex:1;min-width:180px;";
+      const state = text("div", "", "text-text-secondary text-caption-m font-regular");
+      copy.append(text("div", label, "text-text-body text-label-l"), text("div", descriptions[route], "text-text-secondary text-body-m font-regular"), state);
+      const toggle = button("读取中…", async () => {
+        if (busy || !routes) return;
+        busy = true; render();
+        try {
+          const next = {...routes, [route]: !routes[route]};
+          const result = await routeRequest("/toy/settings/reply-routes", {request_id: videoReplyRequestId(), routes: next, videos});
+          routes = result.routes; status.textContent = `${label}已${routes[route] ? "开启" : "关闭"}。`;
+        } catch (_) { status.textContent = "保存失败，请重新读取后重试。"; }
+        finally { busy = false; render(); }
+      });
+      toggle.setAttribute("aria-label", `切换${label}`);
+      const video = button("视频：关", async () => {
+        if (busy || !routes) return;
+        busy = true; render();
+        try {
+          const result = await routeRequest("/toy/settings/reply-routes", {request_id: videoReplyRequestId(), routes, videos:{...videos,[route]:!videos[route]}});
+          videos = result.videos; status.textContent = `${label}将生成${videos[route] ? "视频" : "音频"}。`;
+        } catch (_) { status.textContent = "保存失败，请重新读取后重试。"; }
+        finally { busy = false; await hydrate(); }
+      });
+      video.setAttribute("aria-label", `切换${label}视频`);
+      const controls = actions(); controls.append(toggle, video);
+      toggles[route] = {toggle, video, state}; row.append(copy, controls); container.append(row);
+    }
+    const controls = actions(); controls.append(button("管理下载", () => openDialog(false, "capability")), button("重新读取", () => { if (!busy) void hydrate(); }));
+    container.append(status, controls); section.append(container);
+    refreshVideoReplySetting = () => container.isConnected ? hydrate() : Promise.resolve();
     void hydrate();
   };
 
@@ -2898,11 +2992,25 @@ BOOTSTRAP_JAVASCRIPT = r'''
   const icon=(button,paused)=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',paused?'M7 4v16l13-8z':'M6 4h4v16H6zm8 0h4v16h-4z');svg.append(path);button.replaceChildren(svg)};
   const safe=value=>{try{const u=new URL(value);return u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\/toy\/media\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(wav|mp4)$/.test(u.pathname)?u.href:''}catch{return ''}};
   let current=null;
+  const coverApi=document.currentScript?.dataset?.apiBase;
   class LetterAudio extends HTMLElement {
-    static get observedAttributes(){return ['audio-url','audio-status','song-url']}
-    connectedCallback(){this.render()}
-    disconnectedCallback(){this.audio?.pause();this.video?.pause();if(current===this.audio||current===this.video)current=null}
+    static get observedAttributes(){return ['audio-url','audio-status','song-url','cover-id']}
+    connectedCallback(){this.render();this.coverTimer=setInterval(()=>this.coverProgress(),4000);this.coverProgress()}
+    disconnectedCallback(){clearInterval(this.coverTimer);this.audio?.pause();this.video?.pause();if(current===this.audio||current===this.video)current=null}
     attributeChangedCallback(){if(this.isConnected)this.render()}
+    async coverProgress(){
+      const id=this.getAttribute('cover-id');if(!id||!coverApi||this.coverBusy)return;
+      this.coverBusy=true;
+      try{
+        const endpoint=new URL('/toy/cover/progress',coverApi);endpoint.searchParams.set('letter_id',id);
+        const response=await fetch(endpoint,{cache:'no-store',credentials:'omit'});if(!response.ok)return;
+        const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
+        const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
+        const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
+        if(['FAILED','UNAVAILABLE'].includes(data.status))status.textContent=errors[data.error_code]||'这次翻唱未能完成，文字回信已保留。';
+        else if(data.status!=='COMPLETED'&&labels[data.stage])status.textContent=labels[data.stage];
+      }catch(_){}finally{this.coverBusy=false}
+    }
     render(){
       const url=safe(this.getAttribute('audio-url')||''), song=safe(this.getAttribute('song-url')||''), state=this.getAttribute('audio-status')||'';
       const key=JSON.stringify([url,song,state]);if(this.key===key)return;
@@ -2923,9 +3031,10 @@ BOOTSTRAP_JAVASCRIPT = r'''
         audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);sync();if(wasPlaying)audio.play().catch(()=>{})};
         audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
         audio.onended=()=>{sync();if(this.video)this.video.play().catch(()=>{})};
-        row.append(button,seek,stamp);this.append(row);
+        const download=document.createElement('a');download.href=url;download.download='林离回信.wav';download.textContent='下载';download.setAttribute('aria-label','下载回信音频');download.style.cssText='color:inherit;font-size:12px;white-space:nowrap';
+        row.append(button,seek,stamp,download);this.append(row);
       }
-      if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次语音未能录好，文字回信已保留。':'林离正在录语音…';
+      if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次音频未能完成，文字回信已保留。':'林离正在准备回信音频…';
       else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';
       else if(state!=='COMPLETED')status.textContent='语音已录好，歌曲制作中…';
       this.append(status);

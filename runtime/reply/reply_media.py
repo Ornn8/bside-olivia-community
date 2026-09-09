@@ -31,6 +31,21 @@ class ReplyMediaError(RuntimeError):
     pass
 
 
+def concatenate_reply_audio(speech: Path, song: Path, output: Path, environment: Mapping[str, str]) -> None:
+    partial = output.with_name(output.stem + ".partial.wav")
+    try:
+        result = subprocess.run([str(resolve_ffmpeg_executable(environment)), "-y", "-v", "error",
+            "-i", str(speech), "-i", str(song), "-filter_complex",
+            "[0:a]aresample=48000,aformat=channel_layouts=stereo[a];[1:a]aresample=48000,aformat=channel_layouts=stereo[b];[a][b]concat=n=2:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "pcm_s16le", str(partial)], capture_output=True, timeout=120)
+        if result.returncode or not partial.is_file(): raise ReplyMediaError("REPLY_AUDIO_CONCAT_FAILED")
+        os.replace(partial, output)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReplyMediaError("REPLY_AUDIO_CONCAT_FAILED") from None
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 @dataclass(frozen=True)
 class CompleteVideoDelivery:
     tts: TTSConfig

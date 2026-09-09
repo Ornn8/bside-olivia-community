@@ -202,7 +202,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v23"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v24"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -846,12 +846,12 @@ const statusPayload = (status) => ({
           list: [], total: 0, scope: "legacy", read_only: true,
         } }) };
       }
-      if (endpoint.pathname === "/toy/settings/video-reply") {
+      if (endpoint.pathname === "/toy/settings/reply-routes") {
         videoMethods.push(options.method);
-        if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", enabled: true } }) };
+        if (options.method === "GET") return { ok: true, json: async () => ({ code: 0, data: { state: "available", routes: {voice_reply:true, singing_video:true, voice_song_video:true}, ready:{} } }) };
         videoWrites += 1;
         return videoWrites === 1
-          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", enabled: false } }) }
+          ? { ok: true, json: async () => ({ code: 0, data: { status: "APPLIED", routes: JSON.parse(options.body).routes } }) }
           : { ok: false, json: async () => ({ data: { error_code: "VIDEO_REPLY_SETTING_UNAVAILABLE" } }) };
       }
       if (endpoint.pathname === "/toy/capabilities/video") {
@@ -922,7 +922,7 @@ vm.runInNewContext(source, context);
       await flush();
       await findButton("已关闭").click();
       await flush();
-      if (!body.querySelectorAll("div").some((item) => item.textContent.includes("原设置保持不变"))) throw new Error("video mutation error was hidden");
+      if (!body.querySelectorAll("p").some((item) => item.textContent.includes("保存失败"))) throw new Error("route mutation error was hidden");
           await clickConfirmed(findButton("暂停长期记忆"));
   await flush();
   const resume = findButton("恢复长期记忆");

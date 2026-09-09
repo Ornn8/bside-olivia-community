@@ -364,8 +364,8 @@ def test_initial_and_later_settings_share_the_complete_optional_capability_panel
     assert "downloadLink.href" not in source
     assert "CAPABILITY_DOWNLOAD_HOSTS" not in source
     assert "missing_dependencies" in source
-    assert "toggle.disabled = !settingAvailable || (!ready && !enabled);" in source
-    assert 'button("下载缺失组件", () => openDialog(false, "capability"))' in source
+    assert "nodes.toggle.disabled = busy || !routes;" in source
+    assert 'button("管理下载", () => openDialog(false, "capability"))' in source
     assert source.index('states.some((value) => ["queued", "downloading", "verifying"].includes(value))') < source.index('states.some((value) => value === "failed")')
 
 
@@ -425,10 +425,9 @@ def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> No
     )
     assert "? 300000" in source
     assert ": 5000;" in source
-    assert "正在检测视频运行环境，第一次可能需要几分钟" in setting
-    assert setting.index("正在检测视频运行环境") < setting.index(
-        "await requestJson(VIDEO_REPLY_SETTINGS_PATH)"
-    )
+    assert "正在读取设置" in setting
+    assert 'await routeRequest("/toy/settings/reply-routes")' in setting
+    assert "ready = payload.ready || {}" in setting
 
 
 def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value() -> None:
@@ -443,21 +442,19 @@ def test_video_reply_setting_mutation_waits_for_probe_and_uses_committed_value()
     assert "path === VIDEO_REPLY_SETTINGS_PATH" in mutation
     assert "? 300000" in mutation
     assert ": 8000;" in mutation
-    assert "enabled = payload.enabled;" in setting
+    assert "routes = result.routes;" in setting
 
 
-def test_video_reply_setting_shows_private_voice_repair_only_when_reported() -> None:
+def test_reply_route_settings_show_individual_readiness_without_claiming_private_repair() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     setting = source.split("const mountVideoReplySetting = (section) => {", 1)[1].split(
         "const mountOfficialLetterImport", 1
     )[0]
 
     assert '["voice_reference", "受管林离音色"]' in source
-    assert 'item.id === "voice_reference"' in setting
-    assert 'voiceReference.install_mode === "managed"' in setting
-    assert 'voiceReference.reason_code === "VOICE_REFERENCE_UNAVAILABLE"' in setting
-    assert 'voiceReference.reason_code === "VOICE_REFERENCE_INVALID"' in setting
-    assert "请重新运行提供此私有版本的安装程序修复" in setting
+    assert 'ready[route] ? "组件已就绪"' in setting
+    assert "组件未就绪，请先准备所需组件" in setting
+    assert 'button("管理下载"' in setting
     assert "随 Olivia 安装包提供" not in source
 
 

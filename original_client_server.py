@@ -515,6 +515,25 @@ def _diagnostic_source(
             "live",
         }:
             item["reply_mode"] = reply_mode
+        # Only categorical routing facts: never copy letter text, paths or free-form reasons.
+        for name in ("video_reply_enabled", "reply_video_enabled"):
+            if type(value.get(name)) is bool:
+                item[name] = value[name]
+        for name in ("reply_routes", "reply_route_videos"):
+            flags = value.get(name)
+            if isinstance(flags, Mapping):
+                item[name] = {key: flags[key] for key in ("voice_reply", "singing_video", "voice_song_video") if type(flags.get(key)) is bool}
+        triage = value.get("triage")
+        if isinstance(triage, Mapping):
+            contexts = triage.get("music_contexts", ())
+            if isinstance(contexts, (list, tuple)):
+                item["explicit_requests"] = [key for key in ("explicit_voice_reply_request", "explicit_video_reply_request", "explicit_video_output_request",
+                    "explicit_performance_or_adaptation_request", "explicit_voice_and_song_request") if key in contexts]
+            reason = triage.get("reason_code")
+            if isinstance(reason, str) and reason in {"explicit_media_requested", "media_components_required", "reply_route_disabled", "media_not_warranted"}:
+                item["route_reason"] = reason
+            if isinstance(triage.get("request_disposition"), str) and triage["request_disposition"] in {"none", "discuss", "fulfill", "refuse", "defer"}:
+                item["request_disposition"] = triage["request_disposition"]
         for name in ("retryable", "media_retryable"):
             flag = value.get(name)
             if type(flag) is bool:

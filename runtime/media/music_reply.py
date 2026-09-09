@@ -258,6 +258,7 @@ def musical_reply_configured(
     *,
     performance_video_path: Path | None,
     include_spoken: bool = True,
+    render_video: bool = True,
 ) -> bool:
     """Return whether the renderer's complete musical delivery closure exists."""
 
@@ -272,7 +273,7 @@ def musical_reply_configured(
         configured_path("OLIVIA_TTS_CONFIG"),
         configured_path("OLIVIA_LOCAL_DATA_ROOT"),
     )
-    if minimax_root is None or latentsync_root is None or delivery_paths[1] is None or (include_spoken and delivery_paths[0] is None):
+    if minimax_root is None or (render_video and latentsync_root is None) or delivery_paths[1] is None or (include_spoken and delivery_paths[0] is None):
         return False
     if include_spoken:
         try:
@@ -292,7 +293,7 @@ def musical_reply_configured(
         configured_path("OLIVIA_ROFORMER_CONFIG_PATH"),
         configured_path("OLIVIA_MINIMAX_COMFY_PYTHON"),
         configured_path("OLIVIA_MINIMAX_WORKER"),
-        configured_path("OLIVIA_LATENTSYNC_PYTHON"),
+        *((configured_path("OLIVIA_LATENTSYNC_PYTHON"),) if render_video else ()),
     )
     if (
         (include_spoken and (ordinary_scene is None or transition_reference is None))
@@ -307,15 +308,14 @@ def musical_reply_configured(
         minimax_root / "models" / "diffusion_models" / "minimax_music3_dit_int8_convrot.safetensors",
         minimax_root / "models" / "text_encoders" / "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
         minimax_root / "models" / "vae" / "minimax_music3_dav.safetensors",
-        latentsync_root / "scripts" / "inference.py",
-        latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
-        latentsync_root / "checkpoints" / "latentsync_unet.pt",
+        *((latentsync_root / "scripts" / "inference.py",
+           latentsync_root / "configs" / "unet" / "stage2_efficient.yaml",
+           latentsync_root / "checkpoints" / "latentsync_unet.pt") if render_video else ()),
     )
     return bool(
         voice_conversion_runtime_ready(env)
         and
-        performance_video_path is not None
-        and performance_video_path.is_file()
+        (not render_video or (performance_video_path is not None and performance_video_path.is_file()))
         and (not include_spoken or (
             ordinary_scene.is_file()
         and str(getattr(delivery.tts, "provider", "")).casefold()
@@ -327,7 +327,7 @@ def musical_reply_configured(
         ).is_file()
         ))
         and minimax_root.is_dir()
-        and latentsync_root.is_dir()
+        and (not render_video or latentsync_root.is_dir())
         and all(path.is_file() for path in required)
     )
 
@@ -1073,8 +1073,8 @@ def separate_vocals(
             "ROFORMER_INPUT_CONVERSION_FAILED",
         )
         command = [str(executable)]
-        configured_python = environment.get("OLIVIA_ROFORMER_PYTHON")
-        if configured_python and Path(str(configured_python)).resolve() == executable.resolve():
+        configured_python = configured_media_path(environment, "OLIVIA_ROFORMER_PYTHON")
+        if configured_python is not None and configured_python == executable.resolve():
             command.extend(["-m", "mel_band_roformer.inference"])
         command.extend(
             [
@@ -1773,10 +1773,14 @@ def render_musical_reply(
     gateway: Gateway | None = None,
     environment: Mapping[str, str] | None = None,
     include_spoken: bool = True,
+    render_video: bool = True,
 ) -> dict[str, object]:
     """Render the ordinary reply, append an original-view song performance."""
 
-    require_breeze_hardware()
+    if render_video:
+        require_breeze_hardware()
+    if include_spoken and not render_video:
+        raise MusicReplyError("MUSIC_AUDIO_COMBINATION_REQUIRES_EXTERNAL_SPEECH")
     duration_seconds = normalize_music_duration(duration_seconds)
     provider_paths = _music_provider_path_snapshot(environment)
     transition_reference = Path(official_reply_reference_path)
@@ -1789,13 +1793,13 @@ def render_musical_reply(
         raise MusicReplyError("MINIMAX_MUSIC3_UNAVAILABLE")
     latentsync_python = provider_paths.latentsync_python
     latentsync_root = provider_paths.latentsync_root
-    if latentsync_python is None or latentsync_root is None:
+    if render_video and (latentsync_python is None or latentsync_root is None):
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     ffmpeg_path = provider_paths.ffmpeg_executable
     if ffmpeg_path is None or not ffmpeg_path.is_file():
         raise MusicReplyError("FFMPEG_UNAVAILABLE")
     provider_cache_root = provider_paths.provider_cache_root
-    if provider_cache_root is None or not provider_cache_root.is_absolute():
+    if render_video and (provider_cache_root is None or not provider_cache_root.is_absolute()):
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     singing_reference = configured_media_path(provider_paths.environment, "OLIVIA_REPLY_VOICE_REFERENCE")
     try:
@@ -2038,6 +2042,12 @@ def render_musical_reply(
         if failure is not None:
             raise failure from None
         _record_stage(manifest, manifest_path, name, destination, upstream=upstream, **audio_gate)
+
+    if not render_video:
+        partial_output = output_path.with_name(f"{output_path.stem}.partial.wav")
+        shutil.copyfile(mixed_song, partial_output)
+        _publish_stage(partial_output, output_path, "final_audio", ("0:a:0",), ffmpeg_path, music_stage_minimum)
+        return {**song_metadata, "song_title": "回信里的歌", "reply_structure": "singing_audio"}
 
     if _stage_reusable(
         manifest,

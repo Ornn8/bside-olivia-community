@@ -1049,9 +1049,9 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     monkeypatch.setattr(music_reply, "render_full_face_performance", fake_face)
     monkeypatch.setattr(music_reply, "concat_videos", fake_concat)
 
-    def render(include_spoken=True):
+    def render(include_spoken=True, render_video=True):
         return music_reply.render_musical_reply(
-        "synthetic letter", "synthetic canonical reply", output,
+        "synthetic letter", "synthetic canonical reply", output if render_video else output.with_suffix('.wav'),
         normal_video_path=normal,
         official_reply_reference_path=official_reference,
         song_video_path=song_video,
@@ -1063,6 +1063,7 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         spoken_action_base_path=spoken_action_base,
         gateway=active_gateway,
         include_spoken=include_spoken,
+        render_video=render_video,
     )
 
     with pytest.raises(music_reply.MusicReplyError, match="MUSIC_REPLY_SPOKEN_REFERENCE_FAILED"):
@@ -1183,6 +1184,14 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
     assert "spoken" not in order and "concat" not in order
     assert output.read_bytes() == song_video.read_bytes()
     assert result["reply_structure"] == "singing_only"
+    monkeypatch.delenv("OLIVIA_LATENTSYNC_PYTHON", raising=False)
+    monkeypatch.delenv("OLIVIA_LATENTSYNC_ROOT", raising=False)
+    monkeypatch.delenv("OLIVIA_PROVIDER_CACHE_ROOT", raising=False)
+    monkeypatch.setattr(music_reply, "require_breeze_hardware", lambda: pytest.fail("audio must not enter video hardware gate"))
+    monkeypatch.setattr(music_reply, "render_full_face_performance", lambda *a, **k: pytest.fail("audio must not render lipsync"))
+    result = render(include_spoken=False, render_video=False)
+    assert result["reply_structure"] == "singing_audio"
+    assert output.with_suffix('.wav').is_file()
 
 
 def test_render_musical_reply_fails_closed_without_official_transition(

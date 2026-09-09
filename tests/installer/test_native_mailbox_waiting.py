@@ -9,6 +9,30 @@ from patch_feapp import MAILBOX_WRITE_ANCHOR_0627
 from patch_feapp import _repair_mailbox_waiting_footer
 
 
+def test_native_send_interceptor_waits_for_route_consent_and_patch_is_idempotent(tmp_path):
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    guard = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode)throw new Ol(e);return e});'
+    main.write_text(guard + '\nconst fixture={' + MAILBOX_WRITE_ANCHOR_0627 + '};', encoding="utf-8")
+    _repair_mailbox_write_access(tmp_path)
+    source = main.read_text(encoding="utf-8")
+    assert source.count('await window.__oliviaPrepareLetterRoute(e)') == 1
+    assert _repair_mailbox_write_access(tmp_path) == "ALREADY_PATCHED"
+    assert main.read_text(encoding="utf-8") == source
+    # Execute the real patched interceptor, stopping before the unrelated render fixture.
+    script = '''let interceptor;const Te={interceptors:{request:{use:f=>interceptor=f}}};
+const document={querySelector:()=>({dataset:{apiBase:"http://127.0.0.1:8899"}})};
+const Ie=()=>({isOfflineMode:false});let calls=0;
+const window={__oliviaPrepareLetterRoute:async e=>{await Promise.resolve();calls++;return {...e,confirmed:true}}};
+''' + source.split('\nconst fixture=')[0] + '''
+(async()=>{const result=await interceptor({url:"/letter/send",baseURL:"http://127.0.0.1:8899"});
+if(!result.confirmed||calls!==1)throw Error("consent bypassed");
+window.__oliviaPrepareLetterRoute=async()=>{throw Error("cancelled")};
+let failed=false;try{await interceptor({url:"/letter/send",baseURL:"http://127.0.0.1:8899"})}catch(e){failed=e.message==="cancelled"}
+if(!failed)throw Error("cancellation bypassed");})().catch(e=>{console.error(e);process.exitCode=1});'''
+    subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+
+
 def test_native_waiting_card_stays_visible_and_blocks_click_until_reply():
     # Verbatim footer and sidebar render from native 0.0.9.627. Execute the
     # patched render/event functions, including a direct disabled-button click.

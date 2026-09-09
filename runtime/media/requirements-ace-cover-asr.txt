@@ -1,0 +1,4 @@
+# Add to the ACE runtime without replacing its tested torch/torchao stack.
+openai-whisper==20250625
+tiktoken==0.14.0
+more-itertools==11.1.0

@@ -57,6 +57,13 @@ _MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav)$")
 _VIDEO_MODES = frozenset({"musical_video", "singing_video", "voice_song_video"})
 
 
+def _audio_reply(letter: Mapping[str, object]) -> bool:
+    mode = _exact_reply_mode(letter.get("reply_mode"))
+    if "reply_video_enabled" in letter:
+        return letter["reply_video_enabled"] is False and mode != "text_letter"
+    return mode in {"voice_reply", "voice_song_video"}
+
+
 class OriginalClientContractError(ValueError):
     """Stable contract error used only by pure serializers."""
 
@@ -73,7 +80,7 @@ def _now_value(now: float | None) -> float:
 
 
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
-    if _video_pending(letter) and _exact_reply_mode(letter.get("reply_mode")) == "musical_video":
+    if _video_pending(letter):
         return False
     deadline = letter.get("reply_not_before", 0.0)
     if deadline in (None, ""):
@@ -85,7 +92,7 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
 
 def _video_pending(letter: Mapping[str, object]) -> bool:
     return (
-        _exact_reply_mode(letter.get("reply_mode")) == "musical_video"
+        (letter.get("reply_video_enabled") is True or _exact_reply_mode(letter.get("reply_mode")) == "musical_video")
         and str(letter.get("media_status") or "").strip().upper()
         in {"PENDING", "QUEUED", "PROCESSING"}
         and _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True)
@@ -178,14 +185,14 @@ def _reply_projection(
     mode = _exact_reply_mode(letter.get("reply_mode"))
     media_status = str(letter.get("media_status") or "").strip().upper()
     media_url = _safe_local_media_url(letter.get("reply_video_url"))
-    if mode == "voice_song_video":
+    if _audio_reply(letter):
         return int(OriginalClientReplyType.TEXT), reply_text, media_url
-    if mode not in _VIDEO_MODES or media_status != "COMPLETED" or not media_url:
+    if mode not in _VIDEO_MODES | {"voice_reply"} or media_status != "COMPLETED" or not media_url:
         # Canonical text remains usable while media is pending or unavailable.
         return int(OriginalClientReplyType.TEXT), reply_text, ""
     # Every local video reply contains generated singing, so the closest
     # original-client semantic is MIX_SVS rather than speech or instrumental.
-    return int(OriginalClientReplyType.MIX_SVS), reply_text, media_url
+    return int(OriginalClientReplyType.SPEECH if mode == "voice_reply" else OriginalClientReplyType.MIX_SVS), reply_text, media_url
 
 
 def _required_identifier(letter: Mapping[str, object]) -> str:
@@ -257,7 +264,9 @@ def serialize_letter_summary(
     }
     if video_pending:
         payload["videoPending"] = True
-    if _exact_reply_mode(letter.get("reply_mode")) in {"voice_reply", "voice_song_video"}:
+    if letter.get("music_provider") == "ace_step_xl_cover" and _exact_reply_mode(letter.get("reply_mode")) != "voice_reply":
+        payload["coverId"] = letter_id
+    if _audio_reply(letter):
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
         payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url"))
 
@@ -308,7 +317,7 @@ def serialize_letter_detail(
             "replyVideoUrl": media_url,
         }
     )
-    if published and _exact_reply_mode(letter.get("reply_mode")) in {"voice_reply", "voice_song_video"}:
+    if published and _audio_reply(letter):
         payload["replyAudioUrl"] = _safe_local_media_url(letter.get("reply_audio_url"))
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
         payload["replySongUrl"] = media_url if _exact_reply_mode(letter.get("reply_mode")) == "voice_song_video" and letter.get("media_status") == "COMPLETED" else ""

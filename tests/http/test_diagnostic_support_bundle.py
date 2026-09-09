@@ -89,6 +89,26 @@ def test_lipsync_context_strictly_projects_labels_and_booleans():
     assert b'private-secret' not in raw
 
 
+def test_route_diagnostics_keep_switches_and_request_facts_without_text():
+    source = _source()
+    task = source['tasks']['items'][0]
+    task.update(video_reply_enabled=True, reply_video_enabled=False,
+        reply_routes={'voice_reply':True, 'secret':'private-secret'},
+        reply_route_videos={'voice_reply':False, 'singing_video':'private-secret'},
+        explicit_requests=['explicit_video_reply_request','private-secret'],
+        route_reason='explicit_media_requested', request_disposition='fulfill')
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('tasks.json')
+    item = json.loads(raw)['items'][0]
+    assert item['reply_video_enabled'] is False
+    assert item['reply_route_videos'] == {'voice_reply':False}
+    assert item['explicit_requests'] == ['explicit_video_reply_request']
+    assert item['route_reason'] == 'explicit_media_requested'
+    assert b'private-secret' not in raw and b'private reply' not in raw
+    task.update(route_reason=['private-secret'], request_disposition={'private-secret':1})
+    build_diagnostic_bundle(source)
+
+
 def test_media_provider_tail_projects_failure_chain_without_private_diagnostics():
     source = _source()
     source['media_provider_tail'] = [

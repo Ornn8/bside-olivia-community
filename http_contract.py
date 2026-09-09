@@ -95,6 +95,11 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
 }
 
 LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
+    "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
+    "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+    "COVER_GENERATION_FAILED": {"status": "FAILED", "retryable": True},
+    "COVER_GENERATION_TIMEOUT": {"status": "FAILED", "retryable": True},
     "BREEZE_TTS_10GB_VRAM_REQUIRED": {
         "status": "UNAVAILABLE",
         "retryable": True,
@@ -201,6 +206,10 @@ def canonical_route_path(path: str) -> str:
 
 
 ROUTES: dict[str, dict[str, Any]] = {
+    "/toy/settings/reply-routes": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/letter/route-preview": _route(["POST"], "letters.send", evidence="local-extension"),
+    "/toy/cover/progress": _route(["GET"], "letters.read", evidence="local-extension"),
+    "/toy/cover/upload": _route(["POST"], "letters.send", evidence="local-extension"),
     "/health": _route(["GET"], "core.health", read_only=True, evidence="local"),
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),
     "/toy/getUserInfo": _route(["GET", "POST"], "core.session", read_only=True),

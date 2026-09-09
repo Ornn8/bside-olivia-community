@@ -225,6 +225,21 @@ def _project_tasks(value: object) -> dict[str, object]:
             if reply_mode not in _REPLY_MODES:
                 raise _invalid()
             projected["reply_mode"] = reply_mode
+        for name in ("video_reply_enabled", "reply_video_enabled"):
+            if type(item.get(name)) is bool:
+                projected[name] = item[name]
+        for name in ("reply_routes", "reply_route_videos"):
+            flags = item.get(name)
+            if isinstance(flags, Mapping):
+                projected[name] = {key: flags[key] for key in ("voice_reply", "singing_video", "voice_song_video") if type(flags.get(key)) is bool}
+        contexts = item.get("explicit_requests")
+        if isinstance(contexts, (list, tuple)):
+            projected["explicit_requests"] = [key for key in ("explicit_voice_reply_request", "explicit_video_reply_request", "explicit_video_output_request",
+                "explicit_performance_or_adaptation_request", "explicit_voice_and_song_request") if key in contexts]
+        if isinstance(item.get("route_reason"), str) and item["route_reason"] in {"explicit_media_requested", "media_components_required", "reply_route_disabled", "media_not_warranted"}:
+            projected["route_reason"] = item["route_reason"]
+        if isinstance(item.get("request_disposition"), str) and item["request_disposition"] in {"none", "discuss", "fulfill", "refuse", "defer"}:
+            projected["request_disposition"] = item["request_disposition"]
         stage = item.get("stage")
         if stage not in _TASK_STAGES:
             raise _invalid()
