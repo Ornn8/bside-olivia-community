@@ -332,6 +332,14 @@ begin
         Log('Olivia installer diagnostic: ' + String(DiagnosticContent));
       if StableInstallCode = 'OFFICIAL_INSTALL_AMBIGUOUS' then
         Result := '检测到多个 Olivia 正版目录，且无法自动确认当前副本。请点击“上一步”，明确选择 Steam 中正在使用的正版游戏目录。'
+      else if StableInstallCode = 'SETUP_PATCH_FILE_IN_USE' then
+        Result := '安装文件正在被占用。请关闭旧版 Olivia 后重试；不要删除信件和记忆目录。'
+      else if StableInstallCode = 'SETUP_PATCH_PERMISSION_DENIED' then
+        Result := '安装时无法写入或访问文件。请确认目标目录可写、旧版 Olivia 已关闭，并检查安全软件的拦截记录。请保留安装日志。'
+      else if StableInstallCode = 'SETUP_PATCH_DISK_FULL' then
+        Result := '安装时磁盘空间不足。请释放安装盘和临时目录所在磁盘的空间后重试。'
+      else if StableInstallCode = 'SETUP_PATCH_FILE_MISSING' then
+        Result := '安装过程中所需文件不存在。请保留安装日志，并检查原版游戏文件和安全软件的隔离记录。'
       else if StableInstallCode <> '' then
         Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。'
       else

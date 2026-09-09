@@ -65,10 +65,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             result = rollback_component_update(args.installation)
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0
     except (PatchInstallError, ComponentPackageBuildError, ComponentUpdateError) as exc:
-        print(json.dumps({"status": "ERROR", "code": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"status": "ERROR", "code": str(exc)}, ensure_ascii=True))
         return 2
 
 
