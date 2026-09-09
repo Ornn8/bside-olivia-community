@@ -1579,12 +1579,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const renderMediaComponents = (panel, payload) => {
     const group = payload.components;
-    panel.replaceChildren(text("h3", "离线组件", "text-text-title text-title-m"),
-      text("p", "组件只提供能力，回信形式仍由路由决定。安装完成后请重启程序。", "text-text-secondary text-body-m font-regular"));
+    panel.replaceChildren(text("h3", "安装声音与视频组件", "text-text-title text-title-m"),
+      text("p", "先按用途找到需要的包，再点击下方按钮选择 ZIP，无需解压。安装组件后，回信形式仍由你的档位设置和信件内容决定。", "text-text-secondary text-body-m font-regular"));
     const list = document.createElement("div");
-    const details = document.createElement("details");
-    const heading = document.createElement("summary"); heading.textContent="查看组件状态"; heading.className="text-text-body text-label-l"; heading.style.cursor="pointer";
-    details.append(heading,list);
+    list.style.cssText="max-height:360px;overflow:auto;scrollbar-width:thin;scrollbar-color:#66686b transparent";
+    const guide = document.createElement("div");
+    guide.append(
+      text("p", "只收文字信：不用安装这里的组件。", "text-text-body text-body-m font-regular"),
+      text("p", "听说话：媒体工具 + 说话语音。听唱歌：媒体工具 + 唱歌；自动识别歌词另加歌词识别。", "text-text-body text-body-m font-regular"),
+      text("p", "还要看视频：在相应声音组件上增加口型视频 + 视频场景；唱歌视频还需人声分离。", "text-text-body text-body-m font-regular")
+    );
     const legacyProgress = payload.runtime_import || {};
     const progress = ["queued", "extracting", "checking", "testing"].includes(legacyProgress.state) ? legacyProgress : group.progress || {};
     const busy = ["queued", "extracting", "checking", "testing"].includes(progress.state);
@@ -1595,45 +1599,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       result.textContent = `未完成：${failedNames.join("、")}。其余组件已处理，原有组件保留；可以只重试失败的包。`;
     }
     if (busy) result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[progress.state]}：${formatBytes(progress.checked_bytes || 0)} / ${formatBytes(progress.total_bytes || 0)}`;
-    const batch = button("导入离线组件", async () => {
+    const batch = button("选择离线包（可多选 ZIP）", async () => {
       batch.disabled = true;
       try {
         const response=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_components",component_ids:group.items.map(x=>x.id)});
-        if(response.status==="CANCELLED") {result.textContent="已取消。";return;}
+        if(response.status==="CANCELLED") {result.textContent="未选择文件，组件没有变动。点击“选择离线包”可重新选择。";return;}
         if(response.status==="REJECTED") {result.textContent="已有导入任务，请等待完成。";return;}
         await renderVideoCapabilityPanel(panel);
       } catch (_) {result.textContent="导入未能启动，请检查选择的组件 ZIP。";}
       finally {batch.disabled=busy;}
     }); batch.disabled=busy;
-    panel.append(batch,text("p","可一次选择多个 ZIP。只导入需要的组件，已有组件无需重复安装。","text-text-secondary text-body-m font-regular"),result,details);
+    panel.append(guide,list,batch,text("p","在文件窗口中按住 Ctrl 可选择多个 ZIP，点击“打开”开始安装。文件名中的日期可以不同，程序按包内信息识别组件；已安装的无需重复选择。","text-text-secondary text-body-m font-regular"),result);
     group.items.forEach(item=>{
       const row=document.createElement("div");row.className="flex items-center justify-between py-3";row.style.cssText="gap:16px;flex-wrap:wrap;border-bottom:1px solid #343638";
       const copy=document.createElement("div");copy.style.cssText="flex:1;min-width:180px";
-      copy.append(text("div",item.label,"text-text-body text-label-l"),text("div",item.state==="installed"?"已安装，可复用":"未安装","text-text-secondary text-caption-m font-regular"));
-      const install=button("导入",async()=>{
-        install.disabled=true;
-        try {const r=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_component",component_id:item.id});if(r.status!=="CANCELLED")await renderVideoCapabilityPanel(panel);}
-        catch (_) {result.textContent="该组件未能导入，请检查 ZIP。";}
-        finally {install.disabled=busy;}
-      });install.disabled=busy;row.append(copy,install);list.append(row);
+      copy.append(text("div",item.label,"text-text-body text-label-l"),text("div",item.description || "","text-text-secondary text-caption-m font-regular"));
+      const filename=text("div",`对应文件：Olivia-${item.id}-日期.zip`,"text-text-secondary text-caption-m font-regular");
+      filename.style.overflowWrap="anywhere";copy.append(filename);
+      row.append(copy,text("span",item.state==="installed"?"已安装，可复用":"未安装","text-text-body text-label-l"));list.append(row);
     });
     panel.append(text("p", "所有组件均通过离线 ZIP 导入，无需解压。歌词识别为可选；长期记忆仍在上方独立管理。", "text-text-secondary text-caption-m font-regular"));
-    const legacy = button("导入旧版离线整包", async () => {
-      legacy.disabled = true;
-      try {
-        const response = await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {action:"import_offline"}, 30 * 60 * 1000);
-        result.textContent = response.status === "CANCELLED" ? "已取消。" : "已提交旧版离线包，请等待校验完成后重启程序。";
-        if (response.status !== "CANCELLED") await renderVideoCapabilityPanel(panel);
-      } catch (_) { result.textContent = "旧版离线包导入失败，请保留诊断包。"; }
-      finally { legacy.disabled = busy; }
-    }); legacy.disabled = busy; panel.append(legacy);
-    if (payload.can_uninstall) {
-      const uninstall = button("卸载旧版视频组件", async () => {
-        if (!await confirmAction("确认卸载旧版视频组件？新导入的独立组件和个人信件会保留。")) return;
-        try { await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {action:"uninstall"}); await renderVideoCapabilityPanel(panel); }
-        catch (_) { result.textContent = "卸载未完成，请重试。"; }
-      }); uninstall.disabled = busy; panel.append(uninstall);
-    }
     if (busy) {
       const update = async () => {
         if (!panel.isConnected) return;
