@@ -100,6 +100,7 @@ def test_builds_release_ready_component_package_that_the_updater_accepts(
         assert archive.namelist()[0] == "manifest.json"
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["version"] == "0.1.1"
+        assert json.loads(archive.read("payload/installer/release-version.json")) == {"version": "0.1.1"}
         assert {item["path"] for item in manifest["files"]} >= {
             "installer/start_local.py",
             "installer/configure.py",

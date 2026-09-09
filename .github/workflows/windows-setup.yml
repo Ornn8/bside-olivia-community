@@ -59,7 +59,7 @@ jobs:
               ($signature.SignerCertificate.Subject -notlike '*CN=Pyrsys B.V.*')) {
             throw 'SETUP_ISCC_SIGNATURE_INVALID'
           }
-          $version = "0.1.$env:GITHUB_RUN_NUMBER"
+          $version = (Get-Content -Raw -LiteralPath 'installer/release-version.json' | ConvertFrom-Json).version
           python installer/build_windows_setup.py `
             --offline offline `
             --output dist `

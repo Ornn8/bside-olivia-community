@@ -183,6 +183,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/uninstall_safety.py",
     "installer/verify_mem0_runtime.py",
     "installer/version_launcher.py",
+    "installer/release-version.json",
     "installer/video-capability-manifest.json",
     "installer/cosyvoice-windows-audio.patch.json",
     "installer/latentsync-windows-memmap.patch.json",
@@ -1270,6 +1271,10 @@ def build_windows_setup(
             f"/DAppVersion={version}",
             os.fspath(source / "installer" / "windows_setup.iss"),
         ]
+        (payload / "installer").mkdir(parents=True, exist_ok=True)
+        (payload / "installer" / "release-version.json").write_text(
+            json.dumps({"version": version}) + "\n", encoding="utf-8"
+        )
         if video_runtime is not None:
             command.insert(-1, "/DVideoRuntimePayload=1")
         if video_offline_root is not None:
