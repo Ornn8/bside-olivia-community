@@ -542,7 +542,7 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
     )
 
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.deepseek.com"
-    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
+    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-pro"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
     assert environment["DEEPSEEK_API_KEY"] == inherited["DEEPSEEK_API_KEY"]
     assert environment["OPENAI_API_KEY"] == inherited["OPENAI_API_KEY"]
@@ -1502,7 +1502,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     defaults = {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
         "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
-        "OLIVIA_LLM_MODEL": "deepseek-v4-flash",
+        "OLIVIA_LLM_MODEL": "deepseek-v4-pro",
         "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
