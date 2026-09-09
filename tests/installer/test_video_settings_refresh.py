@@ -11,22 +11,23 @@ const assert = require("node:assert/strict");
 let refreshVideoReplySetting = async () => {};
 let ready = false, calls = 0;
 const buttons=[];
-const node=()=>({isConnected:true,style:{},append(){},setAttribute(){}});
+const node=()=>({isConnected:true,style:{},append(){},setAttribute(k,v){this[k]=v}});
 const document={createElement:node};
 const text=node, actions=node;
 const button=(label,fn)=>{const n=node();n.textContent=label;n.click=fn;buttons.push(n);return n;};
 const VIDEO_REPLY_SETTINGS_PATH="/toy/settings/video-reply";
 const VIDEO_REPLY_DEPENDENCY_LABELS=new Map();
-const requestJson=async()=>{calls++;return {state:"available",enabled:false,ready,dependencies:[]};};
+const routeRequest=async()=>{calls++;return {tier:ready?'audio':'text',routes:{}};};
 '''
     harness += mount + r'''
 (async()=>{
  mountVideoReplySetting(node());
  await new Promise(setImmediate);
- assert.equal(buttons[0].disabled,true);
+ assert.equal(buttons[0]['aria-checked'],'true');
  ready=true;
  await refreshVideoReplySetting();
- assert.equal(buttons[0].disabled,false);
+ assert.equal(buttons[0]['aria-checked'],'false');
+ assert.equal(buttons[1]['aria-checked'],'true');
  assert.equal(calls,2);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
@@ -42,4 +43,4 @@ def test_capability_completion_and_all_dialog_dismissals_refresh_setting():
     assert "void refreshVideoReplySetting();" in dialog
     assert dialog.count("dismiss();") == 3
     capability = source[source.index("  const renderVideoCapabilityPanel ="):source.index("  const openDialog =")]
-    assert 'if (payload && payload.status === "READY") void refreshVideoReplySetting();' in capability
+    assert 'if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();' in capability

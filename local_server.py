@@ -1817,7 +1817,7 @@ async def handler(request: web.Request):
                 return web.Response(status=503)
             library = LocalSongLibrary(root, _os.environ)
             name = request.path.rsplit('/', 1)[-1]
-            target = library.media_path(name.removesuffix('.mp4'))
+            target = library.media_path(name.removesuffix('.mp4').removesuffix('.wav'))
             return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", **CORS_HEADERS(request)})
         except LocalSongError:
             return web.Response(status=404)
@@ -2778,6 +2778,20 @@ def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
     return None
 
 
+def _cover_request_route(material):
+    from runtime.media.cover_upload import source_path
+    from letter_triage import TriageResult
+    source_path(_local_data_root(), material.get('cover_source_id'))
+    output = material.get('cover_output', 'audio')
+    if output not in ('audio', 'video'):
+        raise ValueError('COVER_OUTPUT_INVALID')
+    return TriageResult('normal', 'singing_video', 'explicit_cover_attachment', 'completed', False,
+        music_contexts=('explicit_performance_or_adaptation_request',
+                        'explicit_audio_output_request' if output == 'audio' else 'explicit_video_output_request'),
+        music_intent='adapt', music_role='adaptation', request_disposition='fulfill',
+        direct_response_sufficient=False, music_materially_better=True)
+
+
 async def route(
     method,
     path,
@@ -2846,6 +2860,19 @@ async def route(
                 except (OSError, ValueError):
                     pass
         return ok(state)
+    if p == "/toy/cover/lyrics":
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {})
+        from runtime.media.cover_upload import recognize_lyrics
+        root = _local_data_root()
+        if root is None:
+            return err(503, "COVER_STORAGE_UNAVAILABLE", {})
+        try:
+            return ok(await asyncio.to_thread(recognize_lyrics, root, body.get('source_id'), dict(_os.environ)))
+        except (ValueError, OSError, TypeError, AttributeError) as exc:
+            code = str(exc) if str(exc) in {'COVER_SOURCE_REQUIRED', 'COVER_TRANSCRIPTION_BUSY', 'COVER_TRANSCRIPTION_UNAVAILABLE'} else 'COVER_TRANSCRIPTION_FAILED'
+            _persist_provider_failure(code, 'stage=transcribe; attempts=1', {**_os.environ, 'OLIVIA_LOCAL_DATA_ROOT': str(root)})
+            return err(400, code, {'error_code': code})
     if p == "/toy/local-songs" or p.startswith("/toy/local-songs/"):
         if method == "POST" and companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
@@ -2854,6 +2881,19 @@ async def route(
             return err(503, "LOCAL_SONG_STORAGE_UNAVAILABLE", {"status": "FAILED"})
         library = LocalSongLibrary(root, _os.environ)
         try:
+            if p.endswith('/from-letter'):
+                letter = next((x for x in store.letters if x.get('letter_id') == body.get('letter_id')), None)
+                if not letter or letter.get('media_status') != 'COMPLETED':
+                    return err(409, 'LETTER_AUDIO_NOT_READY', {})
+                from urllib.parse import urlsplit
+                name = Path(urlsplit(str(letter.get('reply_audio_url', ''))).path).name
+                if name != str(letter['letter_id']) + '.wav':
+                    return err(409, 'LETTER_AUDIO_NOT_READY', {})
+                source = (root / 'media' / name).resolve()
+                if not source.is_relative_to((root / 'media').resolve()) or not source.is_file():
+                    return err(409, 'LETTER_AUDIO_NOT_READY', {})
+                report = await asyncio.to_thread(library.import_audio, source, body.get('name', '林离的翻唱'))
+                return ok(report)
             if p.endswith("/import"):
                 return ok(await asyncio.to_thread(library.import_path, body.get("path")))
             if p.endswith("/rename"):
@@ -3187,7 +3227,13 @@ async def route(
         except VideoReplySettingsError as exc:
             return err(exc.status, exc.code, {})
         preview_videos = video_reply_settings_store.videos_snapshot()
-        decision = await _classify_managed_route(content, routes)
+        if body.get('cover_source_id') is not None:
+            try:
+                decision = _cover_request_route(body)
+            except ValueError as exc:
+                return err(400, str(exc), {'error_code': str(exc)})
+        else:
+            decision = await _classify_managed_route(content, routes)
         if routes != video_reply_settings_store.routes_snapshot() or preview_videos != video_reply_settings_store.videos_snapshot():
             return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
         if decision.status == "unavailable":
@@ -3200,7 +3246,7 @@ async def route(
         video_confirmation = bool(requested and explicit_video and not preview_videos[requested])
         ready = await asyncio.to_thread(_route_readiness, {**preview_videos, requested: True}) if video_confirmation else await asyncio.to_thread(_route_readiness)
         selected_video = preview_videos.get(requested, False)
-        if video_reply_settings_store.saved_tier() is not None:
+        if video_reply_settings_store.saved_tier() is not None or body.get('cover_source_id'):
             from runtime.video_reply_settings import routed_video
             selected_mode = requested or decision.reply_mode
             selected_video = routed_video(selected_mode, decision.music_contexts, {**preview_videos, **({requested: True} if video_confirmation else {})})
@@ -3212,7 +3258,7 @@ async def route(
         if len(_reply_route_previews) >= 128: _reply_route_previews.pop(next(iter(_reply_route_previews)))
         import hashlib
         _reply_route_previews[token] = (now, hashlib.sha256(content.encode()).hexdigest(), decision,
-                                       preview_videos, routes)
+                                       preview_videos, routes, body.get('cover_source_id'), body.get('cover_output', 'audio'))
         return ok({"token": token, "requested_route": requested, "video_enabled": selected_video,
                    "requires_cover_audio": (requested or decision.reply_mode) in {"singing_video", "voice_song_video", "musical_video"},
                    "needs_confirmation": bool(requested and not routes[requested]),
@@ -3615,10 +3661,17 @@ async def route(
                 return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
             if preview[3] != videos or preview[4] != routes:
                 return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
+            if len(preview) > 5 and preview[5] is not None and (preview[5] != material.get('cover_source_id') or preview[6] != material.get('cover_output', 'audio')):
+                return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
             route_decision = preview[2]
         elif once is not None or video_once is not None:
             return err(400, "REPLY_ROUTE_OVERRIDE_INVALID", {})
         # Clients that have not upgraded still cannot silently bypass a disabled route.
+        if route_decision is None and material.get('cover_source_id'):
+            try:
+                route_decision = _cover_request_route(material)
+            except ValueError as exc:
+                return err(400, str(exc), {'error_code': str(exc)})
         if route_decision is None and video_reply_settings_store.routes_configured():
             route_decision = await _classify_managed_route(content, routes)
         if route_decision is not None:
@@ -3633,7 +3686,7 @@ async def route(
                     return err(409, "REPLY_VIDEO_CONFIRM_REQUIRED", {"error_code": "REPLY_VIDEO_CONFIRM_REQUIRED", "requested_route": requested})
                 videos[requested] = True
             ready = await asyncio.to_thread(_route_readiness, videos) if video_once is not None else await asyncio.to_thread(_route_readiness)
-            if video_reply_settings_store.saved_tier() is not None:
+            if video_reply_settings_store.saved_tier() is not None or material.get('cover_source_id'):
                 from runtime.video_reply_settings import routed_video
                 selected_mode = requested or route_decision.reply_mode
                 ready = await asyncio.to_thread(_route_readiness, {**videos, selected_mode: routed_video(selected_mode, route_decision.music_contexts, videos)})
@@ -3646,6 +3699,8 @@ async def route(
                     return err(409, "REPLY_ROUTE_CONFIRM_REQUIRED", {"error_code": "REPLY_ROUTE_CONFIRM_REQUIRED", "requested_route": requested})
                 routes[requested] = True
             route_decision = restrict_reply_route(route_decision, routes)
+            if material.get('cover_source_id') and 'explicit_audio_output_request' in route_decision.music_contexts:
+                videos[requested] = False
         # New music replies are always source-conditioned covers. Old stored jobs
         # retain their original renderer so an upgrade cannot rewrite accepted work.
         source_id = material.get("cover_source_id")

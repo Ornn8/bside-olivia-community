@@ -53,6 +53,12 @@ def main() -> None:
     request = json.loads(args.request.read_text(encoding="utf-8"))
     job = args.request.parent
 
+    if request.get("operation") == "transcribe":
+        os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+        lyrics, language = transcribe_cover_source(Path(request["source"]), Path(request["asr_model"]), request["ffmpeg"])
+        Path(request["output"]).write_text(json.dumps({"lyrics": lyrics, "language": language}, ensure_ascii=False), encoding="utf-8")
+        return
+
     def progress(stage: str, **fields) -> None:
         partial = job / "progress.partial.json"
         partial.write_text(json.dumps({"stage": stage, "updated_at": time.time(), **fields}), encoding="utf-8")

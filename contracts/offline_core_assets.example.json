@@ -13,7 +13,7 @@
     "package": "pip",
     "version": "25.2"
   },
-  "requirements_sha256": "1d0a1ffc59c358123d1a3fc97c2b86e82daa52d1b336bb1b5d39524d75fc1ef1",
+  "requirements_sha256": "96a0d770e24605a20425e36cbd37dace42a95b42ac753fe81c995783f0142ea5",
   "wheels": [
     {
       "path": "wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl",
@@ -84,6 +84,11 @@
       "path": "wheelhouse/yarl-1.24.2-cp312-cp312-win_amd64.whl",
       "size_bytes": 92901,
       "sha256": "7dafe10c12ddd4d120d528c4b5599c953bd7b12845347d507b95451195bb6cad"
+    },
+    {
+      "path": "wheelhouse/imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl",
+      "size_bytes": 31246824,
+      "sha256": "02fa47c83703c37df6bfe4896aab339013f62bf02c5ebf2dce6da56af04ffc0a"
     }
   ]
 }

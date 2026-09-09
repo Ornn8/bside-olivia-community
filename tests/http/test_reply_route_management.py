@@ -59,7 +59,7 @@ def test_explicit_disabled_route_requires_confirmation_and_freezes_once(tmp_path
     monkeypatch.setattr(server, "_persist_store_state", lambda: None)
     monkeypatch.setattr(server, "_schedule_reply_job", lambda *a, **k: None)
     monkeypatch.setattr(server, "_video_reply_dependencies_ready", lambda: True)
-    monkeypatch.setattr(server, "_route_readiness", lambda: dict.fromkeys(REPLY_ROUTES, True))
+    monkeypatch.setattr(server, "_route_readiness", lambda videos=None: dict.fromkeys(REPLY_ROUTES, True))
     calls = []
     async def classify(content):
         calls.append(content)

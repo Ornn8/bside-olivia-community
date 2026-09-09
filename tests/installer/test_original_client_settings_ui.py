@@ -222,7 +222,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
     assert (
-        "matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;"
+        "input.maxLength = LETTER_CHARACTER_LIMIT;"
     ) in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in BOOTSTRAP_JAVASCRIPT
     assert 'const LETTER_SUBMIT_LABEL = "寄出信件";' in BOOTSTRAP_JAVASCRIPT
@@ -976,7 +976,7 @@ const run = (spec) => {
   const makeDialog = (item) => {
     let areas = item.shared ? sharedAreas.get(item.shared) : null;
     if (!areas) {
-      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null }));
+      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null, closest: () => null }));
       if (item.shared) sharedAreas.set(item.shared, areas);
     }
     const nodes = (values) => values.map((textContent) => ({ textContent }));

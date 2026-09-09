@@ -209,6 +209,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/settings/reply-routes": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
     "/toy/letter/route-preview": _route(["POST"], "letters.send", evidence="local-extension"),
     "/toy/cover/progress": _route(["GET"], "letters.read", evidence="local-extension"),
+    "/toy/cover/lyrics": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/cover/upload": _route(["POST"], "letters.send", evidence="local-extension"),
     "/health": _route(["GET"], "core.health", read_only=True, evidence="local"),
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),
@@ -320,6 +321,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/midi/deleteJob": _route(["POST"], "music.midi_jobs"),
     "/toy/local-songs": _route(["GET"], "music.local_library"),
     "/toy/local-songs/import": _route(["POST"], "music.local_library"),
+    "/toy/local-songs/from-letter": _route(["POST"], "music.local_library"),
     "/toy/local-songs/rename": _route(["POST"], "music.local_library"),
     "/toy/local-songs/delete": _route(["POST"], "music.local_library"),
     "/toy/midi/importShareCode": _route(

@@ -358,7 +358,7 @@ def _project_media_tail(value: object) -> bytes:
         timestamp = source.get('timestamp')
         if type(timestamp) is int and 0 <= timestamp <= 10_000_000_000:
             record['timestamp'] = timestamp
-        if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg'}:
+        if isinstance(source.get('provider'), str) and source['provider'] in {'latentsync', 'breeze', 'minimax', 'soulx', 'roformer', 'ffmpeg', 'ace_step_xl', 'whisper'}:
             record['provider'] = source['provider']
         if source.get('provider') == 'latentsync':
             from runtime.media.latentsync_reply import project_failure_context

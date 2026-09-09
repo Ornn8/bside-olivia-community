@@ -1652,6 +1652,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (panel.videoCapabilityGeneration !== renderGeneration) return;
     if (payload && payload.components && Array.isArray(payload.components.items)) {
       renderMediaComponents(panel, payload);
+      if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();
       return;
     }
     panel.replaceChildren(text("p", "组件管理服务暂不可用，请重试或更新程序。", "text-text-secondary text-body-m font-regular"),
@@ -1809,15 +1810,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (!catalog) return;
     const result = await localSongRequest();
     const imported = result.songs.map((song) => {
-      const url = new URL(`/toy/local-songs/media/${song.id}.mp4`, apiBase).href;
+      const isAudio=song.media_type === "audio";
+      const url = new URL(`/toy/local-songs/media/${song.id}.${isAudio ? "wav" : "mp4"}`, apiBase).href;
       return {
         id: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)),
         itemId: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)), itemType: 3, name: song.name,
         nameKey: "local_" + song.id, styleType: "Local Performance",
         styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
-        videoUrl: url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: "",
+        videoUrl: isAudio ? "" : url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: isAudio ? url : "",
         duration: song.duration, videoDuration: song.duration, audioDuration: song.duration,
-        videoByTodView: [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: Math.round(song.duration)}], oliviaLocal: true,
+        videoByTodView: isAudio ? [] : [{url, tod: "TOD12", view: "NI", coverUrl: "", duration: Math.round(song.duration)}], oliviaLocal: true,
       };
     });
     if (window.cefViewQuery && imported.length) {
@@ -1878,10 +1880,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         Object.assign(name.style, {background: "transparent", color: "inherit", padding: "8px", border: "1px solid #606164", borderRadius: "8px"});
         const controls = actions();
         controls.append(button("播放", () => {
-          let video = row.querySelector("video");
+          let video = row.querySelector("video, audio");
           if (!video) {
-            video = document.createElement("video"); video.controls = true;
-            video.src = new URL(`/toy/local-songs/media/${song.id}.mp4`, apiBase).href;
+            video = document.createElement(song.media_type === "audio" ? "audio" : "video"); video.controls = true;
+            video.src = new URL(`/toy/local-songs/media/${song.id}.${song.media_type === "audio" ? "wav" : "mp4"}`, apiBase).href;
             video.style.width = "100%"; row.append(video);
           }
           video.play().catch(() => {});
@@ -1892,7 +1894,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           } catch (_error) { state.textContent = "曲名保存失败，请重试。"; }
         }), button("删除", async () => {
           if (!await confirmAction("从本地曲库删除这段演奏？原始文件会保留。")) return;
-          const video = row.querySelector("video");
+          const video = row.querySelector("video, audio");
           if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
           try {
             await localSongRequest("/delete", {id: song.id});
@@ -2292,61 +2294,102 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
     document.body.append(dialog); dialog.showModal();
   });
-  const selectCoverAudio = () => new Promise((resolve) => {
+  const composerCovers = new WeakMap();
+  let coverComposer = null;
+  const selectCoverAudio = (existing = null) => new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.setAttribute("aria-label", "选择翻唱音频");
-    dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#191a1c;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:520px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
+    dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#232427;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:560px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
     const file = document.createElement("input"); file.type = "file";
-    file.style.cssText = "display:block;width:100%;max-width:100%;margin:12px 0;color:inherit;color-scheme:dark;";
     file.accept = ".wav,.flac,.mp3,.m4a,.ogg"; file.setAttribute("aria-label", "原曲音频");
+    file.style.cssText = "width:100%;margin:16px 0;color:inherit;color-scheme:dark;";
     const lyrics = document.createElement("textarea"); lyrics.maxLength = 30000;
-    lyrics.placeholder = "原曲歌词（可选，留空时本地识别；识别结果可能有误）";
+    lyrics.value = existing?.cover_lyrics || "";
+    lyrics.placeholder = "上传后自动识别歌词，你可以在这里修正。";
     lyrics.setAttribute("aria-label", "原曲歌词");
-    lyrics.style.cssText = "width:100%;min-height:96px;background:#232427;color:inherit;border:1px solid #66696f;margin:16px 0;padding:10px;box-sizing:border-box;";
+    lyrics.style.cssText = "width:100%;min-height:150px;background:#191a1c;color:inherit;border:1px solid #66696f;border-radius:8px;margin:12px 0;padding:12px;box-sizing:border-box;line-height:1.7;";
     const language = document.createElement("select"); language.setAttribute("aria-label", "歌词语言");
-    language.style.cssText = "display:block;background:#232427;color:inherit;border:1px solid #66696f;border-radius:6px;padding:6px 10px;margin-bottom:16px;color-scheme:dark;";
-    for (const [value, label] of [["unknown","随原曲"],["zh","中文"],["en","英语"],["ja","日语"],["ko","韩语"]]) {
-      const option = document.createElement("option"); option.value = value; option.textContent = label; language.append(option);
+    const output = document.createElement("select"); output.setAttribute("aria-label", "翻唱回信形式");
+    for (const node of [language, output]) node.style.cssText = "background:#191a1c;color:inherit;border:1px solid #66696f;border-radius:8px;padding:8px 12px;color-scheme:dark;";
+    for (const [value,label] of [["unknown","随原曲"],["zh","中文"],["en","英语"],["ja","日语"],["ko","韩语"]]) {
+      const option=document.createElement("option"); option.value=value; option.textContent=label; language.append(option);
     }
-    const status = text("p", "选择原曲后，林离会按原曲完整时长翻唱。最大 256 MiB。", "text-body-m font-regular");
-    status.setAttribute("aria-live", "polite");
-    const player = document.createElement("audio"); player.controls = true; player.style.cssText = "width:100%;color-scheme:dark;";
-    let objectUrl, busy = false;
-    file.onchange = () => { if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = file.files[0] ? URL.createObjectURL(file.files[0]) : ""; player.src = objectUrl; };
-    const previous = document.activeElement;
-    const finish = (value) => { if (objectUrl) URL.revokeObjectURL(objectUrl); dialog.close(); dialog.remove(); previous?.focus(); resolve(value); };
-    const cancel = button("返回修改", () => { if (!busy) finish(null); });
-    const submit = button("上传并继续寄信", async () => {
-      const audio = file.files[0];
-      if (!audio || audio.size > 256 * 1024 * 1024) { status.textContent = "请选择不超过 256 MiB 的音频文件。"; return; }
-      busy = true; submit.disabled = cancel.disabled = file.disabled = true;
-      status.textContent = "正在上传并检查音频…";
-      try {
-        const response = await fetch(new URL("/toy/cover/upload", apiBase), {method:"POST", credentials:"omit",
-          headers:{"Content-Type":"application/octet-stream", [CONFIRM_HEADER]:CONFIRM_VALUE}, body:audio});
-        const result = await response.json();
-        if (!response.ok || result.code !== 0) throw new Error(result.data?.error_code || "upload");
-        if (result.data.asr_available === false && !lyrics.value.trim()) {
-          status.textContent = "本地歌词识别模型尚未准备好，请填写原曲歌词后继续。"; lyrics.focus(); return;
-        }
-        finish({cover_source_id:result.data.source_id, cover_lyrics:lyrics.value, cover_language:language.value});
-      } catch (error) { status.textContent = error.message === "COVER_FFMPEG_UNAVAILABLE"
-          ? "本地音频工具未准备好，请修复媒体工具后重试。信件尚未寄出。"
-          : "音频上传或解码失败，请确认文件可以播放后重试。信件尚未寄出。"; }
-      finally { busy = false; submit.disabled = cancel.disabled = file.disabled = false; }
+    for (const [value,label] of [["audio","音频回信"],["video","视频回信"]]) {
+      const option=document.createElement("option"); option.value=value; option.textContent=label; output.append(option);
+    }
+    language.value=existing?.cover_language || "unknown"; output.value=existing?.cover_output || "audio";
+    const status=text("p", existing ? "原曲已添加，可修改歌词或回信形式。" : "选择原曲后自动识别歌词，确认并修正后再寄出。最大 256 MiB。", "text-text-secondary text-body-m");
+    status.setAttribute("role", "status");
+    const player=document.createElement("audio"); player.controls=true; player.style.cssText="width:100%;color-scheme:dark;";
+    let material=existing ? {...existing} : null, busy=false, objectUrl;
+    const previous=document.activeElement;
+    const finish=value=>{player.pause();if(objectUrl)URL.revokeObjectURL(objectUrl);dialog.close();dialog.remove();previous?.focus();resolve(value)};
+    const cancel=button("取消",()=>{if(!busy)finish(null)});
+    const submit=button("使用这首原曲",()=>{
+      if(busy||!material)return;
+      if(!lyrics.value.trim()){status.textContent="请填写或识别歌词后继续。";lyrics.focus();return}
+      finish({...material,cover_lyrics:lyrics.value,cover_language:language.value,cover_output:output.value});
     });
-    dialog.addEventListener("cancel", (event) => { event.preventDefault(); if (!busy) finish(null); });
-    const controls = actions(); controls.append(cancel, submit);
-    dialog.append(text("h3", "让林离翻唱这首歌", "text-title-m"), status, file, player, lyrics, language, controls);
-    document.body.append(dialog); dialog.showModal();
+    const update=()=>{submit.disabled=busy||!material;cancel.disabled=file.disabled=busy;lyrics.disabled=busy;recognize.disabled=busy||!material};
+    const transcribe=async()=>{
+      busy=true;update();status.textContent="正在本地识别歌词，请稍候…";
+      const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),660000);
+      try {
+        const response=await fetch(new URL("/toy/cover/lyrics",apiBase),{method:"POST",credentials:"omit",signal:controller.signal,
+          headers:{"Content-Type":"application/json",[CONFIRM_HEADER]:CONFIRM_VALUE},body:JSON.stringify({source_id:material.cover_source_id})});
+        const result=await response.json();if(!response.ok||result.code!==0)throw Error(result.data?.error_code||"failed");
+        lyrics.value=result.data.lyrics;language.value=result.data.language;if(!language.value)language.value="unknown";
+        status.textContent="歌词已识别，请核对并修正后使用。";
+      } catch (_) {status.textContent="未能识别歌词，原曲已保留。可以手动填写，或检查歌词识别组件后重试。";}
+      finally {clearTimeout(timer);busy=false;update();}
+    };
+    const recognize=button("识别歌词",()=>{if(!busy)void transcribe()});
+    file.onchange=async()=>{
+      const audio=file.files[0];if(!audio)return;
+      if(audio.size>256*1024*1024){status.textContent="请选择不超过 256 MiB 的音频。";return}
+      busy=true;material=null;lyrics.value="";update();status.textContent="正在上传并检查原曲…";
+      if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=URL.createObjectURL(audio);player.src=objectUrl;
+      try {
+        const response=await fetch(new URL("/toy/cover/upload",apiBase),{method:"POST",credentials:"omit",
+          headers:{"Content-Type":"application/octet-stream",[CONFIRM_HEADER]:CONFIRM_VALUE},body:audio});
+        const result=await response.json();if(!response.ok||result.code!==0)throw Error(result.data?.error_code||"upload");
+        material={cover_source_id:result.data.source_id,filename:audio.name};
+        if(result.data.asr_available){await transcribe();}
+        else status.textContent="原曲已上传。未安装歌词识别组件，请手动填写歌词，或安装组件后点击识别歌词。";
+      } catch (_) {status.textContent="原曲上传失败，请检查文件和媒体工具后重试。";}
+      finally {busy=false;update();}
+    };
+    const options=actions();options.append(language,output,recognize);
+    const controls=actions();controls.append(cancel,submit);
+    dialog.append(text("h3","让林离翻唱一首歌","text-title-m"),status,file,player,lyrics,options,controls);
+    dialog.addEventListener("cancel",event=>{event.preventDefault();if(!busy)finish(null)});
+    update();document.body.append(dialog);dialog.showModal();
   });
+  const mountCoverComposer = (input) => {
+    coverComposer=input;
+    const dialog=input.closest('[role="dialog"], .el-dialog');
+    if(!dialog || dialog.querySelector('[data-olivia-cover-composer]'))return;
+    const row=actions();row.setAttribute('data-olivia-cover-composer','');row.style.cssText='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;';
+    const state=text('span','','text-text-secondary text-caption-m');
+    const choose=button('翻唱歌曲',async()=>{
+      const result=await selectCoverAudio(composerCovers.get(input));if(!result)return;
+      composerCovers.set(input,result);refresh();
+    });
+    const remove=button('移除原曲',()=>{composerCovers.delete(input);refresh()});
+    const refresh=()=>{const value=composerCovers.get(input);choose.textContent=value?'原曲与歌词':'翻唱歌曲';remove.hidden=!value;
+      state.textContent=value?`${value.filename || '原曲已添加'} · ${value.cover_output==='video'?'视频回信':'音频回信'}`:'选择一首想听她唱的歌';};
+    row.append(choose,state,remove);const footer=dialog.querySelector('.el-dialog__footer');
+    if(footer)footer.before(row);else dialog.append(row);refresh();
+  };
   window.__oliviaPrepareLetterRoute = async (config) => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
     if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/send$/.test(endpoint.pathname)) return config;
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
     if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
     let preview;
-    try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content}); }
+    const attachment=coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
+      ...(attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
     catch (error) {
       error.config = config;
       const messages = {LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
@@ -2365,11 +2408,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (preview.needs_confirmation) once = preview.requested_route;
       if (preview.needs_video_confirmation) videoOnce = preview.requested_route;
     }
-    const material = {...(body.material || {}), route_preview_token: preview.token};
+    const material = {...(body.material || {}), ...(attachment || {}), route_preview_token: preview.token};
+    delete material.filename;
     if (preview.requires_cover_audio && !material.cover_source_id) {
       const cover = await selectCoverAudio();
       if (!cover) { const error = new Error("已取消发送"); error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error; }
-      Object.assign(material, cover);
+      Object.assign(material, cover);delete material.filename;
+      // Re-run preflight with the chosen output so the confirmation matches it.
+      if(coverComposer?.isConnected && coverComposer.value===body.content){composerCovers.set(coverComposer,cover);return window.__oliviaPrepareLetterRoute(config);}
+      throw Object.assign(new Error("请在写信窗口添加原曲后再寄出。"),{code:"ERR_CANCELED",__CANCEL__:true});
     }
     delete material.route_allow_once;
     delete material.route_video_once;
@@ -2638,7 +2685,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (matches.size !== 1) {
       return;
     }
-    matches.values().next().value.maxLength = LETTER_CHARACTER_LIMIT;
+    const input=matches.values().next().value;
+    input.maxLength = LETTER_CHARACTER_LIMIT;
+    mountCoverComposer(input);
   };
 
   const schedule = () => {
@@ -2807,15 +2856,22 @@ BOOTSTRAP_JAVASCRIPT = r'''
         try{styles.value=localStorage.getItem('olivia.letter.wave-style')||'bars'}catch(_){}if(!styles.value)styles.value='bars';
         const choose=()=>{row.dataset.waveStyle=styles.value;this.waveCleanup.setStyle(styles.value)};
         styles.onchange=()=>{choose();try{localStorage.setItem('olivia.letter.wave-style',styles.value)}catch(_){}};document.body.append(styles);choose();
+        const collect=document.createElement('button');collect.type='button';collect.className='olivia-wave-style';collect.textContent='添加到曲库';
+        collect.onclick=async()=>{if(collect.disabled)return;collect.disabled=true;
+          try {const response=await fetch(new URL('/toy/local-songs/from-letter',coverApi),{method:'POST',credentials:'omit',
+            headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({letter_id:this.getAttribute('cover-id')})});
+            const result=await response.json();if(!response.ok||result.code!==0)throw Error();collect.textContent='已添加到曲库';window.dispatchEvent(new Event('olivia-local-catalog-ready'));
+          }catch(_){collect.textContent='添加失败，点击重试';collect.disabled=false;}};
+        if(this.getAttribute('cover-id')&&state==='COMPLETED')document.body.append(collect);
         const paper=this.closest('.mail-box-reply-content-text')||this;
         const positionStyle=()=>{
           const rect=paper.getBoundingClientRect();const top=this.getBoundingClientRect().top;
           styles.hidden=rect.bottom<0||top<0||top>window.innerHeight||!this.isConnected;
           styles.style.left=Math.min(window.innerWidth-116,rect.right+10)+'px';
-          styles.style.top=Math.max(8,top)+'px';
+          styles.style.top=Math.max(8,top)+'px';collect.hidden=styles.hidden;collect.style.left=styles.style.left;collect.style.top=Math.max(8,top+42)+'px';
         };
         const styleResize=new ResizeObserver(positionStyle);styleResize.observe(paper);window.addEventListener('resize',positionStyle);document.addEventListener('scroll',positionStyle,true);positionStyle();
-        this.styleCleanup=()=>{styles.remove();styleResize.disconnect();window.removeEventListener('resize',positionStyle);document.removeEventListener('scroll',positionStyle,true)};
+        this.styleCleanup=()=>{collect.remove();styles.remove();styleResize.disconnect();window.removeEventListener('resize',positionStyle);document.removeEventListener('scroll',positionStyle,true)};
       }
       if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次音频未能完成，文字回信已保留。':'林离正在准备回信音频…';
       else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';
