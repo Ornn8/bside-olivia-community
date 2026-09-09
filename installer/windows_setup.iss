@@ -340,6 +340,10 @@ begin
         Result := '安装时磁盘空间不足。请释放安装盘和临时目录所在磁盘的空间后重试。'
       else if StableInstallCode = 'SETUP_PATCH_FILE_MISSING' then
         Result := '安装过程中所需文件不存在。请保留安装日志，并检查原版游戏文件和安全软件的隔离记录。'
+      else if StableInstallCode = 'SETUP_PATCH_PATH_TOO_LONG' then
+        Result := '复制文件时路径过长。请改用较短的安装目录后重试，例如 D:\Olivia；若仍失败，请保留安装日志。'
+      else if StableInstallCode = 'SETUP_PATCH_COPY_FAILED' then
+        Result := '复制客户端文件失败。请关闭原版游戏和 Olivia 后重试，并保留安装日志以确认具体原因。'
       else if StableInstallCode <> '' then
         Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。'
       else
