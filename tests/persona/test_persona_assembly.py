@@ -713,6 +713,33 @@ def test_evidence_preserves_distinct_source_ids_without_promoting_or_parsing_tex
     assert assembled.budget_report.used_units <= 10000
 
 
+def test_daily_life_survives_ordinary_evidence_pressure_as_one_optional_block() -> None:
+    context = ReplyContext.create(
+        ReplyMode.TEXT_LETTER,
+        trusted_time=TrustedTime(datetime(2026, 9, 7, tzinfo=timezone.utc)),
+    )
+    daily_life = UntrustedFragment("linli.daily-life", "current life and valid plans")
+    ordinary = UntrustedFragment("ordinary.summary", "ordinary evidence")
+    kwargs = dict(
+        snapshot=_style_snapshot(),
+        context=context,
+        user_input="Synthetic input.",
+    )
+    daily_only = assemble_persona(
+        **kwargs,
+        evidence_summaries=(daily_life,),
+        max_units=10000,
+    )
+    mixed = assemble_persona(
+        **kwargs,
+        evidence_summaries=(ordinary, daily_life),
+        max_units=daily_only.budget_report.input_units,
+    )
+
+    assert mixed.budget_report.dropped_ids == ("evidence.ordinary.summary",)
+    assert "current life and valid plans" in mixed.system_content
+
+
 @pytest.mark.parametrize("cost_counter", [len, lambda text: 2 * len(text)])
 def test_rhythm_state_and_its_interpretation_leave_budget_together(cost_counter) -> None:
     context = ReplyContext.create(

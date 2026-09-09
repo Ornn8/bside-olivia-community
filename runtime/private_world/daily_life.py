@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from runtime.memory.private_world_relationship import validate_exchange_relationship
+from runtime.memory.private_world_relationship import validate_exchange_relationship, validate_boundary_changes
 from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evidence, MEDIA_EVIDENCE_MEANING
 
 # A reply can change several independent promises; autonomous day planning
@@ -248,7 +248,7 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None) -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
@@ -259,6 +259,7 @@ class DailyLifeStore:
             raise ValueError("DAILY_LIFE_TIME_INVALID")
         digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
         relationship = validate_exchange_relationship(relationship, user_text, reply_text)
+        boundaries = validate_boundary_changes(boundaries, reply_text)
         if routine is not None:
             if not isinstance(routine, dict) or set(routine) != {'sleep_minute', 'utc_offset_minutes', 'quote'}:
                 raise ValueError('DAILY_LIFE_ROUTINE_INVALID')
@@ -304,7 +305,7 @@ class DailyLifeStore:
                     if existing["updated_at"] > stamp:
                         continue  # A delayed delivery cannot roll current life backwards.
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (item["id"], _json(item)))
-            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship})))
+            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship, "boundaries": boundaries})))
             db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
             if routine is not None:
                 db.execute('INSERT INTO life_user_routine VALUES (?,?,?)', (source_id, stamp, _json(routine)))
@@ -320,15 +321,23 @@ class DailyLifeStore:
             return cursor.rowcount == 1
 
     def exchange_relationship(self, source_id: str, user_text: str, reply_text: str) -> dict | None:
+        payload = self._exchange_payload(source_id, user_text, reply_text)
+        return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
+
+    def exchange_boundaries(self, source_id: str, user_text: str, reply_text: str) -> list[dict]:
+        payload = self._exchange_payload(source_id, user_text, reply_text)
+        return validate_boundary_changes(payload.get("boundaries"), reply_text)
+
+    def _exchange_payload(self, source_id: str, user_text: str, reply_text: str) -> dict:
         with self._db() as db:
             row = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='exchange'", (source_id,)).fetchone()
         if row is None:
-            return None
+            return {}
         payload = json.loads(row[0])
         digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
         if payload.get("digest") != digest:
             raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
-        return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
+        return payload
 
     def exchange_state(self, query: str = "", *, related_text: str = "") -> dict:
         """All identities; full evidence for active or currently mentioned items."""
@@ -443,7 +452,7 @@ class DailyLifeStore:
     def _moments(rows) -> list:
         moments = []
         for row in rows:
-            content = {k: v for k, v in json.loads(row["payload"]).items() if k not in {"digest", "relationship"}}
+            content = {k: v for k, v in json.loads(row["payload"]).items() if k not in {"digest", "relationship", "boundaries"}}
             if row["kind"] == "exchange" and isinstance(content.get("current"), dict):
                 content["current"] = _current_evidence(content["current"])
             moments.append({"id": row["source_id"], "occurred_at": row["occurred_at"],
