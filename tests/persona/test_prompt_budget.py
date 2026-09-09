@@ -86,3 +86,33 @@ def test_bounded_blocks_keep_earlier_relevant_items_and_drop_later_whole_items()
     assert plan.report.used_units == 85
     assert plan.report.dropped_ids == ("world.secondary",)
     assert plan.report.included_ids == ("user", "world.primary")
+
+
+def test_current_life_outlives_ordinary_evidence_but_remains_trimmable() -> None:
+    items = (
+        PromptBudgetItem("user", PromptSection.USER_INPUT, 60),
+        PromptBudgetItem("evidence.summary", PromptSection.EVIDENCE_SUMMARY, 20),
+        PromptBudgetItem("life.current", PromptSection.CURRENT_LIFE, 20),
+    )
+
+    plan = plan_prompt_budget(items, max_units=80)
+
+    assert plan.report.dropped_ids == ("evidence.summary",)
+    assert plan.report.included_ids == ("user", "life.current")
+
+    trimmed = plan_prompt_budget(items, max_units=60)
+    assert trimmed.report.dropped_ids == ("evidence.summary", "life.current")
+
+
+def test_current_life_outlives_history_and_style_examples() -> None:
+    items = (
+        PromptBudgetItem("user", PromptSection.USER_INPUT, 50),
+        PromptBudgetItem("history.old", PromptSection.HISTORY, 20),
+        PromptBudgetItem("style.example", PromptSection.STYLE_EXAMPLE, 20),
+        PromptBudgetItem("life.current", PromptSection.CURRENT_LIFE, 20),
+    )
+
+    plan = plan_prompt_budget(items, max_units=70)
+
+    assert plan.report.dropped_ids == ("history.old", "style.example")
+    assert plan.report.included_ids == ("user", "life.current")

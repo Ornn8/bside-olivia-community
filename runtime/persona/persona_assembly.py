@@ -66,6 +66,7 @@ _CONTINUATION_CUE_RE = re.compile(
 )
 _STYLE_EXAMPLE_LIMIT = 2
 _SOFT_ANCHOR_LIMIT = 4
+_CURRENT_LIFE_FRAGMENT_IDS = frozenset({"linli.daily-life", "linli.rhythm"})
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
 _SUBJECT_RE = re.compile(
     r"奥利维亚|Olivia|林离|他们|她们|它们|我们|别人|对方|朋友|同事|同学|他|她|它|我|你",
@@ -479,11 +480,16 @@ def _persona_blocks(
         )
     )
     for fragment in evidence_summaries:
+        section = (
+            PromptSection.CURRENT_LIFE
+            if fragment.fragment_id in _CURRENT_LIFE_FRAGMENT_IDS
+            else PromptSection.EVIDENCE_SUMMARY
+        )
         blocks.append(
             _json_block(
                 "evidence_summary",
                 _budget_id("evidence", fragment.fragment_id),
-                PromptSection.EVIDENCE_SUMMARY,
+                section,
                 {"fragment_id": fragment.fragment_id, "untrusted": True, "text": fragment.text},
             )
         )
@@ -500,7 +506,7 @@ def _persona_blocks(
     # both tags in one optional item makes cropping and cost accounting atomic.
     if any(fragment.fragment_id == "linli.rhythm" for fragment in evidence_summaries):
         rhythm_rule = _json_block(
-            "life_rhythm", "life_rhythm", PromptSection.EVIDENCE_SUMMARY,
+            "life_rhythm", "life_rhythm", PromptSection.CURRENT_LIFE,
             "linli.rhythm 是程序维护的当前角色作息，优先于过期近况；保持她自己的生活，不展示内部字段或分数。"
             + RHYTHM_FACT_AUTHORITY
             + "可以简短说困倦、想休息，不必每封报时或拿用户发信时间评判他。倾诉认真回应，不因对方倾诉责备他。已有双方夜聊约定要尊重，不反过来指责打扰。疲劳影响今天的安排和语气，休息好后恢复；亲近不取消边界，不以身体状态让对方内疚。不自动编造疾病、去医院或共同经历。正常进餐、休息和专注时段有自己的节奏，不每封都汇报作息。",

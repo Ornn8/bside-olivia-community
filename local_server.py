@@ -4536,6 +4536,16 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 letter["relationship_status"] = relationship_status.value
                 if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+            boundaries = daily_life_runtime.store.exchange_boundaries(source_id, letter["content"], letter["reply_text"])
+            if boundaries:
+                if private_world_relationship_committer is None:
+                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+                boundary_status = private_world_relationship_committer.commit_boundaries(
+                    letter["private_world_delivery_id"], letter["reply_text"], boundaries,
+                    occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
+                )
+                if boundary_status.value not in {"COMMITTED", "DUPLICATE"}:
+                    raise RuntimeError("DAILY_LIFE_BOUNDARY_UNAVAILABLE")
             letter["daily_life_status"] = "COMMITTED"
             letter.pop("daily_life_error_code", None)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):

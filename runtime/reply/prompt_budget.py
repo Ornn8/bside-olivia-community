@@ -32,6 +32,7 @@ class PromptSection(str, Enum):
     PUBLIC_CANON = "public_canon"
     HISTORY = "history"
     EVIDENCE_SUMMARY = "evidence_summary"
+    CURRENT_LIFE = "current_life"
     SOFT_CANON = "soft_canon"
     INFERRED_TRAIT = "inferred_trait"
 
@@ -52,6 +53,7 @@ _DROP_ORDER = (
     PromptSection.HISTORY,
     PromptSection.SOFT_CANON,
     PromptSection.STYLE_EXAMPLE,
+    PromptSection.CURRENT_LIFE,
     PromptSection.PRIVATE_BEHAVIOR,
     PromptSection.WORLD_FACT,
     PromptSection.PUBLIC_CANON,

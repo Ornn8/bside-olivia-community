@@ -48,6 +48,29 @@ def validate_exchange_relationship(signal: object, user_text: str, reply_text: s
     return dict(signal)
 
 
+def validate_boundary_changes(changes: object, reply_text: str) -> list[dict]:
+    """Keep canonical quotations, never a model's rewritten personality rule."""
+    if changes is None:
+        return []
+    if not isinstance(changes, list) or len(changes) > 4:
+        raise ValueError("DAILY_LIFE_BOUNDARY_INVALID")
+    checked = []
+    for change in changes:
+        if not isinstance(change, dict) or set(change) != {"action", "boundary_id", "quote"}:
+            raise ValueError("DAILY_LIFE_BOUNDARY_INVALID")
+        action, boundary_id, quote = change["action"], change["boundary_id"], change["quote"]
+        if action not in {"set", "withdraw"} or not isinstance(quote, str) or not quote.strip() or len(quote) > 200 or quote not in reply_text:
+            raise ValueError("DAILY_LIFE_BOUNDARY_EVIDENCE_INVALID")
+        if action == "set" and boundary_id is None:
+            boundary_id = "boundary." + hashlib.sha256(quote.encode("utf-8")).hexdigest()[:48]
+        if not isinstance(boundary_id, str) or len(boundary_id) > 64 or not _ID_RE.fullmatch(boundary_id):
+            raise ValueError("DAILY_LIFE_BOUNDARY_INVALID")
+        checked.append({"action": action, "boundary_id": boundary_id, "quote": quote})
+    if len({item["boundary_id"] for item in checked}) != len(checked):
+        raise ValueError("DAILY_LIFE_BOUNDARY_INVALID")
+    return checked
+
+
 class RelationshipFactStatus(StrEnum):
     COMMITTED = "COMMITTED"
     DUPLICATE = "DUPLICATE"
@@ -117,6 +140,53 @@ class RelationshipFactCommand:
 class PrivateWorldRelationshipCommitter:
     def __init__(self, ledger: SQLitePrivateWorldLedger) -> None:
         self.ledger = ledger
+
+    def commit_boundaries(self, delivery_id: str, reply_text: str, changes: list, *, occurred_at: datetime) -> RelationshipFactStatus:
+        changes = validate_boundary_changes(changes, reply_text)
+        if not isinstance(occurred_at, datetime) or occurred_at.utcoffset() is None:
+            raise ValueError("boundary time must be timezone-aware")
+        reply_digest = hashlib.sha256(reply_text.encode("utf-8")).hexdigest()
+        canonical = next((event for event in self.ledger.events()
+                          if event.delivery_id == delivery_id and event.event_type == ReducerEventKind.CANONICAL_REPLY_DELIVERED.value), None)
+        if canonical is None or canonical.payload.get("canonical_reply_sha256") != reply_digest or datetime.fromisoformat(canonical.occurred_at.replace("Z", "+00:00")) > occurred_at:
+            return RelationshipFactStatus.REJECTED
+        status = RelationshipFactStatus.DUPLICATE
+        for change in changes:
+            command_id = "boundary." + hashlib.sha256(
+                (delivery_id + ":" + change["boundary_id"]).encode("utf-8")).hexdigest()
+            events = self.ledger.events()
+            # Check replay before current-state validation: a withdrawal has
+            # already removed its target, and an old set must not revive it.
+            if any(event.delivery_id == command_id for event in events):
+                continue
+            active = self.ledger.snapshot().active_boundaries
+            if change["action"] == "set" and len(active) >= 16 and not any(item.boundary_id == change["boundary_id"] for item in active):
+                return RelationshipFactStatus.REJECTED
+            if change["action"] == "withdraw" and not any(item.boundary_id == change["boundary_id"] for item in active):
+                return RelationshipFactStatus.REJECTED
+            # Legacy boundary events omit the target ID. A later legacy change
+            # may concern this boundary; do not guess and resurrect older state.
+            if any(event.event_type in {ReducerEventKind.CHARACTER_BOUNDARY_SET.value, ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN.value}
+                   and event.payload.get("boundary_id") in {None, change["boundary_id"]}
+                   and datetime.fromisoformat(event.occurred_at.replace("Z", "+00:00")) > occurred_at
+                   for event in events):
+                return RelationshipFactStatus.REJECTED
+            at = occurred_at.astimezone(timezone.utc)
+            result = self.commit(RelationshipFactCommand(
+                command_id=command_id,
+                kind=ReducerEventKind.CHARACTER_BOUNDARY_SET if change["action"] == "set" else ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN,
+                occurred_at=at, semantic_key=command_id,
+                canonical_delivery_id=delivery_id,
+                canonical_reply_sha256=reply_digest,
+                evidence_ref_id=delivery_id + ".boundary",
+                boundary=ActiveBoundary(change["boundary_id"], at.isoformat(), change["quote"]) if change["action"] == "set" else None,
+                boundary_id=change["boundary_id"] if change["action"] == "withdraw" else None,
+            ))
+            if result not in {RelationshipFactStatus.COMMITTED, RelationshipFactStatus.DUPLICATE}:
+                return result
+            if result is RelationshipFactStatus.COMMITTED:
+                status = result
+        return status
 
     def commit_exchange(self, delivery_id: str, user_text: str, reply_text: str, signal: dict, *, occurred_at: datetime) -> RelationshipFactStatus:
         """Project grounded canonical interaction, never manual permission commands."""
@@ -217,6 +287,8 @@ class PrivateWorldRelationshipCommitter:
                         "canonical_reply_sha256": command.canonical_reply_sha256,
                         "evidence_ref_id": command.evidence_ref_id,
                         "semantic_key": command.semantic_key,
+                        **({"boundary_id": command.boundary.boundary_id if command.boundary else command.boundary_id}
+                           if command.kind in {ReducerEventKind.CHARACTER_BOUNDARY_SET, ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN} else {}),
                     },
                     occurred_at=command.occurred_at.isoformat(),
                 ),
