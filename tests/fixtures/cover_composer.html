@@ -1,0 +1,49 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Olivia · 写信界面预览</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111214;color:#ded9d1;font:16px "Microsoft YaHei",sans-serif}header{padding:26px 32px;font-size:30px;font-weight:bold}main{padding:0 32px;color:#aaa}#backdrop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0007;padding:20px}.el-dialog{width:min(940px,100%);max-height:calc(100dvh - 40px);overflow:auto;border:1px solid #56585d;border-radius:16px;background:#232427;padding:24px}h2{margin:0;font-size:24px}.mail-box-write-dialog-subtitle{color:#b8b9bf;margin:12px 0 22px}.native-title-row{display:flex;align-items:center;justify-content:space-between}button{font:inherit;border:1px solid #686a70;border-radius:999px;padding:10px 20px;background:transparent;color:#ded9d1;cursor:pointer}button:disabled{opacity:.5;cursor:default}.mail-box-write-dialog-content{position:relative;aspect-ratio:16/10;background:#f4f0e8 url(paper.webp) center/100% 100%;min-height:320px}.mail-box-write-dialog-content-textarea{position:absolute;inset:24px;width:calc(100% - 48px);height:calc(100% - 48px);border:0;resize:none;background:transparent;color:#24211d;font:22px/1.6 KaiTi,serif}.native-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.native-footer button:last-child{background:#ded9d1;color:#232427;font-weight:bold}.preview-note{position:fixed;bottom:8px;left:16px;font-size:12px;color:#aaa}#receipt{white-space:pre-wrap}#acceptance{display:none}.w-full{width:100%}@media(max-width:700px){#backdrop{padding:8px}.el-dialog{padding:16px;max-height:calc(100dvh - 16px)}h2{font-size:20px}.mail-box-write-dialog-content{min-height:310px}}
+</style>
+<header>信箱</header><main><p>界面预览 · 不调用模型，不会寄出真实信件</p><div id="receipt"></div><button id="reopen" hidden>继续预览写信</button></main>
+<div id="backdrop"><div role="dialog" class="el-dialog" aria-label="写下你的感受"><div class="mail-box-write-dialog"><div class="native-title-row"><h2 class="mail-box-write-dialog-title">写下你的感受</h2><button id="close">关闭 ×</button></div><div class="mail-box-write-dialog-subtitle">今天有什么想跟林离分享的？</div><div class="native-paper-frame"><div class="mail-box-write-dialog-content w-full"><textarea class="mail-box-write-dialog-content-textarea" aria-label="信件正文">今晚想听你唱一首歌。</textarea></div></div></div><div class="native-footer"><button id="clear">清空</button><button id="send">寄出信件</button></div></div></div>
+<div class="preview-note">本地交互预览 · 两侧内容独立保留</div><pre id="acceptance"></pre>
+<script>
+const params=new URLSearchParams(location.search),asr=params.get('asr')||'ready';
+const text=(tag,copy)=>{const n=document.createElement(tag);n.textContent=copy;return n};
+const button=(copy,fn)=>{const n=text('button',copy);n.type='button';n.addEventListener('click',fn);return n};
+const apiBase='http://127.0.0.1:8899',CONFIRM_HEADER='X-Olivia-Companion-Action',CONFIRM_VALUE='confirmed';
+const calls=[];let uploadFails=false,forceCover=false;
+window.fetch=async(url,request)=>{const path=new URL(url).pathname;calls.push(path);
+ if(path==='/toy/cover/upload')return {ok:!uploadFails,json:async()=>uploadFails?{code:400}:{code:0,data:{source_id:'a'.repeat(32),asr_available:asr!=='missing'}}};
+ if(path==='/toy/cover/lyrics')return {ok:asr!=='failed',json:async()=>asr==='failed'?{code:400}:{code:0,data:{lyrics:'晚风轻轻吹过我的脸\n带着你熟悉的温柔\n这一首歌 想唱给你听',language:'zh'}}};
+ throw Error('Preview forbids real network');
+};
+const routeRequest=async(path,body)=>{calls.push({path,body});return {token:'fixture-token',requested_route:body.cover_source_id?'singing_video':null,requires_cover_audio:!!body.cover_source_id||forceCover,ready:true}};
+const confirmReplyRoute=async()=>true;
+/* WAVE */
+/* COMPOSER */
+const input=document.querySelector('.mail-box-write-dialog-content-textarea');const send=document.getElementById('send');
+input.addEventListener('input',()=>{send.disabled=!input.value.trim()});mountCoverComposer(input);
+document.getElementById('clear').addEventListener('click',()=>{input.value='';input.dispatchEvent(new Event('input',{bubbles:true}))});
+document.getElementById('close').onclick=()=>{document.getElementById('backdrop').style.display='none';document.getElementById('reopen').hidden=false};
+document.getElementById('reopen').onclick=()=>{document.getElementById('backdrop').style.display='flex';document.getElementById('reopen').hidden=true};
+send.onclick=async()=>{try{const config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});document.getElementById('receipt').textContent=config.data.material.cover_source_id?'预览信箱：已提交翻唱，选择 '+config.data.material.cover_output+' 回信。':'预览信箱：已提交普通信件。\n'+config.data.content;document.getElementById('close').click()}catch(e){document.querySelector('.olivia-compose-cover [role=status]').textContent=e.message}};
+const testFile=async(name='原曲.wav')=>{const dt=new DataTransfer();dt.items.add(new File([new Uint8Array(44)],name,{type:'audio/wav'}));const file=document.querySelector('input[type=file]');file.files=dt.files;await file.onchange()};
+if(params.has('cover')){composerCovers.get(input).select('cover');testFile()}
+if(params.has('verify'))(async()=>{
+ const assert=(ok,label)=>{if(!ok)throw Error(label)};
+ const state=composerCovers.get(input),draft=input.value,grid=document.querySelector('.olivia-compose-grid'),frame=document.querySelector('.native-paper-frame');
+ assert(state.mode==='letter'&&!frame.hidden,'ordinary default');
+ let config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(!config.data.material.cover_source_id&&config.data.content===draft,'normal send');
+ const beforeSwitch=grid.getBoundingClientRect(),paperWidth=frame.getBoundingClientRect().width;
+ state.select('cover');assert(frame.hidden&&state.draft===draft,'cover opens and preserves text');assert(send.disabled,'empty cover cannot send');
+ assert(Math.abs(grid.getBoundingClientRect().height-beforeSwitch.height)<1,'switch preserves dialog height');assert(Math.abs(frame.getBoundingClientRect().width-paperWidth)<1,'paper keeps full width while collapsing');assert(getComputedStyle(frame).display!=='none','outgoing pane remains mounted for transition');
+ let canceled=0;document.querySelector('[role=dialog]').addEventListener('cancel',()=>canceled++);
+ document.querySelector('input[type=file]').dispatchEvent(new Event('cancel',{bubbles:true}));assert(canceled===0&&state.mode==='cover'&&grid.isConnected,'file cancel stays open');
+ await testFile();const lyrics=document.querySelector('[aria-label="翻唱歌词"]');assert(asr==='ready'?lyrics.value.includes('晚风'):lyrics.value==='', 'recognition state');
+ lyrics.value='人工修正歌词';assert(state.materialForSend().cover_output==='audio','default audio');document.querySelector('.olivia-cover-options button:last-child').click();
+ config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(config.data.material.cover_output==='video'&&config.data.material.cover_lyrics==='人工修正歌词','cover send');assert(config.data.content==='请翻唱《原曲》。','cover own content');
+ state.select('letter');assert(input.value===draft,'restore ordinary draft');config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(!config.data.material.cover_source_id,'no cover leak');
+ state.select('cover');assert(lyrics.value==='人工修正歌词','retain corrected lyrics');uploadFails=true;await testFile('失败.wav');assert(state.material.filename==='原曲.wav'&&lyrics.value==='人工修正歌词','failed replacement preserves old source');
+ document.getElementById('clear').click();assert(!state.material&&lyrics.value===''&&state.draft===draft,'clear cover only');state.select('letter');assert(input.value===draft,'clear did not erase letter');
+ mountCoverComposer(input);assert(document.querySelectorAll('.olivia-compose-grid').length===1,'idempotent mount');const dialog=document.querySelector('.el-dialog').getBoundingClientRect();assert(Math.abs(dialog.left+dialog.width/2-innerWidth/2)<2,'dialog centered');assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal page overflow');assert(grid.closest('[role=dialog]')!==null,'controls inside native dialog');assert(!document.querySelector('select'),'no language selector');document.getElementById('acceptance').textContent='PASS';
+})().catch(e=>{document.getElementById('acceptance').textContent='FAIL: '+e.message});
+</script></html>

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v26"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v32"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -996,6 +996,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const renderPrivateWorldPanel = async (panel, privateCapability) => {
+    if (!panel) return;
     const rawPrivateWorldState = privateCapability
       && typeof privateCapability.state === "string"
       ? privateCapability.state
@@ -1031,7 +1032,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const labels = { planned: "打算做", ongoing: "进行中", paused: "暂时搁下", completed: "已完成", cancelled: "已取消", awaiting_user: "等你说说后续" };
     const when = (value) => {
       const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     };
     const card = () => {
       const el = document.createElement("article");
@@ -1066,7 +1067,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let attempted = false;
     const momentRow = (moment) => {
       const content = moment.content;
-      const body = moment.kind === "daily" ? content.note : content.current ? content.current.note : (content.updates || []).map(item => item.detail).join(" · ");
+      const body = moment.kind === "media" ? `${content.delivery?.summary || "已送达回信"} · ${content.delivery?.presentation === "video" ? "视频" : "音频"}` : moment.kind === "daily" ? content.note : content.current ? content.current.note : (content.updates || []).map(item => item.detail).join(" · ");
       const el = document.createElement("details");
       el.style.cssText = "padding:10px 0;overflow-wrap:anywhere";
       el.append(text("summary", `${when(moment.occurred_at)} · ${body.slice(0, 54)}${body.length > 54 ? "…" : ""}`, "text-text-body text-body-m"));
@@ -1194,7 +1195,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!recent.length) moments.append(text("p", "新的生活片段会慢慢留下来。", "text-text-secondary text-body-m"));
       status.textContent = payload.refreshing ? "正在整理新的近况，已有内容仍可阅读。"
         : payload.error_code ? "新近况暂时没能整理好，已有记录已保留。可以稍后重试。" : "近况已保存。";
-      panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationshipPanel());
+      if (panel.dataset?.worldMain !== undefined) {
+        const top=actions();top.className='olivia-world-heading';
+        const title=stack();title.append(heading,text('p','上海 · 北京时间','text-text-secondary'));top.append(title,button('更新近况',()=>load(true)));
+        const columns=document.createElement('div');columns.className='olivia-world-columns';
+        const primary=document.createElement('div'),secondary=document.createElement('aside');
+        const expanded=panel._worldExpanded || (panel._worldExpanded=['now','projects']);
+        const fold=(content,key,column)=>{
+          const area=content.tagName==='DETAILS'?content:document.createElement('details');
+          const caption=area===content?content.querySelector('summary'):document.createElement('summary');
+          if(area!==content){caption.textContent=content.querySelector('h4').textContent;content.querySelector('h4').remove();area.append(caption)}
+          const body=document.createElement('div');body.className='olivia-world-scroll';body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label',caption.textContent);
+          if(area===content){for(const child of [...area.children])if(child!==caption)body.append(child)}else body.append(content);
+          area.append(body);area.classList.add('olivia-world-fold');area.dataset.worldSection=key;area.open=expanded[column]===key;
+          area.addEventListener('toggle',()=>{
+            if(!area.isConnected)return;
+            if(area.open){expanded[column]=key;for(const peer of area.parentElement.children)if(peer!==area)peer.open=false}
+            else if(expanded[column]===key)expanded[column]=null;
+          });
+          return area;
+        };
+        primary.append(fold(now,'now',0),fold(moments,'moments',0),fold(historyPanel(),'history',0));
+        secondary.append(fold(projects,'projects',1),fold(shared,'shared',1),fold(relationshipPanel(),'relationship',1));columns.append(primary,secondary);
+        panel.replaceChildren(top,status,columns);
+      } else panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationshipPanel());
     };
     const load = async (refresh = false) => {
       if (busy || !alive()) return;
@@ -1997,24 +2021,76 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   // The lite client's mailbox is the original /collection view. Keep both
   // destinations inside the main window: desktop widgets can be off-screen.
+  const WORLD_ROUTE = '#/world';
+  const mountWorldPage = (page) => {
+    page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-world-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:24px;-webkit-app-region:no-drag}
+      .olivia-world-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+      .olivia-world-header h1{font-size:30px;margin:0;font-weight:700}
+      [data-world-main]{overflow:hidden;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;display:flex;flex-direction:column;box-sizing:border-box}
+      [data-world-main] p{line-height:1.7;margin:8px 0}
+      [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
+      [data-world-main] button,.olivia-world-header button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
+      [data-world-main] summary{cursor:pointer;line-height:1.7}
+      [data-world-main] article{background:transparent!important;padding:12px 0!important}
+      .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
+      .olivia-world-columns{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(0,1fr);gap:36px;flex:1;min-height:0;overflow:hidden}
+      .olivia-world-columns>aside{border-left:1px solid #383a3e;padding-left:32px;min-width:0}
+      .olivia-world-columns>div,.olivia-world-columns>aside{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+      .olivia-world-fold{margin:0!important;min-height:0;flex:0 0 auto;border-bottom:1px solid #383a3e;overflow:hidden}
+      .olivia-world-fold[open]{flex:1 1 0;position:relative}
+      .olivia-world-fold>summary{padding:14px 0;font-size:20px;height:64px;box-sizing:border-box}
+      .olivia-world-scroll{position:absolute;inset:64px 0 0;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:none;padding:0 12px 16px 0}
+      .olivia-world-scroll::-webkit-scrollbar{display:none;width:0;height:0}
+      .olivia-world-scroll>section{margin-top:0!important}
+      @media(max-width:800px){.olivia-world-columns{gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.olivia-world-columns>aside{padding-left:16px}[data-world-main]{padding:16px}.olivia-world-fold>summary{font-size:16px;padding:12px 0;height:52px}.olivia-world-scroll{top:52px}}
+    `;
+    const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
+    const panel=document.createElement('section');panel.dataset.worldMain='';
+    page.replaceChildren(style,header,panel);
+    panel.append(text('p','正在读取林离的生活……'));
+    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(()=>{
+      if(page.isConnected)panel.replaceChildren(text('p','近况暂时无法读取。'),button('重试',()=>mountWorldPage(page)));
+    });
+  };
+  const installNativeWorldRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router || !native.h)return;
+    if(!native.router.hasRoute('olivia-world'))native.router.addRoute({
+      path:'/world',name:'olivia-world',component:{
+        name:'OliviaWorldView',
+        render(){return native.h('main',{class:'mx-full h-full'})},
+        mounted(){mountWorldPage(this.$el)},
+        beforeUnmount(){this.$el.querySelector('[data-world-main]')?._lifeRequest && (this.$el.querySelector('[data-world-main]')._lifeRequest=null)},
+      },
+    });
+    if(window.location.hash==='#/collection?view=world')native.router.replace('/world');
+  };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
+    const world=window.location.hash===WORLD_ROUTE;
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection") {
+    if (route !== "#/studio" && route !== "#/collection" && route !== WORLD_ROUTE) {
       nav?.remove();
       return;
     }
     if (!nav) {
       nav = document.createElement("nav");
       nav.setAttribute("data-olivia-main-navigation", "");
-      nav.setAttribute("aria-label", "信箱与曲库");
+      nav.setAttribute("aria-label", "主导航");
       Object.assign(nav.style, {
         position: "fixed", top: "60px", left: "120px", zIndex: "20",
         display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
       });
-      for (const [label, href] of [["信箱", "#/collection"], ["曲库", "#/studio"]]) {
+      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["曲库", "#/studio"]]) {
         const link = text("a", label, "text-body-m");
         link.href = href;
+        link.addEventListener('click',event=>{
+          if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+          const router=window.__oliviaNativeView?.router;if(!router)return;
+          event.preventDefault();void router.push(href.slice(1));
+        });
         Object.assign(link.style, {
           display: "inline-flex", alignItems: "center", minHeight: "36px",
           padding: "0 16px", borderRadius: "18px", border: "1px solid #6b7280",
@@ -2025,8 +2101,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       document.body.append(nav);
     }
+    nav.style.left='120px';
     for (const link of nav.querySelectorAll("a")) {
-      const active = link.getAttribute("href") === route;
+      const active = link.getAttribute("href") === (world?WORLD_ROUTE:route);
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
       link.style.color = active ? "#111827" : "#d1d5db";
@@ -2162,7 +2239,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           { id: "capability", label: "本地组件", key: "capability" },
           { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
-          { id: "private-world", label: "林离世界", key: "privateWorld" },
         ];
 
     const showPanel = (id) => {
@@ -2296,90 +2372,139 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   });
   const composerCovers = new WeakMap();
   let coverComposer = null;
-  const selectCoverAudio = (existing = null) => new Promise((resolve) => {
-    const dialog = document.createElement("dialog");
-    dialog.setAttribute("aria-label", "选择翻唱音频");
-    dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#232427;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:560px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
-    const file = document.createElement("input"); file.type = "file";
-    file.accept = ".wav,.flac,.mp3,.m4a,.ogg"; file.setAttribute("aria-label", "原曲音频");
-    file.style.cssText = "width:100%;margin:16px 0;color:inherit;color-scheme:dark;";
-    const lyrics = document.createElement("textarea"); lyrics.maxLength = 30000;
-    lyrics.value = existing?.cover_lyrics || "";
-    lyrics.placeholder = "上传后自动识别歌词，你可以在这里修正。";
-    lyrics.setAttribute("aria-label", "原曲歌词");
-    lyrics.style.cssText = "width:100%;min-height:150px;background:#191a1c;color:inherit;border:1px solid #66696f;border-radius:8px;margin:12px 0;padding:12px;box-sizing:border-box;line-height:1.7;";
-    const language = document.createElement("select"); language.setAttribute("aria-label", "歌词语言");
-    const output = document.createElement("select"); output.setAttribute("aria-label", "翻唱回信形式");
-    for (const node of [language, output]) node.style.cssText = "background:#191a1c;color:inherit;border:1px solid #66696f;border-radius:8px;padding:8px 12px;color-scheme:dark;";
-    for (const [value,label] of [["unknown","随原曲"],["zh","中文"],["en","英语"],["ja","日语"],["ko","韩语"]]) {
-      const option=document.createElement("option"); option.value=value; option.textContent=label; language.append(option);
-    }
-    for (const [value,label] of [["audio","音频回信"],["video","视频回信"]]) {
-      const option=document.createElement("option"); option.value=value; option.textContent=label; output.append(option);
-    }
-    language.value=existing?.cover_language || "unknown"; output.value=existing?.cover_output || "audio";
-    const status=text("p", existing ? "原曲已添加，可修改歌词或回信形式。" : "选择原曲后自动识别歌词，确认并修正后再寄出。最大 256 MiB。", "text-text-secondary text-body-m");
-    status.setAttribute("role", "status");
-    const player=document.createElement("audio"); player.controls=true; player.style.cssText="width:100%;color-scheme:dark;";
-    let material=existing ? {...existing} : null, busy=false, objectUrl;
-    const previous=document.activeElement;
-    const finish=value=>{player.pause();if(objectUrl)URL.revokeObjectURL(objectUrl);dialog.close();dialog.remove();previous?.focus();resolve(value)};
-    const cancel=button("取消",()=>{if(!busy)finish(null)});
-    const submit=button("使用这首原曲",()=>{
-      if(busy||!material)return;
-      if(!lyrics.value.trim()){status.textContent="请填写或识别歌词后继续。";lyrics.focus();return}
-      finish({...material,cover_lyrics:lyrics.value,cover_language:language.value,cover_output:output.value});
-    });
-    const update=()=>{submit.disabled=busy||!material;cancel.disabled=file.disabled=busy;lyrics.disabled=busy;recognize.disabled=busy||!material};
-    const transcribe=async()=>{
-      busy=true;update();status.textContent="正在本地识别歌词，请稍候…";
-      const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),660000);
-      try {
-        const response=await fetch(new URL("/toy/cover/lyrics",apiBase),{method:"POST",credentials:"omit",signal:controller.signal,
-          headers:{"Content-Type":"application/json",[CONFIRM_HEADER]:CONFIRM_VALUE},body:JSON.stringify({source_id:material.cover_source_id})});
-        const result=await response.json();if(!response.ok||result.code!==0)throw Error(result.data?.error_code||"failed");
-        lyrics.value=result.data.lyrics;language.value=result.data.language;if(!language.value)language.value="unknown";
-        status.textContent="歌词已识别，请核对并修正后使用。";
-      } catch (_) {status.textContent="未能识别歌词，原曲已保留。可以手动填写，或检查歌词识别组件后重试。";}
-      finally {clearTimeout(timer);busy=false;update();}
-    };
-    const recognize=button("识别歌词",()=>{if(!busy)void transcribe()});
-    file.onchange=async()=>{
-      const audio=file.files[0];if(!audio)return;
-      if(audio.size>256*1024*1024){status.textContent="请选择不超过 256 MiB 的音频。";return}
-      busy=true;material=null;lyrics.value="";update();status.textContent="正在上传并检查原曲…";
-      if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=URL.createObjectURL(audio);player.src=objectUrl;
-      try {
-        const response=await fetch(new URL("/toy/cover/upload",apiBase),{method:"POST",credentials:"omit",
-          headers:{"Content-Type":"application/octet-stream",[CONFIRM_HEADER]:CONFIRM_VALUE},body:audio});
-        const result=await response.json();if(!response.ok||result.code!==0)throw Error(result.data?.error_code||"upload");
-        material={cover_source_id:result.data.source_id,filename:audio.name};
-        if(result.data.asr_available){await transcribe();}
-        else status.textContent="原曲已上传。未安装歌词识别组件，请手动填写歌词，或安装组件后点击识别歌词。";
-      } catch (_) {status.textContent="原曲上传失败，请检查文件和媒体工具后重试。";}
-      finally {busy=false;update();}
-    };
-    const options=actions();options.append(language,output,recognize);
-    const controls=actions();controls.append(cancel,submit);
-    dialog.append(text("h3","让林离翻唱一首歌","text-title-m"),status,file,player,lyrics,options,controls);
-    dialog.addEventListener("cancel",event=>{event.preventDefault();if(!busy)finish(null)});
-    update();document.body.append(dialog);dialog.showModal();
-  });
   const mountCoverComposer = (input) => {
+    // The native content element is the anchor, never the full-screen overlay.
+    const paper=input.closest('.mail-box-write-dialog-content');
+    const owner=paper?.closest('.mail-box-write-dialog');
+    if(!paper||!owner)return;
     coverComposer=input;
-    const dialog=input.closest('[role="dialog"], .el-dialog');
-    if(!dialog || dialog.querySelector('[data-olivia-cover-composer]'))return;
-    const row=actions();row.setAttribute('data-olivia-cover-composer','');row.style.cssText='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;';
-    const state=text('span','','text-text-secondary text-caption-m');
-    const choose=button('翻唱歌曲',async()=>{
-      const result=await selectCoverAudio(composerCovers.get(input));if(!result)return;
-      composerCovers.set(input,result);refresh();
-    });
-    const remove=button('移除原曲',()=>{composerCovers.delete(input);refresh()});
-    const refresh=()=>{const value=composerCovers.get(input);choose.textContent=value?'原曲与歌词':'翻唱歌曲';remove.hidden=!value;
-      state.textContent=value?`${value.filename || '原曲已添加'} · ${value.cover_output==='video'?'视频回信':'音频回信'}`:'选择一首想听她唱的歌';};
-    row.append(choose,state,remove);const footer=dialog.querySelector('.el-dialog__footer');
-    if(footer)footer.before(row);else dialog.append(row);refresh();
+    if(composerCovers.has(input))return;
+    if(!document.getElementById('olivia-composer-style')){
+      const style=document.createElement('style');style.id='olivia-composer-style';
+      style.textContent=`
+        .olivia-compose-grid{--rail:108px;--gap:16px;display:grid;grid-template-columns:calc(100% - var(--rail) - var(--gap)) var(--rail);gap:var(--gap);width:100%;min-width:0;transition:grid-template-columns .32s cubic-bezier(.16,1,.3,1)}
+        .olivia-compose-grid[data-mode=cover]{grid-template-columns:var(--rail) calc(100% - var(--rail) - var(--gap))}
+        .olivia-compose-pane{min-width:0;overflow:hidden}
+        .olivia-compose-body{width:var(--body-width)!important;opacity:1;visibility:visible;transition:opacity .18s ease-out,visibility 0s}
+        .olivia-compose-grid .olivia-compose-body[hidden]{display:block!important;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease-out,visibility 0s .12s}
+        .olivia-compose-grid .olivia-compose-cover[hidden]{display:flex!important}
+        .olivia-compose-pane>button{margin:0 0 16px;max-width:100%;padding:10px 20px;white-space:nowrap}
+        .olivia-compose-grid button{border:1px solid #686a70;border-radius:999px;color:#ded9d1;background:transparent;min-height:40px;font:inherit;cursor:pointer}
+        .olivia-compose-grid button[aria-expanded=true],.olivia-compose-grid button[aria-pressed=true]{background:#ded9d1;color:#202124;border-color:#ded9d1}
+        .olivia-compose-grid button:focus-visible,.olivia-compose-grid textarea:focus-visible{outline:2px solid #ded9d1;outline-offset:3px}
+        .olivia-compose-grid button:disabled{opacity:.5;cursor:default}
+        .olivia-compose-grid [hidden]{display:none!important}
+        .olivia-compose-cover{display:flex;flex-direction:column;gap:16px;color:#ded9d1;min-height:360px}
+        .olivia-compose-cover p{margin:0;line-height:1.6;color:#b8b9bf}
+        .olivia-compose-cover .olivia-cover-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+        .olivia-compose-cover .olivia-cover-name{flex:1;min-width:80px;overflow-wrap:anywhere}
+        .olivia-compose-cover textarea{width:100%;min-height:170px;resize:vertical;box-sizing:border-box;padding:16px;background:#191a1c;color:#ded9d1;border:1px solid #686a70;border-radius:12px;font:inherit;line-height:1.7}
+        .olivia-compose-cover textarea::placeholder{color:#b8b9bf}
+        .olivia-compose-cover .olivia-cover-wave{position:relative;flex:1;min-width:100px;height:60px}
+        .olivia-cover-wave canvas{width:100%;height:60px;filter:brightness(3)}
+        .olivia-cover-wave input{position:absolute;inset:0;width:100%;height:60px;opacity:0;cursor:pointer}
+        .olivia-cover-wave:focus-within{outline:2px solid #ded9d1;outline-offset:2px}
+        .olivia-cover-play{width:44px;padding:0!important;font-size:18px!important}
+        .olivia-cover-time{font-size:12px;font-variant-numeric:tabular-nums;color:#b8b9bf}
+        .olivia-cover-options{display:flex;gap:8px;flex-wrap:wrap}
+        .olivia-compose-hint{margin:16px 0 0;color:#b8b9bf;font-size:13px}
+        @media(max-width:700px){.olivia-compose-grid{--rail:84px;--gap:8px}.olivia-compose-pane>button{font-size:12px;padding:8px 4px}.olivia-compose-cover{gap:12px}.olivia-compose-cover textarea{padding:12px}}
+        @media(prefers-reduced-motion:reduce){.olivia-compose-grid,.olivia-compose-grid .olivia-compose-body{transition:none!important}}
+      `;document.head.append(style);
+    }
+    const state={mode:'letter',draft:input.value,material:null,busy:false,output:'audio'};
+    composerCovers.set(input,state);
+    const frame=paper.parentElement;
+    const grid=document.createElement('div');grid.className='olivia-compose-grid';grid.dataset.mode='letter';
+    const left=document.createElement('section'),right=document.createElement('section');
+    left.className=right.className='olivia-compose-pane';
+    const cover=document.createElement('div');cover.className='olivia-compose-cover olivia-compose-body';cover.dataset.oliviaCoverPanel='';frame.classList.add('olivia-compose-body');
+    const setValue=value=>{input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}))};
+    const syncCoverText=()=>{if(state.mode==='cover')setValue(state.material ? `请翻唱《${state.material.filename.replace(/\.[^.]+$/,'')}》。` : '')};
+    const select=mode=>{
+      if(mode===state.mode)return;
+      if(state.mode==='letter')state.draft=input.value;
+      state.mode=mode;grid.dataset.mode=mode;
+      frame.hidden=mode!=='letter';frame.inert=mode!=='letter';cover.hidden=mode!=='cover';cover.inert=mode!=='cover';
+      normal.setAttribute('aria-expanded',String(mode==='letter'));sing.setAttribute('aria-expanded',String(mode==='cover'));
+      if(mode==='letter'){audio.pause();setValue(state.draft)}else syncCoverText();
+    };
+    state.select=select;
+    const normal=button('普通信件',()=>select('letter')),sing=button('翻唱歌曲',()=>select('cover'));
+    normal.setAttribute('aria-expanded','true');sing.setAttribute('aria-expanded','false');
+    frame.before(grid);left.append(normal,frame);right.append(sing,cover);grid.append(left,right);cover.hidden=true;cover.inert=true;
+    // Keep full-width content mounted so switching cannot reflow the paper or resize the dialog.
+    const sizeBodies=()=>{const css=getComputedStyle(grid);grid.style.setProperty('--body-width',Math.max(0,grid.clientWidth-parseFloat(css.getPropertyValue('--rail'))-parseFloat(css.columnGap))+'px')};
+    sizeBodies();const bodyResize=new ResizeObserver(sizeBodies);bodyResize.observe(grid);
+    const status=text('p','选择原曲后自动识别歌词，你可以修改后再寄出。');status.setAttribute('role','status');
+    const file=document.createElement('input');file.type='file';file.accept='.wav,.flac,.mp3,.m4a,.ogg';file.hidden=true;
+    // File-picker cancellation bubbles as "cancel"; it must not close the letter dialog.
+    file.addEventListener('cancel',event=>event.stopPropagation());
+    file.addEventListener('click',event=>event.stopPropagation());
+    const filename=text('span','未选择原曲');filename.className='olivia-cover-name';
+    const choose=button('选择原曲',()=>file.click());
+    const remove=button('移除',()=>{if(state.busy)return;audio.pause();state.material=null;lyrics.value='';file.value='';filename.textContent='未选择原曲';choose.textContent='选择原曲';player.hidden=true;syncCoverText();update()});
+    const sourceRow=document.createElement('div');sourceRow.className='olivia-cover-row';sourceRow.append(choose,filename,remove,file);
+    const audio=new Audio();audio.preload='metadata';let objectUrl=null;
+    const player=document.createElement('div');player.className='olivia-cover-row';player.hidden=true;
+    const play=button('▶',async()=>{if(audio.paused){waveCleanup?.start();try{await audio.play()}catch{status.textContent='原曲暂时无法播放，请重新选择文件。'}}else audio.pause()});play.className+=' olivia-cover-play';play.setAttribute('aria-label','播放原曲');
+    const wave=document.createElement('div');wave.className='olivia-cover-wave';
+    const seek=document.createElement('input');seek.type='range';seek.min=0;seek.max=0;seek.step='.1';seek.value=0;seek.setAttribute('aria-label','原曲播放进度');seek.oninput=()=>{audio.currentTime=Number(seek.value)};
+    const time=text('span','0:00 / 0:00');time.className='olivia-cover-time';
+    const clock=n=>Number.isFinite(n)?`${Math.floor(n/60)}:${String(Math.floor(n%60)).padStart(2,'0')}`:'0:00';
+    const playback=()=>{play.textContent=audio.paused?'▶':'Ⅱ';play.setAttribute('aria-label',audio.paused?'播放原曲':'暂停原曲');seek.max=Number.isFinite(audio.duration)?audio.duration:0;seek.value=audio.currentTime;time.textContent=`${clock(audio.currentTime)} / ${clock(audio.duration)}`};
+    ['play','pause','ended','loadedmetadata','timeupdate'].forEach(name=>audio.addEventListener(name,playback));
+    player.append(play,wave,time);const waveCleanup=window.__oliviaLetterWave?.(wave,seek,audio,'');
+    const lyrics=document.createElement('textarea');lyrics.maxLength=30000;lyrics.setAttribute('aria-label','翻唱歌词');lyrics.placeholder='选择原曲后自动识别，也可手动填写歌词。';
+    const transcribe=async()=>{
+      if(state.busy||!state.material)return;
+      state.busy=true;update();status.textContent='正在本地识别歌词，可以切回普通信件继续写信。';
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),660000);
+      try{
+        const response=await fetch(new URL('/toy/cover/lyrics',apiBase),{method:'POST',credentials:'omit',signal:controller.signal,
+          headers:{'Content-Type':'application/json',[CONFIRM_HEADER]:CONFIRM_VALUE},body:JSON.stringify({source_id:state.material.cover_source_id})});
+        const result=await response.json();if(!response.ok||result.code!==0)throw Error('asr');
+        lyrics.value=result.data.lyrics;state.material.cover_language=result.data.language||'unknown';status.textContent='歌词已自动识别，请核对并修正。';
+      }catch{status.textContent='未能识别歌词。原曲已保留，可手动填写或重新识别。'}
+      finally{clearTimeout(timer);state.busy=false;update()}
+    };
+    const recognize=button('重新识别',()=>void transcribe());
+    const labelRow=document.createElement('div');labelRow.className='olivia-cover-row';labelRow.append(text('span','歌词'),recognize);
+    const options=document.createElement('div');options.className='olivia-cover-options';
+    for(const [mode,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.output=mode;for(const node of options.children)node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(mode==='audio'));options.append(item)}
+    const update=()=>{choose.disabled=remove.disabled=lyrics.disabled=state.busy;remove.hidden=!state.material;recognize.disabled=state.busy||!state.material};
+    state.materialForSend=()=>{
+      if(state.busy)throw Error('原曲还在准备中，请稍候再寄出。');
+      if(!state.material)throw Error('请先选择原曲。');
+      if(!lyrics.value.trim()){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
+      return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output};
+    };
+    file.onchange=async()=>{
+      const selected=file.files[0];if(!selected)return;
+      if(selected.size>256*1024*1024){status.textContent='请选择不超过 256 MiB 的音频。';file.value='';return}
+      state.busy=true;update();status.textContent='正在上传并检查原曲…';
+      try{
+        const response=await fetch(new URL('/toy/cover/upload',apiBase),{method:'POST',credentials:'omit',headers:{'Content-Type':'application/octet-stream',[CONFIRM_HEADER]:CONFIRM_VALUE},body:selected});
+        const result=await response.json();if(!response.ok||result.code!==0)throw Error('upload');
+        audio.pause();if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=URL.createObjectURL(selected);audio.src=objectUrl;player.hidden=false;
+        state.material={cover_source_id:result.data.source_id,filename:selected.name,cover_language:'unknown'};lyrics.value='';filename.textContent=selected.name;choose.textContent='更换原曲';syncCoverText();
+        state.busy=false;
+        if(result.data.asr_available)await transcribe();else status.textContent='原曲已上传。请导入歌词识别组件，或手动填写歌词。';
+      }catch{status.textContent='上传失败，请检查音频文件后重新选择。之前的草稿和原曲仍保留。'}
+      finally{state.busy=false;file.value='';update()}
+    };
+    cover.append(status,sourceRow,player,labelRow,lyrics,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
+    const hint=text('p','切换保留内容 · 寄出当前展开的内容');hint.className='olivia-compose-hint';grid.after(hint);update();
+    const shell=owner.closest('[role="dialog"],.el-dialog')||owner.parentElement;
+    const clear=Array.from(shell.querySelectorAll('button')).find(node=>node.textContent.trim()==='清空');
+    clear?.addEventListener('click',event=>{
+      if(state.mode!=='cover')return;
+      event.preventDefault();event.stopImmediatePropagation();
+      if(state.busy){status.textContent='原曲仍在准备中，请完成后再清空。';return}
+      remove.click();status.textContent='翻唱内容已清空，普通信件草稿保留。';
+    },true);
+    // Release only this editor's media when the native composer is removed.
+    const dispose=new MutationObserver(()=>{if(grid.isConnected)return;audio.pause();waveCleanup?.();bodyResize.disconnect();if(objectUrl)URL.revokeObjectURL(objectUrl);dispose.disconnect()});dispose.observe(document.body,{childList:true,subtree:true});
   };
   window.__oliviaPrepareLetterRoute = async (config) => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
@@ -2387,7 +2512,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
     if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
     let preview;
-    const attachment=coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    const editor=coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    let attachment=null;
+    try{if(editor?.mode==='cover')attachment=editor.materialForSend()}
+    catch(error){error.config=config;throw error}
     try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
       ...(attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
     catch (error) {
@@ -2411,12 +2539,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const material = {...(body.material || {}), ...(attachment || {}), route_preview_token: preview.token};
     delete material.filename;
     if (preview.requires_cover_audio && !material.cover_source_id) {
-      const cover = await selectCoverAudio();
-      if (!cover) { const error = new Error("已取消发送"); error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error; }
-      Object.assign(material, cover);delete material.filename;
-      // Re-run preflight with the chosen output so the confirmation matches it.
-      if(coverComposer?.isConnected && coverComposer.value===body.content){composerCovers.set(coverComposer,cover);return window.__oliviaPrepareLetterRoute(config);}
-      throw Object.assign(new Error("请在写信窗口添加原曲后再寄出。"),{code:"ERR_CANCELED",__CANCEL__:true});
+      editor?.select('cover');
+      throw Object.assign(new Error("请在翻唱页选择原曲并确认歌词，再点击寄出。"),{config,code:"ERR_CANCELED",__CANCEL__:true});
     }
     delete material.route_allow_once;
     delete material.route_video_once;
@@ -2672,7 +2796,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (dialog.closest(`[${DIALOG_ATTR}]`)) {
           return false;
         }
-        const textareas = dialog.querySelectorAll("textarea");
+        const textareas = Array.from(dialog.querySelectorAll("textarea")).filter(node=>!node.closest("[data-olivia-cover-panel]"));
         const titles = Array.from(
           dialog.querySelectorAll('h1,h2,h3,[class*="title"]')
         ).filter((item) => item.textContent.trim() === LETTER_COMPOSER_TITLE);
@@ -2680,7 +2804,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           dialog.querySelectorAll("button")
         ).filter((item) => item.textContent.trim() === LETTER_SUBMIT_LABEL);
         return textareas.length === 1 && titles.length === 1 && submitButtons.length === 1;
-      }).map((dialog) => dialog.querySelector("textarea"))
+      }).map((dialog) => Array.from(dialog.querySelectorAll("textarea")).find(node=>!node.closest("[data-olivia-cover-panel]")))
     );
     if (matches.size !== 1) {
       return;
@@ -2697,6 +2821,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     scheduled = true;
     window.requestAnimationFrame(() => {
       scheduled = false;
+      installNativeWorldRoute();
       constrainLetterInputs();
       mountMainNavigation();
       mountLocalSongEntry();
@@ -2708,6 +2833,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const observer = new MutationObserver(schedule);
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener("hashchange", schedule);
+  window.addEventListener("olivia-native-router-ready", schedule);
   window.addEventListener("popstate", schedule);
   if (typeof window.setInterval === "function") {
     setupPoll = window.setInterval(maybeOpenInitialSetup, 1500);
@@ -2810,6 +2936,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
     draw();const cleanup=()=>{disposed=true;cancelAnimationFrame(frame);resize.disconnect();events.forEach(name=>audio.removeEventListener(name,draw));document.removeEventListener('visibilitychange',draw);source?.disconnect();analyser?.disconnect();if(context&&context.state!=='closed')context.close().catch(()=>{})};
     cleanup.start=start;cleanup.setStyle=value=>{kind=['bars','dots','ribbon','ripple'].includes(value)?value:'bars';draw()};return cleanup;
   }
+  window.__oliviaLetterWave=letterWave;
   const coverApi=document.currentScript?.dataset?.apiBase;
   class LetterAudio extends HTMLElement {
     static get observedAttributes(){return ['audio-url','audio-status','song-url','cover-id']}
