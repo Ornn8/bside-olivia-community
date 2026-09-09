@@ -37,6 +37,40 @@ import mem0_memory
 NOW = datetime(2026, 8, 23, 2, 0, tzinfo=timezone.utc)
 
 
+def test_exchange_waits_for_concurrent_memory_list_before_dedup(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    class ReadingMem0(FakeMem0):
+        def get_all(self, **kwargs):
+            if not entered.is_set():
+                entered.set()
+                release.wait(2)
+            return super().get_all(**kwargs)
+
+    backend = ReadingMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    probe = threading.Thread(target=adapter.status, daemon=True)
+    probe.start()
+    try:
+        assert entered.wait(1)
+        settle = adapter._provider_call.settle
+
+        def finish_read(**kwargs):
+            release.set()
+            return settle(**kwargs)
+
+        monkeypatch.setattr(adapter._provider_call, "settle", finish_read)
+        result = adapter.remember_exchange(
+            user_message="我在东京工作。", assistant_message="我记住了。",
+            occurred_at=NOW, source_id="reply:concurrent-read", user_id="local-user",
+        )
+        assert result.status is MemoryWriteStatus.WRITTEN
+        assert len([call for call in backend.calls if call[0] == "add"]) == 1
+    finally:
+        release.set()
+        probe.join(2)
+
+
 class FakeMem0:
     def __init__(self) -> None:
         self.rows: list[dict[str, object]] = []

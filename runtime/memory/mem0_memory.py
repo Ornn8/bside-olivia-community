@@ -1713,7 +1713,12 @@ class Mem0ConversationMemoryAdapter:
                 source_id,
                 error_code="MEM0_EXCHANGE_INVALID",
             )
-        if self._provider_call.inflight:
+        # A normal UI list/status read can overlap an import. Wait for that
+        # read within its existing bound before performing exact deduplication.
+        read_state, _ = self._provider_call.settle(
+            timeout_seconds=self.config.search_timeout_seconds,
+        )
+        if read_state == "timeout":
             self._last_error_code = "MEM0_SOURCE_DEDUP_UNAVAILABLE"
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,

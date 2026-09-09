@@ -225,6 +225,20 @@ def _local_import_snapshot():
 async def _run_local_import():
     global _local_import_result
     try:
+        deadline = asyncio.get_running_loop().time() + MEMORY_READY_REPLY_TIMEOUT_SECONDS
+        while getattr(conversation_memory_adapter.status(), "reason_code", None) == "MEM0_INITIALIZING":
+            _update_official_import_progress(
+                status="RUNNING", stage="memory_wait", total=0, processed=0,
+            )
+            if asyncio.get_running_loop().time() >= deadline:
+                _local_import_result = err(503, "OFFICIAL_HISTORY_MEMORY_WAIT_TIMEOUT", {
+                    "status": "UNAVAILABLE",
+                    "error_code": "OFFICIAL_HISTORY_MEMORY_WAIT_TIMEOUT",
+                    "retryable": True,
+                })
+                return
+            await asyncio.sleep(0.5)
+        _update_official_import_progress(status="RUNNING", stage="preflight", total=0, processed=0)
         _local_import_result = await route(
             "POST", "/toy/letter/legacy/local-import", {}, {},
             companion_confirmed=True, _local_import_worker=True,

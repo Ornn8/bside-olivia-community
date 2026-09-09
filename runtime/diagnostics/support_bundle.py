@@ -23,7 +23,7 @@ DIAGNOSTIC_BUNDLE_MEMBERS = (
 MAX_BUNDLE_BYTES = 1 << 20
 MAX_CHECKS = 32
 HISTORY_IMPORT_STAGES = frozenset({
-    "idle", "preflight", "listing", "memory", "relationship", "importing", "completed", "failed", "unknown",
+    "idle", "preflight", "memory_wait", "listing", "memory", "relationship", "importing", "completed", "failed", "unknown",
 })
 BREEZE_INSTALL_DIAGNOSTIC_CODES = frozenset({
     "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
