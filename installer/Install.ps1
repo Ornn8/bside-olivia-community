@@ -1874,6 +1874,9 @@ if ($installExitCode -ne 0) {
                 $record.code -cmatch '^[A-Z][A-Z0-9_]{3,95}$'
             ) {
                 $installCode = $record.code
+                if ($record.diagnostic.schema_version -eq 'olivia.setup-patch-error.v1') {
+                    Write-SetupDiagnosticResult -Diagnostic $record.diagnostic
+                }
             }
         } catch {
             # Ignore non-JSON child output; it must never reach the setup log.
