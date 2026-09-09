@@ -411,6 +411,7 @@ def _run_runtime_publish_fixture(
     tmp_path: Path,
     *,
     bootstrap_exit_code: int, bootstrap_replaces_managed_app: bool = False,
+    bootstrap_diagnostic: dict[str, object] | None = None,
     bootstrap_retires_update_state: bool = False,
     seed_update_state: bool = False,
     voice_reference: bytes | None = None,
@@ -475,7 +476,7 @@ def _run_runtime_publish_fixture(
     (payload_installer / "bootstrap_install.py").write_text(
         "import json, pathlib, shutil, sys\n"
         + bootstrap_actions
-        + f"print(json.dumps({{'status': '{'OK' if bootstrap_exit_code == 0 else 'ERROR'}', 'code': 'SYNTHETIC_PATCH_FAILED'}}))\n"
+        + f"print(json.dumps({{'status': '{'OK' if bootstrap_exit_code == 0 else 'ERROR'}', 'code': 'SYNTHETIC_PATCH_FAILED', 'diagnostic': {bootstrap_diagnostic!r}}}))\n"
         f"raise SystemExit({bootstrap_exit_code})\n",
         encoding="utf-8",
     )
@@ -719,6 +720,8 @@ def _run_runtime_publish_fixture(
         if video_runtime is not None:
             command.extend(("-VideoRuntimePath", str(runtime_archive)))
         command.extend(("-VideoOfflineRoot", str(video_offline_root)))
+    if bootstrap_diagnostic is not None:
+        command.extend(("-SetupResultPath", str(tmp_path / 'setup-result.txt')))
     result = subprocess.run(
         command,
         env=environment,
@@ -734,6 +737,15 @@ def _run_runtime_publish_fixture(
             if blocked.is_dir():
                 shutil.rmtree(blocked)
     return result, product
+
+
+def test_patch_failure_diagnostic_reaches_setup_result_file(tmp_path: Path) -> None:
+    diagnostic = {'schema_version': 'olivia.setup-patch-error.v1', 'phase': 'INSTALL_PATCH',
+                  'error_type': 'PermissionError', 'errno': 13, 'winerror': 5,
+                  'frames': [{'file': 'installer/full_patch.py', 'line': 1}]}
+    result, _ = _run_runtime_publish_fixture(tmp_path, bootstrap_exit_code=2, bootstrap_diagnostic=diagnostic)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert json.loads((tmp_path / 'setup-result.txt.diagnostic.json').read_text(encoding='utf-8')) == diagnostic
 
 
 def test_first_install_publishes_voice_reference_to_preserved_data_path(tmp_path: Path) -> None:
