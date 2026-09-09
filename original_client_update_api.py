@@ -57,6 +57,13 @@ def running_component_version(backend_root: Path | None = None) -> dict[str, str
     match = re.fullmatch(r"([0-9A-Za-z][0-9A-Za-z.+-]{0,63})-([0-9a-f]{64})", root.name)
     if match and root.parent.name == "local_backend" and root.parent.parent.name == "versions":
         return {"version": match[1], "manifest_sha256": match[2]}
+    try:
+        release = json.loads((root / "installer" / "release-version.json").read_text(encoding="utf-8"))
+        version = release.get("version") if isinstance(release, dict) else None
+        if isinstance(version, str) and _VERSION_RE.fullmatch(version):
+            return {"version": version, "manifest_sha256": None}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
     return {"version": None, "manifest_sha256": None}
 
 

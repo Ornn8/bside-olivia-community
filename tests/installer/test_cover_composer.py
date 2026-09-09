@@ -22,7 +22,7 @@ def test_inline_cover_composer_preserves_drafts_and_submission(tmp_path,asr,widt
         browser=next((str(p) for p in [Path('C:/Program Files/Google/Chrome/Application/chrome.exe'),Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')] if p.is_file()),None)
     if not browser:pytest.skip('Headless Chromium unavailable')
     page=tmp_path/'composer.html';page.write_text(composer_document(),encoding='utf-8')
-    result=subprocess.run([browser,'--headless','--disable-gpu','--no-first-run','--disable-extensions',f'--user-data-dir={tmp_path / "profile"}',f'--window-size={width},960','--virtual-time-budget=1500','--dump-dom',page.as_uri()+f'?verify&asr={asr}'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
+    result=subprocess.run([browser,'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions',f'--user-data-dir={tmp_path / "profile"}',f'--window-size={width},960','--virtual-time-budget=1500','--dump-dom',page.as_uri()+f'?verify&asr={asr}'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
     assert result.returncode==0,result.stderr[-1500:]
     assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
 
@@ -66,5 +66,5 @@ location.hash='#/collection';mountMainNavigation();check(links[0].getAttribute('
 document.getElementById('acceptance').textContent='PASS';
 })().catch(e=>document.getElementById('acceptance').textContent='FAIL:'+e.message);
 </script>''',encoding='utf-8')
-    result=subprocess.run([str(browser),'--headless','--disable-gpu','--no-first-run',f'--user-data-dir={tmp_path / "profile"}','--virtual-time-budget=1000','--dump-dom',page.as_uri()],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
+    result=subprocess.run([str(browser),'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update',f'--user-data-dir={tmp_path / "profile"}','--virtual-time-budget=1000','--dump-dom',page.as_uri()],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
     assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]

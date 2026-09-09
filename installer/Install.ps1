@@ -1518,11 +1518,12 @@ function Get-OfflineCoreAssets {
     ) {
         throw 'OFFLINE_CORE_MANIFEST_INVALID'
     }
+    $expectedWheelAssets = Get-ExpectedOfflineWheels
     if (
         $manifest.requirements_sha256 -isnot [string] -or
         $manifest.requirements_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $manifest.wheels -isnot [array] -or
-        $manifest.wheels.Count -ne 14
+        $manifest.wheels.Count -ne $expectedWheelAssets.Count
     ) {
         throw 'OFFLINE_CORE_MANIFEST_INVALID'
     }
@@ -1610,7 +1611,6 @@ function Get-OfflineCoreAssets {
             size_bytes = [int64]$manifest.video_offline.size_bytes
         }
     }
-    $expectedWheelAssets = Get-ExpectedOfflineWheels
     $wheelPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $manifestWheelHashes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach ($wheel in @($manifest.wheels)) {
@@ -1635,7 +1635,7 @@ function Get-OfflineCoreAssets {
             throw 'OFFLINE_CORE_REQUIREMENTS_INVALID'
         }
     }
-    if ($lockedWheelHashes.Count -ne 14 -or -not $lockedWheelHashes.SetEquals($manifestWheelHashes)) {
+    if ($lockedWheelHashes.Count -ne $expectedWheelAssets.Count -or -not $lockedWheelHashes.SetEquals($manifestWheelHashes)) {
         throw 'OFFLINE_CORE_WHEEL_SET_MISMATCH'
     }
     $actualWheels = @(Get-ChildItem -LiteralPath (Join-Path $Root 'wheelhouse') -Filter '*.whl' -File)

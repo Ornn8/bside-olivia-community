@@ -215,6 +215,9 @@ def build_component_package(
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
         _verify_source(source_root, source_commit)
+        (payload / "installer" / "release-version.json").write_text(
+            json.dumps({"version": version}) + "\n", encoding="utf-8"
+        )
         files = _payload_files(payload)
         manifest = {
             "schema_version": PACKAGE_SCHEMA,

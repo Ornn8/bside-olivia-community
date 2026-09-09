@@ -1114,6 +1114,8 @@ def test_private_build_publishes_hash_locked_video_runtime_sidecar(
 
     def compile_setup(command: list[str], **_: object) -> SimpleNamespace:
         observed.extend(command)
+        payload = Path(next(item.split("=", 1)[1] for item in command if item.startswith("/DPayloadRoot=")))
+        assert json.loads((payload / "installer" / "release-version.json").read_text(encoding="utf-8")) == {"version": "fixture"}
         (output / "Olivia-Setup-x64.exe").write_bytes(b"setup")
         return SimpleNamespace(returncode=0)
 
@@ -1983,6 +1985,8 @@ def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
     )
 
     assert "branches: [main]" in workflow
+    assert "installer/release-version.json" in workflow
+    assert "GITHUB_RUN_NUMBER" not in workflow
     assert "build_offline_core_assets.py" in workflow
     assert "build_windows_setup.py" in workflow
     assert "pip install --require-hashes" in workflow
