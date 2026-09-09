@@ -19,6 +19,28 @@ from memory_port import (
 NOW = datetime(2026, 8, 23, 4, 0, tzinfo=timezone.utc)
 
 
+def test_oversized_provenance_does_not_hide_later_fitting_memory():
+    class Retrieved(FakeConversationMemory):
+        def __init__(self, rows):
+            super().__init__()
+            self.rows = rows
+
+        def search_context(self, query, *, user_id, limit):
+            return self.rows[:limit]
+
+    short = ConversationMemoryRecord(memory_id='short', text='用户的猫叫栗子。',
+        user_id='scope', source_id='reply:short:1', score=0.8, occurred_at=NOW, created_at=NOW)
+    long = ConversationMemoryRecord(memory_id='long', text='用户喜欢园艺。',
+        user_id='scope', source_id='reply:' + 'a' * 150 + ':1', score=0.9, occurred_at=NOW, created_at=NOW)
+    def builder(rows):
+        return CompanionMemoryPromptBuilder(NullMemoryPort(), Retrieved(rows), user_id='scope')
+    budget = len(builder([short]).build('猫的名字', max_chars=2400).text) + 8
+    assert [r.memory_id for r in builder([short]).build('猫的名字', max_chars=budget).references] == ['short']
+    result = builder([long, short]).build('猫的名字', max_chars=budget)
+    assert [r.memory_id for r in result.references] == ['short']
+    assert len(result.text) <= budget and result.truncated
+
+
 class FakeArchiveMemory:
     enabled = True
 

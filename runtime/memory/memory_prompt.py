@@ -226,7 +226,9 @@ class MemoryPromptBuilder:
                 )
                 if remaining < 8:
                     truncated = True
-                    break
+                    # This record's citation/provenance may be larger than the
+                    # next one's. Keep looking for a complete fact that fits.
+                    continue
                 rendered, was_truncated = _safe_json_text(record.text, remaining)
                 # Current facts need their trailing conditions and negations.
                 if domain == CONVERSATION_MEMORY and was_truncated:

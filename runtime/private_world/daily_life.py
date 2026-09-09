@@ -14,6 +14,11 @@ from pathlib import Path
 import re
 import sqlite3
 from runtime.memory.private_world_relationship import validate_exchange_relationship
+from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evidence, MEDIA_EVIDENCE_MEANING
+
+# A reply can change several independent promises; autonomous day planning
+# retains its separate three-project limit.
+MAX_EXCHANGE_UPDATES = 12
 from runtime.private_world.life_rhythm import rhythm, LOCAL
 from statistics import median
 
@@ -21,7 +26,7 @@ from statistics import median
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _STATUSES = {"planned", "ongoing", "paused", "completed", "cancelled", "awaiting_user"}
 _EXCHANGE_UPDATE_FIELDS = frozenset({"id", "title", "detail", "status", "kind", "actor", "quote"})
-_VISIBLE = "(kind='daily' OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
+_VISIBLE = "(kind IN ('daily','media') OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
 FRESH_FOR = timedelta(hours=6)
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
@@ -268,7 +273,7 @@ class DailyLifeStore:
             quote = _current_source_quote(current_quote, reply_text)
             current = {"location": None, "activity": None, "note": quote,
                        "source_id": source_id, "occurred_at": stamp}
-        if not isinstance(updates, list) or len(updates) > 3:
+        if not isinstance(updates, list) or len(updates) > MAX_EXCHANGE_UPDATES:
             raise ValueError("DAILY_LIFE_UPDATES_INVALID")
         checked = []
         for update in updates:
@@ -307,6 +312,13 @@ class DailyLifeStore:
                 self._set_current(db, current)
         return True
 
+    def record_media_delivery(self, event: dict) -> bool:
+        event = validate_delivery(event)
+        with self._db() as db:
+            cursor = db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
+                (event['event_id'], _time(datetime.fromisoformat(event['occurred_at'])), 'media', _json({'delivery': event})))
+            return cursor.rowcount == 1
+
     def exchange_relationship(self, source_id: str, user_text: str, reply_text: str) -> dict | None:
         with self._db() as db:
             row = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='exchange'", (source_id,)).fetchone()
@@ -341,7 +353,10 @@ class DailyLifeStore:
     def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
         snapshot = self.snapshot(now)
-        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"]:
+        with self._db() as db:
+            media = [json.loads(row[0])['delivery'] for row in db.execute(
+                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
+        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media:
             return ""
         tokens = _query_tokens(query)
         related_tokens = _query_tokens(related_text)
@@ -391,6 +406,11 @@ class DailyLifeStore:
                              "commitment_evidence": "requires_user_statement",
                              "meaning": "她的等待不等于用户承诺；用户是否答应，以用户原文为准。"}
             candidate = {**value, "threads": [*value["threads"], disclosed]}
+            if len(_json(candidate)) <= max_chars:
+                value = candidate
+        for group in grouped_delivery_evidence(media):
+            candidate = {**value, 'media_deliveries': [*value.get('media_deliveries', []), group],
+                'media_meaning': MEDIA_EVIDENCE_MEANING}
             if len(_json(candidate)) <= max_chars:
                 value = candidate
         result = _json(value)

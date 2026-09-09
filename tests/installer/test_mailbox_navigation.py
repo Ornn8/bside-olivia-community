@@ -54,7 +54,7 @@ vm.runInNewContext(source,context);
  window.location.hash='#/studio';
  context.navigation.mountMainNavigation();
  assert.equal(body.children[0].children[0].href,'#/collection','music must retain a mailbox entry');
- assert.equal(body.children[0].children[1].getAttribute('aria-current'),'page');
+ assert.equal(body.children[0].children[2].getAttribute('aria-current'),'page');
  window.location.hash='#/login';
  context.navigation.mountMainNavigation();
  assert.equal(body.children.length,0,'do not mount navigation on login');

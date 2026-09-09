@@ -338,6 +338,12 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    # Reuse the client's own Vue renderer and router for additional main views.
+    router_anchor = 'const Db=async()=>'
+    if 'window.__oliviaNativeView=' not in source and router_anchor in source:
+        source = source.replace(router_anchor,
+            'window.__oliviaNativeView={router:Ea,h:mo};'
+            'window.dispatchEvent(new Event("olivia-native-router-ready"));' + router_anchor, 1)
     # 芙桃's local catalog integration: expose only the existing reactive catalog.
     source = source.replace(
         'return{songs:e,musicStyles:t,performanceModes:s,loaded:i,',

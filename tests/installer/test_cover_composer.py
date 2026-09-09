@@ -1,4 +1,5 @@
-import json
+from pathlib import Path
+import os
 import shutil
 import subprocess
 
@@ -7,47 +8,23 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-@pytest.mark.parametrize('asr', ['ready', 'missing', 'failed'])
-def test_cover_upload_recognizes_before_manual_confirmation(tmp_path, asr):
-    node = shutil.which('node')
-    if not node:
-        pytest.skip('Node unavailable')
-    source = BOOTSTRAP_JAVASCRIPT
-    source = source[source.index('  const composerCovers ='):source.index('  window.__oliviaPrepareLetterRoute')]
-    script = tmp_path / 'composer.cjs'
-    script.write_text('const asr=' + json.dumps(asr) + ';\n' + r'''
-const assert=require('node:assert/strict');
-const nodes=[],calls=[];
-const make=tag=>{const n={tag,style:{},value:'',files:[],children:[],append(...children){this.children.push(...children)},setAttribute(k,v){this[k]=v},addEventListener(){},showModal(){},close(){},remove(){},focus(){},pause(){}};nodes.push(n);return n};
-const document={createElement:make,activeElement:null,body:make('body')};
-const text=(tag,copy)=>{const n=make(tag);n.textContent=copy;return n};
-const button=(copy,fn)=>{const n=text('button',copy);n.onclick=fn;return n};
-const actions=()=>make('div');const apiBase='http://127.0.0.1:8899';
-const CONFIRM_HEADER='X-Olivia-Companion-Action',CONFIRM_VALUE='confirmed';
-URL.createObjectURL=()=> 'blob:mock';URL.revokeObjectURL=()=>{};
-const fetch=async(url,request)=>{calls.push({path:new URL(url).pathname,request});
- if(new URL(url).pathname==='/toy/cover/upload')return {ok:true,json:async()=>({code:0,data:{source_id:'a'.repeat(32),asr_available:asr!=='missing'}})};
- if(new URL(url).pathname==='/toy/cover/lyrics')return {ok:asr!=='failed',json:async()=>asr==='failed'?{code:400,data:{}}:{code:0,data:{lyrics:'识别结果',language:'zh'}}};
- throw Error('Unexpected generation or send');
-};
-''' + source + r'''
-(async()=>{
- const pending=selectCoverAudio();
- const file=nodes.find(n=>n.type==='file');file.files=[{name:'原曲.mp3',size:100}];await file.onchange();
- const lyrics=nodes.find(n=>n.tag==='textarea');
- assert.equal(lyrics.value,asr==='ready'?'识别结果':'');
- assert.equal(calls.filter(x=>x.path==='/toy/cover/lyrics').length,asr==='missing'?0:1);
- assert.equal(calls[0].request.headers[CONFIRM_HEADER],'confirmed');
- lyrics.value='人工修正歌词';
- const submit=nodes.find(n=>n.textContent==='使用这首原曲');assert.equal(submit.disabled,false);submit.onclick();
- const material=await pending;
- assert.equal(material.cover_source_id,'a'.repeat(32));assert.equal(material.cover_lyrics,'人工修正歌词');
- assert.equal(material.cover_output,'audio');assert.equal(material.filename,'原曲.mp3');
- assert(!calls.some(x=>x.path.includes('send')));
-})().catch(e=>{console.error(e);process.exitCode=1});
-''', encoding='utf-8')
-    result = subprocess.run([node, str(script)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+def composer_document():
+    source=BOOTSTRAP_JAVASCRIPT
+    composer=source[source.index('  const composerCovers ='):source.index('  const mountVideoReplySetting')]
+    wave=source[source.index('  function letterWave('):source.index('  const coverApi=')]
+    return (Path(__file__).parents[1]/'fixtures/cover_composer.html').read_text(encoding='utf-8').replace('/* COMPOSER */',composer).replace('/* WAVE */',wave)
+
+
+@pytest.mark.parametrize('asr,width', [('ready',1200),('missing',700),('failed',1200)])
+def test_inline_cover_composer_preserves_drafts_and_submission(tmp_path,asr,width):
+    browser=shutil.which('google-chrome') or shutil.which('chromium')
+    if os.name=='nt':
+        browser=next((str(p) for p in [Path('C:/Program Files/Google/Chrome/Application/chrome.exe'),Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')] if p.is_file()),None)
+    if not browser:pytest.skip('Headless Chromium unavailable')
+    page=tmp_path/'composer.html';page.write_text(composer_document(),encoding='utf-8')
+    result=subprocess.run([browser,'--headless','--disable-gpu','--no-first-run','--disable-extensions',f'--user-data-dir={tmp_path / "profile"}',f'--window-size={width},960','--virtual-time-budget=1500','--dump-dom',page.as_uri()+f'?verify&asr={asr}'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
+    assert result.returncode==0,result.stderr[-1500:]
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
 
 
 def test_audio_collection_reuses_existing_waveform_and_stays_outside_paper():
@@ -57,3 +34,37 @@ def test_audio_collection_reuses_existing_waveform_and_stays_outside_paper():
     assert "this.waveCleanup=letterWave(wave,seek,audio,url)" in source
     assert "'/toy/local-songs/from-letter'" in source
     assert "collect.remove();styles.remove();" in source
+
+
+def test_world_main_navigation_lifecycle(tmp_path):
+    browser=Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
+    if not browser.is_file():pytest.skip('Headless Chromium unavailable')
+    source=BOOTSTRAP_JAVASCRIPT
+    nav=source[source.index('  const WORLD_ROUTE ='):source.index('  const finishInitialSetup =')]
+    page=tmp_path/'world.html'
+    page.write_text('''<!doctype html><meta charset="utf-8"><pre id="acceptance"></pre><script>
+const text=(tag,copy)=>{const n=document.createElement(tag);n.textContent=copy;return n};
+const button=(copy,fn)=>{const n=text('button',copy);n.onclick=fn;return n};
+const STATUS_PATH='/status';let reads=0;
+const requestJson=async()=>{reads++;return {capabilities:{private_world:{state:'available'}}}};
+const renderPrivateWorldPanel=async(panel)=>panel.append(text('p','真实接口内容'));
+const openDialog=()=>{};
+let routeRecord,pushes=[];
+window.__oliviaNativeView={h:(tag)=>document.createElement(tag),router:{hasRoute:()=>!!routeRecord,addRoute:r=>routeRecord=r,push:path=>pushes.push(path)}};
+''' + nav + '''
+(async()=>{const check=(ok,msg)=>{if(!ok)throw Error(msg)};
+installNativeWorldRoute();check(routeRecord.path==='/world','independent native route');
+location.hash=WORLD_ROUTE;mountMainNavigation();
+const view=routeRecord.component,el=view.render();document.body.append(el);view.mounted.call({$el:el});await Promise.resolve();
+const links=[...document.querySelectorAll('nav a')];check(links.map(n=>n.textContent).join(',')==='信箱,世界,曲库','navigation order');
+const navigationLeft=document.querySelector('nav').style.left;
+check(links[1].getAttribute('aria-current')==='page','world selected');check(document.querySelector('main [data-world-main]'),'world main mounted');
+mountMainNavigation();check(reads===1,'does not reload on DOM changes');
+links[2].click();check(pushes[0]==='/studio','navigation uses native router');
+view.beforeUnmount.call({$el:el});el.remove();location.hash='#/studio';mountMainNavigation();check(!document.querySelector('[data-olivia-world-page]'),'world removed');check(links[2].getAttribute('aria-current')==='page','studio selected');check(document.querySelector('nav').style.left===navigationLeft,'navigation stays in place');
+location.hash='#/collection';mountMainNavigation();check(links[0].getAttribute('aria-current')==='page','mailbox selected');
+document.getElementById('acceptance').textContent='PASS';
+})().catch(e=>document.getElementById('acceptance').textContent='FAIL:'+e.message);
+</script>''',encoding='utf-8')
+    result=subprocess.run([str(browser),'--headless','--disable-gpu','--no-first-run',f'--user-data-dir={tmp_path / "profile"}','--virtual-time-budget=1000','--dump-dom',page.as_uri()],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
