@@ -72,6 +72,20 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     monkeypatch.setattr(local_server, "create_model_quality_ports", create_quality)
     monkeypatch.delenv("OLIVIA_LLM_RUNTIME_KEY_CONFIGURED", raising=False)
 
+    # A running backend still has its startup gateway/key environment. Saving
+    # new credentials must not let those values override the memory fallback.
+    monkeypatch.setenv("OLIVIA_LLM_BASE_URL", "https://old.example/v1")
+    monkeypatch.setenv("OLIVIA_LLM_MODEL", "old-model")
+    monkeypatch.setenv("OLIVIA_LLM_API_KEY_ENV", "MISSING_OLD_KEY")
+    monkeypatch.setenv("OLIVIA_MEMORY_LLM_API_KEY_ENV", "MISSING_OLD_KEY")
+    captured_memory = []
+    def capture_memory(_config, *, environ, **kwargs):
+        from runtime.memory.mem0_memory import load_mem0_config
+        config = load_mem0_config(environ=environ)
+        captured_memory.append(config.provider_config(environ)["llm"]["config"])
+        return object()
+    monkeypatch.setattr(local_server, "create_conversation_memory_adapter", capture_memory)
+
     local_server.apply_runtime_llm_config(
         ManagedLLMConfig(
             provider="openai_compatible",
@@ -81,6 +95,10 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
         ),
         "synthetic-runtime-key",
     )
+
+    assert captured_memory[0]["api_key"] == "synthetic-runtime-key"
+    assert captured_memory[0]["openai_base_url"] == "https://gateway.example/v1"
+    assert captured_memory[0]["model"] == "new-model"
 
     assert local_server.letters_adapter.gateway is marker
     assert local_server.emotion_triage.gateway is marker

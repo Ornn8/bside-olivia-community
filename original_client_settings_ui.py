@@ -1297,7 +1297,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     model.input.maxLength = 128;
     key.input.maxLength = 512;
     base.input.value = setup.llm.base_url || "https://api.deepseek.com";
-    model.input.value = setup.llm.model || "deepseek-v4-flash";
+    model.input.value = setup.llm.model || "deepseek-v4-pro";
     key.input.value = "";
     const inferProvider = () => {
       if (base.input.value === "https://api.deepseek.com") return "deepseek";
@@ -1308,10 +1308,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     provider.addEventListener("change", () => {
       if (provider.value === "deepseek") {
         base.input.value = "https://api.deepseek.com";
-        model.input.value = "deepseek-v4-flash";
+        model.input.value = "deepseek-v4-pro";
       } else if (provider.value === "opencode-go") {
         base.input.value = "https://opencode.ai/zen/go/v1";
-        model.input.value = "deepseek-v4-flash";
+        model.input.value = "deepseek-v4-pro";
       }
       invalidateTest();
     });

@@ -1017,7 +1017,10 @@ def _load_runtime_root_manifest(
         try:
             relative = _safe_relative(raw.get("path"))
             digest = _safe_sha(raw.get("sha256"))
-            candidate = _inside(root, root / relative)
+            # Startup only loads the already hash-checked manifest and declared
+            # environment paths. Resolve all payload files during full install
+            # verification, not on every launch for tens of thousands of files.
+            candidate = _inside(root, root / relative) if verify_files else root / relative
         except (OSError, VideoCapabilityError):
             raise VideoCapabilityError("VIDEO_RUNTIME_ROOT_INVALID") from None
         folded = relative.casefold()
