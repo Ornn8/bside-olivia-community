@@ -26,7 +26,7 @@ def test_waveform_tracks_audio_and_releases_resources(tmp_path):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node unavailable')
-    source = BOOTSTRAP_JAVASCRIPT.split('  function letterWave(', 1)[1].split('  const coverApi=', 1)[0]
+    source = BOOTSTRAP_JAVASCRIPT.split('  function letterWave(', 1)[1].split('  window.__oliviaLetterWave=', 1)[0]
     harness = r'''
 const assert=require('node:assert/strict');
 let lines=[],color='',closed=0,disconnected=0,frames=new Map(),next=0,level=128,reads=0;
