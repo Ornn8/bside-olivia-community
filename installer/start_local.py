@@ -135,7 +135,7 @@ def _load_llm_environment(
 
     values = environment.copy()
     base_url = "https://api.deepseek.com"
-    model = "deepseek-v4-flash"
+    model = "deepseek-v4-pro"
     provider = "openai_compatible"
     max_retries = 2
     requires_api_key = True

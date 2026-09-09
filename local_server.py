@@ -445,14 +445,14 @@ def apply_runtime_llm_config(
     else:
         _os.environ[key_env] = "1"
     memory_environment = dict(_os.environ)
-    if not managed.requires_api_key:
-        memory_environment.update({
-            "OLIVIA_MEMORY_LLM_BASE_URL": candidate.base_url,
-            "OLIVIA_MEMORY_LLM_MODEL": candidate.model,
-            "OLIVIA_MEMORY_LLM_API_KEY_ENV": key_env,
-        })
-    if api_key is not None:
-        memory_environment[key_env] = api_key
+    # An explicit settings save replaces the shared provider for both replies
+    # and memory. Startup environment values must not shadow this new binding.
+    memory_environment.update({
+        "OLIVIA_MEMORY_LLM_BASE_URL": candidate.base_url,
+        "OLIVIA_MEMORY_LLM_MODEL": candidate.model,
+        "OLIVIA_MEMORY_LLM_API_KEY_ENV": key_env,
+        key_env: api_key or "",
+    })
     replacement = create_conversation_memory_adapter(
         _memory_config,
         environ=memory_environment,

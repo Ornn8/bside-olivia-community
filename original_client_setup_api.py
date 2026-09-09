@@ -261,7 +261,7 @@ class LLMSetupService:
     def _config(self) -> ManagedLLMConfig:
         fallback = _managed_config(
             "https://api.deepseek.com",
-            "deepseek-v4-flash",
+            "deepseek-v4-pro",
         )
         try:
             payload = json.loads(self._config_path.read_text(encoding="utf-8"))

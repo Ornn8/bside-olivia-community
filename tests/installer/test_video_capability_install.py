@@ -3444,6 +3444,13 @@ def test_runtime_manifest_duplicate_check_is_linear(
     monkeypatch.setattr(video_capability_install, "_sha256_file", lambda _path: (1, digest))
     monkeypatch.setattr(video_capability_install.json, "loads", lambda _raw: payload)
 
+    resolved_paths = []
+    real_inside = video_capability_install._inside
+    def counted_inside(root, candidate):
+        resolved_paths.append(candidate)
+        return real_inside(root, candidate)
+    monkeypatch.setattr(video_capability_install, "_inside", counted_inside)
+
     environment = video_capability_install._load_runtime_root_manifest(
         runtime_root,
         digest,
@@ -3452,6 +3459,7 @@ def test_runtime_manifest_duplicate_check_is_linear(
 
     assert environment["OLIVIA_LATENTSYNC_PYTHON"] == str(python)
     assert CountingPath.calls <= len(paths) * 4
+    assert not any("item-" in str(path) for path in resolved_paths)
 
 
 def test_portable_python_probe_rejects_a_runtime_outside_its_base_prefix(
