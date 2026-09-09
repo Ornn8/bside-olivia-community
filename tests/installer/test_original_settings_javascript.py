@@ -413,11 +413,14 @@ def test_components_are_offline_scoped_and_shared_between_setup_and_settings():
     source = BOOTSTRAP_JAVASCRIPT
     assert "renderCapabilityPanel(panels.capability)" in source
     assert "renderMediaComponents(panel, payload)" in source
-    assert 'action:"import_component",component_id:item.id' in source
-    assert 'button("导入旧版离线整包"' in source
-    assert 'button("卸载旧版视频组件"' in source
-    assert 'uninstall.disabled = busy' in source
-    assert 'install.disabled=busy' in source
+    assert 'action:"import_components",component_ids:group.items.map(x=>x.id)' in source
+    assert 'button("导入旧版离线整包"' not in source
+    assert 'button("卸载旧版视频组件"' not in source
+    assert 'button("选择离线包（可多选 ZIP）"' in source
+    assert '对应文件：Olivia-${item.id}-日期.zip' in source
+    assert 'item.description' in source
+    assert '查看组件状态' not in source
+    assert 'batch.disabled=busy' in source
     assert 'const onlineInstallAvailable' not in source
     assert '仅官方源' not in source
     assert '下载并启用' not in source
