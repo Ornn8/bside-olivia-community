@@ -202,7 +202,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v24"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v26"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -918,9 +918,9 @@ vm.runInNewContext(source, context);
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
       await open.click();
       await flush();
-      await findButton("已开启").click();
+      await findButton("保存").click();
       await flush();
-      await findButton("已关闭").click();
+      await findButton("保存").click();
       await flush();
       if (!body.querySelectorAll("p").some((item) => item.textContent.includes("保存失败"))) throw new Error("route mutation error was hidden");
           await clickConfirmed(findButton("暂停长期记忆"));

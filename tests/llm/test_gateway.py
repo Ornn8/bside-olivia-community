@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from llm_gateway import (
     GatewayConfig,
+    GatewayError,
     GatewayRequestScope,
     InvalidGatewayInput,
     ManagedLLMConfig,
@@ -51,6 +52,34 @@ ROOT_MESSAGES = (
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status,code", [(402, ""), (429, "insufficient_quota"), (403, "insufficient_balance")])
+def test_provider_quota_is_sanitized_and_never_retried(monkeypatch, stream, status, code):
+    async def exercise():
+        calls = []
+
+        async def handler(request):
+            calls.append(1)
+            return web.json_response({"error": {"code": code, "message": "private billing detail"}}, status=status)
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), max_retries=2))
+            with pytest.raises(GatewayError) as caught:
+                if stream:
+                    _ = [delta async for delta in adapter.stream(ROOT_MESSAGES)]
+                else:
+                    await adapter.complete(ROOT_MESSAGES)
+        assert caught.value.code == "PROVIDER_QUOTA_EXHAUSTED"
+        assert caught.value.retryable is False
+        assert "private billing detail" not in str(caught.value)
+        assert len(calls) == 1
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
 
 
 def make_config(base_url: str, **overrides) -> GatewayConfig:

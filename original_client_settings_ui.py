@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v24"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v26"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -806,19 +806,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           panel.replaceChildren(heading, summary, resultState);
           return;
         }
-        const install = button("安装 Embedding", async () => {
-          if (!await confirmAction("确认下载本地 Embedding 模型？下载仅在此次确认后开始。")) {
-            return;
-          }
+        const install = button("导入记忆离线包", async () => {
           setButtonsBusy([install], true);
           resultState.textContent = "正在安装 Embedding……";
           try {
             const payload = await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
-              action: "install",
-              source: "auto",
+              action: "import_offline",
             });
-            if (["queued", "downloading", "verifying", "ready"].includes(payload.state)) {
-              resultState.textContent = "已转入本地能力下载；可在“本地能力与下载”查看进度。";
+            if (payload.status === "CANCELLED") {
+              resultState.textContent = "已取消导入。";
+            } else if (["APPLIED", "NOOP"].includes(payload.status) || ["queued", "downloading", "verifying", "ready"].includes(payload.state)) {
+              resultState.textContent = "已提交离线导入，可在“本地组件”查看进度。";
             } else {
               resultState.textContent = "Embedding 安装失败，请重试。";
             }
@@ -1448,7 +1446,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "长期记忆", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "可选安装 Mem0 与 BGE 中文 Embedding；约 317 MiB 下载，无需 GPU。",
+      "导入长期记忆离线包，包含 Mem0 与 BGE，无需 GPU。",
       "text-text-secondary text-body-m font-regular"
     );
     const metadata = stack();
@@ -1477,45 +1475,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refresh = async () => {
       await renderMem0CapabilityPanel(panel);
     };
-    const onlineInstallAvailable = !offlineImport && (
-      ["missing", "repair"].includes(stateValue) || stateValue === "paused"
-    );
-    if (onlineInstallAvailable) {
-      const source = document.createElement("select");
-      source.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-      for (const [value, label, disabled] of [
-        ["auto", "自动选择（国内源优先）", false],
-        ["official", "仅官方源", false],
-      ]) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        option.disabled = disabled;
-        source.append(option);
-      }
-      if (
-        stateValue === "paused"
-        && ["auto", "official"].includes(payload.source)
-      ) {
-        source.value = payload.source;
-      }
-      const install = button(stateValue === "paused" ? "继续下载" : "下载并启用", async () => {
-        if (!await confirmAction("确认下载长期记忆能力包？下载将在后台继续。")) return;
-        setButtonsBusy([install], true);
-        result.textContent = "正在启动后台下载……";
-        try {
-          await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
-            action: stateValue === "paused" ? "resume" : "install",
-            source: source.value,
-          });
-          await refresh();
-        } catch (_error) {
-          result.textContent = "下载未能启动，请稍后重试。";
-          setButtonsBusy([install], false);
-        }
-      });
-      controls.append(source, install);
-    } else if (["queued", "downloading", "verifying"].includes(stateValue)) {
+    if (["queued", "downloading", "verifying"].includes(stateValue)) {
       const pause = button(offlineImport ? "暂停导入" : "暂停下载", async () => {
         try {
           await requestCapability(MEM0_CAPABILITY_ACTION_PATH, { action: "pause" });
@@ -1537,7 +1497,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       const removeAll = button("卸载并删除模型", async () => {
         if (!await confirmAction("确认卸载长期记忆并删除已下载模型？个人记忆仍会保留。")) return;
-        if (!await confirmAction("模型删除后重新启用需要再次下载，仍要继续吗？")) return;
+        if (!await confirmAction("模型删除后重新启用需要再次导入离线包，仍要继续吗？")) return;
         await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
           action: "uninstall",
           remove_model: true,
@@ -1547,7 +1507,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       controls.append(uninstall, removeAll);
     }
     if (["missing", "repair", "paused"].includes(stateValue)) {
-      const importOffline = button("断网恢复：导入离线包（ZIP）", async () => {
+      const importOffline = button("导入记忆离线包（ZIP）", async () => {
         setButtonsBusy([importOffline], true);
         result.textContent = "请选择 Olivia 记忆离线包（ZIP），无需解压。";
         try {
@@ -1593,6 +1553,79 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return { state, downloadable, runtimeRequired };
   };
 
+  const renderMediaComponents = (panel, payload) => {
+    const group = payload.components;
+    panel.replaceChildren(text("h3", "离线组件", "text-text-title text-title-m"),
+      text("p", "组件只提供能力，回信形式仍由路由决定。安装完成后请重启程序。", "text-text-secondary text-body-m font-regular"));
+    const list = document.createElement("div");
+    const details = document.createElement("details");
+    const heading = document.createElement("summary"); heading.textContent="查看组件状态"; heading.className="text-text-body text-label-l"; heading.style.cursor="pointer";
+    details.append(heading,list);
+    const legacyProgress = payload.runtime_import || {};
+    const progress = ["queued", "extracting", "checking", "testing"].includes(legacyProgress.state) ? legacyProgress : group.progress || {};
+    const busy = ["queued", "extracting", "checking", "testing"].includes(progress.state);
+    const result = text("p", progress.state === "ready" ? "组件安装完成，请重启程序启用。" : progress.state === "failed" ? "组件安装未完成，原有组件已保留，请重试导入。" : "", "text-text-secondary text-body-m font-regular");
+    result.setAttribute("role", "status");
+    if (progress.state === "failed" && Array.isArray(progress.failed_components)) {
+      const failedNames = group.items.filter(x=>progress.failed_components.includes(x.id)).map(x=>x.label);
+      result.textContent = `未完成：${failedNames.join("、")}。其余组件已处理，原有组件保留；可以只重试失败的包。`;
+    }
+    if (busy) result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[progress.state]}：${formatBytes(progress.checked_bytes || 0)} / ${formatBytes(progress.total_bytes || 0)}`;
+    const batch = button("导入离线组件", async () => {
+      batch.disabled = true;
+      try {
+        const response=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_components",component_ids:group.items.map(x=>x.id)});
+        if(response.status==="CANCELLED") {result.textContent="已取消。";return;}
+        if(response.status==="REJECTED") {result.textContent="已有导入任务，请等待完成。";return;}
+        await renderVideoCapabilityPanel(panel);
+      } catch (_) {result.textContent="导入未能启动，请检查选择的组件 ZIP。";}
+      finally {batch.disabled=busy;}
+    }); batch.disabled=busy;
+    panel.append(batch,text("p","可一次选择多个 ZIP。只导入需要的组件，已有组件无需重复安装。","text-text-secondary text-body-m font-regular"),result,details);
+    group.items.forEach(item=>{
+      const row=document.createElement("div");row.className="flex items-center justify-between py-3";row.style.cssText="gap:16px;flex-wrap:wrap;border-bottom:1px solid #343638";
+      const copy=document.createElement("div");copy.style.cssText="flex:1;min-width:180px";
+      copy.append(text("div",item.label,"text-text-body text-label-l"),text("div",item.state==="installed"?"已安装，可复用":"未安装","text-text-secondary text-caption-m font-regular"));
+      const install=button("导入",async()=>{
+        install.disabled=true;
+        try {const r=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_component",component_id:item.id});if(r.status!=="CANCELLED")await renderVideoCapabilityPanel(panel);}
+        catch (_) {result.textContent="该组件未能导入，请检查 ZIP。";}
+        finally {install.disabled=busy;}
+      });install.disabled=busy;row.append(copy,install);list.append(row);
+    });
+    panel.append(text("p", "所有组件均通过离线 ZIP 导入，无需解压。歌词识别为可选；长期记忆仍在上方独立管理。", "text-text-secondary text-caption-m font-regular"));
+    const legacy = button("导入旧版离线整包", async () => {
+      legacy.disabled = true;
+      try {
+        const response = await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {action:"import_offline"}, 30 * 60 * 1000);
+        result.textContent = response.status === "CANCELLED" ? "已取消。" : "已提交旧版离线包，请等待校验完成后重启程序。";
+        if (response.status !== "CANCELLED") await renderVideoCapabilityPanel(panel);
+      } catch (_) { result.textContent = "旧版离线包导入失败，请保留诊断包。"; }
+      finally { legacy.disabled = busy; }
+    }); legacy.disabled = busy; panel.append(legacy);
+    if (payload.can_uninstall) {
+      const uninstall = button("卸载旧版视频组件", async () => {
+        if (!await confirmAction("确认卸载旧版视频组件？新导入的独立组件和个人信件会保留。")) return;
+        try { await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {action:"uninstall"}); await renderVideoCapabilityPanel(panel); }
+        catch (_) { result.textContent = "卸载未完成，请重试。"; }
+      }); uninstall.disabled = busy; panel.append(uninstall);
+    }
+    if (busy) {
+      const update = async () => {
+        if (!panel.isConnected) return;
+        try {
+          const next = await requestJson(VIDEO_CAPABILITY_PATH);
+          const oldProgress = next.runtime_import || {};
+          const current = ["queued", "extracting", "checking", "testing"].includes(oldProgress.state) ? oldProgress : next.components.progress;
+          if (!["queued", "extracting", "checking", "testing"].includes(current.state)) { await renderVideoCapabilityPanel(panel); return; }
+          result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[current.state]}：${formatBytes(current.checked_bytes || 0)} / ${formatBytes(current.total_bytes || 0)}`;
+        } catch (_) { result.textContent = "暂时无法读取进度，正在重新连接。"; }
+        panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
+      };
+      panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
+    }
+  };
+
   const renderVideoCapabilityPanel = async (panel) => {
     const renderGeneration = (Number(panel.videoCapabilityGeneration) || 0) + 1;
     panel.videoCapabilityGeneration = renderGeneration;
@@ -1617,339 +1650,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       payload = null;
     }
     if (panel.videoCapabilityGeneration !== renderGeneration) return;
-    const known = new Map(
-      payload && Array.isArray(payload.bundles)
-        ? payload.bundles
-          .filter((item) => item && typeof item.id === "string")
-          .map((item) => [item.id, item])
-        : []
-    );
-    const bundles = VIDEO_CAPABILITY_BUNDLES.map((id) => known.get(id) || {
-      id,
-      state: "missing",
-      downloaded_bytes: 0,
-      total_bytes: 0,
-    });
-    const { state, downloadable } = videoCapabilityViewState(bundles);
-    if (payload && payload.status === "READY") void refreshVideoReplySetting();
-    const canUninstall = payload && payload.can_uninstall === true;
-    const verifyingOnly = bundles.some((item) => item.state === "verifying")
-      && !bundles.some((item) => ["queued", "downloading"].includes(item.state));
-    const downloadedBytes = bundles.reduce((total, item) => total + (Number(item.downloaded_bytes) || 0), 0);
-    const totalBytes = bundles.reduce((total, item) => total + (Number(item.total_bytes) || 0), 0);
-    const runtimeProgress = payload && payload.runtime_import && typeof payload.runtime_import === "object"
-      ? payload.runtime_import
-      : { state: "idle", checked_bytes: 0, total_bytes: 0 };
-    const runtimePreparing = ["queued", "extracting", "checking", "testing"].includes(runtimeProgress.state);
-    const runtimeReasonLabels = {
-      VIDEO_RUNTIME_ARCHIVE_REQUIRED: "当前安装中缺少视频运行环境包",
-      VIDEO_RUNTIME_ARCHIVE_INVALID: "所选 ZIP 不是完整的视频运行环境包",
-      VIDEO_RUNTIME_ROOT_INVALID: "运行环境清单或文件校验失败",
-      VIDEO_RUNTIME_NOT_PORTABLE: "运行环境不能在这台电脑上独立启动",
-      VIDEO_RUNTIME_TTS_CONFIG_UNAVAILABLE: "林离语音运行环境未准备完整",
-      VIDEO_RUNTIME_PROBE_FAILED: "运行环境自检未通过",
-      VIDEO_RUNTIME_ENVIRONMENT_WRITE_FAILED: "运行环境配置保存失败",
-      VIDEO_RUNTIME_ENVIRONMENT_ACTIVATION_FAILED: "运行环境已安装，但本次启用失败",
-      VIDEO_RUNTIME_IMPORT_FAILED: "视频运行环境安装失败",
-    };
-    const hardwareReasonLabels = {
-      BREEZE_TTS_NVIDIA_GPU_REQUIRED: "Breeze TTS 2 需要 NVIDIA 显卡；CPU 和其他显卡尚未验证",
-      BREEZE_TTS_10GB_VRAM_REQUIRED: "Breeze TTS 2 实测要求至少 10GB NVIDIA 显存；8GB 尚未验证",
-      BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED: "无法确认 NVIDIA 显卡与显存，暂不允许下载或启用",
-    };
-    const hardware = payload && payload.hardware && typeof payload.hardware === "object"
-      ? payload.hardware
-      : null;
-    const hardwareMessage = hardware && hardware.status !== "READY"
-      ? hardwareReasonLabels[hardware.reason_code] || "Breeze TTS 2 的显卡条件尚未满足"
-      : hardware && Number(hardware.detected_vram_mib) > 0
-      ? `Breeze TTS 2 显卡检查通过：NVIDIA ${Math.round(Number(hardware.detected_vram_mib) / 1024)}GB`
-      : "";
-    const runtimeStepMessage = (progress) => {
-      const checked = Math.max(0, Number(progress.checked_bytes) || 0);
-      const total = Math.max(0, Number(progress.total_bytes) || 0);
-      const amount = total > 0 ? ` ${formatBytes(checked)} / ${formatBytes(total)}` : "";
-      if (progress.state === "queued") return "视频运行环境等待安装。";
-      if (progress.state === "extracting") return `正在解压视频运行环境${amount}。`;
-      if (progress.state === "checking") return `正在检查视频运行环境${amount}。`;
-      if (progress.state === "testing") return "正在测试视频运行环境。";
-      if (progress.state === "ready") return "视频运行环境已安装并启用。";
-      if (["required", "failed"].includes(progress.state)) {
-        return runtimeReasonLabels[progress.reason_code] || "视频运行环境尚未安装完成。";
-      }
-      return "";
-    };
-    let videoSourceMode = "auto";
-    const heading = text("h3", "视频回信一键安装", "text-text-title text-title-m");
-    const summary = text(
-      "p",
-      "视频回信固定包含说话与音乐。点击一次自动准备语音、音乐、口型、媒体工具和固定场景所需组件；可用组件优先使用国内源，没有国内镜像时使用官方源。",
-      "text-text-secondary text-body-m font-regular"
-    );
-    const item = card();
-    const stateLabel = state === "ready"
-      ? "已就绪"
-      : state === "paused"
-      ? "已暂停"
-      : state === "failed"
-      ? "安装失败，可重试"
-      : state === "downloading"
-      ? verifyingOnly ? "正在校验安装文件" : bundles.some((item) => item.source === "offline-package") ? "正在导入离线包并安装" : "正在下载并安装"
-      : ["license_review_required", "prerequisites_required"].includes(state)
-      ? runtimePreparing
-        ? "组件已下载，正在准备运行环境"
-        : "组件已下载，还需准备视频运行环境"
-      : "未安装";
-    const result = text("div", "", "text-text-secondary text-caption-m font-regular");
-    const sourceControls = actions();
-    const domesticSource = button("自动选择（可用国内源优先）", () => {
-      videoSourceMode = "auto";
-      result.textContent = "可用组件优先使用国内源；没有国内镜像的组件会直接使用官方源。";
-    });
-    const officialSource = button("仅官方源", () => {
-      videoSourceMode = "official";
-      result.textContent = "下载时仅使用官方源。";
-    });
-    sourceControls.append(domesticSource, officialSource);
-    const progressText = text(
-      "div",
-      totalBytes
-        ? `已处理 ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`
-        : "大小将在安装时按固定清单校验",
-      "text-text-secondary text-caption-m font-regular"
-    );
-    item.append(
-      text("div", "视频回信（说话 + 音乐）", "text-text-body text-label-l"),
-      text("div", stateLabel, "text-text-secondary text-body-m font-regular"),
-      text("div", "语音、音乐、口型和媒体工具会自动准备，无需逐项选择。", "text-text-secondary text-caption-m font-regular"),
-      progressText
-    );
-    if (hardwareMessage) {
-      item.append(text("div", hardwareMessage, "text-text-secondary text-caption-m font-regular"));
+    if (payload && payload.components && Array.isArray(payload.components.items)) {
+      renderMediaComponents(panel, payload);
+      return;
     }
-    const failureLabels = {http: "下载服务器返回错误", network: "网络连接失败", timeout: "连接或操作超时", disk_full: "磁盘空间不足", permission: "文件访问权限不足", path_too_long: "安装路径过长", file_missing: "所需文件不存在", file_locked: "文件被其他程序占用", io: "文件读写失败", archive: "压缩包无法读取", validation: "文件校验失败", unexpected: "安装步骤异常"};
-    const stageLabels = {prepare: "准备安装", download: "下载", offline_copy: "读取离线包", verify_file: "校验文件", stage_copy: "复制文件", extract: "解压", verify_tree: "校验安装目录", dependencies: "安装运行依赖", activate: "启用组件", cleanup: "整理缓存"};
-    const failedComponentLabels = {tts_runtime: "语音运行目录", tts_model: "语音模型", tts_license: "语音模型许可文件", tts_python: "语音 Python 环境", voice_reference: "音色参考文件", tts_quality_model: "语音校验模型", tts_config: "语音配置文件"};
-    for (const bundle of bundles) {
-      const detail = bundle.failure_details;
-      if (bundle.state !== "failed" || !detail || !failureLabels[detail.kind]) continue;
-      const component = bundle.id === "ordinary_video" ? "说话视频" : "音乐视频";
-      const http = Number.isInteger(detail.http_status) ? `（HTTP ${detail.http_status}）` : "";
-      const failedComponent = failedComponentLabels[detail.component];
-      item.append(text("div", `${component}：${stageLabels[detail.stage] || "安装"}${failedComponent ? "（" + failedComponent + "）" : ""} — ${failureLabels[detail.kind]}${http}。请保留诊断包。`, "text-text-secondary text-caption-m font-regular"));
-    }
-    item.append(sourceControls);
-    const runtimeStatusText = text(
-      "div",
-      runtimeStepMessage(runtimeProgress),
-      "text-text-secondary text-caption-m font-regular"
-    );
-    const importOffline = button("断网恢复：导入离线包（ZIP）", async () => {
-      setButtonsBusy([importOffline], true);
-      result.textContent = "请选择 Olivia 完整离线包（ZIP），无需解压。";
-      let importFinished = false;
-      const updateImportProgress = async () => {
-        try {
-          const statusPayload = await requestJson(VIDEO_CAPABILITY_PATH);
-          if (importFinished) return;
-          const progress = statusPayload && statusPayload.runtime_import;
-          if (progress && typeof progress === "object") {
-            result.textContent = runtimeStepMessage(progress) || "正在导入离线包。";
-          }
-        } catch (_error) {
-          // The active import request remains authoritative; retry on the next tick.
-        }
-      };
-      const progressTimer = window.setInterval(updateImportProgress, 1000);
-      try {
-        const response = await requestCapability(
-          VIDEO_CAPABILITY_ACTION_PATH,
-          { action: "import_offline" },
-          30 * 60 * 1000
-        );
-        if (response.status === "CANCELLED") {
-          result.textContent = "已取消导入。";
-          return;
-        }
-        importFinished = true;
-        await renderVideoCapabilityPanel(panel);
-      } catch (_error) {
-        importFinished = true;
-        const failureMessage = _error && typeof _error.code === "string"
-          && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)
-          ? `离线包导入未完成：${_error.code}。请保留诊断包。`
-          : "离线包导入未完成，请保留诊断包以检查原因。";
-        try {
-          const failed = await requestJson(VIDEO_CAPABILITY_PATH);
-          const progress = failed && failed.runtime_import;
-          result.textContent = progress && typeof progress === "object"
-            ? runtimeStepMessage(progress) || failureMessage
-            : failureMessage;
-        } catch (_statusError) {
-          result.textContent = failureMessage;
-        }
-      } finally {
-        importFinished = true;
-        window.clearInterval(progressTimer);
-        setButtonsBusy([importOffline], false);
-      }
-    });
-    importOffline.disabled = state === "downloading" || state === "ready" || runtimePreparing;
-    item.append(
-      text(
-        "div",
-        state === "downloading"
-          ? "请先暂停当前下载，再导入离线包。"
-          : "正常下载会自动安装并启用；仅断网恢复时选择 Olivia 离线包，无需解压。",
-        "text-text-secondary text-caption-m font-regular"
-      ),
-      runtimeStatusText,
-      importOffline
-    );
-    if (state === "downloading") {
-      const pause = button("暂停下载", async () => {
-        try {
-          await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, { action: "pause" });
-          await renderVideoCapabilityPanel(panel);
-        } catch (_error) {
-          result.textContent = "暂停失败，请稍后重试。";
-        }
-      });
-      item.append(pause);
-    } else if (downloadable) {
-      const actionLabel = state === "paused" ? "继续下载" : state === "failed" ? "失败重试" : "一键下载并安装";
-      const install = button(actionLabel, async () => {
-        if (!await confirmAction("确认下载并安装视频回信？将自动准备说话与音乐所需的全部组件；下载即表示你已阅读并同意各上游许可证与使用条款。")) return;
-        setButtonsBusy([install], true);
-        result.textContent = "正在启动后台下载…";
-        try {
-          for (const dependency of bundles) {
-            if (["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(dependency.state)) continue;
-            const action = dependency.state === "paused" ? "resume" : dependency.state === "failed" ? "retry" : "install";
-            await requestCapability(VIDEO_CAPABILITY_ACTION_PATH, {
-              action,
-              bundle_id: dependency.id,
-              source: videoSourceMode,
-              accept_licenses: dependency.id === "music_video",
-            });
-          }
-          await renderVideoCapabilityPanel(panel);
-        } catch (_error) {
-          result.textContent = "下载未能启动，请检查网络后重试。";
-          setButtonsBusy([install], false);
-        }
-      });
-      item.append(install);
-    }
-    if (canUninstall) {
-      const uninstallBusy = state === "downloading" || runtimePreparing;
-      const uninstall = button("卸载视频模型与运行依赖", async () => {
-        if (uninstallBusy) return;
-        if (!await confirmAction("确认卸载视频模型与运行依赖？已生成的视频、信件和记忆会保留。")) return;
-        if (!await confirmAction("重新启用视频回信需要再次下载或导入约 36.8 GiB，仍要继续吗？")) return;
-        setButtonsBusy([uninstall], true);
-        result.textContent = "正在卸载视频组件……";
-        try {
-          const response = await requestCapability(
-            VIDEO_CAPABILITY_ACTION_PATH,
-            { action: "uninstall" },
-            2 * 60 * 1000
-          );
-          if (response.status === "REJECTED") {
-            result.textContent = "视频组件正在使用，请等待当前任务结束后重试。";
-            setButtonsBusy([uninstall], false);
-            return;
-          }
-          await renderVideoCapabilityPanel(panel);
-        } catch (_error) {
-          result.textContent = "视频组件卸载失败，请关闭正在运行的视频任务后重试。";
-          setButtonsBusy([uninstall], false);
-        }
-      });
-      setButtonsBusy([uninstall], uninstallBusy);
-      item.append(uninstall);
-      if (uninstallBusy) {
-        item.append(text("p", runtimePreparing || verifyingOnly
-          ? "正在安装或校验视频组件，请等待当前步骤结束后再卸载。"
-          : "请先暂停下载，等待当前安装步骤结束后再卸载。",
-          "text-text-secondary text-caption-m font-regular"));
-      }
-    }
-    item.append(result);
-    const list = stack();
-    list.append(item);
-    const refresh = actions();
-    const refreshButton = button("重新检测", async () => {
-      refreshButton.textContent = "检测中…";
-      setButtonsBusy([refreshButton], true);
-      await renderVideoCapabilityPanel(panel);
-      panel.append(text(
-        "p",
-        "重新检测完成，上方已显示最新结果。",
-        "text-text-secondary text-caption-m font-regular"
-      ));
-    });
-    refresh.append(refreshButton);
-    panel.replaceChildren(heading, summary, list, refresh);
-    if (state === "downloading" || runtimePreparing) {
-      const progressStartedAt = Date.now();
-      const updateProgress = async () => {
-        let nextPayload = null;
-        try {
-          nextPayload = await requestJson(VIDEO_CAPABILITY_PATH);
-        } catch (_error) {
-          nextPayload = null;
-        }
-        if (panel.videoCapabilityGeneration !== renderGeneration) return;
-        if (!nextPayload) {
-          panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
-          return;
-        }
-        const nextBundles = nextPayload && Array.isArray(nextPayload.bundles)
-          ? nextPayload.bundles
-          : [];
-        const nextState = videoCapabilityViewState(nextBundles).state;
-        const nextRuntime = nextPayload && nextPayload.runtime_import;
-        const nextRuntimePreparing = nextRuntime && ["queued", "extracting", "checking", "testing"].includes(nextRuntime.state);
-        if (nextState !== "downloading" && !nextRuntimePreparing) {
-          await renderVideoCapabilityPanel(panel);
-          return;
-        }
-        const nextDownloadedBytes = nextBundles.reduce(
-          (total, entry) => total + (Number(entry.downloaded_bytes) || 0),
-          0
-        );
-        const nextTotalBytes = nextBundles.reduce(
-          (total, entry) => total + (Number(entry.total_bytes) || 0),
-          0
-        );
-        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1000));
-        const activeFile = nextBundles.find((entry) =>
-          ["queued", "downloading", "verifying"].includes(entry.state)
-          && typeof entry.current_file === "string"
-        );
-        const activeFileText = activeFile ? `，当前：${activeFile.current_file}` : "";
-        progressText.textContent = nextTotalBytes
-          ? `已处理 ${formatBytes(nextDownloadedBytes)} / ${formatBytes(nextTotalBytes)}，已用时 ${elapsedSeconds} 秒${activeFileText}`
-          : `大小将在安装时按固定清单校验，已用时 ${elapsedSeconds} 秒${activeFileText}`;
-        if (nextRuntimePreparing) {
-          const checkedBytes = Math.max(0, Number(nextRuntime.checked_bytes) || 0);
-          const runtimeTotalBytes = Math.max(0, Number(nextRuntime.total_bytes) || 0);
-          progressText.textContent = runtimeTotalBytes > 0
-            ? `正在准备运行环境：${formatBytes(checkedBytes)} / ${formatBytes(runtimeTotalBytes)}，已用时 ${elapsedSeconds} 秒`
-            : `正在准备视频运行环境，已用时 ${elapsedSeconds} 秒……`;
-        }
-        panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
-      };
-      panel.videoCapabilityProgressTimer = window.setTimeout(updateProgress, 1000);
-    }
+    panel.replaceChildren(text("p", "组件管理服务暂不可用，请重试或更新程序。", "text-text-secondary text-body-m font-regular"),
+      button("重新检测", () => { void renderVideoCapabilityPanel(panel); }));
   };
 
   const renderCapabilityPanel = async (panel) => {
-    const heading = text("h3", "本地能力与下载", "text-text-title text-title-m");
+    const heading = text("h3", "本地组件", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "已有自动安装的能力可直接下载；其他能力保留国内源优先、官方源备用。",
+      "所有组件通过离线包安装。按需要分别导入，已安装组件可以复用。",
       "text-text-secondary text-body-m font-regular"
     );
     const memory = card();
@@ -2444,7 +2157,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ]
       : [
           { id: "llm", label: "大模型", key: "llm" },
-          { id: "capability", label: "本地能力与下载", key: "capability" },
+          { id: "capability", label: "本地组件", key: "capability" },
           { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
           { id: "private-world", label: "林离世界", key: "privateWorld" },
@@ -2565,7 +2278,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     title.style.marginBottom = "12px";
     const explanation = text("p", ready
       ? `这封信请求了${REPLY_ROUTE_LABELS[route]}${video ? "视频" : ""}，但你已关闭该形式。可以仅为这封信开启，长期设置保持不变。`
-      : `这封信请求了${REPLY_ROUTE_LABELS[route]}，当前缺少所需组件。请先在本地能力与下载中准备好，再发送。`, "text-body-m font-regular");
+      : `这封信请求了${REPLY_ROUTE_LABELS[route]}，当前缺少所需组件。请先在本地组件中准备好，再发送。`, "text-body-m font-regular");
     explanation.style.cssText = "margin-bottom:20px;line-height:1.7;";
     const shade = document.createElement("style");
     shade.textContent = "dialog[data-olivia-route-confirm]::backdrop{background:rgba(0,0,0,.6)}";
@@ -2634,7 +2347,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
     let preview;
     try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content}); }
-    catch (error) { error.config = config; error.message = "回信形式检测失败，请稍后重试。信件尚未寄出。"; throw error; }
+    catch (error) {
+      error.config = config;
+      const messages = {LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
+        LLM_AUTH_FAILED:"大模型服务认证失败，请检查 API Key 和访问权限。",
+        LLM_RATE_LIMITED:"大模型服务请求过于频繁，请稍后重试。",
+        LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。"};
+      error.message = (messages[error.message] || "回信形式检测失败，请稍后重试。") + "信件尚未寄出。";
+      throw error;
+    }
     let once;
     let videoOnce;
     if (preview.requested_route && (!preview.ready || preview.needs_confirmation || preview.needs_video_confirmation)) {
@@ -2660,71 +2381,47 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const mountVideoReplySetting = (section) => {
     const container = document.createElement("div");
     container.setAttribute("data-olivia-reply-routes", "true");
-    container.style.cssText = "display:grid;gap:12px;";
-    container.append(text("div", "回信形式管理", "text-text-body text-title-m"),
-      text("p", "文字回信始终可用。开启的形式可由林离自动选择；明确请求已关闭的形式时，发送前询问是否仅本次开启。已接收的信件不受后续设置变化影响。", "text-text-secondary text-body-m font-regular"));
-    const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular");
-    status.setAttribute("aria-live", "polite");
-    let routes = null, videos = {voice_reply:false, singing_video:true, voice_song_video:true}, ready = {}, busy = false;
-    const toggles = {};
-    const descriptions = {
-      voice_reply: "视频开启：说话口型视频；关闭：纯语音。",
-      singing_video: "视频开启：唱歌视频；关闭：纯歌曲音频。",
-      voice_song_video: "视频开启：传统说话加唱歌视频；关闭：说话加歌曲音频。",
-    };
+    container.className = "flex flex-col gap-4";
+    container.append(text("div", "回信能力", "text-text-body text-title-m"),
+      text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。开启声音或视频，不代表每封信都会使用。", "text-text-secondary text-body-m font-regular"));
+    const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
+    choices.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
+    const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
+    const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
+    let selected = null, busy = false;
+    const nodes = {};
+    const detail = text("p", "", "text-text-secondary text-body-m font-regular");
+    const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
     const render = () => {
-      for (const [route, nodes] of Object.entries(toggles)) {
-        nodes.toggle.disabled = busy || !routes;
-        nodes.toggle.textContent = !routes ? "读取中…" : routes[route] ? "已开启" : "已关闭";
-        nodes.toggle.setAttribute("aria-pressed", String(!!routes?.[route]));
-        nodes.video.disabled = busy || !routes;
-        nodes.video.textContent = videos[route] ? "视频：开" : "视频：关";
-        nodes.video.setAttribute("aria-pressed", String(videos[route]));
-        nodes.state.textContent = !routes ? "" : ready[route] ? "组件已就绪" : "组件未就绪，请先准备所需组件";
-      }
+      Object.entries(nodes).forEach(([key,node])=>{
+        node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));
+        node.style.background=selected===key ? "#ded7cb" : "transparent";
+        node.style.color=selected===key ? "#18191b" : "";
+      });
+      detail.textContent=descriptions[selected] || ""; save.disabled=busy || selected===null;
     };
-    const hydrate = async () => {
+    Object.entries(labels).forEach(([key,label])=>{
+      const choice=button(label,()=>{selected=key;status.textContent="点击保存应用此档位。";render();});
+      choice.setAttribute("role","radio"); choice.style.flex="1 1 160px"; nodes[key]=choice; choices.append(choice);
+    });
+    const save=button("保存",async()=>{
+      busy=true;render();
+      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected}); status.textContent="已保存。已接收的信件继续按原设置处理。"; }
+      catch (_) { status.textContent="保存失败，请重试。"; }
+      finally {busy=false;render();}
+    });
+    const hydrate=async()=>{
       try {
-        const payload = await routeRequest("/toy/settings/reply-routes");
-        if (!payload.routes || Object.keys(REPLY_ROUTE_LABELS).some(key => typeof payload.routes[key] !== "boolean")) throw new Error("invalid settings");
-        routes = payload.routes; videos = payload.videos || videos; ready = payload.ready || {}; status.textContent = "模式与视频选项独立保存，关闭视频不会关闭该模式。";
-      } catch (_) { routes = null; status.textContent = "设置读取失败，请点击重新读取。"; }
+        const result=await routeRequest("/toy/settings/reply-routes");
+        selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
+        if(!labels[selected]) throw Error("invalid tier");
+        status.textContent=result.tier_configured===false ? "当前沿用旧设置，保存后统一按所选档位生效。" : "";
+      } catch (_) { selected=null;status.textContent="设置读取失败，请重新读取。"; }
       render();
     };
-    for (const [route, label] of Object.entries(REPLY_ROUTE_LABELS)) {
-      const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid #303135;";
-      const copy = document.createElement("div"); copy.style.cssText = "flex:1;min-width:180px;";
-      const state = text("div", "", "text-text-secondary text-caption-m font-regular");
-      copy.append(text("div", label, "text-text-body text-label-l"), text("div", descriptions[route], "text-text-secondary text-body-m font-regular"), state);
-      const toggle = button("读取中…", async () => {
-        if (busy || !routes) return;
-        busy = true; render();
-        try {
-          const next = {...routes, [route]: !routes[route]};
-          const result = await routeRequest("/toy/settings/reply-routes", {request_id: videoReplyRequestId(), routes: next, videos});
-          routes = result.routes; status.textContent = `${label}已${routes[route] ? "开启" : "关闭"}。`;
-        } catch (_) { status.textContent = "保存失败，请重新读取后重试。"; }
-        finally { busy = false; render(); }
-      });
-      toggle.setAttribute("aria-label", `切换${label}`);
-      const video = button("视频：关", async () => {
-        if (busy || !routes) return;
-        busy = true; render();
-        try {
-          const result = await routeRequest("/toy/settings/reply-routes", {request_id: videoReplyRequestId(), routes, videos:{...videos,[route]:!videos[route]}});
-          videos = result.videos; status.textContent = `${label}将生成${videos[route] ? "视频" : "音频"}。`;
-        } catch (_) { status.textContent = "保存失败，请重新读取后重试。"; }
-        finally { busy = false; await hydrate(); }
-      });
-      video.setAttribute("aria-label", `切换${label}视频`);
-      const controls = actions(); controls.append(toggle, video);
-      toggles[route] = {toggle, video, state}; row.append(copy, controls); container.append(row);
-    }
-    const controls = actions(); controls.append(button("管理下载", () => openDialog(false, "capability")), button("重新读取", () => { if (!busy) void hydrate(); }));
-    container.append(status, controls); section.append(container);
-    refreshVideoReplySetting = () => container.isConnected ? hydrate() : Promise.resolve();
-    void hydrate();
+    const controls=actions();controls.append(save,button("离线组件",()=>openDialog(false,"capability")),button("重新读取",()=>{if(!busy)void hydrate();}));
+    container.append(choices,detail,controls,status);section.append(container);
+    refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
   const mountDiagnosticExport = (section) => {
@@ -2979,11 +2676,20 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
     .mail-box-reply-content-text:has(olivia-letter-audio){height:auto;min-height:290px}
     .mail-box-reply-content-text:has(olivia-letter-audio) .mail-box-reply-content-textarea{height:180px;margin-top:10px}
-    olivia-letter-audio .voice-controls{display:flex;align-items:center;gap:12px;min-height:32px;border-bottom:1px solid currentColor;padding-bottom:10px}
+    olivia-letter-audio .voice-controls{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 0 12px;color:#514638}
+    olivia-letter-audio .voice-controls>button{position:absolute;top:21px;left:calc(50% - 105px)}
+    olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{left:calc(50% - 15px);top:21px;z-index:1}
+    .olivia-wave-style{position:fixed;z-index:50;width:108px;border:1px solid #64676e;border-radius:14px;background:#202124;color:#eee9df;font:13px/1.5 "Microsoft YaHei",Arial,sans-serif;padding:6px;cursor:pointer;color-scheme:dark}
+    .olivia-wave-style option{background:#202124;color:#eee9df;font:13px "Microsoft YaHei",Arial,sans-serif}
+    @media(max-width:600px){olivia-letter-audio .voice-controls{padding-top:32px}olivia-letter-audio .voice-controls>button,olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{top:45px}}
     olivia-letter-audio button{appearance:none;border:0;background:none;color:inherit;padding:6px;cursor:pointer;flex-shrink:0;line-height:1}
     olivia-letter-audio button:focus-visible,olivia-letter-audio input:focus-visible{outline:2px solid currentColor;outline-offset:3px}
     olivia-letter-audio svg{width:18px;height:18px;fill:currentColor;display:block}
     olivia-letter-audio input{min-width:20px;flex:1;height:3px;accent-color:var(--tp-grey-0,#333);cursor:pointer}
+    olivia-letter-audio .voice-wave{position:relative;width:160px;max-width:65%;height:60px;color:#514638}
+    olivia-letter-audio .voice-wave canvas{display:block;width:100%;height:60px;pointer-events:none}
+    olivia-letter-audio .voice-wave input{position:absolute;left:0;bottom:-5px;width:100%;height:20px;margin:0;opacity:0;touch-action:pan-y}
+    olivia-letter-audio .voice-wave:focus-within{outline:1px solid currentColor;outline-offset:3px}
     olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
     olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
     olivia-letter-audio video{width:100%;max-height:260px;margin-top:12px;display:block}
@@ -2992,11 +2698,74 @@ BOOTSTRAP_JAVASCRIPT = r'''
   const icon=(button,paused)=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',paused?'M7 4v16l13-8z':'M6 4h4v16H6zm8 0h4v16h-4z');svg.append(path);button.replaceChildren(svg)};
   const safe=value=>{try{const u=new URL(value);return u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\/toy\/media\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(wav|mp4)$/.test(u.pathname)?u.href:''}catch{return ''}};
   let current=null;
+  function letterWave(wrap,seek,audio,url){
+    const canvas=document.createElement('canvas');canvas.setAttribute('aria-hidden','true');wrap.append(canvas,seek);
+    const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+    let frame=0,disposed=false,context=null,analyser=null,source=null,samples=null,kind='bars';
+    const levels=new Float32Array(11);
+    const start=()=>{
+      if(disposed)return;
+      try{
+        const AudioContext=window.AudioContext||window.webkitAudioContext;
+        if(!context&&AudioContext){
+          context=new AudioContext();analyser=context.createAnalyser();analyser.fftSize=2048;
+          samples=new Uint8Array(analyser.fftSize);samples.fill(128);source=context.createMediaElementSource(audio);
+          source.connect(analyser);analyser.connect(context.destination);
+        }
+        context?.resume().catch(()=>{});
+      }catch(_){source?.connect(context.destination)}
+    };
+    const draw=()=>{
+      cancelAnimationFrame(frame);frame=0;if(disposed)return;
+      const width=Math.max(1,wrap.clientWidth),ratio=window.devicePixelRatio||1;
+      if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(60*ratio)){canvas.width=Math.round(width*ratio);canvas.height=Math.round(60*ratio)}
+      const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,60);
+      const progress=audio.duration?Math.min(1,audio.currentTime/audio.duration):0;
+      const moving=!audio.paused&&!audio.ended&&!document.hidden&&!reduced.matches;
+      ctx.lineWidth=1.5;ctx.lineCap='round';
+      if(analyser&&moving)analyser.getByteTimeDomainData(samples);
+      for(let i=0;i<levels.length;i++){
+        let sum=0,n=0;if(samples)for(let j=Math.floor(i*samples.length/11);j<Math.floor((i+1)*samples.length/11);j++){sum+=((samples[j]-128)/128)**2;n++}
+        const target=audio.ended||reduced.matches?0:Math.min(1,Math.sqrt(sum/Math.max(1,n))*5);
+        if(moving)levels[i]+=(target-levels[i])*(target>levels[i]?.65:.18);else if(audio.ended||reduced.matches)levels[i]=0;
+      }
+      const energy=levels.reduce((a,b)=>a+b,0)/11,center=width/2;
+      if(kind==='bars'||kind==='dots'){
+        for(let i=0;i<11;i++){
+          const edge=1-Math.abs(i-5)/8,x=center+(i-5)*7,h=1.5+levels[i]*16*edge;
+          ctx.strokeStyle=`rgba(81,70,56,${.35+edge*.55})`;ctx.lineWidth=kind==='dots'?3+levels[i]*2:2.5;
+          const y=kind==='dots'?26-levels[i]*10*edge:26;
+          ctx.beginPath();ctx.moveTo(x,y-(kind==='dots'?.5:h));ctx.lineTo(x,y+(kind==='dots'?.5:h));ctx.stroke();
+        }
+      }else{
+        for(let layer=0;layer<3;layer++){
+          ctx.lineWidth=1.2;ctx.strokeStyle=`rgba(81,70,56,${.75-layer*.23})`;ctx.beginPath();
+          for(let i=0;i<=80;i++){
+            const t=i/80;let x,y;
+            if(kind==='ripple'){
+              const angle=t*Math.PI*2,r=15+layer*4+energy*3+Math.sin(angle*3+audio.currentTime*2+layer)*energy*2;
+              x=center+Math.cos(angle)*r;y=26+Math.sin(angle)*r;
+            }else{
+              x=center+(t-.5)*100;y=26+Math.sin(t*Math.PI*4+audio.currentTime*5+layer*.6)*Math.sin(t*Math.PI)*(2+energy*12)*(1-layer*.18);
+            }
+            if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);
+          }ctx.stroke();
+        }
+      }
+      ctx.lineWidth=1;ctx.strokeStyle='rgba(81,70,56,.25)';ctx.beginPath();ctx.moveTo(0,59);ctx.lineTo(width,59);ctx.stroke();
+      ctx.strokeStyle='#514638';ctx.beginPath();ctx.moveTo(0,59);ctx.lineTo(width*progress,59);ctx.stroke();
+      if(moving)frame=requestAnimationFrame(draw);
+    };
+    const events=['play','pause','ended','timeupdate','seeked','loadedmetadata'];events.forEach(name=>audio.addEventListener(name,draw));
+    document.addEventListener('visibilitychange',draw);const resize=new ResizeObserver(draw);resize.observe(wrap);
+    draw();const cleanup=()=>{disposed=true;cancelAnimationFrame(frame);resize.disconnect();events.forEach(name=>audio.removeEventListener(name,draw));document.removeEventListener('visibilitychange',draw);source?.disconnect();analyser?.disconnect();if(context&&context.state!=='closed')context.close().catch(()=>{})};
+    cleanup.start=start;cleanup.setStyle=value=>{kind=['bars','dots','ribbon','ripple'].includes(value)?value:'bars';draw()};return cleanup;
+  }
   const coverApi=document.currentScript?.dataset?.apiBase;
   class LetterAudio extends HTMLElement {
     static get observedAttributes(){return ['audio-url','audio-status','song-url','cover-id']}
     connectedCallback(){this.render();this.coverTimer=setInterval(()=>this.coverProgress(),4000);this.coverProgress()}
-    disconnectedCallback(){clearInterval(this.coverTimer);this.audio?.pause();this.video?.pause();if(current===this.audio||current===this.video)current=null}
+    disconnectedCallback(){clearInterval(this.coverTimer);this.styleCleanup?.();this.waveCleanup?.();this.key=null;this.audio?.pause();this.video?.pause();if(current===this.audio||current===this.video)current=null}
     attributeChangedCallback(){if(this.isConnected)this.render()}
     async coverProgress(){
       const id=this.getAttribute('cover-id');if(!id||!coverApi||this.coverBusy)return;
@@ -3015,24 +2784,38 @@ BOOTSTRAP_JAVASCRIPT = r'''
       const url=safe(this.getAttribute('audio-url')||''), song=safe(this.getAttribute('song-url')||''), state=this.getAttribute('audio-status')||'';
       const key=JSON.stringify([url,song,state]);if(this.key===key)return;
       this.key=key;const sameAudio=this.audio?.src===url,oldTime=sameAudio?this.audio.currentTime:0,wasPlaying=sameAudio&&!this.audio.paused;
-      this.audio?.pause();this.video?.pause();this.replaceChildren();this.audio=null;this.video=null;
+      this.styleCleanup?.();this.waveCleanup?.();this.audio?.pause();this.video?.pause();this.replaceChildren();this.audio=null;this.video=null;
       const status=document.createElement('div');status.className='voice-status';status.setAttribute('role','status');
       if(url){
-        const audio=new Audio(url);this.audio=audio;audio.preload='metadata';
+        const audio=new Audio();audio.crossOrigin='anonymous';audio.src=url;this.audio=audio;audio.preload='metadata';
         const row=document.createElement('div');row.className='voice-controls';
         const button=document.createElement('button');button.type='button';icon(button,true);button.setAttribute('aria-label','播放语音');
         const seek=document.createElement('input');seek.type='range';seek.min='0';seek.max='0';seek.step='0.1';seek.value='0';seek.setAttribute('aria-label','语音播放进度');
         const stamp=document.createElement('time');stamp.textContent='0:00';
         const fmt=x=>Math.floor(x/60)+':'+String(Math.floor(x%60)).padStart(2,'0');
         const sync=()=>{icon(button,audio.paused);button.setAttribute('aria-label',audio.paused?'播放语音':'暂停语音');seek.max=String(audio.duration||0);seek.value=String(audio.currentTime);stamp.textContent=fmt(audio.currentTime)+' / '+fmt(audio.duration||0)};
-        button.onclick=()=>{if(audio.paused)audio.play().catch(()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'});else audio.pause()};
+        button.onclick=()=>{this.waveCleanup?.start();if(audio.paused)audio.play().catch(()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'});else audio.pause()};
         seek.oninput=()=>{audio.currentTime=Number(seek.value)};
         audio.onplay=()=>{if(current&&current!==audio)current.pause();document.querySelectorAll('video').forEach(v=>v.pause());current=audio;sync()};audio.onpause=sync;audio.ontimeupdate=sync;
         audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);sync();if(wasPlaying)audio.play().catch(()=>{})};
         audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
         audio.onended=()=>{sync();if(this.video)this.video.play().catch(()=>{})};
-        const download=document.createElement('a');download.href=url;download.download='林离回信.wav';download.textContent='下载';download.setAttribute('aria-label','下载回信音频');download.style.cssText='color:inherit;font-size:12px;white-space:nowrap';
-        row.append(button,seek,stamp,download);this.append(row);
+        const wave=document.createElement('div');wave.className='voice-wave';
+        row.append(button,wave,stamp);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
+        const styles=document.createElement('select');styles.className='olivia-wave-style';styles.setAttribute('aria-label','波形样式');styles.title='选择波形样式';
+        for(const [value,label] of [['bars','淡墨呼吸'],['dots','浮动墨点'],['ribbon','轻柔声带'],['ripple','声音涟漪']]){const option=document.createElement('option');option.value=value;option.textContent=label;styles.append(option)}
+        try{styles.value=localStorage.getItem('olivia.letter.wave-style')||'bars'}catch(_){}if(!styles.value)styles.value='bars';
+        const choose=()=>{row.dataset.waveStyle=styles.value;this.waveCleanup.setStyle(styles.value)};
+        styles.onchange=()=>{choose();try{localStorage.setItem('olivia.letter.wave-style',styles.value)}catch(_){}};document.body.append(styles);choose();
+        const paper=this.closest('.mail-box-reply-content-text')||this;
+        const positionStyle=()=>{
+          const rect=paper.getBoundingClientRect();const top=this.getBoundingClientRect().top;
+          styles.hidden=rect.bottom<0||top<0||top>window.innerHeight||!this.isConnected;
+          styles.style.left=Math.min(window.innerWidth-116,rect.right+10)+'px';
+          styles.style.top=Math.max(8,top)+'px';
+        };
+        const styleResize=new ResizeObserver(positionStyle);styleResize.observe(paper);window.addEventListener('resize',positionStyle);document.addEventListener('scroll',positionStyle,true);positionStyle();
+        this.styleCleanup=()=>{styles.remove();styleResize.disconnect();window.removeEventListener('resize',positionStyle);document.removeEventListener('scroll',positionStyle,true)};
       }
       if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次音频未能完成，文字回信已保留。':'林离正在准备回信音频…';
       else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';

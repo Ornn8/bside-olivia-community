@@ -62,6 +62,25 @@ class ProviderUnavailable(GatewayError):
         super().__init__("PROVIDER_UNAVAILABLE", retryable=True)
 
 
+async def _check_provider_quota(response) -> None:
+    """Classify billing errors locally without exposing the provider response."""
+    if response.status == 402:
+        raise GatewayError('PROVIDER_QUOTA_EXHAUSTED', retryable=False, status=402)
+    if response.status not in (400, 403, 429):
+        return
+    try:
+        body = await response.text()
+        error = json.loads(body).get('error', {}) if len(body) <= 16384 else {}
+        if not isinstance(error, dict):
+            return
+        identifiers = {str(error.get(key, '')).lower() for key in ('code', 'type')}
+        exhausted = bool(identifiers & {'insufficient_quota', 'insufficient_balance', 'quota_exceeded', 'credit_balance_too_low'})
+    except (ValueError, TypeError, AttributeError):
+        return
+    if exhausted:
+        raise GatewayError('PROVIDER_QUOTA_EXHAUSTED', retryable=False, status=response.status)
+
+
 class ProviderTimeout(GatewayError):
     def __init__(self) -> None:
         super().__init__("PROVIDER_TIMEOUT", retryable=True)
@@ -885,6 +904,7 @@ class OpenAICompatibleAdapter(Gateway):
                         headers=self._headers(key, request_id),
                     ) as response:
                         status = response.status
+                        await _check_provider_quota(response)
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
                                 await self._retry_wait(attempt)
@@ -1091,6 +1111,7 @@ class OpenAICompatibleAdapter(Gateway):
                         headers=self._headers(key, request),
                     ) as response:
                         status = response.status
+                        await _check_provider_quota(response)
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
                                 await self._retry_wait(attempt)

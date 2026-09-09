@@ -158,7 +158,7 @@ def _select_windows_runtime_root() -> Path | None:
     return None if not selected else _runtime_root_path(selected)
 
 
-def _select_windows_offline_archive() -> Path | None:
+def _select_windows_offline_archive(*, multiple=False):
     if os.name != "nt":
         raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
@@ -182,6 +182,11 @@ def _select_windows_offline_archive() -> Path | None:
         "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
         "{ [Console]::Out.Write($dialog.FileName) }"
     )
+    if multiple:
+        script = script.replace('$dialog.Multiselect = $false', '$dialog.Multiselect = $true').replace(
+            '[Console]::Out.Write($dialog.FileName)',
+            '[Console]::Out.Write((ConvertTo-Json -InputObject @($dialog.FileNames) -Compress))',
+        )
     try:
         completed = subprocess.run(
             [str(powershell), "-NoProfile", "-STA", "-Command", script],
@@ -196,6 +201,11 @@ def _select_windows_offline_archive() -> Path | None:
     if completed.returncode != 0:
         raise VideoCapabilityAPIError("VIDEO_OFFLINE_PICKER_UNAVAILABLE", status=503)
     selected = completed.stdout.strip()
+    if multiple:
+        values = json.loads(selected) if selected else []
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise VideoCapabilityAPIError('VIDEO_OFFLINE_ARCHIVE_INVALID', status=400)
+        return [_offline_archive_path(value) for value in values]
     return None if not selected else _offline_archive_path(selected)
 
 
@@ -240,6 +250,7 @@ def mount_original_client_video_capability_api(
     select_runtime_root=None,
     select_offline_archive=None,
     select_runtime_archive=None,
+    select_component_archives=None,
 ) -> None:
     if app.get(_MOUNTED_KEY, False):
         raise RuntimeError("VIDEO_CAPABILITY_API_ALREADY_MOUNTED")
@@ -285,7 +296,7 @@ def mount_original_client_video_capability_api(
 
     async def action(request: web.Request) -> web.Response:
         payload = await _body(request)
-        if payload.get("action") == "import_offline":
+        if payload.get("action") in {"import_offline", "import_component"}:
             request["offline_stage"] = "authorization"
         origin = _authorize(request, confirmation=True)
         try:
@@ -368,8 +379,26 @@ def mount_original_client_video_capability_api(
             kwargs = {
                 "runtime_archive": _offline_archive_path(payload.get("runtime_archive")),
             }
-        elif action_name == "import_offline":
-            if set(payload) != {"action"}:
+        elif action_name == "import_components":
+            from runtime.media.component_packages import COMPONENTS
+            ids = payload.get('component_ids')
+            if (set(payload) != {'action', 'component_ids'} or not isinstance(ids, list)
+                or not 1 <= len(ids) <= len(COMPONENTS) or not all(isinstance(item, str) and item in COMPONENTS for item in ids)
+                or len(set(ids)) != len(ids)):
+                raise VideoCapabilityAPIError('VIDEO_CAPABILITY_FIELDS_INVALID', status=400)
+            selected = await asyncio.to_thread(select_component_archives or (lambda: _select_windows_offline_archive(multiple=True)))
+            if not selected:
+                return web.json_response({'status': 'CANCELLED'}, headers={'Access-Control-Allow-Origin': origin, 'Cache-Control': 'no-store'})
+            call = installer.media_components.start_many
+            kwargs = {'archives': [_offline_archive_path(path) for path in selected], 'expected_components': ids}
+        elif action_name in {"import_offline", "import_component"}:
+            from runtime.media.component_packages import COMPONENTS, archive_component
+            if (action_name == "import_offline" and set(payload) != {"action"}) or (
+                action_name == "import_component" and (
+                    set(payload) != {"action", "component_id"} or not isinstance(payload.get("component_id"), str)
+                    or payload.get("component_id") not in COMPONENTS
+                )
+            ):
                 raise VideoCapabilityAPIError("VIDEO_CAPABILITY_FIELDS_INVALID", status=400)
             request["offline_stage"] = "selection"
             try:
@@ -388,6 +417,16 @@ def mount_original_client_video_capability_api(
             archive = _offline_archive_path(selected)
             try:
                 async with control_lock:
+                    selected_component = await asyncio.to_thread(archive_component, archive)
+                    if selected_component is not None or action_name == "import_component":
+                        result = await asyncio.to_thread(
+                            installer.media_components.start, archive,
+                            payload.get("component_id"),
+                        )
+                        return web.json_response(
+                            {"status": result},
+                            headers={"Access-Control-Allow-Origin": origin, "Cache-Control": "no-store"},
+                        )
                     if _is_runtime_archive(archive):
                         request["offline_stage"] = "installation"
                         result = await asyncio.to_thread(

@@ -844,9 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_PRIVATE_WORLD_DB": str(
             data_root / "private_world" / "private_world.sqlite3"
         ),
-        "OLIVIA_REPLY_DELAY_ENABLED": "1",
-        "OLIVIA_REPLY_DELAY_MINUTES_MIN": "5",
-        "OLIVIA_REPLY_DELAY_MINUTES_MAX": "10",
+        "OLIVIA_REPLY_DELAY_ENABLED": "0",
         "OLIVIA_PORT": str(args.port),
     }
     backend_environment.update(runtime_environment)

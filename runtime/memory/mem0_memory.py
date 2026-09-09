@@ -190,6 +190,8 @@ def _explicit_addressing_facts(user_message: str, assistant_message: str) -> tup
 
 
 def _explicit_user_memory_fact(value: str) -> str | None:
+    if re.search(r"[?？]|如果|假如|假设|假使|倘若|要是|\b(?:if|suppose|supposing|hypothetically)\b", value, re.I):
+        return None
     match = _EXPLICIT_MEMORY_FACT_RE.search(value)
     if match is not None:
         fact = f"{match.group(1)}：{match.group(2).strip()}"

@@ -475,6 +475,8 @@ def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-voice-", dir=output_path.parent) as temporary:
         config = _tts_config(tts_config_path, Path(temporary), ordinary_video=True, env=environment)
+        from dataclasses import replace
+        config = replace(config, provider_options={**config.provider_options, "audio_only_unbounded": True})
         try:
             result = render_delivery_wav(config, voice_performance_plan, output_path)
         except DeliveryAudioError as exc:

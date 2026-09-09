@@ -200,6 +200,8 @@ class BreezeTTS2Provider:
                 instruction_parts.append(emphasis_direction)
         instruction = "，".join(part for part in instruction_parts if part)
         options = self.config.provider_options
+        if options.get('enable_direction') is not True:
+            instruction = ''
         units = tuple(getattr(plan, "speech_units")())
         gain_db = float(getattr(units[0], "gain_db", 0.0)) if units else 0.0
         return {
@@ -225,11 +227,11 @@ class BreezeTTS2Provider:
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
             "cfg_scale": float(options.get("cfg_scale", 1.0)),
             "seed": int(options.get("seed", 200717)),
-            # Leave room for EOS in a naturally paced performance; the content
-            # and delivery-duration gates still decide whether it is usable.
-            "max_new_tokens": max(
-                64, min(650, int(options.get("max_new_tokens", 650)))
-            ),
+            # Audio-only replies get a text-sized EOS budget; video keeps its
+            # existing bounded budget. Neither path regenerates the content.
+            "max_new_tokens": (max(650, len(text) * 8)
+                if options.get("audio_only_unbounded") is True
+                else max(64, min(650, int(options.get("max_new_tokens", 650))))),
             "temperature": float(options.get("temperature", 0.9)),
             "top_k": int(options.get("top_k", 50)),
             "top_p": float(options.get("top_p", 1.0)),
@@ -243,7 +245,8 @@ class BreezeTTS2Provider:
             "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
             "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
             "quality_max_cer": 0.18,
-            "duration_target_seconds": [40.0, 50.0],
+            "duration_target_seconds": None if options.get("audio_only_unbounded") is True else [40.0, 50.0],
+            "audio_only_unbounded": options.get("audio_only_unbounded") is True,
             "max_attempts": 1,
             "performance_control_mode": "single_pass_llm_breeze_direction",
         }

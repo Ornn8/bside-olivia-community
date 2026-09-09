@@ -396,6 +396,7 @@ def _media_provider_tail(data_root: Path | None) -> tuple[Mapping[str, object], 
     """Read a bounded tail from the active installation, tolerating an in-flight append."""
     if data_root is None:
         return ()
+    records = []
     try:
         with (data_root / 'logs' / 'media-provider.jsonl').open('rb') as stream:
             stream.seek(0, 2)
@@ -412,9 +413,19 @@ def _media_provider_tail(data_root: Path | None) -> tuple[Mapping[str, object], 
                 continue
             if isinstance(record, Mapping):
                 records.append(record)
-        return tuple(records)
     except OSError:
-        return ()
+        pass
+    from itertools import islice
+    from tts.external_breeze_worker import project_worker_status
+    for path in islice((data_root / 'media').glob('olivia-*/olivia-delivery-*/worker-status.json'), 20):
+        try:
+            with path.open(encoding='utf-8') as stream:
+                worker = project_worker_status(json.loads(stream.read(4097)))
+            if worker:
+                records.append({'provider': 'breeze', 'diagnostic': json.dumps({'worker': worker})})
+        except (OSError, ValueError):
+            continue
+    return tuple(records[-_DIAGNOSTIC_TAIL_LIMIT:])
 
 
 def _diagnostic_source(
@@ -516,6 +527,19 @@ def _diagnostic_source(
         }:
             item["reply_mode"] = reply_mode
         # Only categorical routing facts: never copy letter text, paths or free-form reasons.
+        tier = value.get('reply_capability_tier')
+        if tier in ('text', 'audio', 'video'):
+            item['reply_capability_tier'] = tier
+        from original_client_letter_contract import serialize_letter_detail
+        if value.get('letter_id'):
+            projection = serialize_letter_detail(value)
+            item['display_status'] = projection['letterStatus']
+            item['audio_available'] = bool(projection.get('replyAudioUrl'))
+            item['video_available'] = bool(projection.get('replyVideoUrl'))
+            item['text_available'] = bool(projection.get('replyText'))
+        duration = value.get('reply_audio_duration')
+        if type(duration) in (int, float) and 0 <= duration <= 86400:
+            item['audio_duration_seconds'] = duration
         for name in ("video_reply_enabled", "reply_video_enabled"):
             if type(value.get(name)) is bool:
                 item[name] = value[name]
@@ -584,6 +608,11 @@ def _diagnostic_source(
             else:
                 try:
                     snapshots = {"video_runtime": dict(installer._runtime_import)}
+                    components = getattr(installer, 'media_components', None)
+                    if components is not None:
+                        snapshots['media_component_install'] = dict(components.progress)
+                        for component in components.status(os.environ)['items']:
+                            checks['component_' + component['id']] = {'state': component['state']}
                     for identifier, name in (("ordinary_video", "video_ordinary"), ("music_video", "video_music")):
                         if identifier in installer._status:
                             snapshots[name] = installer._status[identifier].to_dict()

@@ -133,6 +133,8 @@ _SOURCE_MODES = {"auto", "official"}
 _SOURCE_IDS = {"domestic", "official"}
 _RUNTIME_ENVIRONMENT_FILE = "runtime-environment.json"
 _RUNTIME_ENVIRONMENT_KEYS = {
+    "OLIVIA_ACE_ROOT", "OLIVIA_ACE_PYTHON", "OLIVIA_ACE_VOICE_LORA",
+    "OLIVIA_ACE_REFERENCE", "OLIVIA_ACE_ASR_MODEL",
     "OLIVIA_FFMPEG_EXE",
     "OLIVIA_COSYVOICE_ROOT",
     "OLIVIA_COSYVOICE_PYTHON",
@@ -1206,6 +1208,8 @@ class VideoCapabilityInstaller:
         if not data_root.is_absolute():
             raise VideoCapabilityError("VIDEO_DATA_ROOT_INVALID")
         self.data_root = data_root.resolve()
+        from runtime.media.component_packages import MediaComponents
+        self.media_components = MediaComponents(self.data_root)
         self.install_root = _checked_install_root(self.data_root, create=True)
         self.manifest = manifest
         self._opener = opener
@@ -1502,6 +1506,11 @@ class VideoCapabilityInstaller:
             }
             if self._hardware is not None:
                 result["hardware"] = dict(self._hardware)
+            try:
+                existing = _load_video_runtime_environment(self.data_root)
+            except VideoCapabilityError:
+                existing = {}
+            result["components"] = self.media_components.status(existing)
             return result
 
     def _set_runtime_import_state(
@@ -3733,7 +3742,15 @@ def _load_video_runtime_environment(
 
 def load_video_runtime_environment(data_root: Path) -> dict[str, str]:
     with _PROMOTION_LOCK:
-        return _load_video_runtime_environment(data_root)
+        from runtime.media.component_packages import MediaComponents
+        try:
+            result = _load_video_runtime_environment(data_root)
+        except VideoCapabilityError:
+            result = {}
+            if not (data_root / 'capabilities/media-components/installed.json').exists():
+                raise
+        result.update(MediaComponents(data_root).environment())
+        return result
 
 
 def apply_runtime_text_patch(

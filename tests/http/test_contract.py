@@ -2668,6 +2668,11 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "UNAVAILABLE",
         ],
         "error_codes": {
+            "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
+            "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
+            "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+            "COVER_GENERATION_FAILED": {"status": "FAILED", "retryable": True},
+            "COVER_GENERATION_TIMEOUT": {"status": "FAILED", "retryable": True},
             "BREEZE_TTS_10GB_VRAM_REQUIRED": {
                 "status": "UNAVAILABLE",
                 "retryable": True,

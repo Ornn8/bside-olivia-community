@@ -303,7 +303,27 @@ asyncio.run(main())
     assert '你已经问过七遍了' not in context
     assert 'fact_recall' in context
     # The real send pipeline must carry the attitude contract to the provider.
-    assert '核对、重复提问、纠正记忆本身不表示恶意、试探或自欺' in context
+    assert '核对、重复提问、纠正记忆不能证明用户有恶意或心理问题' in context
+    assert '也可以主动调侃、嘴硬或接着玩笑说下去' in context
     assert '不同意见和拒绝' in context
     assert '未被说明的个人经历保持未知' in context
     assert '后续回合不等于又过一天' in context
+
+
+@pytest.mark.parametrize('query, keep_reply', [
+    ('你的琴谱整理完了吗？我的杯子你还记得是什么颜色吗？', True),
+    ('我的杯子你还记得是什么颜色吗？你的琴谱整理完了吗？', True),
+    ('Have you finished sorting? Do you remember my cup color?', True),
+    ('你还记得我的杯子颜色吗？还记得我的口味吗？', False),
+])
+def test_mixed_current_and_recall_questions_keep_character_evidence(query, keep_reply):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [{'letter_id': 'one', 'reply_revision': 1, 'letter_status': 'COMPLETED',
+             'private_world_occurred_at': '2026-09-05T08:00:00+00:00',
+             'content': '我用蓝色杯子。',
+             'reply_text': '这批琴谱已整理完了。'}]
+    packet = json.loads(recent_correspondence(rows, query=query))
+    assert packet['letters'][0]['user_letter'] == rows[0]['content']
+    assert ('linli_reply' in packet['letters'][0]) is keep_reply
+    if keep_reply:
+        assert packet['letters'][0]['linli_reply'] == rows[0]['reply_text']

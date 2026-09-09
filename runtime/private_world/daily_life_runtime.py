@@ -35,6 +35,7 @@ conflict 是已经发生的关系摩擦：用户针对她施压、贬低或侵�
 rhythm 只说明她的身体状态，不证明用户施压或侵犯意愿。夜间普通发信、倾诉、她困倦或回信中的责备本身不构成 conflict；必须有用户正文中明确的施压、贬低或违背已知边界的行为。interrupted_rest 表示仍醒着，不能宣称又被叫醒。
 问候、客套谢谢、用户单方面宣称、假设/引用/玩笑、不涉及双方关系的情绪均填 null。不从发信次数、礼物或表白强度推断。不要评价关系等级、身体接触或现实权限，不输出分数。
 current_quote 仅在林离明确描述自己现在的活动时，填写回信中连续原文（180字内）；回忆、假设、以后打算或普通聊天填 null。它将替换页面上旧的此刻近况。
+previous_observation 是此前已发布的生活观察，不是本轮信件原文。先核对本次回信是否无依据地改写同一活动的既有进度。此前明确完成而回信又说尚未完成，且双方本轮未明确说明更正、重做或开始另一件新活动时，不用这段矛盾回信改写事项，也不把它保存为 current_quote；对应 updates 不添加，current_quote 为 null。明确开始另一批、新一轮活动仍可记录，不能因为活动名称相同就禁止新进展。一次随口自我评价或泛化性格不属于现在活动，不夹入 current_quote。
 每项字段严格为 id,title,detail,status,kind,actor,quote，最多3项；没有明确变化返回空数组。
 id 是稳定英文事项标识，延续已有事项务必使用原id；title<=60字，detail<=240字。
 kind 只能 linli 或 shared；actor 是证据说话人 linli 或 user；quote 是对应正式正文中的连续原文，<=240字。
@@ -169,8 +170,15 @@ class DailyLifeRuntime:
         async with self._lock:
             if self.store.has_source(source_id):
                 return self.store.record_exchange(source_id, user_text, reply_text, [], occurred_at=occurred_at)
+            receipt_time = received_at or occurred_at
+            previous = self.store.snapshot(receipt_time)
+            observation = previous["current"]
+            # Delayed deliveries must not learn observations published after receipt.
+            if observation and datetime.fromisoformat(observation["occurred_at"]) > receipt_time:
+                observation = None
             data = {
-                "rhythm": self.store.snapshot(received_at or occurred_at)["rhythm"],
+                "rhythm": previous["rhythm"],
+                "previous_observation": observation,
                 "previous_state": self.store.exchange_state(user_text, related_text=reply_text),
                 "user_letter": user_text, "linli_reply": reply_text,
             }

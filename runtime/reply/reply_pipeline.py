@@ -309,6 +309,7 @@ def _character_reply_fragment(
     if (
         available <= 0
         or not text
+        or len(text) > available
         or any(ord(character) < 32 or ord(character) == 127 for character in text)
     ):
         return None
@@ -317,7 +318,7 @@ def _character_reply_fragment(
     ).hexdigest()
     return UntrustedFragment(
         f"character_reply.{digest}",
-        f"{_CHARACTER_REPLY_PREFIX}{text[:available]}",
+        f"{_CHARACTER_REPLY_PREFIX}{text}",
     )
 
 

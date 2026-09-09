@@ -215,9 +215,6 @@ def build_component_package(
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
         _verify_source(source_root, source_commit)
-        if (payload / "runtime/media/local_song_library.py").is_file():
-            from installer.bundle_media_tool import bundle_media_tool
-            bundle_media_tool(payload)
         files = _payload_files(payload)
         manifest = {
             "schema_version": PACKAGE_SCHEMA,

@@ -484,6 +484,19 @@ def render_delivery_wav(
 
         run_worker(request)
         sample_rate, frame_count = _validate_wav(temporary_output)
+        if config.provider == 'breeze_tts2':
+            from .external_breeze_worker import project_worker_status
+            try:
+                evidence = project_worker_status(json.loads(worker_status_path.read_text(encoding='utf-8')))
+                data_root = environment.get('OLIVIA_LOCAL_DATA_ROOT')
+                if data_root and evidence:
+                    log = Path(data_root) / 'logs' / 'media-provider.jsonl'
+                    log.parent.mkdir(parents=True, exist_ok=True)
+                    with log.open('a', encoding='utf-8') as stream:
+                        stream.write(json.dumps({'timestamp': int(time.time()), 'provider': 'breeze',
+                            'diagnostic': json.dumps({'worker': evidence})}) + '\n')
+            except (OSError, ValueError):
+                pass
         quality_report = None
         temporary_output.replace(output_path)
         return DeliveryAudioResult(

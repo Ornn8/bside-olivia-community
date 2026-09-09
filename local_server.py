@@ -1142,6 +1142,14 @@ def _load_store_state() -> None:
             setattr(store, name, value)
             if name == "letters":
                 for item in value:
+                    if (
+                        item.get("reply_not_before", 0)
+                        and _os.environ.get("OLIVIA_REPLY_DELAY_ENABLED", "0").casefold()
+                        not in {"1", "true", "yes", "on"}
+                    ):
+                        item["reply_not_before"] = 0.0
+                        item["reply_delay_minutes"] = 0.0
+                        needs_persist = True
                     item["reply_mode"] = _exact_reply_mode(
                         item.get("reply_mode", ReplyMode.TEXT_LETTER.value)
                     )
@@ -1249,7 +1257,10 @@ async def _classify_managed_route(content: str, routes: dict[str, bool]) -> Tria
 def _route_readiness(videos=None) -> dict[str, bool]:
     environment = dict(_os.environ)
     from runtime.media.music_reply import musical_reply_configured
-    videos = video_reply_settings_store.videos_snapshot() if videos is None else videos
+    if videos is None:
+        videos = video_reply_settings_store.videos_snapshot()
+        if video_reply_settings_store.saved_tier() == "video":
+            videos["voice_reply"] = False
     voice = _voice_reply_configured(environment)
     from runtime.media.ace_cover import cover_configured
     song_audio = cover_configured(environment)
@@ -1791,7 +1802,7 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
     if not target.is_file():
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
-    return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", "Cache-Control": "no-store"})
+    return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", "Cache-Control": "no-store", **CORS_HEADERS(request)})
 
 
 async def handler(request: web.Request):
@@ -3155,10 +3166,13 @@ async def route(
     if p == "/toy/settings/reply-routes":
         try:
             if method == "POST":
+                if set(body) == {"request_id", "tier"}:
+                    return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"]))
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            return ok({"state": "available", "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
+            return ok({"state": "available", "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
+                       "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
                        "ready": await asyncio.to_thread(_route_readiness)})
         except VideoReplySettingsError as exc:
             return err(exc.status, exc.code, {"error_code": exc.code})
@@ -3177,11 +3191,20 @@ async def route(
         if routes != video_reply_settings_store.routes_snapshot() or preview_videos != video_reply_settings_store.videos_snapshot():
             return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
         if decision.status == "unavailable":
-            return err(503, "VIDEO_TRIAGE_UNAVAILABLE", {"error_code": "VIDEO_TRIAGE_UNAVAILABLE"})
+            reason = getattr(decision, 'reason_code', '')
+            code = {'router_quota_exhausted': 'LLM_QUOTA_EXHAUSTED', 'router_auth_failed': 'LLM_AUTH_FAILED',
+                    'router_rate_limited': 'LLM_RATE_LIMITED', 'router_timeout': 'LLM_TIMEOUT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
+            return err(503, code, {"error_code": code})
         requested = explicitly_requested_route(decision)
         explicit_video = bool({"explicit_video_reply_request", "explicit_video_output_request"}.intersection(decision.music_contexts))
         video_confirmation = bool(requested and explicit_video and not preview_videos[requested])
         ready = await asyncio.to_thread(_route_readiness, {**preview_videos, requested: True}) if video_confirmation else await asyncio.to_thread(_route_readiness)
+        selected_video = preview_videos.get(requested, False)
+        if video_reply_settings_store.saved_tier() is not None:
+            from runtime.video_reply_settings import routed_video
+            selected_mode = requested or decision.reply_mode
+            selected_video = routed_video(selected_mode, decision.music_contexts, {**preview_videos, **({requested: True} if video_confirmation else {})})
+            ready = await asyncio.to_thread(_route_readiness, {**preview_videos, selected_mode: selected_video})
         token = str(uuid.uuid4())
         now = time.monotonic()
         for key, value in list(_reply_route_previews.items()):
@@ -3190,7 +3213,7 @@ async def route(
         import hashlib
         _reply_route_previews[token] = (now, hashlib.sha256(content.encode()).hexdigest(), decision,
                                        preview_videos, routes)
-        return ok({"token": token, "requested_route": requested, "video_enabled": preview_videos.get(requested, False),
+        return ok({"token": token, "requested_route": requested, "video_enabled": selected_video,
                    "requires_cover_audio": (requested or decision.reply_mode) in {"singing_video", "voice_song_video", "musical_video"},
                    "needs_confirmation": bool(requested and not routes[requested]),
                    "needs_video_confirmation": video_confirmation,
@@ -3610,6 +3633,10 @@ async def route(
                     return err(409, "REPLY_VIDEO_CONFIRM_REQUIRED", {"error_code": "REPLY_VIDEO_CONFIRM_REQUIRED", "requested_route": requested})
                 videos[requested] = True
             ready = await asyncio.to_thread(_route_readiness, videos) if video_once is not None else await asyncio.to_thread(_route_readiness)
+            if video_reply_settings_store.saved_tier() is not None:
+                from runtime.video_reply_settings import routed_video
+                selected_mode = requested or route_decision.reply_mode
+                ready = await asyncio.to_thread(_route_readiness, {**videos, selected_mode: routed_video(selected_mode, route_decision.music_contexts, videos)})
             if requested and not ready.get(requested):
                 return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {"error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING"})
             if once is not None and (once != requested or preview_token is None):
@@ -3662,6 +3689,7 @@ async def route(
             "music_provider": "ace_step_xl_cover",
             "reply_routes": routes,
             "reply_route_videos": videos,
+            "reply_capability_tier": video_reply_settings_store.saved_tier(),
             "route_preflight": route_decision.to_dict() if route_decision else None,
             # Freeze the setting at the service receive boundary.  Recovery,
             # retry, and media work read this field rather than global state.
@@ -4511,8 +4539,8 @@ async def _run_reply_pipeline_for_letter(
         if reply_input is None:
             reply_input = (
                 build_ordinary_video_llm_content(content)
-                if exact_mode
-                in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value, "voice_reply", "singing_video", "voice_song_video"}
+                if exact_mode in {ReplyMode.SPOKEN_VIDEO.value, ReplyMode.MUSICAL_VIDEO.value}
+                or (exact_mode in {"voice_reply", "voice_song_video"} and letter.get("reply_video_enabled") is True)
                 else content
             )
         request = ReplyRequest(
@@ -4591,7 +4619,11 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     letter["triage"] = decision.to_dict()
     letter["reply_mode"] = exact_mode
     if isinstance(letter.get("reply_route_videos"), dict):
-        letter["reply_video_enabled"] = letter["reply_route_videos"].get(exact_mode, False)
+        if letter.get("reply_capability_tier") is not None:
+            from runtime.video_reply_settings import routed_video
+            letter["reply_video_enabled"] = routed_video(exact_mode, decision.music_contexts, letter["reply_route_videos"])
+        else:
+            letter["reply_video_enabled"] = letter["reply_route_videos"].get(exact_mode, False)
     if exact_mode in {
         ReplyMode.SPOKEN_VIDEO.value,
         ReplyMode.MUSICAL_VIDEO.value,

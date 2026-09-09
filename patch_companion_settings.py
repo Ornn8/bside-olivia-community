@@ -629,6 +629,17 @@ __all__ = [
 
 def _repair_native_letter_audio(source: str) -> str:
     """Extend native props and paper content; keep original imagery and type."""
+    source = source.replace(
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
+        'const replyAudio=M.value?.received?.audioUrl;'
+        'if(replyAudio){yt.hide();await d.startVideoDownload(replyAudio,R);return}'
+        'yt.hide(),Ds(R)',
+    )
+    source = source.replace(
+        'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")',
+        'A.videoPending?"林离录视频中":["PENDING","QUEUED","PROCESSING"].includes(A.audioStatus)?"林离正在录语音…":o(i)("mailbox_waiting_for_reply")',
+    )
     def cover_progress(value):
         if 'coverId:e.coverId' in value:
             return value

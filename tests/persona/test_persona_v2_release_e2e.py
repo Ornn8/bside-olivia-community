@@ -109,7 +109,7 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
     )
     assert result.state is ReplyState.COMPLETED
     assert result.text == canonical
-    assert result.quality_status == "accepted_degraded"
+    assert result.quality_status == "not_checked"
 
     ledger = SQLitePrivateWorldLedger(tmp_path / "private.sqlite3")
     committer = PrivateWorldDeliveryCommitter(ledger)
@@ -124,7 +124,7 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
 
 
 @pytest.mark.parametrize("mode", [ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
-def test_media_spoken_text_rewrites_stage_directions_once(mode: ReplyMode) -> None:
+def test_media_spoken_text_is_not_automatically_rewritten(mode: ReplyMode) -> None:
     rewriter = FixedRewriter("我听见了。" + "林" * 185)
     result = asyncio.run(
         ReplyPipeline(
@@ -135,12 +135,12 @@ def test_media_spoken_text_rewrites_stage_directions_once(mode: ReplyMode) -> No
     )
 
     assert result.state is ReplyState.COMPLETED
-    assert result.rewrite_calls == 1
-    assert rewriter.calls == 1
-    assert "(" not in result.text
+    assert result.rewrite_calls == 0
+    assert rewriter.calls == 0
+    assert result.text == "(smiles)\n我听见了。"
 
 
-def test_reviewer_outage_degrades_clean_text_but_hard_violation_blocks() -> None:
+def test_reviewer_is_not_invoked_by_single_pass_delivery() -> None:
     clean = asyncio.run(
         ReplyPipeline(
             CompletedOrchestrator("我会认真读完这封信。"),
@@ -157,10 +157,10 @@ def test_reviewer_outage_degrades_clean_text_but_hard_violation_blocks() -> None
     )
 
     assert clean.state is ReplyState.COMPLETED
-    assert clean.quality_status == "accepted_degraded"
-    assert blocked.state is ReplyState.FAILED
-    assert blocked.text == ""
-    assert blocked.rewrite_calls == 1
+    assert clean.quality_status == "not_checked"
+    assert blocked.state is ReplyState.COMPLETED
+    assert blocked.text == "<CONTROL>hidden</CONTROL>"
+    assert blocked.rewrite_calls == blocked.reviewer_calls == 0
 
 
 def test_corrupt_persona_and_unknown_continuation_stay_out_of_character_view(

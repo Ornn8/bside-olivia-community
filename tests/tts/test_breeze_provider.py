@@ -21,7 +21,7 @@ from voice_direction import VoicePerformancePlan
 _BREEZE_LICENSE = "BreezeBlue-Research-and-Non-Commercial-1.0"
 
 
-def _breeze_config(tmp_path: Path) -> TTSConfig:
+def _breeze_config(tmp_path: Path, *, enable_direction=False) -> TTSConfig:
     runtime = tmp_path / "ComfyUI-Breeze-TTS-2"
     runtime.mkdir()
     for name in ("__init__.py", "loader.py", "nodes.py", "int8.py", "LICENSE"):
@@ -59,6 +59,7 @@ def _breeze_config(tmp_path: Path) -> TTSConfig:
         license_id=_BREEZE_LICENSE,
         fallback="text",
         provider_options={
+            "enable_direction": enable_direction,
             "external_python": sys.executable,
             "model_variant": "int8_hybrid",
             "model_license_path": str(model_license),
@@ -76,6 +77,13 @@ def _plan() -> VoicePerformancePlan:
         emphasize_sentences=(),
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
+
+
+def test_default_voice_omits_direction_but_keeps_canonical_text(tmp_path):
+    plan = _plan()
+    request = BreezeTTS2Provider(_breeze_config(tmp_path)).performance_request(plan)
+    assert request['text'] == plan.spoken_text
+    assert request['instruction'] == request['quality_forbidden_text'] == ''
 
 
 def test_breeze_provider_is_selectable_and_missing_assets_fall_back_before_generation(
@@ -142,7 +150,7 @@ def test_sentence_directions_stay_out_of_frozen_spoken_text(tmp_path: Path) -> N
         overall_emotion="自然对话", global_speed=1.0, energy=0.55,
         breath_before_sentences=(), emphasize_sentences=(), short_instruction=instruction,
     )
-    request = BreezeTTS2Provider(_breeze_config(tmp_path)).performance_request(VoicePerformancePlan.from_dict(plan.to_dict()))
+    request = BreezeTTS2Provider(_breeze_config(tmp_path, enable_direction=True)).performance_request(VoicePerformancePlan.from_dict(plan.to_dict()))
     assert request["text"] == plan.reply_text
     assert instruction in request["instruction"]
     assert "保持中等能量" not in request["instruction"]
@@ -164,7 +172,7 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
         short_instruction="声音柔软自然地承接，再缓缓托起给到力量",
     )
 
-    config = _breeze_config(tmp_path)
+    config = _breeze_config(tmp_path, enable_direction=True)
     request = BreezeTTS2Provider(config).performance_request(plan)
 
     assert request["text"] == reply
@@ -197,6 +205,84 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
         }
     )
     assert BreezeTTS2Provider(limited).performance_request(plan)["max_new_tokens"] == 64
+
+
+def test_audio_only_budget_scales_with_full_text_without_video_duration_target(tmp_path):
+    from dataclasses import replace
+    plan = replace(_plan(), reply_text='我会慢慢听你说，也把想说的话完整告诉你。' * 30)
+    config = _breeze_config(tmp_path)
+    audio = replace(config, provider_options={**config.provider_options, 'audio_only_unbounded': True})
+    request = BreezeTTS2Provider(audio).performance_request(plan)
+    assert request['text'] == plan.reply_text
+    assert request['max_new_tokens'] == len(plan.reply_text) * 8
+    assert request['duration_target_seconds'] is None
+    assert request['max_attempts'] == 1
+    video = BreezeTTS2Provider(config).performance_request(plan)
+    assert video['max_new_tokens'] == 650
+    assert video['duration_target_seconds'] == [40.0, 50.0]
+
+
+def test_long_audio_chunks_preserve_every_character_and_video_stays_single_pass():
+    from tts.external_breeze_worker import _audio_text_chunks, _generate_complete_audio
+    text = '长文需要完整说完，不能因为视频限制而截断。' * 30
+    chunks = _audio_text_chunks(text)
+    assert ''.join(chunks) == text
+    assert all(0 < len(chunk) <= 180 for chunk in chunks)
+    assert ''.join(_audio_text_chunks('字' * 501)) == '字' * 501
+    calls = []
+    def generate(bundle, **kwargs):
+        calls.append(kwargs['text'])
+        return {'sample_rate':24000, 'waveform':None}
+    result = _generate_complete_audio(generate, None, text=text, audio_only_unbounded=False)
+    assert calls == [text]
+    assert result['sample_rate'] == 24000
+
+
+def test_audio_chunks_are_generated_once_and_directions_are_renumbered(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from tts.external_breeze_worker import _generate_complete_audio
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cat=lambda waves, dim: sum(waves, [])))
+    text = '一' * 100 + '。' + '二' * 100 + '。' + '三' * 100 + '。'
+    calls = []
+    def generate(bundle, **kwargs):
+        calls.append(kwargs)
+        return {'sample_rate':24000,'waveform':[len(kwargs['text'])]}
+    result = _generate_complete_audio(generate, None, text=text, audio_only_unbounded=True,
+        instruction='第1句：稍慢。第2句：上扬。第3句：平稳。')
+    assert ''.join(item['text'] for item in calls) == text
+    assert len(calls) == 3
+    assert calls[1]['instruction'] == '第1句：上扬。'
+    assert result['waveform'] == [101,101,101]
+
+
+def test_multi_chunk_worker_retains_model_until_last_decode(tmp_path, monkeypatch):
+    import contextlib
+    import torch
+    device = SimpleNamespace(type='cuda')
+    moves = []
+    model = SimpleNamespace(to=lambda target: moves.append(target))
+    bundle = SimpleNamespace(model=model, codec='codec', patchers=[object()])
+    loader = SimpleNamespace(HYBRID_LABEL='hybrid', load_breeze_bundle=lambda *a:bundle)
+    runtime = SimpleNamespace(comfy_audio_to_tensor=lambda value:('wave',24000),
+        encode_reference_audio=lambda *a:'codes', decode_codes=lambda *a:torch.zeros(1,1,24))
+    generated = []
+    def generate(current, **kwargs):
+        assert current.model is model
+        generated.append(kwargs['text'])
+        return {'sample_rate':24000,'waveform':runtime.decode_codes('codec',SimpleNamespace(device=device))}
+    monkeypatch.setattr(torch.cuda, 'device', lambda *a:contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda:None)
+    monkeypatch.setattr(torch.cuda, 'empty_cache', lambda:None)
+    monkeypatch.setattr(external_breeze_worker, '_load_package',lambda *a:(loader,SimpleNamespace(_generate_audio=generate),runtime))
+    monkeypatch.setattr(external_breeze_worker, '_read_reference_audio',lambda *a:{})
+    text = '一'*100+'。'+'二'*100+'。'
+    external_breeze_worker._synthesize(dict(runtime_root=str(tmp_path),model_dir=str(tmp_path),
+        reference_audio='reference.wav',reference_text='参考',instruction='自然说话',text=text,
+        audio_only_unbounded=True),tmp_path/'out.wav',tmp_path/'status.json')
+    assert ''.join(generated) == text and len(generated) == 2
+    assert moves == ['cpu',device]
+    assert bundle.model is None and bundle.patchers == []
 
 
 @pytest.mark.parametrize("cfg_scale", [None, 1.0, 2.0])
@@ -331,12 +417,15 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
         "status": "ready",
         "phase": "generation",
         "audio_started": False,
+        "chunk_count": 1, "chunk_index": 0, "context_limit": 2048,
+        "instruction_enabled": True, "segmentation": "single",
     }
     assert calls["generation"]["text"] == request["text"]
     assert calls["generation"]["instruction"] == request["instruction"]
     assert calls["generation"]["ref_text"] == request["reference_text"]
     assert calls["generation"]["ref_codes"] == "reference-codes"
-    assert json.loads(status.read_text(encoding="utf-8")) == {
+    final_status = json.loads(status.read_text(encoding="utf-8"))
+    assert {key: final_status[key] for key in ('status', 'phase', 'audio_started')} == {
         "status": "completed",
         "phase": "completed",
         "audio_started": True,

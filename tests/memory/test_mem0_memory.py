@@ -2983,3 +2983,26 @@ def test_manual_clear_timeout_is_bounded_and_retry_does_not_accumulate_workers(
         for thread in threading.enumerate():
             if thread.name == "olivia-mem0-write" and thread not in existing_threads:
                 thread.join(timeout=0.5)
+
+
+@pytest.mark.parametrize('content', [
+    '我们是朋友吗？请记住这个关系。',
+    '如果我们是朋友。请记住这个关系。',
+    '假设有这么一天。我找回了指南针。这件事对我很重要。',
+    '承诺：我们每周一起写信吗？',
+])
+def test_explicit_fallback_does_not_turn_questions_or_hypotheses_into_facts(tmp_path, content):
+    class EmptyInferenceMem0(FakeMem0):
+        def add(self, messages, **kwargs):
+            if kwargs.get('infer') is not False:
+                self.calls.append(('add', {'messages': messages, **kwargs}))
+                return {'results': []}
+            return super().add(messages, **kwargs)
+
+    backend = EmptyInferenceMem0()
+    result = Mem0ConversationMemoryAdapter(backend, _config(tmp_path)).remember_exchange(
+        user_message=content, assistant_message='收到。', occurred_at=NOW,
+        source_id='reply:fixture:uncertain', user_id='local-user',
+    )
+    assert result.status is MemoryWriteStatus.SKIPPED
+    assert all(call.get('infer') is not False for name, call in backend.calls if name == 'add')

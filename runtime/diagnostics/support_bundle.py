@@ -126,7 +126,7 @@ def _project_health(value: object) -> dict[str, object]:
             if check.get("error_code") not in OFFLINE_ACTION_ERROR_CODES or check.get("stage") not in OFFLINE_ACTION_STAGES:
                 raise _invalid()
             entry["stage"] = check["stage"]
-        if name in {"video_ordinary", "video_music", "video_runtime"}:
+        if name in {"video_ordinary", "video_music", "video_runtime", "media_component_install"}:
             from runtime.diagnostics.install_failure import project_install_failure
             details = project_install_failure(check.get('failure_details'))
             if details:
@@ -214,6 +214,16 @@ def _project_tasks(value: object) -> dict[str, object]:
     for index, value in enumerate(raw_items, start=1):
         item = _mapping(value)
         projected: dict[str, object] = {"index": index, "status": _status(item.get("status"))}
+        if item.get('reply_capability_tier') in ('text', 'audio', 'video'):
+            projected['reply_capability_tier'] = item['reply_capability_tier']
+        if type(item.get('display_status')) is int and -1 <= item['display_status'] <= 10:
+            projected['display_status'] = item['display_status']
+        for field in ('audio_available', 'video_available', 'text_available'):
+            if type(item.get(field)) is bool:
+                projected[field] = item[field]
+        duration = item.get('audio_duration_seconds')
+        if type(duration) in (int, float) and 0 <= duration <= 86400:
+            projected['audio_duration_seconds'] = duration
         if "error_code" in item:
             projected["error_code"] = _code(item["error_code"])
         if "media_status" in item:
@@ -418,6 +428,9 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
         "manifest.json": _json_bytes({
             "members": list(DIAGNOSTIC_BUNDLE_MEMBERS),
             "schema_version": DIAGNOSTIC_BUNDLE_SCHEMA,
+            "revision": 2,
+            "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
+                         "natural_voice_chunks", "worker_progress", "waveform_styles"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),
