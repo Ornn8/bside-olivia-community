@@ -9,13 +9,14 @@ from runtime.diagnostics.support_bundle import build_diagnostic_bundle, project_
 
 
 @pytest.mark.parametrize("running", [True, False])
-def test_configured_diagnostic_collector_reads_live_history_progress_without_importing(monkeypatch, running):
+@pytest.mark.parametrize("stage", ["memory", "memory_wait"])
+def test_configured_diagnostic_collector_reads_live_history_progress_without_importing(monkeypatch, running, stage):
     import original_client_server as server
 
     collectors, snapshots = [], []
     def progress():
         snapshots.append(True)
-        return {"status": "RUNNING", "stage": "memory", "total": 142, "processed": 18,
+        return {"status": "RUNNING", "stage": stage, "total": 142, "processed": 18,
                 "content": "private-letter", "source_id": "private-source", "path": "C:/private/key.txt"}
     async def fallback(request):
         raise AssertionError("diagnostics must not invoke an import route")
@@ -30,7 +31,7 @@ def test_configured_diagnostic_collector_reads_live_history_progress_without_imp
     assert snapshots == []  # Captured lazily at export, without crawling storage.
     source = collectors[0]()
     assert snapshots == [True]
-    expected = {"state": "running" if running else "unavailable", "stage": "memory", "total": 142, "processed": 18, "task_running": running}
+    expected = {"state": "running" if running else "unavailable", "stage": stage, "total": 142, "processed": 18, "task_running": running}
     if not running:
         expected["error_code"] = "MEM0_SOURCE_DEDUP_UNAVAILABLE"
     assert source["health"]["checks"]["history_import"] == expected

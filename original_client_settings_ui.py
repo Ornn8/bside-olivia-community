@@ -2665,7 +2665,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         while (payload.status === "RUNNING") {
           const stages = {preflight: "检查备份", memory: "整理长期记忆", relationship: "整理关系状态"};
-          importState.textContent = `${stages[payload.stage] || "后台导入中"}：${payload.processed || 0} / ${payload.total || 0}。请勿重复提交；关闭此面板不会停止任务。`;
+          importState.textContent = payload.stage === "memory_wait"
+            ? "正在准备长期记忆，就绪后会自动继续导入。无需重复提交；关闭此面板不会停止任务。"
+            : `${stages[payload.stage] || "后台导入中"}：${payload.processed || 0} / ${payload.total || 0}。请勿重复提交；关闭此面板不会停止任务。`;
           await new Promise(resolve => window.setTimeout(resolve, 2000));
           payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
         }
@@ -2691,6 +2693,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? missingBackupText
           : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
             ? "本地 letter_pairs.json 格式无效，请更换完整备份后重试。"
+            : error && error.code === "OFFICIAL_HISTORY_MEMORY_WAIT_TIMEOUT"
+              ? "长期记忆准备时间较长，本次尚未开始导入。请等待长期记忆显示可用后，再点击导入。"
+            : error && error.code === "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE"
+              ? "长期记忆尚不可用，本次尚未开始导入。请到长期记忆页面查看状态；恢复可用后再点击导入。"
             : error && error.code && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code)
               ? `本地信件导入未完成：${error.code}。请保留诊断包。`
               : "暂时无法读取导入结果，后台任务可能仍在继续。点击可查询进度，请勿重启或重复导入。";
