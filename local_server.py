@@ -3963,13 +3963,63 @@ def _record_media_job_failure(exc: Exception, stage: str, environment: Mapping[s
     _persist_provider_failure("MEDIA_JOB_FAILED", json.dumps(details, sort_keys=True), environment)
 
 
+def _sync_media_delivery_world(letter: dict) -> None:
+    from runtime.reply.media_delivery import delivery_references
+    events = delivery_references(letter)
+    if not events:
+        return
+    if daily_life_runtime is None:
+        letter['media_world_status'] = 'DISABLED'
+        return
+    try:
+        for event in events:
+            daily_life_runtime.store.record_media_delivery(event)
+        letter['media_world_status'] = 'COMMITTED'
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        # Media remains playable. The persisted letter is the retry source.
+        letter['media_world_status'] = 'PENDING'
+
+
+def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
+                            path: Path, components: tuple[str, ...], presentation: str) -> None:
+    from runtime.reply.media_delivery import make_delivery, delivery_references
+    if (not delivery_id or letter.get('private_world_delivery_id') != delivery_id
+            or letter.get('reply_text') != reply_text or not path.is_file() or path.stat().st_size == 0):
+        return
+    events = delivery_references(letter)
+    for component in components:
+        if not any(event['component'] == component for event in events):
+            try:
+                event = make_delivery(letter, component=component, presentation=presentation,
+                                      occurred_at=datetime.now(timezone.utc))
+            except (ValueError, TypeError, KeyError):
+                letter['media_world_status'] = 'UNAVAILABLE'
+                return  # Invalid legacy metadata must not break playable media.
+            events.append(event)
+    letter['media_deliveries'] = events
+    letter['media_world_status'] = 'PENDING'
+    # Persist the playable letter and its receipt before publishing world facts.
+    # A crash after this point can replay the same idempotent events on startup.
+    _persist_media_state()
+    _sync_media_delivery_world(letter)
+
+
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
     """Render one media reply at a time and persist a relative artifact path."""
 
     letter = next((item for item in store.letters if item["letter_id"] == letter_id), None)
     if letter is None:
         return
+    delivery_id = letter.get('private_world_delivery_id', '')
+    if letter.get('reply_text') is not None and letter['reply_text'] != reply_text:
+        return
+    binding = (delivery_id, letter.get('reply_revision'), letter.get('private_world_reply_sha256'), letter.get('reply_text'))
+    def still_current():
+        return binding == (letter.get('private_world_delivery_id', ''), letter.get('reply_revision'),
+                           letter.get('private_world_reply_sha256'), letter.get('reply_text'))
     async with media_semaphore:
+        if not still_current():
+            return
         letter["media_status"] = "PROCESSING"
         _persist_media_state()
         environment = MappingProxyType(dict(_os.environ))
@@ -4010,11 +4060,15 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     stage = "speech"
                     metadata = await asyncio.to_thread(render_reply_audio, reply_text, audio_path,
                         tts_config_path=tts_config, voice_performance_plan=voice_plan, environment=environment)
+                    if not still_current():
+                        return
                     letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{audio_path.name}"
                     letter["reply_audio_duration"] = metadata["duration_seconds"]
                     _persist_media_state()
                 if reply_mode == "voice_reply":
                     letter.update(media_status="COMPLETED", media_error_code=None, media_retryable=False)
+                    _record_published_media(letter, reply_text=reply_text, delivery_id=delivery_id,
+                        path=audio_path, components=('speech',), presentation='audio')
                     _persist_media_state()
                     return
             if reply_mode == ReplyMode.SPOKEN_VIDEO.value:
@@ -4099,12 +4153,18 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     **cover_options,
                     **({"render_video": False} if not video_enabled else {}),
                 )
+                if not still_current():
+                    return
                 letter.update(_sanitized_music_render_metadata(render_metadata))
                 if reply_mode == "voice_song_video":
                     from runtime.reply.reply_media import concatenate_reply_audio
                     await asyncio.to_thread(concatenate_reply_audio, audio_path, song_output, output_path, environment)
+                    if not still_current():
+                        return
                     letter["reply_structure"] = "speech_song_audio"
             stage = "publish"
+            if not still_current():
+                return
             if video_enabled:
                 letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             else:
@@ -4112,6 +4172,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
             letter["media_retryable"] = False
+            components = ('speech',) if reply_mode == ReplyMode.SPOKEN_VIDEO.value else (
+                (('speech',) if reply_mode in {ReplyMode.MUSICAL_VIDEO.value, 'voice_song_video'} else ())
+                + (('cover',) if letter.get('music_provider') == 'ace_step_xl_cover' else ('music',)))
+            _record_published_media(letter, reply_text=reply_text, delivery_id=delivery_id,
+                path=output_path, components=components, presentation='video' if video_enabled else 'audio')
             _persist_media_state()
         except (
             ReplyMediaError,
@@ -4122,6 +4187,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             ValueError,
             OSError,
         ) as exc:
+            if not still_current():
+                return
             _record_media_job_failure(exc, stage, environment)
             candidate = str(exc)[:80]
             error_contract = contract.letter_detail_media_error_metadata(candidate)
@@ -4136,6 +4203,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             letter["media_retryable"] = bool(
                 error_contract and error_contract["retryable"]
             )
+            if reply_mode == 'voice_song_video' and letter.get('reply_audio_url'):
+                _record_published_media(letter, reply_text=reply_text, delivery_id=delivery_id,
+                    path=output_dir / f'{letter_id}-speech.wav', components=('speech',), presentation='audio')
             _persist_media_state()
 
 
@@ -4340,9 +4410,19 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     _schedule_pending_media_jobs()
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+        media_changed = False
         for letter in store.letters:
+            if letter.get('media_deliveries'):
+                old_media_status = letter.get('media_world_status')
+                _sync_media_delivery_world(letter)
+                media_changed = media_changed or old_media_status != letter.get('media_world_status')
             if letter.get("letter_status") == "COMPLETED" and letter.get("daily_life_status") == "PENDING":
                 _schedule_daily_life_exchange(letter)
+        if media_changed:
+            try:
+                _persist_store_state()
+            except (OSError, StoreStateUnavailable):
+                _safe_log('media_world_status_persist_unavailable')
 
 
 def _start_ready_conversation_memory_runtime():

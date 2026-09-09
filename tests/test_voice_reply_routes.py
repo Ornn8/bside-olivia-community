@@ -122,12 +122,19 @@ def test_native_audio_patch_is_idempotent_and_binds_props():
 
 @pytest.mark.parametrize('mode', ['voice_reply', 'singing_video', 'voice_song_video'])
 @pytest.mark.parametrize('video', [False, True])
-def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeypatch, mode, video):
+@pytest.mark.parametrize('cover', [False, True])
+def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeypatch, mode, video, cover):
     import local_server as server
     import runtime.reply.reply_media as media
     calls = []
     letter = dict(letter_id='matrix', reply_mode=mode, reply_video_enabled=video,
                   letter_status='COMPLETED', reply_text='synthetic')
+    import hashlib
+    from runtime.private_world.daily_life import DailyLifeStore
+    world = DailyLifeStore(tmp_path/'world.sqlite')
+    letter.update(reply_revision=1, private_world_delivery_id='matrix:1',
+        private_world_reply_sha256=hashlib.sha256(b'synthetic').hexdigest())
+    monkeypatch.setattr(server, 'daily_life_runtime', SimpleNamespace(store=world))
     monkeypatch.setattr(server.store, 'letters', [letter])
     monkeypatch.setattr(server, 'media_semaphore', asyncio.Semaphore(1))
     monkeypatch.setattr(server, '_local_data_root', lambda *a: tmp_path)
@@ -151,9 +158,25 @@ def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeyp
     monkeypatch.setattr(server, 'render_reply_audio', speech)
     monkeypatch.setattr(server, 'render_reply_video', speech_video)
     monkeypatch.setattr(server, 'render_musical_reply', song)
+    if cover:
+        import runtime.media.cover_reply as covers
+        import runtime.media.cover_upload as uploads
+        letter.update(music_provider='ace_step_xl_cover', material={'cover_source_id': 'a'*32, 'cover_lyrics': '这句歌词不是承诺。'})
+        monkeypatch.setattr(covers, 'render_cover_reply', song)
+        monkeypatch.setattr(uploads, 'source_path', lambda *a: scene)
     monkeypatch.setattr(media, 'concatenate_reply_audio', concat)
     asyncio.run(server._render_media_job('matrix', 'synthetic', 'synthetic', mode))
     assert letter['media_status'] == 'COMPLETED', letter
+    music = 'cover' if cover else 'music'
+    expected = {'speech'} if mode == 'voice_reply' else {music} if mode == 'singing_video' else {'speech', music}
+    assert {event['component'] for event in letter['media_deliveries']} == expected
+    assert all(event['presentation'] == ('video' if video else 'audio') for event in letter['media_deliveries'])
+    assert letter['media_world_status'] == 'COMMITTED'
+    assert len(world.history()['moments']) == len(expected)
+    if cover and mode != 'voice_reply':
+        event = next(e for e in letter['media_deliveries'] if e['component'] == 'cover')
+        assert event['source_audio_id'] == 'a'*32
+        assert 'lyrics' not in str(event) and '这句歌词' not in str(event)
     assert ('video_gate' in calls) is video
     if mode == 'voice_reply':
         assert calls == (['video_gate', 'speech_video'] if video else ['speech_audio'])
