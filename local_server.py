@@ -340,6 +340,8 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
     record: dict[str, object] = {"event": event}
+    from runtime.diagnostics.failure_context import project_failure_context
+    record.update(project_failure_context(fields))
     for name in ("status", "error_code"):
         value = fields.get(name)
         if isinstance(value, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(value):
@@ -1960,6 +1962,10 @@ async def handler(request: web.Request):
         except Exception as e:
             code = _diagnostic_code('ROUTE', e)
             _safe_log('route_failure', method=method, path=path, error_code=code)
+            if canonical_path == "/toy/letter/route-preview":
+                from runtime.diagnostics.failure_context import exception_context
+                _safe_log("reply_route_preview_exception", status="FAILED",
+                          error_code="REPLY_ROUTE_INTERNAL_ERROR", **exception_context(e, "internal"))
             result = err(500, 'INTERNAL_ERROR', {'status': 'FAILED', 'error_code': code})
 
     if canonical_path == "/toy/letter/route-preview":
@@ -3476,6 +3482,12 @@ async def route(
         except VideoReplySettingsError as exc:
             return err(exc.status, exc.code, {"error_code": exc.code})
 
+    if p == "/toy/letter/route-preview-diagnostic":
+        code = body.get("error_code")
+        if not isinstance(code, str) or code not in {"REPLY_ROUTE_CLIENT_TIMEOUT", "REPLY_ROUTE_CLIENT_CONNECTION", "REPLY_ROUTE_CLIENT_RESPONSE_INVALID", "REPLY_ROUTE_CLIENT_UNKNOWN"}:
+            return err(400, "INVALID_DIAGNOSTIC", {})
+        _safe_log("reply_route_frontend_failed", status="FAILED", error_code=code)
+        return ok({})
     if p == "/toy/letter/route-preview":
         from letter_triage import explicitly_requested_route
         content = body.get("content")
@@ -3501,7 +3513,11 @@ async def route(
                     'router_rate_limited': 'LLM_RATE_LIMITED', 'router_timeout': 'LLM_TIMEOUT',
                     'router_invalid_result': 'REPLY_ROUTE_INVALID_RESULT',
                     'router_invalid_content': 'REPLY_ROUTE_INVALID_CONTENT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
-            _safe_log("reply_route_classification_failed", status="FAILED", error_code=code)
+            from runtime.diagnostics.failure_context import project_failure_context
+            detail = project_failure_context(getattr(decision, "diagnostic", None) or {})
+            if not detail:
+                detail = {"failure_stage": "route_validation"}
+            _safe_log("reply_route_classification_failed", status="FAILED", error_code=code, **detail)
             return err(503, code, {"error_code": code})
         requested = explicitly_requested_route(decision)
         explicit_video = bool({"explicit_video_reply_request", "explicit_video_output_request"}.intersection(decision.music_contexts))

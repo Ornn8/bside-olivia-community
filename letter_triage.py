@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from llm_gateway import GatewayError, GatewayToolCall
+from runtime.diagnostics.failure_context import exception_context
 from runtime.media.media_paths import configured_media_path
 from music_reply import musical_reply_configured
 
@@ -201,6 +202,7 @@ class TriageResult:
     character_willing: bool = True
     music_role: str = "none"
     request_disposition: str = "none"
+    diagnostic: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -220,7 +222,7 @@ class TriageResult:
         }
 
 
-def _failed(code: str, *, called: bool = True) -> TriageResult:
+def _failed(code: str, *, called: bool = True, diagnostic=None) -> TriageResult:
     return TriageResult(
         "unknown",
         "text_letter",
@@ -228,6 +230,7 @@ def _failed(code: str, *, called: bool = True) -> TriageResult:
         "unavailable",
         called,
         character_willing=False,
+        diagnostic=diagnostic,
     )
 
 
@@ -397,18 +400,19 @@ class LetterReplyRouter:
                 ),
                 timeout=self.timeout_seconds,
             )
-        except asyncio.TimeoutError:
-            return _failed("router_timeout")
+        except asyncio.TimeoutError as error:
+            return _failed("router_timeout", diagnostic=exception_context(error))
         except GatewayError as error:
+            diagnostic = exception_context(error)
             if error.code == 'PROVIDER_QUOTA_EXHAUSTED':
-                return _failed('router_quota_exhausted')
+                return _failed('router_quota_exhausted', diagnostic=diagnostic)
             if error.status in (401, 403):
-                return _failed('router_auth_failed')
+                return _failed('router_auth_failed', diagnostic=diagnostic)
             if error.status == 429:
-                return _failed('router_rate_limited')
-            return _failed('router_timeout' if error.code == 'PROVIDER_TIMEOUT' else 'router_unavailable')
-        except Exception:
-            return _failed("router_unavailable")
+                return _failed('router_rate_limited', diagnostic=diagnostic)
+            return _failed('router_timeout' if error.code == 'PROVIDER_TIMEOUT' else 'router_unavailable', diagnostic=diagnostic)
+        except Exception as error:
+            return _failed("router_unavailable", diagnostic=exception_context(error, "internal"))
 
         if len(calls) != 1 or getattr(calls[0], "name", None) != "select_reply_mode":
             return _failed("router_invalid_result")

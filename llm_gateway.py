@@ -97,8 +97,9 @@ class ProviderRejected(GatewayError):
 
 
 class ProviderProtocolError(GatewayError):
-    def __init__(self) -> None:
+    def __init__(self, detail: str | None = None) -> None:
         super().__init__("PROVIDER_PROTOCOL", retryable=False)
+        self.diagnostic_detail = detail
 
 
 class _RetryableProviderProtocolError(ProviderProtocolError):
@@ -890,11 +891,17 @@ class OpenAICompatibleAdapter(Gateway):
         background_reasoning: bool = False,
         endpoint: str | None = None,
     ) -> dict[str, Any]:
-        key = self._ensure_configured()
+        try:
+            key = self._ensure_configured()
+        except GatewayError as exc:
+            exc.diagnostic_stage = "configuration"
+            raise
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning or background_reasoning)
         )
         for attempt in range(self.config.max_retries + 1):
+            diagnostic_stage = "request"
+            response_status = None
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
@@ -904,6 +911,8 @@ class OpenAICompatibleAdapter(Gateway):
                         headers=self._headers(key, request_id),
                     ) as response:
                         status = response.status
+                        response_status = status
+                        diagnostic_stage = "http_response"
                         await _check_provider_quota(response)
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
@@ -912,24 +921,37 @@ class OpenAICompatibleAdapter(Gateway):
                             raise ProviderRetryableError(status)
                         if status >= 400:
                             raise ProviderRejected(status)
+                        diagnostic_stage = "response_json"
                         try:
                             raw = await response.text()
                             data = json.loads(raw)
                         except (UnicodeError, json.JSONDecodeError, TypeError):
-                            raise ProviderProtocolError() from None
+                            raise ProviderProtocolError("invalid_json") from None
                         if not isinstance(data, Mapping) or not data:
-                            raise ProviderProtocolError()
+                            raise ProviderProtocolError("invalid_response_shape")
                         return dict(data)
+            except GatewayError as exc:
+                exc.diagnostic_stage = diagnostic_stage
+                if exc.status is None:
+                    exc.status = response_status
+                raise
             except asyncio.TimeoutError:
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
-                raise ProviderTimeout() from None
-            except aiohttp.ClientError:
+                error = ProviderTimeout()
+                error.diagnostic_stage = diagnostic_stage
+                error.status = response_status
+                raise error from None
+            except aiohttp.ClientError as exc:
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
-                raise ProviderUnavailable() from None
+                error = ProviderUnavailable()
+                error.diagnostic_stage = diagnostic_stage
+                error.diagnostic_exception_type = type(exc).__name__
+                error.status = response_status
+                raise error from None
         raise ProviderUnavailable()
 
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
@@ -1055,9 +1077,13 @@ class OpenAICompatibleAdapter(Gateway):
         ):
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
-        calls = _extract_tool_calls(data)
-        if not calls:
-            raise ProviderProtocolError()
+        try:
+            calls = _extract_tool_calls(data)
+            if not calls:
+                raise ProviderProtocolError("missing_tools")
+        except GatewayError as exc:
+            exc.diagnostic_stage = "tool_parse"
+            raise
         return calls
 
     async def stream(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> AsyncIterator[GatewayDelta]:
@@ -1258,9 +1284,9 @@ def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
             if isinstance(message, Mapping) and isinstance(message.get("tool_calls"), list):
                 tool_calls = message["tool_calls"]
                 if any(not isinstance(item, Mapping) for item in tool_calls):
-                    raise ProviderProtocolError()
+                    raise ProviderProtocolError("invalid_tool_entry")
                 if any(not isinstance(item.get("function"), Mapping) for item in tool_calls):
-                    raise ProviderProtocolError()
+                    raise ProviderProtocolError("invalid_tool_entry")
                 raw_calls.extend(tool_calls)
     output = data.get("output")
     if isinstance(output, list):
@@ -1277,14 +1303,14 @@ def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
         name = source.get("name")
         arguments = source.get("arguments")
         if not isinstance(name, str) or not name:
-            raise ProviderProtocolError()
+            raise ProviderProtocolError("invalid_tool_name")
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
             except json.JSONDecodeError:
-                raise ProviderProtocolError() from None
+                raise ProviderProtocolError("invalid_tool_arguments") from None
         if not isinstance(arguments, Mapping):
-            raise ProviderProtocolError()
+            raise ProviderProtocolError("invalid_tool_arguments")
         calls.append(GatewayToolCall(name=name, arguments=dict(arguments)))
     return tuple(calls)
 

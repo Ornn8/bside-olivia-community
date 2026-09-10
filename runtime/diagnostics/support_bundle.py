@@ -297,6 +297,8 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     if "error_code" in source:
         record["error_code"] = _code(source["error_code"])
     if runtime:
+        from runtime.diagnostics.failure_context import project_failure_context
+        record.update(project_failure_context(source))
         for name, maximum in (("elapsed_ms", 86_400_000), ("recorded_at_ms", 10_000_000_000_000)):
             if name in source:
                 value = source[name]
@@ -431,7 +433,7 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
             "revision": 2,
             "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
                          "natural_voice_chunks", "worker_progress", "waveform_styles", "reply_route_preview_diagnostics",
-                         "history_relationship_failure_codes"],
+                         "history_relationship_failure_codes", "route_failure_context"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),
