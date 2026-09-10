@@ -204,6 +204,7 @@ RELEASE_TOOL_FILES = {
     "tools/live_healthcheck.py",
     "tools/livetalking_runtime.py",
     "tools/livetalking_worker.py",
+    "tools/latentsync_diagnostic_worker.py",
     "tools/memory_import.py",
     "tools/minimax_music3_worker.py",
     "tools/minimax_profile.py",
