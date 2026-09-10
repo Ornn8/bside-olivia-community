@@ -830,7 +830,8 @@ def test_history_audit_write_failure_rolls_back_and_does_not_mark_complete(tmp_p
 
 
 @pytest.mark.parametrize("variant", ["format", "append", "reorder"])
-def test_history_reimport_matches_content_across_file_changes_and_restart(tmp_path, variant):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_history_reimport_matches_content_across_file_changes_and_restart(tmp_path, variant, legacy):
     from runtime.imports.offline_letter_pairs import offline_letter_pair_exchanges
     pairs = [{"content": "我喜欢钢琴。", "reply": "我会练琴。"}]
     path = tmp_path / "letters.json"
@@ -842,7 +843,14 @@ def test_history_reimport_matches_content_across_file_changes_and_restart(tmp_pa
             assistant_message=exchange.assistant_message, occurred_at=exchange.occurred_at,
             source_id=exchange.memory_source_id, user_id="local-user")
     old = offline_letter_pair_exchanges(path)[0]
-    assert write(Mem0ConversationMemoryAdapter(backend, config), old).status is MemoryWriteStatus.WRITTEN
+    original = Mem0ConversationMemoryAdapter(backend, config)
+    if legacy:
+        initial = original.remember_exchange(user_message=old.user_message,
+            assistant_message=old.assistant_message, occurred_at=old.occurred_at,
+            source_id=old.memory_source_id.replace('history:offline:', 'history:'), user_id='local-user')
+    else:
+        initial = write(original, old)
+    assert initial.status is MemoryWriteStatus.WRITTEN
     before = sum(name == "add" for name, _ in backend.calls)
     if variant != "format":
         pairs.append({"content": "我喜欢散步。", "reply": "我刚练完琴。"})
@@ -860,6 +868,22 @@ def test_history_reimport_matches_content_across_file_changes_and_restart(tmp_pa
     if variant != "format":
         new = next(item for item in exchanges if item.user_message != old.user_message)
         assert write(adapter, new).status is MemoryWriteStatus.WRITTEN
+
+
+def test_dated_history_keeps_separate_occurrences_with_identical_text(tmp_path):
+    from datetime import timedelta
+    from runtime.imports.historical_memory import HistoricalExchange
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    results = []
+    for index in range(2):
+        exchange = HistoricalExchange(f'official:account:letter-{index}', NOW + timedelta(days=index),
+                                      '我明天要面试。', '祝你面试顺利。')
+        results.append(adapter.remember_exchange(user_message=exchange.user_message,
+            assistant_message=exchange.assistant_message, occurred_at=exchange.occurred_at,
+            source_id=exchange.memory_source_id, user_id='local-user'))
+    assert [result.status for result in results] == [MemoryWriteStatus.WRITTEN] * 2
+    assert set(results[0].memory_ids).isdisjoint(results[1].memory_ids)
 
 
 def test_history_audit_does_not_skip_when_saved_memory_ids_disappear(tmp_path):

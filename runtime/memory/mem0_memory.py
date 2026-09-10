@@ -1372,9 +1372,11 @@ class Mem0ConversationMemoryAdapter:
         source_id: str, user_id: str, origin: str = "user",
     ) -> MemoryWriteResult:
         original_source = source_id
-        if source_id.startswith("history:") and origin != "proactive":
+        if source_id.startswith("history:offline:") and origin != "proactive":
             # Reuse a completed legacy source even when the backup's raw-file
-            # hash/order changed. The normal path still verifies its actual IDs.
+            # hash/order changed. Only untimed offline pairs permit content-only
+            # aliases; dated history retains each independent occurrence.
+            # The normal path still verifies the legacy source's actual IDs.
             digest = hashlib.sha256(json.dumps(
                 [self.config.agent_id, user_message, assistant_message], ensure_ascii=False,
             ).encode("utf-8")).hexdigest()

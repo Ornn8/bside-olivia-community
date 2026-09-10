@@ -54,6 +54,8 @@ class HistoricalExchange:
     @property
     def memory_source_id(self) -> str:
         digest = hashlib.sha256(self.source_record_id.encode("utf-8")).hexdigest()
+        if self.source_record_id.startswith("offline-letter-pairs:"):
+            return f"history:offline:{digest}"
         return f"history:{digest}"
 
 
