@@ -147,6 +147,7 @@ from runtime.imports.offline_letter_pairs import (
 from runtime.imports.historical_memory import (
     HistoricalExchange,
     HistoricalMigrationResult,
+    HistoricalRelationshipError,
     apply_historical_private_world,
     assess_historical_relationship,
     exchanges_from_legacy_payload,
@@ -1521,6 +1522,7 @@ async def _migrate_historical_history(
             private_world_status="unavailable",
             error_code="PRIVATE_WORLD_HISTORY_UNAVAILABLE",
         )
+    failure_code = "PRIVATE_WORLD_HISTORY_LOOKUP_FAILED"
     try:
         command_id = historical_relationship_command_id(full_exchanges)
         existing = await asyncio.to_thread(
@@ -1539,23 +1541,28 @@ async def _migrate_historical_history(
             processed=len(full_exchanges),
             retryable=False,
         )
+        failure_code = "PRIVATE_WORLD_HISTORY_PREPARE_FAILED"
         assessment = await assess_historical_relationship(
             full_exchanges,
             gateway=letters_adapter.gateway,
             persona_policy=letters_adapter.get_persona_policy(),
         )
+        failure_code = "PRIVATE_WORLD_HISTORY_WRITE_FAILED"
         private_world_status = await asyncio.to_thread(
             apply_historical_private_world,
             full_exchanges,
             assessment=assessment,
             command_service=private_world_command_service,
         )
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, HistoricalRelationshipError):
+            failure_code = exc.code
+        _safe_log("history_relationship_failed", status="FAILED", error_code=failure_code)
         return replace(
             result,
             status="partial",
             private_world_status="unavailable",
-            error_code="PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED",
+            error_code=failure_code,
         )
     return replace(result, private_world_status=private_world_status)
 
@@ -1955,6 +1962,12 @@ async def handler(request: web.Request):
             _safe_log('route_failure', method=method, path=path, error_code=code)
             result = err(500, 'INTERNAL_ERROR', {'status': 'FAILED', 'error_code': code})
 
+    if canonical_path == "/toy/letter/route-preview":
+        code = (result.get("data") or {}).get("error_code")
+        fields = {"status": "COMPLETED" if result.get("code") == 0 else "FAILED"}
+        if isinstance(code, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(code):
+            fields["error_code"] = code
+        _safe_log("reply_route_preview_result", **fields)
     return web.json_response(
         result,
         status=response_http_status(result),
@@ -3485,7 +3498,10 @@ async def route(
         if decision.status == "unavailable":
             reason = getattr(decision, 'reason_code', '')
             code = {'router_quota_exhausted': 'LLM_QUOTA_EXHAUSTED', 'router_auth_failed': 'LLM_AUTH_FAILED',
-                    'router_rate_limited': 'LLM_RATE_LIMITED', 'router_timeout': 'LLM_TIMEOUT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
+                    'router_rate_limited': 'LLM_RATE_LIMITED', 'router_timeout': 'LLM_TIMEOUT',
+                    'router_invalid_result': 'REPLY_ROUTE_INVALID_RESULT',
+                    'router_invalid_content': 'REPLY_ROUTE_INVALID_CONTENT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
+            _safe_log("reply_route_classification_failed", status="FAILED", error_code=code)
             return err(503, code, {"error_code": code})
         requested = explicitly_requested_route(decision)
         explicit_video = bool({"explicit_video_reply_request", "explicit_video_output_request"}.intersection(decision.music_contexts))

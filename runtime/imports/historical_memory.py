@@ -143,6 +143,14 @@ def exchanges_from_legacy_payload(
     )
 
 
+class HistoricalRelationshipError(ValueError):
+    """Fixed diagnostic code without provider text or historical content."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
 async def assess_historical_relationship(
     exchanges: Iterable[HistoricalExchange],
     *,
@@ -170,10 +178,25 @@ async def assess_historical_relationship(
         persona_policy,
         max_input_chars=max_input_chars,
     )
-    response = await gateway.complete(
-        messages,
-        request_id=historical_relationship_command_id(ordered),
-    )
+    try:
+        response = await gateway.complete(
+            messages,
+            request_id=historical_relationship_command_id(ordered),
+        )
+    except Exception as exc:
+        suffix = {
+            "PROVIDER_QUOTA_EXHAUSTED": "QUOTA_EXHAUSTED",
+            "PROVIDER_TIMEOUT": "TIMEOUT",
+            "PROVIDER_PROTOCOL": "PROTOCOL",
+            "PROVIDER_UNAVAILABLE": "UNAVAILABLE",
+            "PROVIDER_RETRYABLE": "RETRYABLE",
+            "PROVIDER_REJECTED": "REJECTED",
+        }.get(getattr(exc, "code", None), "FAILED")
+        if getattr(exc, "status", None) in (401, 403):
+            suffix = "AUTH_FAILED"
+        elif getattr(exc, "status", None) == 429:
+            suffix = "RATE_LIMITED" if suffix != "QUOTA_EXHAUSTED" else suffix
+        raise HistoricalRelationshipError("PRIVATE_WORLD_HISTORY_LLM_" + suffix) from None
     try:
         payload = json.loads(response.text)
         required = {
@@ -202,7 +225,7 @@ async def assess_historical_relationship(
             tuple(indexes),
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError("historical relationship assessment is invalid") from exc
+        raise HistoricalRelationshipError("PRIVATE_WORLD_HISTORY_RESULT_INVALID") from None
 
 
 def _bounded_assessment_messages(
