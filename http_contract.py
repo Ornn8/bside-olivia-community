@@ -233,6 +233,8 @@ ROUTES: dict[str, dict[str, Any]] = {
         state="not_implemented",
         error_code="PREFERENCE_SURVEY_NOT_IMPLEMENTED",
     ),
+    "/toy/proactive/status": _route(["GET"], "letters.read", read_only=True),
+    "/toy/proactive/settings": _route(["POST"], "settings.video_reply", evidence="local-extension"),
     "/toy/letter/list": _route(["GET"], "letters.read", read_only=True),
     "/toy/letter/unread_count": _route(["GET"], "letters.unread", read_only=True),
     "/toy/letter/detail": _route(["GET"], "letters.read", read_only=True),

@@ -382,6 +382,8 @@ def _provenance(value: Mapping[str, Any]) -> str:
         "occurred_at",
         "content_hash",
         "kind",
+        "origin",
+        "speaker",
         "read_only",
         "current_conversation",
     ):

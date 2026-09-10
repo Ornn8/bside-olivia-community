@@ -85,6 +85,11 @@ class _ConversationMemoryView:
         ):
             metadata["canonical"] = True
             metadata["history_actor"] = history_actor
+        if record.metadata.get("origin") == "proactive":
+            provenance["origin"] = "proactive"
+            provenance["speaker"] = "linli"
+            metadata["origin"] = "proactive"
+            metadata["verbatim"] = record.metadata.get("verbatim") is True
         return MemoryRecord(
             memory_id=record.memory_id,
             domain=CONVERSATION_MEMORY,

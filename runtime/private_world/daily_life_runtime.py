@@ -171,10 +171,14 @@ class DailyLifeRuntime:
                 self.error_code = "DAILY_LIFE_GENERATION_UNAVAILABLE"
                 self._retry_after = now + timedelta(minutes=2)
 
-    async def consume_exchange(self, source_id: str, user_text: str, reply_text: str, *, occurred_at: datetime, received_at: datetime | None = None) -> bool:
+    async def consume_exchange(self, source_id: str, user_text: str, reply_text: str, *, occurred_at: datetime, received_at: datetime | None = None, origin: str = "user") -> bool:
+        if not isinstance(origin, str) or origin not in {"user", "proactive"}:
+            raise ValueError("DAILY_LIFE_ORIGIN_INVALID")
+        if origin == "proactive" and user_text != "":
+            raise ValueError("DAILY_LIFE_PROACTIVE_USER_TEXT_INVALID")
         async with self._lock:
             if self.store.has_source(source_id):
-                return self.store.record_exchange(source_id, user_text, reply_text, [], occurred_at=occurred_at)
+                return self.store.record_exchange(source_id, user_text, reply_text, [], occurred_at=occurred_at, origin=origin)
             receipt_time = received_at or occurred_at
             previous = self.store.snapshot(receipt_time)
             observation = previous["current"]
@@ -190,7 +194,7 @@ class DailyLifeRuntime:
                 "rhythm": previous["rhythm"],
                 "previous_observation": observation,
                 "previous_state": self.store.exchange_state(user_text, related_text=reply_text),
-                "user_letter": user_text, "linli_reply": reply_text,
+                "user_letter": user_text, "linli_reply": reply_text, "origin": origin,
                 "active_boundaries": [{**item, "boundary_id": alias} for alias, item in zip(boundary_ids, known_boundaries)],
             }
             request_id = "life:" + hashlib.sha256(source_id.encode()).hexdigest()[:32]
@@ -212,6 +216,19 @@ class DailyLifeRuntime:
                     if "updates" not in payload or set(payload) - {"updates", "current_quote", "relationship", "routine", "boundaries"}:
                         raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
                     boundary_changes = validate_boundary_changes(payload.get("boundaries"), reply_text)
+                    if origin == "proactive":
+                        if payload.get("relationship") is not None:
+                            raise ValueError("DAILY_LIFE_PROACTIVE_RELATIONSHIP_INVALID")
+                        if payload.get("routine") is not None:
+                            raise ValueError("DAILY_LIFE_PROACTIVE_ROUTINE_INVALID")
+                        for update in payload["updates"]:
+                            if not isinstance(update, dict):
+                                raise ValueError("DAILY_LIFE_UPDATE_INVALID")
+                            if update.get("actor") == "user" or (
+                                update.get("kind") == "shared"
+                                and update.get("status") != "awaiting_user"
+                            ):
+                                raise ValueError("DAILY_LIFE_PROACTIVE_UPDATE_INVALID")
                     for raw, change in zip(payload.get("boundaries") or [], boundary_changes):
                         if raw["boundary_id"] is not None:
                             if raw["boundary_id"] not in boundary_ids:
@@ -239,7 +256,7 @@ class DailyLifeRuntime:
                             raise ValueError("DAILY_LIFE_CONFLICT_EVIDENCE_INVALID" if conflict else "DAILY_LIFE_BOUNDARY_EVIDENCE_INVALID")
                         payload["relationship"] = None if conduct == "none" else {**relation, "user_quote": quote}
                     return self.store.record_exchange(source_id, user_text, reply_text, payload["updates"], occurred_at=occurred_at,
-                                                      current_quote=payload.get("current_quote"), relationship=payload.get("relationship"), received_at=received_at, routine=payload.get("routine"), boundaries=boundary_changes)
+                                                      current_quote=payload.get("current_quote"), relationship=payload.get("relationship"), received_at=received_at, routine=payload.get("routine"), boundaries=boundary_changes, origin=origin)
                 except (ValueError, TypeError, KeyError) as exc:
                     if attempt or str(exc) == "DAILY_LIFE_CONTEXT_TOO_LARGE":
                         raise

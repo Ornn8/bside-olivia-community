@@ -202,7 +202,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v32"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v33"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -217,7 +217,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 2
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 3
     assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
@@ -249,6 +249,22 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert 'panel.style.background = "#202228";' in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.background = "#2b2e35";' in BOOTSTRAP_JAVASCRIPT
     assert "var(--el-fill-color-light" not in BOOTSTRAP_JAVASCRIPT
+
+
+def test_proactive_letters_use_native_mailbox_routes_and_settings_contract() -> None:
+    source = BOOTSTRAP_JAVASCRIPT
+
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v33"
+    assert 'const PROACTIVE_STATUS_PATH = "/toy/proactive/status";' in source
+    assert 'const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";' in source
+    assert "login_check_enabled" in source
+    assert "林离正在写信" in source
+    assert "PROACTIVE_LETTER_BUSY" in source
+    assert "olivia-proactive-letter" not in source
+    assert "data-olivia-proactive-settings" in source
+    assert "olivia-letter-audio" in source
+    assert "title" in source
+    assert "自动播放" not in source
 
 
 def test_selected_settings_tab_keeps_a_distinct_visual_state() -> None:

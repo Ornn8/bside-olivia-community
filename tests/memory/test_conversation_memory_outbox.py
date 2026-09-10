@@ -304,6 +304,45 @@ def test_written_delivery_is_terminal_across_rescan_and_restart(tmp_path: Path) 
     asyncio.run(scenario())
 
 
+def test_proactive_completed_row_with_empty_content_is_delivered_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        state = tmp_path / "state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "letters": [
+                        {
+                            "letter_id": "proactive-1",
+                            "origin": "proactive",
+                            "letter_status": "COMPLETED",
+                            "reply_revision": 1,
+                            "content": "",
+                            "reply_text": "我今晚把那段录音整理好发给你。",
+                            "private_world_occurred_at": OCCURRED_AT,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        committer = SequencedCommitter()
+        outbox = _outbox(tmp_path, committer)
+
+        first = await outbox.scan_once()
+        second = await outbox.scan_once()
+
+        assert first.discovered == 1
+        assert first.delivered == 1
+        assert second.duplicates == 1
+        assert len(committer.calls) == 1
+        assert committer.calls[0].origin == "proactive"
+        assert committer.calls[0].user_message == ""
+        assert committer.calls[0].assistant_message == "我今晚把那段录音整理好发给你。"
+
+    asyncio.run(scenario())
+
+
 def test_unavailable_delivery_remains_pending_and_retries_to_success(tmp_path: Path) -> None:
     async def scenario() -> None:
         _state(tmp_path / "state.json")

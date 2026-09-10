@@ -71,6 +71,52 @@ def test_exchange_waits_for_concurrent_memory_list_before_dedup(tmp_path, monkey
         probe.join(2)
 
 
+def test_proactive_exchange_writes_one_verbatim_assistant_memory_without_llm_extraction(tmp_path):
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    reply = "我今晚把那段录音整理好发给你，原文要完整保留。"
+
+    result = adapter.remember_exchange(
+        user_message="",
+        assistant_message=reply,
+        occurred_at=NOW,
+        source_id="reply:proactive-1:1",
+        user_id="local-user",
+        origin="proactive",
+    )
+
+    assert result.status is MemoryWriteStatus.WRITTEN
+    adds = [call for method, call in backend.calls if method == "add"]
+    assert len(adds) == 1
+    assert adds[0]["messages"] == reply
+    assert adds[0]["infer"] is False
+    assert adds[0]["metadata"]["origin"] == "proactive"
+    assert adds[0]["metadata"]["actor"] == "linli"
+    assert adds[0]["metadata"]["source_id"] == "reply:proactive-1:1"
+    assert all("prompt" not in call for call in adds)
+    assert adapter.remember_exchange(
+        user_message="",
+        assistant_message=reply,
+        occurred_at=NOW,
+        source_id="reply:proactive-1:1",
+        user_id="local-user",
+        origin="proactive",
+    ).status is MemoryWriteStatus.DUPLICATE
+    assert len([call for method, call in backend.calls if method == "add"]) == 1
+
+    from companion_memory_context import CompanionMemoryPromptBuilder
+    from memory_port import NullMemoryPort
+    prompt = CompanionMemoryPromptBuilder(NullMemoryPort(), adapter).build(
+        "你上次主动说要录的那段，具体怎么说的？",
+        max_chars=2400,
+    )
+    assert reply in prompt.text
+    assert '\\"origin\\": \\"proactive\\"' in prompt.text
+    assert '\\"speaker\\": \\"linli\\"' in prompt.text
+    assert "reply:proactive-1:1" in prompt.text
+    assert NOW.isoformat() in prompt.text
+
+
 class FakeMem0:
     def __init__(self) -> None:
         self.rows: list[dict[str, object]] = []

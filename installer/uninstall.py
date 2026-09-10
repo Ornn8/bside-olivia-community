@@ -36,6 +36,7 @@ $backendPrefixes = @(
     [IO.Path]::GetFullPath((Join-Path $root 'local_backend')) + [IO.Path]::DirectorySeparatorChar
     [IO.Path]::GetFullPath((Join-Path $root 'versions\local_backend')) + [IO.Path]::DirectorySeparatorChar
 )
+$stableLauncher = [IO.Path]::GetFullPath((Join-Path $root 'launcher\version_launcher.py'))
 function Test-IsManagedOliviaProcess {
     param([object]$Process)
     $executable = [string]$Process.ExecutablePath
@@ -46,6 +47,10 @@ function Test-IsManagedOliviaProcess {
         return $false
     }
     $command = [string]$Process.CommandLine
+    if ($command.IndexOf($stableLauncher, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $command.IndexOf('proactive-login', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return $true
+    }
     foreach ($backendPrefix in $backendPrefixes) {
         if ($command.IndexOf($backendPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             return $true
@@ -54,6 +59,50 @@ function Test-IsManagedOliviaProcess {
     return $false
 }
 """
+
+
+def _disable_proactive_login(root: Path) -> bool:
+    """Atomically stop future scans while leaving all user data in place."""
+
+    path = root / "data" / "proactive" / "settings.json"
+    if not path.is_file():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        value = {}
+    settings = value if isinstance(value, dict) else {}
+    settings = {
+        **settings,
+        "enabled": False,
+        "login_check_enabled": False,
+    }
+    temporary = path.with_name(f".{path.name}.uninstall.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(settings, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _remove_proactive_login_registration() -> None:
+    """Remove only the proactive worker's per-user Run value."""
+
+    if os.name != "nt":
+        return
+    try:
+        try:
+            from .proactive_login import unregister_windows_login
+        except ImportError:
+            from proactive_login import unregister_windows_login
+    except ImportError:
+        # A legacy payload predates this Run value and has nothing to remove.
+        return
+    unregister_windows_login()
 
 
 _STOP_MANAGED_PROCESSES = _MANAGED_PROCESS_FILTER + r"""
@@ -169,6 +218,15 @@ def main() -> int:
         return 2
     print(json.dumps({"status": "UNINSTALLED" if args.apply else "DRY_RUN", "owned_paths": list(OWNED_PATHS), "preserved_paths": list(PRESERVED_PATHS)}, ensure_ascii=False))
     if args.apply:
+        try:
+            _disable_proactive_login(root)
+        except (OSError, UnicodeError):
+            print("PROACTIVE_LOGIN_DISABLE_FAILED")
+        try:
+            _remove_proactive_login_registration()
+        except (OSError, RuntimeError, ValueError):
+            print("PROACTIVE_LOGIN_REGISTRATION_REMOVE_FAILED")
+            return 2
         try:
             _stop_managed_processes(root)
         except (KeyError, OSError, subprocess.SubprocessError):
