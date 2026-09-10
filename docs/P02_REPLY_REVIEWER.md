@@ -1,5 +1,21 @@
 # P02 reply reviewer and configured-model transport
 
+## Current production wiring (2026-09-11)
+
+The shared `ReplyPipeline.run` returns the first completed candidate with
+`quality_status="not_checked"`. It does not call the reviewer, rewriter, or
+recheck for text letters, spoken replies, or musical replies. This behavior
+was introduced by `43c0735` and is covered by `tests/test_single_generation.py`
+and `tests/persona/test_reply_pipeline.py`. Constructing quality ports or
+reserving quality timeout capacity does not invoke a model. Setting
+`OLIVIA_REPLY_REVIEW_ENABLED` alone does not reconnect the gate to this pipeline.
+
+The contracts and transport below remain available for explicit callers and
+tests. They describe the review components, not an automatic production step.
+`not_checked` is not a quality pass. Usage reports must count actual requests;
+memory extraction, world consumption, and the optional current-turn interpreter
+are separate from these inactive review calls.
+
 `runtime/reply/reply_reviewer.py` keeps the provider-neutral JSON contract;
 `reply_reviewer.py` remains an exact module alias for legacy imports. The response must
 match `contracts/reply_review.schema.json` with id
@@ -9,11 +25,11 @@ candidate-bound `intimacy_claims`. A completed review must contain both
 intimacy fields; a disabled, unavailable, or invalid review contains neither,
 so missing assessment cannot be confused with a completed empty claim list.
 
-`reply_model_quality.py` supplies the runtime transport. When a configured
-non-mock Provider is present, `ReplyPipeline` replaces its `NullReviewer` with
-a reviewer that calls the same configured Provider after first-generation
-completion. It requests strict JSON and validates the response through the
-existing adapter and schema.
+`reply_model_quality.py` supplies the review transport. When a configured
+non-mock Provider is present, `ReplyPipeline` can replace its `NullReviewer`
+with a configured reviewer object, but does not invoke it in the current
+generation path. Explicit review calls request strict JSON and validate the
+response through the existing adapter and schema.
 
 ## Reviewer input boundary
 

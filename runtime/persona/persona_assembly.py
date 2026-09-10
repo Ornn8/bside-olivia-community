@@ -14,6 +14,7 @@ from .persona_loader import (
     PersonaStyleExemplar,
 )
 from .persona_mode import persona_mode_for_reply_mode
+from .relationship_expression import render_relationship_expression
 from runtime.reply.prompt_budget import (
     PromptBudgetItem,
     PromptBudgetReport,
@@ -265,6 +266,7 @@ def assemble_persona(
     history: tuple[UntrustedFragment, ...] = (),
     evidence_summaries: tuple[UntrustedFragment, ...] = (),
     cost_counter: Callable[[str], int] = len,
+    relationship_expression_enabled: bool = False,
 ) -> PersonaAssembly:
     if not isinstance(snapshot, PersonaSnapshot):
         raise TypeError("snapshot must be PersonaSnapshot")
@@ -274,7 +276,12 @@ def assemble_persona(
         raise ValueError("user_input is required")
 
     blocks = _persona_blocks(
-        snapshot, context, user_input, history, evidence_summaries
+        snapshot,
+        context,
+        user_input,
+        history,
+        evidence_summaries,
+        relationship_expression_enabled=relationship_expression_enabled,
     )
     items = tuple(
         PromptBudgetItem(block.item_id, block.section, cost_counter(block.content))
@@ -303,12 +310,32 @@ def _persona_blocks(
     user_input: str,
     history: tuple[UntrustedFragment, ...],
     evidence_summaries: tuple[UntrustedFragment, ...],
+    *,
+    relationship_expression_enabled: bool = False,
 ) -> tuple[_Block, ...]:
     persona_mode = persona_mode_for_reply_mode(context.mode)
     if snapshot.status == "READY":
         if snapshot.profile is None:
             raise ValueError("READY persona requires a profile")
         declarations = snapshot.declarations
+        # Keep the source/reviewer inventory intact. The stock participation
+        # rule already contains refusal; mode grounding retains clarification.
+        if any(
+            item.declaration_id == "constitution.autonomy"
+            and item.source_id == "P02.LINLI.CONSTITUTION"
+            and item.statement == "林离有自己的生活、注意力、情绪和主见。她按当下感受决定如何参与，能欣然接话、主动关心、一起开玩笑，也能不同意、拒绝或暂时少说；自主体现在自己的选择里。"
+            for item in declarations
+        ):
+            declarations = tuple(
+                item for item in declarations
+                if not (
+                    item.source_id == "P02.LINLI.CONSTITUTION"
+                    and (item.declaration_id, item.statement) in {
+                        ("character.not_reward_dispenser", "可以不接受请求、不喜欢某个玩笑、不同意；回应不以取悦为默认。"),
+                        ("relationship.boundary_is_character", "林离不同意用户或今天不想见面属于人物自主，不应被质量门误判成需要修正；只有与已确认历史冲突才是系统问题。"),
+                    }
+                )
+            )
     elif snapshot.status == "POLICY_ONLY":
         declarations = tuple(
             item for item in snapshot.declarations if item.tier == "CONSTITUTION"
@@ -369,21 +396,19 @@ def _persona_blocks(
             PromptSection.MODE_CONSTRAINTS,
             {
                 "mode": persona_mode,
-                **({"style_grounding": "历史回信只用于核对发生过什么，不是口吻范本；不要延续其中无依据的训斥。用户的文风、昵称、亲近表达不证明过度依赖或越界，不模仿其文风或把日常分享解释成报备。以当前人格为准；边界针对具体行为，有误解就澄清，不借机继续责备。"} if snapshot.status == "READY" else {}),
+                **({"style_grounding": "历史回信只提供事件线索，不是口吻范本。用当前人格、自己的话回应本封的分享、关心或询问；友善和亲近表达本身不证明越界。分歧针对具体行为，误解先澄清，再自然接话。"} if snapshot.status == "READY" else {}),
                 **({"delivery_mode": context.mode.value, "delivery_instruction": (
                     "本次已选择语音回信，正文会交给语音组件朗读，并与文字一起交付。"
                     "直接写你要对用户说的话，不要声称不能语音回复、只能打字或让用户自行想象声音。"
                     "不要把过去信件中的能力限制当成本次限制，也不要宣称录制或发送已经成功。"
                 )} if context.mode.value in {"voice_reply", "voice_song_video", "spoken_video", "musical_video"} else {}),
-                "trusted_time": context.to_dict()["trusted_time"],
-                **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
-                   if snapshot.status == "READY" else {}),
                 "output": context.output_constraints.to_dict(),
                 "reply_priorities": (
-                    "Answer as Linli, not as a service agent or therapist.",
-                    "Never invent personal facts, shared history, or relationship facts.",
-                    "Engage one or two concrete details instead of exhaustively recapping.",
-                    "Use restrained natural language without forced uplift or closure.",
+                    "以林离的身份与对方说话，选择真正注意到的具体内容。"
+                    if snapshot.status == "READY"
+                    else "Reply respectfully without a named identity.",
+                    "事实按来源与最新更正判断，自己的当下感受可以直接表达。",
+                    "文字亲切、具体、自然，长短随内容需要。",
                 ),
             },
         )
@@ -412,6 +437,42 @@ def _persona_blocks(
                 ),
             )
         )
+
+    blocks.extend(
+        _declaration_blocks(
+            declarations, "PUBLIC_CANON", PromptSection.PUBLIC_CANON
+        )
+    )
+    soft_canon = _select_soft_canon(
+        declarations,
+        user_input=user_input,
+        history=history,
+        evidence_summaries=evidence_summaries,
+    )
+    blocks.extend(
+        _declaration_blocks(
+            soft_canon, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON
+        )
+    )
+    blocks.extend(
+        _declaration_blocks(
+            declarations, "INFERRED", PromptSection.INFERRED_TRAIT
+        )
+    )
+    blocks.extend(
+        _declaration_blocks(
+            declarations, "UNCERTAINTY", PromptSection.EVIDENCE_SUMMARY
+        )
+    )
+
+    # The clock changes each request; keep it out of the stable persona prefix.
+    # It remains required, even if optional life/state evidence is cropped.
+    blocks.append(_json_block(
+        "runtime_time", "runtime_time", PromptSection.MODE_CONSTRAINTS,
+        {"trusted_time": context.to_dict()["trusted_time"],
+         **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
+            if snapshot.status == "READY" else {})},
+    ))
 
     selected_exemplars = _select_style_exemplars(snapshot, context, user_input)
     if selected_exemplars:
@@ -447,7 +508,10 @@ def _persona_blocks(
             "private_behavior",
             "private_behavior",
             PromptSection.PRIVATE_BEHAVIOR,
-            _private_behavior_payload(context),
+            _private_behavior_payload(
+                context,
+                relationship_expression_enabled=relationship_expression_enabled,
+            ),
         )
     )
     for fact in context.world_facts:
@@ -459,32 +523,6 @@ def _persona_blocks(
                 fact.to_dict(),
             )
         )
-    blocks.extend(
-        _declaration_blocks(
-            declarations, "PUBLIC_CANON", PromptSection.PUBLIC_CANON
-        )
-    )
-    soft_canon = _select_soft_canon(
-        declarations,
-        user_input=user_input,
-        history=history,
-        evidence_summaries=evidence_summaries,
-    )
-    blocks.extend(
-        _declaration_blocks(
-            soft_canon, "COMMUNITY_SOFT_CANON", PromptSection.SOFT_CANON
-        )
-    )
-    blocks.extend(
-        _declaration_blocks(
-            declarations, "INFERRED", PromptSection.INFERRED_TRAIT
-        )
-    )
-    blocks.extend(
-        _declaration_blocks(
-            declarations, "UNCERTAINTY", PromptSection.EVIDENCE_SUMMARY
-        )
-    )
     for fragment in evidence_summaries:
         section = (
             PromptSection.CURRENT_LIFE
@@ -549,7 +587,11 @@ def _persona_blocks(
     return tuple(blocks)
 
 
-def _private_behavior_payload(context: ReplyContext) -> dict[str, object]:
+def _private_behavior_payload(
+    context: ReplyContext,
+    *,
+    relationship_expression_enabled: bool = False,
+) -> dict[str, object]:
     # Only the writer projection changes; reducers and guards retain typed state.
     view = {
         key: value for key, value in context.private_behavior.to_dict().items()
@@ -557,6 +599,12 @@ def _private_behavior_payload(context: ReplyContext) -> dict[str, object]:
             "familiarity", "trust", "comfort", "closeness", "tension", "relationship_stage",
         }
     }
+    if relationship_expression_enabled:
+        expression = render_relationship_expression(context.private_behavior)
+        if expression is not None:
+            for key in ("familiarity", "trust", "comfort", "closeness", "tension"):
+                view.pop(key, None)
+            view["expression_context"] = expression
     view["action_permissions"] = {
         "physical_contact": {
             "ceiling": view.pop("intimacy_ceiling"),

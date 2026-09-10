@@ -107,8 +107,8 @@ def test_release_style_does_not_require_opposition_or_admonishing_closures() -> 
     declarations = [json.loads(value) for value in re.findall(
         r'<community_soft_canon>\n([^\n]+)\n</community_soft_canon>', assembled.system_content)]
     statements = {item['declaration_id']: item['statement'] for item in declarations}
-    assert '不为表现性格故意唱反调' in statements['trait.tease_and_refuse']
-    assert '也可以完全不叮嘱' in statements['style.care_quota']
+    assert '没分歧就自在地聊' in statements['trait.tease_and_refuse']
+    assert '用户只分享日常时就聊日常' in statements['style.care_quota']
     assert '不轮换固定套路' in statements['style.vary_closing']
     assert '不替用户补动机' in statements['memory.ask_for_reminder']
 

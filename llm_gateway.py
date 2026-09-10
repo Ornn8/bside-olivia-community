@@ -22,12 +22,15 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from runtime.diagnostics.usage_metrics import record_usage, purpose_for
+
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
+QWEN_REASONING_MODELS = frozenset({"qwen3.8-flash", "qwen3.8-max"})
 MANAGED_LLM_SCHEMA_VERSION = 3
 _MANAGED_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
@@ -242,6 +245,15 @@ class GatewayConfig:
         if self.model:
             result["model"] = self.model
         return result
+
+
+def supports_scoped_reasoning(config: GatewayConfig) -> bool:
+    return (
+        config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and (config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
+             or config.model.casefold() in QWEN_REASONING_MODELS)
+    )
 
 
 @dataclass(frozen=True)
@@ -799,9 +811,7 @@ class OpenAICompatibleAdapter(Gateway):
 
     def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:
         return (
-            self.config.provider == "openai_compatible"
-            and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            supports_scoped_reasoning(self.config)
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
                 GatewayRequestScope.JSON_MAX_REASONING,
@@ -819,6 +829,7 @@ class OpenAICompatibleAdapter(Gateway):
         return (
             scope is GatewayRequestScope.JSON_MAX_REASONING
             and self._uses_max_reasoning(scope)
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
             and endpoint.scheme == "https"
             and endpoint.hostname == "api.deepseek.com"
             and endpoint.path.rstrip("/") in {"", "/v1"}
@@ -859,22 +870,17 @@ class OpenAICompatibleAdapter(Gateway):
         }
         if scope is GatewayRequestScope.SONG_CONTENT:
             body["response_format"] = {"type": "json_object"}
-        endpoint = urlsplit(self.config.base_url)
-        if (
-            scope is GatewayRequestScope.JSON_MAX_REASONING
-            and self._uses_max_reasoning(scope)
-            and endpoint.scheme == "https"
-            and endpoint.hostname == "api.deepseek.com"
-            and endpoint.path.rstrip("/") in {"", "/v1"}
-        ):
+        if self._uses_official_review_responses(scope):
             body["response_format"] = {"type": "json_object"}
         if (
             max_reasoning
             and self.config.provider == "openai_compatible"
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
         ):
             body["thinking"] = {"type": "enabled"}
             body["reasoning_effort"] = "max"
+        if max_reasoning and self.config.model.casefold() in QWEN_REASONING_MODELS:
+            body.update(enable_thinking=True, reasoning_effort="high", max_completion_tokens=10000)
         return body
 
     async def _retry_wait(self, attempt: int) -> None:
@@ -902,6 +908,8 @@ class OpenAICompatibleAdapter(Gateway):
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
             response_status = None
+            usage = None
+            outcome = "error"
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
@@ -929,6 +937,8 @@ class OpenAICompatibleAdapter(Gateway):
                             raise ProviderProtocolError("invalid_json") from None
                         if not isinstance(data, Mapping) or not data:
                             raise ProviderProtocolError("invalid_response_shape")
+                        usage = data.get("usage")
+                        outcome = "response"
                         return dict(data)
             except GatewayError as exc:
                 exc.diagnostic_stage = diagnostic_stage
@@ -936,6 +946,7 @@ class OpenAICompatibleAdapter(Gateway):
                     exc.status = response_status
                 raise
             except asyncio.TimeoutError:
+                outcome = "timeout"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
@@ -944,6 +955,7 @@ class OpenAICompatibleAdapter(Gateway):
                 error.status = response_status
                 raise error from None
             except aiohttp.ClientError as exc:
+                outcome = "transport_error"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
@@ -952,6 +964,8 @@ class OpenAICompatibleAdapter(Gateway):
                 error.diagnostic_exception_type = type(exc).__name__
                 error.status = response_status
                 raise error from None
+            finally:
+                record_usage(usage, purpose=purpose_for(request_id), outcome=outcome)
         raise ProviderUnavailable()
 
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
@@ -1023,7 +1037,7 @@ class OpenAICompatibleAdapter(Gateway):
         if (
             scope is GatewayRequestScope.SONG_CONTENT
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
         ):
             body["thinking"] = {"type": "disabled"}
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
@@ -1073,7 +1087,7 @@ class OpenAICompatibleAdapter(Gateway):
         if not (
             self.config.provider == "openai_compatible"
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
         ):
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
@@ -1123,11 +1137,20 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
+        if self.config.api_style == "chat_completions" and (
+            urlsplit(self.config.base_url).hostname == "api.deepseek.com"
+            or self.config.model.casefold() in QWEN_REASONING_MODELS
+        ):
+            body["stream_options"] = {"include_usage": True}
         key = self._ensure_configured()
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning)
         )
         for attempt in range(self.config.max_retries + 1):
+            usage = None
+            terminal_finish_reason = None
+            buffered = []
+            outcome = "error"
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
@@ -1161,7 +1184,13 @@ class OpenAICompatibleAdapter(Gateway):
                             try:
                                 data = json.loads(payload)
                             except (UnicodeError, json.JSONDecodeError):
+                                if terminal_finish_reason == "stop":
+                                    break
                                 raise ProviderProtocolError() from None
+                            if isinstance(data, Mapping):
+                                usage = data.get("usage") or (data.get("response", {}).get("usage") if isinstance(data.get("response"), Mapping) else None) or usage
+                            if terminal_finish_reason is not None:
+                                continue
                             text = _extract_stream_text(data)
                             saw_reasoning = saw_reasoning or _has_stream_reasoning(data)
                             finish_reason = _extract_finish_reason(data)
@@ -1173,7 +1202,10 @@ class OpenAICompatibleAdapter(Gateway):
                                 buffered.append(text)
                             if finish_reason:
                                 terminal_finish_reason = finish_reason
-                                break
+                                # Usage may arrive in a final choices=[] event after finish_reason.
+                                if not body.get("stream_options", {}).get("include_usage"):
+                                    break
+                        outcome = "response"
                         if terminal_finish_reason == "length":
                             if not saw_delta and saw_reasoning:
                                 raise _RetryableProviderProtocolError()
@@ -1199,15 +1231,31 @@ class OpenAICompatibleAdapter(Gateway):
                     continue
                 raise
             except asyncio.TimeoutError:
+                if terminal_finish_reason == "stop" and buffered:
+                    outcome = "response"
+                    for index, text in enumerate(buffered):
+                        yield GatewayDelta(text, request, index=index)
+                    yield GatewayDelta("", request, index=len(buffered), finish_reason="stop")
+                    return
+                outcome = "timeout"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise ProviderTimeout() from None
             except aiohttp.ClientError:
+                if terminal_finish_reason == "stop" and buffered:
+                    outcome = "response"
+                    for index, text in enumerate(buffered):
+                        yield GatewayDelta(text, request, index=index)
+                    yield GatewayDelta("", request, index=len(buffered), finish_reason="stop")
+                    return
+                outcome = "transport_error"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise ProviderUnavailable() from None
+            finally:
+                record_usage(usage, purpose=purpose_for(request), outcome=outcome)
         raise ProviderUnavailable()
 
 

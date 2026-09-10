@@ -1383,7 +1383,20 @@ def test_start_local_matches_first_party_client_launch_contract(
     assert "SteamGameId" not in environment
 
 
+def test_official_fixture_archive_hashes_do_not_depend_on_wall_clock(tmp_path, monkeypatch):
+    monkeypatch.setattr(zipfile.time, 'localtime', lambda *args: (2026, 1, 1, 0, 0, 0, 3, 1, 0))
+    first = _make_official(tmp_path / 'first')
+    monkeypatch.setattr(zipfile.time, 'localtime', lambda *args: (2026, 1, 1, 0, 0, 4, 3, 1, 0))
+    second = _make_official(tmp_path / 'second')
+    assert first[1:] == second[1:]
+
+
 def _make_official(root: Path) -> tuple[Path, str, str]:
+    def entry(name):
+        info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        return info
+
     version_root = root / CURRENT_TEST_CLIENT_VERSION
     resources = version_root / "resources"
     resources.mkdir(parents=True)
@@ -1412,27 +1425,27 @@ def _make_official(root: Path) -> tuple[Path, str, str]:
     feapp = resources / "feapp.dat"
     with zipfile.ZipFile(feapp, "w", zipfile.ZIP_DEFLATED) as output:
         output.writestr(
-            "index.html",
+            entry("index.html"),
             "<!doctype html><html><head>"
             '<script type="module" crossorigin '
             'src="./assets/main-917d29fc.js"></script>'
             '<link rel="stylesheet" href="./assets/index.css">'
             "</head><body><div id=\"app\"></div></body></html>",
         )
-        output.writestr("assets/main-917d29fc.js", javascript)
-        output.writestr("assets/index.css", "body{display:block}")
+        output.writestr(entry("assets/main-917d29fc.js"), javascript)
+        output.writestr(entry("assets/index.css"), "body{display:block}")
 
     webplayer = resources / "webplayer.dat"
     with zipfile.ZipFile(webplayer, "w", zipfile.ZIP_DEFLATED) as output:
         output.writestr(
-            "index.html",
+            entry("index.html"),
             "<!doctype html><html><head>"
             '<script type="module" crossorigin '
             'src="./assets/main-752b9fc4.js"></script>'
             "</head><body><div id=\"app\"></div></body></html>",
         )
         output.writestr(
-            "assets/main-752b9fc4.js",
+            entry("assets/main-752b9fc4.js"),
             "console.log('synthetic original player')",
         )
     return root, _sha256(feapp), _sha256(webplayer)

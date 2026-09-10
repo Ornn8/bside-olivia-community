@@ -6,7 +6,13 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-@pytest.mark.parametrize("scenario", ["same", "changed", "inflight", "save_body", "catalog"])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "same", "changed", "inflight", "save_body", "catalog", "qwen", "qwen-saved",
+        "deepseek-v1",
+    ],
+)
 def test_generated_llm_panel_saves_only_tested_normalized_configuration(scenario):
     node = shutil.which("node")
     if node is None:
@@ -34,7 +40,14 @@ const context={
   setButtonsBusy:(buttons,busy)=>buttons.forEach(el=>{el.disabled=busy;el.style.opacity=busy?'0.5':'1';}),
   SETUP_STATUS_PATH:'status', LLM_TEST_PATH:'test', LLM_SAVE_PATH:'save', LLM_DELETE_PATH:'delete',
   requestSetup:async(path,body)=>{
-    if(path==='status') return {llm:{base_url:'https://api.deepseek.com',model:'model',key_configured:false}};
+    if(path==='status') {
+      const savedQwen = process.argv[1]==='qwen-saved';
+      const savedDeepseekV1 = process.argv[1]==='deepseek-v1';
+      return {llm:{
+        base_url:savedQwen?'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1':savedDeepseekV1?'https://api.deepseek.com/v1/':'https://api.deepseek.com',
+        model:savedQwen?'qwen3.8-flash':savedDeepseekV1?'deepseek-v4-flash':'model',key_configured:false,
+      }};
+    }
     sent.push({path,body});
     if(path==='/toy/setup/llm/models') {
       if(catalogFails) throw new Error('synthetic outage');
@@ -54,6 +67,36 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.render=renderLlmSetupP
   const status=elements.find(el=>el.tag==='p' && el.textContent.startsWith('请先测试连接。'));
   assert.ok(status);
   key.value=' synthetic-key ';
+  if(process.argv[1]==='qwen' || process.argv[1]==='qwen-saved') {
+    const providers=elements.filter(el=>el.tag==='select')[0];
+    const modelSelect=elements.filter(el=>el.tag==='select')[1];
+    assert.ok(providers.children.some(el=>el.value==='qwen'));
+    if(process.argv[1]==='qwen') {
+      providers.value='qwen';providers.listeners.change();
+      assert.equal(base.value,'https://dashscope.aliyuncs.com/compatible-mode/v1');
+      assert.equal(model.value,'qwen3.8-max');
+    } else {
+      assert.equal(providers.value,'qwen');
+      assert.equal(model.value,'qwen3.8-flash');
+    }
+    assert.equal(model.hidden,true);
+    assert.equal(modelSelect.value,model.value);
+    assert.deepEqual(modelSelect.children.map(el=>el.value),['qwen3.8-max','qwen3.8-flash']);
+    modelSelect.value='qwen3.8-flash';modelSelect.listeners.change();
+    assert.equal(model.value,'qwen3.8-flash');
+    base.value='https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
+    base.listeners.change();
+    assert.equal(base.value,'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1');
+    return;
+  }
+  if(process.argv[1]==='deepseek-v1') {
+    const providers=elements.filter(el=>el.tag==='select')[0];
+    const modelSelect=elements.filter(el=>el.tag==='select')[1];
+    assert.equal(providers.value,'deepseek');
+    assert.equal(model.hidden,true);
+    assert.equal(modelSelect.value,'deepseek-v4-flash');
+    return;
+  }
   if(process.argv[1]==='catalog') {
     const refresh=elements.find(el=>el.textContent==='刷新模型列表');
     const select=elements.filter(el=>el.tag==='select')[1];

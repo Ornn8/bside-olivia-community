@@ -73,6 +73,23 @@ def test_setup_dpapi_round_trip_does_not_store_plaintext() -> None:
     assert _dpapi_unprotect(protected) == fixture_value
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process creation flags")
+def test_key_protection_and_loading_never_open_a_console(monkeypatch):
+    from types import SimpleNamespace
+    import subprocess
+    import original_client_setup_api as setup_api
+    calls = []
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="synthetic-result")
+    monkeypatch.setattr(setup_api.subprocess, "run", run)
+    _dpapi_protect("synthetic-key")
+    _dpapi_unprotect("dpapi-v1:synthetic-ciphertext")
+    assert len(calls) == 2
+    assert all(call["creationflags"] & subprocess.CREATE_NO_WINDOW for call in calls)
+    assert all(call["capture_output"] for call in calls)
+
+
 def _service(tmp_path: Path, probes: list[tuple[str, str, str]]) -> LLMSetupService:
     async def probe(base_url: str, model: str, api_key: str) -> None:
         probes.append((base_url, model, api_key))
@@ -238,14 +255,16 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
 def test_setup_connection_probe_identifies_the_client_to_provider(
-    tmp_path: Path,
+    tmp_path: Path, model: str,
 ) -> None:
     async def scenario() -> None:
         seen: dict[str, str | None] = {}
 
         async def completion(request: web.Request) -> web.Response:
             seen["user_agent"] = request.headers.get("User-Agent")
+            seen["body"] = await request.json()
             return web.json_response(
                 {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
             )
@@ -257,12 +276,18 @@ def test_setup_connection_probe_identifies_the_client_to_provider(
             await service.test(
                 {
                     "base_url": str(client.make_url("/v1")),
-                    "model": "deepseek-v4-flash",
+                    "model": model,
                     "api_key": "fixture-private-key",
                 }
             )
 
         assert seen["user_agent"] == "Olivia-Community/0.1"
+        if model.startswith("qwen"):
+            assert seen["body"]["enable_thinking"] is False
+            assert seen["body"]["max_completion_tokens"] == 16
+            assert "max_tokens" not in seen["body"]
+        else:
+            assert seen["body"]["max_tokens"] == 2
 
     asyncio.run(scenario())
 

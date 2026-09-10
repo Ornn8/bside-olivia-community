@@ -81,9 +81,17 @@ def main() -> None:
     torch.set_num_threads(4)
     if not torch.cuda.is_available():
         raise RuntimeError("COVER_CUDA_UNAVAILABLE")
-    source = Path(request["source"])
-    info = sf.info(source)
-    duration = info.frames / info.samplerate
+    task_type = request.get("task_type", "cover")
+    if task_type not in {"cover", "text2music"}:
+        raise RuntimeError("ACE_TASK_INVALID")
+    source = Path(request["source"]) if task_type == "cover" else None
+    if source is not None:
+        info = sf.info(source)
+        duration = info.frames / info.samplerate
+    else:
+        duration = request["duration"]
+        if duration != 110 or not request.get("lyrics", "").strip():
+            raise RuntimeError("ORIGINAL_PLAN_INVALID")
     if duration <= 0:
         raise RuntimeError("COVER_AUDIO_INVALID")
     lyrics = request.get("lyrics", "").strip()
@@ -117,13 +125,14 @@ def main() -> None:
     if not all(m.lora_A["default"].weight.dtype == torch.bfloat16 for m in layers):
         raise RuntimeError("COVER_LORA_DTYPE_INVALID")
     params = GenerationParams(
-        task_type="cover", src_audio=str(source), reference_audio=request["reference"],
-        caption=CAPTION, lyrics=lyrics, vocal_language=language, duration=duration,
+        task_type=task_type, src_audio=str(source) if source is not None else None, reference_audio=request["reference"],
+        caption=request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
+        **({key: request[key] for key in ("bpm", "keyscale", "timesignature")} if task_type == "text2music" else {}),
         audio_cover_strength=.8, cover_noise_strength=.08, inference_steps=50,
         guidance_scale=7., shift=1., infer_method="ode", sampler_mode="euler", seed=200717,
         thinking=False, use_cot_metas=False, use_cot_caption=False,
         use_cot_language=False, use_cot_lyrics=False, dcw_enabled=False)
-    params.instruction = handler.generate_instruction(task_type="cover")
+    params.instruction = handler.generate_instruction(task_type=task_type)
     (job / "generation.private.json").write_text(json.dumps(params.to_dict(), ensure_ascii=False), encoding="utf-8")
     progress("generating", duration_seconds=duration)
     torch.cuda.reset_peak_memory_stats()

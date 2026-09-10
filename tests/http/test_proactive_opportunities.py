@@ -55,6 +55,12 @@ import local_server as server
 from runtime.reply.proactive_letters import write_json
 root = server._state_root()
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
+assert server._proactive_reason == 'disabled'
+assert server._proactive_status()['reason'] == 'waiting'
+server._proactive_reason = 'considering'
+write_json(root / 'proactive/settings.json', {'enabled': False})
+assert server._proactive_status()['reason'] == 'disabled'
+write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 server.store.letters.clear()
 server._proactive_ready = lambda: True
 server.private_world_committer = None
@@ -141,6 +147,7 @@ async def main():
     result = await server.route('POST', '/toy/proactive/settings', {'enabled':False, 'allow_voice':False}, {},
                                 companion_confirmed=True)
     assert result['code'] == 0 and result['data']['enabled'] is False
+    assert result['data']['reason'] == 'disabled'
     rejected = await server.route('POST', '/toy/proactive/settings', {'enabled':'true'}, {},
                                   companion_confirmed=True)
     assert rejected['code'] == 400

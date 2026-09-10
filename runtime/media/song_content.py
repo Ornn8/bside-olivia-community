@@ -113,8 +113,8 @@ class SongContentPlan:
     semantic_plan: SongSemanticPlan | None = field(default=None, repr=False, compare=False)
 
 
-_LINE_COUNTS = {40: 12, 60: 16, 110: 24}
-_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (12, 12)}
+_LINE_COUNTS = {40: 12, 60: 16, 110: 20}
+_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (10, 10)}
 _SEMANTIC_PLAN_FIELDS = frozenset(
     {
         "schema_version",
@@ -273,7 +273,7 @@ def _plan_from_lyrics_response(text: str, duration_seconds: int) -> SongSemantic
 def _planner_contract(duration_seconds: int) -> str:
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
-    return f"""You write only the lyrics for Lin Li's MiniMax Music 3 reply.
+    return f"""You write only the lyrics for Lin Li's original song reply.
 Return one JSON object only, containing exactly two keys: verse and chorus.
 Each value is an array of lyric strings, one sung line per array item.
 The application fixes all musical arrangement and production choices.

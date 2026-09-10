@@ -52,7 +52,7 @@ async function run(audioUrl){
 (async()=>{
  assert.deepEqual(await run('http://127.0.0.1:8899/toy/media/voice.wav'),[
  ['image','paper','chosen-folder/mail-letter-reply.png'],
- ['audio','http://127.0.0.1:8899/toy/media/voice.wav','chosen-folder']]);
+ ['audio',['http://127.0.0.1:8899/toy/media/voice.wav'],'chosen-folder']]);
  assert.deepEqual(await run(''),[['image','paper','chosen-folder/mail-letter-reply.png'],['open','chosen-folder']]);
 })();''', encoding='utf-8')
     subprocess.run(['node', str(script)], check=True, capture_output=True)
@@ -182,7 +182,10 @@ def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeyp
         assert calls == (['video_gate', 'speech_video'] if video else ['speech_audio'])
     else:
         assert ('music', video and mode == 'voice_song_video', video) in calls
-        assert ('audio_concat' in calls) is (not video and mode == 'voice_song_video')
+        assert 'audio_concat' not in calls
+    if not video and mode == 'voice_song_video':
+        assert letter['reply_audio_url'].endswith('-speech.wav')
+        assert letter['reply_song_url'].endswith('-song.wav')
         assert ('speech_audio' in calls) is (not video and mode == 'voice_song_video')
     projected = serialize_letter_detail(letter)
     if video:

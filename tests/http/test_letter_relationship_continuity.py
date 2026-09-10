@@ -60,7 +60,9 @@ async def main():
         assert states[2].tension < states[1].tension
         assert states[3] == states[2]
         followup = next(call for call in main_calls if cases[1][0] in call[-1]['content'])
-        assert '"tension":"low"' in followup[0]['content']
+        projected = json.loads(re.search(r'<private_behavior>\s*(.*?)\s*</private_behavior>', followup[0]['content'], re.S)[1])
+        assert '当前交流较平和' in projected['expression_context']
+        assert 'tension' not in projected
         assert all(s.relationship_stage=='unknown' for s in states)
 asyncio.run(main())
 '''

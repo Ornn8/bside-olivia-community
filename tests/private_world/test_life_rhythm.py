@@ -10,13 +10,13 @@ import pytest
 
 
 @pytest.mark.parametrize("now,shifts,start,end", [
-    ("2026-09-07T20:00:00+08:00", {}, "2026-09-07T23:00:00+08:00", "2026-09-08T07:00:00+08:00"),
-    ("2026-09-08T00:30:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T01:00:00+08:00", "2026-09-08T09:00:00+08:00"),
-    ("2026-09-08T08:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T01:00:00+08:00", "2026-09-08T09:00:00+08:00"),
-    ("2026-09-08T09:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T22:00:00+08:00", "2026-09-09T06:00:00+08:00"),
-    ("2026-09-08T00:00:00+08:00", {"2026-09-07":-60}, "2026-09-07T22:00:00+08:00", "2026-09-08T06:00:00+08:00"),
-    ("2026-09-11T23:00:00+08:00", {}, "2026-09-11T23:00:00+08:00", "2026-09-12T08:00:00+08:00"),
-    ("2026-09-13T23:00:00+08:00", {}, "2026-09-13T23:00:00+08:00", "2026-09-14T07:00:00+08:00"),
+    ("2026-09-07T20:00:00+08:00", {}, "2026-09-08T00:00:00+08:00", "2026-09-08T08:30:00+08:00"),
+    ("2026-09-08T00:30:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T02:00:00+08:00", "2026-09-08T10:30:00+08:00"),
+    ("2026-09-08T08:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T02:00:00+08:00", "2026-09-08T10:30:00+08:00"),
+    ("2026-09-08T11:00:00+08:00", {"2026-09-07":120,"2026-09-08":-60}, "2026-09-08T23:00:00+08:00", "2026-09-09T07:30:00+08:00"),
+    ("2026-09-08T00:00:00+08:00", {"2026-09-07":-60}, "2026-09-07T23:00:00+08:00", "2026-09-08T07:30:00+08:00"),
+    ("2026-09-11T23:00:00+08:00", {}, "2026-09-12T00:00:00+08:00", "2026-09-12T08:30:00+08:00"),
+    ("2026-09-13T23:00:00+08:00", {}, "2026-09-14T00:00:00+08:00", "2026-09-14T08:30:00+08:00"),
 ])
 def test_planned_rest_window_is_current_or_next_and_preserves_night_shift(now, shifts, start, end):
     now = datetime.fromisoformat(now)
@@ -98,10 +98,10 @@ def test_actual_exchange_duration_and_resleep_are_not_flat_letter_counts():
 
 
 def test_sleep_window_clips_awake_duration_and_daytime_does_not_count():
-    start = datetime(2026, 9, 7, 14, 50, tzinfo=timezone.utc)  # 22:50
-    end = start + timedelta(minutes=40)  # 23:30, continued across bedtime
+    start = datetime(2026, 9, 7, 15, 50, tzinfo=timezone.utc)  # 23:50
+    end = start + timedelta(minutes=40)  # 00:30, continued across bedtime
     load = rest_timeline(end + timedelta(hours=1), [(start, end)])
-    assert load['awake_minutes'] == 60  # 23:00 through 00:00
+    assert load['awake_minutes'] == 60  # 00:00 through 01:00
     assert load['interruptions'] == 0  # Stayed up; was not awakened.
     day = start - timedelta(hours=8)
     assert rest_timeline(end, [(day, day + timedelta(minutes=20))])['awake_minutes'] == 0
@@ -155,13 +155,30 @@ def test_routine_adapts_gradually_once_a_day_and_never_rewrites_previous_sleep(t
     assert store.snapshot(now + timedelta(days=2))['rhythm']['sleep_shift_minutes'] == 15
 
 
+def test_adaptation_preserves_started_bath_and_sleep_with_existing_shift(tmp_path):
+    for index, (shift, clock) in enumerate([(-45, '22:45'), (-45, '23:20'), (0, '23:30')]):
+        store = DailyLifeStore(tmp_path / f'life-{index}.sqlite3')
+        with store._db() as db:
+            db.execute('INSERT INTO life_routine_days VALUES (?, ?)', ('2026-09-10', shift))
+        now = datetime.fromisoformat(f'2026-09-11T{clock}:00+08:00')
+        before = store.snapshot(now)['rhythm']
+        store.adapt_routine(now, affinity=0)
+        after = store.snapshot(now)['rhythm']
+        assert after['phase'] == before['phase']
+        assert after['planned_rest_window'] == before['planned_rest_window']
+        assert after['bath_end_at'] == before['bath_end_at']
+        with store._db() as db:
+            assert db.execute('SELECT day FROM life_routine_days ORDER BY day DESC LIMIT 1').fetchone()[0] == '2026-09-12'
+
+
 def test_delayed_bedtime_preserves_sleep_duration_across_midnight():
     shifts = {'2026-09-07': 120}
     midnight = datetime(2026, 9, 7, 16, tzinfo=timezone.utc)
     assert rhythm(midnight, [], shifts)['phase'] == 'quiet'
-    assert rhythm(midnight + timedelta(hours=1), [], shifts)['phase'] == 'sleep'
+    assert rhythm(midnight + timedelta(hours=1, minutes=30), [], shifts)['phase'] == 'bathing'
+    assert rhythm(midnight + timedelta(hours=2), [], shifts)['phase'] == 'sleep'
     assert rhythm(midnight + timedelta(hours=8), [], shifts)['phase'] == 'sleep'
-    assert rhythm(midnight + timedelta(hours=9), [], shifts)['phase'] == 'breakfast'
+    assert rhythm(midnight + timedelta(hours=10, minutes=30), [], shifts)['phase'] == 'breakfast'
     event = (midnight, midnight + timedelta(minutes=2))
     assert rest_timeline(midnight + timedelta(hours=10), [event], shifts)['interruptions'] == 0
 

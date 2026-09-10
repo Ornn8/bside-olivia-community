@@ -425,6 +425,11 @@ def _repair_mailbox_write_access(root: Path) -> str:
     )
     source = source.replace('a.timestamp?Hs(a.timestamp):""', 'a.timestamp?Ws(a.timestamp):""')
     source = source.replace('I=j(()=>Hs(l.timestamp))', 'I=j(()=>Ws(l.timestamp))')
+    source = source.replace('v(o(a)("common_beta_tag"))', 'v("Resonance Edition")')
+    source = source.replace('letterStatus:e.letterStatus,', 'replyKind:e.replyKind||"text_letter",letterStatus:e.letterStatus,') if 'replyKind:e.replyKind' not in source else source
+    native_icon = 'n("div",{class:ae(["mail-item-icon",o(a).iconBgClass])},[k(p,{type:o(a).iconType,class:ae(["text-[24px]",o(a).iconClass])},null,8,["type","class"])],2)'
+    if 'n("olivia-mail-kind"' not in source:
+        source = source.replace(native_icon, '(m.mail.received&&m.mail.received.type!=="video"&&["voice_reply","singing_video","voice_song_video"].includes(m.mail.replyKind)?n("olivia-mail-kind",{kind:m.mail.replyKind},null,8,["kind"]):' + native_icon + ')')
     source = source.replace(
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',
@@ -647,26 +652,49 @@ __all__ = [
 
 def _repair_native_letter_audio(source: str) -> str:
     """Extend native props and paper content; keep original imagery and type."""
+    # Native downloads return task IDs before completion. Queue both files once
+    # and track every task; two calls would overwrite the active task/poller.
+    source = source.replace('sourceUrls:[B],destPath:K', 'sourceUrls:Array.isArray(B)?B:[B],destPath:K')
+    source = source.replace('ue=Object.values(W.data)[0];he.value=ue', 'ue=Object.values(W.data);he.value=ue')
+    source = source.replace('e1([he.value]),ye=re[0];if(!ye)return;',
+        'e1(Array.isArray(he.value)?he.value:[he.value]),ye={totalBytes:re.reduce((s,t)=>s+t.totalBytes,0),'
+        'downloadedBytes:re.reduce((s,t)=>s+t.downloadedBytes,0),state:re.length&&re.every(t=>t.state===zo.Completed)?zo.Completed:'
+        're.some(t=>t.state===zo.Failed||t.state===zo.Cancelled)?zo.Failed:null};if(!re.length)return;')
+    source = source.replace('t1([he.value])', 't1(Array.isArray(he.value)?he.value:[he.value])')
+    source = source.replace(
+        'const replyAudio=M.value?.received?.audioUrl;if(replyAudio){yt.hide();await d.startVideoDownload(replyAudio,R);return}',
+        'const replyAudio=M.value?.received?.audioUrl;const replySong=M.value?.received?.songUrl;'
+        'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}')
     source = source.replace(
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
         'const replyAudio=M.value?.received?.audioUrl;'
-        'if(replyAudio){yt.hide();await d.startVideoDownload(replyAudio,R);return}'
+        'const replySong=M.value?.received?.songUrl;'
+        'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}'
         'yt.hide(),Ds(R)',
     )
     source = source.replace(
         'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")',
         'A.videoPending?"林离录视频中":["PENDING","QUEUED","PROCESSING"].includes(A.audioStatus)?"林离正在录语音…":o(i)("mailbox_waiting_for_reply")',
     )
+    def bath_progress(value):
+        if 'replyWaitReason:e.replyWaitReason' not in value:
+            value = value.replace('audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason||"",audioStatus:e.audioStatus||"",')
+            value = value.replace('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{replyWaitReason:{},')
+            value = value.replace('F(ks,{coverId:i.mail.coverId,', 'F(ks,{replyWaitReason:i.mail.replyWaitReason,coverId:i.mail.coverId,')
+            value = value.replace('"audioUrl","audioStatus","songUrl",', '"replyWaitReason","audioUrl","audioStatus","songUrl",')
+            value = value.replace('A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?"林离洗澡中":A.videoPending?"林离录视频中":')
+            value = value.replace('re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason||re.isUnread!==Ee.isUnread')
+        return value
     def cover_progress(value):
         if 'coverId:e.coverId' in value:
-            return value
+            return bath_progress(value)
         value = value.replace('audioStatus:e.audioStatus||"",', 'coverId:e.coverId||"",audioStatus:e.audioStatus||"",')
         value = value.replace('props:{audioUrl:{},', 'props:{coverId:{},audioUrl:{},')
         value = value.replace('F(ks,{audioUrl:', 'F(ks,{coverId:i.mail.coverId,audioUrl:')
         value = value.replace('["audioUrl","audioStatus","songUrl",', '["coverId","audioUrl","audioStatus","songUrl",')
         value = value.replace('{"audio-url":A.audioUrl', '{"cover-id":A.coverId||"","audio-url":A.audioUrl')
-        return value.replace('["audio-url","audio-status","song-url"]', '["cover-id","audio-url","audio-status","song-url"]')
+        return bath_progress(value.replace('["audio-url","audio-status","song-url"]', '["cover-id","audio-url","audio-status","song-url"]'))
     if 'olivia-letter-audio' in source:
         return cover_progress(source)
     source = source.replace('letterStatus:e.letterStatus,',

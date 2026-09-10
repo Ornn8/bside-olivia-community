@@ -35,7 +35,7 @@ def test_release_profile_is_complete_linli_not_policy_only() -> None:
     assert loaded.snapshot.profile is not None
     assert loaded.snapshot.profile.display_name == "林离 Olivia"
     assert "钢琴" in loaded.snapshot.profile.summary
-    assert "不是通用助手" in loaded.snapshot.profile.summary
+    assert any("不承担通用助手或专业咨询的角色" in row.statement for row in loaded.snapshot.declarations)
     assert not loaded.readiness_gaps
 
     facets = {row.facet for row in loaded.snapshot.declarations}
@@ -125,7 +125,12 @@ def test_release_character_autonomy_rules_are_assembled() -> None:
     for declaration_id, (facet, statement) in expected.items():
         assert by_id[declaration_id]["facet"] == facet
         assert by_id[declaration_id]["tier"] == "CONSTITUTION"
-        assert statement in assembly.system_content
+        if declaration_id == "character.not_reward_dispenser":
+            assert statement == by_id[declaration_id]["statement"]
+            assert statement not in assembly.system_content
+            assert "也能不同意、拒绝或暂时少说" in assembly.system_content
+        else:
+            assert statement in assembly.system_content
     assert any(row["facet"] == "AUTONOMY" for row in by_id.values())
 
 
@@ -217,9 +222,9 @@ def test_release_profile_contains_exact_concrete_anchors(
         ("anchor.school_timeline", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "2025 年 9 月入学上海音乐学院钢琴表演专业，年级按当前时间推算。2029 年 7 月之后她已毕业，在家经营个人作曲工作室，不再有老师和课程。"),
         ("style.word_texture", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "她偏爱双字词，语言因此更鲜活；想说的时候会带一两处口语反应——呀、啦、嘛、呢、吧，或者「欸」「行」「好吧」。"),
         ("style.play_along", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "对方开玩笑或扮演角色时，她先跟戏半拍：抓住他用的角色、行话、数字或道具顺着演一下。笑点本身已经成立时，不去解释它背后的深情。"),
-        ("style.odd_word_first", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "一封信里如果有个词很新鲜、或者很突兀，她通常就从那里下手。"),
-        ("style.care_quota", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "关心跟着对方实际说的处境走，通常一句就够，也可以完全不叮嘱。用户只分享日常时就聊日常。"),
-        ("style.picky_about_praise", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "她对浪漫和赞美挑剔一点，不照单全收。"),
+        ("style.odd_word_first", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "新鲜的小词会吸引她，能顺着内容逗个笑；一封信真正的关心、分享或问题仍是交流的重心。"),
+        ("style.care_quota", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "关心跟着对方实际说的处境走，落在具体小事上，分量随内容需要；用户只分享日常时就聊日常。"),
+        ("style.picky_about_praise", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "赞美她可以大方收下，也可以对其中一个具体说法挑剔、开个玩笑；看她当下是否认同，不把所有夸奖一律打折。"),
         ("style.vary_closing", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "说到自然结束就停，收尾跟随本封内容，不轮换固定套路；一个具体回应、感受或留白都可以。"),
         ("style.no_repeat_imagery", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "日常落点一封只点一处，相邻两封不要撞同一个意象——琴房、窗、旧唱片、旧影像、天气、发呆、让自己停下来的小动作。"),
     ),
@@ -368,6 +373,28 @@ def test_release_profile_excludes_private_instances_and_control_protocol() -> No
     assert len(text) < 40_000
     payload = json.loads(text)
     assert max(len(row["statement"]) for row in payload["declarations"]) <= 240
+
+
+@pytest.mark.parametrize("custom", [None, "autonomy", "statement", "source"])
+def test_writer_dedup_keeps_source_and_custom_autonomy(custom) -> None:
+    from dataclasses import replace
+
+    snapshot = load_persona(RELEASE_PATH).snapshot
+    duplicate = next(row for row in snapshot.declarations if row.declaration_id == "character.not_reward_dispenser")
+    original = snapshot.declarations
+    if custom:
+        changed_id = "constitution.autonomy" if custom == "autonomy" else duplicate.declaration_id
+        snapshot = replace(snapshot, declarations=tuple(
+            replace(row, **({"source_id": "custom.source"} if custom == "source" else {"statement": row.statement + " 自定义条件必须保留。"}))
+            if row.declaration_id == changed_id else row for row in original
+        ))
+    before = snapshot.declarations
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 9, 10, tzinfo=timezone.utc)))
+    assembly = assemble_persona(snapshot, context, user_input="聊聊近况。", max_units=40_000)
+    assert (f'"declaration_id":"{duplicate.declaration_id}"' in assembly.system_content) == bool(custom)
+    assert snapshot.declarations == before
+    assert any(row.declaration_id == duplicate.declaration_id for row in original)
+    assert "分歧针对具体行为，误解先澄清" in assembly.system_content
 
 
 def test_public_persona_reference_excludes_private_continuation_and_rights_claims() -> None:
@@ -589,7 +616,7 @@ def test_assembled_release_keeps_identity_and_mode_style_under_budget() -> None:
 
     assert assembly.persona_status == "READY"
     assert "林离 Olivia" in assembly.system_content
-    assert "不是通用助手" in assembly.system_content
+    assert "不承担通用助手或专业咨询的角色" in assembly.system_content
     assert "不要求每次反问或升华" in assembly.system_content
     assert "<mode_style>" in assembly.system_content
     assert "<untrusted_history>" not in assembly.system_content

@@ -178,14 +178,18 @@ class DailyLifeStore:
         """At most 15 minutes per active day, from >=3 distinct evening dates.
 
         This learns availability, not an assertion about the user's bedtime.
-        A new plan starts at the next 23:00 window, never retroactively.
+        A new plan starts at the next bedtime window, never during its bath.
         """
         _time(now)
         affinity = max(0.0, min(1.0, float(affinity)))
         local = now.astimezone(LOCAL)
-        day = local.date() + (timedelta(days=1) if local.hour >= 23 else timedelta())
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
+            day = local.date()
+            active = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<=? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
+            bath_start = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23, minutes=30 + (active[0] if active else 0))
+            if local >= bath_start:
+                day += timedelta(days=1)
             if db.execute('SELECT 1 FROM life_routine_days WHERE day=?', (day.isoformat(),)).fetchone():
                 return
             old = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
@@ -207,10 +211,10 @@ class DailyLifeStore:
                 target = 0
             elif preference and preference['sleep_minute'] is not None:
                 minute = (preference['sleep_minute'] - preference['utc_offset_minutes'] + 480) % 1440
-                offset = (minute - 23 * 60 + 720) % 1440 - 720
+                offset = (minute - 24 * 60 + 720) % 1440 - 720
                 target = round(max(-60, min(120, offset)) * affinity)
             elif len(daily) >= 3:
-                target = round(max(-60, min(120, median(daily.values()) - 23 * 60)) * affinity)
+                target = round(max(-60, min(120, median(daily.values()) - 24 * 60)) * affinity)
             shift = previous + max(-15, min(15, target - previous))
             db.execute('INSERT INTO life_routine_days VALUES (?,?)', (day.isoformat(), shift))
 

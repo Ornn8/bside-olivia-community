@@ -66,7 +66,9 @@ def test_private_continuity_reaches_persona_without_control_only_state() -> None
     system = adapter._messages("今天普通地有点累。")[0]["content"]
 
     assert "小河豚" in system
-    assert '"trust":"high"' in system
+    assert '"expression_context"' in system
+    assert "谈自己的想法和小困扰比较放心" in system
+    assert '"trust":"high"' not in system
     assert '"claiming_home_history":{"allowed":true}' in system
     assert "visit_access" not in system
     assert "林离已经知道下周课程时间会调整。" in system

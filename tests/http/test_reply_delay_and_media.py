@@ -864,8 +864,9 @@ def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
     ) == 4295.0
 
 
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
 def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning(
-    monkeypatch,
+    monkeypatch, model,
 ):
     seen = []
 
@@ -877,13 +878,14 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
     config = GatewayConfig(
         provider="openai_compatible",
         api_style="chat_completions",
-        model="deepseek-v4-flash",
+        model=model,
         timeout_seconds=180.0,
         reasoning_timeout_seconds=720.0,
     )
     monkeypatch.setattr(local_server, "LLM_CONFIG", config)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
     monkeypatch.setattr(local_server, "reply_pipeline", RecordingPipeline())
+    assert local_server._letter_reply_timeout_seconds(config) == 720.0
 
     async def exercise():
         await local_server._run_reply_pipeline_for_letter(
@@ -909,6 +911,40 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
     assert seen[1][0].request_id == "letter-reply:video-fixture"
     assert seen[1][0].idempotency_key == "stable:video-fixture"
     assert seen[1][1] is ReplyMode.SPOKEN_VIDEO
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "deepseek-v4-flash"])
+@pytest.mark.parametrize("planning", [False, True])
+def test_proactive_completion_uses_gateway_reasoning_deadline(monkeypatch, model, planning):
+    from types import SimpleNamespace
+    from llm_gateway import OpenAICompatibleAdapter
+
+    gateway = OpenAICompatibleAdapter(GatewayConfig(
+        provider="openai_compatible", model=model, reasoning_timeout_seconds=720,
+    ))
+    seen = []
+
+    async def complete(messages, *, request_id, scope):
+        assert scope is GatewayRequestScope.BACKGROUND_REASONING
+        return SimpleNamespace(text="synthetic final reply")
+
+    async def wait_for(awaitable, *, timeout):
+        seen.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(gateway, "complete_scoped", complete)
+    monkeypatch.setattr(local_server, "store", SimpleNamespace(letters=[{
+        "letter_id": "fixture", "content": "synthetic previous letter", "reply_text": "synthetic previous reply",
+    }]))
+    monkeypatch.setattr(local_server, "letters_adapter", SimpleNamespace(
+        gateway=gateway, _messages=lambda _: [{"role": "system", "content": "synthetic persona"}],
+    ))
+    monkeypatch.setattr(local_server.asyncio, "wait_for", wait_for)
+    result = asyncio.run(local_server._proactive_complete(
+        {"id": "intent", "source_id": "reply:fixture:1"}, planning=planning,
+    ))
+    assert result == "synthetic final reply"
+    assert seen == [720]
 
 
 @pytest.mark.parametrize(

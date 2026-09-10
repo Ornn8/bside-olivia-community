@@ -289,6 +289,9 @@ class LocalSongLibrary:
                                                  'error_code': code}) + '\n')
                 except OSError:
                     pass
+                if code == 'LOCAL_SONG_FFMPEG_UNAVAILABLE':
+                    # A missing shared tool cannot be repaired by trying every video.
+                    raise
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)

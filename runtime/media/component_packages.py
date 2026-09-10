@@ -11,6 +11,8 @@ import zipfile
 
 
 COMPONENTS = {
+    'original': ('原创歌曲音色与曲风', '1000 步林离音色与单依纯钢琴曲风，配合 ACE 唱歌组件使用',
+                 ('OLIVIA_ACE_ORIGINAL_LORA',)),
     'tools': ('媒体工具', '所有音频、视频和本地演奏导入共用', ('OLIVIA_FFMPEG_EXE',)),
     'voice': ('说话语音 · 2250', '生成说话音频，包含运行环境、模型与音色', ('OLIVIA_TTS_CONFIG',)),
     'cover': ('唱歌 · ACE', '用上传音源生成唱歌音频，包含模型、运行环境与音色',
@@ -33,9 +35,11 @@ def requirements_for(mode: str, video: bool) -> list[str]:
         result.append('voice')
     if mode != 'voice_reply':
         result.append('cover')
+    if mode == 'voice_song_video':
+        result.append('original')
     if video:
         result += ['lipsync', 'scenes']
-        if mode != 'voice_reply':
+        if mode == 'singing_video':
             result.append('separator')
     return result
 

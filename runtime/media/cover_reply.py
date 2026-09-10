@@ -41,7 +41,7 @@ def render_cover_reply(content, reply_text, output_path, *, source_audio,
 def deliver_cover_video(audio, output_path, *, environment, metadata, include_spoken,
                         reply_text, normal_video_path, song_video_path, official_reply_reference_path,
                         tts_config_path, visual_config_path, worker_path, performance_video_path,
-                        spoken_action_base_path=None, voice_performance_plan=None):
+                        spoken_action_base_path=None, voice_performance_plan=None, separate_for_lipsync=True):
     """Reuse a finished cover through the same video delivery path as a new job."""
     def path(key):
         return configured_media_path(environment, key)
@@ -51,7 +51,9 @@ def deliver_cover_video(audio, output_path, *, environment, metadata, include_sp
     vocals = audio.with_name(audio.stem + "-vocals.wav")
     # Separate the completed cover only for mouth conditioning. The source is
     # never separated before ACE, and the final cover audio is never re-voiced.
-    if metadata.get("music_stage") != "reused" or not _valid_wave_audio(vocals, ffmpeg_path=path("OLIVIA_FFMPEG_EXE")):
+    if not separate_for_lipsync:
+        vocals = audio
+    elif metadata.get("music_stage") != "reused" or not _valid_wave_audio(vocals, ffmpeg_path=path("OLIVIA_FFMPEG_EXE")):
         separate_vocals(audio, vocals, executable=path("OLIVIA_ROFORMER_PYTHON") or path("OLIVIA_ROFORMER_EXE"),
                         model_path=path("OLIVIA_ROFORMER_MODEL_PATH"), config_path=path("OLIVIA_ROFORMER_CONFIG_PATH"),
                         environment=environment, ffmpeg_path=path("OLIVIA_FFMPEG_EXE"))

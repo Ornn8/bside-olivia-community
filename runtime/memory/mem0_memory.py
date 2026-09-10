@@ -8,7 +8,7 @@ provider failures collapse to stable, privacy-safe states.
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import errno
@@ -1368,6 +1368,44 @@ class Mem0ConversationMemoryAdapter:
         )
 
     def _remember_exchange_transaction(
+        self, *, user_message: str, assistant_message: str, occurred_at: datetime,
+        source_id: str, user_id: str, origin: str = "user",
+    ) -> MemoryWriteResult:
+        original_source = source_id
+        if source_id.startswith("history:offline:") and origin != "proactive":
+            # Reuse a completed legacy source even when the backup's raw-file
+            # hash/order changed. Only untimed offline pairs permit content-only
+            # aliases; timestamped imports retain each independent occurrence.
+            # The normal path still verifies the legacy source's actual IDs.
+            digest = hashlib.sha256(json.dumps(
+                [self.config.agent_id, user_message, assistant_message], ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            path = self.config.data_root / "history-extraction-audit.sqlite3"
+            if path.exists():
+                try:
+                    with closing(sqlite3.connect(path)) as connection:
+                        for alias in self._configured_user_aliases(self._normalized_user_id(user_id)):
+                            row = connection.execute(
+                                "SELECT source_id FROM completed WHERE user_id=? AND content_sha=? "
+                                "ORDER BY (source_id=?) DESC, rowid LIMIT 1",
+                                (alias, digest, source_id),
+                            ).fetchone()
+                            if row is not None:
+                                candidate = row[0]
+                                if not isinstance(candidate, str) or not candidate.startswith("history:") or not _ID_RE.fullmatch(candidate):
+                                    raise ValueError("invalid history source")
+                                source_id = candidate
+                                break
+                except (OSError, sqlite3.Error, ValueError):
+                    return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, original_source,
+                        error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE")
+        result = self._remember_resolved_exchange_transaction(
+            user_message=user_message, assistant_message=assistant_message,
+            occurred_at=occurred_at, source_id=source_id, user_id=user_id, origin=origin,
+        )
+        return replace(result, source_id=original_source)
+
+    def _remember_resolved_exchange_transaction(
         self,
         *,
         user_message: str,
@@ -2195,7 +2233,13 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
             }
-        response = create(*args, **kwargs)
+        from runtime.diagnostics.usage_metrics import record_usage
+        response = None
+        try:
+            response = create(*args, **kwargs)
+        finally:
+            usage = getattr(response, "usage", None)
+            record_usage(usage, purpose="memory", outcome="response" if response is not None else "error")
         if any(getattr(choice, "finish_reason", None) == "length"
                for choice in getattr(response, "choices", ())):
             raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")

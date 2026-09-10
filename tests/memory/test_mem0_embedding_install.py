@@ -635,7 +635,9 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     assert "http://" not in BOOTSTRAP_JAVASCRIPT.replace("http://www.w3.org/2000/svg", "")
     without_provider_presets = BOOTSTRAP_JAVASCRIPT.replace(
         "https://api.deepseek.com", ""
-    ).replace("https://opencode.ai/zen/go/v1", "")
+    ).replace("https://opencode.ai/zen/go/v1", "").replace(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1", ""
+    )
     assert "https://" not in without_provider_presets
 
     memory = UnavailableConversationMemoryPort("MEM0_EMBEDDING_CACHE_UNAVAILABLE")

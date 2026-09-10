@@ -52,7 +52,7 @@ def test_http_tier_save_does_not_select_a_reply_mode(tmp_path, monkeypatch):
     import local_server as server
     store = VideoReplySettingsStore.initialize(tmp_path)
     monkeypatch.setattr(server, 'video_reply_settings_store', store)
-    monkeypatch.setattr(server, '_route_readiness', lambda *a: dict.fromkeys(REPLY_ROUTES, True))
+    monkeypatch.setattr(server, '_route_readiness', lambda *a, **kw: dict.fromkeys(REPLY_ROUTES, True))
     async def run():
         saved = await server.route('POST', '/toy/settings/reply-routes', {'request_id':'video_reply_setting:test','tier':'audio'}, {})
         assert saved['code'] == 0
@@ -88,7 +88,7 @@ def test_tier_preview_send_matrix(tmp_path, monkeypatch, tier, mode, contexts):
     monkeypatch.setattr(server, '_persist_store_state', lambda: None)
     monkeypatch.setattr(server, '_schedule_reply_job', lambda *a, **k: None)
     monkeypatch.setattr(server, '_video_reply_dependencies_ready', lambda: True)
-    monkeypatch.setattr(server, '_route_readiness', lambda *a: dict.fromkeys(REPLY_ROUTES, True))
+    monkeypatch.setattr(server, '_route_readiness', lambda *a, **kw: dict.fromkeys(REPLY_ROUTES, True))
     monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
     source_id = 'a' * 32
     audio = tmp_path / 'cover-inputs' / source_id / 'source.wav'
