@@ -381,6 +381,9 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "LICENSE").write_text("license", encoding="utf-8")
     (source / "local_server.py").write_text("tracked", encoding="utf-8")
+    worker = Path(__file__).parents[2] / "tools/latentsync_diagnostic_worker.py"
+    (source / "tools").mkdir()
+    (source / "tools/latentsync_diagnostic_worker.py").write_bytes(worker.read_bytes())
     (source / "untracked.py").write_text("untracked", encoding="utf-8")
     (source / "test_root.py").write_text("hidden", encoding="utf-8")
     (source / "requirements-ci.txt").write_text("hidden", encoding="utf-8")
@@ -400,6 +403,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
             *BUILD_CONTROL_FILES,
             "LICENSE",
             "local_server.py",
+            "tools/latentsync_diagnostic_worker.py",
             "test_root.py",
             "requirements-ci.txt",
             "pyproject.toml",
@@ -418,6 +422,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     assert (destination / "installer" / "assets" / "olivia.ico").read_bytes() == b"icon"
     assert (destination / "LICENSE").is_file()
     assert (destination / "local_server.py").is_file()
+    assert (destination / "tools/latentsync_diagnostic_worker.py").read_bytes() == worker.read_bytes()
     assert (destination / "offline" / "offline-core-assets.json").is_file()
     assert not (destination / "untracked.py").exists()
     assert not (destination / "tests").exists()
@@ -1733,6 +1738,7 @@ def test_setup_payload_uses_positive_runtime_allowlist() -> None:
     assert _is_release_file("installer/start_hidden.vbs.txt")
     assert _is_release_file("installer/assets/olivia.ico")
     assert _is_release_file("tools/livetalking_worker.py")
+    assert _is_release_file("tools/latentsync_diagnostic_worker.py")
     assert _is_release_file("tools/soulx_svc_worker.py")
 
     assert not _is_release_file(".gitignore")
