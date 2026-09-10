@@ -2598,8 +2598,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const messages = {LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
         LLM_AUTH_FAILED:"大模型服务认证失败，请检查 API Key 和访问权限。",
         LLM_RATE_LIMITED:"大模型服务请求过于频繁，请稍后重试。",
-        LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。"};
-      error.message = (messages[error.message] || "回信形式检测失败，请稍后重试。") + "信件尚未寄出。";
+        LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。",
+        REPLY_ROUTE_INVALID_RESULT:"大模型返回的回信形式无法识别，请重试；若持续出现，请导出诊断包。",
+        REPLY_ROUTE_INVALID_CONTENT:"信件内容无法用于检测回信形式，请检查后重试。",
+        VIDEO_TRIAGE_UNAVAILABLE:"回信形式检测服务暂不可用，请重试；若持续出现，请导出诊断包。",
+        REPLY_ROUTE_PREVIEW_EXPIRED:"检测期间回信设置发生变化，请重新寄出。"};
+      const code = /^[A-Z][A-Z0-9_]{0,95}$/.test(error.message || "") ? error.message : null;
+      const fallback = error.name === "AbortError" ? "回信形式检测超时，请稍后重试。"
+        : error instanceof TypeError ? "无法连接回信形式检测服务，请检查本地服务是否运行。"
+        : "回信形式检测失败，请导出诊断包。";
+      error.message = (messages[code] || fallback) + (code ? `（${code}）` : "") + "信件尚未寄出。";
       throw error;
     }
     let once;

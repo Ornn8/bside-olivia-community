@@ -71,6 +71,37 @@ def _exchange(name: str, timestamp: int) -> HistoricalExchange:
     )
 
 
+@pytest.mark.parametrize("provider_code,http_status,expected", [
+    ("PROVIDER_QUOTA_EXHAUSTED", 429, "LLM_QUOTA_EXHAUSTED"),
+    ("PROVIDER_REJECTED", 401, "LLM_AUTH_FAILED"),
+    ("PROVIDER_RETRYABLE", 429, "LLM_RATE_LIMITED"),
+    ("PROVIDER_TIMEOUT", None, "LLM_TIMEOUT"),
+    ("PROVIDER_PROTOCOL", None, "LLM_PROTOCOL"),
+    ("private-key", None, "LLM_FAILED"),
+    (None, None, "RESULT_INVALID"),
+])
+def test_relationship_failures_have_safe_stage_codes(provider_code, http_status, expected):
+    import asyncio
+    from types import SimpleNamespace
+    from runtime.imports.historical_memory import HistoricalRelationshipError
+
+    class FakeGateway:
+        async def complete(self, *args, **kwargs):
+            if provider_code is None:
+                return SimpleNamespace(text="private-letter-invalid-json")
+            error = RuntimeError("private-provider-body-and-key")
+            error.code = provider_code
+            error.status = http_status
+            raise error
+
+    with pytest.raises(HistoricalRelationshipError) as caught:
+        asyncio.run(assess_historical_relationship(
+            [_exchange("synthetic", 10)], gateway=FakeGateway(), persona_policy="synthetic policy",
+        ))
+    assert caught.value.code == "PRIVATE_WORLD_HISTORY_" + expected
+    assert "private-" not in str(caught.value)
+
+
 def _history_payload(
     order: tuple[str, ...] = ("first", "second"),
 ) -> dict[str, object]:
