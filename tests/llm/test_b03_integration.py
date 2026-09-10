@@ -193,6 +193,58 @@ def test_non_deepseek_save_hot_reload_restart_and_full_letter_stay_consistent(
     monkeypatch.setattr(local_server, "create_model_quality_ports", create_quality)
     monkeypatch.setattr(local_server, "_persist_store_state", lambda: None)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_MODEL", raising=False)
+    monkeypatch.delenv("OLIVIA_LLM_RUNTIME_KEY_CONFIGURED", raising=False)
+    monkeypatch.setattr(local_server, "LLM_CONFIG", local_server.LLM_CONFIG)
+    monkeypatch.setattr(
+        local_server, "LLM_TIMEOUT_SECONDS", local_server.LLM_TIMEOUT_SECONDS
+    )
+    monkeypatch.setattr(local_server, "LLM_CFG", local_server.LLM_CFG)
+    monkeypatch.setattr(local_server, "reply_pipeline", local_server.reply_pipeline)
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "config",
+        local_server.letters_adapter.config,
+    )
+    monkeypatch.setattr(
+        local_server.letters_adapter,
+        "gateway",
+        local_server.letters_adapter.gateway,
+    )
+    monkeypatch.setattr(
+        local_server.emotion_triage,
+        "gateway",
+        local_server.emotion_triage.gateway,
+    )
+    monkeypatch.setattr(
+        local_server.reply_engine,
+        "timeout_seconds",
+        local_server.reply_engine.timeout_seconds,
+    )
+    if isinstance(
+        local_server.private_world_candidate_analyzer,
+        local_server.GatewayPrivateWorldCandidateAnalyzer,
+    ):
+        monkeypatch.setattr(
+            local_server.private_world_candidate_analyzer,
+            "gateway",
+            local_server.private_world_candidate_analyzer.gateway,
+        )
+        monkeypatch.setattr(
+            local_server.private_world_candidate_analyzer,
+            "timeout_seconds",
+            local_server.private_world_candidate_analyzer.timeout_seconds,
+        )
+    monkeypatch.setattr(
+        local_server,
+        "create_conversation_memory_adapter",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        local_server.conversation_memory_adapter,
+        "reconfigure_from",
+        lambda _replacement: False,
+        raising=False,
+    )
     local_server.store.letters.clear()
     local_server.store.request_keys.clear()
 
