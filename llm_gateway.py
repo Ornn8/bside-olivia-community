@@ -829,7 +829,7 @@ class OpenAICompatibleAdapter(Gateway):
         return (
             scope is GatewayRequestScope.JSON_MAX_REASONING
             and self._uses_max_reasoning(scope)
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
             and endpoint.scheme == "https"
             and endpoint.hostname == "api.deepseek.com"
             and endpoint.path.rstrip("/") in {"", "/v1"}

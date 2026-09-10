@@ -563,6 +563,11 @@ def test_memory_readiness_recovery_dispatches_pending_letter_once(
 ) -> None:
     import local_server
 
+    monkeypatch.setattr(local_server.store, 'letters', [{
+        'letter_id': 'memory-recovered-letter', 'letter_status': 'PENDING',
+        'content': 'synthetic recovered memory input',
+    }])
+
     checks = 0
     generated: list[tuple[str, str, str | None]] = []
 

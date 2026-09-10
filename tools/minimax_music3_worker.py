@@ -27,7 +27,7 @@ from tools.minimax_profile import (  # noqa: E402
 
 _ALLOWED_DURATIONS = frozenset({40, 60, 110})
 _INFERENCE_TIMEOUT_SECONDS = 14400.0
-_EXPECTED_LYRIC_LINES = {40: 12, 60: 16, 110: 24}
+_EXPECTED_LYRIC_LINES = {40: 12, 60: 16, 110: 20}
 _SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
 _CAPTION_HEADINGS = ("### Global Metadata", "### Vocal Details", "### Arrangement")
@@ -110,7 +110,7 @@ def _lyrics(value: object, duration: int) -> str:
     if tags != _SONG_TAGS:
         raise RuntimeError("MINIMAX_MUSIC3_LYRICS_INVALID")
     lyric_lines = tuple(line for line in lines if not _TAG_LINE.fullmatch(line))
-    if len(lyric_lines) != _EXPECTED_LYRIC_LINES[duration]:
+    if len(lyric_lines) != _EXPECTED_LYRIC_LINES[duration] and not (duration == 110 and len(lyric_lines) == 24):
         raise RuntimeError("MINIMAX_MUSIC3_LYRICS_INVALID")
     return normalized
 

@@ -55,7 +55,7 @@ def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkey
     monkeypatch.setattr(server, '_persist_store_state', lambda: None)
     monkeypatch.setattr(server, '_schedule_reply_job', lambda *a, **k: None)
     monkeypatch.setattr(server, '_video_reply_dependencies_ready', lambda: True)
-    monkeypatch.setattr(server, '_route_readiness', lambda *a: dict.fromkeys(REPLY_ROUTES, True))
+    monkeypatch.setattr(server, '_route_readiness', lambda *a, **kw: dict.fromkeys(REPLY_ROUTES, True))
     monkeypatch.setattr(server, '_classify_managed_route', lambda *a: pytest.fail('explicit attachment needs no model guess'))
     monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
     source_id = 'a' * 32
