@@ -2895,9 +2895,10 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     messages = ({'role': 'system', 'content': assembled[0]['content'] + '\n' + task},
                 {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
     gateway = letters_adapter.gateway
+    scope = GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
         messages, request_id='proactive:' + intent['id'] + (':plan' if planning else ':body'),
-        scope=GatewayRequestScope.BACKGROUND_REASONING), timeout=180)
+        scope=scope), timeout=gateway.timeout_seconds_for_scope(scope, default=180))
     text = result.text.strip()
     if not text or len(text) > 10000 or '<think' in text.lower() or '</think' in text.lower():
         raise ValueError('PROACTIVE_RESPONSE_INVALID')
