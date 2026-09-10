@@ -39,7 +39,9 @@
           "audio_download",
           "natural_voice_chunks",
           "worker_progress",
-          "waveform_styles"
+          "waveform_styles",
+          "reply_route_preview_diagnostics",
+          "history_relationship_failure_codes"
         ]
       }
     }
