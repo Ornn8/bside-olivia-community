@@ -2595,7 +2595,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ...(attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
     catch (error) {
       error.config = config;
+      if (!/^[A-Z][A-Z0-9_]{0,95}$/.test(error.message || "")) {
+        const clientCode = error.name === "AbortError" ? "REPLY_ROUTE_CLIENT_TIMEOUT"
+          : error instanceof TypeError ? "REPLY_ROUTE_CLIENT_CONNECTION"
+          : error instanceof SyntaxError ? "REPLY_ROUTE_CLIENT_RESPONSE_INVALID" : "REPLY_ROUTE_CLIENT_UNKNOWN";
+        // Best effort only: a disconnected backend cannot accept diagnostics.
+        void fetch(new URL("/toy/letter/route-preview-diagnostic", apiBase), {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({error_code: clientCode}),
+        }).catch(() => {});
+        error.message = clientCode;
+      }
       const messages = {LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
+        REPLY_ROUTE_CLIENT_TIMEOUT:"回信形式检测超时，请稍后重试。",
+        REPLY_ROUTE_CLIENT_CONNECTION:"无法连接回信形式检测服务，请检查本地服务是否运行。",
+        REPLY_ROUTE_CLIENT_RESPONSE_INVALID:"本地回信形式检测接口返回格式异常，请导出诊断包。",
+        REPLY_ROUTE_CLIENT_UNKNOWN:"前端回信形式检测失败，请导出诊断包。",
         LLM_AUTH_FAILED:"大模型服务认证失败，请检查 API Key 和访问权限。",
         LLM_RATE_LIMITED:"大模型服务请求过于频繁，请稍后重试。",
         LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。",
@@ -2644,19 +2659,50 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       "林离会在允许的时间主动写一封信。信件完成后才会进入信箱，写信期间普通寄信会暂时锁定。",
       "text-text-secondary text-body-m font-regular"
     );
-    const makeOption = (label, checked) => {
+    const optionStyle = document.createElement("style");
+    optionStyle.textContent = `
+      [data-olivia-proactive-settings] .olivia-proactive-option {
+        display:flex; align-items:center; justify-content:space-between; gap:24px;
+        min-height:72px; padding:16px 0; border-bottom:1px solid #343536;
+        cursor:pointer; box-sizing:border-box;
+      }
+      [data-olivia-proactive-settings] .olivia-proactive-copy {min-width:0; display:flex; flex-direction:column; gap:6px;}
+      [data-olivia-proactive-settings] .olivia-proactive-switch {
+        appearance:none; -webkit-appearance:none; position:relative; flex:0 0 44px;
+        width:44px; height:26px; margin:0; padding:0; border:1px solid #777772;
+        border-radius:99px; background:#28292b; cursor:pointer;
+      }
+      [data-olivia-proactive-settings] .olivia-proactive-switch::before {
+        content:''; position:absolute; top:3px; left:3px; width:18px; height:18px;
+        border-radius:50%; background:#b8b6ae; transition:transform 160ms ease-out;
+      }
+      [data-olivia-proactive-settings] .olivia-proactive-switch:checked {background:#d9d5c9; border-color:#d9d5c9;}
+      [data-olivia-proactive-settings] .olivia-proactive-switch:checked::before {transform:translateX(18px); background:#28292b;}
+      [data-olivia-proactive-settings] .olivia-proactive-switch:focus-visible {outline:2px solid #eee9dd; outline-offset:4px;}
+      [data-olivia-proactive-settings] .olivia-proactive-option:hover .olivia-proactive-switch {border-color:#eee9dd;}
+      [data-olivia-proactive-settings] .olivia-proactive-switch:disabled {opacity:.45; cursor:default;}
+      @media(prefers-reduced-motion:reduce) {[data-olivia-proactive-settings] .olivia-proactive-switch::before {transition:none;}}
+    `;
+    const makeOption = (label, checked, detail) => {
       const row = document.createElement("label");
-      row.className = "flex items-center gap-2 text-text-body text-body-m";
+      row.className = "olivia-proactive-option text-text-body text-body-m";
       const input = document.createElement("input");
       input.type = "checkbox";
+      input.className = "olivia-proactive-switch";
+      input.setAttribute("role", "switch");
+      input.setAttribute("aria-label", label);
       input.checked = checked;
       input.addEventListener("change", () => { dirty = true; });
-      row.append(input, text("span", label, "text-text-body text-body-m"));
+      const copy = document.createElement("span");
+      copy.className = "olivia-proactive-copy";
+      copy.append(text("span", label, "text-text-body text-body-m"),
+        text("span", detail, "text-text-secondary text-caption-m font-regular"));
+      row.append(copy, input);
       return { row, input };
     };
-    const enabled = makeOption("允许主动写信", proactiveState.enabled);
-    const allowVoice = makeOption("允许主动信附带语音", proactiveState.allow_voice);
-    const loginCheck = makeOption("登录 Windows 后在后台检查主动来信", proactiveState.login_check_enabled);
+    const enabled = makeOption("允许主动写信", proactiveState.enabled, "有合适的话题时，让林离主动给你来信。");
+    const allowVoice = makeOption("主动信附带语音", proactiveState.allow_voice, "允许在主动来信中附上她的声音。");
+    const loginCheck = makeOption("登录后检查来信", proactiveState.login_check_enabled, "登录 Windows 后，在后台检查是否有适合寄出的主动来信。");
     const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");
     const save = button("保存", async () => {
@@ -2704,7 +2750,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     proactiveStateListeners.add(render);
     const controls = actions();
     controls.append(save, refresh);
-    container.append(heading, description, enabled.row, allowVoice.row, loginCheck.row,
+    container.append(optionStyle, heading, description, enabled.row, allowVoice.row, loginCheck.row,
       controls, status);
     section.append(container);
     status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";

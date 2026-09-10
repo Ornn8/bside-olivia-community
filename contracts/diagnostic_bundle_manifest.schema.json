@@ -41,7 +41,8 @@
           "worker_progress",
           "waveform_styles",
           "reply_route_preview_diagnostics",
-          "history_relationship_failure_codes"
+          "history_relationship_failure_codes",
+          "route_failure_context"
         ]
       }
     }
