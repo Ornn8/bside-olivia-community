@@ -1186,7 +1186,12 @@ def _target_frame_count(
         ffmpeg = Path(_ffmpeg(ffmpeg_path)).resolve()
         ffprobe = ffmpeg.with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
         if not ffprobe.is_file():
-            raise OSError("ffprobe unavailable")
+            duration = _media_duration_seconds(
+                video_path, required_streams=("0:v:0",), ffmpeg_path=ffmpeg
+            )
+            if duration is None or duration <= 0:
+                raise RuntimeError("video duration unavailable")
+            return max(1, round(duration * fps))
         completed = subprocess.run(
             [
                 str(ffprobe),
@@ -1201,6 +1206,7 @@ def _target_frame_count(
             capture_output=True,
             check=False,
             timeout=60,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if completed.returncode != 0:
             raise RuntimeError("ffprobe failed")

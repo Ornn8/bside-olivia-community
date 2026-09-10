@@ -829,6 +829,39 @@ def test_history_audit_write_failure_rolls_back_and_does_not_mark_complete(tmp_p
         assert backend.rows == []
 
 
+@pytest.mark.parametrize("variant", ["format", "append", "reorder"])
+def test_history_reimport_matches_content_across_file_changes_and_restart(tmp_path, variant):
+    from runtime.imports.offline_letter_pairs import offline_letter_pair_exchanges
+    pairs = [{"content": "我喜欢钢琴。", "reply": "我会练琴。"}]
+    path = tmp_path / "letters.json"
+    path.write_text(json.dumps(pairs), encoding="utf-8")
+    backend = FakeMem0()
+    config = _config(tmp_path)
+    def write(adapter, exchange):
+        return adapter.remember_exchange(user_message=exchange.user_message,
+            assistant_message=exchange.assistant_message, occurred_at=exchange.occurred_at,
+            source_id=exchange.memory_source_id, user_id="local-user")
+    old = offline_letter_pair_exchanges(path)[0]
+    assert write(Mem0ConversationMemoryAdapter(backend, config), old).status is MemoryWriteStatus.WRITTEN
+    before = sum(name == "add" for name, _ in backend.calls)
+    if variant != "format":
+        pairs.append({"content": "我喜欢散步。", "reply": "我刚练完琴。"})
+    if variant == "reorder":
+        pairs.reverse()
+    path.write_text(json.dumps(pairs, indent=2), encoding="utf-8")
+    exchanges = offline_letter_pair_exchanges(path)
+    current = next(item for item in exchanges if item.user_message == old.user_message)
+    assert current.memory_source_id != old.memory_source_id
+    adapter = Mem0ConversationMemoryAdapter(backend, config)
+    result = write(adapter, current)
+    assert result.status is MemoryWriteStatus.DUPLICATE
+    assert result.source_id == current.memory_source_id
+    assert sum(name == "add" for name, _ in backend.calls) == before
+    if variant != "format":
+        new = next(item for item in exchanges if item.user_message != old.user_message)
+        assert write(adapter, new).status is MemoryWriteStatus.WRITTEN
+
+
 def test_history_audit_does_not_skip_when_saved_memory_ids_disappear(tmp_path):
     backend = FakeMem0()
     adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))

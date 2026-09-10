@@ -274,9 +274,18 @@ def serialize_letter_summary(
     }
     if video_pending:
         payload["videoPending"] = True
+    if (status == int(OriginalClientLetterStatus.PENDING)
+            and letter.get('reply_wait_reason') == 'bathing'
+            and letter.get('reply_resume_at', 0) > _now_value(now)):
+        payload['replyWaitReason'] = 'bathing'
+    if reply_type != OriginalClientReplyType.NONE:
+        payload["replyKind"] = _exact_reply_mode(letter.get("reply_mode"))
     if letter.get("music_provider") == "ace_step_xl_cover" and _exact_reply_mode(letter.get("reply_mode")) != "voice_reply":
         payload["coverId"] = letter_id
-    if _audio_reply(letter):
+    if _audio_reply(letter) or (
+        letter.get("reply_video_enabled") is True
+        and str(letter.get("media_status") or "").upper() in {"FAILED", "UNAVAILABLE"}
+    ):
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
         payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url"))
 
@@ -330,7 +339,7 @@ def serialize_letter_detail(
     if published and _audio_reply(letter):
         payload["replyAudioUrl"] = _safe_local_media_url(letter.get("reply_audio_url"))
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
-        payload["replySongUrl"] = media_url if _exact_reply_mode(letter.get("reply_mode")) == "voice_song_video" and letter.get("media_status") == "COMPLETED" else ""
+        payload["replySongUrl"] = _safe_local_media_url(letter.get("reply_song_url")) if _exact_reply_mode(letter.get("reply_mode")) == "voice_song_video" and letter.get("media_status") == "COMPLETED" else ""
     if include_legacy_aliases:
         payload.update(
             {

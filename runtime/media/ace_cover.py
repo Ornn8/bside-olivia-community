@@ -33,7 +33,10 @@ def cover_paths(environment: Mapping[str, str]) -> dict[str, Path | None]:
 
 
 def cover_configured(environment: Mapping[str, str]) -> bool:
-    paths = cover_paths(environment)
+    return ace_paths_configured(cover_paths(environment))
+
+
+def ace_paths_configured(paths) -> bool:
     root, lora = paths["runtime_root"], paths["voice_lora"]
     return bool(root and lora and paths["data_root"] and
                 all(paths[key] and paths[key].is_file() for key in ("python", "reference")) and
@@ -51,7 +54,12 @@ def generate_cover(source: Path | None, output: Path, *, environment: Mapping[st
     paths = cover_paths(environment)
     if not lyrics.strip() and not (paths["asr_model"] and paths["asr_model"].is_file()):
         raise CoverError("COVER_LYRICS_REQUIRED")
-    job = output.parent / (output.stem + "-cover-stages")
+    return generate_ace(source, output, environment=environment, paths=paths, lyrics=lyrics, language=language)
+
+
+def generate_ace(source, output, *, environment, paths, lyrics, language,
+                 task_type="cover", parameters=None):
+    job = output.parent / (output.stem + ("-cover-stages" if task_type == "cover" else "-original-stages"))
     job.mkdir(parents=True, exist_ok=True)
     temp = job / "tmp"
     temp.mkdir(exist_ok=True)
@@ -60,11 +68,13 @@ def generate_cover(source: Path | None, output: Path, *, environment: Mapping[st
     request = {key: str(value) if value else "" for key, value in paths.items()}
     from runtime.media.latentsync_reply import resolve_ffmpeg_executable
     request["ffmpeg"] = str(resolve_ffmpeg_executable(environment))
-    request.update(source=str(source.resolve()), output=str(partial.resolve()), lyrics=lyrics, language=language)
+    request.update(source=str(source.resolve()) if source is not None else None,
+                   output=str(partial.resolve()), lyrics=lyrics, language=language,
+                   task_type=task_type, **(parameters or {}))
     def digest(path):
         with Path(path).open("rb") as stream:
             return hashlib.file_digest(stream, "sha256").hexdigest()
-    fingerprints = {"source": digest(source), "worker": digest(Path(__file__).with_name("ace_cover_worker.py"))}
+    fingerprints = {"source": digest(source) if source is not None else None, "worker": digest(Path(__file__).with_name("ace_cover_worker.py"))}
     for key, asset in (("reference", paths["reference"]), ("lora", paths["voice_lora"] / "adapter_model.safetensors")):
         if asset.is_file():
             fingerprints[key] = digest(asset)
@@ -96,7 +106,7 @@ def generate_cover(source: Path | None, output: Path, *, environment: Mapping[st
             raise CoverError(code)
         metadata = json.loads((job / "progress.json").read_text(encoding="utf-8"))
         partial.replace(output)
-        metadata.update(audio_model="ACE-Step-1.5-XL", task_type="cover")
+        metadata.update(audio_model="ACE-Step-1.5-XL", task_type=task_type)
         receipt.write_text(json.dumps({"request": request, "metadata": metadata, "output_sha256": digest(output)}), encoding="utf-8")
         return metadata
     except subprocess.TimeoutExpired as exc:

@@ -124,6 +124,7 @@ def _dpapi_protect(value: str) -> str:
         text=True,
         capture_output=True,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     protected = result.stdout.strip()
     if result.returncode or not protected:
@@ -155,6 +156,7 @@ def _dpapi_unprotect(value: str) -> str:
         text=True,
         capture_output=True,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     secret = result.stdout.strip()
     if result.returncode or not secret:

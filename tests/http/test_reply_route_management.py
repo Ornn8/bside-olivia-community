@@ -81,25 +81,11 @@ def test_explicit_disabled_route_requires_confirmation_and_freezes_once(tmp_path
         altered = {**body, "content": "different input"}
         assert (await server.route("POST", "/toy/letter/send", altered, {}, defer_reply=True))["code"] == 409
         body["material"]["route_allow_once"] = requested
-        if requested != "voice_reply":
-            missing = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
-            assert missing["data"]["error_code"] == "COVER_SOURCE_REQUIRED"
-            assert not server.store.letters
-            monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
-            source_id = "a" * 32
-            audio = tmp_path / "cover-inputs" / source_id / "source.wav"
-            audio.parent.mkdir(parents=True)
-            import wave
-            with wave.open(str(audio), "wb") as stream:
-                stream.setnchannels(1)
-                stream.setsampwidth(2)
-                stream.setframerate(16000)
-                stream.writeframes(b"\0\0" * 1600)
-            body["material"]["cover_source_id"] = source_id
-            body["material"]["cover_lyrics"] = "synthetic"
         accepted = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
         assert accepted["code"] == 0, accepted
         letter = server.store.letters[0]
+        assert letter["music_provider"] == "ace_step_xl_original"
+        assert "cover_source_id" not in letter["material"]
         assert letter["route_preflight"]["reply_mode"] == requested
         assert letter["reply_routes"] == {key: key == requested for key in REPLY_ROUTES}
         assert "route_preview_token" not in letter["material"]

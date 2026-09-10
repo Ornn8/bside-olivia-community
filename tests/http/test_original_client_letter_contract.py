@@ -17,6 +17,20 @@ from original_client_letter_contract import (
 NOW = 1_800_000_000.0
 
 
+def test_separate_original_song_projection_never_replaces_spoken_audio():
+    speech = 'http://127.0.0.1:8899/toy/media/fixture-speech.wav'
+    song = 'http://127.0.0.1:8899/toy/media/fixture-song.wav'
+    letter = _letter(reply_mode='voice_song_video', reply_video_enabled=False,
+                     reply_audio_url=speech, reply_song_url=song, media_status='COMPLETED')
+    result = serialize_letter_detail(letter, now=NOW)
+    assert result['replyAudioUrl'] == speech
+    assert result['replySongUrl'] == song
+    letter['media_status'] = 'FAILED'
+    result = serialize_letter_detail(letter, now=NOW)
+    assert result['replyAudioUrl'] == speech
+    assert result['replySongUrl'] == ''
+
+
 def test_explicit_unknown_history_time_is_not_replaced_by_current_time():
     summary = serialize_letter_summary(_letter(created_at=None, replied_at=None), now=NOW)
     assert summary["createdAt"] is None

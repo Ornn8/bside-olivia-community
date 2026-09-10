@@ -105,3 +105,32 @@ def test_import_failure_logs_safe_specific_code(library, tmp_path, monkeypatch):
     log = (library.root.parent / 'logs/media-provider.jsonl').read_text()
     assert 'LOCAL_SONG_PERMISSION_DENIED' in log
     assert 'private' not in log
+
+
+def test_three_scene_backup_imports_one_song_without_touching_source(library, tmp_path):
+    folder = tmp_path / '曲子' / 'midi_1012_1783936102'
+    folder.mkdir(parents=True)
+    for index in range(3):
+        (folder / (str(index) * 32 + '.mp4')).write_bytes(b'video' * (index + 1))
+    original = {p: p.read_bytes() for p in folder.iterdir()}
+    assert library.import_path(str(folder.parent))['added'] == 1
+    assert library.import_path(str(folder.parent))['skipped'] == 1
+    assert len(list(library.root.glob('*.mp4'))) == 1
+    assert not list(folder.parent.glob('*.mp4'))
+    assert {p: p.read_bytes() for p in folder.iterdir()} == original
+
+
+def test_missing_ffmpeg_stops_batch_and_cleans_temporary(library, tmp_path, monkeypatch):
+    folder = tmp_path / 'videos'
+    folder.mkdir()
+    for name in ('one', 'two', 'three'):
+        (folder / (name + '.mp4')).write_bytes(name.encode())
+    attempts = []
+    def unavailable(source, output):
+        attempts.append(source)
+        raise LocalSongError('LOCAL_SONG_FFMPEG_UNAVAILABLE')
+    monkeypatch.setattr(library, '_prepare', unavailable)
+    with pytest.raises(LocalSongError, match='LOCAL_SONG_FFMPEG_UNAVAILABLE'):
+        library.import_path(str(folder))
+    assert len(attempts) == 1
+    assert not list(library.root.glob('*.mp4'))

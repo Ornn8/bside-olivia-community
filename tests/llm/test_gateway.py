@@ -347,6 +347,7 @@ def test_deepseek_v4_flash_release_text_requests_max_reasoning(
 
 
 @pytest.mark.parametrize("model,style,disabled", [
+    ("deepseek-flash", "chat_completions", True),
     ("deepseek-v4-flash", "chat_completions", True),
     ("deepseek-v4-pro", "chat_completions", True),
     ("another-model", "chat_completions", False),
@@ -418,6 +419,7 @@ def test_text_reasoning_empty_final_is_retryable_only_after_clean_stop(monkeypat
 
 
 @pytest.mark.parametrize("base_url,model,style,expected", [
+    ("https://api.deepseek.com", "deepseek-flash", "chat_completions", True),
     ("https://api.deepseek.com", "deepseek-v4-flash", "chat_completions", True),
     ("https://api.deepseek.com/v1/", "DeepSeek-V4-Flash", "chat_completions", True),
     ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", "chat_completions", False),
@@ -477,6 +479,7 @@ def test_official_stream_forwards_json_reasoning_scope(monkeypatch):
 
 
 @pytest.mark.parametrize("model,style,max_effort", [
+    ("deepseek-flash", "chat_completions", True),
     ("synthetic-model", "chat_completions", False),
     ("DeepSeek-V4-Flash", "chat_completions", True),
     ("deepseek-v4-flash", "responses", False),
@@ -587,7 +590,7 @@ def test_deepseek_v4_flash_release_reasoning_has_a_compatible_http_timeout(
     assert run(exercise()) == ("mock reply", "PROVIDER_TIMEOUT")
 
 
-@pytest.mark.parametrize("model,required", [("synthetic-model", True), ("deepseek-v4-flash", False), ("deepseek-v4-pro", False)])
+@pytest.mark.parametrize("model,required", [("synthetic-model", True), ("deepseek-v4-flash", False), ("deepseek-v4-pro", False), ("deepseek-flash", False)])
 def test_openai_compatible_adapter_returns_required_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
     model, required,

@@ -490,6 +490,7 @@ def render_latentsync_video(
         command = [
             str(python_path),
             str(Path(__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"),
+            "--olivia-path-safe-io",
             "--unet_config_path",
             str(config_path),
             "--inference_ckpt_path",

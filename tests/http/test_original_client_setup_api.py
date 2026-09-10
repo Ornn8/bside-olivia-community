@@ -73,6 +73,23 @@ def test_setup_dpapi_round_trip_does_not_store_plaintext() -> None:
     assert _dpapi_unprotect(protected) == fixture_value
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process creation flags")
+def test_key_protection_and_loading_never_open_a_console(monkeypatch):
+    from types import SimpleNamespace
+    import subprocess
+    import original_client_setup_api as setup_api
+    calls = []
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="synthetic-result")
+    monkeypatch.setattr(setup_api.subprocess, "run", run)
+    _dpapi_protect("synthetic-key")
+    _dpapi_unprotect("dpapi-v1:synthetic-ciphertext")
+    assert len(calls) == 2
+    assert all(call["creationflags"] & subprocess.CREATE_NO_WINDOW for call in calls)
+    assert all(call["capture_output"] for call in calls)
+
+
 def _service(tmp_path: Path, probes: list[tuple[str, str, str]]) -> LLMSetupService:
     async def probe(base_url: str, model: str, api_key: str) -> None:
         probes.append((base_url, model, api_key))

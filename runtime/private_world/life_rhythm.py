@@ -23,10 +23,9 @@ def _shift(day, shifts):
 def _rest_window(day, shifts):
     """One simulated night plan, not a verified character fact or recorded sleep."""
     offset = timedelta(minutes=_shift(day, shifts))
-    begin = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23) + offset
+    begin = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(days=1) + offset
     tomorrow = day + timedelta(days=1)
-    wake = 8 if tomorrow.weekday() >= 5 else 7
-    finish = datetime.combine(tomorrow, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=wake) + offset
+    finish = datetime.combine(tomorrow, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=8, minutes=30) + offset
     return begin, finish
 
 
@@ -81,13 +80,16 @@ def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shi
 def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None) -> dict:
     local = now.astimezone(LOCAL)
     shifts = shifts or {}
-    wake_hour = 8 if local.weekday() >= 5 else 7
+    wake_hour = 8.5
     prior_shift = _shift(local.date() - timedelta(days=1), shifts)
     shift = _shift(local.date(), shifts)
     wake_hour += prior_shift / 60
     hour = local.hour + local.minute / 60
-    sleeping = hour >= 23 + shift / 60 or (hour < wake_hour and hour >= -1 + prior_shift / 60)
-    phase = ('sleep' if sleeping else
+    windows = [_rest_window(local.date() + timedelta(days=i), shifts) for i in (-2, -1, 0, 1)]
+    begin, finish = next((start, end) for start, end in windows if end > local)
+    sleeping = begin <= local < finish
+    bathing = begin - timedelta(minutes=30) <= local < begin
+    phase = ('bathing' if bathing else 'sleep' if sleeping else
              'quiet' if hour < 5 else
              'breakfast' if hour < wake_hour + 1 else
              'lunch' if 12 <= hour < 13 else
@@ -111,20 +113,18 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
                     '正在慢慢恢复，先不把日程排满。' if recovering else
                     '没有持续身体不适的记录。'),
     }
-    labels = {'sleep': '计划休息的时段', 'interrupted_rest': '夜间通信后，准备继续休息',
+    labels = {'bathing': '林离洗澡中', 'sleep': '计划休息的时段', 'interrupted_rest': '夜间通信后，准备继续休息',
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
-    begin, finish = _rest_window(local.date() - timedelta(days=1), shifts)
-    if finish <= local:
-        begin, finish = _rest_window(local.date(), shifts)
     return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
             'phase_basis': 'schedule_and_correspondence', 'wake_cause': 'unknown',
             'planned_rest_window': {'kind': 'current_plan', 'start': begin.isoformat(), 'end': finish.isoformat()},
+            'bath_end_at': begin.timestamp() if bathing else None,
             'wellbeing': wellbeing,
             'sleep_shift_minutes': shift,
             'activity': labels[phase],
             'note': ('休息不足，今天减少安排，把休息放在前面。' if rest == 'depleted' else
                      '最近休息受到影响，放慢一点，留时间补觉。' if rest == 'tired' else
                      '按自己的节奏生活。'),
-            'availability': 'rest' if phase in {'sleep', 'interrupted_rest', 'quiet'} else
+            'availability': 'rest' if phase in {'bathing', 'sleep', 'interrupted_rest', 'quiet'} else
                             'busy' if phase in {'focus', 'breakfast', 'lunch', 'dinner'} else 'open'}

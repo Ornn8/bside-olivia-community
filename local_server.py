@@ -1271,7 +1271,7 @@ async def _classify_managed_route(content: str, routes: dict[str, bool]) -> Tria
     return await router.classify(content)
 
 
-def _route_readiness(videos=None) -> dict[str, bool]:
+def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:
     environment = dict(_os.environ)
     from runtime.media.music_reply import musical_reply_configured
     if videos is None:
@@ -1280,7 +1280,8 @@ def _route_readiness(videos=None) -> dict[str, bool]:
             videos["voice_reply"] = False
     voice = _voice_reply_configured(environment)
     from runtime.media.ace_cover import cover_configured
-    song_audio = cover_configured(environment)
+    from runtime.media.original_song import original_configured
+    song_audio = cover_configured(environment) if cover else original_configured(environment)
     latent = configured_media_path(environment, "OLIVIA_LATENTSYNC_ROOT")
     latent_python = configured_media_path(environment, "OLIVIA_LATENTSYNC_PYTHON")
     performance = _current_music_performance(environment)
@@ -1288,9 +1289,9 @@ def _route_readiness(videos=None) -> dict[str, bool]:
                 and latent_python.is_file() and all((latent / name).is_file() for name in
                     ("scripts/inference.py", "configs/unet/stage2_efficient.yaml", "checkpoints/latentsync_unet.pt")))
     separator = configured_media_path(environment, "OLIVIA_ROFORMER_PYTHON") or configured_media_path(environment, "OLIVIA_ROFORMER_EXE")
-    song = bool(song and separator and separator.is_file() and all(
+    song = bool(song and (not cover or (separator and separator.is_file() and all(
         configured_media_path(environment, key) is not None and configured_media_path(environment, key).is_file()
-        for key in ("OLIVIA_ROFORMER_MODEL_PATH", "OLIVIA_ROFORMER_CONFIG_PATH")))
+        for key in ("OLIVIA_ROFORMER_MODEL_PATH", "OLIVIA_ROFORMER_CONFIG_PATH")))))
     from runtime.reply.reply_media import assemble_latentsync_video_delivery
     try:
         if not voice or _local_data_root(environment) is None:
@@ -1324,7 +1325,8 @@ def _video_reply_dependencies_ready() -> bool:
     environment = MappingProxyType(dict(_os.environ))
     try:
         from runtime.media.ace_cover import cover_configured
-        return _voice_reply_configured(environment) or cover_configured(environment)
+        from runtime.media.original_song import original_configured
+        return _voice_reply_configured(environment) or cover_configured(environment) or original_configured(environment)
     except Exception:
         return False
 
@@ -2828,15 +2830,31 @@ def _proactive_status() -> dict:
     from runtime.reply.proactive_letters import make_context, read_json
     root = _state_root()
     schedule = read_json(root / 'proactive/schedule.json') if root else {}
-    return {**_proactive_settings(), 'busy': _proactive_busy,
+    prefs = _proactive_settings()
+    reason = ('disabled' if not prefs['enabled'] else
+              'waiting' if _proactive_reason == 'disabled' else _proactive_reason)
+    return {**prefs, 'busy': _proactive_busy,
             'remaining': make_context(store.letters, now=time.time())['remaining'],
-            'reason': _proactive_reason, 'next_check_at': schedule.get('next_check_at')}
+            'reason': reason, 'next_check_at': schedule.get('next_check_at')}
+
+
+def _current_life_rhythm() -> dict:
+    from runtime.private_world.life_rhythm import rhythm
+    now = datetime.now(timezone.utc)
+    return (daily_life_runtime.store.snapshot(now)['rhythm']
+            if daily_life_runtime is not None else rhythm(now, []))
 
 
 def _proactive_ready() -> bool:
     if (not _proactive_settings()['enabled'] or _history_memory_admin_gate.locked()
-            or not _conversation_memory_ready_for_reply() or _active_undelivered_letter()
-            or not 9 <= datetime.now().hour < 22):
+            or not _conversation_memory_ready_for_reply() or _active_undelivered_letter()):
+        return False
+    try:
+        current_rhythm = _current_life_rhythm()
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
+        _safe_log('proactive_rhythm_unavailable')
+        return False
+    if current_rhythm.get('availability') != 'open':
         return False
     context = _refresh_proactive_context()
     return context['remaining'] > 0 and not context['blocked'] and not context['unread']
@@ -3151,13 +3169,14 @@ async def route(
                 if not letter or letter.get('media_status') != 'COMPLETED':
                     return err(409, 'LETTER_AUDIO_NOT_READY', {})
                 from urllib.parse import urlsplit
-                name = Path(urlsplit(str(letter.get('reply_audio_url', ''))).path).name
-                if name != str(letter['letter_id']) + '.wav':
+                song_url = letter.get('reply_song_url')
+                name = Path(urlsplit(str(song_url or letter.get('reply_audio_url', ''))).path).name
+                if name != str(letter['letter_id']) + ('-song.wav' if song_url else '.wav'):
                     return err(409, 'LETTER_AUDIO_NOT_READY', {})
                 source = (root / 'media' / name).resolve()
                 if not source.is_relative_to((root / 'media').resolve()) or not source.is_file():
                     return err(409, 'LETTER_AUDIO_NOT_READY', {})
-                report = await asyncio.to_thread(library.import_audio, source, body.get('name', '林离的翻唱'))
+                report = await asyncio.to_thread(library.import_audio, source, body.get('name', '林离的原创歌曲' if song_url else '林离的翻唱'))
                 return ok(report)
             if p.endswith("/import"):
                 return ok(await asyncio.to_thread(library.import_path, body.get("path")))
@@ -3528,7 +3547,8 @@ async def route(
             from runtime.video_reply_settings import routed_video
             selected_mode = requested or decision.reply_mode
             selected_video = routed_video(selected_mode, decision.music_contexts, {**preview_videos, **({requested: True} if video_confirmation else {})})
-            ready = await asyncio.to_thread(_route_readiness, {**preview_videos, selected_mode: selected_video})
+            ready = await asyncio.to_thread(_route_readiness, {**preview_videos, selected_mode: selected_video},
+                                          **({"cover": True} if body.get('cover_source_id') else {}))
         token = str(uuid.uuid4())
         now = time.monotonic()
         for key, value in list(_reply_route_previews.items()):
@@ -3538,7 +3558,7 @@ async def route(
         _reply_route_previews[token] = (now, hashlib.sha256(content.encode()).hexdigest(), decision,
                                        preview_videos, routes, body.get('cover_source_id'), body.get('cover_output', 'audio'))
         return ok({"token": token, "requested_route": requested, "video_enabled": selected_video,
-                   "requires_cover_audio": (requested or decision.reply_mode) in {"singing_video", "voice_song_video", "musical_video"},
+                   "requires_cover_audio": bool(body.get("cover_source_id")),
                    "needs_confirmation": bool(requested and not routes[requested]),
                    "needs_video_confirmation": video_confirmation,
                    "ready": ready.get(requested, True), "reply_mode": decision.reply_mode})
@@ -3988,10 +4008,9 @@ async def route(
             route_decision = restrict_reply_route(route_decision, routes)
             if material.get('cover_source_id') and 'explicit_audio_output_request' in route_decision.music_contexts:
                 videos[requested] = False
-        # New music replies are always source-conditioned covers. Old stored jobs
-        # retain their original renderer so an upgrade cannot rewrite accepted work.
+        # Uploaded songs are covers; ordinary singing replies are original music.
         source_id = material.get("cover_source_id")
-        if source_id is not None or (route_decision is not None and route_decision.reply_mode in {"singing_video", "voice_song_video", "musical_video"}):
+        if source_id is not None:
             from runtime.media.cover_upload import source_path
             try:
                 root = _local_data_root()
@@ -4030,7 +4049,7 @@ async def route(
             "reply_mode": ReplyMode.TEXT_LETTER.value,
             "triage": {"status": "pending"},
             "music_duration_seconds": duration,
-            "music_provider": "ace_step_xl_cover",
+            "music_provider": "ace_step_xl_cover" if source_id is not None else "ace_step_xl_original",
             "reply_routes": routes,
             "reply_route_videos": videos,
             "reply_capability_tier": video_reply_settings_store.saved_tier(),
@@ -4042,6 +4061,10 @@ async def route(
                 and _video_reply_dependencies_ready()
             ),
         }
+        bath_end = _current_life_rhythm().get('bath_end_at')
+        if bath_end is not None and bath_end > time.time():
+            letter['reply_resume_at'] = bath_end
+            letter['reply_wait_reason'] = 'bathing'
         store.letters.insert(0, letter)
         previous_request_id = (
             store.request_keys.get(idempotency_key)
@@ -4063,7 +4086,7 @@ async def route(
                 else:
                     store.request_keys.pop(idempotency_key, None)
             raise
-        if defer_reply or not _conversation_memory_ready_for_reply():
+        if defer_reply or letter.get('reply_resume_at', 0) > time.time() or not _conversation_memory_ready_for_reply():
             _schedule_reply_job(lid, content, idempotency_key=idempotency_key)
             return _send_result_for_letter(letter)
         completed = await generate_reply(lid, content, idempotency_key=idempotency_key)
@@ -4415,6 +4438,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 song_output = output_dir / f"{letter_id}-song.wav" if not video_enabled and reply_mode == "voice_song_video" else output_path
                 music_renderer = render_musical_reply
                 cover_options = {}
+                if letter.get("music_provider") == "ace_step_xl_original":
+                    from runtime.media.original_song import render_original_reply
+                    music_renderer = render_original_reply
                 if letter.get("music_provider") == "ace_step_xl_cover":
                     from runtime.media.cover_reply import render_cover_reply
                     from runtime.media.cover_upload import source_path
@@ -4452,17 +4478,16 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     return
                 letter.update(_sanitized_music_render_metadata(render_metadata))
                 if reply_mode == "voice_song_video":
-                    from runtime.reply.reply_media import concatenate_reply_audio
-                    await asyncio.to_thread(concatenate_reply_audio, audio_path, song_output, output_path, environment)
-                    if not still_current():
-                        return
-                    letter["reply_structure"] = "speech_song_audio"
+                    letter["reply_song_url"] = f"http://127.0.0.1:{PORT}/toy/media/{song_output.name}"
+                    letter["reply_song_duration"] = render_metadata.get("duration_seconds", 110)
+                    letter["reply_structure"] = "speech_and_separate_song_audio"
+                    output_path = song_output
             stage = "publish"
             if not still_current():
                 return
             if video_enabled:
                 letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
-            else:
+            elif reply_mode != "voice_song_video":
                 letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
             letter["media_error_code"] = None
@@ -4577,6 +4602,13 @@ async def _run_reply_when_memory_ready(
     idempotency_key: str | None,
     ready_timeout_seconds: float | None = None,
 ) -> bool:
+    letter = next((item for item in store.letters if item['letter_id'] == letter_id), None)
+    if letter is None:
+        return False
+    while letter.get('reply_resume_at', 0) > time.time():
+        await asyncio.sleep(min(60, letter['reply_resume_at'] - time.time()))
+        if letter.get('letter_status') not in {'PENDING', 'PROCESSING'}:
+            return False
     timeout_seconds = (
         MEMORY_READY_REPLY_TIMEOUT_SECONDS
         if ready_timeout_seconds is None
@@ -4587,7 +4619,7 @@ async def _run_reply_when_memory_ready(
             (item for item in store.letters if item["letter_id"] == letter_id),
             None,
         )
-        created_at = None if letter is None else letter.get("created_at")
+        created_at = None if letter is None else max(letter.get("created_at", 0), letter.get('reply_resume_at', 0))
         if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
             elapsed = max(0.0, time.time() - float(created_at))
             timeout_seconds = max(0.0, timeout_seconds - elapsed)

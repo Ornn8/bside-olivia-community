@@ -36,7 +36,7 @@ def _restore(value, duration):
 def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner):
     identity = hashlib.sha256(json.dumps([content, reply, duration],
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-    expected = {"schema_version": _SCHEMA, "planner_version": 2 if duration == 110 else _PLANNER_VERSION,
+    expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else _PLANNER_VERSION,
                 "input_sha256": identity}
     try:
         if _safe(path) and stat.S_ISREG(path.stat().st_mode) and path.stat().st_size <= _MAX_BYTES:

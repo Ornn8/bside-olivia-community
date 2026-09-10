@@ -2078,7 +2078,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           state.textContent += " 请导出诊断包以查看具体原因。";
         }
         await reload(); await refreshLocalSongCatalog();
-      } catch (_error) { state.textContent = "导入失败，请检查路径、媒体工具和磁盘空间后重试。"; }
+      } catch (_error) {
+        state.textContent = _error.message === "LOCAL_SONG_FFMPEG_UNAVAILABLE"
+          ? "导入已停止：未找到 FFmpeg。请在本地组件中导入新版媒体工具组件，重启后重试。原视频已保留。"
+          : "导入失败，请检查路径、媒体工具和磁盘空间后重试。";
+      }
       finally { if (localSongImportPending === pending) localSongImportPending = null; importButton.disabled = false; }
     };
     const pickButton = button("选择文件夹", async () => {
@@ -2753,7 +2757,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       input.setAttribute("role", "switch");
       input.setAttribute("aria-label", label);
       input.checked = checked;
-      input.addEventListener("change", () => { dirty = true; });
+      input.addEventListener("change", () => {
+        dirty = true;
+        status.textContent = "设置尚未保存，请点击保存后生效。";
+      });
       const copy = document.createElement("span");
       copy.className = "olivia-proactive-copy";
       copy.append(text("span", label, "text-text-body text-body-m"),
@@ -2803,7 +2810,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (payload.busy) {
         status.textContent = "林离正在写信。普通寄信暂时锁定。";
       } else if (payload.reason && payload.reason !== "PROACTIVE_STATUS_UNAVAILABLE") {
-        const reasons = {disabled:"主动写信已关闭。", waiting:"等有合适的话题时再写。", considering:"林离在考虑要不要写信。",
+        const reasons = {disabled:"主动写信已关闭。", waiting:"主动写信已开启，等待合适的时间和话题。", considering:"林离在考虑要不要写信。",
           no_opportunity:"暂时没有新的话题。", deferred:"这次先不写，晚些再看看。", retry_later:"暂时未能完成检查，稍后会重试。"};
         status.textContent = reasons[payload.reason] || "主动写信已开启。";
       }
@@ -3162,6 +3169,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 BOOTSTRAP_JAVASCRIPT = r'''
 (() => {
   if (!window.customElements || customElements.get('olivia-letter-audio')) return;
+  if (!customElements.get('olivia-mail-kind')) {
+    customElements.define('olivia-mail-kind', class extends HTMLElement {
+      static get observedAttributes(){return ['kind']}
+      connectedCallback(){this.render()}
+      attributeChangedCallback(){if(this.isConnected)this.render()}
+      render(){
+        const kind=this.getAttribute('kind');
+        const styles={voice_reply:['#81796d','语音信'],singing_video:['#936f79','唱歌'],voice_song_video:['#958054','说话加唱歌']};
+        const [color,label]=styles[kind]||styles.voice_reply;
+        this.style.cssText=`display:flex;align-items:center;justify-content:center;flex-shrink:0;width:40px;height:40px;border-radius:6px;background:${color};color:#efeae3`;
+        this.setAttribute('role','img');this.setAttribute('aria-label',label);this.title=label;
+        const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
+        for(const [name,value] of Object.entries({viewBox:'0 0 24 24',width:'24',height:'24',fill:'currentColor','aria-hidden':'true'}))svg.setAttribute(name,value);
+        const glyph=document.createElementNS(ns,'path');
+        glyph.setAttribute('d',kind==='voice_reply'?'M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.93V21H8v2h8v-2h-3v-3.07A7 7 0 0019 11z':'M10 3v12.3A4.5 4.5 0 1013 19V8l7 2V5z');svg.append(glyph);
+        if(kind==='voice_song_video'){
+          const wave=document.createElementNS(ns,'path');
+          for(const [name,value] of Object.entries({d:'M6 18v2m2-4v6m2-5v4',fill:'none',stroke:color,'stroke-width':'1.2','stroke-linecap':'round'}))wave.setAttribute(name,value);
+          svg.append(wave);
+        }
+        this.replaceChildren(svg);
+      }
+    });
+  }
   const style = document.createElement('style');
   style.textContent = `
     olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
@@ -3183,6 +3214,9 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio .voice-wave:focus-within{outline:1px solid currentColor;outline-offset:3px}
     olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
     olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
+    olivia-letter-audio .song-controls{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px 16px;border:1px solid #a48c5c66;border-radius:12px;background:#a48c5c14;color:#78613b}
+    olivia-letter-audio .song-controls .song-title{font-size:13px;white-space:nowrap}
+    olivia-letter-audio .song-controls input{accent-color:#a48c5c}
     olivia-letter-audio video{width:100%;max-height:260px;margin-top:12px;display:block}
   `;
   document.head.append(style);
@@ -3291,7 +3325,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         audio.onplay=()=>{if(current&&current!==audio)current.pause();document.querySelectorAll('video').forEach(v=>v.pause());current=audio;sync()};audio.onpause=sync;audio.ontimeupdate=sync;
         audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);sync();if(wasPlaying)audio.play().catch(()=>{})};
         audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
-        audio.onended=()=>{sync();if(this.video)this.video.play().catch(()=>{})};
+        audio.onended=sync;
         const wave=document.createElement('div');wave.className='voice-wave';
         row.append(button,wave,stamp);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
         const styles=document.createElement('select');styles.className='olivia-wave-style';styles.setAttribute('aria-label','波形样式');styles.title='选择波形样式';
@@ -3316,11 +3350,25 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const styleResize=new ResizeObserver(positionStyle);styleResize.observe(paper);window.addEventListener('resize',positionStyle);document.addEventListener('scroll',positionStyle,true);positionStyle();
         this.styleCleanup=()=>{collect.remove();styles.remove();styleResize.disconnect();window.removeEventListener('resize',positionStyle);document.removeEventListener('scroll',positionStyle,true)};
       }
-      if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次音频未能完成，文字回信已保留。':'林离正在准备回信音频…';
+      if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次声音或视频未能生成，文字回信已保留。':'林离正在准备回信音频…';
       else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';
       else if(state!=='COMPLETED')status.textContent='语音已录好，歌曲制作中…';
       this.append(status);
-      if(song){const video=document.createElement('video');video.src=song;video.controls=true;video.preload='metadata';video.setAttribute('playsinline','');video.setAttribute('aria-label','林离的唱歌视频');video.onplay=()=>{if(current&&current!==video)current.pause();current=video};this.video=video;this.append(video)}
+      if(song){
+        const music=new Audio(song);music.preload='metadata';this.video=music;
+        const row=document.createElement('div');row.className='song-controls';
+        const title=document.createElement('span');title.className='song-title';title.textContent='♫ 为你写的歌';
+        const button=document.createElement('button');button.type='button';icon(button,true);
+        const seek=document.createElement('input');seek.type='range';seek.min='0';seek.max='0';seek.step='0.1';seek.value='0';seek.setAttribute('aria-label','歌曲播放进度');
+        const stamp=document.createElement('time');
+        const fmt=x=>Math.floor(x/60)+':'+String(Math.floor(x%60)).padStart(2,'0');
+        const sync=()=>{icon(button,music.paused);button.setAttribute('aria-label',music.paused?'播放歌曲':'暂停歌曲');seek.max=String(music.duration||0);seek.value=String(music.currentTime);stamp.textContent=fmt(music.currentTime)+' / '+fmt(music.duration||0)};
+        button.onclick=()=>{if(music.paused)music.play().catch(()=>{status.textContent='歌曲暂时无法播放，请重新打开信件。'});else music.pause()};
+        seek.oninput=()=>{music.currentTime=Number(seek.value)};
+        music.onplay=()=>{if(current&&current!==music)current.pause();document.querySelectorAll('video').forEach(v=>v.pause());current=music;sync()};
+        music.onpause=sync;music.ontimeupdate=sync;music.onloadedmetadata=sync;music.onended=sync;sync();
+        row.append(button,title,seek,stamp);this.append(row);
+      }
     }
   }
   customElements.define('olivia-letter-audio',LetterAudio);

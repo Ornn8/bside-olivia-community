@@ -801,7 +801,7 @@ class OpenAICompatibleAdapter(Gateway):
         return (
             self.config.provider == "openai_compatible"
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
                 GatewayRequestScope.JSON_MAX_REASONING,
@@ -871,7 +871,7 @@ class OpenAICompatibleAdapter(Gateway):
         if (
             max_reasoning
             and self.config.provider == "openai_compatible"
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
         ):
             body["thinking"] = {"type": "enabled"}
             body["reasoning_effort"] = "max"
@@ -1023,7 +1023,7 @@ class OpenAICompatibleAdapter(Gateway):
         if (
             scope is GatewayRequestScope.SONG_CONTENT
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
         ):
             body["thinking"] = {"type": "disabled"}
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
@@ -1073,7 +1073,7 @@ class OpenAICompatibleAdapter(Gateway):
         if not (
             self.config.provider == "openai_compatible"
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
         ):
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)

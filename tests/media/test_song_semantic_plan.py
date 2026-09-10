@@ -34,7 +34,7 @@ def _lyrics(duration: int) -> str:
 
 
 def _short_lyrics(duration: int) -> str:
-    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (12, 12)}[duration]
+    verse_count, chorus_count = {40: (6, 6), 60: (8, 8), 110: (10, 10)}[duration]
     return "\n".join(
         (
             "[Intro]",
@@ -125,12 +125,12 @@ def test_full_song_requires_original_110_second_lyrics_instead_of_short_plan():
     with pytest.raises(ValueError, match="SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID"):
         parse_song_semantic_plan(json.dumps(_payload(40), ensure_ascii=False), 110)
     contract = _planner_contract(110)
-    assert "24 original Simplified Chinese lyric lines: 12 in Verse and 12 in Chorus" in contract
+    assert "20 original Simplified Chinese lyric lines: 10 in Verse and 10 in Chorus" in contract
 
 
 def test_model_writes_only_sung_lines_and_program_builds_empty_intro_outro():
     from runtime.media.song_content import _plan_from_lyrics_response
-    payload = {'verse': ['窗外的晚风轻轻吹来'] * 12, 'chorus': ['让我把这首歌唱给你'] * 12}
+    payload = {'verse': ['窗外的晚风轻轻吹来'] * 10, 'chorus': ['让我把这首歌唱给你'] * 10}
     plan = _plan_from_lyrics_response(json.dumps(payload, ensure_ascii=False), 110)
     assert plan.lyrics.startswith('[Intro]\n[Verse]\n')
     assert plan.lyrics.endswith('让我把这首歌唱给你\n[Outro]')

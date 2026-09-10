@@ -781,6 +781,22 @@ def test_target_frame_count_uses_bundled_ffprobe_without_imageio(
     assert Path(observed[0][0]).name == "ffprobe.exe"
 
 
+def test_target_frame_count_supports_ffmpeg_only_package(tmp_path: Path) -> None:
+    import imageio_ffmpeg
+    ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    assert not ffmpeg.with_name('ffprobe.exe').is_file()
+    video = tmp_path / '中文 reply.mp4'
+    result = music_reply.subprocess.run(
+        [str(ffmpeg), '-v', 'error', '-f', 'lavfi', '-i', 'color=s=64x64:r=25',
+         '-t', '1', '-c:v', 'libx264', str(video)], capture_output=True,
+        creationflags=getattr(music_reply.subprocess, 'CREATE_NO_WINDOW', 0))
+    assert result.returncode == 0
+    assert music_reply._target_frame_count(video, ffmpeg_path=ffmpeg) == 25
+    video.write_bytes(b'broken')
+    with pytest.raises(music_reply.MusicReplyError, match='MUSIC_REPLY_DURATION_UNAVAILABLE'):
+        music_reply._target_frame_count(video, ffmpeg_path=ffmpeg)
+
+
 def test_short_required_video_stream_is_not_recorded_as_completed_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ffmpeg, video = _write(tmp_path / "ffmpeg.exe", b"runtime"), _write(tmp_path / "short-audio.mp4", b"container")
     manifest, manifest_path = {"artifacts": {}}, tmp_path / "manifest.json"
