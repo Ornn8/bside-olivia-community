@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v32"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v33"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -16,6 +16,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_PATH = "/toy/companion/memory";
   const PRIVATE_WORLD_PATH = "/toy/companion/private-world";
   const DAILY_LIFE_PATH = PRIVATE_WORLD_PATH + "/life";
+  const PROACTIVE_STATUS_PATH = "/toy/proactive/status";
+  const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";
   const VIDEO_REPLY_SETTINGS_PATH = "/toy/settings/video-reply";
   let refreshVideoReplySetting = async () => {};
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
@@ -44,6 +46,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const CAPABILITY_CONFIRM_HEADER = "X-Olivia-Capability-Action";
   const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
+  let proactiveState = {
+    enabled: false,
+    allow_voice: true,
+    login_check_enabled: false,
+    busy: false,
+    remaining: 0,
+    reason: "",
+    next_check_at: null,
+  };
+  let proactiveStatusPending = false;
+  let proactiveStatusTimer = null;
+  const proactiveStateListeners = new Set();
   let mem0RuntimeProgressStartedAt = null;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
@@ -277,7 +291,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const controller = new AbortController();
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
-      : path === STATUS_PATH ? 15000 : 5000;
+      : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(endpoint, {
@@ -289,7 +303,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
-          || path === LOCAL_LETTER_IMPORT_PATH)
+          || path === LOCAL_LETTER_IMPORT_PATH
+          || path === PROACTIVE_STATUS_PATH)
         && responseBody && responseBody.data
         ? responseBody.data
         : responseBody;
@@ -305,6 +320,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : path === VIDEO_REPLY_SETTINGS_PATH
         ? payload && (payload.state === "available" && typeof payload.enabled === "boolean"
           || payload.state === "unavailable" && typeof payload.reason_code === "string")
+        : path === PROACTIVE_STATUS_PATH
+        ? payload
+          && typeof payload.enabled === "boolean"
+          && typeof payload.allow_voice === "boolean"
+          && typeof payload.login_check_enabled === "boolean"
+          && typeof payload.busy === "boolean"
+          && Number.isInteger(payload.remaining)
+          && typeof payload.reason === "string"
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         const error = new Error("unavailable");
@@ -317,6 +340,67 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     } finally {
       window.clearTimeout(timeout);
     }
+  };
+
+  const publishProactiveState = (payload) => {
+    proactiveState = {
+      ...proactiveState,
+      enabled: payload.enabled === true,
+      allow_voice: payload.allow_voice !== false,
+      login_check_enabled: payload.login_check_enabled === true,
+      busy: payload.busy === true,
+      remaining: Number.isInteger(payload.remaining) && payload.remaining >= 0 ? payload.remaining : 0,
+      reason: typeof payload.reason === "string" ? payload.reason : "",
+      next_check_at: Number.isFinite(payload.next_check_at) ? payload.next_check_at : null,
+    };
+    for (const listener of proactiveStateListeners) {
+      try { listener(proactiveState); } catch (_error) { /* one view cannot break the poll */ }
+    }
+    try {
+      const event = new Event("olivia-proactive-status");
+      event.proactiveState = proactiveState;
+      window.dispatchEvent(event);
+    } catch (_error) { /* older CEF may not expose Event constructors */ }
+  };
+
+  const refreshProactiveStatus = async () => {
+    if (proactiveStatusPending || !apiBase) return proactiveState;
+    proactiveStatusPending = true;
+    try {
+      publishProactiveState(await requestJson(PROACTIVE_STATUS_PATH));
+    } catch (_error) {
+      publishProactiveState({ ...proactiveState, busy: false, reason: "PROACTIVE_STATUS_UNAVAILABLE" });
+    } finally {
+      proactiveStatusPending = false;
+    }
+    return proactiveState;
+  };
+
+  const saveProactiveSettings = async (body) => {
+    const endpoint = new URL(PROACTIVE_SETTINGS_PATH, apiBase);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
+      body: JSON.stringify({
+        enabled: body.enabled === true,
+        allow_voice: body.allow_voice !== false,
+        login_check_enabled: body.login_check_enabled === true,
+      }),
+    });
+    let responseBody = null;
+    try { responseBody = await response.json(); } catch (_error) { /* malformed response */ }
+    const payload = responseBody && responseBody.data && typeof responseBody.data === "object"
+      ? responseBody.data : responseBody;
+    if (!response.ok || (responseBody?.code != null && responseBody.code !== 0) || !payload || typeof payload.enabled !== "boolean") {
+      const error = new Error("PROACTIVE_SETTINGS_UNAVAILABLE");
+      error.code = payload && typeof payload.error_code === "string"
+        ? payload.error_code : "PROACTIVE_SETTINGS_UNAVAILABLE";
+      throw error;
+    }
+    publishProactiveState(payload);
+    return payload;
   };
 
   const requestDiagnosticExport = async () => {
@@ -2494,6 +2578,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   window.__oliviaPrepareLetterRoute = async (config) => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
     if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/send$/.test(endpoint.pathname)) return config;
+    if (proactiveState.busy) {
+      const error = new Error("林离正在写信，完成后就可以寄出。草稿会保留。");
+      error.code = "PROACTIVE_LETTER_BUSY";
+      error.config = config;
+      throw error;
+    }
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
     if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
     let preview;
@@ -2534,6 +2624,84 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     config.data = {...body, material};
     return config;
   };
+  const mountProactiveSetting = (section) => {
+    if (!document.createElement) return;
+    let dirty = false;
+    const container = document.createElement("div");
+    container.setAttribute("data-olivia-proactive-settings", "true");
+    container.className = "flex flex-col gap-3";
+    const heading = text("div", "主动写信", "text-text-body text-title-m");
+    const description = text(
+      "p",
+      "林离会在允许的时间主动写一封信。信件完成后才会进入信箱，写信期间普通寄信会暂时锁定。",
+      "text-text-secondary text-body-m font-regular"
+    );
+    const makeOption = (label, checked) => {
+      const row = document.createElement("label");
+      row.className = "flex items-center gap-2 text-text-body text-body-m";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = checked;
+      input.addEventListener("change", () => { dirty = true; });
+      row.append(input, text("span", label, "text-text-body text-body-m"));
+      return { row, input };
+    };
+    const enabled = makeOption("允许主动写信", proactiveState.enabled);
+    const allowVoice = makeOption("允许主动信附带语音", proactiveState.allow_voice);
+    const loginCheck = makeOption("登录 Windows 后在后台检查主动来信", proactiveState.login_check_enabled);
+    const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
+    status.setAttribute("role", "status");
+    const save = button("保存", async () => {
+      setButtonsBusy([save], true);
+      status.textContent = "正在保存主动写信设置…";
+      try {
+        await saveProactiveSettings({
+          enabled: enabled.input.checked,
+          allow_voice: allowVoice.input.checked,
+          login_check_enabled: loginCheck.input.checked,
+        });
+        dirty = false;
+        status.textContent = "主动写信设置已保存。";
+      } catch (error) {
+        const failures = {PROACTIVE_LOGIN_UNAVAILABLE:"登录启动暂时不可用，可以先关闭登录检查后保存。",
+          PROACTIVE_STORAGE_UNAVAILABLE:"设置暂时无法保存，请检查磁盘空间后重试。"};
+        status.textContent = failures[error?.code] || "主动写信设置保存失败，请稍后重试。";
+      } finally {
+        setButtonsBusy([save], false);
+      }
+    });
+    const refresh = button("重新读取", async () => {
+      setButtonsBusy([save, refresh], true);
+      dirty = false;
+      try {
+        await refreshProactiveStatus();
+        status.textContent = "主动写信设置已更新。";
+      } finally {
+        setButtonsBusy([save, refresh], false);
+      }
+    });
+    const render = (payload) => {
+      if (dirty) return;
+      enabled.input.checked = payload.enabled === true;
+      allowVoice.input.checked = payload.allow_voice !== false;
+      loginCheck.input.checked = payload.login_check_enabled === true;
+      if (payload.busy) {
+        status.textContent = "林离正在写信。普通寄信暂时锁定。";
+      } else if (payload.reason && payload.reason !== "PROACTIVE_STATUS_UNAVAILABLE") {
+        const reasons = {disabled:"主动写信已关闭。", waiting:"等有合适的话题时再写。", considering:"林离在考虑要不要写信。",
+          no_opportunity:"暂时没有新的话题。", deferred:"这次先不写，晚些再看看。", retry_later:"暂时未能完成检查，稍后会重试。"};
+        status.textContent = reasons[payload.reason] || "主动写信已开启。";
+      }
+    };
+    proactiveStateListeners.add(render);
+    const controls = actions();
+    controls.append(save, refresh);
+    container.append(heading, description, enabled.row, allowVoice.row, loginCheck.row,
+      controls, status);
+    section.append(container);
+    status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";
+  };
+
   const mountVideoReplySetting = (section) => {
     const container = document.createElement("div");
     container.setAttribute("data-olivia-reply-routes", "true");
@@ -2747,6 +2915,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     row.append(copy, button("打开", () => openDialog(false)));
     section.append(title, row);
+    if (window.__oliviaNativeView) mountProactiveSetting(section);
     mountDiagnosticExport(section);
     mountVideoReplySetting(section);
     mountLocalLetterImport(section);
@@ -2805,6 +2974,45 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     mountCoverComposer(input);
   };
 
+  const proactiveSendButton = (node) => {
+    const label = (node.textContent || "").trim();
+    return node.tagName === "BUTTON"
+      && (label === LETTER_SUBMIT_LABEL || /寄出|发送|写信/.test(label));
+  };
+
+  const applyProactiveSendGate = () => {
+    const busy = proactiveState.busy === true;
+    const candidates = Array.from(document.querySelectorAll("button"))
+      .filter(proactiveSendButton);
+    for (const node of candidates) {
+      if (!node.dataset.oliviaProactiveOriginalDisabled) {
+        node.dataset.oliviaProactiveOriginalDisabled = String(node.disabled);
+      }
+      if (busy) {
+        node.disabled = true;
+        node.setAttribute("aria-disabled", "true");
+      } else {
+        node.disabled = node.dataset.oliviaProactiveOriginalDisabled === "true";
+        node.removeAttribute("aria-disabled");
+        delete node.dataset.oliviaProactiveOriginalDisabled;
+      }
+    }
+    for (const dialog of document.querySelectorAll('[role="dialog"], .el-dialog')) {
+      if (!busy) {
+        dialog.querySelector('[data-olivia-proactive-writing]')?.remove();
+        continue;
+      }
+      if (!dialog.querySelector('[data-olivia-proactive-writing]')) {
+        const status = text("p", "林离正在写信", "text-text-secondary text-body-m");
+        status.setAttribute("data-olivia-proactive-writing", "true");
+        status.setAttribute("role", "status");
+        dialog.append(status);
+      }
+    }
+  };
+
+  proactiveStateListeners.add(applyProactiveSendGate);
+
   const schedule = () => {
     if (scheduled) {
       return;
@@ -2814,6 +3022,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       scheduled = false;
       installNativeWorldRoute();
       constrainLetterInputs();
+      applyProactiveSendGate();
       mountMainNavigation();
       mountLocalSongEntry();
       mountShell();
@@ -2828,6 +3037,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   window.addEventListener("popstate", schedule);
   if (typeof window.setInterval === "function") {
     setupPoll = window.setInterval(maybeOpenInitialSetup, 1500);
+    proactiveStatusTimer = window.setInterval(refreshProactiveStatus, 2500);
   }
   schedule();
 })();

@@ -311,6 +311,7 @@ def _entrypoint_arguments(
     root = installation.expanduser().resolve()
     entrypoints = {
         "start": ("start_local.py", "--install-root"),
+        "proactive-login": ("proactive_login.py", "--install-root"),
         "configure": ("configure.py", "--installation"),
         "uninstall": ("uninstall.py", "--installation"),
     }
@@ -351,7 +352,9 @@ def _run_action(args: argparse.Namespace) -> int:
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="olivia-version-launcher")
     parser.add_argument("--install-root", type=Path, required=True)
-    parser.add_argument("action", choices=("start", "configure", "uninstall"))
+    parser.add_argument(
+        "action", choices=("start", "proactive-login", "configure", "uninstall")
+    )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
 

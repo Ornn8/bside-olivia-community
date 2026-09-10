@@ -228,6 +228,105 @@ def test_late_day_cannot_roll_back_a_newer_letter_and_users_stay_separate(tmp_pa
     assert second.snapshot(NOW)["projects"] == []
 
 
+def test_proactive_exchange_stores_linli_original_without_user_routine_or_rest(tmp_path):
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    reply = "我今晚会练琴。我不想把这段录音公开。"
+    assert life.record_exchange(
+        "reply:proactive:1",
+        "",
+        reply,
+        [{
+            "id": "practice",
+            "title": "今晚练琴",
+            "detail": "我今晚会练琴。",
+            "status": "planned",
+            "kind": "linli",
+            "actor": "linli",
+            "quote": "我今晚会练琴。",
+        }],
+        occurred_at=NOW,
+        origin="proactive",
+        boundaries=[{"action": "set", "boundary_id": None, "quote": "我不想把这段录音公开。"}],
+    )
+
+    state = life.exchange_state("练琴")
+    assert state["projects"][0]["source_id"] == "reply:proactive:1"
+    with life._db() as db:
+        payload = json.loads(db.execute(
+            "SELECT payload FROM life_moments WHERE source_id=?",
+            ("reply:proactive:1",),
+        ).fetchone()[0])
+        assert payload["origin"] == "proactive"
+        assert db.execute("SELECT COUNT(*) FROM life_rest_exchanges").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM life_user_routine").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("candidate, expected", [
+    ({"relationship": {"kind": "support_received", "user_quote": "", "reply_quote": "我今晚会练琴。"}}, "PROACTIVE_RELATIONSHIP"),
+    ({"routine": {"sleep_minute": 1380, "utc_offset_minutes": 480, "quote": "我今晚会练琴。"}}, "PROACTIVE_ROUTINE"),
+    ({"updates": [{"id": "user", "title": "用户行动", "detail": "用户会去做", "status": "planned", "kind": "shared", "actor": "user", "quote": "用户会去做"}]}, "PROACTIVE_UPDATE"),
+    ({"updates": [{"id": "shared", "title": "共同安排", "detail": "一起去", "status": "planned", "kind": "shared", "actor": "linli", "quote": "我今晚会练琴。"}]}, "PROACTIVE_UPDATE"),
+])
+def test_proactive_store_rejects_relationship_routine_user_actor_and_shared_commitment(tmp_path, candidate, expected):
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    reply = "我今晚会练琴。"
+    updates = candidate.get("updates", [])
+    kwargs = {key: value for key, value in candidate.items() if key != "updates"}
+    with pytest.raises(ValueError, match=expected):
+        life.record_exchange(
+            "reply:proactive:invalid",
+            "",
+            reply,
+            updates,
+            occurred_at=NOW,
+            origin="proactive",
+            **kwargs,
+        )
+
+
+def test_proactive_source_idempotency_includes_origin(tmp_path):
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    life.record_exchange("reply:origin:1", "", "我会练琴。", [], occurred_at=NOW, origin="proactive")
+    with pytest.raises(ValueError, match="SOURCE_CONFLICT"):
+        life.record_exchange("reply:origin:1", "用户来信", "我会练琴。", [], occurred_at=NOW)
+
+
+def test_proactive_runtime_passes_empty_user_and_commits_only_linli_evidence(tmp_path):
+    calls = []
+
+    class Model:
+        async def complete(self, messages, **kwargs):
+            calls.append(messages)
+            return SimpleNamespace(text=json.dumps({
+                "updates": [{
+                    "id": "practice",
+                    "title": "今晚练琴",
+                    "detail": "我今晚会练琴。",
+                    "status": "planned",
+                    "kind": "linli",
+                    "actor": "linli",
+                    "quote": "我今晚会练琴。",
+                }],
+                "current_quote": "我今晚会练琴。",
+            }, ensure_ascii=False))
+
+    from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    life = DailyLifeStore(tmp_path / "life.sqlite3")
+    runtime = DailyLifeRuntime(life, Model, lambda: "")
+    assert asyncio.run(runtime.consume_exchange(
+        "reply:proactive:runtime",
+        "",
+        "我今晚会练琴。",
+        occurred_at=NOW,
+        origin="proactive",
+    ))
+    assert calls
+    request = json.loads(calls[0][1]["content"])
+    assert request["origin"] == "proactive"
+    assert request["user_letter"] == ""
+    assert life.exchange_state()["projects"][0]["actor"] == "linli"
+
+
 def test_runtime_refresh_is_cached_and_failed_generation_keeps_public_state(tmp_path):
     from runtime.private_world.daily_life_runtime import DailyLifeRuntime
     class Gateway:

@@ -248,16 +248,25 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None) -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user") -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
             raise ValueError("DAILY_LIFE_SOURCE_INVALID")
+        if not isinstance(origin, str) or origin not in {"user", "proactive"}:
+            raise ValueError("DAILY_LIFE_ORIGIN_INVALID")
+        if origin == "proactive" and user_text != "":
+            raise ValueError("DAILY_LIFE_PROACTIVE_USER_TEXT_INVALID")
         stamp = _time(occurred_at)
         received = _time(received_at or occurred_at)
         if received > stamp:
             raise ValueError("DAILY_LIFE_TIME_INVALID")
-        digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
+        digest_value = [user_text, reply_text] if origin == "user" else [origin, user_text, reply_text]
+        digest = hashlib.sha256(_json(digest_value).encode("utf-8")).hexdigest()
+        if origin == "proactive" and relationship is not None:
+            raise ValueError("DAILY_LIFE_PROACTIVE_RELATIONSHIP_INVALID")
+        if origin == "proactive" and routine is not None:
+            raise ValueError("DAILY_LIFE_PROACTIVE_ROUTINE_INVALID")
         relationship = validate_exchange_relationship(relationship, user_text, reply_text)
         boundaries = validate_boundary_changes(boundaries, reply_text)
         if routine is not None:
@@ -284,6 +293,8 @@ class DailyLifeStore:
             actor, kind = update["actor"], update["kind"]
             if actor not in {"user", "linli"} or kind not in {"linli", "shared"} or (actor == "user" and kind != "shared"):
                 raise ValueError("DAILY_LIFE_ACTOR_INVALID")
+            if origin == "proactive" and (actor == "user" or (kind == "shared" and item["status"] != "awaiting_user")):
+                raise ValueError("DAILY_LIFE_PROACTIVE_UPDATE_INVALID")
             quote = _source_quote(update["quote"], user_text if actor == "user" else reply_text)
             item.update(kind=kind, actor=actor, quote=quote, source_id=source_id, updated_at=stamp)
             checked.append(item)
@@ -305,9 +316,10 @@ class DailyLifeStore:
                     if existing["updated_at"] > stamp:
                         continue  # A delayed delivery cannot roll current life backwards.
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (item["id"], _json(item)))
-            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship, "boundaries": boundaries})))
-            db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
-            if routine is not None:
+            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship, "boundaries": boundaries, "origin": origin})))
+            if origin == "user":
+                db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
+            if routine is not None and origin == "user":
                 db.execute('INSERT INTO life_user_routine VALUES (?,?,?)', (source_id, stamp, _json(routine)))
             if current:
                 self._set_current(db, current)
@@ -320,21 +332,22 @@ class DailyLifeStore:
                 (event['event_id'], _time(datetime.fromisoformat(event['occurred_at'])), 'media', _json({'delivery': event})))
             return cursor.rowcount == 1
 
-    def exchange_relationship(self, source_id: str, user_text: str, reply_text: str) -> dict | None:
-        payload = self._exchange_payload(source_id, user_text, reply_text)
+    def exchange_relationship(self, source_id: str, user_text: str, reply_text: str, *, origin: str = "user") -> dict | None:
+        payload = self._exchange_payload(source_id, user_text, reply_text, origin=origin)
         return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
 
-    def exchange_boundaries(self, source_id: str, user_text: str, reply_text: str) -> list[dict]:
-        payload = self._exchange_payload(source_id, user_text, reply_text)
+    def exchange_boundaries(self, source_id: str, user_text: str, reply_text: str, *, origin: str = "user") -> list[dict]:
+        payload = self._exchange_payload(source_id, user_text, reply_text, origin=origin)
         return validate_boundary_changes(payload.get("boundaries"), reply_text)
 
-    def _exchange_payload(self, source_id: str, user_text: str, reply_text: str) -> dict:
+    def _exchange_payload(self, source_id: str, user_text: str, reply_text: str, *, origin: str = "user") -> dict:
         with self._db() as db:
             row = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='exchange'", (source_id,)).fetchone()
         if row is None:
             return {}
         payload = json.loads(row[0])
-        digest = hashlib.sha256(_json([user_text, reply_text]).encode("utf-8")).hexdigest()
+        digest_value = [user_text, reply_text] if origin == "user" else [origin, user_text, reply_text]
+        digest = hashlib.sha256(_json(digest_value).encode("utf-8")).hexdigest()
         if payload.get("digest") != digest:
             raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
         return payload

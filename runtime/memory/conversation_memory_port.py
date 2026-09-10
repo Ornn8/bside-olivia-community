@@ -244,6 +244,7 @@ class ConversationMemoryPort(Protocol):
         occurred_at: datetime,
         source_id: str,
         user_id: str,
+        origin: str = "user",
     ) -> MemoryWriteResult: ...
 
     def list_memories(
@@ -291,8 +292,9 @@ class NullConversationMemoryPort:
         occurred_at: datetime,
         source_id: str,
         user_id: str,
+        origin: str = "user",
     ) -> MemoryWriteResult:
-        del user_message, assistant_message, occurred_at, user_id
+        del user_message, assistant_message, occurred_at, user_id, origin
         return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
 
     def list_memories(
@@ -353,8 +355,9 @@ class UnavailableConversationMemoryPort(NullConversationMemoryPort):
         occurred_at: datetime,
         source_id: str,
         user_id: str,
+        origin: str = "user",
     ) -> MemoryWriteResult:
-        del user_message, assistant_message, occurred_at, user_id
+        del user_message, assistant_message, occurred_at, user_id, origin
         return MemoryWriteResult(
             MemoryWriteStatus.UNAVAILABLE,
             source_id,

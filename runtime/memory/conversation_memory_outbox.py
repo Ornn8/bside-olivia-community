@@ -408,10 +408,15 @@ def _delivery_from_row(
 ) -> CanonicalMemoryDelivery | None:
     if str(row.get("letter_status", "")).upper() != "COMPLETED":
         return None
+    origin = row.get("origin", "user")
+    if not isinstance(origin, str) or origin not in {"user", "proactive"}:
+        return None
     letter_id = row.get("letter_id")
     revision = row.get("reply_revision", 1)
     user_message = row.get("content")
     assistant_message = row.get("reply_text")
+    if origin == "proactive" and user_message != "":
+        return None
     occurred_at = _row_time(row)
     try:
         return CanonicalMemoryDelivery(
@@ -421,6 +426,7 @@ def _delivery_from_row(
             assistant_message=assistant_message,  # type: ignore[arg-type]
             occurred_at=occurred_at,
             user_id=user_id,
+            origin=origin,  # type: ignore[arg-type]
         )
     except (CanonicalMemoryDeliveryError, TypeError, ValueError):
         return None

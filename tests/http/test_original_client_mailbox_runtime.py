@@ -259,6 +259,65 @@ def test_original_collection_detail_keeps_text_and_only_exposes_completed_local_
     asyncio.run(scenario())
 
 
+def test_proactive_rows_are_completed_only_and_keep_native_detail_metadata() -> None:
+    async def scenario() -> None:
+        letters = [
+            {
+                "letter_id": "proactive.pending",
+                "origin": "proactive",
+                "title": "尚未完成的主动信",
+                "content": "",
+                "reply_text": "不应提前进入信箱",
+                "letter_status": "PROCESSING",
+                "audit_status": 2,
+                "reply_mode": "text_letter",
+                "reply_not_before": 0.0,
+                "media_status": "PENDING",
+                "is_read": 1,
+                "created_at": 1_700_000_010,
+            },
+            {
+                "letter_id": "proactive.completed",
+                "origin": "proactive",
+                "title": "给你的主动信",
+                "content": "",
+                "reply_text": "这是正式入箱的正文。",
+                "letter_status": "COMPLETED",
+                "audit_status": 2,
+                "reply_mode": "text_letter",
+                "reply_not_before": 0.0,
+                "media_status": "NOT_REQUESTED",
+                "is_read": 0,
+                "created_at": 1_700_000_011,
+            },
+        ]
+        runtime = create_original_client_server_runtime(
+            _fallback_factory(letters),
+            letter_collection=lambda _scope: letters,
+        )
+        async with TestClient(TestServer(runtime.app)) as client:
+            listing = await client.get("/toy/letter/list")
+            rows = (await listing.json())["data"]["list"]
+            assert [row["letterId"] for row in rows] == ["proactive.completed"]
+            assert rows[0]["origin"] == "proactive"
+            assert rows[0]["title"] == "给你的主动信"
+            assert rows[0]["summary"] == "给你的主动信"
+            assert rows[0]["replyType"] == 1
+
+            detail = await client.get(
+                "/toy/letter/detail?letter_id=proactive.completed"
+            )
+            payload = (await detail.json())["data"]
+            assert payload["origin"] == "proactive"
+            assert payload["title"] == "给你的主动信"
+            assert payload["content"] == ""
+            assert payload["replyText"] == "这是正式入箱的正文。"
+            assert payload["reply_text"] == payload["replyText"]
+            assert payload["replyType"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_send_adds_original_terminal_fields_without_losing_internal_status() -> None:
     async def scenario() -> None:
         letters = _letters()

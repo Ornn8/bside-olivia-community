@@ -262,6 +262,17 @@ def test_repository_owned_bootstrap_upgrade_restores_0627_mailbox_write_access(
     assert '"hide-write":o(p)||!o(N3)' not in main
 
 
+def test_native_router_bridge_is_restored_and_idempotent(tmp_path: Path) -> None:
+    from patch_companion_settings import _repair_mailbox_write_access, MAIN_JS_0627
+
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    main.write_text('prefix"hide-write":o(p)||!o(N3)suffix;const Db=async()=>{}', encoding="utf-8")
+    assert _repair_mailbox_write_access(tmp_path) == "PATCHED"
+    assert 'window.__oliviaNativeView={router:Ea,h:mo};' in main.read_text(encoding="utf-8")
+    assert _repair_mailbox_write_access(tmp_path) == "ALREADY_PATCHED"
+
+
 def test_0627_mailbox_write_repair_rejects_missing_anchor_without_mutation(
     tmp_path: Path,
 ) -> None:

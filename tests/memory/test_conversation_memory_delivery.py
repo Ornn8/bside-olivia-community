@@ -197,6 +197,28 @@ def test_available_provider_receives_exact_canonical_exchange_in_worker_thread()
     asyncio.run(scenario())
 
 
+def test_proactive_delivery_preserves_assistant_only_origin_and_full_reply() -> None:
+    async def scenario() -> None:
+        memory = FakeMemory()
+        result = await ConversationMemoryDeliveryCommitter(memory).commit(
+            _delivery(origin="proactive", user_message="", assistant_message="我今晚把那段录音整理好发给你。")
+        )
+
+        assert result.status is CanonicalMemoryDeliveryStatus.WRITTEN
+        assert memory.calls == [
+            {
+                "user_message": "",
+                "assistant_message": "我今晚把那段录音整理好发给你。",
+                "occurred_at": NOW,
+                "source_id": "reply:letter-1:2",
+                "user_id": "local-user",
+                "origin": "proactive",
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("next_letter", ["letter-1", "letter-2"])
 def test_retry_consumes_late_canonical_delivery_without_writing_twice(next_letter: str) -> None:
     async def scenario() -> None:
@@ -426,6 +448,8 @@ def test_provider_timeout_uses_one_daemon_worker_for_status_and_write(
         {"assistant_message": "\x00bad"},
         {"occurred_at": datetime(2026, 8, 23)},
         {"user_id": "bad scope"},
+        {"origin": "proactive"},
+        {"origin": "unknown"},
     ],
 )
 def test_delivery_contract_rejects_invalid_or_ambiguous_inputs(
@@ -433,6 +457,13 @@ def test_delivery_contract_rejects_invalid_or_ambiguous_inputs(
 ) -> None:
     with pytest.raises(CanonicalMemoryDeliveryError):
         _delivery(**changes)
+
+
+def test_proactive_delivery_requires_empty_user_message_and_nonempty_reply() -> None:
+    with pytest.raises(CanonicalMemoryDeliveryError):
+        _delivery(origin="proactive", user_message="伪造的用户话")
+    with pytest.raises(CanonicalMemoryDeliveryError):
+        _delivery(origin="proactive", user_message="", assistant_message="")
 
 
 @pytest.mark.parametrize(

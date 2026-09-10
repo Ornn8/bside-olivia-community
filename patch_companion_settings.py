@@ -338,7 +338,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
-    # Reuse the client's own Vue renderer and router for additional main views.
+    # Expose the existing native router for the world page and settings entry.
     router_anchor = 'const Db=async()=>'
     if 'window.__oliviaNativeView=' not in source and router_anchor in source:
         source = source.replace(router_anchor,
@@ -438,6 +438,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)&&',
     )
     source = _repair_native_letter_audio(source)
+    source = _repair_native_proactive_collection(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
@@ -495,6 +496,8 @@ def _verify_archive(
     )
     bootstrap_required = (
         'const STATUS_PATH = "/toy/companion/status";',
+        'const PROACTIVE_STATUS_PATH = "/toy/proactive/status";',
+        'const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";',
         'const MEMORY_PATH = "/toy/companion/memory";',
         'const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";',
         'const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";',
@@ -506,6 +509,9 @@ def _verify_archive(
         'method: "GET"',
         'method: "POST"',
         "confirmAction",
+        "login_check_enabled",
+        "data-olivia-proactive-settings",
+        "林离正在写信",
         "data-olivia-companion-settings-root",
         "panel.dataset.oliviaCompanionPanel",
         "长期记忆",
@@ -549,6 +555,10 @@ def _verify_archive(
             and (
                 main_0627.count(MAILBOX_WRITE_REPLACEMENT_0627) != 1
                 or MAILBOX_WRITE_ANCHOR_0627 in main_0627
+                or (
+                    'const Db=async()=>' in main_0627
+                    and 'window.__oliviaNativeView={router:Ea,h:mo};' not in main_0627
+                )
             )
         )
     ):
@@ -675,3 +685,87 @@ def _repair_native_letter_audio(source: str) -> str:
     replacement='[A.type==="text"&&(A.audioUrl||A.audioStatus)?n("olivia-letter-audio",{"audio-url":A.audioUrl||"","audio-status":A.audioStatus||"","song-url":A.songUrl||""},null,8,["audio-url","audio-status","song-url"]):Y("",!0),A.type==="error"?'
     source = source.replace(anchor,replacement,1)
     return cover_progress(source)
+
+
+_NATIVE_PROACTIVE_MARKER = "/*olivia-proactive-native-v1*/"
+
+
+def _repair_native_proactive_collection(source: str) -> str:
+    """Project proactive rows into the original Collection welcome-paper path."""
+
+    if _NATIVE_PROACTIVE_MARKER in source:
+        return source
+
+    # The supported 0.0.9.627 bundle first maps the list/detail wire payload
+    # into `bn`/`p1`, then renders the built-in welcome paper for `__welcome__`.
+    # Keep that shape and only add the fields needed to make a proactive row
+    # title-only on the left and reply-only on the right.
+    model_prefix = (
+        'return{id:e.letterId,isUnread:e.isRead===0,coverId:e.coverId||"",'
+    )
+    model_replacement = (
+        'return{id:e.letterId,isUnread:e.isRead===0,'
+        'origin:e.origin||"",title:e.title||e.summary||"",'
+        'replyAllowed:e.replyAllowed!==false,coverId:e.coverId||"",'
+    )
+    if source.count(model_prefix) < 2:
+        return source
+    required = (
+        ':x.selectedMail&&!o(p)?',
+        ':o(p)&&o(l).welcomeMailRead?',
+        'h=j({get:()=>i("mailbox_welcome_content"),set:()=>{}})',
+        '"is-visible":!0,readonly:"",timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"}',
+    )
+    if any(source.count(anchor) != 1 for anchor in required):
+        raise CompanionSettingsPatchError('COMPANION_PROACTIVE_ANCHOR_INVALID')
+    source = source.replace(model_prefix, model_replacement)
+    source = source.replace(
+        'sent:{subject:e.summary,',
+        'sent:{subject:e.title||e.summary,',
+        1,
+    )
+    source = source.replace(
+        'received:t?{subject:e.summary,',
+        'received:t?{subject:e.title||e.summary,',
+        1,
+    )
+    source = source.replace(
+        'const t=e.content.length>20?e.content.slice(0,20)+"...":e.content;',
+        'const t=e.origin==="proactive"?(e.title||e.summary||""):'
+        'e.content.length>20?e.content.slice(0,20)+"...":e.content;',
+        1,
+    )
+    source = source.replace(
+        'sent:{subject:t,timestamp:e.createdAt==null?null:e.createdAt*1e3,content:e.content}',
+        'sent:{subject:t,timestamp:e.createdAt==null?null:e.createdAt*1e3,'
+        'content:e.origin==="proactive"?"":e.content}',
+        1,
+    )
+    source = source.replace(
+        'h=j({get:()=>i("mailbox_welcome_content"),set:()=>{}})',
+        'h=j({get:()=>{var x;return((x=a.selectedMail)==null?void 0:x.origin)==="proactive"'
+        '?((x=a.selectedMail.received)==null?void 0:x.content)||"":i("mailbox_welcome_content")},set:()=>{}})',
+        1,
+    )
+    source = source.replace(
+        ':x.selectedMail&&!o(p)?',
+        ':x.selectedMail&&!o(p)&&x.selectedMail.origin!=="proactive"?',
+        1,
+    )
+    source = source.replace(
+        ':o(p)&&o(l).welcomeMailRead?',
+        ':(o(p)&&o(l).welcomeMailRead||x.selectedMail&&x.selectedMail.origin==="proactive")?',
+        1,
+    )
+    source = source.replace(
+        'k(ks,{modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+        'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"},null,8,["modelValue","timestamp"]',
+        'k(ks,{coverId:x.selectedMail?.coverId,audioUrl:x.selectedMail?.received?.audioUrl||"",'
+        'audioStatus:x.selectedMail?.audioStatus||"",songUrl:x.selectedMail?.received?.songUrl||"",'
+        'modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+        'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]',
+        1,
+    )
+    return _NATIVE_PROACTIVE_MARKER + source

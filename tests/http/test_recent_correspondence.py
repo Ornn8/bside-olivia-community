@@ -28,6 +28,44 @@ def test_mentioning_a_reply_preserves_dialogue_without_assigning_a_dispute_task(
     assert '直接回答本次询问' not in packet['meaning']
 
 
+def test_proactive_letter_recall_keeps_original_reply_source_and_never_fakes_user_text():
+    from runtime.reply.recent_correspondence import recent_correspondence
+
+    proactive_reply = "我上次主动说要录的那段，已经整理好准备发给你。"
+    rows = [
+        {
+            "letter_id": "proactive-1",
+            "origin": "proactive",
+            "reply_revision": 1,
+            "letter_status": "COMPLETED",
+            "private_world_occurred_at": "2026-09-05T12:50:00+00:00",
+            "content": "",
+            "reply_text": proactive_reply,
+        },
+        {
+            "letter_id": "normal-1",
+            "reply_revision": 1,
+            "letter_status": "COMPLETED",
+            "private_world_occurred_at": "2026-09-05T12:49:00+00:00",
+            "content": "今天吃了面。",
+            "reply_text": "慢慢吃。",
+        },
+    ]
+
+    packet = json.loads(
+        recent_correspondence(rows, query="你上次主动说要录的那段，具体怎么说的？")
+    )
+    item = next(
+        item for item in packet["letters"]
+        if item["source_id"] == "reply:proactive-1:1"
+    )
+
+    assert item["linli_reply"] == proactive_reply
+    assert item["time"] == "2026-09-05T12:50:00+00:00"
+    assert "user_letter" not in item
+    assert "主动说要录" in json.dumps(packet, ensure_ascii=False)
+
+
 def test_dialogue_retrieves_original_proposal_instead_of_only_later_reply_claims():
     from runtime.reply.recent_correspondence import recent_correspondence
     pairs = [

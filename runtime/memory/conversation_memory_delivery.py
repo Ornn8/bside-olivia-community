@@ -50,6 +50,7 @@ class CanonicalMemoryDelivery:
     assistant_message: str
     occurred_at: datetime
     user_id: str = "local-user"
+    origin: str = "user"
 
     def __post_init__(self) -> None:
         for value, field_name in ((self.letter_id, "letter_id"),):
@@ -61,9 +62,17 @@ class CanonicalMemoryDelivery:
             )
         except ConversationMemoryIdentityError as exc:
             raise CanonicalMemoryDeliveryError("user_id is invalid") from exc
+        if not isinstance(self.origin, str) or self.origin not in {"user", "proactive"}:
+            raise CanonicalMemoryDeliveryError("origin is invalid")
         if type(self.revision) is not int or self.revision < 1:
             raise CanonicalMemoryDeliveryError("revision must be positive")
-        _message(self.user_message, field_name="user_message", maximum=10_000)
+        if self.origin == "proactive":
+            if self.user_message != "":
+                raise CanonicalMemoryDeliveryError(
+                    "proactive delivery requires an empty user_message"
+                )
+        else:
+            _message(self.user_message, field_name="user_message", maximum=10_000)
         _message(
             self.assistant_message,
             field_name="assistant_message",
@@ -334,12 +343,17 @@ def _deliver_to_provider(
             ),
         )
     try:
+        values = {
+            "user_message": delivery.user_message,
+            "assistant_message": delivery.assistant_message,
+            "occurred_at": delivery.occurred_at,
+            "source_id": delivery.source_id,
+            "user_id": delivery.user_id,
+        }
+        if delivery.origin == "proactive":
+            values["origin"] = delivery.origin
         return memory.remember_exchange(
-            user_message=delivery.user_message,
-            assistant_message=delivery.assistant_message,
-            occurred_at=delivery.occurred_at,
-            source_id=delivery.source_id,
-            user_id=delivery.user_id,
+            **values,
         )
     except Exception:
         return CanonicalMemoryDeliveryResult(

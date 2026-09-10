@@ -10,7 +10,7 @@ from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 def composer_document():
     source=BOOTSTRAP_JAVASCRIPT
-    composer=source[source.index('  const composerCovers ='):source.index('  const mountVideoReplySetting')]
+    composer='const proactiveState={busy:false};\n'+source[source.index('  const composerCovers ='):source.index('  const mountVideoReplySetting')]
     wave=source[source.index('  function letterWave('):source.index('  const coverApi=')]
     return (Path(__file__).parents[1]/'fixtures/cover_composer.html').read_text(encoding='utf-8').replace('/* COMPOSER */',composer).replace('/* WAVE */',wave)
 

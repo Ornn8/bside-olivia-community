@@ -964,6 +964,8 @@ def _row_to_record(
             "canonical",
             "manual",
             "actor",
+            "origin",
+            "verbatim",
             _HISTORY_ACTOR_KEY,
             _HISTORY_EXTRACTION_VERSION_KEY,
         }
@@ -1287,6 +1289,84 @@ class Mem0ConversationMemoryAdapter:
         finally:
             self._write_gate.release()
 
+    def _remember_assistant_only_transaction(
+        self,
+        *,
+        assistant_message: str,
+        occurred_at: datetime,
+        source_id: str,
+        user_id: str,
+    ) -> MemoryWriteResult:
+        """Persist a proactive reply verbatim without user-side extraction."""
+
+        user_id = self._normalized_user_id(user_id)
+        for alias in self._configured_user_aliases(user_id):
+            try:
+                exact_response = self.backend.get_all(
+                    filters={**self._provider_filters(alias), "source_id": source_id},
+                    top_k=64,
+                )
+            except Exception:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+                )
+            source_records = self._source_id_records_in_exact_response(
+                exact_response,
+                user_id=alias,
+                source_id=source_id,
+            )
+            if source_records is None:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE",
+                )
+            if source_records:
+                return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
+
+        metadata = {
+            "source_id": source_id,
+            "occurred_at": occurred_at.isoformat(),
+            "domain": _DOMAIN,
+            "canonical": True,
+            "origin": "proactive",
+            "actor": "linli",
+            "verbatim": True,
+        }
+        created_ids: tuple[str, ...] = ()
+        try:
+            value = self.backend.add(
+                assistant_message,
+                user_id=user_id,
+                agent_id=self.config.agent_id,
+                metadata=metadata,
+                infer=False,
+            )
+            acknowledgements = _add_acknowledgements(value)
+            if acknowledgements is None:
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_WRITE_FAILED",
+                )
+            created_ids = tuple(memory_id for memory_id, _ in acknowledgements)
+        except Exception:
+            pending_ids = self._delete_provider_memories(created_ids)
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                pending_ids,
+                error_code="MEM0_WRITE_ROLLBACK_FAILED" if pending_ids else "MEM0_WRITE_FAILED",
+            )
+        return MemoryWriteResult(
+            MemoryWriteStatus.WRITTEN if created_ids else MemoryWriteStatus.UNAVAILABLE,
+            source_id,
+            created_ids,
+            error_code=None if created_ids else "MEM0_WRITE_FAILED",
+        )
+
     def _remember_exchange_transaction(
         self,
         *,
@@ -1295,7 +1375,15 @@ class Mem0ConversationMemoryAdapter:
         occurred_at: datetime,
         source_id: str,
         user_id: str,
+        origin: str = "user",
     ) -> MemoryWriteResult:
+        if origin == "proactive":
+            return self._remember_assistant_only_transaction(
+                assistant_message=assistant_message,
+                occurred_at=occurred_at,
+                source_id=source_id,
+                user_id=user_id,
+            )
         result = self._remember_content_transaction(
             user_message=user_message, assistant_message=assistant_message,
             occurred_at=occurred_at, source_id=source_id, user_id=user_id,
@@ -1698,6 +1786,7 @@ class Mem0ConversationMemoryAdapter:
         occurred_at: datetime,
         source_id: str,
         user_id: str,
+        origin: str = "user",
     ) -> MemoryWriteResult:
         try:
             user_id = self._normalized_user_id(user_id)
@@ -1708,6 +1797,25 @@ class Mem0ConversationMemoryAdapter:
                 error_code="MEM0_EXCHANGE_INVALID",
             )
         if not isinstance(occurred_at, datetime) or occurred_at.tzinfo is None:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_EXCHANGE_INVALID",
+            )
+        if not isinstance(origin, str) or origin not in {"user", "proactive"}:
+            return MemoryWriteResult(
+                MemoryWriteStatus.UNAVAILABLE,
+                source_id,
+                error_code="MEM0_EXCHANGE_INVALID",
+            )
+        if origin == "proactive":
+            if user_message != "" or not isinstance(assistant_message, str) or not assistant_message.strip():
+                return MemoryWriteResult(
+                    MemoryWriteStatus.UNAVAILABLE,
+                    source_id,
+                    error_code="MEM0_EXCHANGE_INVALID",
+                )
+        elif not isinstance(user_message, str) or not user_message.strip():
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
                 source_id,
@@ -1732,6 +1840,7 @@ class Mem0ConversationMemoryAdapter:
                 occurred_at=occurred_at,
                 source_id=source_id,
                 user_id=user_id,
+                origin=origin,
             ),
             exchange_key=(user_id, source_id),
         )

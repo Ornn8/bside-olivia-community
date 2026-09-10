@@ -793,7 +793,7 @@ class LetterAdapter:
             return ()
         try:
             related = "\n".join(
-                pair["user_letter"] + "\n" + pair.get("linli_reply", "")
+                pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in self.recent_letter_fragments(content)
                 for pair in json.loads(fragment.text)["letters"]
             )
@@ -1745,6 +1745,9 @@ def letter_to_out(l):
     summary = summary or ""
     return {
         "letter_id": l["letter_id"],
+        "origin": l.get("origin", "user"),
+        "title": l.get("title", ""),
+        "reply_allowed": l.get("origin") != "proactive",
         "summary": summary[:50],
         "letter_status": (
             l.get("letter_status", 4)
@@ -2498,7 +2501,8 @@ def _letter_collection(scope: str):
     if scope == "legacy":
         return _legacy_letter_collection()
     _mark_superseded_failed_retries()
-    current = [letter for letter in store.letters if not letter.get("superseded_by")]
+    current = [letter for letter in store.letters if not letter.get("superseded_by")
+               and (letter.get("origin") != "proactive" or letter.get("letter_status") == "COMPLETED")]
     return sorted(
         [*current, *_official_history_mailbox_projection()],
         key=_mailbox_sort_key,
@@ -2775,6 +2779,196 @@ def _recent_active_duplicate(
     return None
 
 
+_proactive_busy = False
+_proactive_task = None
+_proactive_reason = 'disabled'
+
+
+def _proactive_settings() -> dict:
+    from runtime.reply.proactive_letters import settings, read_json
+    root = _state_root()
+    return settings(read_json(root / 'proactive/settings.json') if root is not None else {})
+
+
+def _refresh_proactive_context() -> dict:
+    from runtime.reply.proactive_letters import make_context, write_json
+    context = make_context(store.letters, now=time.time())
+    try:
+        world = daily_life_runtime.store.exchange_state() if daily_life_runtime is not None else {}
+        context = make_context(store.letters, now=time.time(), world=world)
+        root = _state_root()
+        if root is not None:
+            write_json(root / 'proactive/context.json', context)
+    except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+        context['blocked'] = True
+        _safe_log('proactive_context_unavailable')
+    return context
+
+
+def _proactive_status() -> dict:
+    from runtime.reply.proactive_letters import make_context, read_json
+    root = _state_root()
+    schedule = read_json(root / 'proactive/schedule.json') if root else {}
+    return {**_proactive_settings(), 'busy': _proactive_busy,
+            'remaining': make_context(store.letters, now=time.time())['remaining'],
+            'reason': _proactive_reason, 'next_check_at': schedule.get('next_check_at')}
+
+
+def _proactive_ready() -> bool:
+    if (not _proactive_settings()['enabled'] or _history_memory_admin_gate.locked()
+            or not _conversation_memory_ready_for_reply() or _active_undelivered_letter()
+            or not 9 <= datetime.now().hour < 22):
+        return False
+    context = _refresh_proactive_context()
+    return context['remaining'] > 0 and not context['blocked'] and not context['unread']
+
+
+async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text') -> str:
+    """Use the configured persona/gateway. This is not an incoming user letter."""
+    source = next((row for row in store.letters
+                   if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == intent['source_id']), None)
+    if source is None:
+        raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
+    query = str(source.get('content', ''))
+    assembled = await asyncio.to_thread(letters_adapter._messages, query)
+    task = ('现在没有新的用户来信。判断林离是否有具体、适时且未说过的理由主动写信。'
+            '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
+            '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
+    if planning:
+        task += ('只输出 JSON：{"decision":"send或defer","format":"text或voice","title":"简短标题"}。'
+                 '没有自然的具体话题就defer；voice只用于适合说出来的内容。')
+    else:
+        task += ('现在写这封主动信，只输出最终正文。无需逐条复述旧信。'
+                 + ('内容适合一段简短语音。' if mode == 'voice' else '按平常文字信写。'))
+    packet = {'opportunity': intent, 'previous_user_letter': query,
+              'previous_linli_letter': source.get('reply_text', ''),
+              'now': datetime.now(timezone.utc).isoformat()}
+    messages = ({'role': 'system', 'content': assembled[0]['content'] + '\n' + task},
+                {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
+    gateway = letters_adapter.gateway
+    result = await asyncio.wait_for(gateway.complete_scoped(
+        messages, request_id='proactive:' + intent['id'] + (':plan' if planning else ':body'),
+        scope=GatewayRequestScope.BACKGROUND_REASONING), timeout=180)
+    text = result.text.strip()
+    if not text or len(text) > 10000 or '<think' in text.lower() or '</think' in text.lower():
+        raise ValueError('PROACTIVE_RESPONSE_INVALID')
+    return text
+
+
+async def _publish_proactive(intent: dict, plan: dict) -> None:
+    global _proactive_busy
+    if not _proactive_ready():
+        return
+    if not _history_memory_admin_gate.acquire(blocking=False):
+        return
+    _proactive_busy = True
+    letter = None
+    try:
+        body = await _proactive_complete(intent, planning=False, mode=plan['format'])
+        if not _proactive_settings()['enabled']:
+            return
+        letter = {'letter_id': str(uuid.uuid4()), 'origin': 'proactive', 'content': '',
+                  'title': plan['title'], 'material': {}, 'created_at': int(time.time()),
+                  'letter_status': 'PROCESSING', 'is_read': 0, 'reply_text': '',
+                  'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
+                  'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
+        _prepare_private_world_delivery(letter, body)
+        letter['reply_text'] = body
+        store.letters.append(letter)
+        _persist_store_state()
+        if plan['format'] == 'voice' and _proactive_settings()['allow_voice']:
+            letter['reply_mode'] = 'voice_reply'
+            try:
+                await asyncio.wait_for(_render_media_job(letter['letter_id'], '', body, 'voice_reply'), timeout=300)
+            except asyncio.TimeoutError:
+                letter.update(media_status='FAILED', media_error_code='MEDIA_TIMEOUT', media_retryable=False)
+            if letter.get('media_status') != 'COMPLETED':
+                letter['reply_mode'] = 'text'
+        if not _proactive_settings()['enabled']:
+            letter['letter_status'] = 'CANCELED'
+            _persist_store_state()
+            return
+        now = datetime.now(timezone.utc)
+        letter.update(letter_status='COMPLETED', published_at=now.timestamp(),
+                      created_at=int(now.timestamp()), replied_at=int(now.timestamp()),
+                      private_world_occurred_at=now.isoformat(), daily_life_status='PENDING')
+        _persist_store_state()
+        _commit_private_world_letter(letter)
+        if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
+            root = _local_data_root()
+            if root is not None:
+                _record_published_media(letter, reply_text=body, delivery_id=letter['private_world_delivery_id'],
+                                        path=root / 'media' / (letter['letter_id'] + '.wav'),
+                                        components=('speech',), presentation='audio')
+        _persist_store_state()
+        _schedule_daily_life_exchange(letter)
+    finally:
+        try:
+            if letter is not None and letter.get('letter_status') == 'PROCESSING':
+                letter.update(letter_status='FAILED', error_code='PROACTIVE_INTERRUPTED')
+                _persist_store_state()
+        finally:
+            _proactive_busy = False
+            _history_memory_admin_gate.release()
+
+
+async def _proactive_tick() -> None:
+    global _proactive_reason
+    from runtime.reply.proactive_letters import read_json, write_json, scan_pending
+    root = _state_root()
+    if root is None or not _proactive_settings()['enabled']:
+        _proactive_reason = 'disabled'
+        return
+    if not _proactive_ready():
+        _proactive_reason = 'waiting'
+        return
+    schedule = read_json(root / 'proactive/schedule.json')
+    if time.time() < schedule.get('next_check_at', 0):
+        return
+    intent = scan_pending(root)
+    if not intent:
+        _proactive_reason = 'no_opportunity'
+        return
+    # Persist before provider calls; retries/restarts cannot turn five-minute
+    # cheap checks into an unbounded sequence of paid decisions.
+    write_json(root / 'proactive/schedule.json', {'next_check_at': time.time() + 3600})
+    _proactive_reason = 'considering'
+    plan = json.loads(await _proactive_complete(intent, planning=True))
+    if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
+            or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
+            or not isinstance(plan['title'], str) or not 1 <= len(plan['title']) <= 40):
+        raise ValueError('PROACTIVE_PLAN_INVALID')
+    # User activity during planning wins. Re-read the newly projected source,
+    # not the background worker's stale decision.
+    _refresh_proactive_context()
+    current = scan_pending(root)
+    if plan['decision'] == 'send' and current.get('id') == intent['id'] and _proactive_ready():
+        _proactive_reason = 'writing'
+        await _publish_proactive(current, plan)
+        _refresh_proactive_context()
+        scan_pending(root)
+        _proactive_reason = 'waiting'
+    else:
+        _proactive_reason = 'deferred'
+
+
+async def _proactive_loop() -> None:
+    global _proactive_reason
+    # A prepared login opportunity is checked after runtime initialization;
+    # fresh opportunities use a five-minute startup window.
+    from runtime.reply.proactive_letters import read_json
+    root = _state_root()
+    prepared = read_json(root / 'proactive/pending.json') if root else {}
+    await asyncio.sleep(10 if prepared else 300)
+    while True:
+        try:
+            await _proactive_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
+            _proactive_reason = 'retry_later'
+            _safe_log('proactive_check_unavailable')
+        await asyncio.sleep(300)
+
+
 def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
     from original_client_letter_contract import _video_pending
 
@@ -2857,6 +3051,44 @@ async def route(
         _require_store_state_available()
     if p == "/health":
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
+    if p == "/toy/proactive/status":
+        return ok(_proactive_status())
+    if p == "/toy/proactive/settings":
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {})
+        from runtime.reply.proactive_letters import DEFAULTS, write_json
+        if not body or set(body) - set(DEFAULTS) or any(type(value) is not bool for value in body.values()):
+            return err(400, "PROACTIVE_SETTINGS_INVALID", {})
+        root = _state_root()
+        if root is None:
+            return err(503, "PROACTIVE_STORAGE_UNAVAILABLE", {})
+        previous = _proactive_settings()
+        updated = {**previous, **body}
+        # Registration is performed only by an explicit settings change.
+        if 'login_check_enabled' in body:
+            from runtime.reply.proactive_login import configure_login_start
+            try:
+                configure_login_start(root, enabled=updated['login_check_enabled'])
+            except (OSError, ValueError, RuntimeError):
+                return err(503, "PROACTIVE_LOGIN_UNAVAILABLE", {})
+        try:
+            write_json(root / 'proactive' / 'settings.json', updated)
+        except OSError:
+            if 'login_check_enabled' in body:
+                try:
+                    configure_login_start(root, enabled=previous['login_check_enabled'])
+                except (OSError, ValueError, RuntimeError):
+                    _safe_log('proactive_login_rollback_unavailable')
+            return err(503, 'PROACTIVE_STORAGE_UNAVAILABLE', {})
+        if updated['enabled'] and updated['login_check_enabled']:
+            from runtime.reply.proactive_login import start_login_worker
+            try:
+                start_login_worker(root)
+            except (OSError, ValueError, RuntimeError):
+                # The app can still check opportunities while open.
+                return err(503, 'PROACTIVE_LOGIN_UNAVAILABLE', _proactive_status())
+        _refresh_proactive_context()
+        return ok(_proactive_status())
     if p == "/toy/cover/progress":
         letter = next((item for item in store.letters if item["letter_id"] == query.get("letter_id")), None)
         if letter is None or letter.get("music_provider") != "ace_step_xl_cover":
@@ -3422,7 +3654,11 @@ async def route(
                 "error_code": "LETTER_NOT_FOUND",
             })
         if scope == "current" and not l.get("read_only"):
+            proactive_unread = l.get('origin') == 'proactive' and not l.get('is_read', 0)
             l["is_read"] = 1
+            if proactive_unread:
+                _persist_store_state()
+                _refresh_proactive_context()
         reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
         error_code, retryable = _public_llm_error(l.get("error_code"))
@@ -3433,6 +3669,9 @@ async def route(
         )
         return ok({
             "letter_id": l["letter_id"],
+            "origin": l.get("origin", "user"),
+            "title": l.get("title", ""),
+            "reply_allowed": l.get("origin") != "proactive",
             "letter_status": l.get("letter_status", 4),
             "error_code": error_code if l.get("letter_status") == "FAILED" else None,
             "retryable": retryable if l.get("letter_status") == "FAILED" else False,
@@ -3588,6 +3827,8 @@ async def route(
             )
         return ok(payload)
     if p == "/toy/letter/send":
+        if _proactive_busy:
+            return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         if query.get("scope", "current") == "legacy":
             return err(403, "READ_ONLY_SCOPE", {
                 "status": "FAILED",
@@ -3741,6 +3982,8 @@ async def route(
                     raise ValueError("COVER_AUDIO_INVALID") from None
             except ValueError as exc:
                 return err(400, str(exc), {"error_code": str(exc)})
+        if _proactive_busy:
+            return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         lid = str(uuid.uuid4())
         letter = {
             "letter_id": lid,
@@ -3796,6 +4039,8 @@ async def route(
             return _send_result_for_letter(letter)
         return _send_result_for_letter(letter)
     if p == "/toy/letter/resend":
+        if _proactive_busy:
+            return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         lid = _request_value(body, query, "letter_id", "letterId")
         if lid is None:
             return _missing_field("letter_id")
@@ -3809,6 +4054,8 @@ async def route(
                 "error_code": "LETTER_NOT_FOUND",
                 "retryable": False,
             })
+        if original.get('origin') == 'proactive':
+            return err(409, 'LETTER_RESEND_NOT_ALLOWED', {})
         if original.get("superseded_by"):
             return err(410, "LETTER_SUPERSEDED", {
                 "status": "SUPERSEDED",
@@ -3996,6 +4243,8 @@ def _sync_media_delivery_world(letter: dict) -> None:
 
 def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
                             path: Path, components: tuple[str, ...], presentation: str) -> None:
+    if letter.get('origin') == 'proactive' and letter.get('letter_status') != 'COMPLETED':
+        return
     from runtime.reply.media_delivery import make_delivery, delivery_references
     if (not delivery_id or letter.get('private_world_delivery_id') != delivery_id
             or letter.get('reply_text') != reply_text or not path.is_file() or path.stat().st_size == 0):
@@ -4420,6 +4669,16 @@ def _schedule_pending_media_jobs() -> int:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
+    global _proactive_task
+    _refresh_proactive_context()
+    prefs = _proactive_settings()
+    if prefs['enabled'] and prefs['login_check_enabled'] and _state_root() is not None:
+        from runtime.reply.proactive_login import start_login_worker
+        try:
+            start_login_worker(_state_root())
+        except (OSError, ValueError, RuntimeError):
+            _safe_log('proactive_login_start_unavailable')
+    _proactive_task = asyncio.create_task(_proactive_loop())
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
     if daily_life_runtime is not None:
@@ -4472,6 +4731,12 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
+    global _proactive_task
+    if _proactive_task is not None:
+        _proactive_task.cancel()
+        await asyncio.gather(_proactive_task, return_exceptions=True)
+        _proactive_task = None
+    _refresh_proactive_context()
     tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks | set(daily_life_tasks.values()))
     for task in tasks:
         task.cancel()
@@ -4538,8 +4803,10 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
                 occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
                 received_at=datetime.fromisoformat(letter.get("life_received_at", letter["private_world_occurred_at"])),
+                **({'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}),
             )
-            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"])
+            origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
+            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
             if signal is not None:
                 if private_world_relationship_committer is None:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
@@ -4550,7 +4817,7 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 letter["relationship_status"] = relationship_status.value
                 if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-            boundaries = daily_life_runtime.store.exchange_boundaries(source_id, letter["content"], letter["reply_text"])
+            boundaries = daily_life_runtime.store.exchange_boundaries(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
             if boundaries:
                 if private_world_relationship_committer is None:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")

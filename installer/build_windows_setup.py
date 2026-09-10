@@ -174,6 +174,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/mem0-runtime-requirements.txt",
     "installer/native_window_layout.py",
     "installer/provision_mem0_embedding.py",
+    "installer/proactive_login.py",
     "installer/patch_native_user_settings.py",
     "installer/runtime-requirements.txt",
     "installer/breeze-runtime-requirements.txt",

@@ -219,6 +219,39 @@ def _non_negative_int(value: object, *, default: int) -> int:
     return value if type(value) is int and value >= 0 else default
 
 
+def _proactive_letter_is_completed(letter: Mapping[str, object]) -> bool:
+    if str(letter.get("origin") or "").strip().lower() != "proactive":
+        return True
+    value = letter.get("letter_status", letter.get("letterStatus"))
+    return value == 4 or str(value or "").strip().upper() == "COMPLETED"
+
+
+def _visible_mailbox_letters(
+    letters: Sequence[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    return tuple(letter for letter in letters if _proactive_letter_is_completed(letter))
+
+
+def _project_proactive_fields(
+    payload: dict[str, object],
+    letter: Mapping[str, object],
+) -> dict[str, object]:
+    if str(letter.get("origin") or "").strip().lower() != "proactive":
+        return payload
+    title = letter.get("title")
+    payload["origin"] = "proactive"
+    payload["replyAllowed"] = False
+    payload["reply_allowed"] = False
+    payload["content"] = ""
+    payload["replyType"] = 1
+    payload["reply_type"] = 1
+    payload["reply_mode"] = "text"
+    if isinstance(title, str) and title.strip():
+        payload["title"] = title.strip()
+        payload["summary"] = title.strip()
+    return payload
+
+
 def _adapt_mailbox_payload(
     request: web.Request,
     payload: dict[str, object],
@@ -231,21 +264,26 @@ def _adapt_mailbox_payload(
     scope = request.query.get("scope", "current")
 
     if path == "/toy/letter/list" and payload.get("code") == 0:
-        letters = tuple(letter_collection(scope))
+        letters = _visible_mailbox_letters(tuple(letter_collection(scope)))
         remaining = _non_negative_int(
             data.get("remaining_today", data.get("remainingToday")),
             default=99 if scope == "current" else 0,
         )
-        payload["data"] = serialize_letter_list(
+        serialized = serialize_letter_list(
             letters,
             remaining_today=remaining,
             scope=scope,
             include_legacy_aliases=True,
         )
+        serialized["list"] = [
+            _project_proactive_fields(item, letter)
+            for item, letter in zip(serialized["list"], letters, strict=True)
+        ]
+        payload["data"] = serialized
         return payload
 
     if path == "/toy/letter/unread_count" and payload.get("code") == 0:
-        letters = tuple(letter_collection(scope))
+        letters = _visible_mailbox_letters(tuple(letter_collection(scope)))
         unread = sum(1 for letter in letters if not letter.get("is_read", 1))
         payload["data"] = serialize_unread_count(
             unread,
@@ -256,7 +294,10 @@ def _adapt_mailbox_payload(
 
     if path == "/toy/letter/detail" and payload.get("code") == 0:
         letter_id = data.get("letter_id", data.get("letterId"))
-        letter = _find_letter(tuple(letter_collection(scope)), letter_id)
+        letter = _find_letter(
+            _visible_mailbox_letters(tuple(letter_collection(scope))),
+            letter_id,
+        )
         if letter is None:
             return payload
         serialized = serialize_letter_detail(
@@ -267,7 +308,7 @@ def _adapt_mailbox_payload(
         for field in ("error_code", "retryable"):
             if field in data:
                 serialized[field] = data[field]
-        payload["data"] = serialized
+        payload["data"] = _project_proactive_fields(serialized, letter)
         return payload
 
     if path == "/toy/letter/send":
