@@ -22,6 +22,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from runtime.diagnostics.usage_metrics import record_usage, purpose_for
+
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
@@ -902,6 +904,8 @@ class OpenAICompatibleAdapter(Gateway):
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
             response_status = None
+            usage = None
+            outcome = "error"
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
@@ -929,6 +933,8 @@ class OpenAICompatibleAdapter(Gateway):
                             raise ProviderProtocolError("invalid_json") from None
                         if not isinstance(data, Mapping) or not data:
                             raise ProviderProtocolError("invalid_response_shape")
+                        usage = data.get("usage")
+                        outcome = "response"
                         return dict(data)
             except GatewayError as exc:
                 exc.diagnostic_stage = diagnostic_stage
@@ -936,6 +942,7 @@ class OpenAICompatibleAdapter(Gateway):
                     exc.status = response_status
                 raise
             except asyncio.TimeoutError:
+                outcome = "timeout"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
@@ -944,6 +951,7 @@ class OpenAICompatibleAdapter(Gateway):
                 error.status = response_status
                 raise error from None
             except aiohttp.ClientError as exc:
+                outcome = "transport_error"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
@@ -952,6 +960,8 @@ class OpenAICompatibleAdapter(Gateway):
                 error.diagnostic_exception_type = type(exc).__name__
                 error.status = response_status
                 raise error from None
+            finally:
+                record_usage(usage, purpose=purpose_for(request_id), outcome=outcome)
         raise ProviderUnavailable()
 
     async def complete(self, messages: Sequence[Mapping[str, Any]], *, request_id: str | None = None) -> GatewayResponse:
@@ -1123,11 +1133,17 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
+        if self.config.api_style == "chat_completions" and urlsplit(self.config.base_url).hostname == "api.deepseek.com":
+            body["stream_options"] = {"include_usage": True}
         key = self._ensure_configured()
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning)
         )
         for attempt in range(self.config.max_retries + 1):
+            usage = None
+            terminal_finish_reason = None
+            buffered = []
+            outcome = "error"
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     self.mark_network_call()
@@ -1161,7 +1177,13 @@ class OpenAICompatibleAdapter(Gateway):
                             try:
                                 data = json.loads(payload)
                             except (UnicodeError, json.JSONDecodeError):
+                                if terminal_finish_reason == "stop":
+                                    break
                                 raise ProviderProtocolError() from None
+                            if isinstance(data, Mapping):
+                                usage = data.get("usage") or (data.get("response", {}).get("usage") if isinstance(data.get("response"), Mapping) else None) or usage
+                            if terminal_finish_reason is not None:
+                                continue
                             text = _extract_stream_text(data)
                             saw_reasoning = saw_reasoning or _has_stream_reasoning(data)
                             finish_reason = _extract_finish_reason(data)
@@ -1173,7 +1195,10 @@ class OpenAICompatibleAdapter(Gateway):
                                 buffered.append(text)
                             if finish_reason:
                                 terminal_finish_reason = finish_reason
-                                break
+                                # Usage may arrive in a final choices=[] event after finish_reason.
+                                if not body.get("stream_options", {}).get("include_usage"):
+                                    break
+                        outcome = "response"
                         if terminal_finish_reason == "length":
                             if not saw_delta and saw_reasoning:
                                 raise _RetryableProviderProtocolError()
@@ -1199,15 +1224,31 @@ class OpenAICompatibleAdapter(Gateway):
                     continue
                 raise
             except asyncio.TimeoutError:
+                if terminal_finish_reason == "stop" and buffered:
+                    outcome = "response"
+                    for index, text in enumerate(buffered):
+                        yield GatewayDelta(text, request, index=index)
+                    yield GatewayDelta("", request, index=len(buffered), finish_reason="stop")
+                    return
+                outcome = "timeout"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise ProviderTimeout() from None
             except aiohttp.ClientError:
+                if terminal_finish_reason == "stop" and buffered:
+                    outcome = "response"
+                    for index, text in enumerate(buffered):
+                        yield GatewayDelta(text, request, index=index)
+                    yield GatewayDelta("", request, index=len(buffered), finish_reason="stop")
+                    return
+                outcome = "transport_error"
                 if attempt < self.config.max_retries:
                     await self._retry_wait(attempt)
                     continue
                 raise ProviderUnavailable() from None
+            finally:
+                record_usage(usage, purpose=purpose_for(request), outcome=outcome)
         raise ProviderUnavailable()
 
 

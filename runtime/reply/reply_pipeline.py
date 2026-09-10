@@ -249,6 +249,7 @@ def _prepare_generation_request(
         max_units=request.max_input_chars,
         history=(*selection.fragments, *(recent_fragments(request.content) if callable(recent_fragments) else ())),
         evidence_summaries=life_fragments(request.content) if callable(life_fragments) else (),
+        relationship_expression_enabled=True,
     ).to_messages()
     return _PreparedGeneration(
         replace(request, content=None, messages=messages),

@@ -2196,10 +2196,14 @@ def test_writer_boundary_projection_preserves_release_and_custom_declaration(cus
         snapshot = replace(snapshot, declarations=tuple(declaration if d.declaration_id == original_id else d for d in snapshot.declarations))
     original_declarations = snapshot.declarations
     system = assemble_persona(snapshot, _context(), user_input="Synthetic.", max_units=40000).system_content
-    payload = next(json.loads(match) for match in re.findall(r"<community_soft_canon>\s*(.*?)\s*</community_soft_canon>", system, re.S) if json.loads(match)["declaration_id"] == declaration.declaration_id)
-    expected = declaration.statement if custom else "林离不同意用户或今天不想见面属于人物自主；只有与已确认历史冲突才需要纠正。"
-    assert payload["statement"] == expected
-    assert payload["facet"] == declaration.facet
+    payloads = [json.loads(match) for match in re.findall(r"<community_soft_canon>\s*(.*?)\s*</community_soft_canon>", system, re.S) if json.loads(match)["declaration_id"] == declaration.declaration_id]
+    if custom:
+        assert payloads[0]["statement"] == declaration.statement
+        assert payloads[0]["facet"] == declaration.facet
+    else:
+        assert payloads == []
+        assert "也能不同意、拒绝或暂时少说" in system
+        assert "分歧针对具体行为，误解先澄清" in system
     assert snapshot.declarations == original_declarations
 
 

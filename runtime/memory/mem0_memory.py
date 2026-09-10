@@ -2231,7 +2231,13 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
             }
-        response = create(*args, **kwargs)
+        from runtime.diagnostics.usage_metrics import record_usage
+        response = None
+        try:
+            response = create(*args, **kwargs)
+        finally:
+            usage = getattr(response, "usage", None)
+            record_usage(usage, purpose="memory", outcome="response" if response is not None else "error")
         if any(getattr(choice, "finish_reason", None) == "length"
                for choice in getattr(response, "choices", ())):
             raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")

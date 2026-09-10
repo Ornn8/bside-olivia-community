@@ -14,6 +14,13 @@ from runtime.private_world.daily_life import DailyLifeStore, MAX_EXCHANGE_UPDATE
 from runtime.memory.private_world_relationship import validate_boundary_changes
 
 
+_REFRESH_RETRY_TABLE = "daily_life_refresh_retry"
+_REFRESH_RETRY_INITIAL = timedelta(minutes=2)
+_REFRESH_RETRY_MAX = timedelta(hours=1)
+_REFRESH_FAILURE_LIMIT = 6
+_SHANGHAI = timezone(timedelta(hours=8))
+
+
 _DAILY_PROMPT = """为林离维护可以让通信对象看到的日常，不是生成回信。只输出 JSON：
 {"current":{"location":"地点，60字内","activity":"正在做什么，60字内","note":"她愿意分享的一句自然近况，180字内"},"projects":[{"id":"稳定英文标识，沿用已有事项id","title":"60字内","detail":"本次进展，240字内","status":"planned|ongoing|paused|completed|cancelled"}]}
 以传入的人格为准，有自己的节奏，不迎合或围着用户转。主要延续已有的林离事项，最多更新3件。
@@ -99,7 +106,103 @@ class DailyLifeRuntime:
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._retry_after: datetime | None = None
+        self._memory_retry_source_id: str | None = None
+        self._memory_retry_after: datetime | None = None
         self.error_code: str | None = None
+        with self.store._db() as db:
+            db.execute(f"""
+                CREATE TABLE IF NOT EXISTS {_REFRESH_RETRY_TABLE} (
+                    source_id TEXT PRIMARY KEY,
+                    failure_count INTEGER NOT NULL,
+                    retry_after TEXT NOT NULL
+                )
+            """)
+
+    @staticmethod
+    def _refresh_block_end(now: datetime) -> datetime:
+        local = now.astimezone(_SHANGHAI)
+        next_hour = ((local.hour // 6) + 1) * 6
+        boundary = local.replace(minute=0, second=0, microsecond=0)
+        if next_hour >= 24:
+            return boundary.replace(hour=0) + timedelta(days=1)
+        return boundary.replace(hour=next_hour)
+
+    def _refresh_retry_state(self, source_id: str) -> tuple[int, datetime | None]:
+        with self.store._db() as db:
+            row = db.execute(
+                f"SELECT failure_count, retry_after FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+        if row is None:
+            return 0, None
+        try:
+            return int(row[0]), datetime.fromisoformat(row[1])
+        except (TypeError, ValueError) as exc:
+            raise sqlite3.Error("DAILY_LIFE_RETRY_STATE_INVALID") from exc
+
+    @staticmethod
+    def _refresh_failure_stops_block(exc: BaseException) -> bool:
+        code = str(getattr(exc, "code", "")).upper()
+        try:
+            status = int(getattr(exc, "status", 0))
+        except (TypeError, ValueError):
+            status = 0
+        if status in {401, 402, 403}:
+            return True
+        return any(token in code for token in (
+            "AUTH", "UNAUTHORIZED", "FORBIDDEN", "API_KEY", "QUOTA", "INSUFFICIENT_BALANCE",
+        ))
+
+    def _set_memory_refresh_failure(self, source_id: str, now: datetime) -> datetime:
+        retry_after = self._refresh_block_end(now)
+        self._memory_retry_source_id = source_id
+        self._memory_retry_after = retry_after
+        self._retry_after = retry_after
+        return retry_after
+
+    def _clear_memory_refresh_failure(self) -> None:
+        self._memory_retry_source_id = None
+        self._memory_retry_after = None
+
+    def _record_refresh_failure(self, source_id: str, now: datetime, *, circuit_break: bool = False) -> datetime:
+        with self.store._db() as db:
+            db.execute(
+                f"DELETE FROM {_REFRESH_RETRY_TABLE} WHERE source_id<>?",
+                (source_id,),
+            )
+            row = db.execute(
+                f"SELECT failure_count FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            try:
+                previous_count = max(0, int(row[0])) if row is not None else 0
+            except (TypeError, ValueError):
+                previous_count = _REFRESH_FAILURE_LIMIT - 1
+            failure_count = _REFRESH_FAILURE_LIMIT if circuit_break else min(previous_count + 1, _REFRESH_FAILURE_LIMIT)
+            if circuit_break or failure_count >= _REFRESH_FAILURE_LIMIT:
+                retry_after = self._refresh_block_end(now)
+            else:
+                delay = min(
+                    _REFRESH_RETRY_INITIAL * (2 ** (failure_count - 1)),
+                    _REFRESH_RETRY_MAX,
+                )
+                retry_after = now + delay
+            db.execute(
+                f"""INSERT INTO {_REFRESH_RETRY_TABLE}
+                    (source_id, failure_count, retry_after) VALUES (?, ?, ?)
+                    ON CONFLICT(source_id) DO UPDATE SET
+                        failure_count=excluded.failure_count,
+                        retry_after=excluded.retry_after""",
+                (source_id, failure_count, retry_after.isoformat()),
+            )
+        return retry_after
+
+    def _clear_refresh_failure(self, source_id: str) -> None:
+        with self.store._db() as db:
+            db.execute(
+                f"DELETE FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
+                (source_id,),
+            )
 
     def snapshot(self, now: datetime) -> dict:
         if self.relationship is not None:
@@ -142,15 +245,22 @@ class DailyLifeRuntime:
 
     async def refresh(self, now: datetime) -> None:
         async with self._lock:
-            if self._retry_after and now < self._retry_after:
-                return
+            local_time = now.astimezone(_SHANGHAI)
+            source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
+            if self._memory_retry_source_id is not None:
+                if self._memory_retry_source_id == source_id and self._memory_retry_after and now < self._memory_retry_after:
+                    self._retry_after = self._memory_retry_after
+                    return
+                self._clear_memory_refresh_failure()
             try:
                 state = self.store.snapshot(now)
                 if not state["stale"]:
                     return
-                local_time = now.astimezone(timezone(timedelta(hours=8)))
-                source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
                 if self.store.has_source(source_id):
+                    return
+                failure_count, retry_after = self._refresh_retry_state(source_id)
+                self._retry_after = retry_after
+                if (retry_after and now < retry_after) or failure_count >= _REFRESH_FAILURE_LIMIT:
                     return
                 data = {"time": local_time.isoformat(), "persona": self.persona(),
                         "previous": state["current"], "projects": state["projects"], "rhythm": state["rhythm"]}
@@ -167,9 +277,19 @@ class DailyLifeRuntime:
                 self.store.publish_day(source_id, result["current"], result["projects"], occurred_at=now)
                 self.error_code = None
                 self._retry_after = None
-            except (ValueError, RuntimeError, OSError, TypeError, KeyError, sqlite3.Error):
+                self._clear_memory_refresh_failure()
+                self._clear_refresh_failure(source_id)
+            except (ValueError, RuntimeError, OSError, TypeError, KeyError, sqlite3.Error) as exc:
                 self.error_code = "DAILY_LIFE_GENERATION_UNAVAILABLE"
-                self._retry_after = now + timedelta(minutes=2)
+                try:
+                    self._retry_after = self._record_refresh_failure(
+                        source_id,
+                        now,
+                        circuit_break=self._refresh_failure_stops_block(exc),
+                    )
+                    self._clear_memory_refresh_failure()
+                except Exception:
+                    self._set_memory_refresh_failure(source_id, now)
 
     async def consume_exchange(self, source_id: str, user_text: str, reply_text: str, *, occurred_at: datetime, received_at: datetime | None = None, origin: str = "user") -> bool:
         if not isinstance(origin, str) or origin not in {"user", "proactive"}:

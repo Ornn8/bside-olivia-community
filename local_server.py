@@ -789,6 +789,7 @@ class LetterAdapter:
             max_units=self.config.max_input_chars,
             history=(*history, *self.recent_letter_fragments(content)),
             evidence_summaries=self.daily_life_fragments(content),
+            relationship_expression_enabled=loaded.snapshot.status == "READY",
         ).to_messages()
 
     def daily_life_fragments(self, content: str) -> tuple[UntrustedFragment, ...]:
@@ -1257,6 +1258,7 @@ def _create_video_reply_settings_store() -> VideoReplySettingsStore:
 
 video_reply_settings_store = _create_video_reply_settings_store()
 _reply_route_previews: dict[str, tuple] = {}
+_route_decision_cache: dict[str, tuple] = {}
 
 
 async def _classify_managed_route(content: str, routes: dict[str, bool]) -> TriageResult:
@@ -1268,7 +1270,24 @@ async def _classify_managed_route(content: str, routes: dict[str, bool]) -> Tria
     router.routing_context = replace(base_context,
         voice_reply_available=ready["voice_reply"], musical_video_available=ready["singing_video"],
         route_availability=ready, automatic_routes=tuple(key for key, enabled in routes.items() if enabled))
-    return await router.classify(content)
+    import hashlib
+    payload = {"content": content, "context": router.routing_context.to_model_dict(),
+               "videos": video_reply_settings_store.videos_snapshot()}
+    cache_key = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    now = time.monotonic()
+    for key, value in list(_route_decision_cache.items()):
+        if now - value[0] >= 300:
+            _route_decision_cache.pop(key, None)
+    gateway = getattr(router, "gateway", None)
+    cached = _route_decision_cache.get(cache_key)
+    if gateway is not None and cached is not None and cached[1] is gateway:
+        return replace(cached[2], llm_called=False)
+    result = await router.classify(content)
+    if gateway is not None and result.status == "completed":
+        if len(_route_decision_cache) >= 128:
+            _route_decision_cache.pop(next(iter(_route_decision_cache)))
+        _route_decision_cache[cache_key] = (time.monotonic(), gateway, result)
+    return result
 
 
 def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:

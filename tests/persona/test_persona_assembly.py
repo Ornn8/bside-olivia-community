@@ -135,6 +135,23 @@ def test_public_source_identifier_is_not_character_knowledge():
     assert snapshot.declarations[-1].source_id == fact.source_id
 
 
+def test_clock_changes_do_not_break_fixed_constraints_prefix():
+    import os
+    from runtime.persona.persona_assembly import _persona_blocks
+    from runtime.reply.prompt_budget import plan_prompt_budget, PromptBudgetItem, PromptSection
+    snapshot = _style_snapshot()
+    contexts = [ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 9, 10, hour, tzinfo=timezone.utc))) for hour in (10, 11)]
+    results = [assemble_persona(snapshot, context, user_input='hello', max_units=8000) for context in contexts]
+    common = os.path.commonprefix([result.system_content for result in results])
+    assert '</mode_constraints>' in common
+    for context, result in zip(contexts, results):
+        blocks = _persona_blocks(snapshot, context, 'hello', (), ())
+        plan = plan_prompt_budget(tuple(PromptBudgetItem(b.item_id, b.section, len(b.content)) for b in blocks) + (PromptBudgetItem('user_input', PromptSection.USER_INPUT, 5),), max_units=8000)
+        assert result.budget_report == plan.report
+        assert len(result.system_content) == sum(len(b.content) for b in blocks if b.item_id in plan.report.included_ids)
+        assert all(result.system_content.count(b.content) == 1 for b in blocks if b.item_id in plan.report.included_ids)
+
+
 @pytest.mark.parametrize(("query", "selected"), [
     ("你平时爱听哪类音乐？", True),
     ("你通常喜欢什么类型的音乐？", True),
@@ -337,7 +354,7 @@ def test_current_delivery_is_explicit_and_history_is_not_a_style_template(mode):
     system = assemble_persona(_style_snapshot(), context, user_input="用语音回答我", max_units=8000).system_content
     data = json.loads(re.search(r"<mode_constraints>\s*(.*?)\s*</mode_constraints>", system, re.S).group(1))
     assert "不是口吻范本" in data["style_grounding"]
-    assert "亲近表达不证明过度依赖或越界" in data["style_grounding"]
+    assert "亲近表达本身不证明越界" in data["style_grounding"]
     if mode is ReplyMode.TEXT_LETTER:
         assert "delivery_instruction" not in data
     else:
@@ -408,16 +425,16 @@ def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> Non
         "content"
     ].index("<mode_style")
     assert '"reply_priorities"' in messages[0]["content"]
-    assert "Answer as Linli, not as a service agent or therapist." in messages[0][
+    assert "以林离的身份与对方说话，选择真正注意到的具体内容。" in messages[0][
         "content"
     ]
-    assert "Never invent personal facts, shared history, or relationship facts." in (
+    assert "事实按来源与最新更正判断，自己的当下感受可以直接表达。" in (
         messages[0]["content"]
     )
-    assert "Engage one or two concrete details instead of exhaustively recapping." in (
+    assert "分歧针对具体行为，误解先澄清，再自然接话。" in (
         messages[0]["content"]
     )
-    assert "Use restrained natural language without forced uplift or closure." in (
+    assert "文字亲切、具体、自然，长短随内容需要。" in (
         messages[0]["content"]
     )
     assert "<reply_priorities>" not in messages[0]["content"]
@@ -799,8 +816,8 @@ def test_user_goodnight_keeps_morning_clock_and_previous_character_reply_in_prom
         evidence_summaries=(UntrustedFragment("linli.rhythm", json.dumps(rhythm(now, []), ensure_ascii=False)),),
         max_units=10_000)
     system = assembled.system_content
-    mode = json.loads(re.search(r"<mode_constraints>\s*(.*?)\s*</mode_constraints>", system, re.S).group(1))
-    assert mode["character_local_time"] == "2026-09-08T07:02:00+08:00"
+    clock = json.loads(re.search(r"<runtime_time>\s*(.*?)\s*</runtime_time>", system, re.S).group(1))
+    assert clock["character_local_time"] == "2026-09-08T07:02:00+08:00"
     assert previous in system
     assert "2026-09-08T07:02:00+08:00" in system
     assert RHYTHM_FACT_AUTHORITY in system
