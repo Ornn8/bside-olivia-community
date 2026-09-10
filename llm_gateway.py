@@ -1073,7 +1073,7 @@ class OpenAICompatibleAdapter(Gateway):
         if not (
             self.config.provider == "openai_compatible"
             and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() == "deepseek-v4-flash"
+            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
         ):
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)

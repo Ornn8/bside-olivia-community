@@ -49,6 +49,7 @@ def test_initial_setup_public_contract_matches_routes_and_schema() -> None:
     Draft202012Validator(schema).validate(contract)
     assert set(contract["routes"]) == {
         SETUP_STATUS_PATH,
+        "/toy/setup/llm/models",
         LLM_TEST_PATH,
         LLM_SAVE_PATH,
         LLM_DELETE_PATH,

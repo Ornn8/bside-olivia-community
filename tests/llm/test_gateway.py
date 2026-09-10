@@ -587,8 +587,10 @@ def test_deepseek_v4_flash_release_reasoning_has_a_compatible_http_timeout(
     assert run(exercise()) == ("mock reply", "PROVIDER_TIMEOUT")
 
 
+@pytest.mark.parametrize("model,required", [("synthetic-model", True), ("deepseek-v4-flash", False), ("deepseek-v4-pro", False)])
 def test_openai_compatible_adapter_returns_required_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
+    model, required,
 ) -> None:
     async def exercise():
         seen = {}
@@ -618,7 +620,7 @@ def test_openai_compatible_adapter_returns_required_tool_calls(
         app = web.Application()
         app.router.add_post("/v1/chat/completions", handler)
         async with TestClient(TestServer(app)) as client:
-            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1"))))
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), model=model))
             calls = await adapter.complete_with_tools(
                 messages=ROOT_MESSAGES,
                 tools=[
@@ -642,7 +644,7 @@ def test_openai_compatible_adapter_returns_required_tool_calls(
         ("apply_voice_performance", {"overall_emotion": "steady reassurance"})
     ]
     assert seen["request_id"] == "voice-direction:fixture"
-    assert seen["body"]["tool_choice"] == "required"
+    assert seen["body"].get("tool_choice") == ("required" if required else None)
     assert seen["body"]["tools"][0]["function"]["name"] == "apply_voice_performance"
 
 

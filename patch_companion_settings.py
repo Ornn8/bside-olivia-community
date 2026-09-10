@@ -423,6 +423,8 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'Ws=e=>{const t=new Date(e),',
         'Ws=e=>{if(e==null)return"时间未知";const t=new Date(e),',
     )
+    source = source.replace('a.timestamp?Hs(a.timestamp):""', 'a.timestamp?Ws(a.timestamp):""')
+    source = source.replace('I=j(()=>Hs(l.timestamp))', 'I=j(()=>Ws(l.timestamp))')
     source = source.replace(
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',

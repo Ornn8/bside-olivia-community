@@ -369,6 +369,12 @@ def _persona_blocks(
             PromptSection.MODE_CONSTRAINTS,
             {
                 "mode": persona_mode,
+                **({"style_grounding": "历史回信只用于核对发生过什么，不是口吻范本；不要延续其中无依据的训斥。用户的文风、昵称、亲近表达不证明过度依赖或越界，不模仿其文风或把日常分享解释成报备。以当前人格为准；边界针对具体行为，有误解就澄清，不借机继续责备。"} if snapshot.status == "READY" else {}),
+                **({"delivery_mode": context.mode.value, "delivery_instruction": (
+                    "本次已选择语音回信，正文会交给语音组件朗读，并与文字一起交付。"
+                    "直接写你要对用户说的话，不要声称不能语音回复、只能打字或让用户自行想象声音。"
+                    "不要把过去信件中的能力限制当成本次限制，也不要宣称录制或发送已经成功。"
+                )} if context.mode.value in {"voice_reply", "voice_song_video", "spoken_video", "musical_video"} else {}),
                 "trusted_time": context.to_dict()["trusted_time"],
                 **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
                    if snapshot.status == "READY" else {}),
