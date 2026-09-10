@@ -20,11 +20,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "/toy/setup/status", "/toy/setup/llm/test", "/toy/setup/llm/save",
+        "/toy/setup/status", "/toy/setup/llm/models", "/toy/setup/llm/test", "/toy/setup/llm/save",
         "/toy/setup/llm/delete", "/toy/setup/complete"
       ],
       "properties": {
         "/toy/setup/status": {"$ref": "#/$defs/route"},
+        "/toy/setup/llm/models": {"$ref": "#/$defs/route"},
         "/toy/setup/llm/test": {"$ref": "#/$defs/route"},
         "/toy/setup/llm/save": {"$ref": "#/$defs/route"},
         "/toy/setup/llm/delete": {"$ref": "#/$defs/route"},

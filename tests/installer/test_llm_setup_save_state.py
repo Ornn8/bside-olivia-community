@@ -6,7 +6,7 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-@pytest.mark.parametrize("scenario", ["same", "changed", "inflight", "save_body"])
+@pytest.mark.parametrize("scenario", ["same", "changed", "inflight", "save_body", "catalog"])
 def test_generated_llm_panel_saves_only_tested_normalized_configuration(scenario):
     node = shutil.which("node")
     if node is None:
@@ -26,6 +26,7 @@ const elements=[];
 const make=tag=>{const el=new Element(tag);elements.push(el);return el;};
 const text=(tag,value)=>{const el=make(tag);el.textContent=value;return el;};
 let resolveTest;
+let catalogFails=false;
 const sent=[];
 const context={
   document:{createElement:make}, text, actions:()=>make('div'),
@@ -35,6 +36,10 @@ const context={
   requestSetup:async(path,body)=>{
     if(path==='status') return {llm:{base_url:'https://api.deepseek.com',model:'model',key_configured:false}};
     sent.push({path,body});
+    if(path==='/toy/setup/llm/models') {
+      if(catalogFails) throw new Error('synthetic outage');
+      return {models:['deepseek-v4-pro','deepseek-v4-flash']};
+    }
     if(path==='test') return await new Promise(resolve=>resolveTest=resolve);
     return {status:'SAVED'};
   },
@@ -49,6 +54,22 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.render=renderLlmSetupP
   const status=elements.find(el=>el.tag==='p' && el.textContent.startsWith('请先测试连接。'));
   assert.ok(status);
   key.value=' synthetic-key ';
+  if(process.argv[1]==='catalog') {
+    const refresh=elements.find(el=>el.textContent==='刷新模型列表');
+    const select=elements.filter(el=>el.tag==='select')[1];
+    await refresh.click();
+    assert.equal(model.hidden,true);
+    assert.equal(select.value,'model');
+    assert.deepEqual(select.children.map(el=>el.value),['model','deepseek-v4-pro','deepseek-v4-flash']);
+    select.value='deepseek-v4-flash';select.listeners.change();
+    assert.equal(model.value,'deepseek-v4-flash');
+    catalogFails=true;await refresh.click();
+    assert.equal(select.value,'deepseek-v4-flash');
+    assert.ok(select.children.some(el=>el.value==='deepseek-v4-pro'));
+    base.value='http://127.0.0.1:8000/v1';await refresh.click();
+    assert.equal(model.hidden,false);assert.equal(select.hidden,true);
+    return;
+  }
   const pending=test.click();
   if(process.argv[1]==='inflight') {model.value='changed';model.listeners.input();}
   resolveTest({status:'AVAILABLE'});await pending;

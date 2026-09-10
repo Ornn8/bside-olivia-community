@@ -331,6 +331,21 @@ def test_known_continuation_is_not_denied_by_unknown_continuation_guidance():
     assert "我知道这里保留了书信。" in system
 
 
+@pytest.mark.parametrize("mode", [ReplyMode.VOICE_REPLY, ReplyMode.VOICE_SONG_VIDEO, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO, ReplyMode.TEXT_LETTER])
+def test_current_delivery_is_explicit_and_history_is_not_a_style_template(mode):
+    context = ReplyContext.create(mode, trusted_time=TrustedTime(datetime.now(timezone.utc)))
+    system = assemble_persona(_style_snapshot(), context, user_input="用语音回答我", max_units=8000).system_content
+    data = json.loads(re.search(r"<mode_constraints>\s*(.*?)\s*</mode_constraints>", system, re.S).group(1))
+    assert "不是口吻范本" in data["style_grounding"]
+    assert "亲近表达不证明过度依赖或越界" in data["style_grounding"]
+    if mode is ReplyMode.TEXT_LETTER:
+        assert "delivery_instruction" not in data
+    else:
+        assert data["delivery_mode"] == mode.value
+        assert "正文会交给语音组件朗读" in data["delivery_instruction"]
+        assert "不要宣称录制或发送已经成功" in data["delivery_instruction"]
+
+
 def test_ready_persona_is_assembled_in_fixed_system_then_user_hierarchy() -> None:
     snapshot = PersonaSnapshot(
         schema_version="p02.persona.v2",

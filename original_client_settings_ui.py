@@ -1398,6 +1398,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         model.input.value = "deepseek-v4-pro";
       }
       invalidateTest();
+      updateModelControl();
+      if (provider.value === "deepseek") void syncModels();
     });
     const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
@@ -1451,6 +1453,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         await requestSetup(LLM_SAVE_PATH, requestedConfig);
         key.input.value = "";
+        setup.llm.key_configured = Boolean(requestedConfig.api_key) || setup.llm.key_configured;
+        void syncModels();
         state.textContent = "已保存。下一次发送立即生效。";
       } catch (_error) {
         state.textContent = "保存失败，请重新测试连接。";
@@ -1495,6 +1499,63 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       controls.append(removeKey);
     }
     panel.append(providerLabel, base.wrapper, model.wrapper, key.wrapper, controls, state);
+    const modelSelect = document.createElement("select");
+    modelSelect.className = provider.className;
+    modelSelect.style.width = "100%";
+    modelSelect.setAttribute("aria-label", "DeepSeek 模型");
+    const modelStatus = text("p", "", "text-text-secondary text-body-m font-regular");
+    modelStatus.setAttribute("aria-live", "polite");
+    let modelRequest = 0;
+    let knownModels = [];
+    const updateModelControl = () => {
+      const official = /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/.test(base.input.value.trim());
+      model.input.hidden = official;
+      modelSelect.hidden = !official;
+      refreshModels.hidden = !official;
+      modelStatus.hidden = !official;
+      const selected = model.input.value;
+      modelSelect.replaceChildren();
+      for (const value of [...new Set([selected, ...knownModels])].filter(Boolean)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        option.style.background = "#222426";
+        modelSelect.append(option);
+      }
+      modelSelect.value = selected;
+    };
+    const syncModels = async () => {
+      updateModelControl();
+      if (modelSelect.hidden) return;
+      if (!key.input.value.trim() && !setup.llm.key_configured) {
+        modelStatus.textContent = "填写 API key 后自动获取模型列表。";
+        return;
+      }
+      const serial = ++modelRequest;
+      const requested = currentConfig();
+      modelStatus.textContent = "正在获取模型列表…";
+      try {
+        const result = await requestSetup("/toy/setup/llm/models", requested);
+        if (serial !== modelRequest || requested.base_url !== currentConfig().base_url || requested.api_key !== currentConfig().api_key) return;
+        if (!Array.isArray(result.models) || !result.models.length) throw new Error();
+        knownModels = result.models;
+        updateModelControl();
+        modelStatus.textContent = "模型列表已同步，当前选择保持不变。";
+      } catch (_error) {
+        if (serial !== modelRequest || requested.base_url !== currentConfig().base_url || requested.api_key !== currentConfig().api_key) return;
+        modelStatus.textContent = "模型列表获取失败，已保留当前模型。请检查服务连接和 Key 后刷新。";
+      }
+    };
+    const refreshModels = button("刷新模型列表", syncModels);
+    modelSelect.addEventListener("change", () => {
+      model.input.value = modelSelect.value;
+      invalidateTest();
+    });
+    base.input.addEventListener("change", () => { knownModels = []; void syncModels(); });
+    key.input.addEventListener("change", () => void syncModels());
+    model.wrapper.append(modelSelect, refreshModels, modelStatus);
+    updateModelControl();
+    void syncModels();
   };
 
   const formatBytes = (value) => {

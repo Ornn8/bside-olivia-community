@@ -21,6 +21,7 @@ from llm_gateway import ManagedLLMConfig
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 SETUP_STATUS_PATH = "/toy/setup/status"
 LLM_TEST_PATH = "/toy/setup/llm/test"
+LLM_MODELS_PATH = "/toy/setup/llm/models"
 LLM_SAVE_PATH = "/toy/setup/llm/save"
 LLM_DELETE_PATH = "/toy/setup/llm/delete"
 SETUP_COMPLETE_PATH = "/toy/setup/complete"
@@ -37,6 +38,12 @@ Protector = Callable[[str], str]
 RuntimeApply = Callable[[ManagedLLMConfig, str | None], None]
 
 PUBLIC_ROUTE_CONTRACT = {
+    LLM_MODELS_PATH: {
+        "methods": ["POST", "OPTIONS"],
+        "status_values": ["AVAILABLE"],
+        "request_fields": ["base_url", "model", "api_key"],
+        "response_fields": ["status", "models"],
+    },
     SETUP_STATUS_PATH: {
         "methods": ["GET", "OPTIONS"],
         "status_values": ["READY"],
@@ -211,6 +218,38 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
         raise LLMSetupError("LLM_SETUP_CONNECTION_FAILED", status=503)
 
 
+async def _list_models(base_url: str, api_key: str) -> list[str]:
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            async with session.get(
+                f"{base_url}/models", allow_redirects=False,
+                headers={"Authorization": f"Bearer {api_key}", "User-Agent": PROVIDER_USER_AGENT},
+            ) as response:
+                if response.status != 200:
+                    raise LLMSetupError("LLM_SETUP_CONNECTION_FAILED", status=503)
+                raw = bytearray()
+                async for chunk in response.content.iter_chunked(16384):
+                    raw.extend(chunk)
+                    if len(raw) > 262144:
+                        raise ValueError
+                payload = json.loads(raw)
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 512:
+            raise ValueError
+        models = []
+        for row in rows:
+            value = row.get("id") if isinstance(row, dict) else None
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
+                raise ValueError
+            if value not in models:
+                models.append(value)
+        return models
+    except LLMSetupError:
+        raise
+    except (ClientError, TimeoutError, ValueError) as exc:
+        raise LLMSetupError("LLM_SETUP_CONNECTION_FAILED", status=503) from exc
+
+
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_suffix(path.suffix + ".staging")
@@ -344,7 +383,6 @@ class LLMSetupService:
         configured = self._config()
         if (
             configured.base_url != base_url
-            or configured.model != model
         ):
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400)
         try:
@@ -357,6 +395,15 @@ class LLMSetupService:
         if not protected:
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=400)
         return _api_key(self._unprotect(protected))
+
+    async def models(self, payload: dict[str, object]) -> list[str]:
+        if set(payload) != {"base_url", "model", "api_key"}:
+            raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
+        config = _managed_config(payload["base_url"], payload["model"])
+        if config.base_url not in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}:
+            raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
+        key = self._secret(payload["api_key"], base_url=config.base_url, model=config.model)
+        return await _list_models(config.base_url, key)
 
     async def test(self, payload: dict[str, object]) -> None:
         if set(payload) != {"base_url", "model", "api_key"}:
@@ -592,6 +639,12 @@ def mount_original_client_setup_api(
         await service.test(await _body(request))
         return web.json_response({"status": "AVAILABLE"}, headers=_headers(origin))
 
+    async def models(request: web.Request) -> web.Response:
+        origin = _authorize(request, confirm=True)
+        service.require_session(request.headers.get(SESSION_HEADER, ""))
+        values = await service.models(await _body(request))
+        return web.json_response({"status": "AVAILABLE", "models": values}, headers=_headers(origin))
+
     async def save(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
         service.require_session(request.headers.get(SESSION_HEADER, ""))
@@ -647,6 +700,7 @@ def mount_original_client_setup_api(
     app.middlewares.append(errors)
     app.router.add_get(SETUP_STATUS_PATH, status)
     for path, handler in (
+        (LLM_MODELS_PATH, models),
         (LLM_TEST_PATH, test),
         (LLM_SAVE_PATH, save),
         (LLM_DELETE_PATH, delete),
@@ -654,6 +708,7 @@ def mount_original_client_setup_api(
     ):
         app.router.add_post(path, handler)
     for path in (
+        LLM_MODELS_PATH,
         SETUP_STATUS_PATH,
         LLM_TEST_PATH,
         LLM_SAVE_PATH,
