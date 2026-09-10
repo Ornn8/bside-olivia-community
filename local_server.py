@@ -4009,7 +4009,9 @@ async def route(
             if video_reply_settings_store.saved_tier() is not None or material.get('cover_source_id'):
                 from runtime.video_reply_settings import routed_video
                 selected_mode = requested or route_decision.reply_mode
-                ready = await asyncio.to_thread(_route_readiness, {**videos, selected_mode: routed_video(selected_mode, route_decision.music_contexts, videos)})
+                ready = await asyncio.to_thread(_route_readiness,
+                    {**videos, selected_mode: routed_video(selected_mode, route_decision.music_contexts, videos)},
+                    **({'cover': True} if material.get('cover_source_id') else {}))
             if requested and not ready.get(requested):
                 return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {"error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING"})
             if once is not None and (once != requested or preview_token is None):
