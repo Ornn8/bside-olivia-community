@@ -1357,9 +1357,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const provider = document.createElement("select");
     provider.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+    const qwenBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+    const qwenModels = ["qwen3.8-max", "qwen3.8-flash"];
+    const isDeepSeekEndpoint = (value) => /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/i.test(value.trim());
+    const isQwenEndpoint = (value) => (
+      /^https:\/\/dashscope\.aliyuncs\.com\/compatible-mode\/v1\/?$/i.test(value.trim())
+      || /^https:\/\/[a-z0-9][a-z0-9-]*\.[a-z0-9-]+\.maas\.aliyuncs\.com\/compatible-mode\/v1\/?$/i.test(value.trim())
+    );
     for (const [value, label] of [
       ["deepseek", "DeepSeek 官方"],
       ["opencode-go", "OpenCode Go"],
+      ["qwen", "阿里云百炼 Qwen"],
       ["custom", "自定义 OpenAI 兼容接口"],
     ]) {
       const option = document.createElement("option");
@@ -1381,11 +1389,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     model.input.maxLength = 128;
     key.input.maxLength = 512;
     base.input.value = setup.llm.base_url || "https://api.deepseek.com";
-    model.input.value = setup.llm.model || "deepseek-v4-pro";
+    model.input.value = setup.llm.model || (
+      isQwenEndpoint(base.input.value)
+        ? qwenModels[0]
+        : "deepseek-v4-pro"
+    );
     key.input.value = "";
     const inferProvider = () => {
-      if (base.input.value === "https://api.deepseek.com") return "deepseek";
+      if (isDeepSeekEndpoint(base.input.value)) return "deepseek";
       if (base.input.value === "https://opencode.ai/zen/go/v1") return "opencode-go";
+      if (isQwenEndpoint(base.input.value)) return "qwen";
       return "custom";
     };
     provider.value = inferProvider();
@@ -1396,10 +1409,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } else if (provider.value === "opencode-go") {
         base.input.value = "https://opencode.ai/zen/go/v1";
         model.input.value = "deepseek-v4-pro";
+      } else if (provider.value === "qwen") {
+        const currentBase = base.input.value.trim();
+        if (!isQwenEndpoint(currentBase)) {
+          base.input.value = qwenBaseUrl;
+        }
+        model.input.value = qwenModels[0];
       }
       invalidateTest();
       updateModelControl();
-      if (provider.value === "deepseek") void syncModels();
+      if (provider.value === "deepseek" || provider.value === "qwen") void syncModels();
     });
     const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
@@ -1502,20 +1521,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const modelSelect = document.createElement("select");
     modelSelect.className = provider.className;
     modelSelect.style.width = "100%";
-    modelSelect.setAttribute("aria-label", "DeepSeek 模型");
+    modelSelect.setAttribute("aria-label", "模型");
     const modelStatus = text("p", "", "text-text-secondary text-body-m font-regular");
     modelStatus.setAttribute("aria-live", "polite");
     let modelRequest = 0;
     let knownModels = [];
     const updateModelControl = () => {
-      const official = /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/.test(base.input.value.trim());
-      model.input.hidden = official;
-      modelSelect.hidden = !official;
+      const official = isDeepSeekEndpoint(base.input.value);
+      const qwen = provider.value === "qwen";
+      model.input.hidden = official || qwen;
+      modelSelect.hidden = !official && !qwen;
       refreshModels.hidden = !official;
-      modelStatus.hidden = !official;
+      modelStatus.hidden = !official && !qwen;
       const selected = model.input.value;
       modelSelect.replaceChildren();
-      for (const value of [...new Set([selected, ...knownModels])].filter(Boolean)) {
+      const choices = qwen ? [...qwenModels, selected] : [selected, ...knownModels];
+      for (const value of [...new Set(choices)].filter(Boolean)) {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = value;
@@ -1526,6 +1547,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const syncModels = async () => {
       updateModelControl();
+      if (provider.value === "qwen") {
+        modelStatus.textContent = "可选 qwen3.8-max 或 qwen3.8-flash；业务空间可填写专属 OpenAI 兼容地址。";
+        return;
+      }
       if (modelSelect.hidden) return;
       if (!key.input.value.trim() && !setup.llm.key_configured) {
         modelStatus.textContent = "填写 API key 后自动获取模型列表。";

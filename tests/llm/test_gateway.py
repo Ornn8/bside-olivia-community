@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from aiohttp import web
@@ -96,6 +97,73 @@ def make_config(base_url: str, **overrides) -> GatewayConfig:
     }
     values.update(overrides)
     return GatewayConfig(**values)
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
+@pytest.mark.parametrize("scope", [
+    GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+    GatewayRequestScope.JSON_MAX_REASONING,
+    GatewayRequestScope.BACKGROUND_REASONING,
+])
+@pytest.mark.parametrize("stream", [False, True])
+def test_qwen_reasoning_payload_and_final_text_boundary(monkeypatch, model, scope, stream):
+    async def exercise():
+        seen = {}
+
+        async def handler(request):
+            seen.update(await request.json())
+            if stream:
+                chunks = [
+                    {"choices": [{"delta": {"reasoning_content": "private reasoning"}}]},
+                    {"choices": [{"delta": {"content": "final reply"}, "finish_reason": "stop"}]},
+                ]
+                return web.Response(
+                    text="".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n",
+                    content_type="text/event-stream",
+                )
+            return web.json_response({"choices": [{"finish_reason": "stop", "message": {
+                "content": "final reply", "reasoning_content": "private reasoning",
+            }}]})
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(
+                str(client.make_url("/v1")), model=model, reasoning_timeout_seconds=90,
+            ))
+            if stream:
+                reply = "".join([delta.text async for delta in adapter.stream_scoped(ROOT_MESSAGES, scope=scope)])
+            else:
+                reply = (await adapter.complete_scoped(ROOT_MESSAGES, scope=scope)).text
+            assert reply == "final reply"
+            assert adapter.timeout_seconds_for_scope(scope, default=0.5) == 90
+        assert seen["model"] == model
+        assert seen["enable_thinking"] is True
+        assert seen["reasoning_effort"] == "high"
+        assert seen["max_completion_tokens"] == 10000
+        if stream:
+            assert seen["stream_options"] == {"include_usage": True}
+        assert "thinking" not in seen
+        assert "thinking_budget" not in seen
+        assert "max_tokens" not in seen
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
+def test_qwen_truncated_thinking_never_becomes_completed_text(monkeypatch, model):
+    adapter = OpenAICompatibleAdapter(make_config("http://127.0.0.1:1/v1", model=model))
+
+    async def response(body, request_id, **kwargs):
+        assert body["max_completion_tokens"] == 10000
+        return {"choices": [{"finish_reason": "length", "message": {
+            "content": "partial reply", "reasoning_content": "private reasoning",
+        }}]}
+
+    monkeypatch.setattr(adapter, "_post_json", response)
+    with pytest.raises(ProviderProtocolError):
+        run(adapter.complete_scoped(ROOT_MESSAGES, scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING))
 
 
 def test_reasoning_timeout_is_an_explicit_bounded_public_config() -> None:
@@ -428,6 +496,9 @@ def test_text_reasoning_empty_final_is_retryable_only_after_clean_stop(monkeypat
     ("http://api.deepseek.com/v1", "deepseek-v4-flash", "chat_completions", False),
     ("https://api.deepseek.com/v1", "deepseek-v4-pro", "chat_completions", False),
     ("https://api.deepseek.com/v1", "deepseek-v4-flash", "responses", False),
+    ("https://api.deepseek.com/v1", "qwen3.8-max", "chat_completions", False),
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash", "chat_completions", False),
+    ("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-max", "responses", False),
 ])
 @pytest.mark.parametrize("stream", [False, True])
 def test_json_reasoning_wire_contract_is_official_flash_only(base_url, model, style, expected, stream):

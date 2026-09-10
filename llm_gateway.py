@@ -30,6 +30,7 @@ PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
+QWEN_REASONING_MODELS = frozenset({"qwen3.8-flash", "qwen3.8-max"})
 MANAGED_LLM_SCHEMA_VERSION = 3
 _MANAGED_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
@@ -244,6 +245,15 @@ class GatewayConfig:
         if self.model:
             result["model"] = self.model
         return result
+
+
+def supports_scoped_reasoning(config: GatewayConfig) -> bool:
+    return (
+        config.provider == "openai_compatible"
+        and config.api_style == "chat_completions"
+        and (config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
+             or config.model.casefold() in QWEN_REASONING_MODELS)
+    )
 
 
 @dataclass(frozen=True)
@@ -801,9 +811,7 @@ class OpenAICompatibleAdapter(Gateway):
 
     def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:
         return (
-            self.config.provider == "openai_compatible"
-            and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
+            supports_scoped_reasoning(self.config)
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
                 GatewayRequestScope.JSON_MAX_REASONING,
@@ -821,6 +829,7 @@ class OpenAICompatibleAdapter(Gateway):
         return (
             scope is GatewayRequestScope.JSON_MAX_REASONING
             and self._uses_max_reasoning(scope)
+            and self.config.model.casefold() == "deepseek-v4-flash"
             and endpoint.scheme == "https"
             and endpoint.hostname == "api.deepseek.com"
             and endpoint.path.rstrip("/") in {"", "/v1"}
@@ -861,14 +870,7 @@ class OpenAICompatibleAdapter(Gateway):
         }
         if scope is GatewayRequestScope.SONG_CONTENT:
             body["response_format"] = {"type": "json_object"}
-        endpoint = urlsplit(self.config.base_url)
-        if (
-            scope is GatewayRequestScope.JSON_MAX_REASONING
-            and self._uses_max_reasoning(scope)
-            and endpoint.scheme == "https"
-            and endpoint.hostname == "api.deepseek.com"
-            and endpoint.path.rstrip("/") in {"", "/v1"}
-        ):
+        if self._uses_official_review_responses(scope):
             body["response_format"] = {"type": "json_object"}
         if (
             max_reasoning
@@ -877,6 +879,8 @@ class OpenAICompatibleAdapter(Gateway):
         ):
             body["thinking"] = {"type": "enabled"}
             body["reasoning_effort"] = "max"
+        if max_reasoning and self.config.model.casefold() in QWEN_REASONING_MODELS:
+            body.update(enable_thinking=True, reasoning_effort="high", max_completion_tokens=10000)
         return body
 
     async def _retry_wait(self, attempt: int) -> None:
@@ -1133,7 +1137,10 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
-        if self.config.api_style == "chat_completions" and urlsplit(self.config.base_url).hostname == "api.deepseek.com":
+        if self.config.api_style == "chat_completions" and (
+            urlsplit(self.config.base_url).hostname == "api.deepseek.com"
+            or self.config.model.casefold() in QWEN_REASONING_MODELS
+        ):
             body["stream_options"] = {"include_usage": True}
         key = self._ensure_configured()
         timeout = aiohttp.ClientTimeout(

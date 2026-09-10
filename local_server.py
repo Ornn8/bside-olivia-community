@@ -46,6 +46,7 @@ from llm_gateway import (
     api_key_configured,
     create_gateway,
     load_gateway_config,
+    supports_scoped_reasoning,
 )
 from persona_provider import (
     CompositePersonaEvidencePort,
@@ -381,16 +382,8 @@ LLM_CFG = LLM_CONFIG.public_dict()
 LLM_CFG["persona_file"] = LLM_CONFIG.persona_file
 
 
-def _deepseek_max_reasoning_enabled(config: GatewayConfig) -> bool:
-    return (
-        config.provider == "openai_compatible"
-        and config.api_style == "chat_completions"
-        and config.model.casefold() == "deepseek-v4-flash"
-    )
-
-
 def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
-    if _deepseek_max_reasoning_enabled(config):
+    if supports_scoped_reasoning(config):
         return config.reasoning_timeout_seconds
     return config.timeout_seconds
 
@@ -2727,7 +2720,7 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
 
     max_reasoning = (
         exact_mode == ReplyMode.TEXT_LETTER.value
-        and _deepseek_max_reasoning_enabled(LLM_CONFIG)
+        and supports_scoped_reasoning(LLM_CONFIG)
     )
     generation_timeout = (
         _letter_reply_timeout_seconds(LLM_CONFIG)
@@ -5064,7 +5057,7 @@ async def _run_reply_pipeline_for_letter(
             gateway_scope=(
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING
                 if exact_mode == ReplyMode.TEXT_LETTER.value
-                and _deepseek_max_reasoning_enabled(LLM_CONFIG)
+                and supports_scoped_reasoning(LLM_CONFIG)
                 else None
             ),
         )

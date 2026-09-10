@@ -37,6 +37,14 @@ BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。
 
 首次启动时配置 API key。密钥由当前 Windows 用户通过 DPAPI 加密保存；解密值仅用于后端，不写入日志。升级保留信件、记忆与已有组件。安装失败时请保留日志和诊断信息，通过 [Issues](https://github.com/Ornn8/bside-olivia-community/issues) 反馈，勿附 API key 或未经处理的私人信件。
 
+### LLM 服务商与模型
+
+设置中的“大模型连接”提供 DeepSeek 官方、OpenCode Go、阿里云百炼 Qwen 和自定义 OpenAI-compatible 接口。选择阿里云百炼 Qwen 时默认使用 `qwen3.8-max`，也可选择 `qwen3.8-flash`；官方兼容地址 `https://dashscope.aliyuncs.com/compatible-mode/v1` 仍可直接使用。需要业务空间时，可以在“接口地址”中填写该空间的专属 OpenAI-compatible 地址；已保存的模型不会因为重新打开设置而自动改写。
+
+Qwen 文字回信和后台生活状态使用高思考（`enable_thinking=true`、`reasoning_effort=high`），思考与正文合计上限为 10,000 tokens。语音、音乐和独立记忆提取仍沿用各自参数。接口参数说明见[阿里云百炼官方文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。
+
+`qwen3.8-max` 与 `qwen3.8-flash` 已有隔离 provider 实测，用于确认连接参数和回复链路。该证据只说明隔离配置下的模型行为，不等同于每台设备的安装、升级或完整客户端验收；安装包与真实客户端仍按对应发行说明和验收记录单独核对。
+
 详细步骤见 [Windows 安装、升级与回滚](docs/WINDOWS_FULL_PATCH.md)。各版附件和已知问题以发行说明为准。
 
 ## 可以做什么
@@ -98,7 +106,7 @@ flowchart LR
 | 模块 | 当前职责 |
 | --- | --- |
 | 本机服务 | Python 3.12、aiohttp、后台任务、持久化与恢复 |
-| 模型网关 | OpenAI-compatible API；支持 DeepSeek，推理内容与最终正文分开处理 |
+| 模型网关 | OpenAI-compatible API；支持 DeepSeek 与 Qwen，推理内容与最终正文分开处理 |
 | 人格 | 带来源与层级的人格资产，按上下文预算装配 |
 | 记忆与世界 | Mem0、离线 embedding、SQLite 生活事项与关系账本；隐藏关系数值不直接进入回信 |
 | 语音 | Breeze TTS 2 与对应音色组件 |

@@ -864,8 +864,9 @@ def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
     ) == 4295.0
 
 
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
 def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning(
-    monkeypatch,
+    monkeypatch, model,
 ):
     seen = []
 
@@ -877,13 +878,14 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
     config = GatewayConfig(
         provider="openai_compatible",
         api_style="chat_completions",
-        model="deepseek-v4-flash",
+        model=model,
         timeout_seconds=180.0,
         reasoning_timeout_seconds=720.0,
     )
     monkeypatch.setattr(local_server, "LLM_CONFIG", config)
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
     monkeypatch.setattr(local_server, "reply_pipeline", RecordingPipeline())
+    assert local_server._letter_reply_timeout_seconds(config) == 720.0
 
     async def exercise():
         await local_server._run_reply_pipeline_for_letter(

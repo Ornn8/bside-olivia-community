@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
-from llm_gateway import ManagedLLMConfig
+from llm_gateway import ManagedLLMConfig, QWEN_REASONING_MODELS
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -194,6 +194,16 @@ def _api_key(value: object, *, allow_empty: bool = False) -> str:
 
 
 async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> None:
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "max_tokens": 2,
+        "stream": False,
+    }
+    if model.casefold() in QWEN_REASONING_MODELS:
+        # Connection probes do not need the reasoning budget used by real letters.
+        body.pop("max_tokens")
+        body.update(enable_thinking=False, max_completion_tokens=16)
     try:
         async with ClientSession(timeout=ClientTimeout(total=20)) as session:
             async with session.post(
@@ -202,12 +212,7 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
                     **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
                     "User-Agent": PROVIDER_USER_AGENT,
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": "Reply with OK."}],
-                    "max_tokens": 2,
-                    "stream": False,
-                },
+                json=body,
             ) as response:
                 if not 200 <= response.status < 300:
                     raise LLMSetupError("LLM_SETUP_CONNECTION_FAILED", status=503)

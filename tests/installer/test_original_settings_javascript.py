@@ -172,6 +172,11 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "API key" in source
     assert "OpenCode Go" in source
     assert "DeepSeek 官方" in source
+    assert "阿里云百炼 Qwen" in source
+    assert "qwen3.8-max" in source
+    assert "qwen3.8-flash" in source
+    assert "https://dashscope.aliyuncs.com/compatible-mode/v1" in source
+    assert "业务空间" in source
     assert "导入离线包（暂不可用）" not in source
     assert "等待可信签名与受限导入校验完成" not in source
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
