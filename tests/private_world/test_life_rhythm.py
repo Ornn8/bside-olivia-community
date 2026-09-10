@@ -155,6 +155,22 @@ def test_routine_adapts_gradually_once_a_day_and_never_rewrites_previous_sleep(t
     assert store.snapshot(now + timedelta(days=2))['rhythm']['sleep_shift_minutes'] == 15
 
 
+def test_adaptation_preserves_started_bath_and_sleep_with_existing_shift(tmp_path):
+    for index, (shift, clock) in enumerate([(-45, '22:45'), (-45, '23:20'), (0, '23:30')]):
+        store = DailyLifeStore(tmp_path / f'life-{index}.sqlite3')
+        with store._db() as db:
+            db.execute('INSERT INTO life_routine_days VALUES (?, ?)', ('2026-09-10', shift))
+        now = datetime.fromisoformat(f'2026-09-11T{clock}:00+08:00')
+        before = store.snapshot(now)['rhythm']
+        store.adapt_routine(now, affinity=0)
+        after = store.snapshot(now)['rhythm']
+        assert after['phase'] == before['phase']
+        assert after['planned_rest_window'] == before['planned_rest_window']
+        assert after['bath_end_at'] == before['bath_end_at']
+        with store._db() as db:
+            assert db.execute('SELECT day FROM life_routine_days ORDER BY day DESC LIMIT 1').fetchone()[0] == '2026-09-12'
+
+
 def test_delayed_bedtime_preserves_sleep_duration_across_midnight():
     shifts = {'2026-09-07': 120}
     midnight = datetime(2026, 9, 7, 16, tzinfo=timezone.utc)

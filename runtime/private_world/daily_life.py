@@ -183,9 +183,13 @@ class DailyLifeStore:
         _time(now)
         affinity = max(0.0, min(1.0, float(affinity)))
         local = now.astimezone(LOCAL)
-        day = local.date() + (timedelta(days=1) if local.hour * 60 + local.minute >= 23 * 60 + 30 else timedelta())
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
+            day = local.date()
+            active = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<=? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
+            bath_start = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23, minutes=30 + (active[0] if active else 0))
+            if local >= bath_start:
+                day += timedelta(days=1)
             if db.execute('SELECT 1 FROM life_routine_days WHERE day=?', (day.isoformat(),)).fetchone():
                 return
             old = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
