@@ -25,11 +25,8 @@ def _assert_memory_outbox_runtime_schema(payload: dict[str, object]) -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_local_store(monkeypatch):
+def reset_local_store():
     import local_server
-
-    # HTTP contract checks must not wait for the real overnight bath schedule.
-    monkeypatch.setattr(local_server, "_current_life_rhythm", lambda: {})
 
     local_server.store.letters.clear()
     local_server.store.legacy_letters.clear()

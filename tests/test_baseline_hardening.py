@@ -15,15 +15,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-@pytest.fixture(autouse=True)
-def immediate_reply_rhythm(monkeypatch):
-    # These tests exercise HTTP/error boundaries; bathing has its own tests.
-    # Real 23:30-00:00 time must not make a synthetic reply wait until midnight.
-    import local_server
-
-    monkeypatch.setattr(local_server, "_current_life_rhythm", lambda: {})
-
-
 def git_ignores(path: str) -> bool:
     result = subprocess.run(
         ["git", "check-ignore", "--no-index", "-q", "--", path],
