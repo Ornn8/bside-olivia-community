@@ -680,15 +680,15 @@ def _repair_native_letter_audio(source: str) -> str:
     def bath_progress(value):
         # Bundles can contain already-patched props but an unpatched caption.
         # Guard each anchor independently so repeat installation stays stable.
-        for before, after in (
-            ('audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason||"",audioStatus:e.audioStatus||"",'),
-            ('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{replyWaitReason:{},'),
-            ('F(ks,{coverId:i.mail.coverId,', 'F(ks,{replyWaitReason:i.mail.replyWaitReason,coverId:i.mail.coverId,'),
-            ('"audioUrl","audioStatus","songUrl",', '"replyWaitReason","audioUrl","audioStatus","songUrl",'),
-            ('A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?"林离洗澡中":A.videoPending?"林离录视频中":'),
-            ('re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason||re.isUnread!==Ee.isUnread'),
+        for before, after, marker in (
+            ('audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason||"",audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason'),
+            ('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{replyWaitReason:{},', 'replyWaitReason:{}'),
+            ('F(ks,{coverId:i.mail.coverId,', 'F(ks,{replyWaitReason:i.mail.replyWaitReason,coverId:i.mail.coverId,', 'replyWaitReason:i.mail.replyWaitReason'),
+            ('"audioUrl","audioStatus","songUrl",', '"replyWaitReason","audioUrl","audioStatus","songUrl",', '"replyWaitReason",'),
+            ('A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?"林离洗澡中":A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?'),
+            ('re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason||re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason'),
         ):
-            if after not in value:
+            if marker not in value:
                 value = value.replace(before, after)
         return value
     def cover_progress(value):

@@ -35,6 +35,15 @@ def test_native_audio_pending_caption_is_idempotent(prefix):
     assert _repair_native_letter_audio(patched) == patched
 
 
+def test_bath_props_remain_idempotent_after_sticker_props_are_inserted():
+    from patch_companion_settings import _repair_native_letter_audio
+    source = ('olivia-letter-audio;'
+              '__name:"MailBoxReplyContent",props:{stickerId:{},replyWaitReason:{},audioUrl:{},')
+    patched = _repair_native_letter_audio(source)
+    assert patched.count('replyWaitReason:{}') == 1
+    assert _repair_native_letter_audio(patched) == patched
+
+
 def test_native_download_saves_voice_and_letter_with_existing_button(tmp_path):
     import subprocess
     from patch_companion_settings import _repair_native_letter_audio
