@@ -422,10 +422,16 @@ def validate_short_instruction(value: object) -> str:
 def validate_performance_instruction(value: object, sentence_count: int) -> str:
     """Read legacy directions or a complete, ordered sentence performance."""
     if not isinstance(value, str):
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID_TYPE")
     instruction = value.strip()
     if not re.search(r"第\d+句", instruction):
         return validate_short_instruction(instruction)
+    if len(instruction) > 4000:
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID_LENGTH")
+    # Normalize formatting only; never modify the frozen spoken reply.
+    instruction = re.sub(r"[ \t\r\n\u3000]+", "", instruction).translate(
+        str.maketrans({":": "：", ",": "，", ";": "；", ".": "。", "!": "！", "?": "？"})
+    )
     matches = list(re.finditer(r"第([1-9]\d*)句：", instruction))
     if (
         len(instruction) > 4000
@@ -433,21 +439,21 @@ def validate_performance_instruction(value: object, sentence_count: int) -> str:
         or matches[0].start() != 0
         or [int(match[1]) for match in matches] != list(range(1, sentence_count + 1))
     ):
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID_SENTENCE_ORDER")
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(instruction)
         direction = instruction[match.end():end].strip()
-        if (
-            not 8 <= len(direction) <= 160
-            or re.fullmatch(r"[\u3400-\u9fff，。！？、；：…—“”‘’]+", direction) is None
-            or any(token in direction for token in (
+        if not 8 <= len(direction) <= 160:
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID_LENGTH")
+        if re.fullmatch(r"[\u3400-\u9fff，。！？、；：…—“”‘’]+", direction) is None:
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID_CHARACTERS")
+        if any(token in direction for token in (
                 "朗读", "提示词", "音色", "声线", "声音", "气息", "呼吸", "气声",
                 "耳语", "轻声", "低声", "嗓", "共鸣", "发声", "上颚", "胸腔",
                 "鼻腔", "口腔", "喉", "沙哑", "清亮", "明亮", "浑厚", "磁性",
                 "柔软", "通透", "距离", "靠近", "远近", "悄悄", "音量", "语气",
-            ))
-        ):
-            raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+            )):
+            raise VoiceDirectionError("VOICE_DIRECTION_INVALID_FORBIDDEN_CONTROL")
     return instruction
 
 
@@ -502,7 +508,7 @@ async def _tool_arguments(
         raise VoiceDirectionError("VOICE_DIRECTION_TOOL_INVALID")
     arguments = calls[0].arguments
     if not isinstance(arguments, Mapping) or set(arguments) != fields:
-        raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
+        raise VoiceDirectionError("VOICE_DIRECTION_INVALID_FIELDS")
     return arguments
 
 

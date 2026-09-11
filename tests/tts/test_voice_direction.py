@@ -43,6 +43,32 @@ class _FakeVoiceDirector:
         return [VoiceToolCall(name="apply_voice_performance", arguments=self.arguments)]
 
 
+@pytest.mark.parametrize("transform", [
+    lambda text: text.replace("：", ":"),
+    lambda text: text.replace("，", ",").replace("。", "."),
+    lambda text: text.replace("音调", "音 调").replace("第2句", "\n\t第2句"),
+])
+def test_director_normalizes_format_without_changing_frozen_reply(transform):
+    reply = "合成第一句。合成第二句。"
+    canonical = "第1句：句头音调稍上扬，句尾回落，语速自然。第2句：句头音调平稳，句尾回落，语速稍慢。"
+    plan = asyncio.run(direct_voice_performance(reply, _FakeVoiceDirector({"short_instruction": transform(canonical)})))
+    assert plan.short_instruction == canonical
+    assert plan.spoken_text == reply
+    assert VoicePerformancePlan.from_dict(plan.to_dict()).short_instruction == canonical
+
+
+@pytest.mark.parametrize("instruction,category", [
+    ("第1句：句头音调平稳，句尾回落。", "SENTENCE_ORDER"),
+    ("第1句：句头音调平稳，句尾回落。第1句：句头音调平稳，句尾回落。", "SENTENCE_ORDER"),
+    ("第1句:音 色清亮而柔软,语速自然。第2句:句头音调平稳,句尾回落。", "FORBIDDEN_CONTROL"),
+    ("第1句：句头音调平稳，<执行>句尾回落。第2句：句头音调平稳，句尾回落。", "CHARACTERS"),
+])
+def test_director_format_normalization_preserves_rejection_categories(instruction, category):
+    with pytest.raises(VoiceDirectionError) as caught:
+        asyncio.run(direct_voice_performance("合成第一句。合成第二句。", _FakeVoiceDirector({"short_instruction": instruction})))
+    assert str(caught.value) == "VOICE_DIRECTION_INVALID_" + category
+
+
 def _valid_direction() -> dict[str, object]:
     return {
         "short_instruction": "声音柔软自然地承接，再缓缓托起给到力量",

@@ -10,6 +10,23 @@ import pytest
 from music_reply import _persist_provider_failure
 
 
+def test_voice_direction_rejection_category_reaches_support_export(tmp_path):
+    import local_server as server
+    from runtime.media.voice_direction import VoiceDirectionError
+    from runtime.diagnostics.support_bundle import _project_media_tail
+
+    server._record_media_job_failure(
+        VoiceDirectionError("VOICE_DIRECTION_INVALID_SENTENCE_ORDER"),
+        "voice_plan", {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)},
+    )
+    records = [json.loads(line) for line in (tmp_path / "logs/media-provider.jsonl").read_text().splitlines()]
+    records[0]["private_input"] = "private-letter"
+    exported = _project_media_tail(records)
+    assert b"VOICE_DIRECTION_INVALID_SENTENCE_ORDER" in exported
+    assert b"voice_plan" in exported
+    assert b"private-letter" not in exported
+
+
 @pytest.mark.parametrize("failure_stage", ["prepare", "voice_plan", "render"])
 @pytest.mark.parametrize("message", ["VOICE_PLAN_NOT_READY", "private letter text and key at C:/private"])
 def test_media_failure_logs_only_stage_type_and_safe_code(tmp_path, failure_stage, message):
