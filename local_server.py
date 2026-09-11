@@ -1523,6 +1523,8 @@ async def _migrate_historical_history(
             retryable=False,
         ),
     )
+    if result.status != "completed":
+        _safe_log("history_memory_failed", status="FAILED", error_code=result.error_code or "MEM0_WRITE_FAILED")
     if result.status != "completed" or not full_exchanges:
         return result
     try:
