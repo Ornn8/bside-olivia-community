@@ -96,6 +96,7 @@ _MEMORY_ADMIN_FILENAME = "memory_admin_audit.sqlite3"
 _DIAGNOSTIC_TAIL_LIMIT = 200
 _DIAGNOSTIC_LOG_MAX_BYTES = 1 << 20
 _DIAGNOSTIC_PROFILES = ("core", "llm", "memory", "asr")
+_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS = 1.0
 _DIAGNOSTIC_CAPABILITIES = {
     "settings.video_reply": "settings_video_reply",
     "native.tts": "native_tts",
@@ -483,6 +484,20 @@ def _diagnostic_source(
 ) -> Callable[[], Mapping[str, object]]:
     """Bind only safe, aggregate collectors for a diagnostic export request."""
 
+    from runtime.memory.bounded_daemon_call import BoundedDaemonCall
+    probes = {name: BoundedDaemonCall(thread_name=f"olivia-diagnostic-{name}")
+              for name in ("companion", *_DIAGNOSTIC_PROFILES)}
+
+    def probe(name: str, operation: Callable[[], object]) -> tuple[object, str | None]:
+        worker = probes[name]
+        outcome, value = worker.call(operation, timeout_seconds=_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS)
+        if outcome == "inflight" and not worker.inflight:
+            outcome, value = worker.settle(timeout_seconds=_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS)
+        if outcome == "completed":
+            return value, None
+        # Never accumulate threads when a provider ignores its own timeout.
+        return None, "DIAGNOSTIC_PROBE_FAILED" if outcome == "failed" else "DIAGNOSTIC_PROBE_TIMEOUT"
+
     def state(value: object) -> str:
         if not isinstance(value, str):
             return "unknown"
@@ -606,7 +621,12 @@ def _diagnostic_source(
         return item
 
     def collect() -> Mapping[str, object]:
-        status = backend.read_status().to_dict()
+        status, probe_error = probe("companion", lambda: backend.read_status().to_dict())
+        if probe_error:
+            status = {"capabilities": {name: {"state": "unavailable", "reason_code": probe_error}
+                                      for name in ("memory", "private_world", "candidates")}}
+        if not isinstance(status, Mapping):
+            raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
         capabilities = status.get("capabilities")
         if not isinstance(capabilities, Mapping):
             raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
@@ -679,7 +699,10 @@ def _diagnostic_source(
         if health_profile_provider is not None:
             core_data: Mapping[str, object] | None = None
             for profile_name in _DIAGNOSTIC_PROFILES:
-                envelope = health_profile_provider(profile_name)
+                envelope, probe_error = probe(profile_name, lambda name=profile_name: health_profile_provider(name))
+                if probe_error:
+                    checks[f"profile_{profile_name}"] = {"state": "unavailable", "error_code": probe_error}
+                    continue
                 if not isinstance(envelope, Mapping) or envelope.get("code") != 0:
                     raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
                 data = envelope.get("data")
@@ -752,7 +775,9 @@ def _diagnostic_source(
         )
         return {
             "summary": summary,
-            "health": {"status": "available", "checks": checks},
+            "health": {"status": "degraded" if any(
+                check.get("error_code") in {"DIAGNOSTIC_PROBE_TIMEOUT", "DIAGNOSTIC_PROBE_FAILED"}
+                for check in checks.values()) else "available", "checks": checks},
             "install": install,
             "tasks": {
                 "status": "active" if pending else "idle",
