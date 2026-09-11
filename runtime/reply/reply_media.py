@@ -17,7 +17,7 @@ from typing import Mapping
 from runtime.media.latentsync_reply import LatentSyncReplyError, media_runtime_available, render_latentsync_video, resolve_ffmpeg_executable
 from runtime.media.media_paths import resolve_media_path
 from runtime.reply.reply_delivery import ReplyDeliveryPlan
-from voice_direction import VoicePerformancePlan
+from voice_direction import TextOnlyVoicePlan, VoicePerformancePlan
 try:
     from runtime.visual.livetalking import LiveTalkingConfig, capture_candidate_frames
 except ImportError:  # Optional visual provider is not part of the portable patch.
@@ -336,7 +336,7 @@ def render_reply_video(
     latentsync_python_path: Path | None = None,
     latentsync_root: Path | None = None,
     adaptive_delivery: bool = False,
-    voice_performance_plan: VoicePerformancePlan | None = None,
+    voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan | None = None,
     enforce_content_gate: bool = False,
     environment: Mapping[str, str] | None = None,
     ffmpeg_path: Path | None = None,
@@ -370,7 +370,7 @@ def render_reply_video(
             )
         audio_path = root / "reply.wav"
         frames = root / "frames"
-        delivery_plan: ReplyDeliveryPlan | VoicePerformancePlan | None = None
+        delivery_plan: ReplyDeliveryPlan | TextOnlyVoicePlan | VoicePerformancePlan | None = None
         audio_provider = delivery.tts.provider
         if adaptive_delivery:
             if voice_performance_plan is None:
@@ -415,7 +415,9 @@ def render_reply_video(
                 "delivery_audio_mode": "single_pass_continuous",
                 "per_segment_audio_controls_applied": False,
                 "voice_emotion_control": (
-                    "llm_global_instruct2"
+                    "none"
+                    if isinstance(delivery_plan, TextOnlyVoicePlan)
+                    else "llm_global_instruct2"
                     if isinstance(delivery_plan, VoicePerformancePlan)
                     else "legacy_global_pace"
                 ),
@@ -467,7 +469,7 @@ def render_reply_video(
 
 
 def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
-                       voice_performance_plan: VoicePerformancePlan,
+                       voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan,
                        environment: Mapping[str, str] | None = None) -> dict[str, object]:
     """Generate speech directly, without video dependencies or a video VRAM gate."""
     if voice_performance_plan.spoken_text != text:

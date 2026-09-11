@@ -391,7 +391,7 @@ def render_delivery_wav(
 ) -> DeliveryAudioResult:
     """Render all delivery segments while loading the maintained model once."""
 
-    if not plan.cues:
+    if not plan.spoken_text.strip():
         raise DeliveryAudioError("TTS_DELIVERY_UNAVAILABLE")
     request = build_external_delivery_request(config, plan)
 
