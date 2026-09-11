@@ -1,6 +1,6 @@
 // Render persisted backend-validated metadata; old letters receive a base illustration.
 export function oliviaLetterSticker(value) {
- return typeof value==='string'&&/^linli-(0[1-9]|[1-4][0-9]|5[0-4])$/.test(value)?value:'linli-01';
+ return typeof value==='string'&&/^linli-(0[1-9]|[1-9][0-9]|10[0-8])$/.test(value)?value:'linli-01';
 }
 
 if(typeof document!=='undefined'&&!document.getElementById('olivia-letter-sticker-style')) {

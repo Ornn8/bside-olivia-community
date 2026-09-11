@@ -60,7 +60,7 @@ def patch_source(source: str) -> str:
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
     assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.json','.js'}}
-    if sum(n.endswith('.png') for n in assets)!=54:
+    if {n for n in assets if n.endswith('.png')} != {f'assets/letter-stickers/linli-{i:02d}.png' for i in range(1,109)}:
         raise ValueError('STICKER_ASSETS_INCOMPLETE')
     with zipfile.ZipFile(path) as archive:
         if MAIN not in archive.namelist():
