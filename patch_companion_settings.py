@@ -428,8 +428,12 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = source.replace('v(o(a)("common_beta_tag"))', 'v("Resonance Edition")')
     source = source.replace('letterStatus:e.letterStatus,', 'replyKind:e.replyKind||"text_letter",letterStatus:e.letterStatus,') if 'replyKind:e.replyKind' not in source else source
     native_icon = 'n("div",{class:ae(["mail-item-icon",o(a).iconBgClass])},[k(p,{type:o(a).iconType,class:ae(["text-[24px]",o(a).iconClass])},null,8,["type","class"])],2)'
+    old_kind_guard = 'm.mail.received&&m.mail.received.type!=="video"&&["voice_reply","singing_video","voice_song_video"].includes(m.mail.replyKind)'
+    kind_ready = 'window.customElements&&window.customElements.get("olivia-mail-kind")&&'
+    if kind_ready not in source:
+        source = source.replace(old_kind_guard + '?n("olivia-mail-kind"', kind_ready + old_kind_guard + '?n("olivia-mail-kind"')
     if 'n("olivia-mail-kind"' not in source:
-        source = source.replace(native_icon, '(m.mail.received&&m.mail.received.type!=="video"&&["voice_reply","singing_video","voice_song_video"].includes(m.mail.replyKind)?n("olivia-mail-kind",{kind:m.mail.replyKind},null,8,["kind"]):' + native_icon + ')')
+        source = source.replace(native_icon, '(' + kind_ready + old_kind_guard + '?n("olivia-mail-kind",{kind:m.mail.replyKind},null,8,["kind"]):' + native_icon + ')')
     source = source.replace(
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',

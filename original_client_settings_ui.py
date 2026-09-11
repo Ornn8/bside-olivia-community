@@ -3196,7 +3196,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
 BOOTSTRAP_JAVASCRIPT = r'''
 (() => {
-  if (!window.customElements || customElements.get('olivia-letter-audio')) return;
+  if (!window.customElements) return;
   if (!customElements.get('olivia-mail-kind')) {
     customElements.define('olivia-mail-kind', class extends HTMLElement {
       static get observedAttributes(){return ['kind']}
@@ -3221,6 +3221,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
       }
     });
   }
+  if (customElements.get('olivia-letter-audio')) return;
   const style = document.createElement('style');
   style.textContent = `
     olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
