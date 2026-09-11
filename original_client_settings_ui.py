@@ -952,10 +952,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "长期记忆（Mem0 + BGE）", "text-text-title text-title-m");
     const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
     const summary = text("p", "", "text-text-secondary text-body-m font-regular");
-    const updateSummary = (count) => {
-      summary.textContent = `状态：${paused ? "已暂停（不检索、不写入）" : stateLabels[state]}${Number.isInteger(count) ? `，共 ${count} 条` : ""}`;
+    const updateSummary = (latest) => {
+      const count = latest && latest.count;
+      const isPaused = latest && latest.reason_code === "MEMORY_ADMIN_PAUSED";
+      summary.textContent = `状态：${isPaused ? "已暂停（不检索、不写入）" : stateLabels[capabilityState(latest)]}${Number.isInteger(count) ? `，共 ${count} 条` : ""}`;
     };
-    updateSummary(capability.count);
+    updateSummary(capability);
     const controls = document.createElement("div");
     controls.style.display = "flex";
     controls.style.gap = "10px";
@@ -991,12 +993,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             ? latestStatus.capabilities
             : {};
           const latestMemory = latestCapabilities.memory;
-          updateSummary(latestMemory && latestMemory.count);
+          updateSummary(latestMemory);
         }
         resultState.textContent = input.value.trim()
           ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
       } catch (_error) {
+        updateSummary({state: "unavailable"});
         resultState.textContent = "长期记忆暂时无法读取。";
       }
     };

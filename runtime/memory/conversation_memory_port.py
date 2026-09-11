@@ -40,7 +40,11 @@ def _plain_text(value: object, *, field_name: str, maximum: int) -> str:
     if (
         not normalized
         or len(normalized) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        or any(
+            (ord(character) < 32 and character not in "\r\n\t")
+            or ord(character) == 127
+            for character in normalized
+        )
     ):
         raise ConversationMemoryError(f"{field_name} is invalid")
     return normalized

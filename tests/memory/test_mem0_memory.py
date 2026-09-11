@@ -37,6 +37,27 @@ import mem0_memory
 NOW = datetime(2026, 8, 23, 2, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\t"])
+def test_existing_multiline_proactive_memory_remains_readable_and_deduplicated(tmp_path, separator):
+    backend = FakeMem0()
+    text = f"第一段。{separator}第二段。"
+    backend.rows.append({
+        "id": "memory.existing.1", "memory": text,
+        "user_id": "local-user", "agent_id": "linli",
+        "metadata": {"source_id": "reply:existing:1", "domain": "conversation_memory",
+                     "canonical": True, "origin": "proactive", "verbatim": True},
+        "created_at": NOW.isoformat(),
+    })
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    assert adapter.status().status == "available"
+    assert adapter.list_memories(user_id="local-user")[0].text == text
+    assert adapter.search_context("第一段", user_id="local-user", limit=1)[0].text == text
+    result = adapter.remember_exchange(user_message="", assistant_message=text,
+        occurred_at=NOW, source_id="reply:existing:1", user_id="local-user", origin="proactive")
+    assert result.status is MemoryWriteStatus.DUPLICATE
+    assert not any(method == "add" for method, _ in backend.calls)
+
+
 def test_exchange_waits_for_concurrent_memory_list_before_dedup(tmp_path, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
