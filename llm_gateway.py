@@ -854,13 +854,14 @@ class OpenAICompatibleAdapter(Gateway):
         scope: GatewayRequestScope | None = None,
     ) -> dict[str, Any]:
         normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
+        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if self.config.api_style == "responses":
             request_input = [
                 {"role": message["role"], "content": message["content"]}
                 for message in normalized
             ]
             body = {"model": self.config.model, "input": request_input, "stream": stream}
-            if scope is GatewayRequestScope.SONG_CONTENT:
+            if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
                 body["text"] = {"format": {"type": "json_object"}}
             return body
         body: dict[str, Any] = {
@@ -868,7 +869,6 @@ class OpenAICompatibleAdapter(Gateway):
             "messages": list(normalized),
             "stream": stream,
         }
-        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self._uses_official_review_responses(scope):

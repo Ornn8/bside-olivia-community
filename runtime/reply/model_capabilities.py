@@ -42,7 +42,11 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
     if not isinstance(overrides, Mapping) or set(overrides) - set(defaults.__dataclass_fields__):
         raise ValueError("invalid provider capabilities")
     values = {**defaults.__dict__, **overrides}
-    if values['thinking'] not in {'none', 'deepseek', 'qwen'} or values['reasoning_effort'] not in {None, 'low', 'medium', 'high', 'max'}:
+    if not isinstance(values['thinking'], str) or values['thinking'] not in {'none', 'deepseek', 'qwen'}:
+        raise ValueError("invalid provider thinking capabilities")
+    if values['reasoning_effort'] is not None and (
+        not isinstance(values['reasoning_effort'], str) or values['reasoning_effort'] not in {'low', 'medium', 'high', 'max'}
+    ):
         raise ValueError("invalid provider reasoning capabilities")
     if any(type(values[k]) is not bool for k in ('json_mode', 'stream_usage', 'tool_choice')):
         raise ValueError("invalid provider boolean capabilities")
