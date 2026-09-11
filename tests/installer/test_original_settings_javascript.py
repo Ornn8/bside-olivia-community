@@ -10,6 +10,47 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
+def test_memory_summary_tracks_latest_status_and_read_failure():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable")
+    panel = BOOTSTRAP_JAVASCRIPT.split("const renderMemoryPanel =", 1)[1]
+    summary = panel.split("const updateSummary =", 1)[1].split("const controls =", 1)[0]
+    load = panel.split("const load = async () => {", 1)[1].split("const search = button", 1)[0]
+    harness = r'''
+const assert = require('node:assert/strict');
+const summary = {textContent: ''}, resultState = {textContent: ''};
+const capability = {state: 'available', count: 5};
+const stateLabels = {available:'AVAILABLE', degraded:'DEGRADED', unavailable:'UNAVAILABLE'};
+const capabilityState = c => c && c.state || 'unavailable';
+const input = {value:''}, list = {replaceChildren(){}}, renderMemories = () => {};
+const MEMORY_PATH = 'memory', STATUS_PATH = 'status';
+let fail = false;
+const requestJson = async path => {
+  if (fail) throw new Error('timeout');
+  return path === MEMORY_PATH ? {memories:[]} : {capabilities:{memory:{state:'degraded'}}};
+};
+'''
+    harness += "const updateSummary =" + summary + "\nconst load = async () => {" + load
+    harness += r'''
+(async () => {
+  assert.match(summary.textContent, /AVAILABLE/);
+  await load();
+  assert.match(summary.textContent, /DEGRADED/);
+  fail = true;
+  await load();
+  assert.match(summary.textContent, /UNAVAILABLE/);
+  assert.doesNotMatch(summary.textContent, /5/);
+  fail = false;
+  input.value = 'retry search';
+  await load();
+  assert.match(summary.textContent, /DEGRADED/);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+'''
+    result = subprocess.run([node, "-e", harness], capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+
+
 def test_original_settings_bootstrap_has_valid_javascript(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:

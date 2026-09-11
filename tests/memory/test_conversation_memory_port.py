@@ -18,6 +18,12 @@ from conversation_memory_port import (
 NOW = datetime(2026, 8, 23, 1, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("control", ["\x00", "\x1b", "\x7f"])
+def test_record_still_rejects_non_text_control_characters(control):
+    with pytest.raises(ConversationMemoryError):
+        ConversationMemoryRecord("memory.1", f"first{control}second", "local-user", "reply:1")
+
+
 def test_record_exposes_only_bounded_prompt_fields() -> None:
     record = ConversationMemoryRecord(
         memory_id="memory.fixture.1",
