@@ -8,6 +8,12 @@ def test_unknown_model_uses_no_vendor_extensions():
     assert caps.tool_choice and caps.json_mode and not caps.stream_usage
 
 
+def test_existing_pro_does_not_silently_switch_to_maximum_reasoning():
+    assert not model_capabilities('https://api.deepseek.com', 'deepseek-v4-pro').scoped_reasoning
+    assert model_capabilities('https://api.deepseek.com', 'deepseek-v4-pro',
+        {'capabilities':{'reasoning_effort':'max'}}).scoped_reasoning
+
+
 @pytest.mark.parametrize('name', ['qwen-flash', 'qwen3.5-plus', 'qwen3.7-flash-2026-09-01'])
 def test_qwen_family_uses_its_own_thinking_switch(name):
     caps = model_capabilities('https://example.test/v1', name)

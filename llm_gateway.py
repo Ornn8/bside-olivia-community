@@ -252,7 +252,7 @@ def supports_scoped_reasoning(config: GatewayConfig) -> bool:
     return (
         config.provider == "openai_compatible"
         and config.api_style == "chat_completions"
-        and model_capabilities(config.base_url, config.model, config.provider_options).thinking != "none"
+        and model_capabilities(config.base_url, config.model, config.provider_options).scoped_reasoning
     )
 
 

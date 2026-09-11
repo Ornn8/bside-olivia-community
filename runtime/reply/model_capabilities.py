@@ -13,6 +13,10 @@ class ModelCapabilities:
     stream_usage: bool = False
     tool_choice: bool = True
 
+    @property
+    def scoped_reasoning(self) -> bool:
+        return self.thinking == "qwen" or (self.thinking != "none" and self.reasoning_effort is not None)
+
     def reasoning_parameters(self, enabled: bool) -> dict[str, object]:
         if self.thinking == "deepseek":
             result = {"thinking": {"type": "enabled" if enabled else "disabled"}}
@@ -31,7 +35,8 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
     name = model.casefold()
     host = urlsplit(base_url).hostname
     if name.startswith("deepseek-v4-") or name == "deepseek-flash":
-        defaults = ModelCapabilities("deepseek", "max", stream_usage=host == "api.deepseek.com", tool_choice=False)
+        effort = "max" if name == "deepseek-flash" or name.startswith("deepseek-v4-flash") else None
+        defaults = ModelCapabilities("deepseek", effort, stream_usage=host == "api.deepseek.com", tool_choice=False)
     elif re.fullmatch(r"qwen3\.8-(?:flash|max)(?:-.*)?", name):
         defaults = ModelCapabilities("qwen", "high", stream_usage=True)
     elif re.fullmatch(r"qwen3\.[567]-(?:flash|plus|max)(?:-.*)?", name) or name in {"qwen-flash", "qwen-plus"}:
