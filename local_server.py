@@ -2829,6 +2829,9 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     else:
         task += ('现在写这封主动信，只输出最终正文。无需逐条复述旧信。'
                  + ('内容适合一段简短语音。' if mode == 'voice' else '按平常文字信写。'))
+        if mode == 'text':
+            from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
+            task += '\n' + LETTER_PRESENTATION_INSTRUCTION
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
@@ -2855,6 +2858,12 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
     letter = None
     try:
         body = await _proactive_complete(intent, planning=False, mode=plan['format'])
+        signature = None
+        if plan['format'] == 'text':
+            from runtime.reply.letter_presentation import split_signature
+            body, signature = split_signature(body)
+            if not body.strip():
+                raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_settings()['enabled']:
             return
         letter = {'letter_id': str(uuid.uuid4()), 'origin': 'proactive', 'content': '',
@@ -2864,6 +2873,7 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
                   'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
         _prepare_private_world_delivery(letter, body)
         letter['reply_text'] = body
+        letter['reply_signature'] = signature
         store.letters.append(letter)
         _persist_store_state()
         if plan['format'] == 'voice' and _proactive_settings()['allow_voice']:
@@ -5140,6 +5150,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         letter["daily_life_status"] = "PENDING"
     letter["reply_text"] = result.text
     letter["reply_sticker_id"] = getattr(result, "sticker_id", None)
+    letter["reply_signature"] = getattr(result, "signature", None)
     letter["letter_status"] = "COMPLETED"
     _mark_superseded_failed_retries()
     _persist_store_state()
