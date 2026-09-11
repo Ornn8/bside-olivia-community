@@ -987,7 +987,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           limit: 50,
         });
         renderMemories(list, payload.memories, load, resultState);
-        if (!input.value.trim()) {
+        {
           const latestStatus = await requestJson(STATUS_PATH);
           const latestCapabilities = latestStatus.capabilities && typeof latestStatus.capabilities === "object"
             ? latestStatus.capabilities

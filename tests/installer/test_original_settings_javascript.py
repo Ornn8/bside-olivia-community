@@ -41,6 +41,10 @@ const requestJson = async path => {
   await load();
   assert.match(summary.textContent, /UNAVAILABLE/);
   assert.doesNotMatch(summary.textContent, /5/);
+  fail = false;
+  input.value = 'retry search';
+  await load();
+  assert.match(summary.textContent, /DEGRADED/);
 })().catch(e => { console.error(e); process.exitCode = 1; });
 '''
     result = subprocess.run([node, "-e", harness], capture_output=True, timeout=20)
