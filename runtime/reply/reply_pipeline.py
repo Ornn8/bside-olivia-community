@@ -27,6 +27,7 @@ from runtime.reply.reply_reviewer import (
     TrustedReviewEvidence,
 )
 from runtime.memory.memory_port import CONVERSATION_MEMORY, MemoryRecord
+from runtime.letter_stickers.selection import allowed_stickers, selection_instruction, split_selection
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
@@ -87,6 +88,7 @@ class PipelineResult:
     violation_codes: tuple[str, ...] = ()
     reviewer_calls: int = 0
     rewrite_calls: int = 0
+    sticker_id: str | None = None
     delivery_repair_disposition: DeliveryRepairDisposition = (
         DeliveryRepairDisposition.NONE
     )
@@ -139,9 +141,15 @@ class ReplyPipeline:
     async def run(self, request: object, context: ReplyContext) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
+        sticker_choices = allowed_stickers(context.private_behavior)
+        sticker_note = selection_instruction(sticker_choices) if context.mode is ReplyMode.TEXT_LETTER else ""
+        original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0
+        generation_request = request
+        if sticker_note and isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(sticker_note) + 1000:
+            generation_request = replace(request, max_input_chars=original_budget-len(sticker_note)-2)
         try:
             preparation = _prepare_generation_request(
-                request,
+                generation_request,
                 context,
                 self.orchestrator,
             )
@@ -169,6 +177,15 @@ class ReplyPipeline:
                     request.request_id if isinstance(request, ReplyRequest) else "",
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
+        if sticker_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+            messages = [dict(message) for message in prepared.messages]
+            system = next((m for m in messages if m.get("role") == "system"), None)
+            if system is None:
+                messages.insert(0, {"role": "system", "content": sticker_note})
+            else:
+                system["content"] += "\n\n" + sticker_note
+            if sum(len(str(m.get("content", ""))) for m in messages) <= original_budget:
+                prepared = replace(prepared, messages=tuple(messages), max_input_chars=original_budget)
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -177,10 +194,14 @@ class ReplyPipeline:
                 error_code=candidate.error_code,
                 retryable=candidate.retryable,
             )
+        clean_text, sticker_id = split_selection(candidate.text, sticker_choices) if sticker_note else (candidate.text, None)
+        if not clean_text.strip():
+            return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         return PipelineResult(
             candidate.request_id,
             ReplyState.COMPLETED,
-            text=candidate.text,
+            text=clean_text,
+            sticker_id=sticker_id,
             quality_status="not_checked",
         )
 

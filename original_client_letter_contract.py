@@ -336,6 +336,9 @@ def serialize_letter_detail(
             "replyVideoUrl": media_url,
         }
     )
+    sticker_id = letter.get("reply_sticker_id")
+    if published and isinstance(sticker_id, str) and sticker_id in {f"linli-{i:02d}" for i in range(1, 55)}:
+        payload["replyStickerId"] = sticker_id
     if published and _audio_reply(letter):
         payload["replyAudioUrl"] = _safe_local_media_url(letter.get("reply_audio_url"))
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")

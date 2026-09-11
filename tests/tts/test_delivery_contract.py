@@ -26,7 +26,23 @@ from tts.delivery import (
     delivery_configured,
     render_delivery_wav,
 )
-from voice_direction import VoicePerformancePlan
+from voice_direction import TextOnlyVoicePlan, VoicePerformancePlan
+
+
+def test_text_only_plan_uses_reference_without_legacy_cosyvoice_instructions():
+    config = SimpleNamespace(
+        runtime_root="runtime", model_dir="model",
+        reference_audio="reference.wav", fp16=True,
+    )
+    text = "今天收到你的信。你想说什么，我都在听。"
+    request = build_external_delivery_request(config, TextOnlyVoicePlan(text))
+    assert request["blocks"] == [text]
+    assert request["reference_audio"] == "reference.wav"
+    assert request["voice_condition_mode"] == "contextual_long_form"
+    assert "instruct_text" not in request
+    assert request["block_controls"] == [
+        {"speed": 1.0, "pause_after_seconds": 0.0, "gain_db": 0.0}
+    ]
 
 _QUALITY_EXPECTED = "这是完整的冻结语音内容，必须原样说完。"
 _QUALITY_FORBIDDEN = "声音柔软自然地承接"
@@ -58,6 +74,11 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
 
 def test_directed_delivery_error_schema_is_stable() -> None:
     assert http_contract.LETTER_DETAIL_MEDIA_ERROR_CODES == {
+        "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
+        "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
+        "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+        "COVER_GENERATION_FAILED": {"status": "FAILED", "retryable": True},
+        "COVER_GENERATION_TIMEOUT": {"status": "FAILED", "retryable": True},
         "BREEZE_TTS_10GB_VRAM_REQUIRED": {
             "status": "UNAVAILABLE",
             "retryable": True,

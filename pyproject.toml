@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bside-olivia-local"
-version = "1.1.13"
+version = "1.1.14"
 description = "Local HTTP and media-state prototype for BSide Olivia Lin"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -107,6 +107,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
+"runtime.letter_stickers" = ["*.png", "*.json", "*.js"]
 contracts = ["*.json"]
 "contracts.asset_baseline" = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]

@@ -513,6 +513,10 @@ def _repair_client_frontend(root: Path, port: int) -> str:
             patch_webplayer(webplayer, work_root=webplayer.parent)
         except WebPlayerPatchError as exc:
             raise CompanionSettingsPatchError("COMPANION_PLAYER_PATCH_FAILED") from exc
+    from installer.patch_letter_stickers import patch_letter_stickers
+    sticker_status = patch_letter_stickers(feapp)
+    if sticker_status == "PATCHED":
+        return "PATCHED"
     return result["status"]
 
 

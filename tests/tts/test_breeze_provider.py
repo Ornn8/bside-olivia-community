@@ -15,7 +15,7 @@ from tts import TTSConfig, TTSProfileManager, TTSRequest, TTSService, default_re
 from tts.contracts import TTSValidationError
 from tts import external_breeze_worker
 from tts.breeze import BreezeTTS2Provider
-from voice_direction import VoicePerformancePlan
+from voice_direction import TextOnlyVoicePlan, VoicePerformancePlan
 
 
 _BREEZE_LICENSE = "BreezeBlue-Research-and-Non-Commercial-1.0"
@@ -106,7 +106,7 @@ def test_breeze_provider_is_selectable_and_missing_assets_fall_back_before_gener
         "model": "Breeze-TTS-2-int8-hybrid",
         "model_variant": "int8_hybrid",
         "streaming": False,
-        "delivery_mode": "single_pass_voice_performance_plan",
+        "delivery_mode": "text_only",
         "reference_audio_local_only": True,
         "offline_only": True,
         "execution": "external-process",
@@ -152,13 +152,13 @@ def test_sentence_directions_stay_out_of_frozen_spoken_text(tmp_path: Path) -> N
     )
     request = BreezeTTS2Provider(_breeze_config(tmp_path, enable_direction=True)).performance_request(VoicePerformancePlan.from_dict(plan.to_dict()))
     assert request["text"] == plan.reply_text
-    assert instruction in request["instruction"]
+    assert request["instruction"] == ""
     assert "保持中等能量" not in request["instruction"]
     assert request["quality_forbidden_text"] == request["instruction"]
     assert len(plan.speech_units()) == 1
 
 
-def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
+def test_breeze_ignores_legacy_directives_even_when_enabled(
     tmp_path: Path,
 ) -> None:
     reply = "第一句保持温柔。第二句慢慢托起力量。"
@@ -177,18 +177,12 @@ def test_breeze_performance_request_consumes_the_complete_llm_voice_plan(
 
     assert request["text"] == reply
     assert request["text"] == plan.spoken_text
-    assert request["instruction"].startswith(plan.short_instruction)
-    assert "自然实声" not in request["instruction"]
-    assert "保持自然语速，句间自然停顿" in request["instruction"]
-    assert "能量饱满" not in request["instruction"]
-    assert "第2句" not in request["instruction"]
-    assert request["voice_plan"] == {
-        "emotion": plan.overall_emotion,
-        "speed": 1.06,
-        "energy": 0.72,
-        "breath_before_sentences": [2],
-        "emphasize_sentences": [1],
-    }
+    assert request["instruction"] == ""
+    assert "voice_plan" not in request
+    assert request["gain_db"] == 0.0
+    assert request["performance_control_mode"] == "text_only"
+    assert request["reference_audio"] == config.reference_audio
+    assert request["reference_text"] == config.reference_text
     assert request["cfg_scale"] == 1.0
     assert request["model_variant"] == "int8_hybrid"
     assert request["max_new_tokens"] == 650
@@ -476,7 +470,7 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
     monkeypatch.setattr(delivery, "_run_breeze_worker", fake_run)
     output = tmp_path / "reply.wav"
 
-    result = delivery.render_delivery_wav(_breeze_config(tmp_path), _plan(), output)
+    result = delivery.render_delivery_wav(_breeze_config(tmp_path), TextOnlyVoicePlan(_plan().spoken_text), output)
 
     assert result.provider == "breeze_tts2"
     assert result.duration_seconds == 43.0
@@ -487,7 +481,8 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
     ]
     synthesis_request = observed[0][1]
     assert synthesis_request["text"] == _plan().spoken_text
-    assert synthesis_request["voice_plan"]["emotion"] == _plan().overall_emotion
+    assert "voice_plan" not in synthesis_request
+    assert synthesis_request["instruction"] == ""
     assert synthesis_request["max_attempts"] == 1
 
 
@@ -531,7 +526,7 @@ def test_breeze_natural_duration_without_asr_generates_once(tmp_path, monkeypatc
         assert request["seed"] == expected["seed"] + index
         assert request["max_attempts"] == 1
         assert request["text"] == expected["text"] == plan.spoken_text
-        assert request["voice_plan"] == expected["voice_plan"]
+        assert "voice_plan" not in request
         assert {key: value for key, value in request.items() if key not in {"seed", "max_attempts"}} == {
             **{key: value for key, value in expected.items() if key not in {"seed", "max_attempts"}},
             "verify_accepted_base_model": False,

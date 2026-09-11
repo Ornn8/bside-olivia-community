@@ -45,6 +45,7 @@ PAYLOAD_DIRS = (
     "linli_character",
 )
 PAYLOAD_EXTRA_DIRS = (
+    "runtime/letter_stickers",
     "runtime/imports",
     "runtime/media",
     "runtime/memory",
@@ -764,6 +765,8 @@ def install_full_patch(
                 base_http,
                 work_root=resources,
             )
+            from installer.patch_letter_stickers import patch_letter_stickers
+            patch_letter_stickers(feapp)
             player_patch = patch_webplayer(
                 webplayer,
                 work_root=resources,

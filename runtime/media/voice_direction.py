@@ -43,6 +43,23 @@ class VoiceSpeechUnit:
 
 
 @dataclass(frozen=True)
+class TextOnlyVoicePlan:
+    """Frozen speech content with neutral transport defaults and no directions."""
+
+    reply_text: str
+
+    @property
+    def spoken_text(self) -> str:
+        return self.reply_text
+
+    def speech_units(self) -> tuple[VoiceSpeechUnit, ...]:
+        return (VoiceSpeechUnit(self.reply_text, 0, 1.0, 0.0, 0.0),)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"reply_text": self.reply_text}
+
+
+@dataclass(frozen=True)
 class VoicePerformanceSegment:
     """A local compatibility view, never a provider-authored control surface."""
 

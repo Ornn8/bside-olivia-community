@@ -48,7 +48,7 @@ from runtime.media.voice_conversion import (
     voice_conversion_fingerprint,
     voice_conversion_runtime_ready,
 )
-from .voice_direction import VoicePerformancePlan
+from .voice_direction import TextOnlyVoicePlan, VoicePerformancePlan
 
 
 _MINIMAX_WORKER_TIMEOUT_SECONDS = 14700.0
@@ -1456,7 +1456,7 @@ def _build_music_stage_manifest(
     minimax_worker_path: Path,
     minimax_root: Path,
     provider_paths: MusicProviderPathSnapshot,
-    voice_performance_plan: VoicePerformancePlan | None,
+    voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan | None,
     singing_reference: Path | None = None,
 ) -> dict[str, object]:
     """Bind resumable stages to canonical text, inputs, and provider revisions."""
@@ -1775,7 +1775,7 @@ def render_musical_reply(
     performance_video_path: Path,
     duration_seconds: int,
     spoken_action_base_path: Path | None = None,
-    voice_performance_plan: VoicePerformancePlan | None = None,
+    voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan | None = None,
     gateway: Gateway | None = None,
     environment: Mapping[str, str] | None = None,
     include_spoken: bool = True,

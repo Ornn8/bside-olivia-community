@@ -81,8 +81,7 @@ from runtime.reply.reply_delivery import (
 )
 from voice_direction import (
     VoiceDirectionError,
-    VoicePerformancePlan,
-    direct_voice_performance,
+    TextOnlyVoicePlan,
 )
 from runtime.video_reply_settings import (
     VideoReplySettingsError,
@@ -1616,80 +1615,19 @@ async def _voice_plan_for_letter(
     reply_text: str,
     *,
     mode: ReplyMode = ReplyMode.SPOKEN_VIDEO,
-) -> VoicePerformancePlan:
-    """Direct the frozen reply once, then reuse its persisted performance plan."""
+) -> TextOnlyVoicePlan:
+    """Use frozen text directly; legacy director state never blocks synthesis."""
 
-    if "voice_performance_plan" in letter:
-        stored = letter.get("voice_performance_plan")
-        if not isinstance(stored, dict):
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        try:
-            plan = VoicePerformancePlan.from_dict(stored)
-        except VoiceDirectionError:
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID") from None
-        if plan.reply_text != reply_text:
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        return plan
-
-    letter_id = str(letter.get("letter_id", "")).strip()
-    if not letter_id:
-        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    request_id = f"letter-reply:{letter_id}:voice-direction"
-    persisted_request_id = letter.get("voice_direction_request_id")
-    if persisted_request_id is not None and persisted_request_id != request_id:
-        raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_REQUEST_INVALID")
-    if persisted_request_id is None:
-        # Commit the provider idempotency key before issuing the paid call, so a
-        # restart in the provider-success/persistence window uses the same key.
-        letter["voice_direction_request_id"] = request_id
-        _persist_media_state()
-    persona_snapshot = (
-        load_persona(letters_adapter.persona_v2_path).snapshot
-        if letters_adapter.config.persona_v2_enabled
-        else None
-    )
-    plan = await asyncio.wait_for(
-        direct_voice_performance(
-            reply_text,
-            letters_adapter.gateway,
-            letter_content=str(letter.get("content", "")),
-            request_id=request_id,
-            persona_snapshot=persona_snapshot,
-            mode=mode,
-        ),
-        timeout=LLM_TIMEOUT_SECONDS,
-    )
-    if plan.reply_text != reply_text:
-        raise VoiceDirectionError("VOICE_DIRECTION_TEXT_MISMATCH")
-    letter["voice_performance_plan"] = plan.to_dict()
-    _persist_media_state()
-    return plan
+    return TextOnlyVoicePlan(reply_text)
 
 
 async def _music_voice_plan_for_letter(
     letter: dict,
     reply_text: str,
-) -> VoicePerformancePlan:
-    """Use the same LLM-directed, persisted performance plan for musical replies."""
+) -> TextOnlyVoicePlan:
+    """Musical reply speech uses the same text-only synthesis as ordinary replies."""
 
-    stored = letter.get("voice_performance_plan")
-    if stored is not None:
-        try:
-            if not isinstance(stored, dict):
-                raise VoiceDirectionError("VOICE_DIRECTION_INVALID")
-            legacy_plan = VoicePerformancePlan.from_music_dict(stored)
-        except VoiceDirectionError:
-            legacy_plan = None
-        if legacy_plan is not None and legacy_plan.reply_text != reply_text:
-            raise VoiceDirectionError("VOICE_DIRECTION_PERSISTED_PLAN_INVALID")
-        if legacy_plan is not None:
-            letter.pop("voice_performance_plan", None)
-            _persist_media_state()
-    return await _voice_plan_for_letter(
-        letter,
-        reply_text,
-        mode=ReplyMode.MUSICAL_VIDEO,
-    )
+    return await _voice_plan_for_letter(letter, reply_text)
 
 
 music_adapter = MusicAdapter()
@@ -5201,6 +5139,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if daily_life_runtime is not None:
         letter["daily_life_status"] = "PENDING"
     letter["reply_text"] = result.text
+    letter["reply_sticker_id"] = getattr(result, "sticker_id", None)
     letter["letter_status"] = "COMPLETED"
     _mark_superseded_failed_retries()
     _persist_store_state()

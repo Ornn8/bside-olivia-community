@@ -25,11 +25,22 @@ def test_audio_letter_waits_for_complete_delivery(mode, status):
     assert out['replyAudioUrl'].endswith('/ready.wav')
 
 
-def test_native_audio_pending_caption_is_idempotent():
+@pytest.mark.parametrize('prefix', ['', 'replyWaitReason:e.replyWaitReason||"",'])
+def test_native_audio_pending_caption_is_idempotent(prefix):
     from patch_companion_settings import _repair_native_letter_audio
-    source = 'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")'
+    source = prefix + 'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")'
     patched = _repair_native_letter_audio(source)
     assert '林离正在录语音…' in patched
+    assert patched.count('林离洗澡中') == 1
+    assert _repair_native_letter_audio(patched) == patched
+
+
+def test_bath_props_remain_idempotent_after_sticker_props_are_inserted():
+    from patch_companion_settings import _repair_native_letter_audio
+    source = ('olivia-letter-audio;'
+              '__name:"MailBoxReplyContent",props:{stickerId:{},replyWaitReason:{},audioUrl:{},')
+    patched = _repair_native_letter_audio(source)
+    assert patched.count('replyWaitReason:{}') == 1
     assert _repair_native_letter_audio(patched) == patched
 
 

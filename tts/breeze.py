@@ -25,29 +25,6 @@ _MODEL_REPOSITORY_DIR = "drbaph_Breeze-TTS-2-comfyui"
 _MODEL_LICENSE_HEADING = "BREEZEBLUE RESEARCH AND NON-COMMERCIAL LICENSE AGREEMENT"
 
 
-def _pace_direction(speed: float) -> str:
-    if speed <= 1.02:
-        return "保持自然语速"
-    if speed <= 1.08:
-        return "整体语速略快但保持自然对话感"
-    return "整体语速轻快但吐字清楚"
-
-
-def _energy_direction(energy: float) -> str:
-    if energy < 0.45:
-        return "能量轻柔克制"
-    if energy <= 0.65:
-        return "保持中等能量"
-    return "能量饱满但不喊叫"
-
-
-def _sentence_marks_direction(prefix: str, values: tuple[int, ...]) -> str | None:
-    if not values:
-        return None
-    numbers = "、".join(str(value) for value in values)
-    return f"{prefix}第{numbers}句"
-
-
 class BreezeTTS2Provider:
     """Breeze TTS 2 voice-clone provider backed by an isolated runtime."""
 
@@ -164,46 +141,17 @@ class BreezeTTS2Provider:
             "model": f"Breeze-TTS-2-{self.model_variant.replace('_', '-')}",
             "model_variant": self.model_variant,
             "streaming": False,
-            "delivery_mode": "single_pass_voice_performance_plan",
+            "delivery_mode": "text_only",
             "reference_audio_local_only": True,
             "offline_only": True,
             "execution": "external-process",
         }
 
     def performance_request(self, plan: object) -> dict[str, object]:
-        """Map one persisted LLM plan into Breeze's non-spoken direction channel."""
+        """Synthesize only frozen text, retaining the configured voice reference."""
 
         text = str(getattr(plan, "spoken_text", "") or "")
-        emotion = str(
-            getattr(plan, "short_instruction", "")
-            or getattr(plan, "overall_emotion", "")
-            or ""
-        ).strip().rstrip("。")
-        speed = float(getattr(plan, "global_speed", 1.0))
-        energy = float(getattr(plan, "energy", 0.55))
-        breaths = tuple(getattr(plan, "breath_before_sentences", ()) or ())
-        emphasis = tuple(getattr(plan, "emphasize_sentences", ()) or ())
-        if emotion.startswith("第1句："):
-            instruction_parts = ["按正文的完整句子依次调整音调和语速，句间自然停顿", str(plan.short_instruction)]
-        elif getattr(plan, "short_instruction", ""):
-            instruction_parts = [
-                emotion,
-                "保持自然语速，句间自然停顿",
-            ]
-        else:
-            instruction_parts = [emotion, _pace_direction(speed), _energy_direction(energy)]
-            breath_direction = _sentence_marks_direction("在", breaths)
-            if breath_direction:
-                instruction_parts.append(breath_direction + "前自然换气")
-            emphasis_direction = _sentence_marks_direction("轻轻强调", emphasis)
-            if emphasis_direction:
-                instruction_parts.append(emphasis_direction)
-        instruction = "，".join(part for part in instruction_parts if part)
         options = self.config.provider_options
-        if options.get('enable_direction') is not True:
-            instruction = ''
-        units = tuple(getattr(plan, "speech_units")())
-        gain_db = float(getattr(units[0], "gain_db", 0.0)) if units else 0.0
         return {
             "runtime_root": str(self.runtime_root),
             "adapter_dir": str(options.get('adapter_dir', '') or ''),
@@ -212,14 +160,7 @@ class BreezeTTS2Provider:
             "reference_audio": self.config.reference_audio,
             "reference_text": self.config.reference_text,
             "text": text,
-            "instruction": instruction,
-            "voice_plan": {
-                "emotion": str(getattr(plan, "overall_emotion", "") or ""),
-                "speed": speed,
-                "energy": energy,
-                "breath_before_sentences": list(breaths),
-                "emphasize_sentences": list(emphasis),
-            },
+            "instruction": "",
             "model_variant": self.model_variant,
             "dtype": str(options.get("dtype", "bf16") or "bf16"),
             "device": str(options.get("device", "cuda") or "cuda"),
@@ -239,16 +180,16 @@ class BreezeTTS2Provider:
             "depth_temperature": float(options.get("depth_temperature", 0.9)),
             "depth_top_k": int(options.get("depth_top_k", 50)),
             "depth_top_p": float(options.get("depth_top_p", 1.0)),
-            "gain_db": max(-1.5, min(1.5, gain_db)),
+            "gain_db": 0.0,
             "quality_gate_required": False,
-            "quality_forbidden_text": instruction,
+            "quality_forbidden_text": "",
             "quality_gate_model": str(options.get("quality_gate_model", "base") or "base"),
             "quality_gate_cache_root": str(options.get("quality_gate_cache_root", "") or ""),
             "quality_max_cer": 0.18,
             "duration_target_seconds": None if options.get("audio_only_unbounded") is True else [40.0, 50.0],
             "audio_only_unbounded": options.get("audio_only_unbounded") is True,
             "max_attempts": 1,
-            "performance_control_mode": "single_pass_llm_breeze_direction",
+            "performance_control_mode": "text_only",
         }
 
     def stream_sentence(
