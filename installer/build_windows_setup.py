@@ -156,6 +156,7 @@ RELEASE_ROOT_FILES = {
     "video_capability_install.py",
 }
 RELEASE_INSTALLER_FILES = {
+    "installer/patch_letter_stickers.py",
     "installer/__init__.py",
     "installer/__main__.py",
     "installer/bootstrap_install.py",

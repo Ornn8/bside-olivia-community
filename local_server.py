@@ -5139,6 +5139,7 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if daily_life_runtime is not None:
         letter["daily_life_status"] = "PENDING"
     letter["reply_text"] = result.text
+    letter["reply_sticker_id"] = getattr(result, "sticker_id", None)
     letter["letter_status"] = "COMPLETED"
     _mark_superseded_failed_retries()
     _persist_store_state()
