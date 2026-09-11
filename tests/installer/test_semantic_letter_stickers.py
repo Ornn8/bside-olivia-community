@@ -9,9 +9,23 @@ def test_progressive_unlock_and_unknown_is_not_high():
     familiar=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH))
     close=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH,trust=L.MEDIUM,comfort=L.MEDIUM))
     assert set(base)<set(familiar)<set(close)
-    assert len(close)==54
+    assert len(close)==72
     assert 'linli-25' not in base and 'linli-25' in familiar
     assert 'linli-27' not in familiar and 'linli-27' in close
+
+
+def test_high_closeness_unlocks_new_whimsical_sets_only_with_trust_and_comfort():
+    high = PrivateBehaviorView(familiarity=L.HIGH, trust=L.HIGH, comfort=L.HIGH, closeness=L.HIGH)
+    assert len(allowed_stickers(PrivateBehaviorView())) == 29
+    assert len(allowed_stickers(PrivateBehaviorView(familiarity=L.MEDIUM))) == 54
+    assert len(allowed_stickers(high)) == 108
+    assert 'linli-108' in allowed_stickers(high)
+    from dataclasses import replace
+    for field in ('trust', 'comfort', 'closeness'):
+        for level in (L.UNKNOWN, L.LOW, L.MEDIUM):
+            assert 'linli-73' not in allowed_stickers(replace(high, **{field: level}))
+    assert split_selection('正文。\n[[sticker:linli-108]]', allowed_stickers(high)) == ('正文。','linli-108')
+    assert split_selection('正文。\n[[sticker:linli-108]]', allowed_stickers(PrivateBehaviorView())) == ('正文。','linli-01')
 
 
 def test_selection_removed_before_text_consumers_and_locked_choice_falls_back():
@@ -53,6 +67,6 @@ def test_one_generation_call_metadata_does_not_reach_review():
 
 def test_persisted_metadata_is_only_exposed_after_publication():
     from original_client_letter_contract import serialize_letter_detail
-    letter=dict(letter_id='sticker-fixture',content='合成来信',reply_text='合成回信',letter_status='COMPLETED',reply_sticker_id='linli-07',reply_not_before=200)
+    letter=dict(letter_id='sticker-fixture',content='合成来信',reply_text='合成回信',letter_status='COMPLETED',reply_sticker_id='linli-108',reply_not_before=200)
     assert 'replyStickerId' not in serialize_letter_detail(letter,now=100)
-    assert serialize_letter_detail(letter,now=300)['replyStickerId']=='linli-07'
+    assert serialize_letter_detail(letter,now=300)['replyStickerId']=='linli-108'

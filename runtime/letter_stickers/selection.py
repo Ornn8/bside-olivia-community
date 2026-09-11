@@ -14,8 +14,11 @@ def allowed_stickers(view):
     ids=set(BASE)
     if familiar:
         ids.update(FAMILIAR)
+        ids.update(range(55,64))
         if value('trust') in {'medium','high'} and value('comfort') in {'medium','high'}:
-            ids.update(range(1,55))
+            ids.update(range(1,73))
+            if all(value(key)=='high' for key in ('closeness','trust','comfort')):
+                ids.update(range(73,109))
     return tuple(f'linli-{i:02d}' for i in sorted(ids))
 
 
@@ -28,6 +31,7 @@ def selection_instruction(allowed):
     return ('呈现元数据约定：先照常写完整回信，末尾另起一行输出 [[sticker:编号]]。'
             '依据整封信的主旨、情绪和当前交流语境，从下列可用插画选一张；不是关键词命中，'
             '严肃、伤心内容不要选搞怪款。可用不等于必须卖萌，也不代表关系身份变化。'
+            '奇幻想象仅为插画，不把画面写成真实经历或已发生的亲密行为。'
             '该行由程序移除，不解释选择，不写入正文。可选：'+
             '；'.join(f'{i}={_labels()[i]}' for i in allowed))
 
@@ -39,6 +43,6 @@ def split_selection(text, allowed):
         return text,'linli-01'
     marker=markers[0]
     footer=text[marker.start():].strip()
-    match=re.fullmatch(r'\[\[sticker:(linli-\d{2})\]\]',footer)
+    match=re.fullmatch(r'\[\[sticker:(linli-\d{2,3})\]\]',footer)
     chosen=match.group(1) if match and match.group(1) in allowed else 'linli-01'
     return text[:marker.start()].rstrip(),chosen
