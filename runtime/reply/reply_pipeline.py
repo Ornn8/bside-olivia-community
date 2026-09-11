@@ -28,6 +28,7 @@ from runtime.reply.reply_reviewer import (
 )
 from runtime.memory.memory_port import CONVERSATION_MEMORY, MemoryRecord
 from runtime.letter_stickers.selection import allowed_stickers, selection_instruction, split_selection
+from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION, split_signature
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
@@ -89,6 +90,7 @@ class PipelineResult:
     reviewer_calls: int = 0
     rewrite_calls: int = 0
     sticker_id: str | None = None
+    signature: str | None = None
     delivery_repair_disposition: DeliveryRepairDisposition = (
         DeliveryRepairDisposition.NONE
     )
@@ -142,7 +144,7 @@ class ReplyPipeline:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
-        sticker_note = selection_instruction(sticker_choices) if context.mode is ReplyMode.TEXT_LETTER else ""
+        sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
         original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0
         generation_request = request
         if sticker_note and isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(sticker_note) + 1000:
@@ -195,6 +197,7 @@ class ReplyPipeline:
                 retryable=candidate.retryable,
             )
         clean_text, sticker_id = split_selection(candidate.text, sticker_choices) if sticker_note else (candidate.text, None)
+        clean_text, signature = split_signature(clean_text) if sticker_note else (clean_text, None)
         if not clean_text.strip():
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         return PipelineResult(
@@ -202,6 +205,7 @@ class ReplyPipeline:
             ReplyState.COMPLETED,
             text=clean_text,
             sticker_id=sticker_id,
+            signature=signature,
             quality_status="not_checked",
         )
 

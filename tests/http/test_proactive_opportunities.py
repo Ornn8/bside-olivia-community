@@ -108,6 +108,19 @@ async def main():
     detail = await server.route('GET', '/toy/letter/detail', {}, {'letter_id':row['letter_id']})
     assert detail['code'] == 0, detail
     assert json.loads((root / 'state.json').read_text(encoding='utf-8'))['letters'][0]['is_read'] == 1
+    async def text_letter(*args, **kwargs):
+        return '第一段。\n\n\n第二段。\n[[signature:阿离]]'
+    server._proactive_complete = text_letter
+    await server._publish_proactive({'id':'signature'}, {'format':'text','title':'写给你'})
+    signed = server.store.letters[-1]
+    assert signed['reply_text'] == '第一段。\n\n\n第二段。'
+    assert signed['reply_signature'] == '阿离'
+    assert committed[-1]['reply_text'] == signed['reply_text']
+    from original_client_letter_contract import serialize_letter_detail
+    assert serialize_letter_detail(signed)['replyText'] == signed['reply_text'] + '\n\n阿离'
+    assert serialize_letter_detail(signed)['replyText'].count('阿离') == 1
+    server.store.letters.pop()
+    committed.pop()
     async def broken(*args, **kwargs):
         raise ValueError('bad model response')
     server._proactive_complete = broken

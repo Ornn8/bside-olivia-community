@@ -326,6 +326,9 @@ def serialize_letter_detail(
     )
     published = _published(letter, now=now)
     reply_type, reply_text, media_url = _reply_projection(letter, published=published)
+    if published and letter.get("reply_signature"):
+        from runtime.reply.letter_presentation import display_letter
+        reply_text = display_letter(reply_text, letter["reply_signature"])
     material = _material(letter.get("material", {}))
     payload.update(
         {
