@@ -38,6 +38,7 @@ class Model:
         main_calls.append(messages)
         return SimpleNamespace(text=next(c[1] for c in cases if c[0] in messages[-1]['content']))
 server.letters_adapter.gateway=Model()
+server._current_life_rhythm=lambda: {}
 async def main():
     runtime=create_configured_original_client_server_runtime(server_module=server)
     states=[]
