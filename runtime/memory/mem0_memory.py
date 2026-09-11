@@ -26,6 +26,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from runtime.memory.bounded_daemon_call import BoundedDaemonCall
+from runtime.reply.model_capabilities import model_capabilities
 from .conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
@@ -2223,6 +2224,7 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     endpoint = urlsplit(str(getattr(client, "base_url", "")))
     flash_reasoning = _flash_memory_reasoning(endpoint.geturl(), model)
     go_flash = flash_reasoning and endpoint.hostname == "opencode.ai"
+    capabilities = model_capabilities(endpoint.geturl(), model)
     deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
         endpoint.scheme == "https"
         and endpoint.hostname == "opencode.ai"
@@ -2244,6 +2246,10 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
         elif deepseek_memory:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
+            }
+        elif capabilities.thinking == "qwen":
+            kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}), **capabilities.reasoning_parameters(False),
             }
         from runtime.diagnostics.usage_metrics import record_usage
         response = None

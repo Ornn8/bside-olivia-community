@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
+from runtime.reply.model_capabilities import model_capabilities
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -251,8 +252,7 @@ def supports_scoped_reasoning(config: GatewayConfig) -> bool:
     return (
         config.provider == "openai_compatible"
         and config.api_style == "chat_completions"
-        and (config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
-             or config.model.casefold() in QWEN_REASONING_MODELS)
+        and model_capabilities(config.base_url, config.model, config.provider_options).thinking != "none"
     )
 
 
@@ -868,19 +868,15 @@ class OpenAICompatibleAdapter(Gateway):
             "messages": list(normalized),
             "stream": stream,
         }
-        if scope is GatewayRequestScope.SONG_CONTENT:
+        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+        if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self._uses_official_review_responses(scope):
             body["response_format"] = {"type": "json_object"}
-        if (
-            max_reasoning
-            and self.config.provider == "openai_compatible"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
-        ):
-            body["thinking"] = {"type": "enabled"}
-            body["reasoning_effort"] = "max"
-        if max_reasoning and self.config.model.casefold() in QWEN_REASONING_MODELS:
-            body.update(enable_thinking=True, reasoning_effort="high", max_completion_tokens=10000)
+        if max_reasoning:
+            body.update(capabilities.reasoning_parameters(True))
+        elif scope is GatewayRequestScope.SONG_CONTENT:
+            body.update(capabilities.reasoning_parameters(False))
         return body
 
     async def _retry_wait(self, attempt: int) -> None:
@@ -1034,12 +1030,6 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
-        if (
-            scope is GatewayRequestScope.SONG_CONTENT
-            and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
-        ):
-            body["thinking"] = {"type": "disabled"}
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
             data = await self._post_json(body, request, background_reasoning=True)
         else:
@@ -1090,11 +1080,8 @@ class OpenAICompatibleAdapter(Gateway):
             body["tools"] = converted
         else:
             body["tools"] = list(tools)
-        if not (
-            self.config.provider == "openai_compatible"
-            and self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
-        ):
+        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+        if self.config.api_style != "chat_completions" or capabilities.tool_choice:
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
         try:
@@ -1143,10 +1130,9 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
-        if self.config.api_style == "chat_completions" and (
-            urlsplit(self.config.base_url).hostname == "api.deepseek.com"
-            or self.config.model.casefold() in QWEN_REASONING_MODELS
-        ):
+        if self.config.api_style == "chat_completions" and model_capabilities(
+            self.config.base_url, self.config.model, self.config.provider_options
+        ).stream_usage:
             body["stream_options"] = {"include_usage": True}
         key = self._ensure_configured()
         timeout = aiohttp.ClientTimeout(
