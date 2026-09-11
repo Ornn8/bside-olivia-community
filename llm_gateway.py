@@ -24,6 +24,7 @@ import aiohttp
 
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
 from runtime.reply.model_capabilities import model_capabilities
+from runtime.reply.model_request_policy import reasoning_request_parameters
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -829,6 +830,7 @@ class OpenAICompatibleAdapter(Gateway):
         return (
             scope is GatewayRequestScope.JSON_MAX_REASONING
             and self._uses_max_reasoning(scope)
+            and model_capabilities(self.config.base_url, self.config.model, self.config.provider_options).thinking == "deepseek"
             and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
             and endpoint.scheme == "https"
             and endpoint.hostname == "api.deepseek.com"
@@ -871,10 +873,13 @@ class OpenAICompatibleAdapter(Gateway):
         }
         if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
-        if self._uses_official_review_responses(scope):
+        if self._uses_official_review_responses(scope) and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if max_reasoning:
-            body.update(capabilities.reasoning_parameters(True))
+            body.update(reasoning_request_parameters(
+                self.config.base_url, self.config.model, self.config.provider_options,
+                purpose=scope.value if scope is not None else None, enabled=True,
+            ))
         elif scope is GatewayRequestScope.SONG_CONTENT:
             body.update(capabilities.reasoning_parameters(False))
         return body
@@ -1008,14 +1013,16 @@ class OpenAICompatibleAdapter(Gateway):
         max_reasoning = self._uses_max_reasoning(scope)
         if self._uses_official_review_responses(scope):
             normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
+            capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
             body = {
                 "model": self.config.model,
                 "input": list(normalized),
                 "stream": False,
-                "reasoning": {"effort": "max"},
-                "text": {"format": deepcopy(dict(response_format)) if response_format is not None
-                         else {"type": "json_object"}},
+                "reasoning": {"effort": capabilities.reasoning_effort},
             }
+            if capabilities.json_mode:
+                body["text"] = {"format": deepcopy(dict(response_format)) if response_format is not None
+                                else {"type": "json_object"}}
             data = await self._post_json(
                 body, request, max_reasoning=True,
                 endpoint="https://api.deepseek.com/responses",

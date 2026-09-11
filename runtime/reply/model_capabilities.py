@@ -26,12 +26,12 @@ class ModelCapabilities:
             return {}
         if enabled and self.reasoning_effort:
             result["reasoning_effort"] = self.reasoning_effort
-        if enabled and self.thinking == "qwen" and self.reasoning_effort:
-            result["max_completion_tokens"] = 10000
         return result
 
 
 def model_capabilities(base_url: str, model: str, options: Mapping | None = None) -> ModelCapabilities:
+    if options is not None and not isinstance(options, Mapping):
+        raise ValueError("invalid provider options")
     name = model.casefold()
     host = urlsplit(base_url).hostname
     if name.startswith("deepseek-v4-") or name == "deepseek-flash":

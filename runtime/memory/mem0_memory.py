@@ -364,6 +364,7 @@ class Mem0Config:
     outbox_enabled: bool = True
     outbox_interval_seconds: float = 5.0
     configured_user_id: str = field(init=False)
+    llm_provider_options: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -398,6 +399,7 @@ class Mem0Config:
             raise ValueError("llm_base_url is invalid")
         if not isinstance(self.llm_model, str) or len(self.llm_model) > 256:
             raise ValueError("llm_model is invalid")
+        model_capabilities(self.llm_base_url, self.llm_model, self.llm_provider_options)
         if not isinstance(self.llm_api_key_env, str) or not re.fullmatch(
             r"^[A-Z][A-Z0-9_]{0,95}$", self.llm_api_key_env
         ):
@@ -465,8 +467,10 @@ class Mem0Config:
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
-        flash_reasoning = _flash_memory_reasoning(self.llm_base_url, self.llm_model)
+        capabilities = model_capabilities(self.llm_base_url, self.llm_model, self.llm_provider_options)
+        flash_reasoning = capabilities.thinking == "deepseek" and _flash_memory_reasoning(self.llm_base_url, self.llm_model)
         return {
+            **({"_olivia_provider_options": dict(self.llm_provider_options)} if self.llm_provider_options else {}),
             "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
             "vector_store": {
                 "provider": "qdrant",
@@ -2214,7 +2218,7 @@ class _ValidatedExtractionLLM:
                 raise Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_INVALID_" + invalid_kind)
 
 
-def _guard_extraction_client(provider: object, *, model: str = "") -> None:
+def _guard_extraction_client(provider: object, *, model: str = "", provider_options: Mapping | None = None) -> None:
     """Guard this memory-only client before upstream discards response metadata."""
     client = getattr(provider, "client", None)
     completions = getattr(getattr(client, "chat", None), "completions", None)
@@ -2222,9 +2226,10 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
     if not callable(create):
         return
     endpoint = urlsplit(str(getattr(client, "base_url", "")))
-    flash_reasoning = _flash_memory_reasoning(endpoint.geturl(), model)
+    capabilities = model_capabilities(endpoint.geturl(), model, provider_options)
+    overrides = (provider_options or {}).get("capabilities", {})
+    flash_reasoning = capabilities.thinking == "deepseek" and _flash_memory_reasoning(endpoint.geturl(), model)
     go_flash = flash_reasoning and endpoint.hostname == "opencode.ai"
-    capabilities = model_capabilities(endpoint.geturl(), model)
     deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
         endpoint.scheme == "https"
         and endpoint.hostname == "opencode.ai"
@@ -2237,13 +2242,17 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "enabled"},
             }
-            kwargs["reasoning_effort"] = "low"
+            effort = overrides.get("reasoning_effort", "low")
+            if effort is not None:
+                kwargs["reasoning_effort"] = effort
             # This route's JSON mode was less reliable in paired extraction
             # replays. Keep the SDK's JSON instructions and outer validator;
             # omit only the wire-level mode, not the extraction contract.
-            if go_flash and kwargs.get("response_format") == {"type": "json_object"}:
+            if go_flash and "json_mode" not in overrides and kwargs.get("response_format") == {"type": "json_object"}:
                 kwargs.pop("response_format")
-        elif deepseek_memory:
+        elif deepseek_memory and (capabilities.thinking == "deepseek" or "thinking" not in overrides):
+            # Preserve the existing memory-only provider-host default for legacy
+            # model aliases, while allowing an explicit dialect override.
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
             }
@@ -2251,6 +2260,8 @@ def _guard_extraction_client(provider: object, *, model: str = "") -> None:
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), **capabilities.reasoning_parameters(False),
             }
+        if not capabilities.json_mode:
+            kwargs.pop("response_format", None)
         from runtime.diagnostics.usage_metrics import record_usage
         response = None
         try:
@@ -2280,6 +2291,7 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
         not in {None, "api.deepseek.com", "opencode.ai", "api.openai.com"}
     )
     factory_config = dict(config)
+    provider_options = factory_config.pop("_olivia_provider_options", {})
     if keyless:
         # Mem0 treats an empty key as an ambient credential; prevent that fallback.
         factory_config["llm"] = {**llm_config, "config": {**provider_config, "api_key": "olivia-no-auth"}}
@@ -2301,7 +2313,7 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
         llm_config = config.get("llm")
         provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None
         model = provider_config.get("model", "") if isinstance(provider_config, Mapping) else ""
-        _guard_extraction_client(provider, model=model if isinstance(model, str) else "")
+        _guard_extraction_client(provider, model=model if isinstance(model, str) else "", provider_options=provider_options)
         backend.llm = _ValidatedExtractionLLM(provider)
     from runtime.memory.mem0_observation_time import bind_observation_time
     from runtime.memory.mem0_history_attribution import bind_history_attribution

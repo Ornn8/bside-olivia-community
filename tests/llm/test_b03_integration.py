@@ -26,6 +26,7 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
         model="old-model",
         api_key_env="OLIVIA_LLM_RUNTIME_KEY_OLD",
         requires_api_key=True,
+        provider_options={"capabilities": {"json_mode": False}},
     )
     marker = object()
     reviewer = object()
@@ -80,6 +81,7 @@ def test_saved_llm_config_replaces_the_next_reply_gateway_without_restart(
     monkeypatch.setenv("OLIVIA_MEMORY_LLM_API_KEY_ENV", "MISSING_OLD_KEY")
     captured_memory = []
     def capture_memory(_config, *, environ, **kwargs):
+        assert kwargs["llm_fallback"]["provider_options"] == previous.provider_options
         from runtime.memory.mem0_memory import load_mem0_config
         config = load_mem0_config(environ=environ)
         captured_memory.append(config.provider_config(environ)["llm"]["config"])
