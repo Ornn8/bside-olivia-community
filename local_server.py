@@ -469,6 +469,7 @@ def apply_runtime_llm_config(
             "base_url": candidate.base_url,
             "model": candidate.model,
             "api_key_env": key_env,
+            "provider_options": candidate.provider_options,
         },
         defer_initialization=True,
     )
@@ -1232,6 +1233,7 @@ conversation_memory_adapter: ConversationMemoryPort = (
             "base_url": LLM_CONFIG.base_url,
             "model": LLM_CONFIG.model,
             "api_key_env": LLM_CONFIG.api_key_env,
+            "provider_options": LLM_CONFIG.provider_options,
         },
         defer_initialization=True,
     )
