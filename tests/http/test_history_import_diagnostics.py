@@ -63,7 +63,7 @@ def test_memory_provider_failure_survives_bundle_export_without_private_fields()
         "key": "private-secret", "content": "private-letter", "message": "private-url",
     })
     source = {"summary": {"status": "available"}, "health": {"status": "available", "checks": {}},
-              "install": {"status": "available"}, "tasks": {"pending": 0, "items": []},
+              "install": {"status": "available"}, "tasks": {"status": "available", "pending": 0, "items": []},
               "launcher_tail": [], "runtime_tail": [record]}
     with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
         # Verify the export projection separately from current health, which may show a retry.
