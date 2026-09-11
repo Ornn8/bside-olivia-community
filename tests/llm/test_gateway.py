@@ -100,6 +100,41 @@ def make_config(base_url: str, **overrides) -> GatewayConfig:
 
 
 @pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
+def test_qwen_required_tools_disable_default_thinking(monkeypatch, model):
+    async def exercise():
+        async def handler(request):
+            body = await request.json()
+            # Simulate the provider's required-tool / thinking incompatibility.
+            if body.get("enable_thinking", True):
+                return web.json_response({"error": {"code": "InvalidParameter"}}, status=400)
+            assert body["tool_choice"] == "required"
+            assert body["stream"] is False
+            return web.json_response({"choices": [{"finish_reason": "tool_calls", "message": {
+                "content": None,
+                "tool_calls": [{"id": "synthetic", "type": "function", "function": {
+                    "name": "select_route", "arguments": '{"mode":"text_letter"}',
+                }}],
+            }}]})
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url("/v1")), model=model))
+            calls = await adapter.complete_with_tools(
+                messages=ROOT_MESSAGES,
+                tools=[{"type": "function", "function": {
+                    "name": "select_route", "parameters": {"type": "object"},
+                }}],
+                tool_choice="required",
+            )
+            assert len(calls) == 1
+            assert calls[0].name == "select_route"
+
+    monkeypatch.setenv("B03_TEST_KEY", "TEST")
+    run(exercise())
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
 @pytest.mark.parametrize("scope", [
     GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
     GatewayRequestScope.JSON_MAX_REASONING,
