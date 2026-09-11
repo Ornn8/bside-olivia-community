@@ -46,3 +46,30 @@ def test_custom_capabilities_apply_to_actual_gateway_body():
         provider_options={'capabilities':{'json_mode':False}})
     body=OpenAICompatibleAdapter(config)._body([{'role':'user','content':'Return JSON.'}],stream=False,scope=GatewayRequestScope.SONG_CONTENT)
     assert body == {'model':'unlisted-model','messages':[{'role':'user','content':'Return JSON.'}],'stream':False}
+
+
+@pytest.mark.parametrize('model,expected', [
+    ('qwen-flash', {'enable_thinking':False}),
+    ('qwen3.5-plus', {'enable_thinking':False}),
+    ('deepseek-v4-pro', {'thinking':{'type':'disabled'}}),
+    ('custom/unlisted-v1', {}),
+])
+def test_compatible_http_endpoints_receive_only_matching_parameters(model, expected):
+    import asyncio
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from llm_gateway import GatewayConfig, OpenAICompatibleAdapter, GatewayRequestScope
+    async def exercise():
+        seen=[]
+        async def complete(request):
+            body=await request.json(); seen.append(body)
+            for key in ('thinking','enable_thinking'):
+                if key in expected: assert body[key]==expected[key]
+                else: assert key not in body
+            return web.json_response({'choices':[{'message':{'content':'{"ok":true}'},'finish_reason':'stop'}]})
+        app=web.Application(); app.router.add_post('/v1/chat/completions',complete)
+        async with TestServer(app) as server:
+            adapter=OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',base_url=str(server.make_url('/v1')),model=model))
+            response=await adapter.complete_scoped([{'role':'user','content':'Return JSON.'}],scope=GatewayRequestScope.SONG_CONTENT)
+            assert response.text=='{"ok":true}' and len(seen)==1
+    asyncio.run(exercise())
