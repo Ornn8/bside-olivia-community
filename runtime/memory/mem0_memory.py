@@ -293,9 +293,21 @@ def _extraction_failure_code(error: BaseException) -> str:
             "MEM0_EXTRACTION_RESPONSE_INVALID", "MEM0_EXTRACTION_RESPONSE_TRUNCATED",
         }:
             return error.code
-        if error.__cause__ is None:
+        status = getattr(error, "status_code", None)
+        if type(status) is int and status in {400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504}:
+            return f"MEM0_PROVIDER_HTTP_{status}"
+        if isinstance(error, TimeoutError) or type(error).__name__ in {
+            "APITimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+        }:
+            return "MEM0_PROVIDER_TIMEOUT"
+        if isinstance(error, ConnectionError) or type(error).__name__ in {
+            "APIConnectionError", "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
+        }:
+            return "MEM0_PROVIDER_CONNECTION_FAILED"
+        nested = error.__cause__ or error.__context__
+        if nested is None:
             break
-        error = error.__cause__
+        error = nested
     return "MEM0_WRITE_FAILED"
 
 

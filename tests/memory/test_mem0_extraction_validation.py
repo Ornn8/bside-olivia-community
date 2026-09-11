@@ -5,6 +5,24 @@ import pytest
 from runtime.memory import mem0_memory
 
 
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504])
+def test_wrapped_memory_provider_status_retains_only_bounded_code(status):
+    error = RuntimeError("private key, endpoint and letter")
+    error.status_code = status
+    wrapped = RuntimeError("private upstream wrapper")
+    wrapped.__cause__ = error
+    assert mem0_memory._extraction_failure_code(wrapped) == f"MEM0_PROVIDER_HTTP_{status}"
+
+
+def test_memory_provider_diagnostics_reject_arbitrary_status_and_classify_timeout():
+    error = RuntimeError("private message")
+    error.status_code = "private-key"
+    assert mem0_memory._extraction_failure_code(error) == "MEM0_WRITE_FAILED"
+    wrapped = RuntimeError("private wrapper")
+    wrapped.__context__ = TimeoutError("private URL")
+    assert mem0_memory._extraction_failure_code(wrapped) == "MEM0_PROVIDER_TIMEOUT"
+
+
 @pytest.mark.parametrize("failure", ["", '{"memory": [broken}',
     mem0_memory.Mem0AdapterError("MEM0_EXTRACTION_RESPONSE_TRUNCATED")])
 def test_extraction_retries_only_current_llm_call_and_recovers(failure):

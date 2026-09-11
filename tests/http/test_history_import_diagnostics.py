@@ -54,3 +54,19 @@ def test_history_import_projection_filters_dirty_values_at_bundle_boundary():
     assert project_history_import(dirty) == {"state": "unknown", "stage": "unknown"}
     assert _project_health({"status": "available", "checks": {"history_import": dirty}}) == {
         "status": "available", "checks": {"history_import": {"state": "unknown", "stage": "unknown"}}}
+
+
+def test_memory_provider_failure_survives_bundle_export_without_private_fields():
+    import local_server as server
+    record = server._runtime_diagnostic_record("history_memory_failed", {
+        "status": "FAILED", "error_code": "MEM0_PROVIDER_HTTP_401",
+        "key": "private-secret", "content": "private-letter", "message": "private-url",
+    })
+    source = {"summary": {"status": "available"}, "health": {"status": "available", "checks": {}},
+              "install": {"status": "available"}, "tasks": {"pending": 0, "items": []},
+              "launcher_tail": [], "runtime_tail": [record]}
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        # Verify the export projection separately from current health, which may show a retry.
+        projected = archive.read("runtime-tail.jsonl")
+        assert b"MEM0_PROVIDER_HTTP_401" in projected
+        assert b"private-" not in projected
