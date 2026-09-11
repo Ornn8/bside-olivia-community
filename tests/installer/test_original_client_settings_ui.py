@@ -694,9 +694,10 @@ def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> Non
 
 def test_memory_list_refreshes_the_visible_count_after_mutations() -> None:
     source = BOOTSTRAP_JAVASCRIPT
-    assert "const updateSummary = (count) =>" in source
+    assert "const updateSummary = (latest) =>" in source
+    assert "const count = latest && latest.count;" in source
     assert "const latestStatus = await requestJson(STATUS_PATH);" in source
-    assert "updateSummary(latestMemory && latestMemory.count);" in source
+    assert "updateSummary(latestMemory);" in source
 
 
 def test_original_settings_management_ui_javascript_is_parseable() -> None:
