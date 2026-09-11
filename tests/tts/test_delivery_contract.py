@@ -74,6 +74,11 @@ def test_ordinary_video_copy_contract_targets_cross_lingual_delivery_length() ->
 
 def test_directed_delivery_error_schema_is_stable() -> None:
     assert http_contract.LETTER_DETAIL_MEDIA_ERROR_CODES == {
+        "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
+        "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
+        "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+        "COVER_GENERATION_FAILED": {"status": "FAILED", "retryable": True},
+        "COVER_GENERATION_TIMEOUT": {"status": "FAILED", "retryable": True},
         "BREEZE_TTS_10GB_VRAM_REQUIRED": {
             "status": "UNAVAILABLE",
             "retryable": True,

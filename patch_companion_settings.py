@@ -678,13 +678,18 @@ def _repair_native_letter_audio(source: str) -> str:
         'A.videoPending?"林离录视频中":["PENDING","QUEUED","PROCESSING"].includes(A.audioStatus)?"林离正在录语音…":o(i)("mailbox_waiting_for_reply")',
     )
     def bath_progress(value):
-        if 'replyWaitReason:e.replyWaitReason' not in value:
-            value = value.replace('audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason||"",audioStatus:e.audioStatus||"",')
-            value = value.replace('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{replyWaitReason:{},')
-            value = value.replace('F(ks,{coverId:i.mail.coverId,', 'F(ks,{replyWaitReason:i.mail.replyWaitReason,coverId:i.mail.coverId,')
-            value = value.replace('"audioUrl","audioStatus","songUrl",', '"replyWaitReason","audioUrl","audioStatus","songUrl",')
-            value = value.replace('A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?"林离洗澡中":A.videoPending?"林离录视频中":')
-            value = value.replace('re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason||re.isUnread!==Ee.isUnread')
+        # Bundles can contain already-patched props but an unpatched caption.
+        # Guard each anchor independently so repeat installation stays stable.
+        for before, after in (
+            ('audioStatus:e.audioStatus||"",', 'replyWaitReason:e.replyWaitReason||"",audioStatus:e.audioStatus||"",'),
+            ('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{replyWaitReason:{},'),
+            ('F(ks,{coverId:i.mail.coverId,', 'F(ks,{replyWaitReason:i.mail.replyWaitReason,coverId:i.mail.coverId,'),
+            ('"audioUrl","audioStatus","songUrl",', '"replyWaitReason","audioUrl","audioStatus","songUrl",'),
+            ('A.videoPending?"林离录视频中":', 'A.replyWaitReason==="bathing"?"林离洗澡中":A.videoPending?"林离录视频中":'),
+            ('re.isUnread!==Ee.isUnread', 're.replyWaitReason!==Ee.replyWaitReason||re.isUnread!==Ee.isUnread'),
+        ):
+            if after not in value:
+                value = value.replace(before, after)
         return value
     def cover_progress(value):
         if 'coverId:e.coverId' in value:
