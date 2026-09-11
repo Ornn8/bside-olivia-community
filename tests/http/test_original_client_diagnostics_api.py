@@ -97,6 +97,31 @@ def test_diagnostics_export_is_loopback_safe_and_downloadable() -> None:
     asyncio.run(scenario())
 
 
+def test_diagnostic_probe_failure_is_sanitized_and_next_export_recovers():
+    from runtime.diagnostics.support_bundle import build_diagnostic_bundle
+    import io
+    import zipfile
+    class Backend:
+        failed = True
+        def diagnostic_status_history(self): return ()
+        def read_status(self):
+            if self.failed:
+                raise RuntimeError('PRIVATE_PROVIDER_CONTENT')
+            return CompanionReadStatus(memory=CompanionCapability('available'),
+                private_world=CompanionCapability('available'), candidates=CompanionCapability('available'))
+    backend = Backend()
+    collect = _diagnostic_source(backend, setup_service=None, launcher_tail_provider=None, runtime_tail_provider=None)
+    failed = collect()
+    assert failed['health']['status'] == 'degraded'
+    assert failed['health']['checks']['memory']['error_code'] == 'DIAGNOSTIC_PROBE_FAILED'
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(failed))) as bundle:
+        assert all(b'PRIVATE_PROVIDER_CONTENT' not in bundle.read(name) for name in bundle.namelist())
+    backend.failed = False
+    recovered = collect()
+    assert recovered['health']['status'] == 'available'
+    assert recovered['health']['checks']['memory'] == {'state':'available'}
+
+
 def test_launcher_tail_reads_recent_events_from_large_append_only_log(
     tmp_path: Path,
 ) -> None:
@@ -436,6 +461,55 @@ def test_diagnostics_export_fails_closed_when_collection_raises() -> None:
                 "error_code": "DIAGNOSTIC_EXPORT_UNAVAILABLE",
             }
         finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(monkeypatch):
+    import io
+    import threading
+    import zipfile
+    import original_client_server as server
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(server, '_DIAGNOSTIC_PROBE_TIMEOUT_SECONDS', 0.02, raising=False)
+
+    class Backend:
+        def diagnostic_status_history(self): return ()
+        def read_status(self):
+            calls.append('status')
+            release.wait(5)
+            return CompanionReadStatus(memory=CompanionCapability('available'),
+                private_world=CompanionCapability('available'), candidates=CompanionCapability('available'))
+
+    def slow_health(profile):
+        calls.append(profile)
+        release.wait(5)
+        raise RuntimeError('PRIVATE_PROVIDER_CONTENT')
+
+    source = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
+        runtime_tail_provider=lambda: [{'event':'reply_failed','error_code':'LLM_TIMEOUT'}],
+        health_profile_provider=slow_health)
+
+    async def scenario():
+        app = web.Application()
+        mount_original_client_diagnostics_api(app, source)
+        client = await _client(app)
+        try:
+            for _ in range(2):
+                response = await asyncio.wait_for(client.get('/toy/diagnostics/export',
+                    headers={'Host':'127.0.0.1', 'Origin':'http://127.0.0.1:3000'}), timeout=1)
+                assert response.status == 200
+                with zipfile.ZipFile(io.BytesIO(await response.read())) as bundle:
+                    checks = json.loads(bundle.read('health.json'))['checks']
+                    assert checks['memory']['error_code'] == 'DIAGNOSTIC_PROBE_TIMEOUT'
+                    assert checks['profile_core']['error_code'] == 'DIAGNOSTIC_PROBE_TIMEOUT'
+                    assert b'LLM_TIMEOUT' in bundle.read('runtime-tail.jsonl')
+                    assert all(b'PRIVATE_PROVIDER_CONTENT' not in bundle.read(name) for name in bundle.namelist())
+            assert sorted(calls) == ['asr', 'core', 'llm', 'memory', 'status']
+        finally:
+            release.set()
             await client.close()
 
     asyncio.run(scenario())

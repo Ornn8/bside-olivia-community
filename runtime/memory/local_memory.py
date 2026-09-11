@@ -18,7 +18,7 @@ import time
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -1386,7 +1386,7 @@ def create_conversation_memory_adapter(
     config: MemoryConfig | None = None,
     *,
     environ: Mapping[str, str] | None = None,
-    llm_fallback: Mapping[str, str] | None = None,
+    llm_fallback: Mapping[str, Any] | None = None,
     defer_initialization: bool = False,
 ) -> ConversationMemoryPort:
     """Select the optional conversation-memory provider without crossing Archive.
@@ -1477,8 +1477,15 @@ def create_conversation_memory_adapter(
         if isinstance(value, str) and value.strip():
             mem0_environment[memory_name] = value.strip()
     try:
+        mem0_config = load_mem0_config(environ=mem0_environment)
+        # Only inherit shared options when memory actually uses that endpoint/model.
+        same_provider = (
+            mem0_config.llm_base_url.rstrip("/") == str(fallback.get("base_url", "")).rstrip("/")
+            and mem0_config.llm_model == fallback.get("model")
+        )
+        options = fallback.get("provider_options", {}) if same_provider else active.llm.get("provider_options", {})
+        mem0_config = replace(mem0_config, llm_provider_options=options)
         if defer_initialization:
-            mem0_config = load_mem0_config(environ=mem0_environment)
             return DeferredConversationMemoryAdapter(
                 mem0_config,
                 lambda: create_mem0_adapter(
@@ -1486,7 +1493,7 @@ def create_conversation_memory_adapter(
                     environ=mem0_environment,
                 ),
             )
-        return create_mem0_adapter(environ=mem0_environment)
+        return create_mem0_adapter(config=mem0_config, environ=mem0_environment)
     except Exception:
         return UnavailableConversationMemoryPort(
             "MEM0_INITIALIZATION_FAILED", config=active

@@ -412,9 +412,9 @@ def test_file_only_mem0_configuration_persists_canonical_state_for_the_outbox(
     )
     memory: CountingConversationMemory | None = None
 
-    def fake_create_mem0_adapter(*, environ):
+    def fake_create_mem0_adapter(*, config, environ):
         nonlocal memory
-        mem0_config = load_mem0_config(environ=environ, project_root=tmp_path)
+        mem0_config = config
         memory = CountingConversationMemory(mem0_config.data_root)
         memory.config = mem0_config
         return memory
