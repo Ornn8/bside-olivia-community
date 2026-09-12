@@ -64,7 +64,7 @@ class _ReleaseRedirects(HTTPRedirectHandler):
 
 
 def _official_manifest_digest(package: Path) -> str:
-    # The untrusted version only selects a fixed official release. The installer
+    # The untrusted version only selects a fixed project release. The installer
     # still checks the manifest against this external digest before staging files.
     try:
         with zipfile.ZipFile(package) as archive:
