@@ -3197,30 +3197,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 BOOTSTRAP_JAVASCRIPT = r'''
 (() => {
   if (!window.customElements || customElements.get('olivia-letter-audio')) return;
-  if (!customElements.get('olivia-mail-kind')) {
-    customElements.define('olivia-mail-kind', class extends HTMLElement {
-      static get observedAttributes(){return ['kind']}
-      connectedCallback(){this.render()}
-      attributeChangedCallback(){if(this.isConnected)this.render()}
-      render(){
-        const kind=this.getAttribute('kind');
-        const styles={voice_reply:['#81796d','语音信'],singing_video:['#936f79','唱歌'],voice_song_video:['#958054','说话加唱歌']};
-        const [color,label]=styles[kind]||styles.voice_reply;
-        this.style.cssText=`display:flex;align-items:center;justify-content:center;flex-shrink:0;width:40px;height:40px;border-radius:6px;background:${color};color:#efeae3`;
-        this.setAttribute('role','img');this.setAttribute('aria-label',label);this.title=label;
-        const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
-        for(const [name,value] of Object.entries({viewBox:'0 0 24 24',width:'24',height:'24',fill:'currentColor','aria-hidden':'true'}))svg.setAttribute(name,value);
-        const glyph=document.createElementNS(ns,'path');
-        glyph.setAttribute('d',kind==='voice_reply'?'M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.93V21H8v2h8v-2h-3v-3.07A7 7 0 0019 11z':'M10 3v12.3A4.5 4.5 0 1013 19V8l7 2V5z');svg.append(glyph);
-        if(kind==='voice_song_video'){
-          const wave=document.createElementNS(ns,'path');
-          for(const [name,value] of Object.entries({d:'M6 18v2m2-4v6m2-5v4',fill:'none',stroke:color,'stroke-width':'1.2','stroke-linecap':'round'}))wave.setAttribute(name,value);
-          svg.append(wave);
-        }
-        this.replaceChildren(svg);
-      }
-    });
-  }
   const style = document.createElement('style');
   style.textContent = `
     olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}

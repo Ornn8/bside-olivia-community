@@ -33,6 +33,15 @@ The typed state, confirmed stage, action permissions, known continuations, activ
 boundaries and acknowledged affection are unchanged. No model call or state write
 is added. Generic assembly retains the opt-in parameter for compatibility.
 
+The writer's `nickname_use.has_authorized_history` reports whether a current
+nickname grant exists, not a blanket decision about a new form of address.
+Concrete labels and direction remain grounded in the authorization source:
+user-to-character and character-to-user addressing are distinct. The character
+may accept or refuse a newly proposed name according to her persona and active
+boundaries; current acceptance does not establish past authorization or expand
+relationship/contact permissions. The stored enum and grant/revoke flow remain
+unchanged. This writer field is also covered by private-state leakage checks.
+
 `runtime_time` uses the required MODE_CONSTRAINTS budget section. It retains the
 exact UTC trusted time and Shanghai character-local time, even when optional
 world context is cropped. DRAFT/POLICY_ONLY remain unnamed generic identities.

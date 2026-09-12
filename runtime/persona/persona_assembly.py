@@ -79,6 +79,7 @@ _DIRECT_QUERY_GAP_TOKENS = (
     "小时候",
     "养过",
     "曾经",
+    "已经",
     "知道",
     "觉得",
     "发现",
@@ -125,6 +126,7 @@ _DIRECT_QUERY_GAP_TOKENS = (
     "来自",
     "家里",
     "是否",
+    "是",
     "最",
     "更",
     "很",
@@ -610,12 +612,21 @@ def _private_behavior_payload(
             "ceiling": view.pop("intimacy_ceiling"),
             "granted": view.pop("granted_intimacy"),
         },
-        "nickname_use": {"permission": view.pop("nickname_permission")},
+        # The legacy enum says whether any current grant exists, not whether
+        # this letter's proposed form of address must be accepted or refused.
+        "nickname_use": {
+            "has_authorized_history": view.pop("nickname_permission") == "allowed",
+        },
         "claiming_home_history": {"allowed": view.pop("home_history_allowed")},
     }
     view["permission_scope"] = (
         "这些许可只约束对应的行为或历史声明，不表示她对本封来信的感受，"
         "也不要求她拒绝普通的友善、赞美或日常亲近。具体边界仍以active_boundaries为准。"
+        "nickname_use只表示是否有当前有效的称呼授权记录，具体称呼和方向以授权原文为准。"
+        "用户称呼林离与林离称呼用户是两个方向，授权不能相互套用。"
+        "没有历史授权记录不等于拒绝本次新称呼；她可按人格、当下感受和已有边界接受或拒绝。"
+        "本次接受不自动成为过去已授权、关系升级或其他亲密行为的许可；"
+        "她使用私人称呼仍须有该方向的明确依据。"
     )
     return view
 

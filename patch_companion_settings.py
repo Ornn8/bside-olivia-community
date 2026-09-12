@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
@@ -329,6 +330,31 @@ _LOCAL_MAILBOX_REQUEST_HELPER = (
 )
 
 
+def _repair_native_mail_icons(source: str) -> str:
+    """Extend the native BaseIcon registry and preserve mailbox state precedence."""
+    native = 'n("div",{class:ae(["mail-item-icon",o(a).iconBgClass])},[k(p,{type:o(a).iconType,class:ae(["text-[24px]",o(a).iconClass])},null,8,["type","class"])],2)'
+    guard = 'm.mail.received&&m.mail.received.type!=="video"&&["voice_reply","singing_video","voice_song_video"].includes(m.mail.replyKind)'
+    ready = 'window.customElements&&window.customElements.get("olivia-mail-kind")&&'
+    for prefix in (ready, ""):
+        source = source.replace('(' + prefix + guard + '?n("olivia-mail-kind",{kind:m.mail.replyKind},null,8,["kind"]):' + native + ')', native)
+    registry = 'userCenter:Np},i=j(()=>s[t.type]||null)'
+    if registry not in source:
+        return source
+    microphone = 'M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.93V21H8v2h8v-2h-3v-3.07A7 7 0 0019 11z'
+    note = 'M10 3v12.3A4.5 4.5 0 1013 19V8l7 2V5z'
+    entries = []
+    for name, glyph in (("oliviaVoice", microphone), ("oliviaSong", note), ("oliviaVoiceSong", note)):
+        paths = 'n("path",{d:' + json.dumps(glyph) + '})'
+        if name == "oliviaVoiceSong":
+            paths += ',n("path",{d:"M6 18v2m2-4v6m2-5v4",fill:"none",stroke:"#958054","stroke-width":"1.2","stroke-linecap":"round"})'
+        entries.append(name + ':{render:()=>{return r(),_("svg",{viewBox:"0 0 24 24",width:"24",height:"24",fill:"#efeae3","aria-hidden":"true"},[' + paths + '])}}')
+    source = source.replace(registry, 'userCenter:Np,' + ','.join(entries) + '},i=j(()=>s[t.type]||null)', 1)
+    source = source.replace('iconType:u?"send":d==="video"?"video":"book",',
+        'iconType:u?"send":d==="video"?"video":({voice_reply:"oliviaVoice",singing_video:"oliviaSong",voice_song_video:"oliviaVoiceSong"}[s.mail.replyKind]||"book"),'
+        'iconStyle:!u&&d!=="video"?({voice_reply:{background:"#81796d"},singing_video:{background:"#936f79"},voice_song_video:{background:"#958054"}}[s.mail.replyKind]||null):null,', 1)
+    return source.replace(native, native.replace('o(a).iconBgClass])}', 'o(a).iconBgClass]),style:o(a).iconStyle}').removesuffix(',2)') + ',6)', 1)
+
+
 def _repair_mailbox_write_access(root: Path) -> str:
     main = root / Path(*MAIN_JS_0627.split("/"))
     if not main.is_file():
@@ -427,9 +453,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = source.replace('I=j(()=>Hs(l.timestamp))', 'I=j(()=>Ws(l.timestamp))')
     source = source.replace('v(o(a)("common_beta_tag"))', 'v("Resonance Edition")')
     source = source.replace('letterStatus:e.letterStatus,', 'replyKind:e.replyKind||"text_letter",letterStatus:e.letterStatus,') if 'replyKind:e.replyKind' not in source else source
-    native_icon = 'n("div",{class:ae(["mail-item-icon",o(a).iconBgClass])},[k(p,{type:o(a).iconType,class:ae(["text-[24px]",o(a).iconClass])},null,8,["type","class"])],2)'
-    if 'n("olivia-mail-kind"' not in source:
-        source = source.replace(native_icon, '(m.mail.received&&m.mail.received.type!=="video"&&["voice_reply","singing_video","voice_song_video"].includes(m.mail.replyKind)?n("olivia-mail-kind",{kind:m.mail.replyKind},null,8,["kind"]):' + native_icon + ')')
+    source = _repair_native_mail_icons(source)
     source = source.replace(
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(0),',
         'const uo=st("mailbox",()=>{const{t:e}=fe(),t=b([]),s=b(99),',
