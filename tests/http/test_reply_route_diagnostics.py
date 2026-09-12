@@ -17,7 +17,6 @@ from runtime.video_reply_settings import VideoReplySettingsStore
     ({"music_role": "performance"}, "route_contexts"),
     ({"direct_response_sufficient": "true"}, "route_booleans"),
     ({"request_disposition": "fulfill"}, "route_disposition"),
-    ({"music_contexts": ["current_work_relevance"]}, "route_current_work"),
     ({"mode": "voice_reply"}, "route_voice_constraints"),
 ])
 def test_qwen_route_validation_reason_survives_export(change, detail):
@@ -49,7 +48,7 @@ def test_qwen_route_validation_reason_survives_export(change, detail):
 
     result = asyncio.run(run())
     assert result.reason_code == "router_invalid_result"
-    assert result.diagnostic == {"failure_stage": "route_validation", "failure_detail": detail}
+    assert result.diagnostic.items() >= {"failure_stage": "route_validation", "failure_detail": detail}.items()
     record = server._runtime_diagnostic_record("reply_route_classification_failed", result.diagnostic)
     exported = _project_tail([record], runtime=True)
     assert detail.encode() in exported

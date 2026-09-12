@@ -21,6 +21,16 @@ def project_failure_context(source):
     status = source.get("http_status")
     if type(status) is int and 100 <= status <= 599:
         result["http_status"] = status
+    fields = source.get("route_missing_fields")
+    allowed_fields = {"mode", "reason_code", "emotion_level", "music_contexts",
+        "music_role", "music_intent", "request_disposition", "direct_response_sufficient",
+        "voice_materially_better", "music_materially_better", "character_willing"}
+    if isinstance(fields, list):
+        result["route_missing_fields"] = sorted({item for item in fields
+            if isinstance(item, str) and item in allowed_fields})
+    count = source.get("route_extra_field_count")
+    if type(count) is int and 0 <= count <= 1000:
+        result["route_extra_field_count"] = count
     return result
 
 

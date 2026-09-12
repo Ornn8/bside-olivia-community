@@ -292,6 +292,10 @@ def _validated_result(
     if None in {direct, voice_better, music_better, willing}:
         return _invalid_result("route_booleans")
 
+    # Model-suggested context is not evidence of an actual current work.
+    if not context.to_model_dict()["current_music_work"]:
+        contexts = tuple(item for item in contexts if item != "current_work_relevance")
+
     voice_explicit = bool({"explicit_voice_reply_request", "explicit_video_reply_request"}.intersection(contexts))
     song_explicit = "explicit_performance_or_adaptation_request" in contexts
     both_explicit = "explicit_voice_and_song_request" in contexts or (voice_explicit and song_explicit)
@@ -311,8 +315,6 @@ def _validated_result(
     if disposition in {"fulfill", "refuse", "defer"}:
         return _invalid_result("route_disposition")
 
-    if "current_work_relevance" in contexts and not context.current_music_work:
-        return _invalid_result("route_current_work")
     if "melody_idea" in contexts:
         if role != "spontaneous_motif" or intent != "compose":
             return _invalid_result("route_music_context")
@@ -425,8 +427,14 @@ class LetterReplyRouter:
         if getattr(calls[0], "name", None) != "select_reply_mode":
             return _invalid_result("route_tool_name")
         arguments = getattr(calls[0], "arguments", None)
-        if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
+        if not isinstance(arguments, Mapping):
             return _invalid_result("route_fields")
+        if set(arguments) != _TOOL_FIELDS:
+            return _failed("router_invalid_result", diagnostic={
+                "failure_stage": "route_validation", "failure_detail": "route_fields",
+                "route_missing_fields": sorted(_TOOL_FIELDS - set(arguments)),
+                "route_extra_field_count": min(1000, len(set(arguments) - _TOOL_FIELDS)),
+            })
         return _validated_result(arguments, context)
 
 
