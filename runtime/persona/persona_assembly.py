@@ -265,6 +265,12 @@ def _persona_blocks(
             PromptSection.MODE_CONSTRAINTS,
             {
                 "mode": persona_mode,
+                **({"delivery_instruction": (
+                    "当前是与同一用户的即时聊天，沿用既有人格、记忆、关系和世界状态。"
+                    "直接接着对方的话聊，不使用书信开场、落款或舞台动作。"
+                    "长短随内容需要，日常话题可以短句、调侃、追问；认真倾诉时也可以耐心展开。"
+                    "历史信件提供事实和关系依据，不要求沿用书面句式。"
+                )} if persona_mode == "future_im" else {}),
                 **({"style_grounding": "历史回信只提供事件线索，不是口吻范本。用当前人格、自己的话回应本封的分享、关心或询问；友善和亲近表达本身不证明越界。分歧针对具体行为，误解先澄清，再自然接话。"} if snapshot.status == "READY" else {}),
                 **({"delivery_mode": context.mode.value, "delivery_instruction": (
                     "本次已选择语音回信，正文会交给语音组件朗读，并与文字一起交付。"

@@ -39,6 +39,23 @@ def _profile() -> PersonaProfile:
     )
 
 
+def test_personal_chat_changes_delivery_style_without_removing_world_or_memory():
+    context = ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+        trusted_time=TrustedTime(datetime(2026, 9, 12, tzinfo=timezone.utc)),
+        private_behavior=PrivateBehaviorView(familiarity=BehaviorLevel.HIGH, trust=BehaviorLevel.MEDIUM))
+    snapshot = _style_snapshot()
+    result = assemble_persona(snapshot, context, user_input="回来了？", max_units=30000,
+        history=(UntrustedFragment("memory.test", "用户今天去青杉图书馆。"),),
+        evidence_summaries=(UntrustedFragment("world.test", "刚练完琴，正在休息。"),),
+        relationship_expression_enabled=True)
+    system = result.system_content
+    assert "即时聊天" in system and "落款" in system
+    assert "用户今天去青杉图书馆" in system
+    assert "刚练完琴" in system
+    assert snapshot.profile.summary in system
+    assert context.private_behavior.trust is BehaviorLevel.MEDIUM
+
+
 @pytest.mark.parametrize("query", [
     "你是什么学校毕业的？",
     "你是从哪所学校毕业的呢？",

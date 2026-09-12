@@ -117,6 +117,7 @@ from runtime.memory.private_world_relationship import (
     RelationshipFactStatus,
 )
 from private_world_candidate import (
+    CandidateDeliveryStatus,
     GatewayPrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateRequest,
@@ -843,7 +844,7 @@ class LetterAdapter:
                 return limit
         return 2400
 
-    def build_reply_context(self, mode: ReplyMode) -> ReplyContext:
+    def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False) -> ReplyContext:
         try:
             private_snapshot = self.private_world_port.snapshot()
             if not isinstance(private_snapshot, PrivateWorldSnapshot):
@@ -871,6 +872,7 @@ class LetterAdapter:
             )
         return ReplyContext.create(
             mode,
+            future_im_enabled=future_im_enabled,
             trusted_time=TrustedTime(self._now()),
             world_facts=facts,
             private_behavior=projected.behavior,
@@ -951,6 +953,8 @@ class Store:
     def __init__(self):
         self.uid = 200717
         self.letters = []      # {letter_id, content, material, reply_text, ...}
+        self.personal_chats = []  # acknowledged IM exchanges; not native inbox letters
+        self.personal_chat_cursors = {}  # transport metadata, never native UI settings
         self.legacy_letters = []  # read-only imported view; never used by send/reply
         self.midi_jobs = []    # {job_id, state, filename, created_at}
         self.settings = {}
@@ -1052,14 +1056,14 @@ def _read_store_state(path: Path) -> dict:
     if not isinstance(loaded, dict) or "letters" not in loaded:
         raise ValueError("store state must be an object")
     normalized: dict[str, object] = {}
-    for name in ("letters", "legacy_letters", "midi_jobs"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
         value = loaded.get(name, [])
         if not isinstance(value, list) or not all(
             isinstance(item, dict) for item in value
         ):
             raise ValueError("store state contains an invalid collection")
         normalized[name] = value
-    for name in ("settings", "request_keys"):
+    for name in ("settings", "request_keys", "personal_chat_cursors"):
         value = loaded.get(name, {})
         if not isinstance(value, dict):
             raise ValueError("store state contains invalid metadata")
@@ -1147,7 +1151,7 @@ def _load_store_state() -> None:
             return
     _store_state_error_code = None
     needs_persist = False
-    for name in ("letters", "legacy_letters", "midi_jobs"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
         value = loaded.get(name)
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             setattr(store, name, value)
@@ -1176,6 +1180,8 @@ def _load_store_state() -> None:
         store.settings = loaded["settings"]
     if isinstance(loaded.get("request_keys"), dict):
         store.request_keys = loaded["request_keys"]
+    if isinstance(loaded.get("personal_chat_cursors"), dict):
+        store.personal_chat_cursors = loaded["personal_chat_cursors"]
     if needs_persist or recovered_from_backup:
         try:
             _persist_store_state()
@@ -1196,6 +1202,8 @@ def _persist_store_state() -> None:
         raise StoreStateUnavailable(StoreStateUnavailable.code) from None
     payload = {
         "letters": store.letters,
+        "personal_chats": store.personal_chats,
+        "personal_chat_cursors": store.personal_chat_cursors,
         "legacy_letters": store.legacy_letters,
         "midi_jobs": store.midi_jobs,
         "settings": store.settings,
@@ -1363,7 +1371,7 @@ letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
-    recent_letters=lambda: list(store.letters),
+    recent_letters=lambda: [*store.letters, *(row for row in store.personal_chats if row.get("delivery_status") == "DELIVERED")],
 )
 
 
@@ -4795,6 +4803,9 @@ def install_reply_task_lifecycle(app: web.Application) -> None:
 
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    from runtime.personal_chat.backend import install_personal_chat
+    import sys
+    install_personal_chat(app, sys.modules[__name__])
     app.on_cleanup.append(_stop_conversation_memory)
     app.on_cleanup.append(_stop_reply_tasks)
 
@@ -4874,7 +4885,7 @@ async def _deliver_private_world_candidate(
     letter: dict,
     user_message: str,
     canonical_reply: str,
-) -> None:
+) -> CandidateDeliveryStatus | None:
     store = private_world_candidate_store
     if store is None:
         return
@@ -4892,7 +4903,7 @@ async def _deliver_private_world_candidate(
         )
     except (AttributeError, KeyError, TypeError, ValueError):
         return
-    await deliver_private_world_candidate(
+    return await deliver_private_world_candidate(
         private_world_candidate_analyzer,
         store,
         request,

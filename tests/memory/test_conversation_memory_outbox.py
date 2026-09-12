@@ -87,6 +87,23 @@ def _outbox(tmp_path: Path, committer: SequencedCommitter) -> CanonicalMemoryOut
     )
 
 
+def test_chat_delivery_requires_platform_ack_and_uses_same_memory_outbox(tmp_path):
+    _state(tmp_path / "state.json")
+    payload = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    canonical = payload["letters"][0]
+    payload["personal_chats"] = [dict(canonical, letter_id="im-" + state, delivery_status=state)
+        for state in ("GENERATING", "GENERATED", "SENDING", "FAILED", "DELIVERED")]
+    (tmp_path / "state.json").write_text(json.dumps(payload), encoding="utf-8")
+    committer = SequencedCommitter([CanonicalMemoryDeliveryStatus.WRITTEN] * 2)
+    box = _outbox(tmp_path, committer)
+    asyncio.run(box.scan_once())
+    assert [d.letter_id for d in committer.calls] == ["letter-1", "im-DELIVERED"]
+    assert {d.user_id for d in committer.calls} == {"local-user"}
+    assert all(d.user_message == SECRET_USER_TEXT and d.assistant_message == SECRET_REPLY_TEXT for d in committer.calls)
+    asyncio.run(box.scan_once())
+    assert len(committer.calls) == 2
+
+
 def test_completed_failures_exhaust_persistent_budget_without_dropping_letter(tmp_path):
     class BrokenMemory:
         calls = 0
