@@ -8,7 +8,8 @@ import tempfile
 import zipfile
 
 MAIN='assets/main-31595bd3.js'
-MARKER='/*olivia-letter-stickers-v3*/'
+MARKER='/*olivia-letter-stickers-v4*/'
+METADATA_MARKER='/*olivia-letter-stickers-v3*/'
 LAYOUT_MARKER='/*olivia-letter-stickers-v2*/'
 ASSETS=Path(__file__).resolve().parents[1]/'runtime'/'letter_stickers'
 
@@ -41,6 +42,8 @@ def _patch_layout(source: str) -> str:
 def patch_source(source: str) -> str:
     if MARKER in source:
         return source
+    if METADATA_MARKER in source:
+        return _patch_presentation(source)
     source=_patch_layout(source)
     anchors={
         'content:e.replyText??"",':'stickerId:e.replyStickerId||"",content:e.replyText??"",',
@@ -54,7 +57,29 @@ def patch_source(source: str) -> str:
         raise ValueError('STICKER_ANCHOR_PROPS_INVALID')
     source=source.replace('F(ks,{','F(ks,{stickerId:i.mail.received?.stickerId,')
     source=source.replace('onVideoError:u},null,8,[','onVideoError:u},null,8,["stickerId",')
-    return source.replace(LAYOUT_MARKER,MARKER,1)
+    return _patch_presentation(source.replace(LAYOUT_MARKER,METADATA_MARKER,1))
+
+
+def _patch_presentation(source: str) -> str:
+    anchors = {
+        'stickerId:e.replyStickerId||"",':
+        'bodyText:e.replyBody,signature:e.replySignature||"",stickerId:e.replyStickerId||"",',
+        '__name:"MailBoxReplyContent",props:{':
+        '__name:"MailBoxReplyContent",props:{bodyText:{},signature:{},',
+        'value:l.modelValue,readonly:A.readonly,':
+        'value:A.type==="text"&&A.signature&&typeof A.bodyText==="string"?A.bodyText:l.modelValue,readonly:A.readonly,',
+        'n("div",mw,v(o(I)),1)':
+        'A.type==="text"&&A.modelValue&&A.signature&&typeof A.bodyText==="string"?n("div",{class:"olivia-letter-signature"},v(A.signature),1):Y("",!0),n("div",mw,v(o(I)),1)',
+    }
+    for before, after in anchors.items():
+        if source.count(before) != 1:
+            raise ValueError('STICKER_ANCHOR_PRESENTATION_INVALID')
+        source = source.replace(before, after, 1)
+    if source.count('F(ks,{stickerId:') != 2 or source.count('onVideoError:u},null,8,["stickerId",') != 2:
+        raise ValueError('STICKER_ANCHOR_PRESENTATION_PROPS_INVALID')
+    source = source.replace('F(ks,{stickerId:', 'F(ks,{bodyText:i.mail.received?.bodyText,signature:i.mail.received?.signature,stickerId:')
+    source = source.replace('onVideoError:u},null,8,["stickerId",', 'onVideoError:u},null,8,["bodyText","signature","stickerId",')
+    return source.replace(METADATA_MARKER, MARKER, 1)
 
 
 def patch_letter_stickers(path: Path | str) -> str:

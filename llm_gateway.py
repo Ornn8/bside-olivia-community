@@ -1209,7 +1209,7 @@ class OpenAICompatibleAdapter(Gateway):
                             if not saw_delta and saw_reasoning:
                                 raise _RetryableProviderProtocolError()
                             raise ProviderProtocolError()
-                        if not saw_delta:
+                        if not saw_delta or not any(part.strip() for part in buffered):
                             raise ProviderProtocolError()
                         for text in buffered:
                             yield GatewayDelta(text, request, index=index)
@@ -1303,7 +1303,7 @@ def _extract_response_text(data: Mapping[str, Any]) -> str:
         if isinstance(choice, Mapping):
             message = choice.get("message", choice)
             if isinstance(message, Mapping):
-                return _content_to_text(message.get("content", ""))
+                return _content_to_text(message.get("content", "")).strip()
     output = data.get("output")
     if isinstance(output, list):
         parts: list[str] = []
@@ -1363,8 +1363,10 @@ def _extract_tool_calls(data: Mapping[str, Any]) -> tuple[GatewayToolCall, ...]:
 
 
 def _content_to_text(value: Any) -> str:
+    # Streaming chunks may consist entirely of meaningful spaces or newlines.
+    # Normalize only a completed response, never individual deltas.
     if isinstance(value, str):
-        return value.strip()
+        return value
     if isinstance(value, list):
         parts: list[str] = []
         for item in value:
@@ -1372,7 +1374,7 @@ def _content_to_text(value: Any) -> str:
                 parts.append(item)
             elif isinstance(item, Mapping) and isinstance(item.get("text"), str):
                 parts.append(item["text"])
-        return "".join(parts).strip()
+        return "".join(parts)
     return ""
 
 

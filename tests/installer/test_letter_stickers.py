@@ -23,6 +23,10 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
         assert z.read('untouched.bin')==b'preserve this'
         patched=z.read('assets/main-31595bd3.js').decode()
         assert 'null,46,uw)' in patched and '],6)}}});' in patched
+        assert 'value:A.type==="text"&&A.signature&&typeof A.bodyText==="string"?A.bodyText:l.modelValue' in patched
+        assert patched.count('signature:i.mail.received?.signature') == 2
+        assert patched.count('["bodyText","signature","stickerId",') == 2
+        assert 'class:"olivia-letter-signature"},v(A.signature),1)' in patched
         assert sum(n.endswith('.png') for n in z.namelist())==108
     before=path.read_bytes()
     assert patch_letter_stickers(path)=='ALREADY_PATCHED'
