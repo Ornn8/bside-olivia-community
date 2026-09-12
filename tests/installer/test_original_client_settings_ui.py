@@ -292,9 +292,11 @@ def test_original_settings_can_apply_a_downloaded_patch_and_roll_back() -> None:
     assert "Manifest SHA-256" in source
     assert 'action: "apply"' in source
     assert 'action: "rollback"' in source
-    assert "安装本地补丁" in source
+    assert "选择补丁并更新" in source
+    assert 'action: "apply_verified"' in source
+    assert "手动校验并安装" in source
     assert "回滚上一版本" in source
-    assert "controls.append(choose, install, rollback);" in source
+    assert "controls.append(choose, rollback);" in source
     assert "关闭并重新打开 Olivia 后生效" in source
 
 

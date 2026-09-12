@@ -43,10 +43,11 @@
             "actions": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["select", "apply", "rollback"],
+              "required": ["select", "apply", "apply_verified", "rollback"],
               "properties": {
                 "select": {"$ref": "#/$defs/action"},
                 "apply": {"$ref": "#/$defs/action"},
+                "apply_verified": {"$ref": "#/$defs/action"},
                 "rollback": {"$ref": "#/$defs/action"}
               }
             }

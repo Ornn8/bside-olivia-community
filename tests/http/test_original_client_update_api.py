@@ -188,3 +188,81 @@ def test_release_docs_describe_local_patch_updates() -> None:
     assert "手动下载 `.oliviapatch`" in documentation
     assert "python -m installer apply-update" in documentation
     assert "Manifest SHA-256" in documentation
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_verified_apply_uses_official_digest_and_fails_closed(tmp_path, monkeypatch, failure):
+    import original_client_update_api as api
+
+    package = tmp_path / "renamed.oliviapatch"
+    package.write_bytes(b"fixture")
+    def resolve(path):
+        assert path == package.resolve()
+        if failure:
+            raise api.UpdateAPIError("UPDATE_CHECKSUM_UNAVAILABLE", status=503)
+        return "b" * 64
+    monkeypatch.setattr(api, "_official_manifest_digest", resolve)
+
+    async def scenario():
+        updater = _Updater()
+        app = web.Application()
+        mount_original_client_update_api(app, updater, trusted_origins=(TRUSTED_ORIGIN,),
+                                         authorize_session=lambda value: None)
+        headers = {"Origin": TRUSTED_ORIGIN, CONFIRM_HEADER: "confirmed"}
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(ACTION_PATH, headers=headers,
+                json={"action": "apply_verified", "package_path": str(package)})
+            assert response.status == (503 if failure else 200)
+            result = await response.json()
+            assert result["status"] == ("FAILED" if failure else "APPLIED")
+            if failure:
+                assert result["error_code"] == "UPDATE_CHECKSUM_UNAVAILABLE"
+        assert updater.applied == ([] if failure else [(package.resolve(), "b" * 64)])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("version", ["1.2.3", "../../evil", "https://evil.example", None])
+def test_official_checksum_uses_only_fixed_release_origin(tmp_path, monkeypatch, version):
+    import io
+    import zipfile
+    import original_client_update_api as api
+    package = tmp_path / "renamed.oliviapatch"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"version": version}))
+    calls = []
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            return io.BytesIO(("c" * 64 + "\n").encode())
+    monkeypatch.setattr(api, "build_opener", lambda *args: Opener())
+    if version == "1.2.3":
+        assert api._official_manifest_digest(package) == "c" * 64
+        assert calls == ["https://github.com/Ornn8/bside-olivia-community/releases/download/v1.2.3/Olivia-1.2.3.oliviapatch.manifest.sha256"]
+    else:
+        with pytest.raises(api.UpdateAPIError):
+            api._official_manifest_digest(package)
+        assert calls == []
+
+
+@pytest.mark.parametrize("body", [b"<html>not found</html>", b"a" * 65, b"a" * 64 + b" " * 200, b"\xff"])
+def test_official_checksum_rejects_invalid_response(tmp_path, monkeypatch, body):
+    import io
+    import zipfile
+    import original_client_update_api as api
+    package = tmp_path / "local.oliviapatch"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({"version": "1.2.3"}))
+    class Opener:
+        def open(self, request, timeout):
+            return io.BytesIO(body)
+    monkeypatch.setattr(api, "build_opener", lambda *args: Opener())
+    with pytest.raises(api.UpdateAPIError, match="UPDATE_CHECKSUM_UNAVAILABLE"):
+        api._official_manifest_digest(package)
+
+
+@pytest.mark.parametrize("url", ["http://github.com/file", "https://evil.example/file",
+                                 "https://github.com@evil.example/file", "https://github.com:444/file"])
+def test_checksum_redirect_rejects_untrusted_destinations(url):
+    import original_client_update_api as api
+    with pytest.raises(api.UpdateAPIError, match="UPDATE_CHECKSUM_UNAVAILABLE"):
+        api._ReleaseRedirects().redirect_request(None, None, 302, "", {}, url)
