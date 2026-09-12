@@ -281,6 +281,7 @@ def test_intimacy_claims_are_typed_and_candidate_bound() -> None:
     '"action_permissions":{}',
     '"physical_contact":{"ceiling":"none","granted":"none"}',
     '"nickname_use":{"permission":"not_allowed"}',
+    '"has_authorized_history":false',
     '"claiming_home_history":{"allowed":false}',
     'permission_scope="internal"',
     'phase_basis="schedule_and_correspondence"',

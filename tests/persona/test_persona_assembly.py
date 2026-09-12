@@ -18,6 +18,8 @@ from runtime.reply.reply_context import (
     BehaviorLevel,
     IntimacyTier,
     KnownContinuationFact,
+    KnownActiveBoundary,
+    NicknamePermission,
     PrivateBehaviorView,
     ReplyContext,
     ReplyMode,
@@ -35,6 +37,52 @@ def _profile() -> PersonaProfile:
         required_facets=("IDENTITY", "EXPRESSION_STYLE"),
         required_modes=("text_letter",),
     )
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("你是什么学校毕业的？", True),
+    ("你是从哪所学校毕业的呢？", True),
+    ("林离，你现在是哪个大学的学生？", True),
+    ("你是不是已经毕业了？", True),
+    ("你在哪个学校？", True),
+    ("我是什么学校毕业的，你还记得吗？", False),
+    ("你知道我是什么学校毕业的吗？", False),
+    ("你知道她是什么学校毕业的吗？", False),
+    ("你觉得朋友是什么学校毕业的？", False),
+    ("你知道小陈是什么学校毕业的吗？", False),
+    ("Olivia，你是哪个年级的学生？", True),
+    ("你好吗？我从学校回来了。", False),
+])
+def test_direct_school_questions_disclose_only_character_school(query, expected):
+    anchor = _declaration("anchor.school_timeline", "COMMUNITY_SOFT_CANON", "BACKGROUND", "合成角色在青杉学院就读，尚未毕业。")
+    snapshot = replace(_style_snapshot(), declarations=(*_style_snapshot().declarations, anchor))
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 9, 12, tzinfo=timezone.utc)))
+    result = assemble_persona(snapshot, context, user_input=query, max_units=30000)
+    assert (anchor.statement in result.system_content) is expected
+    assert not result.budget_report.dropped_ids
+
+
+@pytest.mark.parametrize("permission", list(NicknamePermission))
+@pytest.mark.parametrize("mode", [mode for mode in ReplyMode if mode is not ReplyMode.FUTURE_IM])
+def test_nickname_projection_distinguishes_history_from_current_addressing(permission, mode):
+    behavior = PrivateBehaviorView(
+        nickname_permission=permission,
+        active_boundaries=(KnownActiveBoundary("boundary.synthetic", "不要再叫我合成坏称呼。"),),
+    )
+    context = ReplyContext.create(mode, trusted_time=TrustedTime(datetime(2026, 9, 12, tzinfo=timezone.utc)), private_behavior=behavior)
+    before = behavior.to_dict()
+    result = assemble_persona(_style_snapshot(), context, user_input="我可以叫你小青吗？你叫我阿岚就好。", max_units=30000)
+    payload = json.loads(re.search(r"<private_behavior>\s*(.*?)\s*</private_behavior>", result.system_content, re.S)[1])
+    assert payload["action_permissions"]["nickname_use"] == {
+        "has_authorized_history": permission is NicknamePermission.ALLOWED,
+    }
+    scope = payload["permission_scope"]
+    assert "用户称呼林离" in scope and "林离称呼用户" in scope
+    assert "接受或拒绝" in scope and "不自动" in scope
+    assert payload["active_boundaries"] == before["active_boundaries"]
+    assert payload["action_permissions"]["physical_contact"] == {"ceiling": "none", "granted": "none"}
+    assert payload["action_permissions"]["claiming_home_history"] == {"allowed": False}
+    assert behavior.to_dict() == before
 
 
 @pytest.mark.parametrize("query, expected", [
@@ -298,7 +346,7 @@ def test_writer_omits_unknown_descriptions_but_keeps_permissions_and_known_level
     assert projected == {k: v for k, v in original.items() if k not in controls and (known or k not in descriptive)}
     assert permissions == {
         "physical_contact": {"ceiling": "none", "granted": "none"},
-        "nickname_use": {"permission": "not_allowed"},
+        "nickname_use": {"has_authorized_history": False},
         "claiming_home_history": {"allowed": False},
     }
     assert projected["acknowledged_affection"] is None

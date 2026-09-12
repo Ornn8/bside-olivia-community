@@ -12,7 +12,8 @@ from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
 from memory_port import NullMemoryPort
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from runtime.reply.reply_context import (
-    BehaviorLevel, PrivateBehaviorView, ReplyContext, ReplyMode, TrustedTime,
+    BehaviorLevel, KnownActiveBoundary, NicknamePermission, PrivateBehaviorView,
+    ReplyContext, ReplyMode, TrustedTime,
 )
 from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
 from runtime.reply.reply_reviewer import NullReviewer
@@ -124,3 +125,30 @@ def test_direct_adapter_generation_also_uses_relationship_projection(monkeypatch
     payload = _block(adapter._persona_v2_messages("今天聊音乐吧。"), "private_behavior")
     assert payload["expression_context"]
     assert not AXES.intersection(payload)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_bridge_discloses_school_and_scopes_nickname_history(streaming):
+    _, provider, pipeline = _configured(streaming)
+    letter = "你是从哪所学校毕业的？我能叫你小青吗？你叫我阿岚就好。"
+    for index, permission in enumerate((NicknamePermission.NOT_ALLOWED, NicknamePermission.ALLOWED, NicknamePermission.NOT_ALLOWED)):
+        behavior = PrivateBehaviorView(
+            nickname_permission=permission,
+            active_boundaries=(KnownActiveBoundary("boundary.synthetic", "不接受合成坏称呼。"),),
+        )
+        before = behavior.to_dict()
+        result = asyncio.run(pipeline.run(
+            ReplyRequest(content=letter, request_id=f"synthetic-addressing-{index}", max_input_chars=30000),
+            _context(ReplyMode.TEXT_LETTER, behavior),
+        ))
+        assert result.state is ReplyState.COMPLETED
+        assert len(provider.requests) == index + 1
+        messages = provider.requests[-1]
+        assert messages[-1] == {"role": "user", "content": letter}
+        assert '"declaration_id":"anchor.school_timeline"' in messages[0]["content"]
+        payload = _block(messages, "private_behavior")
+        assert payload["action_permissions"]["nickname_use"] == {
+            "has_authorized_history": permission is NicknamePermission.ALLOWED,
+        }
+        assert payload["active_boundaries"] == before["active_boundaries"]
+        assert behavior.to_dict() == before

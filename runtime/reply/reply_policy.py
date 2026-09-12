@@ -95,7 +95,7 @@ _CONTROL_MARKUP_RE = re.compile(
     re.IGNORECASE,
 )
 _PRIVATE_STATE_RE = re.compile(
-    r"(?i)(?:[\"']?)(?:familiarity|trust|comfort|closeness|tension|relationship_stage|intimacy_ceiling|granted_intimacy|intimacy_request|nickname_permission|home_access|home_history_allowed|action_permissions|physical_contact|nickname_use|claiming_home_history|permission_scope|phase_basis|wake_cause)(?:[\"']?)\s*[:=]"
+    r"(?i)(?:[\"']?)(?:familiarity|trust|comfort|closeness|tension|relationship_stage|intimacy_ceiling|granted_intimacy|intimacy_request|nickname_permission|home_access|home_history_allowed|action_permissions|physical_contact|nickname_use|has_authorized_history|claiming_home_history|permission_scope|phase_basis|wake_cause)(?:[\"']?)\s*[:=]"
 )
 _STAGE_DIRECTION_RE = re.compile(
     r"(?m)^\s*(?:[\(（\[【][^\n]{1,120}[\)）\]】]|\*[^\n*]{1,120}\*)\s*$"
