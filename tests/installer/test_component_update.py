@@ -32,6 +32,41 @@ _REQUIRED_COMPONENT_ENTRYPOINTS = {
 }
 
 
+@pytest.mark.parametrize("valid_digest", [True, False])
+def test_auto_verified_http_update_preserves_data_and_rejects_mismatch(tmp_path, monkeypatch, valid_digest):
+    import asyncio
+    import io
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    import original_client_update_api as api
+
+    installation, _ = _managed_installation(tmp_path)
+    data = installation / "data"
+    data.mkdir()
+    letter = data / "synthetic-letter.txt"
+    letter.write_text("preserve me", encoding="utf-8")
+    package = tmp_path / "renamed.oliviapatch"
+    digest = _write_component_package(package, version="1.2.3", files={"new.py": b"new"})
+    class Opener:
+        def open(self, request, timeout):
+            return io.BytesIO((digest if valid_digest else "0" * 64).encode())
+    monkeypatch.setattr(api, "build_opener", lambda *args: Opener())
+
+    async def scenario():
+        app = web.Application()
+        api.mount_original_client_update_api(app, api.LocalComponentUpdater(installation),
+            trusted_origins=("https://client.example",), authorize_session=lambda _: None)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(api.ACTION_PATH,
+                headers={"Origin": "https://client.example", api.CONFIRM_HEADER: "confirmed"},
+                json={"action": "apply_verified", "package_path": str(package)})
+            assert response.status == (200 if valid_digest else 409)
+            assert (await response.json())["status"] == ("APPLIED" if valid_digest else "FAILED")
+    asyncio.run(scenario())
+    assert letter.read_text(encoding="utf-8") == "preserve me"
+    assert (installation / ".olivia-update-state.json").exists() == valid_digest
+
+
 def _write_component_package(
     path: Path,
     *,

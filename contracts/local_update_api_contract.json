@@ -27,6 +27,12 @@
           "status_values": ["APPLIED"],
           "restart_required": true
         },
+        "apply_verified": {
+          "request_fields": ["action", "package_path"],
+          "response_fields": ["status", "component", "version", "restart_required"],
+          "status_values": ["APPLIED"],
+          "restart_required": true
+        },
         "rollback": {
           "request_fields": ["action"],
           "response_fields": ["status", "component", "version", "restart_required"],
@@ -38,6 +44,8 @@
   },
   "error_http_statuses": {
     "UPDATE_FIELDS_INVALID": 400,
+    "UPDATE_MANIFEST_INVALID": 409,
+    "UPDATE_CHECKSUM_UNAVAILABLE": 503,
     "UPDATE_JSON_INVALID": 400,
     "UPDATE_CONFIRMATION_REQUIRED": 403,
     "UPDATE_HOST_FORBIDDEN": 403,

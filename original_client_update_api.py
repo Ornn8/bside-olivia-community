@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 from typing import Any, Protocol
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+import zipfile
 
 from aiohttp import web
 
@@ -49,6 +51,50 @@ class ComponentUpdater(Protocol):
 
 SessionAuthorizer = Callable[[str], None]
 PatchPicker = Callable[[], Path | None]
+
+
+class _ReleaseRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urlsplit(newurl)
+        if (target.scheme != "https" or target.hostname not in {
+            "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+        } or target.username or target.password or target.port not in {None, 443}):
+            raise UpdateAPIError("UPDATE_CHECKSUM_UNAVAILABLE", status=503)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _official_manifest_digest(package: Path) -> str:
+    # The untrusted version only selects a fixed project release. The installer
+    # still checks the manifest against this external digest before staging files.
+    try:
+        with zipfile.ZipFile(package) as archive:
+            entries = [entry for entry in archive.infolist() if entry.filename == "manifest.json"]
+            if len(entries) != 1 or entries[0].file_size > 1_048_576:
+                raise ValueError("invalid manifest")
+            with archive.open(entries[0]) as source:
+                raw = source.read(1_048_577)
+            if len(raw) > 1_048_576:
+                raise ValueError("oversized manifest")
+            manifest = json.loads(raw)
+            version = manifest.get("version") if isinstance(manifest, dict) else None
+            if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
+                raise ValueError("invalid version")
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise UpdateAPIError("UPDATE_MANIFEST_INVALID", status=409) from exc
+    url = (
+        "https://github.com/Ornn8/bside-olivia-community/releases/download/"
+        f"v{version}/Olivia-{version}.oliviapatch.manifest.sha256"
+    )
+    try:
+        request = Request(url, headers={"User-Agent": "Olivia-Updater", "Accept": "text/plain"})
+        with build_opener(_ReleaseRedirects()).open(request, timeout=20) as response:
+            raw_digest = response.read(257)
+        digest = raw_digest.decode("ascii").strip()
+        if len(raw_digest) > 256 or not _SHA256_RE.fullmatch(digest):
+            raise ValueError("invalid checksum")
+        return digest
+    except Exception as exc:
+        raise UpdateAPIError("UPDATE_CHECKSUM_UNAVAILABLE", status=503) from exc
 
 
 def running_component_version(backend_root: Path | None = None) -> dict[str, str | None]:
@@ -251,6 +297,9 @@ def mount_original_client_update_api(
     control_lock = asyncio.Lock()
     picker = select_patch or _select_windows_patch
 
+    def apply_verified(package: Path) -> Mapping[str, object]:
+        return updater.apply(package, _official_manifest_digest(package))
+
     @web.middleware
     async def errors(request: web.Request, handler):
         try:
@@ -300,6 +349,9 @@ def mount_original_client_update_api(
                 raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
             call = updater.apply
             args = (_package_path(payload.get("package_path")), digest)
+        elif payload.get("action") == "apply_verified" and set(payload) == {"action", "package_path"}:
+            call = apply_verified
+            args = (_package_path(payload.get("package_path")),)
         elif payload == {"action": "rollback"}:
             call = updater.rollback
             args = ()
@@ -308,6 +360,8 @@ def mount_original_client_update_api(
         try:
             async with control_lock:
                 result = await asyncio.to_thread(call, *args)
+        except UpdateAPIError:
+            raise
         except ComponentUpdateError as exc:
             code = str(exc)
             if not re.fullmatch(r"UPDATE_[A-Z0-9_]{3,90}", code):

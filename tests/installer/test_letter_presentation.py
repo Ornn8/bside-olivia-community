@@ -48,7 +48,26 @@ def test_signature_is_only_displayed_on_published_new_letters():
     letter = dict(letter_id='format', content='合成信', reply_text='正文。', reply_signature='阿离',
                   letter_status='COMPLETED', reply_mode='text_letter', reply_not_before=200)
     assert serialize_letter_detail(letter, now=100)['replyText'] == ''
+    assert 'replySignature' not in serialize_letter_detail(letter, now=100)
     assert serialize_letter_detail(letter, now=300)['replyText'] == '正文。\n\n阿离'
+    assert serialize_letter_detail(letter, now=300)['replyBody'] == '正文。'
+    assert serialize_letter_detail(letter, now=300)['replySignature'] == '阿离'
     assert letter['reply_text'] == '正文。'
     del letter['reply_signature']
     assert serialize_letter_detail(letter, now=300)['replyText'] == '正文。'
+    assert 'replySignature' not in serialize_letter_detail(letter, now=300)
+
+
+def test_display_never_invents_paragraphs_or_changes_authored_whitespace():
+    from original_client_letter_contract import serialize_letter_detail
+    body = '今天练琴后沿着河边走了一会儿，风很轻，街角的小店已经开门了。' * 5
+    letter = dict(letter_id='synthetic-layout', content='合成信', reply_text=body,
+                  reply_signature='林离', letter_status='COMPLETED', reply_mode='text_letter')
+    payload = serialize_letter_detail(letter)
+    assert payload['replyBody'] == body
+    assert letter['reply_text'] == body
+    authored = body[:30] + '\n\n' + body[30:]
+    letter['reply_text'] = authored
+    assert serialize_letter_detail(letter)['replyBody'] == authored
+    letter['reply_text'] = '很短的一句话。'
+    assert serialize_letter_detail(letter)['replyBody'] == '很短的一句话。'
