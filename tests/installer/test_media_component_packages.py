@@ -53,11 +53,71 @@ def test_corruption_does_not_replace_active_component(tmp_path):
     manager = MediaComponents(tmp_path / 'data')
     archive = package(tmp_path)
     manager.install(archive, expected_component='tools')
+    before = set(manager.root.iterdir())
     with zipfile.ZipFile(archive, 'a') as z:
         z.writestr('unexpected.txt', 'bad')
     with pytest.raises(ValueError):
         manager.install(archive, expected_component='tools')
     assert Path(manager.environment()['OLIVIA_FFMPEG_EXE']).read_bytes() == b'fixture'
+    assert set(manager.root.iterdir()) == before
+
+
+def test_failed_extraction_does_not_accumulate_partial_generations(tmp_path, monkeypatch):
+    import errno
+    import video_capability_install as module
+    manager = MediaComponents(tmp_path / 'data')
+    archive = package(tmp_path)
+    manager.install(archive, expected_component='tools')
+    before = set(manager.root.iterdir())
+    with zipfile.ZipFile(archive, 'a') as z:
+        z.writestr('new.txt', 'changed')
+    def fail(archive, destination, **kwargs):
+        destination.mkdir()
+        (destination / 'partial.bin').write_bytes(b'partial')
+        raise OSError(errno.ENOSPC, 'synthetic')
+    monkeypatch.setattr(module, '_extract_runtime_zip_safely', fail)
+    for _ in range(2):
+        with pytest.raises(OSError):
+            manager.install(archive, expected_component='tools')
+        assert set(manager.root.iterdir()) == before
+    assert Path(manager.environment()['OLIVIA_FFMPEG_EXE']).read_bytes() == b'fixture'
+
+
+def test_registry_write_failure_cleans_only_unpublished_generation(tmp_path, monkeypatch):
+    import runtime.media.component_packages as module
+    manager = MediaComponents(tmp_path / 'data')
+    archive = package(tmp_path)
+    manager.install(archive, expected_component='tools')
+    before = set(manager.root.iterdir())
+    registry = (manager.root / 'installed.json').read_bytes()
+    # Change ZIP metadata without changing its verified runtime payload.
+    with zipfile.ZipFile(archive, 'a') as z:
+        z.comment = b'new generation'
+    replace = module.os.replace
+    def fail_registry(source, destination):
+        if Path(destination).name == 'installed.json':
+            raise PermissionError('synthetic')
+        return replace(source, destination)
+    monkeypatch.setattr(module.os, 'replace', fail_registry)
+    with pytest.raises(PermissionError):
+        manager.install(archive, expected_component='tools')
+    assert set(manager.root.iterdir()) == before
+    assert (manager.root / 'installed.json').read_bytes() == registry
+    assert Path(manager.environment()['OLIVIA_FFMPEG_EXE']).read_bytes() == b'fixture'
+
+
+def test_destination_collision_does_not_delete_existing_files(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import runtime.media.component_packages as module
+    manager = MediaComponents(tmp_path / 'data')
+    archive = package(tmp_path)
+    existing = manager.root / ('tools-' + 'a' * 32)
+    existing.mkdir(parents=True)
+    (existing / 'keep.txt').write_text('preserve')
+    monkeypatch.setattr(module.uuid, 'uuid4', lambda: SimpleNamespace(hex='a' * 32))
+    with pytest.raises(ValueError, match='MEDIA_COMPONENT_DESTINATION_EXISTS'):
+        manager.install(archive, expected_component='tools')
+    assert (existing / 'keep.txt').read_text() == 'preserve'
 
 
 def test_modes_only_require_relevant_components():

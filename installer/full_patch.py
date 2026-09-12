@@ -728,12 +728,14 @@ def install_full_patch(
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
     staging = target
+    operation = "copy_client"
     try:
         copied_runtime = copy_official_runtime(
             source,
             staging / "app",
             version,
         )
+        operation = "copy_backend"
         copied = copy_project_payload(payload, staging / "local_backend")
         resources = staging / "app" / version / "resources"
         feapp = resources / "feapp.dat"
@@ -749,6 +751,7 @@ def install_full_patch(
             raise PatchInstallError("INVALID_PORT")
 
         base_http = f"http://127.0.0.1:{port}"
+        operation = "patch_resources"
         try:
             navigation_manifest = (
                 staging / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
@@ -779,6 +782,7 @@ def install_full_patch(
         ) as exc:
             raise PatchInstallError("UNSUPPORTED_OFFICIAL_VERSION") from exc
 
+        operation = "finalize"
         _write_start_scripts(staging, port)
         (staging / "data").mkdir(exist_ok=True)
         marker = {
@@ -819,7 +823,17 @@ def install_full_patch(
             ),
             encoding="utf-8",
         )
-    except Exception:
+    except Exception as exc:
+        # Capture before rollback frees the partial copy and changes free space.
+        storage = {"operation": operation}
+        for label, location in (("destination", target), ("payload", payload)):
+            try:
+                while not location.exists() and location != location.parent:
+                    location = location.parent
+                storage[label + "_free_bytes"] = shutil.disk_usage(location).free
+            except OSError:
+                pass
+        exc.install_storage = storage
         if staging.exists():
             if reusing_preserved_root:
                 try:

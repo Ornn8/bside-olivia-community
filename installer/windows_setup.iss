@@ -337,7 +337,7 @@ begin
       else if StableInstallCode = 'SETUP_PATCH_PERMISSION_DENIED' then
         Result := '安装时无法写入或访问文件。请确认目标目录可写、旧版 Olivia 已关闭，并检查安全软件的拦截记录。请保留安装日志。'
       else if StableInstallCode = 'SETUP_PATCH_DISK_FULL' then
-        Result := '安装时磁盘空间不足。请释放安装盘和临时目录所在磁盘的空间后重试。'
+        Result := '安装写入时系统报告空间不足。失败后回滚会释放部分空间，因此现在看到的剩余空间可能已增加。请保留安装日志，核对安装盘及临时目录所在盘。'
       else if StableInstallCode = 'SETUP_PATCH_FILE_MISSING' then
         Result := '安装过程中所需文件不存在。请保留安装日志，并检查原版游戏文件和安全软件的隔离记录。'
       else if StableInstallCode = 'SETUP_PATCH_PATH_TOO_LONG' then

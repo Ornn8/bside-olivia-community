@@ -56,6 +56,17 @@ except Exception as exc:
     diagnostic = {"schema_version": "olivia.setup-patch-error.v1", "phase": "INSTALL_PATCH",
                   "error_type": type(exc).__name__, "errno": number, "winerror": winerror,
                   "frames": frames[-6:]}
+    storage = getattr(exc, 'install_storage', None)
+    if isinstance(storage, dict):
+        safe_storage = {}
+        operation = storage.get('operation')
+        if isinstance(operation, str) and operation in {'copy_client', 'copy_backend', 'patch_resources', 'finalize'}:
+            safe_storage['operation'] = operation
+        for field in ('destination_free_bytes', 'payload_free_bytes'):
+            value = storage.get(field)
+            if type(value) is int and value >= 0:
+                safe_storage[field] = value
+        diagnostic['storage_before_rollback'] = safe_storage
     if isinstance(exc, shutil.Error):
         diagnostic["operation"] = "copy_tree"
         diagnostic["copy_errors"] = copy_errors

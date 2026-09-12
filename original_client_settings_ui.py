@@ -1771,6 +1771,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const failedNames = group.items.filter(x=>progress.failed_components.includes(x.id)).map(x=>x.label);
       result.textContent = `未完成：${failedNames.join("、")}。其余组件已处理，原有组件保留；可以只重试失败的包。`;
     }
+    if (progress.state === "failed") {
+      const failures = {
+        VIDEO_ARCHIVE_DISK_FULL: "解压写入时磁盘空间不足。请检查 Olivia 数据目录所在盘的可用空间；ZIP 解压后的体积可能远大于压缩包。",
+        VIDEO_ARCHIVE_ACCESS_DENIED: "解压时无法读写文件。请检查目录权限和安全软件的拦截记录。",
+        VIDEO_ARCHIVE_PATH_TOO_LONG: "解压后的文件路径过长。请使用较短的 Olivia 安装路径。",
+        VIDEO_ARCHIVE_IO_FAILED: "读取离线包或写入文件失败。请检查磁盘、外接设备和目录是否可访问。",
+        VIDEO_RUNTIME_ARCHIVE_CORRUPT: "ZIP 数据损坏或不完整，请重新下载失败的包。",
+        VIDEO_RUNTIME_ARCHIVE_INVALID: "离线包结构不符合要求，请保留诊断包核对版本。",
+        MEDIA_COMPONENT_CLEANUP_FAILED: "导入失败，且本次临时文件未能完全清理。请导出诊断包，不要反复重试。"
+      };
+      result.textContent += " " + (failures[progress.reason_code] || "请导出诊断包查看具体失败原因。");
+    }
     if (busy) result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[progress.state]}：${formatBytes(progress.checked_bytes || 0)} / ${formatBytes(progress.total_bytes || 0)}`;
     const batch = button("选择离线包（可多选 ZIP）", async () => {
       batch.disabled = true;
