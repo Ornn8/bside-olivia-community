@@ -16,6 +16,24 @@ RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 8, 30, tzinfo=timezone.utc))
 
 
+@pytest.mark.parametrize("query", [
+    "你能说说外婆的事情吗？", "你的钢琴是怎么来的？", "这架钢琴有什么来历？",
+    "你最爱吃什么？", "你家的猫叫什么？", "你平时看些什么书？",
+    "生日是哪天？", "你读的是哪所学校？", "我家的钢琴是我父亲买的。",
+])
+def test_short_character_background_is_available_without_wording_gate(query):
+    snapshot = load_persona(RELEASE_PERSONA).snapshot
+    result = assemble_persona(snapshot, ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW),
+        user_input=query, max_units=GatewayConfig().max_input_chars)
+    expected = {d.declaration_id: d.statement for d in snapshot.declarations if d.declaration_id.startswith("anchor.")}
+    actual = {block["declaration_id"]: block["statement"] for block in (
+        json.loads(raw) for raw in re.findall(r"<community_soft_canon>\s*(.*?)\s*</community_soft_canon>", result.system_content, re.S))}
+    assert {k: v for k, v in actual.items() if k.startswith("anchor.")} == expected
+    assert result.to_messages()[-1] == {"role": "user", "content": query}
+    assert query not in actual.values()
+    assert not result.budget_report.dropped_ids
+
+
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
 def test_scope_grounding_also_reaches_statements_without_history(mode) -> None:
     assembly = assemble_persona(
@@ -164,189 +182,14 @@ def test_public_30k_budget_preserves_full_context_that_22k_would_drop() -> None:
     assert public_budget.budget_report.dropped_ids == ()
 
 
-def test_release_persona_progressively_discloses_relevant_soft_anchors() -> None:
-    loaded = load_persona(RELEASE_PERSONA)
-    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
-
-    ordinary = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="今天开会有点累，刚刚才结束。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    food = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你平时喜欢吃什么，口味偏甜还是偏辣？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    residence = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你现在住在哪里？家里能放下三角钢琴吗？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    current_piece = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你最近在练什么曲子？老师在帮你调整什么？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-
-    assert '"declaration_id":"style.care_quota"' in ordinary
-    assert ordinary.count('"declaration_id":"anchor.') == 0
-    assert '"declaration_id":"anchor.everyday_taste"' in food
-    assert '"declaration_id":"anchor.cat"' not in food
-    assert '"declaration_id":"anchor.residence"' in residence
-    assert '"declaration_id":"anchor.physical"' not in residence
-    assert '"declaration_id":"anchor.grandmother_piano"' not in residence
-    assert '"declaration_id":"anchor.school_timeline"' not in residence
-    assert '"declaration_id":"anchor.current_piece"' in current_piece
-    assert '"declaration_id":"anchor.listening_shelf"' not in current_piece
-    assert '"declaration_id":"anchor.school_timeline"' not in current_piece
-    assert food.count('"declaration_id":"anchor.') <= 4
-    assert residence.count('"declaration_id":"anchor.') <= 4
 
 
-def test_progressive_disclosure_uses_recent_history_for_follow_up_letters() -> None:
-    loaded = load_persona(RELEASE_PERSONA)
-    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
-
-    assembled = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="那后来呢？",
-        history=(UntrustedFragment("history.recent", "你去云南遇到蜘蛛以后呢？"),),
-        max_units=GatewayConfig().max_input_chars,
-    )
-
-    assert '"declaration_id":"anchor.afraid_of_bugs"' in assembled.system_content
-    assert '<constitution>' in assembled.system_content
-    assert assembled.system_content.count('"declaration_id":"anchor.') <= 4
 
 
-def test_progressive_disclosure_rejects_idioms_and_prioritizes_current_letter() -> None:
-    loaded = load_persona(RELEASE_PERSONA)
-    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
-
-    idioms = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="我真的撑不住了。这门课程让我吃了个大亏，帮我调音以后我决定住手。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    current_topic = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你喜欢猫吗？",
-        history=(
-            UntrustedFragment("history.food", "你平时喜欢吃什么？"),
-            UntrustedFragment("history.home", "你现在住在哪里？"),
-        ),
-        evidence_summaries=(
-            UntrustedFragment("evidence.piano", "最近在练什么曲子？"),
-            UntrustedFragment("evidence.school", "你在哪所音乐学院上学？"),
-        ),
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    own_topics = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="我告诉你，我最近在练琴，也很喜欢猫。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    reciprocal = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="我喜欢甜食，你呢？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-
-    assert idioms.count('"declaration_id":"anchor.') == 0
-    assert own_topics.count('"declaration_id":"anchor.') == 0
-    assert '"declaration_id":"anchor.cat"' in current_topic
-    assert '"declaration_id":"anchor.everyday_taste"' not in current_topic
-    assert '"declaration_id":"anchor.residence"' not in current_topic
-    assert '"declaration_id":"anchor.current_piece"' not in current_topic
-    assert '"declaration_id":"anchor.school_timeline"' not in current_topic
-    assert '"declaration_id":"anchor.everyday_taste"' in reciprocal
 
 
-def test_progressive_disclosure_does_not_treat_user_details_as_persona_details() -> None:
-    loaded = load_persona(RELEASE_PERSONA)
-    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
-
-    comparison = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="我和林离一样最近在练琴。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    observation = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你有没有发现我最近在练琴？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    third_person = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你有没有发现她最近在练琴？",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    named_others = tuple(
-        assemble_persona(
-            loaded.snapshot,
-            context,
-            user_input=user_input,
-            max_units=GatewayConfig().max_input_chars,
-        ).system_content
-        for user_input in (
-            "你有没有发现老师最近在练琴？",
-            "你有没有发现爸爸最近在练琴？",
-            "你有没有发现小王最近在练琴？",
-        )
-    )
-    cross_sentence = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你好吗？最近在练琴好累。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-    bare_name = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="林离这个名字很好听，Olivia 在音乐学院读书。",
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-
-    assert '"declaration_id":"anchor.current_piece"' not in comparison
-    assert '"declaration_id":"anchor.current_piece"' not in observation
-    assert '"declaration_id":"anchor.current_piece"' not in third_person
-    assert all(
-        '"declaration_id":"anchor.current_piece"' not in item
-        for item in named_others
-    )
-    assert '"declaration_id":"anchor.current_piece"' not in cross_sentence
-    # This clause explicitly describes Olivia's schooling. Its existing canon
-    # is relevant even though the user did not phrase it as a question.
-    assert '"declaration_id":"anchor.school_timeline"' in bare_name
-    assert bare_name.count('"declaration_id":"anchor.') == 1
 
 
-def test_current_persona_question_without_known_anchor_does_not_fall_back_to_history() -> None:
-    loaded = load_persona(RELEASE_PERSONA)
-    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
-
-    assembled = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input="你今天心情怎么样？",
-        history=(UntrustedFragment("history.home", "你住在哪里？"),),
-        max_units=GatewayConfig().max_input_chars,
-    ).system_content
-
-    assert '"declaration_id":"anchor.residence"' not in assembled
 
 
 def test_soft_canon_outlives_history_under_pressure() -> None:

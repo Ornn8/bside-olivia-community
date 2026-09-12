@@ -33,6 +33,16 @@ The typed state, confirmed stage, action permissions, known continuations, activ
 boundaries and acknowledged affection are unchanged. No model call or state write
 is added. Generic assembly retains the opt-in parameter for compatibility.
 
+The small reviewed character-background inventory is supplied in full rather
+than selected by question keywords, explicit pronouns or a four-anchor limit.
+It retains its existing authority tier and whole-block budget priority. This
+avoids dropping known facts when a letter uses paraphrases or omitted subjects.
+The complete inventory is available under the default budget; smaller custom
+budgets may still drop optional blocks, recorded in the budget report. History
+and user input remain separate untrusted sources. Availability of background
+does not require reciting it: the existing selective-attention/persona rules
+still govern what the reply discusses. No retrieval model call is added.
+
 The writer's `nickname_use.has_authorized_history` reports whether a current
 nickname grant exists, not a blanket decision about a new form of address.
 Concrete labels and direction remain grounded in the authorization source:

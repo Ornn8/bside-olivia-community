@@ -23,6 +23,25 @@ ROOT = Path(__file__).resolve().parents[2]
 AXES = {"familiarity", "trust", "comfort", "closeness", "tension"}
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("letter", ["讲讲外婆吧。", "那台钢琴是怎么来的？", "最爱吃什么？"])
+def test_real_bridge_delivers_background_details_without_keyword_selection(streaming, letter):
+    _, provider, pipeline = _configured(streaming)
+    result = asyncio.run(pipeline.run(
+        ReplyRequest(content=letter, request_id="synthetic-background"),
+        _context(ReplyMode.TEXT_LETTER, PrivateBehaviorView()),
+    ))
+    assert result.state is ReplyState.COMPLETED
+    assert len(provider.requests) == 1
+    messages = provider.requests[0]
+    assert messages[-1] == {"role": "user", "content": letter}
+    system = messages[0]["content"]
+    assert "九岁时外婆去世" in system
+    assert "毛线球滚到踏板下" in system
+    assert "外婆也是她的钢琴启蒙老师" in system
+    assert '"declaration_id":"anchor.grandmother_piano"' in system
+
+
 class RecordingProvider(Gateway):
     def __init__(self, streaming):
         self.stream_enabled = streaming

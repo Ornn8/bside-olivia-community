@@ -12,6 +12,8 @@ from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 9, 4, tzinfo=timezone.utc))
+BACKGROUND_IDS = tuple(d.declaration_id for d in load_persona(RELEASE_PERSONA).snapshot.declarations
+                       if d.declaration_id.startswith("anchor."))
 
 
 def _assemble(user_input: str):
@@ -79,10 +81,11 @@ def test_action_phrasing_selects_the_relevant_anchor(
     "user_input",
     ("今天下雨了。", "今天买的面包有点难吃。", "在吗？"),
 )
-def test_ordinary_letters_do_not_receive_unrelated_biography(user_input: str) -> None:
+def test_ordinary_letters_keep_known_background_available(user_input: str) -> None:
     assembled = _assemble(user_input)
 
-    assert assembled.system_content.count('"declaration_id":"anchor.') == 0
+    assert _anchor_ids(user_input) == BACKGROUND_IDS
+    assert assembled.to_messages()[-1] == {"role": "user", "content": user_input}
 
 
 @pytest.mark.parametrize(
@@ -93,8 +96,9 @@ def test_ordinary_letters_do_not_receive_unrelated_biography(user_input: str) ->
         "你喜欢猫、甜食、黑胶和读书吗？你住在哪里，平时穿什么？",
     ),
 )
-def test_anchor_disclosure_never_exceeds_the_limit(user_input: str) -> None:
-    assert len(_anchor_ids(user_input)) <= 4
+def test_background_remains_bounded_by_the_prompt_budget(user_input: str) -> None:
+    assert _anchor_ids(user_input) == BACKGROUND_IDS
+    assert _assemble(user_input).budget_report.used_units <= GatewayConfig().max_input_chars
 
 
 @pytest.mark.parametrize(
@@ -117,14 +121,14 @@ def test_anchor_disclosure_never_exceeds_the_limit(user_input: str) -> None:
         "你听室友弹夜曲吗？",
     ),
 )
-def test_short_gap_does_not_reassign_other_people_to_persona(user_input: str) -> None:
-    anchor_ids = _anchor_ids(user_input)
+def test_other_people_remain_user_content_not_character_declarations(user_input: str) -> None:
+    assembled = _assemble(user_input)
+    assert _anchor_ids(user_input) == BACKGROUND_IDS
+    assert user_input not in assembled.system_content
+    assert assembled.to_messages()[-1] == {"role": "user", "content": user_input}
 
-    assert set(anchor_ids) <= {"anchor.father"}
-    assert "anchor.current_piece" not in anchor_ids
 
-
-def test_follow_up_fallback_does_not_restore_rejected_history_anchor() -> None:
+def test_follow_up_keeps_history_untrusted_and_background_unchanged() -> None:
     loaded = load_persona(RELEASE_PERSONA)
     context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
 
@@ -141,18 +145,19 @@ def test_follow_up_fallback_does_not_restore_rejected_history_anchor() -> None:
         if item_id.startswith("declaration.anchor.")
     )
 
-    assert len(anchor_ids) == 0
-    assert "anchor.cat" not in anchor_ids
+    assert anchor_ids == BACKGROUND_IDS
+    assert '<untrusted_history>' in assembled.system_content
+    assert '"untrusted":true' in assembled.system_content
 
 
 def test_baseline_anchor_is_deterministic_for_the_same_letter() -> None:
-    assert _anchor_ids("今天下雨了。") == ()
+    assert _anchor_ids("今天下雨了。") == _anchor_ids("今天下雨了。") == BACKGROUND_IDS
 
 
-def test_unrelated_letters_never_trigger_random_biography() -> None:
+def test_unrelated_letters_do_not_randomize_known_background() -> None:
     inputs = tuple(f"普通日常来信第{index}封。" for index in range(8))
 
-    assert all(_anchor_ids(user_input) == () for user_input in inputs)
+    assert all(_anchor_ids(user_input) == BACKGROUND_IDS for user_input in inputs)
 
 
 def test_anchor_disclosure_fits_default_budget_with_full_history() -> None:
@@ -167,5 +172,5 @@ def test_anchor_disclosure_fits_default_budget_with_full_history() -> None:
         max_units=GatewayConfig().max_input_chars,
     )
 
-    assert assembled.system_content.count('"declaration_id":"anchor.') == 0
+    assert assembled.system_content.count('"declaration_id":"anchor.') == len(BACKGROUND_IDS)
     assert assembled.budget_report.dropped_ids == ()

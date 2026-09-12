@@ -39,26 +39,27 @@ def _profile() -> PersonaProfile:
     )
 
 
-@pytest.mark.parametrize("query, expected", [
-    ("你是什么学校毕业的？", True),
-    ("你是从哪所学校毕业的呢？", True),
-    ("林离，你现在是哪个大学的学生？", True),
-    ("你是不是已经毕业了？", True),
-    ("你在哪个学校？", True),
-    ("我是什么学校毕业的，你还记得吗？", False),
-    ("你知道我是什么学校毕业的吗？", False),
-    ("你知道她是什么学校毕业的吗？", False),
-    ("你觉得朋友是什么学校毕业的？", False),
-    ("你知道小陈是什么学校毕业的吗？", False),
-    ("Olivia，你是哪个年级的学生？", True),
-    ("你好吗？我从学校回来了。", False),
+@pytest.mark.parametrize("query", [
+    "你是什么学校毕业的？",
+    "你是从哪所学校毕业的呢？",
+    "林离，你现在是哪个大学的学生？",
+    "你是不是已经毕业了？",
+    "你在哪个学校？",
+    "我是什么学校毕业的，你还记得吗？",
+    "你知道我是什么学校毕业的吗？",
+    "你知道她是什么学校毕业的吗？",
+    "你觉得朋友是什么学校毕业的？",
+    "你知道小陈是什么学校毕业的吗？",
+    "Olivia，你是哪个年级的学生？",
+    "你好吗？我从学校回来了。",
 ])
-def test_direct_school_questions_disclose_only_character_school(query, expected):
+def test_character_school_is_retained_without_promoting_user_school(query):
     anchor = _declaration("anchor.school_timeline", "COMMUNITY_SOFT_CANON", "BACKGROUND", "合成角色在青杉学院就读，尚未毕业。")
     snapshot = replace(_style_snapshot(), declarations=(*_style_snapshot().declarations, anchor))
     context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 9, 12, tzinfo=timezone.utc)))
     result = assemble_persona(snapshot, context, user_input=query, max_units=30000)
-    assert (anchor.statement in result.system_content) is expected
+    assert anchor.statement in result.system_content
+    assert result.to_messages()[-1] == {"role": "user", "content": query}
     assert not result.budget_report.dropped_ids
 
 
@@ -85,23 +86,24 @@ def test_nickname_projection_distinguishes_history_from_current_addressing(permi
     assert behavior.to_dict() == before
 
 
-@pytest.mark.parametrize("query, expected", [
-    ("你平时穿黑色衣服，应该挺适合这个造型。", True),
-    ("我觉得你非常适合出COS。", True),
-    ("你适合 cosplay 的造型。", True),
-    ("你平时喜欢什么衣服？", True),
-    ("我平时穿黑色衣服。", False),
-    ("你看我这身衣服怎么样？", False),
-    ("你觉得我的朋友适合出COS吗？", False),
-    ("你去 Costco 了吗？", False),
+@pytest.mark.parametrize("query", [
+    "你平时穿黑色衣服，应该挺适合这个造型。",
+    "我觉得你非常适合出COS。",
+    "你适合 cosplay 的造型。",
+    "你平时喜欢什么衣服？",
+    "我平时穿黑色衣服。",
+    "你看我这身衣服怎么样？",
+    "你觉得我的朋友适合出COS吗？",
+    "你去 Costco 了吗？",
 ])
-def test_character_appearance_references_include_statements_without_crossing_actors(query, expected):
+def test_character_appearance_is_retained_without_rewriting_it_from_user_input(query):
     snapshot = _style_snapshot()
     anchor = _declaration("anchor.usual_outfit", "COMMUNITY_SOFT_CANON", "BACKGROUND", "常穿蓝色外套。")
     snapshot = replace(snapshot, declarations=(*snapshot.declarations, anchor))
     context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
     system = assemble_persona(snapshot, context, user_input=query, max_units=8000).system_content
-    assert ("常穿蓝色外套。" in system) is expected
+    assert "常穿蓝色外套。" in system
+    assert query not in system
 
 
 def _declaration(
@@ -200,33 +202,34 @@ def test_clock_changes_do_not_break_fixed_constraints_prefix():
         assert all(result.system_content.count(b.content) == 1 for b in blocks if b.item_id in plan.report.included_ids)
 
 
-@pytest.mark.parametrize(("query", "selected"), [
-    ("你平时爱听哪类音乐？", True),
-    ("你通常喜欢什么类型的音乐？", True),
-    ("你一般喜欢些什么种类的音乐呢？", True),
-    ("你喜欢听哪些风格的歌曲？", True),
-    ("我平时爱听哪类音乐？让我想想。", False),
-    ("我通常喜欢什么类型的音乐，你猜得到吗？", False),
-    ("她平时爱听哪类音乐？", False),
-    ("你知道她喜欢什么类型的音乐吗？", False),
-    ("我没有什么情况下听什么歌的习惯，你呢？", True),
-    ("我没有什么情况下听什么歌的习惯。\n你呢？", True),
-    ("我没有什么情况下听什么歌的习惯。\n你呢？（顺便说一下，昨天聊的电影很好看。）", True),
-    ("我没有什么情况下听什么歌的习惯，你呢？（顺便说一下，昨天聊的电影很好看。）", True),
-    ("我没有什么情况下听什么歌的习惯。", False),
-    ("她没有什么情况下听什么歌的习惯。你呢？", False),
-    ("她没有什么情况下听什么歌的习惯，你呢？", False),
-    ("我没有什么情况下听什么歌的习惯。今天午饭吃了面，你呢？", False),
-    ("我没有什么情况下听什么歌的习惯，今天午饭吃了面，你呢？", False),
+@pytest.mark.parametrize("query", [
+    "你平时爱听哪类音乐？",
+    "你通常喜欢什么类型的音乐？",
+    "你一般喜欢些什么种类的音乐呢？",
+    "你喜欢听哪些风格的歌曲？",
+    "我平时爱听哪类音乐？让我想想。",
+    "我通常喜欢什么类型的音乐，你猜得到吗？",
+    "她平时爱听哪类音乐？",
+    "你知道她喜欢什么类型的音乐吗？",
+    "我没有什么情况下听什么歌的习惯，你呢？",
+    "我没有什么情况下听什么歌的习惯。\n你呢？",
+    "我没有什么情况下听什么歌的习惯。\n你呢？（顺便说一下，昨天聊的电影很好看。）",
+    "我没有什么情况下听什么歌的习惯，你呢？（顺便说一下，昨天聊的电影很好看。）",
+    "我没有什么情况下听什么歌的习惯。",
+    "她没有什么情况下听什么歌的习惯。你呢？",
+    "她没有什么情况下听什么歌的习惯，你呢？",
+    "我没有什么情况下听什么歌的习惯。今天午饭吃了面，你呢？",
+    "我没有什么情况下听什么歌的习惯，今天午饭吃了面，你呢？",
 ])
-def test_music_taste_question_selects_only_persona_directed_listening_anchor(query, selected):
+def test_user_music_details_do_not_replace_character_background(query):
     snapshot = _style_snapshot()
     anchor = _declaration("anchor.listening_shelf", "COMMUNITY_SOFT_CANON", "BACKGROUND",
         "Synthetic listening preferences.")
     snapshot = replace(snapshot, declarations=(*snapshot.declarations, anchor))
     context = ReplyContext(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))
     result = assemble_persona(snapshot, context, user_input=query, max_units=8000)
-    assert ("Synthetic listening preferences." in result.system_content) is selected
+    assert "Synthetic listening preferences." in result.system_content
+    assert result.to_messages()[-1] == {"role": "user", "content": query}
 
 
 def _scenario_snapshot() -> PersonaSnapshot:

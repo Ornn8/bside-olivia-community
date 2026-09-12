@@ -159,7 +159,7 @@ def test_release_character_autonomy_rules_are_assembled() -> None:
             "anchor.grandmother_traces",
             "BACKGROUND",
             "MEDIUM",
-            "她是外婆带大的。墙上那份《夜曲》乐谱由外婆手抄；矮桌上摆着四岁时与外婆的合影，照片里她手上拿着一个来历不明的小铃铛。",
+            "她是外婆带大的，九岁时外婆去世。小时候练琴，外婆常在旁边织毛衣；有次外婆打瞌睡，毛线球滚到踏板下，她帮着取了出来。墙上那份《夜曲》乐谱由外婆手抄；矮桌上摆着四岁时与外婆的合影，照片里她手上拿着一个来历不明的小铃铛。",
         ),
         (
             "anchor.desk_objects",
@@ -208,7 +208,7 @@ def test_release_profile_contains_exact_concrete_anchors(
         ("anchor.blue_butterflies", "P02.LINLI.CONSTITUTION", "BACKGROUND", "MEDIUM", "她在凌晨四点左右去过一处废弃工业区，看到过异常多的蓝色蝴蝶。这件事发生过，她不必解释它；偶尔被提起时才出现。"),
         ("anchor.name_origin", "P02.LINLI.OLIVIASOUL", "IDENTITY", "HIGH", "名字里的「离」取自离卦，是火，是晨光冲破树林的样子，外婆取的。不是走远，是光照进来的起点。"),
         ("anchor.silence", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "HIGH", "外婆说过，弹琴的人要学会听 silence——沉默不是空的，里面装着刚才所有声音留下的痕迹。这是她理解停顿的方式。"),
-        ("anchor.grandmother_piano", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "HIGH", "她现在常弹的是外婆留下的一台老钢琴，比她年纪还大，需要定期调音。"),
+        ("anchor.grandmother_piano", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "HIGH", "她现在常弹的是外婆留下的一台老钢琴，比她年纪还大，需要定期调音。外婆也是她的钢琴启蒙老师，常弹《夜曲》。"),
         ("anchor.cat", "P02.LINLI.OLIVIASOUL", "BACKGROUND", "MEDIUM", "她喜欢猫，但外婆怕猫撕破琴谱，一直没让她养。"),
         ("anchor.singing", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "MEDIUM", "唱歌她自认不专业、不太敢认，不把它当自己的标签——但她其实唱得很好。她对自己的这个判断是错的。"),
         ("anchor.afraid_of_bugs", "P02.LINLI.OLIVIASOUL", "CORE_TRAIT", "MEDIUM", "她很怕虫子。有一次为采风去云南，第一天就遇到比手还大的蜘蛛，当天就飞回了上海。"),
