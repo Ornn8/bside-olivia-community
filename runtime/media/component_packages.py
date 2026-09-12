@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 import uuid
 import zipfile
+import shutil
 
 
 COMPONENTS = {
@@ -201,25 +202,39 @@ class MediaComponents:
                     return 'NOOP'
             # Immutable generations keep an existing installation intact on any failure.
             destination = _inside(self.root, self.root / (component + '-' + uuid.uuid4().hex))
+            if destination.exists():
+                raise ValueError('MEDIA_COMPONENT_DESTINATION_EXISTS')
             def progress(done, total):
                 self.progress.update(checked_bytes=done, total_bytes=total)
-            self.progress.update(state='extracting')
-            _extract_runtime_zip_safely(archive, destination, progress=progress)
-            digest = _sha256_file(destination / 'runtime-manifest.json')[1]
-            self.progress.update(state='checking')
-            env = _load_runtime_root_manifest(destination, digest, verify_files=True, progress=progress)
-            self.progress.update(state='testing')
-            for key, value in env.items():
-                if key.endswith('_PYTHON') and not _portable_python_runtime(Path(value), destination):
-                    raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
-            if component == 'voice':
-                config = json.loads(self._voice_config(destination, Path(env['OLIVIA_TTS_CONFIG'])).read_text(encoding='utf-8'))
-                if not _portable_python_runtime(Path(config['settings']['provider_options']['external_python']), destination):
-                    raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
-            registry[component] = {'directory': destination.name, 'manifest_sha256': digest,
-                                   'archive_sha256': archive_digest}
             temporary = self.root / ('installed-' + uuid.uuid4().hex + '.tmp')
-            temporary.write_text(json.dumps(registry, sort_keys=True), encoding='utf-8')
-            os.replace(temporary, self.root / 'installed.json')
+            try:
+                self.progress.update(state='extracting')
+                _extract_runtime_zip_safely(archive, destination, progress=progress)
+                digest = _sha256_file(destination / 'runtime-manifest.json')[1]
+                self.progress.update(state='checking')
+                env = _load_runtime_root_manifest(destination, digest, verify_files=True, progress=progress)
+                self.progress.update(state='testing')
+                for key, value in env.items():
+                    if key.endswith('_PYTHON') and not _portable_python_runtime(Path(value), destination):
+                        raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
+                if component == 'voice':
+                    config = json.loads(self._voice_config(destination, Path(env['OLIVIA_TTS_CONFIG'])).read_text(encoding='utf-8'))
+                    if not _portable_python_runtime(Path(config['settings']['provider_options']['external_python']), destination):
+                        raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
+                registry[component] = {'directory': destination.name, 'manifest_sha256': digest,
+                                       'archive_sha256': archive_digest}
+                temporary.write_text(json.dumps(registry, sort_keys=True), encoding='utf-8')
+                os.replace(temporary, self.root / 'installed.json')
+            except Exception:
+                # Only this attempt's unpublished generation belongs to this cleanup.
+                try:
+                    _reject_reparse_tree(self.root)
+                    _inside(self.root, destination)
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    temporary.unlink(missing_ok=True)
+                except (OSError, ValueError):
+                    raise ValueError('MEDIA_COMPONENT_CLEANUP_FAILED') from None
+                raise
             self.progress.update(state='ready')
             return 'APPLIED'

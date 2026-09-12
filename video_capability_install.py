@@ -3554,12 +3554,12 @@ def _extract_runtime_zip_safely(
 ) -> None:
     """Extract a published portable runtime; its signed manifest verifies files next."""
 
-    destination.mkdir(parents=True, exist_ok=resume)
-    if resume:
-        _reject_reparse_tree(destination)
     written: set[str] = set()
     extracted_bytes = 0
     try:
+        destination.mkdir(parents=True, exist_ok=resume)
+        if resume:
+            _reject_reparse_tree(destination)
         with zipfile.ZipFile(archive_path) as archive:
             members = archive.infolist()
             total_bytes = sum(member.file_size for member in members)
@@ -3633,7 +3633,20 @@ def _extract_runtime_zip_safely(
                 value.casefold() for _, value in normalized
             }:
                 raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID")
-    except (OSError, zipfile.BadZipFile, ComponentUpdateError) as exc:
+    except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
+        if exc.errno == errno.ENOSPC or winerror in {39, 112}:
+            code = "VIDEO_ARCHIVE_DISK_FULL"
+        elif exc.errno in {errno.EACCES, errno.EPERM} or winerror == 5:
+            code = "VIDEO_ARCHIVE_ACCESS_DENIED"
+        elif exc.errno == errno.ENAMETOOLONG or winerror == 206:
+            code = "VIDEO_ARCHIVE_PATH_TOO_LONG"
+        else:
+            code = "VIDEO_ARCHIVE_IO_FAILED"
+        raise VideoCapabilityError(code) from exc
+    except zipfile.BadZipFile as exc:
+        raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_CORRUPT") from exc
+    except ComponentUpdateError as exc:
         raise VideoCapabilityError("VIDEO_RUNTIME_ARCHIVE_INVALID") from exc
 
 

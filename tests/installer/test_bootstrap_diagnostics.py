@@ -46,6 +46,23 @@ def test_cli_install_result_survives_ascii_output_encoding(tmp_path):
     assert json.loads(result.stdout)['status'] == 'INSTALLED'
 
 
+def test_storage_snapshot_is_projected_without_private_paths(tmp_path):
+    package = tmp_path / 'installer'
+    package.mkdir()
+    (package / '__init__.py').write_text('')
+    (package / '__main__.py').write_text(
+        "error = OSError(28, 'private-secret')\n"
+        "error.install_storage = {'operation': 'copy_client', 'destination_free_bytes': 0, "
+        "'payload_free_bytes': 2048, 'path': 'private-path'}\nraise error\n")
+    result = subprocess.run([sys.executable, str(BOOTSTRAP), str(tmp_path)],
+                            capture_output=True, text=True, timeout=15)
+    record = json.loads(result.stdout)
+    assert record['code'] == 'SETUP_PATCH_DISK_FULL'
+    assert record['diagnostic']['storage_before_rollback'] == {
+        'operation': 'copy_client', 'destination_free_bytes': 0, 'payload_free_bytes': 2048}
+    assert 'private-' not in result.stdout + result.stderr
+
+
 @pytest.mark.parametrize(('failure', 'code'), [
     ("PermissionError(13, 'private-path-secret')", 'SETUP_PATCH_PERMISSION_DENIED'),
     ("OSError(28, 'private-path-secret')", 'SETUP_PATCH_DISK_FULL'),

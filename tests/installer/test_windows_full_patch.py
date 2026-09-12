@@ -33,6 +33,30 @@ from installer.version_launcher import resolve_active_backend
 CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
 
 
+def test_disk_failure_snapshot_is_taken_before_rollback(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import errno
+    official, feapp_sha, webplayer_sha = _make_official(tmp_path / 'official')
+    manifest = _write_manifest(tmp_path / 'manifest.json', feapp_sha, webplayer_sha)
+    target = tmp_path / 'install'
+    error = OSError(errno.ENOSPC, 'private-message')
+    def fail(source, destination, version):
+        destination.mkdir(parents=True)
+        (destination / 'partial').write_text('partial')
+        raise error
+    def usage(path):
+        # Rollback restores space; recording afterwards would misdiagnose this.
+        return SimpleNamespace(free=0 if target.exists() else 1000000)
+    monkeypatch.setattr(full_patch, 'copy_official_runtime', fail)
+    monkeypatch.setattr(full_patch.shutil, 'disk_usage', usage)
+    with pytest.raises(OSError) as caught:
+        install_full_patch(official, target, tmp_path / 'payload', manifest)
+    assert caught.value is error
+    assert not target.exists()
+    assert error.install_storage['destination_free_bytes'] == 0
+    assert error.install_storage['operation'] == 'copy_client'
+
+
 def test_video_seed_patch_is_a_required_runtime_payload() -> None:
     assert "installer/seed-vc-overlap-frames.patch" not in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert "installer/assets/olivia.ico" in PAYLOAD_REQUIRED_RELATIVE_FILES
