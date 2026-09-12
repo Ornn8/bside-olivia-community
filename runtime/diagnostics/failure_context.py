@@ -4,6 +4,12 @@ STAGES = {"configuration", "request", "http_response", "response_json", "tool_pa
 CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE", "PROVIDER_RETRYABLE", "PROVIDER_REJECTED", "GATEWAY_OTHER"}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
+DETAILS |= {
+    "route_tool_count", "route_tool_name", "route_fields", "route_values",
+    "route_contexts", "route_booleans", "route_disposition", "route_current_work",
+    "route_music_context", "route_text_constraints", "route_voice_constraints",
+    "route_music_constraints",
+}
 
 
 def project_failure_context(source):

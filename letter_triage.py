@@ -239,10 +239,16 @@ def _bool_field(value: Mapping[str, Any], name: str) -> bool | None:
     return item if type(item) is bool else None
 
 
+def _invalid_result(detail: str) -> TriageResult:
+    return _failed("router_invalid_result", diagnostic={
+        "failure_stage": "route_validation", "failure_detail": detail,
+    })
+
+
 def _validated_result(
     value: Mapping[str, Any],
     context: RoutingContext,
-) -> TriageResult | None:
+) -> TriageResult:
     mode = value.get("mode")
     reason = value.get("reason_code")
     emotion = value.get("emotion_level")
@@ -266,7 +272,7 @@ def _validated_result(
         or len(raw_contexts) > len(_ALLOWED_MUSIC_CONTEXTS)
         or any(type(item) is not str for item in raw_contexts)
     ):
-        return None
+        return _invalid_result("route_values")
 
     contexts = tuple(raw_contexts)
     if (
@@ -277,14 +283,14 @@ def _validated_result(
         )
         or _ROLE_INTENT[role] != intent
     ):
-        return None
+        return _invalid_result("route_contexts")
 
     direct = _bool_field(value, "direct_response_sufficient")
     voice_better = _bool_field(value, "voice_materially_better")
     music_better = _bool_field(value, "music_materially_better")
     willing = _bool_field(value, "character_willing")
     if None in {direct, voice_better, music_better, willing}:
-        return None
+        return _invalid_result("route_booleans")
 
     voice_explicit = bool({"explicit_voice_reply_request", "explicit_video_reply_request"}.intersection(contexts))
     song_explicit = "explicit_performance_or_adaptation_request" in contexts
@@ -303,27 +309,27 @@ def _validated_result(
             "fulfill" if available else "defer",
         )
     if disposition in {"fulfill", "refuse", "defer"}:
-        return None
+        return _invalid_result("route_disposition")
 
     if "current_work_relevance" in contexts and not context.current_music_work:
-        return None
+        return _invalid_result("route_current_work")
     if "melody_idea" in contexts:
         if role != "spontaneous_motif" or intent != "compose":
-            return None
+            return _invalid_result("route_music_context")
     elif role == "spontaneous_motif":
-        return None
+        return _invalid_result("route_music_context")
 
     if mode == "text_letter":
         if role in _ACTIVE_MUSIC_ROLES:
-            return None
+            return _invalid_result("route_text_constraints")
     elif mode == "voice_reply":
         if not context.available(mode) or direct or not voice_better or not willing or role != "none" or music_better:
-            return None
+            return _invalid_result("route_voice_constraints")
     else:
         if not context.available("singing_video" if mode == "musical_video" else mode) or direct or not music_better or not willing or not contexts or role not in _ACTIVE_MUSIC_ROLES:
-            return None
+            return _invalid_result("route_music_constraints")
         if mode == "voice_song_video" and not voice_better:
-            return None
+            return _invalid_result("route_music_constraints")
         # Old automatic musical decisions retain their song expression without adding speech.
         if mode == "musical_video":
             mode = "singing_video"
@@ -414,13 +420,14 @@ class LetterReplyRouter:
         except Exception as error:
             return _failed("router_unavailable", diagnostic=exception_context(error, "internal"))
 
-        if len(calls) != 1 or getattr(calls[0], "name", None) != "select_reply_mode":
-            return _failed("router_invalid_result")
+        if len(calls) != 1:
+            return _invalid_result("route_tool_count")
+        if getattr(calls[0], "name", None) != "select_reply_mode":
+            return _invalid_result("route_tool_name")
         arguments = getattr(calls[0], "arguments", None)
         if not isinstance(arguments, Mapping) or set(arguments) != _TOOL_FIELDS:
-            return _failed("router_invalid_result")
-        result = _validated_result(arguments, context)
-        return result or _failed("router_invalid_result")
+            return _invalid_result("route_fields")
+        return _validated_result(arguments, context)
 
 
 # Existing imports keep working while the behavior is upgraded from emotion

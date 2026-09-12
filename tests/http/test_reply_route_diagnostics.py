@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections import deque
 from types import SimpleNamespace
 
@@ -8,6 +9,51 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from runtime.diagnostics.support_bundle import _project_tail
 from runtime.video_reply_settings import VideoReplySettingsStore
+
+
+@pytest.mark.parametrize("change,detail", [
+    ({"extra": "private-letter"}, "route_fields"),
+    ({"reason_code": "private-invalid-reason"}, "route_values"),
+    ({"music_role": "performance"}, "route_contexts"),
+    ({"direct_response_sufficient": "true"}, "route_booleans"),
+    ({"request_disposition": "fulfill"}, "route_disposition"),
+    ({"music_contexts": ["current_work_relevance"]}, "route_current_work"),
+    ({"mode": "voice_reply"}, "route_voice_constraints"),
+])
+def test_qwen_route_validation_reason_survives_export(change, detail):
+    from llm_gateway import GatewayConfig, OpenAICompatibleAdapter
+    from letter_triage import LetterReplyRouter
+    import local_server as server
+
+    arguments = dict(mode="text_letter", reason_code="direct_words", emotion_level="normal",
+        music_contexts=[], music_role="none", music_intent="none", request_disposition="none",
+        direct_response_sufficient=True, voice_materially_better=False,
+        music_materially_better=False, character_willing=True)
+    arguments.update(change)
+
+    async def run():
+        async def provider(request):
+            body = await request.json()
+            assert body["model"] == "qwen3.8-flash"
+            assert body["enable_thinking"] is False
+            return web.json_response({"choices": [{"message": {"tool_calls": [{"function": {
+                "name": "select_reply_mode", "arguments": json.dumps(arguments),
+            }}]}}]})
+        app = web.Application()
+        app.router.add_post('/chat/completions', provider)
+        async with TestClient(TestServer(app)) as client:
+            gateway = OpenAICompatibleAdapter(GatewayConfig(
+                provider="openai_compatible", base_url=str(client.make_url('/')).rstrip('/'),
+                model="qwen3.8-flash", requires_api_key=False, max_retries=0))
+            return await LetterReplyRouter(gateway, environ={}).classify("private-letter")
+
+    result = asyncio.run(run())
+    assert result.reason_code == "router_invalid_result"
+    assert result.diagnostic == {"failure_stage": "route_validation", "failure_detail": detail}
+    record = server._runtime_diagnostic_record("reply_route_classification_failed", result.diagnostic)
+    exported = _project_tail([record], runtime=True)
+    assert detail.encode() in exported
+    assert b"private-" not in exported
 
 
 @pytest.mark.parametrize("reason,expected", [
