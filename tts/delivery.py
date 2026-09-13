@@ -444,6 +444,7 @@ def render_delivery_wav(
             request_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             command = [
                 str(executable),
+                *(["-I"] if config.provider == "breeze_tts2" and payload.get("runtime_backend") == "rocm" else []),
                 str(worker),
                 "--request",
                 str(request_path),

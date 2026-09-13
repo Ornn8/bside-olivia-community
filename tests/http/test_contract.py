@@ -2694,6 +2694,10 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
                 "status": "UNAVAILABLE",
                 "retryable": True,
             },
+            "BREEZE_TTS_ROCM_UNAVAILABLE": {
+                "status": "UNAVAILABLE",
+                "retryable": True,
+            },
             "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
                 "status": "UNAVAILABLE",

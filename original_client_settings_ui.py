@@ -1764,6 +1764,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     guide.append(
       text("p", "只收文字信：不用安装这里的组件。", "text-text-body text-body-m font-regular"),
       text("p", "听说话：媒体工具 + 说话语音。听唱歌：媒体工具 + 唱歌；自动识别歌词另加歌词识别。", "text-text-body text-body-m font-regular"),
+      text("p", "AMD 用户：使用 Olivia-voice-amd 专用离线包，仍从下方选择 ZIP 导入。仅语音实验支持，需要 Windows 11 和兼容 ROCm 的显卡；尚未完成 AMD 实机验收。视频和唱歌组件仍需 NVIDIA。", "text-text-secondary text-body-m font-regular"),
       text("p", "还要看视频：在相应声音组件上增加口型视频 + 视频场景；唱歌视频还需人声分离。", "text-text-body text-body-m font-regular")
     );
     const legacyProgress = payload.runtime_import || {};

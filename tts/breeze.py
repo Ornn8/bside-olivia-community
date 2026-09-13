@@ -164,6 +164,7 @@ class BreezeTTS2Provider:
             "model_variant": self.model_variant,
             "dtype": str(options.get("dtype", "bf16") or "bf16"),
             "device": str(options.get("device", "cuda") or "cuda"),
+            "runtime_backend": str(options.get("runtime_backend", "cuda") or "cuda"),
             "attention": str(options.get("attention", "eager") or "eager"),
             "decode_mode": str(options.get("decode_mode", "eager") or "eager"),
             "cfg_scale": float(options.get("cfg_scale", 1.0)),

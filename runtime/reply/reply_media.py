@@ -133,9 +133,9 @@ def _tts_config(
         if provider == "breeze_tts2"
         else "OLIVIA_COSYVOICE_PYTHON"
     )
-    configured_python = environment.get(python_env) or provider_options.get(
-        "external_python"
-    )
+    configured_python = (provider_options.get("external_python")
+        if provider == "breeze_tts2" and provider_options.get("runtime_backend") == "rocm"
+        else environment.get(python_env) or provider_options.get("external_python"))
     external_python = (
         configured_path(configured_python)
         if configured_python is not None and str(configured_python).strip()
