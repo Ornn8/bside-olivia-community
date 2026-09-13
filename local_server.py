@@ -1264,6 +1264,8 @@ _route_decision_cache: dict[str, tuple] = {}
 
 
 async def _classify_managed_route(content: str, routes: dict[str, bool]) -> TriageResult:
+    if video_reply_settings_store.saved_tier() == "text":
+        return TriageResult("normal", "text_letter", "text_tier_selected", "completed", False)
     import copy
     from letter_triage import routing_context_from_environment
     ready = await asyncio.to_thread(_route_readiness)

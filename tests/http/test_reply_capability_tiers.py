@@ -6,6 +6,41 @@ from runtime.video_reply_settings import VideoReplySettingsStore, REPLY_ROUTES, 
 from letter_triage import TriageResult, restrict_reply_route
 
 
+@pytest.mark.parametrize('content', ['今天听了一首歌', '请给我唱一首歌'])
+@pytest.mark.parametrize('with_preview', [False, True])
+def test_text_tier_accepts_song_letters_without_media(tmp_path, monkeypatch, content, with_preview):
+    from types import SimpleNamespace
+    import local_server as server
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    settings.mutate_tier('video_reply_setting:text-only', 'text')
+    monkeypatch.setattr(server, 'video_reply_settings_store', settings)
+    monkeypatch.setattr(server.store, 'letters', [])
+    monkeypatch.setattr(server.store, 'request_keys', {})
+    monkeypatch.setattr(server, '_reply_route_previews', {})
+    monkeypatch.setattr(server, '_missing_memory_component', lambda: None)
+    monkeypatch.setattr(server, '_persist_store_state', lambda: None)
+    monkeypatch.setattr(server, '_schedule_reply_job', lambda *a, **k: None)
+    monkeypatch.setattr(server, '_route_readiness', lambda *a, **k: dict.fromkeys(REPLY_ROUTES, False))
+    async def classify(_content):
+        pytest.fail('Text-only letters must not invoke media routing')
+    monkeypatch.setattr(server, 'emotion_triage', SimpleNamespace(classify=classify))
+
+    async def run():
+        material = {}
+        if with_preview:
+            response = await server.route('POST', '/toy/letter/route-preview', {'content': content}, {})
+            assert response['code'] == 0, response
+            preview = response['data']
+            assert not preview['needs_confirmation']
+            assert not preview['needs_video_confirmation']
+            material['route_preview_token'] = preview['token']
+        response = await server.route('POST', '/toy/letter/send',
+            {'content': content, 'material': material}, {}, defer_reply=True)
+        assert response['code'] == 0, response
+        assert server.store.letters[0]['route_preflight']['reply_mode'] == 'text_letter'
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('mode,video,bounded', [
     ('voice_reply',False,False), ('voice_reply',True,True),
     ('voice_song_video',False,False), ('voice_song_video',True,True),
@@ -111,7 +146,7 @@ def test_tier_preview_send_matrix(tmp_path, monkeypatch, tier, mode, contexts):
             assert not server.store.letters
             if preview['needs_confirmation']: material['route_allow_once'] = mode
             if preview['needs_video_confirmation']: material['route_video_once'] = mode
-        expected_mode = 'text_letter' if tier == 'text' and not contexts else mode
+        expected_mode = 'text_letter' if tier == 'text' else mode
         if expected_mode in ('singing_video', 'voice_song_video'):
             material.update(cover_source_id=source_id, cover_lyrics='验收歌词')
         accepted = await server.route('POST', '/toy/letter/send', body, {}, defer_reply=True)
@@ -127,5 +162,5 @@ def test_tier_preview_send_matrix(tmp_path, monkeypatch, tier, mode, contexts):
         assert settings.saved_tier() == tier
         assert settings.routes_snapshot() == dict.fromkeys(REPLY_ROUTES, tier != 'text')
         assert settings.videos_snapshot() == dict.fromkeys(REPLY_ROUTES, tier == 'video')
-        assert len(calls) == 1
+        assert len(calls) == (0 if tier == 'text' else 1)
     asyncio.run(run())
