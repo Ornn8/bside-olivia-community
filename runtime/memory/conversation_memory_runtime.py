@@ -217,21 +217,25 @@ class ConversationMemoryRuntime:
 
     def _refresh_reply_provider(self) -> None:
         """Probe only on the maintenance worker, never in UI/readiness requests."""
-        self._reply_provider_ready = False
+        ready = False
         health = self.outbox.health()
         if (health.get("reason_code") == "MEMORY_OUTBOX_RETRY_EXHAUSTED"
                 and 0 < _count(health.get("pending_count")) == _count(health.get("exhausted_count"))
                 and not self.outbox.committer.delivery_pending):
-            self._reply_provider_ready = _provider_status(self.outbox.committer.memory)[0] == "available"
+            ready = _provider_status(self.outbox.committer.memory)[0] == "available"
+        # Publish the new verdict after the check. Starting a check is not a
+        # failure; the previous success still has its existing 15-second TTL.
+        self._reply_provider_ready = ready
         self._reply_provider_checked_at = time.monotonic()
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
                 scan = asyncio.run(self.outbox.scan_once())
-                self._reply_provider_ready = False
                 if scan.status != "unavailable":
                     self._refresh_reply_provider()
+                else:
+                    self._reply_provider_ready = False
                 self.status()
             except Exception:
                 with self._reply_status_lock:

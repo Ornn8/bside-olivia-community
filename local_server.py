@@ -117,6 +117,7 @@ from runtime.memory.private_world_relationship import (
     RelationshipFactStatus,
 )
 from private_world_candidate import (
+    CandidateDeliveryStatus,
     GatewayPrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateAnalyzer,
     PrivateWorldCandidateRequest,
@@ -843,7 +844,7 @@ class LetterAdapter:
                 return limit
         return 2400
 
-    def build_reply_context(self, mode: ReplyMode) -> ReplyContext:
+    def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False) -> ReplyContext:
         try:
             private_snapshot = self.private_world_port.snapshot()
             if not isinstance(private_snapshot, PrivateWorldSnapshot):
@@ -871,6 +872,7 @@ class LetterAdapter:
             )
         return ReplyContext.create(
             mode,
+            future_im_enabled=future_im_enabled,
             trusted_time=TrustedTime(self._now()),
             world_facts=facts,
             private_behavior=projected.behavior,
@@ -951,6 +953,8 @@ class Store:
     def __init__(self):
         self.uid = 200717
         self.letters = []      # {letter_id, content, material, reply_text, ...}
+        self.personal_chats = []  # acknowledged IM exchanges; not native inbox letters
+        self.personal_chat_cursors = {}  # transport metadata, never native UI settings
         self.legacy_letters = []  # read-only imported view; never used by send/reply
         self.midi_jobs = []    # {job_id, state, filename, created_at}
         self.settings = {}
@@ -1052,14 +1056,14 @@ def _read_store_state(path: Path) -> dict:
     if not isinstance(loaded, dict) or "letters" not in loaded:
         raise ValueError("store state must be an object")
     normalized: dict[str, object] = {}
-    for name in ("letters", "legacy_letters", "midi_jobs"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
         value = loaded.get(name, [])
         if not isinstance(value, list) or not all(
             isinstance(item, dict) for item in value
         ):
             raise ValueError("store state contains an invalid collection")
         normalized[name] = value
-    for name in ("settings", "request_keys"):
+    for name in ("settings", "request_keys", "personal_chat_cursors"):
         value = loaded.get(name, {})
         if not isinstance(value, dict):
             raise ValueError("store state contains invalid metadata")
@@ -1147,7 +1151,7 @@ def _load_store_state() -> None:
             return
     _store_state_error_code = None
     needs_persist = False
-    for name in ("letters", "legacy_letters", "midi_jobs"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
         value = loaded.get(name)
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             setattr(store, name, value)
@@ -1176,6 +1180,8 @@ def _load_store_state() -> None:
         store.settings = loaded["settings"]
     if isinstance(loaded.get("request_keys"), dict):
         store.request_keys = loaded["request_keys"]
+    if isinstance(loaded.get("personal_chat_cursors"), dict):
+        store.personal_chat_cursors = loaded["personal_chat_cursors"]
     if needs_persist or recovered_from_backup:
         try:
             _persist_store_state()
@@ -1196,6 +1202,8 @@ def _persist_store_state() -> None:
         raise StoreStateUnavailable(StoreStateUnavailable.code) from None
     payload = {
         "letters": store.letters,
+        "personal_chats": store.personal_chats,
+        "personal_chat_cursors": store.personal_chat_cursors,
         "legacy_letters": store.legacy_letters,
         "midi_jobs": store.midi_jobs,
         "settings": store.settings,
@@ -1363,7 +1371,7 @@ letters_adapter = LetterAdapter(
     memory_port=memory_adapter,
     conversation_memory=conversation_memory_adapter,
     private_world_port=private_world_port,
-    recent_letters=lambda: list(store.letters),
+    recent_letters=lambda: [*store.letters, *(row for row in store.personal_chats if row.get("delivery_status") == "DELIVERED")],
 )
 
 
@@ -1429,6 +1437,16 @@ def _official_history_memory_available() -> bool:
         and status.enabled is True
         and status.provider == "mem0"
     )
+
+
+def _missing_memory_component() -> str | None:
+    status = conversation_memory_adapter.status()
+    code = getattr(status, 'reason_code', None)
+    if status.status == 'unavailable' and code in {
+        'MEM0_EMBEDDING_CACHE_UNAVAILABLE', 'MEM0_IMPORT_FAILED',
+    }:
+        return code
+    return None
 
 
 def _conversation_memory_ready_for_reply() -> bool:
@@ -2141,6 +2159,12 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                     "status": "unavailable",
                     "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE",
                 }
+    if (isinstance(runtime_info, dict)
+            and runtime_info.get('reason_code') == 'MEM0_INITIALIZING'
+            and conversation_info.get('status') == 'unavailable'
+            and conversation_info.get('reason_code') not in {None, 'MEM0_INITIALIZING'}):
+        runtime_info = {**runtime_info, 'status': 'unavailable',
+                        'reason_code': conversation_info['reason_code']}
     if (
         conversation_info.get("status") != "disabled"
         and not lifecycle_unavailable
@@ -2771,6 +2795,11 @@ def _refresh_proactive_context() -> dict:
     try:
         world = daily_life_runtime.store.exchange_state() if daily_life_runtime is not None else {}
         context = make_context(store.letters, now=time.time(), world=world)
+        from runtime.personal_chat.contact_invitation import candidate, preview_configured
+        invitation = (candidate(store.letters, private_world_port.snapshot(), time.time())
+                      if preview_configured(_state_root()) else None)
+        if invitation:
+            context['candidates'].insert(0, invitation)
         root = _state_root()
         if root is not None:
             write_json(root / 'proactive/context.json', context)
@@ -2787,7 +2816,9 @@ def _proactive_status() -> dict:
     prefs = _proactive_settings()
     reason = ('disabled' if not prefs['enabled'] else
               'waiting' if _proactive_reason == 'disabled' else _proactive_reason)
-    return {**prefs, 'busy': _proactive_busy,
+    from runtime.personal_chat.contact_invitation import status
+    contact = status(store.letters, private_world_port.snapshot())
+    return {**prefs, 'busy': _proactive_busy, 'contact': contact,
             'remaining': make_context(store.letters, now=time.time())['remaining'],
             'reason': reason, 'next_check_at': schedule.get('next_check_at')}
 
@@ -2821,7 +2852,7 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     if source is None:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     query = str(source.get('content', ''))
-    assembled = await asyncio.to_thread(letters_adapter._messages, query)
+    assembled = [] if planning else await asyncio.to_thread(letters_adapter._messages, query)
     task = ('现在没有新的用户来信。判断林离是否有具体、适时且未说过的理由主动写信。'
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
@@ -2834,13 +2865,17 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
         if mode == 'text':
             from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
             task += '\n' + LETTER_PRESENTATION_INSTRUCTION
+    if intent.get('kind') == 'contact_invitation':
+        task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
+                 '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
+                 '可以围绕偶尔想随口聊两句来写，不要求用户转移所有通信，保留写信的习惯。')
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
-    messages = ({'role': 'system', 'content': assembled[0]['content'] + '\n' + task},
+    messages = ({'role': 'system', 'content': (assembled[0]['content'] + '\n' if assembled else '') + task},
                 {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
     gateway = letters_adapter.gateway
-    scope = GatewayRequestScope.BACKGROUND_REASONING
+    scope = GatewayRequestScope.PROACTIVE_PLANNING if planning else GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
         messages, request_id='proactive:' + intent['id'] + (':plan' if planning else ':body'),
         scope=scope), timeout=gateway.timeout_seconds_for_scope(scope, default=180))
@@ -2854,12 +2889,18 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
     global _proactive_busy
     if not _proactive_ready():
         return
+    if intent.get('kind') == 'contact_invitation':
+        from runtime.personal_chat.contact_invitation import status, preview_configured
+        if not preview_configured(_state_root()) or status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
+            return
     if not _history_memory_admin_gate.acquire(blocking=False):
         return
     _proactive_busy = True
     letter = None
     try:
         body = await _proactive_complete(intent, planning=False, mode=plan['format'])
+        if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
+            raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
         if plan['format'] == 'text':
             from runtime.reply.letter_presentation import split_signature
@@ -2868,10 +2909,15 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
                 raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_settings()['enabled']:
             return
+        if intent.get('kind') == 'contact_invitation':
+            from runtime.personal_chat.contact_invitation import status
+            if status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
+                return
         letter = {'letter_id': str(uuid.uuid4()), 'origin': 'proactive', 'content': '',
                   'title': plan['title'], 'material': {}, 'created_at': int(time.time()),
                   'letter_status': 'PROCESSING', 'is_read': 0, 'reply_text': '',
                   'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
+                  'proactive_kind': intent.get('kind'),
                   'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
         _prepare_private_world_delivery(letter, body)
         letter['reply_text'] = body
@@ -2916,7 +2962,7 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
 
 async def _proactive_tick() -> None:
     global _proactive_reason
-    from runtime.reply.proactive_letters import read_json, write_json, scan_pending
+    from runtime.reply.proactive_letters import DAY, read_json, write_json, scan_pending
     root = _state_root()
     if root is None or not _proactive_settings()['enabled']:
         _proactive_reason = 'disabled'
@@ -2927,13 +2973,23 @@ async def _proactive_tick() -> None:
     schedule = read_json(root / 'proactive/schedule.json')
     if time.time() < schedule.get('next_check_at', 0):
         return
-    intent = scan_pending(root)
+    now = time.time()
+    # A decision attempt counts even when the provider fails, defers, or the
+    # process exits. Keep both limits on disk, independent of model/provider.
+    attempts = [item for item in schedule.get('attempts', [])
+                if isinstance(item, dict) and isinstance(item.get('id'), str)
+                and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
+    if len(attempts) >= 3:
+        _proactive_reason = 'waiting'
+        return
+    intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
     if not intent:
         _proactive_reason = 'no_opportunity'
         return
     # Persist before provider calls; retries/restarts cannot turn five-minute
     # cheap checks into an unbounded sequence of paid decisions.
-    write_json(root / 'proactive/schedule.json', {'next_check_at': time.time() + 3600})
+    attempts.append({'id': intent['id'], 'at': now})
+    write_json(root / 'proactive/schedule.json', {'next_check_at': now + 3600, 'attempts': attempts})
     _proactive_reason = 'considering'
     plan = json.loads(await _proactive_complete(intent, planning=True))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
@@ -3477,6 +3533,9 @@ async def route(
         content = body.get("content")
         if not isinstance(content, str) or not content.strip() or len(content) > 10000:
             return err(400, "INVALID_CONTENT", {})
+        missing = await asyncio.to_thread(_missing_memory_component)
+        if missing:
+            return err(503, missing, {'error_code': missing, 'retryable': True})
         try:
             routes = video_reply_settings_store.routes_snapshot()
         except VideoReplySettingsError as exc:
@@ -3876,6 +3935,9 @@ async def route(
                 'error_code': 'CONTENT_TOO_LONG',
                 'max_length': 10000,
             })
+        missing = await asyncio.to_thread(_missing_memory_component)
+        if missing:
+            return err(503, missing, {'error_code': missing, 'retryable': True})
         idempotency_key = _request_value(
             body,
             query,
@@ -4598,7 +4660,8 @@ async def _run_reply_when_memory_ready(
             # memory call is still being settled. Only the outbox owns retries.
             busy = (
                 runtime.enabled and runtime.worker_running
-                and runtime.delivery_pending
+                and (runtime.delivery_pending
+                     or (runtime.pending_count > 0 and runtime.reason_code is None))
                 and runtime.status == "degraded"
                 and runtime.reason_code in {None, "MEMORY_OUTBOX_RETRY_EXHAUSTED"}
             )
@@ -4795,6 +4858,9 @@ def install_reply_task_lifecycle(app: web.Application) -> None:
 
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    from runtime.personal_chat.backend import install_personal_chat
+    import sys
+    install_personal_chat(app, sys.modules[__name__])
     app.on_cleanup.append(_stop_conversation_memory)
     app.on_cleanup.append(_stop_reply_tasks)
 
@@ -4830,11 +4896,19 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
 
     async def deliver():
         try:
+            from runtime.personal_chat.contact_invitation import status, observe, validate_choice
+            contact = status(store.letters, private_world_port.snapshot())
+            invitation_id = contact.get('invitation_id') if letter.get('origin') != 'proactive' else None
+            # A delayed extraction cannot interpret an older letter as acceptance.
+            invitation = next((r for r in store.letters if r.get('letter_id') == invitation_id), None)
+            if invitation and float(letter.get('created_at', 0)) < float(invitation.get('published_at', 0)):
+                invitation_id = None
             await daily_life_runtime.consume_exchange(
                 source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
                 occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
                 received_at=datetime.fromisoformat(letter.get("life_received_at", letter["private_world_occurred_at"])),
                 **({'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}),
+                **({'contact_invited': True} if invitation_id else {}),
             )
             origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
             signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
@@ -4848,6 +4922,13 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 letter["relationship_status"] = relationship_status.value
                 if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+                observe(letter, private_world_port.snapshot(), private_world_relationship_committer.ledger.events())
+            if invitation_id:
+                payload = daily_life_runtime.store._exchange_payload(source_id, letter['content'], letter['reply_text'])
+                choice = validate_choice(payload.get('contact_choice'), letter['content'])
+                if choice:
+                    letter['contact_invitation_id'] = invitation_id
+                    letter['contact_choice'] = choice
             boundaries = daily_life_runtime.store.exchange_boundaries(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
             if boundaries:
                 if private_world_relationship_committer is None:
@@ -4874,7 +4955,7 @@ async def _deliver_private_world_candidate(
     letter: dict,
     user_message: str,
     canonical_reply: str,
-) -> None:
+) -> CandidateDeliveryStatus | None:
     store = private_world_candidate_store
     if store is None:
         return
@@ -4892,7 +4973,7 @@ async def _deliver_private_world_candidate(
         )
     except (AttributeError, KeyError, TypeError, ValueError):
         return
-    await deliver_private_world_candidate(
+    return await deliver_private_world_candidate(
         private_world_candidate_analyzer,
         store,
         request,

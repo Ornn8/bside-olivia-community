@@ -312,7 +312,14 @@ class CanonicalMemoryOutbox:
         letters = payload.get("letters", ())
         if not isinstance(letters, Sequence) or isinstance(letters, (str, bytes)):
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STATE_INVALID")
-        return tuple(row for row in letters if isinstance(row, Mapping))
+        chats = payload.get("personal_chats", ())
+        if not isinstance(chats, Sequence) or isinstance(chats, (str, bytes)):
+            raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STATE_INVALID")
+        # The same outbox/committer owns both channels. Generated or uncertain
+        # sends are never canonical memory even if their text is present.
+        return (*tuple(row for row in letters if isinstance(row, Mapping)),
+                *tuple(row for row in chats if isinstance(row, Mapping)
+                       and row.get("delivery_status") == "DELIVERED"))
 
     def _is_terminal(self, source_id: str) -> bool:
         try:

@@ -805,7 +805,8 @@ def test_proactive_completion_uses_gateway_reasoning_deadline(monkeypatch, model
     seen = []
 
     async def complete(messages, *, request_id, scope):
-        assert scope is GatewayRequestScope.BACKGROUND_REASONING
+        assert scope is (GatewayRequestScope.PROACTIVE_PLANNING if planning
+                         else GatewayRequestScope.BACKGROUND_REASONING)
         return SimpleNamespace(text="synthetic final reply")
 
     async def wait_for(awaitable, *, timeout):
@@ -824,7 +825,7 @@ def test_proactive_completion_uses_gateway_reasoning_deadline(monkeypatch, model
         {"id": "intent", "source_id": "reply:fixture:1"}, planning=planning,
     ))
     assert result == "synthetic final reply"
-    assert seen == [720]
+    assert seen == [180 if planning else 720]
 
 
 @pytest.mark.parametrize(

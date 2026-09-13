@@ -1,0 +1,10 @@
+{
+  "wechat": {
+    "credentials_file": "F:/Olivia/Integrations/personal-probe-data/wechat.dpapi"
+  },
+  "qq": {
+    "url": "ws://127.0.0.1:3001",
+    "account": "REPLACE_WITH_CHARACTER_QQ",
+    "owner": "REPLACE_WITH_OWNER_QQ"
+  }
+}

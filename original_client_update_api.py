@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
 import subprocess
+import tempfile
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -198,11 +200,11 @@ async def _json_body(request: web.Request) -> dict[str, object]:
     return payload
 
 
-def _package_path(value: object) -> Path:
+def _package_path(value: object, *, allow_bundle: bool = False) -> Path:
     if not isinstance(value, str) or not value or len(value) > 4_096:
         raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
     path = Path(value).expanduser()
-    if not path.is_absolute() or path.suffix.casefold() != ".oliviapatch":
+    if not path.is_absolute() or path.suffix.casefold() not in ({".oliviapatch", ".zip"} if allow_bundle else {".oliviapatch"}):
         raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
     try:
         metadata = path.lstat()
@@ -213,6 +215,51 @@ def _package_path(value: object) -> Path:
         return path.resolve(strict=True)
     except OSError as exc:
         raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400) from exc
+
+
+def _apply_update_bundle(updater: ComponentUpdater, bundle: Path) -> Mapping[str, object]:
+    # Bundled hashes check transfer integrity; they are not a publisher signature.
+    with tempfile.TemporaryDirectory(prefix="olivia-update-", ignore_cleanup_errors=True) as directory:
+        package = Path(directory) / "update.oliviapatch"
+        try:
+            with zipfile.ZipFile(bundle) as archive:
+                entries = archive.infolist()
+                patches = [entry for entry in entries if entry.filename.casefold().endswith('.oliviapatch')]
+                if len(entries) != 3 or len(patches) != 1:
+                    raise ValueError()
+                patch = patches[0]
+                name = patch.filename
+                if (not 0 < patch.file_size <= 512 * 1024 * 1024 or len(name) > 256
+                    or '/' in name or '\\' in name
+                    or {entry.filename for entry in entries} != {name, name + '.sha256', name + '.manifest.sha256'}
+                    or any(entry.is_dir() or entry.flag_bits & 1
+                           or (entry.external_attr >> 16) & 0o170000 not in {0, 0o100000} for entry in entries)):
+                    raise ValueError()
+                digests = []
+                for suffix in ('.sha256', '.manifest.sha256'):
+                    entry = archive.getinfo(name + suffix)
+                    if entry.file_size > 256:
+                        raise ValueError()
+                    value = archive.read(entry).decode('ascii').strip()
+                    if not _SHA256_RE.fullmatch(value):
+                        raise ValueError()
+                    digests.append(value)
+                digest = hashlib.sha256()
+                count = 0
+                with archive.open(patch) as source, package.open('xb') as output:
+                    while chunk := source.read(1024 * 1024):
+                        count += len(chunk)
+                        if count > patch.file_size:
+                            raise ValueError()
+                        digest.update(chunk)
+                        output.write(chunk)
+                if count != patch.file_size or digest.hexdigest() != digests[0]:
+                    raise UpdateAPIError('UPDATE_BUNDLE_CHECKSUM_MISMATCH', status=409)
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, KeyError) as exc:
+            if isinstance(exc, UpdateAPIError):
+                raise
+            raise UpdateAPIError('UPDATE_BUNDLE_INVALID', status=409) from exc
+        return updater.apply(package, digests[1])
 
 
 def _select_windows_patch() -> Path | None:
@@ -237,7 +284,7 @@ def _select_windows_patch() -> Path | None:
         "$owner.StartPosition = 'CenterScreen';"
         "$owner.Show();"
         "$owner.Activate();"
-        "$dialog.Filter = 'Olivia patch (*.oliviapatch)|*.oliviapatch';"
+        "$dialog.Filter = 'Olivia update (*.zip;*.oliviapatch)|*.zip;*.oliviapatch';"
         "$dialog.CheckFileExists = $true;"
         "$dialog.Multiselect = $false;"
         "if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) "
@@ -258,7 +305,7 @@ def _select_windows_patch() -> Path | None:
     if completed.returncode != 0:
         raise UpdateAPIError("UPDATE_PICKER_UNAVAILABLE", status=503)
     selected = completed.stdout.strip()
-    return None if not selected else _package_path(selected)
+    return None if not selected else _package_path(selected, allow_bundle=True)
 
 
 def _public_result(value: Mapping[str, object]) -> dict[str, object]:
@@ -298,6 +345,8 @@ def mount_original_client_update_api(
     picker = select_patch or _select_windows_patch
 
     def apply_verified(package: Path) -> Mapping[str, object]:
+        if package.suffix.casefold() == '.zip':
+            return _apply_update_bundle(updater, package)
         return updater.apply(package, _official_manifest_digest(package))
 
     @web.middleware
@@ -305,10 +354,14 @@ def mount_original_client_update_api(
         try:
             return await handler(request)
         except UpdateAPIError as exc:
+            try:
+                origin = _authorize(request, confirmation=False)
+            except UpdateAPIError:
+                origin = None
             return web.json_response(
                 {"status": "FAILED", "error_code": exc.code},
                 status=exc.status,
-                headers=_headers(),
+                headers=_headers(origin),
             )
 
     app.middlewares.append(errors)
@@ -332,7 +385,7 @@ def mount_original_client_update_api(
                     if selected is None
                     else {
                         "status": "SELECTED",
-                        "package_path": str(_package_path(str(selected))),
+                        "package_path": str(_package_path(str(selected), allow_bundle=True)),
                         "restart_required": False,
                     }
                 )
@@ -351,7 +404,7 @@ def mount_original_client_update_api(
             args = (_package_path(payload.get("package_path")), digest)
         elif payload.get("action") == "apply_verified" and set(payload) == {"action", "package_path"}:
             call = apply_verified
-            args = (_package_path(payload.get("package_path")),)
+            args = (_package_path(payload.get("package_path"), allow_bundle=True),)
         elif payload == {"action": "rollback"}:
             call = updater.rollback
             args = ()

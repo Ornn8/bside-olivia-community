@@ -252,7 +252,7 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user") -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user", contact_choice: dict | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
@@ -271,6 +271,10 @@ class DailyLifeStore:
             raise ValueError("DAILY_LIFE_PROACTIVE_RELATIONSHIP_INVALID")
         if origin == "proactive" and routine is not None:
             raise ValueError("DAILY_LIFE_PROACTIVE_ROUTINE_INVALID")
+        from runtime.personal_chat.contact_invitation import validate_choice
+        contact_choice = validate_choice(contact_choice, user_text)
+        if origin == "proactive" and contact_choice is not None:
+            raise ValueError("DAILY_LIFE_CONTACT_CHOICE_INVALID")
         relationship = validate_exchange_relationship(relationship, user_text, reply_text)
         boundaries = validate_boundary_changes(boundaries, reply_text)
         if routine is not None:
@@ -320,7 +324,7 @@ class DailyLifeStore:
                     if existing["updated_at"] > stamp:
                         continue  # A delayed delivery cannot roll current life backwards.
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (item["id"], _json(item)))
-            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship, "boundaries": boundaries, "origin": origin})))
+            db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "exchange", _json({"updates": checked, "digest": digest, "current": current, "relationship": relationship, "contact_choice": contact_choice, "boundaries": boundaries, "origin": origin})))
             if origin == "user":
                 db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
             if routine is not None and origin == "user":

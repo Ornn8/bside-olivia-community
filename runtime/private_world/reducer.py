@@ -47,6 +47,8 @@ class ReducerEventKind(str, Enum):
     CANONICAL_REPLY_DELIVERED = "canonical_reply_delivered"
     BOUNDARY_RESPECTED = "boundary_respected"
     SUPPORT_RECEIVED = "support_received"
+    MEANINGFUL_EXCHANGE = "meaningful_exchange"
+    SHARED_EXPERIENCE = "shared_experience"
     CONFLICT = "conflict"
     REPAIR = "repair"
     STAGE_CONFIRMED = "stage_confirmed"
@@ -65,7 +67,7 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _STAGE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _DEDUPLICATION_WINDOW = timedelta(hours=24)
 _GROWTH_WINDOW = timedelta(days=7)
-_WEEKLY_GROWTH_CAP = 6
+_WEEKLY_GROWTH_CAP = 21
 _INTIMACY_TIER_ORDER = (
     IntimacyTier.NONE,
     IntimacyTier.LIGHT_CONTACT,
@@ -377,6 +379,18 @@ def reduce_private_world(
             )
         else:
             reason_code = "GROWTH_CAP_REACHED"
+    elif event.kind in {ReducerEventKind.MEANINGFUL_EXCHANGE, ReducerEventKind.SHARED_EXPERIENCE}:
+        growth_start, growth_used = _growth_window(snapshot, event.occurred_at)
+        if growth_used >= _WEEKLY_GROWTH_CAP:
+            return _no_change(snapshot, "GROWTH_CAP_REACHED")
+        updates = {
+            "familiarity": _bounded(snapshot.familiarity, 2),
+            "comfort": _bounded(snapshot.comfort, 1),
+            "growth_window_start": growth_start,
+            "growth_used": growth_used + 1,
+        }
+        if event.kind is ReducerEventKind.SHARED_EXPERIENCE:
+            updates.update(trust=_bounded(snapshot.trust, 1), closeness=_bounded(snapshot.closeness, 2))
     elif event.kind is ReducerEventKind.CONFLICT:
         updates = {
             "trust": _bounded(snapshot.trust, -2),

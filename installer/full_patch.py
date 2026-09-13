@@ -50,6 +50,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/media",
     "runtime/memory",
     "runtime/persona",
+    "runtime/personal_chat",
     "runtime/private_world",
     "runtime/reply",
     "runtime/validation",
