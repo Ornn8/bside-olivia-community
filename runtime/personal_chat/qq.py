@@ -6,7 +6,7 @@ import uuid
 
 import aiohttp
 
-from .events import owner_message
+from .events import owner_message, combine
 from .probe import checked_url
 
 log = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def _ack(raw):
     return raw["data"]
 
 
-async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout):
+async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2):
     login_echo = uuid.uuid4().hex
     await ws.send_json({"action": "get_login_info", "echo": login_echo})
     async with asyncio.timeout(ack_timeout):
@@ -39,16 +39,14 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     pending = {}
     processing = False
 
-    async def send(text):
-        if not isinstance(text, str) or not text.strip() or len(text) > 10000:
-            raise ValueError("QQ_REPLY_INVALID")
+    async def send_item(item):
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         pending[echo] = future
         try:
             await ws.send_json({"action": "send_private_msg", "echo": echo,
                 "params": {"user_id": int(owner_id),
-                    "message": [{"type": "text", "data": {"text": text}}]}})
+                    "message": [item]}})
             result = _ack(await asyncio.wait_for(future, ack_timeout))
             identifier = result.get("message_id")
             if isinstance(identifier, bool) or not isinstance(identifier, (str, int)) or not str(identifier):
@@ -58,6 +56,18 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             pending.pop(echo, None)
             if not future.done():
                 future.cancel()
+
+    async def send(text):
+        if not isinstance(text, str) or not text.strip() or len(text) > 10000:
+            raise ValueError('QQ_REPLY_INVALID')
+        return await send_item({'type': 'text', 'data': {'text': text}})
+
+    async def send_audio(path):
+        from pathlib import Path
+        return await send_item({'type': 'record', 'data': {'file': Path(path).resolve().as_uri()}})
+
+    send.audio = send_audio
+    send.is_available = lambda: not ws.closed
 
     async def reader():
         async for message in ws:
@@ -85,17 +95,34 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     async def worker():
         nonlocal processing
+        carry = None
         while True:
-            event = await queue.get()
+            event = carry or await queue.get()
+            carry = None
+            events = [event]
             processing = True
             try:
-                await handle_message(event, send)
+                deadline = asyncio.get_running_loop().time() + 8
+                while event.text.strip() != '/连接测试' and len(events) < 16:
+                    wait = min(merge_seconds, deadline - asyncio.get_running_loop().time())
+                    if wait <= 0:
+                        break
+                    try:
+                        next_event = await asyncio.wait_for(queue.get(), wait)
+                    except asyncio.TimeoutError:
+                        break
+                    if next_event.text.strip() == '/连接测试' or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000:
+                        carry = next_event
+                        break
+                    events.append(next_event)
+                await handle_message(combine(events), send)
             except Exception:
                 # Neither generation nor ambiguous sends are retried here.
                 raise RuntimeError("QQ_MESSAGE_HANDLER_FAILED") from None
             finally:
                 processing = False
-                queue.task_done()
+                for _ in events:
+                    queue.task_done()
 
     reader_task = asyncio.create_task(reader())
     worker_task = asyncio.create_task(worker())
@@ -115,7 +142,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
-                 *, ack_timeout=30, reconnect_delay=1):
+                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2):
     """Run until stopped. send(text) returns a confirmed platform message ID.
 
     The handler must persist a sending reservation before calling send: a timeout
@@ -134,7 +161,7 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
         while not stop_event.is_set():
             try:
                 async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
-                    await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout)
+                    await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds)
             except (aiohttp.ClientError, ConnectionError, TimeoutError):
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():

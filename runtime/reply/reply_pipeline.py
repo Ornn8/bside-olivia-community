@@ -145,10 +145,19 @@ class ReplyPipeline:
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
         sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
+        generation_note = sticker_note
+        if context.mode is ReplyMode.FUTURE_IM:
+            from runtime.personal_chat.presentation import CURRENT, INSTRUCTION
+            if CURRENT.get() is not None:
+                if CURRENT.get().get('structured'):
+                    from runtime.personal_chat.decision import INSTRUCTION as DECISION_INSTRUCTION
+                    generation_note = DECISION_INSTRUCTION
+                else:
+                    generation_note = INSTRUCTION
         original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0
         generation_request = request
-        if sticker_note and isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(sticker_note) + 1000:
-            generation_request = replace(request, max_input_chars=original_budget-len(sticker_note)-2)
+        if generation_note and isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(generation_note) + 1000:
+            generation_request = replace(request, max_input_chars=original_budget-len(generation_note)-2)
         try:
             preparation = _prepare_generation_request(
                 generation_request,
@@ -179,13 +188,13 @@ class ReplyPipeline:
                     request.request_id if isinstance(request, ReplyRequest) else "",
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
-        if sticker_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+        if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
             messages = [dict(message) for message in prepared.messages]
             system = next((m for m in messages if m.get("role") == "system"), None)
             if system is None:
-                messages.insert(0, {"role": "system", "content": sticker_note})
+                messages.insert(0, {"role": "system", "content": generation_note})
             else:
-                system["content"] += "\n\n" + sticker_note
+                system["content"] += "\n\n" + generation_note
             if sum(len(str(m.get("content", ""))) for m in messages) <= original_budget:
                 prepared = replace(prepared, messages=tuple(messages), max_input_chars=original_budget)
         candidate = await self.orchestrator.run(prepared)

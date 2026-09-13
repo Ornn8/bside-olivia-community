@@ -4,7 +4,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 import pytest
 
-from runtime.personal_chat.qq import run_qq
+from runtime.personal_chat.qq import run_qq as _run_qq
+from functools import partial
+run_qq = partial(_run_qq, merge_seconds=0)
 
 TOKEN = "synthetic-onebot-token"
 

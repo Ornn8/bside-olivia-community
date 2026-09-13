@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("signal", [None, "support_received"])
+@pytest.mark.parametrize("signal", [None, "support_received", "meaningful_exchange", "shared_experience"])
 def test_completed_letter_reaches_life_and_next_persona_prompt(tmp_path, signal):
     script = r'''
 import asyncio, json, os

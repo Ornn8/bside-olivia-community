@@ -42,6 +42,7 @@ class GatewayRequestScope(str, Enum):
 
     TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
     JSON_MAX_REASONING = "json_max_reasoning"
+    PERSONAL_CHAT_JSON = "personal_chat_json"
     BACKGROUND_REASONING = "background_reasoning"
     SONG_CONTENT = "song_content"
 
@@ -816,6 +817,7 @@ class OpenAICompatibleAdapter(Gateway):
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
                 GatewayRequestScope.JSON_MAX_REASONING,
+                GatewayRequestScope.PERSONAL_CHAT_JSON,
                 GatewayRequestScope.BACKGROUND_REASONING,
             }
         )
@@ -863,7 +865,7 @@ class OpenAICompatibleAdapter(Gateway):
                 for message in normalized
             ]
             body = {"model": self.config.model, "input": request_input, "stream": stream}
-            if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
+            if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON} and capabilities.json_mode:
                 body["text"] = {"format": {"type": "json_object"}}
             return body
         body: dict[str, Any] = {
@@ -871,7 +873,7 @@ class OpenAICompatibleAdapter(Gateway):
             "messages": list(normalized),
             "stream": stream,
         }
-        if scope is GatewayRequestScope.SONG_CONTENT and capabilities.json_mode:
+        if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON} and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self._uses_official_review_responses(scope) and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
@@ -1045,7 +1047,7 @@ class OpenAICompatibleAdapter(Gateway):
             raise ProviderProtocolError()
         text = _extract_response_text(data)
         if not text:
-            if scope in {GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING} and _extract_finish_reason(data) == "stop":
+            if scope in {GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING, GatewayRequestScope.PERSONAL_CHAT_JSON} and _extract_finish_reason(data) == "stop":
                 raise ProviderEmptyResponse()
             raise ProviderProtocolError()
         if len(text) > self.config.max_output_chars:

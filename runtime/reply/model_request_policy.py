@@ -21,7 +21,7 @@ def reasoning_request_parameters(
         and endpoint.scheme == "https"
         and endpoint.hostname == "api.deepseek.com"
         and endpoint.path.rstrip("/") in {"", "/v1"}
-        and purpose in {"text_letter_max_reasoning", "background_reasoning"}
+        and purpose in {"text_letter_max_reasoning", "background_reasoning", "personal_chat_json"}
     ):
         # Explicit capability overrides take precedence over task defaults.
         if "reasoning_effort" not in options.get("capabilities", {}):

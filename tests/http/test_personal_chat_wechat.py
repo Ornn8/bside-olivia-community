@@ -47,7 +47,7 @@ def test_owner_only_send_and_cursor_saved_after_checked_ack(monkeypatch):
             stop.set()
 
         monkeypatch.setattr(wechat, "wechat_request", request)
-        await wechat.run_wechat(CREDENTIALS, handle, stop, cursor_store=cursor)
+        await wechat.run_wechat(CREDENTIALS, handle, stop, cursor_store=cursor, merge_seconds=0)
         assert cursor.value == "new"
         assert len(sends) == 1
         assert sends[0]["to_user_id"] == "owner"
@@ -71,7 +71,7 @@ def test_failed_handler_leaves_batch_replayable(monkeypatch):
 
         monkeypatch.setattr(wechat, "wechat_request", request)
         with pytest.raises(RuntimeError, match="service unavailable"):
-            await wechat.run_wechat(CREDENTIALS, handle, asyncio.Event(), cursor_store=cursor)
+            await wechat.run_wechat(CREDENTIALS, handle, asyncio.Event(), cursor_store=cursor, merge_seconds=0)
         assert cursor.value == "old"
         assert handled == ["1", "2"]
 
@@ -96,7 +96,7 @@ def test_unknown_send_is_not_retried(monkeypatch):
             stop.set()
 
         monkeypatch.setattr(wechat, "wechat_request", request)
-        await wechat.run_wechat(CREDENTIALS, handle, stop)
+        await wechat.run_wechat(CREDENTIALS, handle, stop, merge_seconds=0)
         assert len(attempts) == 1
 
     asyncio.run(exercise())
@@ -114,7 +114,7 @@ def test_stop_cancels_long_poll(monkeypatch):
                 cancelled.set()
 
         monkeypatch.setattr(wechat, "wechat_request", request)
-        task = asyncio.create_task(wechat.run_wechat(CREDENTIALS, None, stop))
+        task = asyncio.create_task(wechat.run_wechat(CREDENTIALS, None, stop, merge_seconds=0))
         await polling.wait()
         stop.set()
         await asyncio.wait_for(task, 1)
@@ -137,7 +137,7 @@ def test_read_disconnect_retries_same_cursor(monkeypatch):
             stop.set()
 
         monkeypatch.setattr(wechat, "wechat_request", request)
-        await wechat.run_wechat(CREDENTIALS, handle, stop, cursor_store=Cursor())
+        await wechat.run_wechat(CREDENTIALS, handle, stop, cursor_store=Cursor(), merge_seconds=0)
         assert reads == ["old", "old"]
 
     asyncio.run(exercise())
@@ -154,7 +154,7 @@ def test_missing_context_does_not_advance_cursor(monkeypatch):
 
         monkeypatch.setattr(wechat, "wechat_request", request)
         with pytest.raises(RuntimeError, match="CONTEXT_MISSING"):
-            await wechat.run_wechat(CREDENTIALS, None, asyncio.Event(), cursor_store=cursor)
+            await wechat.run_wechat(CREDENTIALS, None, asyncio.Event(), cursor_store=cursor, merge_seconds=0)
         assert cursor.value == "old"
 
     asyncio.run(exercise())
@@ -170,7 +170,7 @@ def test_authorization_rejection_stops_without_retry_or_secret_error(monkeypatch
 
         monkeypatch.setattr(wechat, "wechat_request", request)
         with pytest.raises(RuntimeError, match="WECHAT_POLL_REJECTED") as caught:
-            await wechat.run_wechat(CREDENTIALS, None, asyncio.Event())
+            await wechat.run_wechat(CREDENTIALS, None, asyncio.Event(), merge_seconds=0)
         assert "private-token" not in str(caught.value)
         assert len(calls) == 1
 

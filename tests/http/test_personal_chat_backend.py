@@ -65,7 +65,8 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         stream_enabled = False
         async def complete(self, messages, *, request_id=None):
             calls.append(tuple(dict(m) for m in messages))
-            return GatewayResponse(text="那你明天再跟我说嘛。", request_id=request_id or "test",
+            from tests.http.test_personal_chat_decision import envelope
+            return GatewayResponse(text=envelope(text="那你明天再跟我说嘛。"), request_id=request_id or "test",
                                    provider="synthetic", model="synthetic")
     adapter = local_server.LetterAdapter(GatewayConfig(provider="openai_compatible",
         base_url="http://127.0.0.1:9/v1", model="synthetic", persona_v2_enabled=True,
@@ -83,7 +84,7 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=.1, _conversation_memory_ready_for_reply=lambda: True,
         _CURRENT_LETTER_MEMORY_SOURCE=source, _CURRENT_LETTER_RECEIPT=receipt,
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
-        _reply_pipeline_timeout_seconds=lambda mode: 2)
+        _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[]))
     event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
     async def scenario():
         result = await backend.generate(server, event, {"life_received_at": datetime.now(timezone.utc).isoformat()})
@@ -189,6 +190,8 @@ def test_candidate_recovers_after_ledger_commit_without_duplicate_ledger_write()
 
 
 def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, monkeypatch):
+    from runtime.reply.proactive_letters import write_json
+    write_json(tmp_path / 'personal-chat/existing-access.json', {'channels': ['qq', 'wechat']})
     from aiohttp import web
     from runtime.personal_chat import qq, wechat
     import original_client_setup_api
@@ -273,6 +276,7 @@ def test_saved_config_is_loaded_on_normal_start_without_environment(tmp_path, mo
     secret.write_text(json.dumps({"token": "synthetic-token-123456789"}), encoding="utf-8")
     folder = tmp_path / "personal-chat"
     folder.mkdir()
+    (folder / 'existing-access.json').write_text(json.dumps({'channels': ['qq']}), encoding='utf-8')
     (folder / "config.json").write_text(json.dumps({"qq": {"url": "ws://127.0.0.1:3001", "account": "100", "owner": "200", "credentials_file": str(secret)}}), encoding="utf-8")
     monkeypatch.setattr(original_client_setup_api, "_dpapi_unprotect", lambda x: x)
     async def scenario():

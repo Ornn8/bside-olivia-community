@@ -2779,6 +2779,11 @@ def _refresh_proactive_context() -> dict:
     try:
         world = daily_life_runtime.store.exchange_state() if daily_life_runtime is not None else {}
         context = make_context(store.letters, now=time.time(), world=world)
+        from runtime.personal_chat.contact_invitation import candidate, preview_configured
+        invitation = (candidate(store.letters, private_world_port.snapshot(), time.time())
+                      if preview_configured(_state_root()) else None)
+        if invitation:
+            context['candidates'].insert(0, invitation)
         root = _state_root()
         if root is not None:
             write_json(root / 'proactive/context.json', context)
@@ -2795,7 +2800,9 @@ def _proactive_status() -> dict:
     prefs = _proactive_settings()
     reason = ('disabled' if not prefs['enabled'] else
               'waiting' if _proactive_reason == 'disabled' else _proactive_reason)
-    return {**prefs, 'busy': _proactive_busy,
+    from runtime.personal_chat.contact_invitation import status
+    contact = status(store.letters, private_world_port.snapshot())
+    return {**prefs, 'busy': _proactive_busy, 'contact': contact,
             'remaining': make_context(store.letters, now=time.time())['remaining'],
             'reason': reason, 'next_check_at': schedule.get('next_check_at')}
 
@@ -2842,6 +2849,10 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
         if mode == 'text':
             from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
             task += '\n' + LETTER_PRESENTATION_INSTRUCTION
+    if intent.get('kind') == 'contact_invitation':
+        task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
+                 '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
+                 '可以围绕偶尔想随口聊两句来写，不要求用户转移所有通信，保留写信的习惯。')
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
@@ -2862,12 +2873,18 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
     global _proactive_busy
     if not _proactive_ready():
         return
+    if intent.get('kind') == 'contact_invitation':
+        from runtime.personal_chat.contact_invitation import status, preview_configured
+        if not preview_configured(_state_root()) or status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
+            return
     if not _history_memory_admin_gate.acquire(blocking=False):
         return
     _proactive_busy = True
     letter = None
     try:
         body = await _proactive_complete(intent, planning=False, mode=plan['format'])
+        if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
+            raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
         if plan['format'] == 'text':
             from runtime.reply.letter_presentation import split_signature
@@ -2876,10 +2893,15 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
                 raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_settings()['enabled']:
             return
+        if intent.get('kind') == 'contact_invitation':
+            from runtime.personal_chat.contact_invitation import status
+            if status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
+                return
         letter = {'letter_id': str(uuid.uuid4()), 'origin': 'proactive', 'content': '',
                   'title': plan['title'], 'material': {}, 'created_at': int(time.time()),
                   'letter_status': 'PROCESSING', 'is_read': 0, 'reply_text': '',
                   'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
+                  'proactive_kind': intent.get('kind'),
                   'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
         _prepare_private_world_delivery(letter, body)
         letter['reply_text'] = body
@@ -4841,11 +4863,19 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
 
     async def deliver():
         try:
+            from runtime.personal_chat.contact_invitation import status, observe, validate_choice
+            contact = status(store.letters, private_world_port.snapshot())
+            invitation_id = contact.get('invitation_id') if letter.get('origin') != 'proactive' else None
+            # A delayed extraction cannot interpret an older letter as acceptance.
+            invitation = next((r for r in store.letters if r.get('letter_id') == invitation_id), None)
+            if invitation and float(letter.get('created_at', 0)) < float(invitation.get('published_at', 0)):
+                invitation_id = None
             await daily_life_runtime.consume_exchange(
                 source_id, str(letter.get("content", "")), str(letter.get("reply_text", "")),
                 occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
                 received_at=datetime.fromisoformat(letter.get("life_received_at", letter["private_world_occurred_at"])),
                 **({'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}),
+                **({'contact_invited': True} if invitation_id else {}),
             )
             origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
             signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
@@ -4859,6 +4889,13 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 letter["relationship_status"] = relationship_status.value
                 if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
+                observe(letter, private_world_port.snapshot(), private_world_relationship_committer.ledger.events())
+            if invitation_id:
+                payload = daily_life_runtime.store._exchange_payload(source_id, letter['content'], letter['reply_text'])
+                choice = validate_choice(payload.get('contact_choice'), letter['content'])
+                if choice:
+                    letter['contact_invitation_id'] = invitation_id
+                    letter['contact_choice'] = choice
             boundaries = daily_life_runtime.store.exchange_boundaries(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
             if boundaries:
                 if private_world_relationship_committer is None:

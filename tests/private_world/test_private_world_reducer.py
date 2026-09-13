@@ -88,7 +88,7 @@ def test_boundary_respect_changes_state_slowly_and_explains_delta() -> None:
 
 def test_weekly_growth_cap_blocks_only_growth_and_resets_at_seven_days() -> None:
     snapshot = PrivateWorldSnapshot(version=1)
-    for index in range(6):
+    for index in range(21):
         snapshot = reduce_private_world(
             snapshot,
             _event(
@@ -98,8 +98,8 @@ def test_weekly_growth_cap_blocks_only_growth_and_resets_at_seven_days() -> None
             ),
         ).snapshot
 
-    assert snapshot.familiarity == 6
-    assert snapshot.growth_used == 6
+    assert snapshot.familiarity == 21
+    assert snapshot.growth_used == 21
     assert snapshot.growth_window_start == NOW.isoformat()
 
     capped = reduce_private_world(
@@ -112,10 +112,10 @@ def test_weekly_growth_cap_blocks_only_growth_and_resets_at_seven_days() -> None
     )
     assert capped.delta.applied is True
     assert capped.delta.reason_code == "GROWTH_CAP_REACHED"
-    assert capped.snapshot.familiarity == 6
-    assert capped.snapshot.trust == 7
-    assert capped.snapshot.comfort == 7
-    assert capped.snapshot.growth_used == 6
+    assert capped.snapshot.familiarity == 21
+    assert capped.snapshot.trust == 22
+    assert capped.snapshot.comfort == 22
+    assert capped.snapshot.growth_used == 21
 
     reset = reduce_private_world(
         capped.snapshot,
@@ -126,7 +126,7 @@ def test_weekly_growth_cap_blocks_only_growth_and_resets_at_seven_days() -> None
         ),
     )
     assert reset.delta.reason_code == "BOUNDARY_RESPECTED"
-    assert reset.snapshot.familiarity == 7
+    assert reset.snapshot.familiarity == 22
     assert reset.snapshot.growth_used == 1
     assert reset.snapshot.growth_window_start == (
         NOW + timedelta(days=7)
@@ -140,7 +140,7 @@ def test_growth_cap_keeps_an_admitted_grant_without_free_growth() -> None:
         relationship_stage="close",
         closeness=12,
         growth_window_start=NOW.isoformat(),
-        growth_used=6,
+        growth_used=21,
     )
 
     result = reduce_private_world(
@@ -152,7 +152,7 @@ def test_growth_cap_keeps_an_admitted_grant_without_free_growth() -> None:
     assert result.delta.reason_code == "GROWTH_CAP_REACHED"
     assert result.snapshot.intimacy_grants == (grant,)
     assert result.snapshot.closeness == 12
-    assert result.snapshot.growth_used == 6
+    assert result.snapshot.growth_used == 21
 
 
 def test_growth_can_exactly_fill_the_remaining_weekly_quota() -> None:
@@ -161,7 +161,7 @@ def test_growth_can_exactly_fill_the_remaining_weekly_quota() -> None:
         relationship_stage="close",
         closeness=8,
         growth_window_start=NOW.isoformat(),
-        growth_used=4,
+        growth_used=19,
     )
 
     result = reduce_private_world(
@@ -171,7 +171,7 @@ def test_growth_can_exactly_fill_the_remaining_weekly_quota() -> None:
 
     assert result.delta.reason_code == "INTIMACY_GRANTED"
     assert result.snapshot.closeness == 10
-    assert result.snapshot.growth_used == 6
+    assert result.snapshot.growth_used == 21
 
 
 def test_event_before_the_window_start_keeps_the_existing_window() -> None:
@@ -199,7 +199,7 @@ def test_exhausted_growth_with_bounded_non_growth_is_a_cap_noop() -> None:
         trust=100,
         comfort=100,
         growth_window_start=NOW.isoformat(),
-        growth_used=6,
+        growth_used=21,
     )
 
     result = reduce_private_world(
@@ -222,7 +222,7 @@ def test_grant_admission_order_precedes_capacity_and_growth_checks() -> None:
         relationship_stage="close",
         intimacy_grants=existing,
         growth_window_start=NOW.isoformat(),
-        growth_used=6,
+        growth_used=21,
     )
 
     duplicate = reduce_private_world(

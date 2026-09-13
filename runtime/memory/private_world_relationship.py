@@ -20,6 +20,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _INTERACTION_KINDS = {
     ReducerEventKind.BOUNDARY_RESPECTED, ReducerEventKind.SUPPORT_RECEIVED,
     ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR,
+    ReducerEventKind.MEANINGFUL_EXCHANGE, ReducerEventKind.SHARED_EXPERIENCE,
 }
 _RELATIONSHIP_FACT_KINDS = frozenset(
     {
@@ -28,6 +29,8 @@ _RELATIONSHIP_FACT_KINDS = frozenset(
         ReducerEventKind.CHARACTER_AFFECTION_ACKNOWLEDGED,
         ReducerEventKind.BOUNDARY_RESPECTED,
         ReducerEventKind.SUPPORT_RECEIVED,
+        ReducerEventKind.MEANINGFUL_EXCHANGE,
+        ReducerEventKind.SHARED_EXPERIENCE,
         ReducerEventKind.CONFLICT,
         ReducerEventKind.REPAIR,
     }
@@ -39,7 +42,7 @@ def validate_exchange_relationship(signal: object, user_text: str, reply_text: s
         return None
     if not isinstance(signal, dict) or set(signal) != {"kind", "user_quote", "reply_quote"}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
-    if signal["kind"] not in {"support_received", "boundary_respected", "conflict", "repair"}:
+    if signal["kind"] not in {kind.value for kind in _INTERACTION_KINDS}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
     for field, source in (("user_quote", user_text), ("reply_quote", reply_text)):
         quote = signal[field]
@@ -195,8 +198,13 @@ class PrivateWorldRelationshipCommitter:
             return RelationshipFactStatus.REJECTED
         # Same category is not the same interaction. Only repeated, validated
         # evidence shares the cooldown; delivery identity still handles retries.
+        evidence = [signal["kind"], signal["user_quote"], signal["reply_quote"]]
+        if signal["kind"] in {"meaningful_exchange", "shared_experience"}:
+            # Reply regeneration or reclassification cannot reward the same
+            # user evidence twice within the existing 24-hour window.
+            evidence = ["daily_exchange", signal["user_quote"]]
         semantic_key = "canonical-interaction:" + hashlib.sha256(json.dumps(
-            [signal["kind"], signal["user_quote"], signal["reply_quote"]],
+            evidence,
             ensure_ascii=False,
         ).encode("utf-8")).hexdigest()
         # Old ledgers kept only the kind, so their evidence cannot be recovered.
@@ -279,6 +287,8 @@ class PrivateWorldRelationshipCommitter:
                     event_type=event.kind.value,
                     payload={
                         "applied": reduced.delta.applied,
+                        "contact_qualification": sum(getattr(reduced.snapshot, name) >= 70
+                            for name in ("familiarity", "trust", "comfort", "closeness")) >= 3,
                         "reason_code": reduced.delta.reason_code,
                         "change_fields": [
                             change.field for change in reduced.delta.changes
