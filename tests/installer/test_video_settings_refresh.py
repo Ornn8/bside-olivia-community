@@ -41,6 +41,7 @@ def test_capability_completion_and_all_dialog_dismissals_refresh_setting():
     dialog = source[source.index("  const openDialog ="):source.index("  const findSettingsContainer =")]
     assert "const dismiss = () => {" in dialog
     assert "void refreshVideoReplySetting();" in dialog
-    assert dialog.count("dismiss();") == 3
+    assert dialog.count("dismiss();") == 2  # Explicit close and Escape only.
+    assert 'if (event.target === backdrop) event.preventDefault();' in dialog
     capability = source[source.index("  const renderVideoCapabilityPanel ="):source.index("  const openDialog =")]
     assert 'if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();' in capability

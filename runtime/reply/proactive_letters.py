@@ -81,7 +81,8 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
             'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
 
 
-def scan_pending(data_root: Path, *, now: float | None = None) -> dict:
+def scan_pending(data_root: Path, *, now: float | None = None,
+                 excluded_ids: set[str] | None = None) -> dict:
     now = time.time() if now is None else now
     root = data_root / 'proactive'
     prefs = settings(read_json(root / 'settings.json'))
@@ -93,6 +94,7 @@ def scan_pending(data_root: Path, *, now: float | None = None) -> dict:
             and 0 <= now - _stamp(context.get('updated_at')) <= 7 * DAY):
         for candidate in context.get('candidates', []):
             if (isinstance(candidate, dict)
+                    and candidate.get('id') not in (excluded_ids or set())
                     and _stamp(candidate.get('not_before')) <= now < _stamp(candidate.get('expires_at'))):
                 selected = {**candidate, 'prepared_at': old.get('prepared_at', now)
                             if old.get('id') == candidate.get('id') else now}

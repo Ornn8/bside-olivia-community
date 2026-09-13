@@ -45,6 +45,7 @@ class GatewayRequestScope(str, Enum):
     PERSONAL_CHAT_JSON = "personal_chat_json"
     BACKGROUND_REASONING = "background_reasoning"
     SONG_CONTENT = "song_content"
+    PROACTIVE_PLANNING = "proactive_planning"
 
 
 class GatewayError(RuntimeError):
@@ -865,7 +866,7 @@ class OpenAICompatibleAdapter(Gateway):
                 for message in normalized
             ]
             body = {"model": self.config.model, "input": request_input, "stream": stream}
-            if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON} and capabilities.json_mode:
+            if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING} and capabilities.json_mode:
                 body["text"] = {"format": {"type": "json_object"}}
             return body
         body: dict[str, Any] = {
@@ -873,7 +874,7 @@ class OpenAICompatibleAdapter(Gateway):
             "messages": list(normalized),
             "stream": stream,
         }
-        if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON} and capabilities.json_mode:
+        if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING} and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self._uses_official_review_responses(scope) and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
@@ -882,7 +883,7 @@ class OpenAICompatibleAdapter(Gateway):
                 self.config.base_url, self.config.model, self.config.provider_options,
                 purpose=scope.value if scope is not None else None, enabled=True,
             ))
-        elif scope is GatewayRequestScope.SONG_CONTENT:
+        elif scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PROACTIVE_PLANNING}:
             body.update(capabilities.reasoning_parameters(False))
         return body
 

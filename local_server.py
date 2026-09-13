@@ -1439,6 +1439,16 @@ def _official_history_memory_available() -> bool:
     )
 
 
+def _missing_memory_component() -> str | None:
+    status = conversation_memory_adapter.status()
+    code = getattr(status, 'reason_code', None)
+    if status.status == 'unavailable' and code in {
+        'MEM0_EMBEDDING_CACHE_UNAVAILABLE', 'MEM0_IMPORT_FAILED',
+    }:
+        return code
+    return None
+
+
 def _conversation_memory_ready_for_reply() -> bool:
     bootstrap = getattr(
         letters_adapter.memory_prompt_builder,
@@ -2149,6 +2159,12 @@ def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
                     "status": "unavailable",
                     "reason_code": "MEMORY_OUTBOX_RUNTIME_UNAVAILABLE",
                 }
+    if (isinstance(runtime_info, dict)
+            and runtime_info.get('reason_code') == 'MEM0_INITIALIZING'
+            and conversation_info.get('status') == 'unavailable'
+            and conversation_info.get('reason_code') not in {None, 'MEM0_INITIALIZING'}):
+        runtime_info = {**runtime_info, 'status': 'unavailable',
+                        'reason_code': conversation_info['reason_code']}
     if (
         conversation_info.get("status") != "disabled"
         and not lifecycle_unavailable
@@ -2836,7 +2852,7 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     if source is None:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     query = str(source.get('content', ''))
-    assembled = await asyncio.to_thread(letters_adapter._messages, query)
+    assembled = [] if planning else await asyncio.to_thread(letters_adapter._messages, query)
     task = ('现在没有新的用户来信。判断林离是否有具体、适时且未说过的理由主动写信。'
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
@@ -2856,10 +2872,10 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
-    messages = ({'role': 'system', 'content': assembled[0]['content'] + '\n' + task},
+    messages = ({'role': 'system', 'content': (assembled[0]['content'] + '\n' if assembled else '') + task},
                 {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
     gateway = letters_adapter.gateway
-    scope = GatewayRequestScope.BACKGROUND_REASONING
+    scope = GatewayRequestScope.PROACTIVE_PLANNING if planning else GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
         messages, request_id='proactive:' + intent['id'] + (':plan' if planning else ':body'),
         scope=scope), timeout=gateway.timeout_seconds_for_scope(scope, default=180))
@@ -2946,7 +2962,7 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
 
 async def _proactive_tick() -> None:
     global _proactive_reason
-    from runtime.reply.proactive_letters import read_json, write_json, scan_pending
+    from runtime.reply.proactive_letters import DAY, read_json, write_json, scan_pending
     root = _state_root()
     if root is None or not _proactive_settings()['enabled']:
         _proactive_reason = 'disabled'
@@ -2957,13 +2973,23 @@ async def _proactive_tick() -> None:
     schedule = read_json(root / 'proactive/schedule.json')
     if time.time() < schedule.get('next_check_at', 0):
         return
-    intent = scan_pending(root)
+    now = time.time()
+    # A decision attempt counts even when the provider fails, defers, or the
+    # process exits. Keep both limits on disk, independent of model/provider.
+    attempts = [item for item in schedule.get('attempts', [])
+                if isinstance(item, dict) and isinstance(item.get('id'), str)
+                and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
+    if len(attempts) >= 3:
+        _proactive_reason = 'waiting'
+        return
+    intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
     if not intent:
         _proactive_reason = 'no_opportunity'
         return
     # Persist before provider calls; retries/restarts cannot turn five-minute
     # cheap checks into an unbounded sequence of paid decisions.
-    write_json(root / 'proactive/schedule.json', {'next_check_at': time.time() + 3600})
+    attempts.append({'id': intent['id'], 'at': now})
+    write_json(root / 'proactive/schedule.json', {'next_check_at': now + 3600, 'attempts': attempts})
     _proactive_reason = 'considering'
     plan = json.loads(await _proactive_complete(intent, planning=True))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
@@ -3507,6 +3533,9 @@ async def route(
         content = body.get("content")
         if not isinstance(content, str) or not content.strip() or len(content) > 10000:
             return err(400, "INVALID_CONTENT", {})
+        missing = await asyncio.to_thread(_missing_memory_component)
+        if missing:
+            return err(503, missing, {'error_code': missing, 'retryable': True})
         try:
             routes = video_reply_settings_store.routes_snapshot()
         except VideoReplySettingsError as exc:
@@ -3906,6 +3935,9 @@ async def route(
                 'error_code': 'CONTENT_TOO_LONG',
                 'max_length': 10000,
             })
+        missing = await asyncio.to_thread(_missing_memory_component)
+        if missing:
+            return err(503, missing, {'error_code': missing, 'retryable': True})
         idempotency_key = _request_value(
             body,
             query,
@@ -4628,7 +4660,8 @@ async def _run_reply_when_memory_ready(
             # memory call is still being settled. Only the outbox owns retries.
             busy = (
                 runtime.enabled and runtime.worker_running
-                and runtime.delivery_pending
+                and (runtime.delivery_pending
+                     or (runtime.pending_count > 0 and runtime.reason_code is None))
                 and runtime.status == "degraded"
                 and runtime.reason_code in {None, "MEMORY_OUTBOX_RETRY_EXHAUSTED"}
             )

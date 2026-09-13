@@ -2490,9 +2490,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     backdrop.append(theme, dialog);
     backdrop.addEventListener("click", (event) => {
-      if (!initialMode && event.target === backdrop) {
-        dismiss();
-      }
+      // Import progress must not disappear because of an accidental outside click.
+      if (event.target === backdrop) event.preventDefault();
     });
     backdrop.addEventListener("keydown", (event) => {
       if (!initialMode && event.key === "Escape") {
@@ -2733,6 +2732,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         LLM_RATE_LIMITED:"大模型服务请求过于频繁，请稍后重试。",
         LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。",
         REPLY_ROUTE_INVALID_RESULT:"大模型返回的回信形式无法识别，请重试；若持续出现，请导出诊断包。",
+        MEM0_EMBEDDING_CACHE_UNAVAILABLE:"长期记忆模型尚未安装或校验未通过。请打开本地陪伴的长期记忆页面，安装或修复模型后重试。",
+        MEM0_IMPORT_FAILED:"长期记忆运行组件缺失或无法加载。请在本地陪伴中修复长期记忆组件后重试。",
         REPLY_ROUTE_INVALID_CONTENT:"信件内容无法用于检测回信形式，请检查后重试。",
         VIDEO_TRIAGE_UNAVAILABLE:"回信形式检测服务暂不可用，请重试；若持续出现，请导出诊断包。",
         REPLY_ROUTE_PREVIEW_EXPIRED:"检测期间回信设置发生变化，请重新寄出。"};
@@ -2961,6 +2962,34 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
   };
 
+  const showLocalImportProgress = (state, home) => {
+    document.querySelector('[data-olivia-local-import-progress]')?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.setAttribute("data-olivia-local-import-progress", "");
+    Object.assign(backdrop.style, {position:"fixed", inset:"0", zIndex:"2147483001",
+      display:"grid", placeItems:"center", padding:"24px", background:"rgba(0,0,0,.62)",
+      pointerEvents:"auto", webkitAppRegion:"no-drag"});
+    const dialog = document.createElement("section");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "本地备份导入进度");
+    Object.assign(dialog.style, {width:"min(560px, calc(100vw - 48px))", padding:"24px",
+      borderRadius:"12px", background:"#18191c", color:"#f9fafb", display:"grid", gap:"16px"});
+    const dismiss = () => { home.append(state); backdrop.remove(); };
+    const close = button("关闭进度窗口", dismiss);
+    dialog.append(text("h3", "本地备份导入进度"), state,
+      text("p", "关闭窗口不会停止后台导入，可再次点击“查看导入进度”。"), close);
+    backdrop.append(dialog);
+    backdrop.addEventListener("click", event => {
+      if (event.target === backdrop) event.preventDefault();
+    });
+    backdrop.addEventListener("keydown", event => {
+      if (event.key === "Escape") { event.preventDefault(); dismiss(); }
+    });
+    document.body.append(backdrop);
+    close.focus();
+  };
+
   const mountLocalLetterImport = (section) => {
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
@@ -2990,17 +3019,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     };
     const importButton = button("导入本地备份", async () => {
-      if (importPending) return;
+      if (importPending) {
+        showLocalImportProgress(importState, importCopy);
+        return;
+      }
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
       const changeCount = preflight.would_insert + preflight.would_update + preflight.would_remove;
       if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件，并同步长期记忆与关系状态？`)) {
         return;
       }
-      setButtonsBusy([importButton], true);
-      importButton.textContent = "正在导入并整理记忆";
+      importButton.textContent = "查看导入进度";
       importPending = true;
       importState.textContent = "正在读取本地备份并写入信箱……";
+      showLocalImportProgress(importState, importCopy);
       try {
         let payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
         if (payload.status !== "RUNNING") {
