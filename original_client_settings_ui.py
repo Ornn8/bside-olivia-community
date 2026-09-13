@@ -1212,7 +1212,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const read = async () => {
         if (pending || !alive() || !area.isConnected) return;
         pending = true;
-        content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
+        if (!loaded) content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
         try {
           const result = await requestJson(PRIVATE_WORLD_PATH);
           if (!alive() || !area.isConnected) return;
@@ -1234,8 +1234,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         } finally { pending = false; }
       };
       area.addEventListener("toggle", () => { if (area.open && !loaded) read(); });
+      area.refresh = read;
       return area;
     };
+    const relationship = relationshipPanel();
     const draw = (payload) => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
@@ -1289,6 +1291,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const primary=document.createElement('div'),secondary=document.createElement('aside');
         const expanded=panel._worldExpanded || (panel._worldExpanded=['now','projects']);
         const fold=(content,key,column)=>{
+          if (content.classList.contains('olivia-world-fold')) return content;
           const area=content.tagName==='DETAILS'?content:document.createElement('details');
           const caption=area===content?content.querySelector('summary'):document.createElement('summary');
           if(area!==content){caption.textContent=content.querySelector('h4').textContent;content.querySelector('h4').remove();area.append(caption)}
@@ -1303,13 +1306,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           return area;
         };
         primary.append(fold(now,'now',0),fold(moments,'moments',0),fold(historyPanel(),'history',0));
-        secondary.append(fold(projects,'projects',1),fold(shared,'shared',1),fold(relationshipPanel(),'relationship',1));columns.append(primary,secondary);
+        secondary.append(fold(projects,'projects',1),fold(shared,'shared',1),fold(relationship,'relationship',1));columns.append(primary,secondary);
         panel.replaceChildren(top,status,columns);
-      } else panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationshipPanel());
+      } else panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationship);
     };
     const load = async (refresh = false) => {
       if (busy || !alive()) return;
       busy = true;
+      if (refresh && relationship.open) relationship.refresh();
       try {
         let payload = await (refresh ? requestMutation(DAILY_LIFE_PATH, {}) : requestJson(DAILY_LIFE_PATH));
         if (!alive()) return;
@@ -3058,7 +3062,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const migration = payload.memory_migration || {};
         const memoryWritten = Number.isInteger(migration.written) ? migration.written : 0;
         const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
-        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封、清理旧乱码重复 ${removed} 封，长期记忆新增 ${memoryWritten} 条、复用 ${memoryDuplicates} 条；正在刷新信箱。`;
+        const memorySkipped = Number.isInteger(migration.skipped) ? migration.skipped : 0;
+        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封、清理重复 ${removed} 封；本次完成记忆提取 ${memoryWritten} 封，已有记忆跳过 ${memoryDuplicates} 封，未提取出记忆 ${memorySkipped} 封。空结果可再次导入重试。正在刷新信箱。`;
         importButton.textContent = "已完成";
         window.setTimeout(() => {
           try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }

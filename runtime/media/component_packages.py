@@ -166,11 +166,20 @@ class MediaComponents:
                     try:
                         self.install(archive, expected_component=component)
                     except Exception as exc:
+                        from runtime.diagnostics.install_failure import install_failure
+                        cause = exc
+                        for _ in range(8):
+                            nested = cause.__cause__ or cause.__context__
+                            if nested is None:
+                                break
+                            cause = nested
+                        details = install_failure(cause, stage=self.progress.get('stage', 'prepare'), source='offline-package')
+                        details['component'] = component
                         code = str(exc)
                         if not re.fullmatch(r'(?:MEDIA_COMPONENT|VIDEO_RUNTIME|VIDEO_ARCHIVE)_[A-Z_]{1,64}', code):
                             code = 'MEDIA_COMPONENT_INSTALL_FAILED'
                         failed.append(component)
-                        self.progress.update(reason_code=code, failed_components=list(failed))
+                        self.progress.update(reason_code=code, failed_components=list(failed), failure_details=details)
                     self.progress.update(completed_count=index + 1, state='queued')
                 self.progress.update(state='failed' if failed else 'ready')
             self._thread = threading.Thread(target=run, daemon=True)
@@ -188,7 +197,7 @@ class MediaComponents:
                 raise ValueError('MEDIA_COMPONENT_PACKAGE_MISMATCH')
             self.root.mkdir(parents=True, exist_ok=True)
             _reject_reparse_tree(self.root)
-            self.progress.update(state='checking', component=component, checked_bytes=0, total_bytes=archive.stat().st_size)
+            self.progress.update(state='checking', stage='verify_file', component=component, checked_bytes=0, total_bytes=archive.stat().st_size)
             archive_digest = _sha256_file(archive, progress=lambda count: self.progress.update(checked_bytes=count))[1]
             registry = self._registry()
             previous = registry.get(component)
@@ -208,12 +217,12 @@ class MediaComponents:
                 self.progress.update(checked_bytes=done, total_bytes=total)
             temporary = self.root / ('installed-' + uuid.uuid4().hex + '.tmp')
             try:
-                self.progress.update(state='extracting')
+                self.progress.update(state='extracting', stage='extract')
                 _extract_runtime_zip_safely(archive, destination, progress=progress)
                 digest = _sha256_file(destination / 'runtime-manifest.json')[1]
-                self.progress.update(state='checking')
+                self.progress.update(state='checking', stage='verify_tree')
                 env = _load_runtime_root_manifest(destination, digest, verify_files=True, progress=progress)
-                self.progress.update(state='testing')
+                self.progress.update(state='testing', stage='dependencies')
                 for key, value in env.items():
                     if key.endswith('_PYTHON') and not _portable_python_runtime(Path(value), destination):
                         raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
@@ -223,6 +232,7 @@ class MediaComponents:
                         raise ValueError('MEDIA_COMPONENT_RUNTIME_NOT_PORTABLE')
                 registry[component] = {'directory': destination.name, 'manifest_sha256': digest,
                                        'archive_sha256': archive_digest}
+                self.progress.update(stage='activate')
                 temporary.write_text(json.dumps(registry, sort_keys=True), encoding='utf-8')
                 os.replace(temporary, self.root / 'installed.json')
             except Exception:

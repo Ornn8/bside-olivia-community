@@ -1524,7 +1524,7 @@ class Mem0ConversationMemoryAdapter:
                 except (OSError, sqlite3.Error, ValueError):
                     return MemoryWriteResult(MemoryWriteStatus.UNAVAILABLE, source_id,
                         error_code="MEM0_SOURCE_DEDUP_UNAVAILABLE")
-                if audited_ids is not None and audited_ids == sorted(record.memory_id for record in source_records):
+                if audited_ids and audited_ids == sorted(record.memory_id for record in source_records):
                     return MemoryWriteResult(MemoryWriteStatus.DUPLICATE, source_id)
                 audit_mismatch = audited_ids is not None
                 if audit_mismatch:
@@ -1799,7 +1799,7 @@ class Mem0ConversationMemoryAdapter:
                     error_code="MEM0_WRITE_ROLLBACK_FAILED" if pending_ids else "MEM0_WRITE_FAILED")
         return MemoryWriteResult(
             MemoryWriteStatus.WRITTEN
-            if history_write or memory_ids
+            if memory_ids
             else MemoryWriteStatus.SKIPPED,
             source_id,
             memory_ids,

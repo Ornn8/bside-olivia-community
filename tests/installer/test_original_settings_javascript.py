@@ -10,6 +10,46 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
+def test_relationship_refresh_keeps_loaded_content_visible():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    source = BOOTSTRAP_JAVASCRIPT.split('const relationshipPanel =', 1)[1].split('const draw =', 1)[0]
+    harness = r'''
+const assert = require('node:assert/strict');
+class Element {
+  constructor(){this.children=[];this.style={};this.isConnected=true;this.open=true;this.events={};}
+  append(...children){this.children.push(...children);}
+  replaceChildren(...children){this.children=children;}
+  addEventListener(name,handler){this.events[name]=handler;}
+}
+const document={createElement:()=>new Element()}, alive=()=>true;
+const text=(tag,value)=>({textContent:value,style:{}}), button=()=>({});
+const PRIVATE_WORLD_PATH='world';
+let resolve, calls=0;
+const requestJson=()=>{calls++;return new Promise(r=>resolve=r);};
+'''
+    harness += 'const relationshipPanel =' + source
+    harness += r'''
+(async()=>{
+  const first=relationship.refresh();
+  resolve({status:'READY',levels:{trust:'high'},relationship_stage:'friend'});
+  await first;
+  const content=relationship.children[1];
+  const visible=content.children[0];
+  const next=relationship.refresh();
+  assert.equal(content.children[0],visible);
+  relationship.events.toggle();
+  assert.equal(calls,2);
+  resolve({status:'READY',levels:{trust:'high'},relationship_stage:'friend'});
+  await next;
+  assert.ok(content.children.length>1);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    completed = subprocess.run([node, '-e', harness], capture_output=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr.decode('utf-8', errors='replace')
+
+
 def test_memory_summary_tracks_latest_status_and_read_failure():
     node = shutil.which("node")
     if node is None:

@@ -803,14 +803,37 @@ def test_completed_empty_history_extraction_is_durable_and_clearable(tmp_path, e
     arguments = dict(user_message="我喜欢钢琴。", assistant_message="我会继续练琴。",
         occurred_at=NOW, source_id="history:empty-reviewed", user_id="local-user")
     adapter = Mem0ConversationMemoryAdapter(backend, config)
-    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    empty = empty_actors == {"user", "linli"}
+    assert adapter.remember_exchange(**arguments).status is (MemoryWriteStatus.SKIPPED if empty else MemoryWriteStatus.WRITTEN)
     count = sum(name == "add" for name, _ in backend.calls)
     adapter = Mem0ConversationMemoryAdapter(backend, config)
-    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
-    assert sum(name == "add" for name, _ in backend.calls) == count
+    assert adapter.remember_exchange(**arguments).status is (MemoryWriteStatus.SKIPPED if empty else MemoryWriteStatus.DUPLICATE)
+    assert sum(name == "add" for name, _ in backend.calls) == count + (2 if empty else 0)
+    count = sum(name == "add" for name, _ in backend.calls)
     adapter.clear_user(user_id="local-user")
-    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    assert adapter.remember_exchange(**arguments).status is (MemoryWriteStatus.SKIPPED if empty else MemoryWriteStatus.WRITTEN)
     assert sum(name == "add" for name, _ in backend.calls) == count + 2
+
+
+def test_empty_import_can_be_retried_and_recalled_without_new_conversation(tmp_path):
+    class RecoveringMem0(FakeMem0):
+        empty = True
+        def add(self, messages, **kwargs):
+            if self.empty:
+                return {'results': []}
+            fact = '用户喜欢钢琴。' if kwargs['metadata']['history_actor'] == 'user' else '我会继续练琴。'
+            return super().add(fact, **kwargs)
+    backend = RecoveringMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    arguments = dict(user_message='我喜欢钢琴。', assistant_message='我会继续练琴。',
+        occurred_at=NOW, source_id='history:recover-empty', user_id='local-user')
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.SKIPPED
+    backend.empty = False
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    records = adapter.search_context('我喜欢什么乐器？', user_id='local-user', limit=8)
+    assert any(record.text == '用户喜欢钢琴。' for record in records)
+    assert all(record.source_id == 'history:recover-empty' for record in records)
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.DUPLICATE
 
 
 def test_provider_failures_degrade_without_echoing_private_text(tmp_path: Path) -> None:
@@ -929,7 +952,7 @@ def test_stale_empty_audit_is_invalidated_before_failed_reextraction(tmp_path, m
     adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
     arguments = dict(user_message="我喜欢钢琴。", assistant_message="我会练琴。",
         occurred_at=NOW, source_id="history:stale-empty", user_id="local-user")
-    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.WRITTEN
+    assert adapter.remember_exchange(**arguments).status is MemoryWriteStatus.SKIPPED
     FakeMem0.add(backend, "旧记录", user_id=adapter._normalized_user_id("local-user"),
         agent_id=adapter.config.agent_id, metadata={"domain": "conversation_memory",
         "source_id": arguments["source_id"], "canonical": True})
