@@ -89,12 +89,14 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "BREEZE_TTS_10GB_VRAM_REQUIRED": {"http_status": 200, "retryable": True},
     "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"http_status": 200, "retryable": True},
     "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"http_status": 200, "retryable": True},
+    "BREEZE_TTS_ROCM_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "MEDIA_PROVIDER_UNAVAILABLE": {"http_status": 200, "retryable": True},
     "LIVE_UNAVAILABLE": {"http_status": 501, "retryable": False},
     "ROUTE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
 }
 
 LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
+    "BREEZE_TTS_ROCM_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
     "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
     "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
     "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},

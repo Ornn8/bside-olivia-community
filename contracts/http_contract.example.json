@@ -137,6 +137,7 @@
       "BREEZE_TTS_10GB_VRAM_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
       "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"status": "UNAVAILABLE", "retryable": true},
       "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
+      "BREEZE_TTS_ROCM_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
       "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
       "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",

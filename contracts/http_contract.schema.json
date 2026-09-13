@@ -215,6 +215,7 @@
             "BREEZE_TTS_10GB_VRAM_REQUIRED",
             "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED",
             "BREEZE_TTS_NVIDIA_GPU_REQUIRED",
+            "BREEZE_TTS_ROCM_UNAVAILABLE",
             "MEDIA_PROVIDER_UNAVAILABLE",
             "TTS_CONTENT_GATE_UNAVAILABLE",
             "TTS_CONTENT_GATE_REJECTED"
@@ -227,6 +228,9 @@
               "$ref": "#/$defs/media_error"
             },
             "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "BREEZE_TTS_ROCM_UNAVAILABLE": {
               "$ref": "#/$defs/media_error"
             },
             "MEDIA_PROVIDER_UNAVAILABLE": {

@@ -430,9 +430,11 @@ def test_breeze_worker_marks_ready_before_generation_and_writes_pcm(
         assert array("h", rendered.readframes(3)).tolist() == [8192, -16384, 24575]
 
 
+@pytest.mark.parametrize("backend", ["cuda", "rocm"])
 def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider(
     tmp_path: Path,
     monkeypatch,
+    backend,
 ) -> None:
     observed: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(delivery.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
@@ -443,7 +445,9 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
         request_path = Path(command[command.index("--request") + 1])
         output_path = Path(command[command.index("--output") + 1])
         request = json.loads(request_path.read_text(encoding="utf-8"))
-        worker = Path(command[1]).name
+        if backend == "rocm":
+            assert command[1] == "-I"
+        worker = Path(command[2 if backend == "rocm" else 1]).name
         observed.append((worker, request))
         if worker == "external_breeze_worker.py":
             with wave.open(str(output_path), "wb") as target:
@@ -470,7 +474,10 @@ def test_breeze_delivery_renders_one_complete_plan_and_reports_the_real_provider
     monkeypatch.setattr(delivery, "_run_breeze_worker", fake_run)
     output = tmp_path / "reply.wav"
 
-    result = delivery.render_delivery_wav(_breeze_config(tmp_path), TextOnlyVoicePlan(_plan().spoken_text), output)
+    from dataclasses import replace
+    config = _breeze_config(tmp_path)
+    config = replace(config, provider_options={**config.provider_options, "runtime_backend": backend})
+    result = delivery.render_delivery_wav(config, TextOnlyVoicePlan(_plan().spoken_text), output)
 
     assert result.provider == "breeze_tts2"
     assert result.duration_seconds == 43.0

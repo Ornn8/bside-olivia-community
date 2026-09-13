@@ -157,7 +157,10 @@ def _python_runtime_ready(
     imports: tuple[str, ...],
     accepted_torch_versions: tuple[str, ...],
     prepend_cwd: bool = True,
+    torch_backend: str = "cuda",
 ) -> bool:
+    if torch_backend not in {"cuda", "rocm"}:
+        return False
     if executable is None or not executable.is_file() or cwd is None or not cwd.is_dir():
         return False
     script = (
@@ -167,16 +170,26 @@ def _python_runtime_ready(
         f"[importlib.import_module(name) for name in {imports!r}]; "
         "import torch; "
         f"assert torch.__version__ in {accepted_torch_versions!r}; "
-        "assert torch.version.cuda; "
+        f"assert torch.version.{'hip' if torch_backend == 'rocm' else 'cuda'}; "
         "assert torch.cuda.is_available(); "
         "torch.ones(1, device='cuda')"
     )
     return _run_runtime_probe([str(executable), "-I", "-B", "-c", script], cwd=cwd)
 
 
-def _breeze_hardware_status() -> tuple[bool, str | None]:
+def _breeze_hardware_status(executable: Path | None = None, *, backend: str = "cuda") -> tuple[bool, str | None]:
     """Recheck the GPU on this host; copied runtime state is never trusted."""
 
+    if backend == "rocm":
+        if executable is None or not executable.is_file():
+            return False, "BREEZE_TTS_ROCM_UNAVAILABLE"
+        script = ("import sys, torch; assert sys.platform == 'win32'; "
+                  "assert sys.getwindowsversion().build >= 22000; "
+                  "assert torch.version.hip; assert torch.cuda.is_available(); "
+                  "assert torch.cuda.get_device_properties(0).total_memory >= 10 * 1024**3; "
+                  "torch.ones(1, device='cuda', dtype=torch.bfloat16)")
+        ready = _run_runtime_probe([str(executable), "-I", "-B", "-c", script], cwd=executable.parent)
+        return ready, None if ready else "BREEZE_TTS_ROCM_UNAVAILABLE"
     executable = shutil.which("nvidia-smi")
     if executable is None:
         return False, "BREEZE_TTS_NVIDIA_GPU_REQUIRED"
@@ -385,12 +398,16 @@ def video_reply_dependency_status(
             external_python = Path(
                 str(delivery.tts.provider_options.get("external_python", ""))
             )
+            backend = delivery.tts.provider_options.get("runtime_backend", "cuda")
+            if backend == "rocm" and probe_runtime:
+                breeze_hardware_ready, breeze_hardware_reason = _breeze_hardware_status(external_python, backend="rocm")
             breeze_runtime_ready = not probe_runtime or _python_runtime_ready(
                 external_python,
                 cwd=Path(delivery.tts.runtime_root),
                 imports=("torch", "transformers", "soundfile", "whisper"),
-                accepted_torch_versions=("2.9.1+cu128",),
+                accepted_torch_versions=(("2.9.1+rocm7.2.1",) if backend == "rocm" else ("2.9.1+cu128",)),
                 prepend_cwd=False,
+                **({"torch_backend": "rocm"} if backend == "rocm" else {}),
             )
         except ReplyMediaError:
             pass
@@ -569,7 +586,7 @@ def video_reply_dependency_status(
             and breeze_hardware_ready
             and bool(tts_config and tts_config.is_file()),
             "automatic",
-            "国内：HF-Mirror；备用：Hugging Face。模型限研究与非商业用途，实测要求 NVIDIA 10GB 及以上显存",
+            "国内：HF-Mirror；备用：Hugging Face。模型限研究与非商业用途，NVIDIA 10GB 及以上显存已实测；AMD 语音为实验支持，需专用离线包、Windows 11 和兼容 ROCm 的显卡，建议 12GB 以上显存，尚未完成 AMD 实机验收",
             (
                 (
                     "domestic",

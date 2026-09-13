@@ -70,6 +70,7 @@ _WORKER_ERRORS = frozenset({"BREEZE_RUNTIME_INVALID", "BREEZE_REFERENCE_AUDIO_IN
     "BREEZE_CUDA_RUNTIME_FAILED", "BREEZE_MODULE_MISSING", "BREEZE_IMPORT_FAILED",
     "BREEZE_FILE_MISSING", "BREEZE_PERMISSION_DENIED", "BREEZE_DISK_FULL",
     "BREEZE_IO_FAILED", "BREEZE_REQUEST_INVALID", "BREEZE_RUNTIME_FAILED"})
+_WORKER_ERRORS = _WORKER_ERRORS | {"BREEZE_ROCM_OUT_OF_MEMORY", "BREEZE_ROCM_RUNTIME_FAILED"}
 _WORKER_EXCEPTION_TYPES = frozenset({"Exception", "RuntimeError", "ValueError", "TypeError",
     "KeyError", "AttributeError", "OSError", "FileNotFoundError", "PermissionError",
     "ImportError", "ModuleNotFoundError", "MemoryError", "OutOfMemoryError", "JSONDecodeError"})
@@ -83,6 +84,8 @@ def project_worker_status(value: object) -> dict[str, object]:
         ("phase", _WORKER_PHASES), ("error_code", _WORKER_ERRORS),
         ("error_type", _WORKER_EXCEPTION_TYPES),
     ) if isinstance(value.get(key), str) and value[key] in allowed}
+    if value.get("runtime_backend") in ("cuda", "rocm"):
+        result["runtime_backend"] = value["runtime_backend"]
     for key in ('chunk_count', 'chunk_index', 'generated_frames', 'max_frames', 'context_limit'):
         if type(value.get(key)) is int and 0 <= value[key] <= 1000000:
             result[key] = value[key]
@@ -102,6 +105,8 @@ def _worker_error_code(error: Exception) -> str:
     if message in _WORKER_ERRORS:
         return message
     lowered = message.casefold()
+    if "hip" in lowered or "rocm" in lowered:
+        return "BREEZE_ROCM_OUT_OF_MEMORY" if "out of memory" in lowered else "BREEZE_ROCM_RUNTIME_FAILED"
     if "cuda" in lowered and "out of memory" in lowered:
         return "BREEZE_CUDA_OUT_OF_MEMORY"
     if "cuda" in lowered:
@@ -204,6 +209,27 @@ def _write_wav(path: Path, waveform: Any, sample_rate: int, gain_db: float) -> N
 
 
 def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
+    if request.get("runtime_backend", "cuda") != "rocm":
+        return _synthesize_impl(request, output, status)
+    _write_status(status, {"status": "initializing", "phase": "preflight", "runtime_backend": "rocm"})
+    try:
+        import torch
+        import comfy_kitchen
+        if sys.platform != "win32" or sys.getwindowsversion().build < 22000 or not torch.version.hip:
+            raise RuntimeError("BREEZE_ROCM_RUNTIME_FAILED")
+        if not torch.cuda.is_available():
+            raise RuntimeError("BREEZE_ROCM_RUNTIME_FAILED")
+        # Explicit AMD path only. Preserve the existing NVIDIA dispatch and models.
+        with comfy_kitchen.use_backend("eager"):
+            return _synthesize_impl({**request, "device": "cuda", "dtype": "bf16",
+                                     "attention": "eager", "decode_mode": "eager"}, output, status)
+    except Exception as exc:
+        if not status.is_file() or json.loads(status.read_text(encoding="utf-8")).get("status") != "failed":
+            _write_failure(status, "preflight", exc)
+        raise
+
+
+def _synthesize_impl(request: dict[str, Any], output: Path, status: Path) -> None:
     decode = None
     register = None
     adapter_receipt = {}
