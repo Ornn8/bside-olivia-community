@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import zipfile
 import json
 import os
 import subprocess
@@ -22,6 +24,47 @@ from original_client_update_api import (
 
 TRUSTED_ORIGIN = "https://client.example"
 ROOT = Path(__file__).parents[2]
+
+
+@pytest.mark.parametrize('variant', ['valid', 'bad_hash', 'missing', 'extra', 'traversal', 'duplicate', 'symlink', 'oversized_digest'])
+def test_update_bundle_applies_offline_only_after_validation(tmp_path, monkeypatch, variant):
+    import original_client_update_api as api
+    package = tmp_path / 'renamed.zip'
+    patch = b'synthetic inner patch'
+    digest = hashlib.sha256(patch).hexdigest()
+    with zipfile.ZipFile(package, 'w') as z:
+        entry = zipfile.ZipInfo('../test.oliviapatch' if variant == 'traversal' else 'test.oliviapatch')
+        if variant == 'symlink':
+            entry.external_attr = 0o120777 << 16
+        z.writestr(entry, patch)
+        if variant != 'missing':
+            z.writestr('test.oliviapatch.manifest.sha256', 'a' * (257 if variant == 'oversized_digest' else 64) + '\n')
+        z.writestr('test.oliviapatch.sha256', ('b' * 64 if variant == 'bad_hash' else digest) + '\n')
+        if variant == 'extra':
+            z.writestr('unexpected.txt', 'private')
+        if variant == 'duplicate':
+            with pytest.warns(UserWarning):
+                z.writestr('test.oliviapatch', patch)
+    monkeypatch.setattr(api, '_official_manifest_digest', lambda _: pytest.fail('bundle must work offline'))
+    seen = []
+    class Updater(_Updater):
+        def apply(self, path, manifest_sha256):
+            assert path.read_bytes() == patch
+            assert manifest_sha256 == 'a' * 64
+            seen.append(path)
+            return super().apply(path, manifest_sha256)
+    async def scenario():
+        app = web.Application()
+        mount_original_client_update_api(app, Updater(), trusted_origins=(TRUSTED_ORIGIN,),
+                                        authorize_session=lambda _: None)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(ACTION_PATH, headers={'Origin': TRUSTED_ORIGIN, CONFIRM_HEADER: 'confirmed'},
+                json={'action': 'apply_verified', 'package_path': str(package)})
+            assert response.status == (200 if variant == 'valid' else 409)
+            assert response.headers['Access-Control-Allow-Origin'] == TRUSTED_ORIGIN
+            assert len(seen) == (1 if variant == 'valid' else 0)
+    asyncio.run(scenario())
+    assert all(not path.exists() for path in seen)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native picker")
@@ -161,6 +204,22 @@ def test_update_api_rejects_non_string_action_values_with_the_public_contract() 
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('origin', ['https://untrusted.example', 'null', ''])
+def test_update_errors_do_not_grant_untrusted_origins_access(origin):
+    async def scenario():
+        updater = _Updater()
+        app = web.Application()
+        mount_original_client_update_api(app, updater, trusted_origins=(TRUSTED_ORIGIN,),
+                                         authorize_session=lambda _: None)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(ACTION_PATH,
+                headers={'Origin': origin, CONFIRM_HEADER: 'confirmed'}, json={'action': 'rollback'})
+            assert response.status == 403
+            assert 'Access-Control-Allow-Origin' not in response.headers
+            assert updater.rollbacks == 0
+    asyncio.run(scenario())
+
+
 def test_update_api_contract_matches_its_schema() -> None:
     contract = json.loads(
         (ROOT / "contracts" / "local_update_api_contract.json").read_text(
@@ -213,6 +272,7 @@ def test_verified_apply_uses_official_digest_and_fails_closed(tmp_path, monkeypa
             response = await client.post(ACTION_PATH, headers=headers,
                 json={"action": "apply_verified", "package_path": str(package)})
             assert response.status == (503 if failure else 200)
+            assert response.headers.get('Access-Control-Allow-Origin') == TRUSTED_ORIGIN
             result = await response.json()
             assert result["status"] == ("FAILED" if failure else "APPLIED")
             if failure:

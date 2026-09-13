@@ -108,11 +108,21 @@ def test_builds_release_ready_component_package_that_the_updater_accepts(
         }
 
     installation = _managed_installation(tmp_path)
-    applied = apply_component_update(
-        installation,
-        package,
-        expected_manifest_sha256=result["manifest_sha256"],
-    )
+    from original_client_update_api import LocalComponentUpdater, _apply_update_bundle
+    bundle = Path(result['bundle'])
+    with zipfile.ZipFile(bundle) as archive:
+        assert archive.read(package.name) == package.read_bytes()
+        assert archive.read(package.name + '.manifest.sha256').decode().strip() == result['manifest_sha256']
+    applied = _apply_update_bundle(LocalComponentUpdater(installation), bundle)
+    tampered = tmp_path / 'tampered.zip'
+    with zipfile.ZipFile(bundle) as source_zip, zipfile.ZipFile(tampered, 'w') as output_zip:
+        for name in source_zip.namelist():
+            output_zip.writestr(name, b'0' * 64 if name.endswith('.manifest.sha256') else source_zip.read(name))
+    state_before = (installation / '.olivia-update-state.json').read_bytes()
+    from installer.component_update import ComponentUpdateError
+    with pytest.raises(ComponentUpdateError, match='UPDATE_MANIFEST_DIGEST_MISMATCH'):
+        _apply_update_bundle(LocalComponentUpdater(installation), tampered)
+    assert (installation / '.olivia-update-state.json').read_bytes() == state_before
     assert applied == {
         "status": "APPLIED",
         "component": "local_backend",
@@ -245,7 +255,7 @@ def test_packages_git_objects_not_an_assume_unchanged_worktree_file(
         assert archive.read("payload/local_server.py") == committed
 
 
-@pytest.mark.parametrize("fail_at", [2, 3])
+@pytest.mark.parametrize("fail_at", [2, 3, 4])
 def test_publish_failure_removes_every_reserved_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

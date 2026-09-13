@@ -194,7 +194,8 @@ def build_component_package(
             raise ComponentPackageBuildError("UPDATE_VERSION_INVALID")
         manifest_sidecar = Path(f"{package}.manifest.sha256")
         package_sidecar = Path(f"{package}.sha256")
-        if any(path.exists() for path in (package, manifest_sidecar, package_sidecar)):
+        bundle = package.with_suffix('.zip')
+        if any(path.exists() for path in (package, manifest_sidecar, package_sidecar, bundle)):
             raise ComponentPackageBuildError("UPDATE_OUTPUT_EXISTS")
         source_commit = _verify_source(source_root, expected_source_commit)
         package.parent.mkdir(parents=True, exist_ok=True)
@@ -250,11 +251,16 @@ def build_component_package(
         staged_package_sidecar = staging / package_sidecar.name
         staged_manifest_sidecar.write_text(manifest_sha256 + "\n", encoding="ascii")
         staged_package_sidecar.write_text(package_sha256 + "\n", encoding="ascii")
+        staged_bundle = staging / bundle.name
+        with zipfile.ZipFile(staged_bundle, 'w') as archive:
+            for item in (staged_package, staged_manifest_sidecar, staged_package_sidecar):
+                _write_member(archive, item.name, item.read_bytes())
         _publish_outputs(
             [
                 (staged_manifest_sidecar, manifest_sidecar),
                 (staged_package_sidecar, package_sidecar),
                 (staged_package, package),
+                (staged_bundle, bundle),
             ]
         )
         return {
@@ -264,6 +270,7 @@ def build_component_package(
             "source_commit": source_commit,
             "file_count": len(files),
             "package": str(package),
+            "bundle": str(bundle),
             "manifest_sha256": manifest_sha256,
             "package_sha256": package_sha256,
         }

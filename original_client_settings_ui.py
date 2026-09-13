@@ -1873,7 +1873,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "下载我们发布的 .oliviapatch，选择后将自动联网校验并安装，无需手填校验码。安装后关闭并重新打开 Olivia 生效。",
+      "下载我们发布的更新 ZIP，直接选择即可校验并安装，无需解压、联网获取校验码或手动填写。也支持原来的 .oliviapatch 文件。安装后关闭并重新打开 Olivia 生效。",
       "text-text-secondary text-body-m font-regular"
     );
     let packagePath = "";
@@ -1895,7 +1895,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (payload.status === "SELECTED" && typeof payload.package_path === "string") {
           packagePath = payload.package_path;
           selectedPatch.textContent = `已选择：${packagePath.split(/[\\/]/).pop()}`;
-          result.textContent = "正在获取官方校验值并安装补丁……";
+          result.textContent = /\.zip$/i.test(packagePath) ? "正在校验更新 ZIP 并安装……" : "正在获取官方校验值并安装补丁……";
           const applied = await requestUpdate({ action: "apply_verified", package_path: packagePath });
           result.textContent = `版本 ${applied.version} 已安装，关闭并重新打开 Olivia 后生效。`;
         } else if (payload.status === "CANCELLED") {
@@ -1905,6 +1905,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const code = error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE";
         result.textContent = code === "UPDATE_CHECKSUM_UNAVAILABLE"
           ? "无法获取官方校验值，尚未安装。请检查网络后重试，或展开手动校验，填入发布说明中的校验值。"
+          : code === "UPDATE_BUNDLE_INVALID" || code === "UPDATE_BUNDLE_CHECKSUM_MISMATCH"
+          ? "更新 ZIP 不完整、结构不正确或校验不匹配，尚未安装。请重新下载我们发布的更新 ZIP。"
           : `未能确认更新结果：${code}。请检查版本后重试。`;
       } finally {
         setButtonsBusy([choose, install, rollback], false);
