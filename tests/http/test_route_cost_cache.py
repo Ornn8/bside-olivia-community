@@ -15,7 +15,8 @@ def test_route_cache_reuses_only_same_successful_context(monkeypatch):
     clock = [10.0]
     monkeypatch.setattr(server, 'emotion_triage', router)
     monkeypatch.setattr(server, '_route_readiness', lambda: dict(ready))
-    monkeypatch.setattr(server, 'video_reply_settings_store', SimpleNamespace(videos_snapshot=lambda: dict(videos)))
+    monkeypatch.setattr(server, 'video_reply_settings_store', SimpleNamespace(
+        videos_snapshot=lambda: dict(videos), saved_tier=lambda: None))
     monkeypatch.setattr(server, '_route_decision_cache', {})
     monkeypatch.setattr(server.time, 'monotonic', lambda: clock[0])
     async def exercise():
