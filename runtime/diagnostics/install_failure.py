@@ -7,7 +7,7 @@ import zipfile
 STAGES = frozenset({'prepare', 'download', 'offline_copy', 'verify_file', 'stage_copy', 'extract', 'verify_tree', 'dependencies', 'activate', 'cleanup'})
 SOURCES = frozenset({'auto', 'domestic', 'official', 'local', 'offline-package'})
 KINDS = frozenset({'http', 'network', 'timeout', 'disk_full', 'permission', 'path_too_long', 'file_missing', 'file_locked', 'io', 'archive', 'validation', 'unexpected'})
-COMPONENTS = frozenset({'tts_runtime', 'tts_model', 'tts_license', 'tts_python', 'voice_reference', 'tts_quality_model', 'tts_config'})
+COMPONENTS = frozenset({'tts_runtime', 'tts_model', 'tts_license', 'tts_python', 'voice_reference', 'tts_quality_model', 'tts_config', 'voice', 'cover', 'lipsync', 'original', 'scenes', 'separator', 'tools', 'transcription'})
 
 def project_install_failure(value):
     if not isinstance(value, dict):

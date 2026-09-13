@@ -7,6 +7,27 @@ import pytest
 from runtime.media.component_packages import MediaComponents, requirements_for
 
 
+def test_failed_import_retains_safe_underlying_io_evidence(tmp_path, monkeypatch):
+    import errno
+    import video_capability_install as installer
+    from runtime.diagnostics.install_failure import project_install_failure
+    manager = MediaComponents(tmp_path / 'data')
+    archive = package(tmp_path)
+    def fail(*args, **kwargs):
+        try:
+            raise OSError(errno.EIO, 'private filename and content')
+        except OSError as cause:
+            raise installer.VideoCapabilityError('VIDEO_ARCHIVE_IO_FAILED') from cause
+    monkeypatch.setattr(installer, '_extract_runtime_zip_safely', fail)
+    manager.start(archive)
+    manager._thread.join(timeout=5)
+    assert not manager._thread.is_alive()
+    assert manager.progress['state'] == 'failed'
+    details = project_install_failure(manager.progress['failure_details'])
+    assert details == {'stage': 'extract', 'source': 'offline-package', 'kind': 'io', 'component': 'tools', 'errno': errno.EIO}
+    assert 'private' not in json.dumps(manager.progress)
+
+
 def package(tmp_path, component='tools'):
     from video_capability_install import write_runtime_root_manifest
     root = tmp_path / 'source'

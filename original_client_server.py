@@ -1163,6 +1163,17 @@ def _configured_embedding_installer(
         return None
 
 
+def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(letters, Sequence) or isinstance(letters, (str, bytes, bytearray)):
+        return ()
+    def priority(item):
+        active = str(item.get("letter_status", "")).lower() in {"pending", "processing"} or str(item.get("media_status", "")).lower() in {"pending", "queued", "processing"}
+        created = item.get("created_at", 0)
+        return (active, created if type(created) in {int, float} else 0)
+    return tuple(sorted((item for item in letters if isinstance(item, Mapping)),
+                        key=priority, reverse=True)[:20])
+
+
 def create_configured_original_client_server_runtime(
     *,
     server_module: ModuleType | Any | None = None,
@@ -1204,15 +1215,7 @@ def create_configured_original_client_server_runtime(
     def task_snapshot() -> tuple[Mapping[str, object], ...]:
         store = getattr(server_module, "store", None)
         letters = getattr(store, "letters", ())
-        if not isinstance(letters, Sequence) or isinstance(
-            letters, (str, bytes, bytearray)
-        ):
-            return ()
-        return tuple(
-            item
-            for item in tuple(letters)[-20:]
-            if isinstance(item, Mapping)
-        )
+        return _recent_diagnostic_tasks(letters)
 
     def history_import_snapshot() -> Mapping[str, object]:
         snapshot = getattr(server_module, "_official_import_progress_snapshot", None)
