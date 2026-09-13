@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from runtime.private_world.life_rhythm import LOCAL
 
 from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.initiative import Initiative, letter_invitation_allowed
@@ -8,7 +9,7 @@ from runtime.personal_chat.service import PersonalChatService
 
 
 def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
-    now = [datetime(2026, 9, 13, 12).timestamp()]
+    now = [datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()]
     rows = []
     policy = Initiative(rows, clock=lambda: now[0], interval=lambda: 1200)
     now[0] += 86400
@@ -28,12 +29,12 @@ def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
 
 
 def test_sleep_and_explicit_pause():
-    now = [datetime(2026, 9, 13, 7).timestamp()]
+    now = [datetime(2026, 9, 13, 7, tzinfo=LOCAL).timestamp()]
     rows = []
     policy = Initiative(rows, clock=lambda: now[0], interval=lambda: 0)
     policy.received(None, None)
     assert not policy.ready()
-    now[0] = datetime(2026, 9, 13, 8, 30).timestamp()
+    now[0] = datetime(2026, 9, 13, 8, 30, tzinfo=LOCAL).timestamp()
     assert policy.ready()
     rows.append(dict(delivery_status='DELIVERED', initiative_preference='pause'))
     assert not policy.ready()

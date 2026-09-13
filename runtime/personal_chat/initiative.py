@@ -2,6 +2,7 @@
 from datetime import datetime
 import random
 import time
+from runtime.private_world.life_rhythm import LOCAL
 
 
 def delivered(row):
@@ -53,7 +54,7 @@ class Initiative:
         scheduled = followup is not None and now >= followup['followup_at']
         if not self.target or (not scheduled and now < self.due):
             return False
-        local = datetime.fromtimestamp(now)
+        local = datetime.fromtimestamp(now, LOCAL)
         if local.hour < 8 or (local.hour == 8 and local.minute < 30):
             return False
         # Reserve budget for attempts too, including SKIP/failure/uncertain sends.

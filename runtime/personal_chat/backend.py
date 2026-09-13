@@ -9,6 +9,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .service import PersonalChatService
+from runtime.private_world.life_rhythm import LOCAL
 
 
 _RUNTIME = web.AppKey("personal_chat", dict)
@@ -64,7 +65,7 @@ async def generate(server, event, row):
     from .stickers import choices, extract
     sticker_choices = choices(server.store.personal_chats, context.private_behavior) if event.channel == 'wechat' else {}
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': previous,
-                                'structured': True, 'decision_now': datetime.now().astimezone().isoformat(),
+                                'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
                                 'letter_invitation_allowed': allowed,

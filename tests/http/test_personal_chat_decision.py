@@ -4,6 +4,7 @@ import pytest
 
 from runtime.personal_chat.decision import decode
 from runtime.personal_chat.initiative import Initiative
+from runtime.private_world.life_rhythm import LOCAL
 
 
 def envelope(**values):
@@ -13,7 +14,7 @@ def envelope(**values):
 
 
 def test_explicit_followup_persists_deadline_and_temporary_pause_expires():
-    now = datetime(2026, 9, 13, 12).astimezone()
+    now = datetime(2026, 9, 13, 12, tzinfo=LOCAL)
     later = now + timedelta(days=1)
     text = '今晚别找我，明天中午再来找我'
     decision = decode(envelope(initiative='pause', followup_at=later.isoformat(), evidence=text), user=text, now=now.timestamp())
@@ -36,11 +37,11 @@ def test_explicit_followup_persists_deadline_and_temporary_pause_expires():
     envelope(followup_at='2030-01-01T12:00:00+09:00', evidence='明天找我')])
 def test_missing_invalid_or_unsupported_decision_cannot_be_sent(raw):
     with pytest.raises(ValueError, match='DECISION_INVALID'):
-        decode(raw, user='明天找我', now=datetime(2026,9,13,12).timestamp())
+        decode(raw, user='明天找我', now=datetime(2026,9,13,12,tzinfo=LOCAL).timestamp())
 
 
 def test_proactive_cannot_modify_user_preferences_and_cancel_survives_restart():
-    now = datetime(2026,9,13,12).timestamp()
+    now = datetime(2026,9,13,12,tzinfo=LOCAL).timestamp()
     with pytest.raises(ValueError):
         decode(envelope(initiative='open', evidence='可以'), user='可以', now=now, proactive=True)
     rows = [dict(letter_id='request', delivery_status='DELIVERED', followup_at=now + 100),
@@ -102,7 +103,7 @@ def test_retry_discards_unpublished_audio_and_decisions():
 
 
 def test_failed_new_user_request_suppresses_initiative_until_next_completed_exchange():
-    now = datetime(2026,9,13,12).timestamp()
+    now = datetime(2026,9,13,12,tzinfo=LOCAL).timestamp()
     rows = [dict(delivery_status='DELIVERED'), dict(delivery_status='FAILED')]
     policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
     policy.received(None, None)
