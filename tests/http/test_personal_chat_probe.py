@@ -80,11 +80,12 @@ def test_journal_does_not_resend_unknown_delivery_after_restart(tmp_path):
 
 
 def test_real_websocket_owner_filter_and_platform_ack(tmp_path, monkeypatch):
-    monkeypatch.setenv("OLIVIA_ONEBOT_TOKEN", "synthetic-token-123456789")
+    fixture_token = "synthetic-token-123456789"
+    monkeypatch.setenv("OLIVIA_ONEBOT_TOKEN", fixture_token)
     async def scenario():
         sent = []
         async def socket(request):
-            assert request.headers["Authorization"] == "Bearer synthetic-token-123456789"
+            assert request.headers["Authorization"] == f"Bearer {fixture_token}"
             ws = web.WebSocketResponse()
             await ws.prepare(request)
             assert (await ws.receive_json())["action"] == "get_login_info"

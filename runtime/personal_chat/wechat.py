@@ -1,4 +1,4 @@
-"""Official Weixin transport; delivery persistence belongs to the shared service."""
+"""Weixin transport; delivery persistence belongs to the shared service."""
 import asyncio
 from contextlib import suppress
 

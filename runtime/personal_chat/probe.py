@@ -117,7 +117,7 @@ async def wechat(args, session, journal):
                 "msg": {"from_user_id": "", "to_user_id": event.owner_id, "client_id": event.exchange_id,
                         "message_type": 2, "message_state": 2, "context_token": raw["context_token"],
                         "item_list": [{"type": 1, "text_item": {"text": "连接测试成功。这是固定测试消息，还没有调用林离的记忆和世界。"}}]}})
-            # Official sendMessage accepts an absent ret; the HTTP wrapper
+            # Weixin sendMessage accepts an absent ret; the HTTP wrapper
             # already rejects transport failures and explicit business errors.
             journal.delivered(event.exchange_id)
             print('WECHAT_OWNER_ROUNDTRIP_PASSED', flush=True)

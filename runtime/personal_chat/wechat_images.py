@@ -1,4 +1,4 @@
-"""Official PNG image upload for personal-chat stickers.
+"""Weixin PNG image upload for personal-chat stickers.
 
 Protocol: Tencent/openclaw-weixin src/cdn/upload.ts and messaging/send.ts.
 """

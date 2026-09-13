@@ -9,7 +9,7 @@ def delivered(row):
 
 
 def letter_invitation_allowed(chats, letters, now):
-    # Both transports share this history. Failed delivery does not count as an invitation.
+    # Both transports share these records. Failed delivery does not count as an invitation.
     recent = [r for r in chats if delivered(r)]
     last_invite = max((float(r.get('created_at', 0)) for r in recent
                        if r.get('letter_invitation')), default=0)
