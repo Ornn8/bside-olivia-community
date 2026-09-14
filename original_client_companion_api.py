@@ -174,14 +174,15 @@ class CompanionMemorySummary:
     memory_id: str
     text: str
     source_id: str
-    created_at: str
+    created_at: str | None
     score: float | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.memory_id, code="MEMORY_ID_INVALID")
         _text(self.text, maximum=2000, code="MEMORY_TEXT_INVALID")
         _identifier(self.source_id, code="MEMORY_SOURCE_INVALID")
-        _timestamp(self.created_at, code="MEMORY_TIME_INVALID")
+        if self.created_at is not None:
+            _timestamp(self.created_at, code="MEMORY_TIME_INVALID")
         if self.score is not None and (
             isinstance(self.score, bool)
             or not isinstance(self.score, (int, float))
