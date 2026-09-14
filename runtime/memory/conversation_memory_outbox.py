@@ -13,6 +13,8 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
+from types import SimpleNamespace
 from pathlib import Path
 import re
 import sqlite3
@@ -98,6 +100,7 @@ class CanonicalMemoryOutbox:
         committer: CanonicalMemoryCommitter,
         *,
         user_id: str = "local-user",
+        archive_memory=None,
     ) -> None:
         state = Path(state_path)
         journal = Path(journal_path)
@@ -114,6 +117,7 @@ class CanonicalMemoryOutbox:
         self.journal_path = journal
         self.committer = committer
         self.user_id = user_id
+        self.archive_memory = archive_memory
         self._scan_lock = asyncio.Lock()
         self._initialize()
 
@@ -207,6 +211,7 @@ class CanonicalMemoryOutbox:
                     pending += 1
                     self._record(delivery, result)
 
+            await self._index_archive_originals()
             status = "degraded" if pending else "available"
             return OutboxScanResult(
                 status,
@@ -216,6 +221,39 @@ class CanonicalMemoryOutbox:
                 pending=pending,
                 ignored=ignored,
             )
+
+    async def _index_archive_originals(self):
+        list_legacy = getattr(self.archive_memory, "list_legacy", None)
+        index = getattr(self.committer, "index_original", None)
+        if not callable(list_legacy) or not callable(index):
+            return
+        try:
+            rows = await asyncio.to_thread(list_legacy)
+        except Exception:
+            return  # Archive failures must not block canonical delivery; retry next scan.
+        indexed = 0
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            metadata = row.get("metadata", {})
+            if not isinstance(metadata, Mapping) or metadata.get("import_kind") not in {
+                "official_text_reply", "offline_recovered_text_reply", "local_letter_backup_v1",
+            }:
+                continue
+            source = row.get("source_record_id")
+            user_text, reply = metadata.get("user_content"), metadata.get("reply_text")
+            if not isinstance(source, str) or not source or not all(isinstance(v, str) for v in (user_text, reply)):
+                continue
+            stamp = _timestamp(row.get("occurred_at"))
+            digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            source_id = ("history:offline:" if source.startswith("offline-letter-pairs:") else "history:") + digest
+            delivery = SimpleNamespace(user_id=self.user_id, source_id=source_id,
+                user_message=user_text, assistant_message=reply, occurred_at=stamp,
+                lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
+                content_hash=hashlib.sha256(json.dumps([user_text, reply, row.get("occurred_at")], ensure_ascii=False).encode("utf-8")).hexdigest())
+            indexed += bool(await index(delivery))
+            if indexed >= 20:
+                break
 
     def health(self) -> dict[str, object]:
         try:

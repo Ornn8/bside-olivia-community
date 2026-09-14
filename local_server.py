@@ -137,6 +137,7 @@ from runtime.memory.private_world_runtime import (
 )
 
 from runtime.imports.official_letters import collect_default_official_text_replies
+from runtime.imports.letter_backup import export_letters as export_letter_backup, import_letters as import_letter_backup, is_backup as is_letter_backup
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
@@ -224,11 +225,11 @@ def _local_import_snapshot():
     return _local_import_result or ok({"status": "IDLE"})
 
 
-async def _run_local_import():
+async def _run_local_import(*, originals_only=False):
     global _local_import_result
     try:
         deadline = asyncio.get_running_loop().time() + MEMORY_READY_REPLY_TIMEOUT_SECONDS
-        while getattr(conversation_memory_adapter.status(), "reason_code", None) == "MEM0_INITIALIZING":
+        while not originals_only and getattr(conversation_memory_adapter.status(), "reason_code", None) == "MEM0_INITIALIZING":
             _update_official_import_progress(
                 status="RUNNING", stage="memory_wait", total=0, processed=0,
             )
@@ -242,7 +243,7 @@ async def _run_local_import():
             await asyncio.sleep(0.5)
         _update_official_import_progress(status="RUNNING", stage="preflight", total=0, processed=0)
         _local_import_result = await route(
-            "POST", "/toy/letter/legacy/local-import", {}, {},
+            "POST", "/toy/letter/legacy/local-import", {"originals_only": originals_only}, {},
             companion_confirmed=True, _local_import_worker=True,
         )
     except asyncio.CancelledError:
@@ -1721,7 +1722,7 @@ def letter_to_out(l):
     imported_history = (
         isinstance(metadata, dict)
         and metadata.get("import_kind") == "official_text_reply"
-    ) or is_published_offline_letter_pair(metadata)
+    ) or is_published_offline_letter_pair(metadata) or is_letter_backup(metadata)
     summary = (
         l.get("content")
         if imported_history
@@ -1876,7 +1877,15 @@ async def handler(request: web.Request):
     body_error = None
     if request.can_read_body:
         try:
-            raw = await request.read()
+            if canonical_path == "/toy/letter/backup/import":
+                from runtime.imports.letter_backup import MAX_BYTES
+                raw = bytearray()
+                async for chunk in request.content.iter_chunked(65536):
+                    raw.extend(chunk)
+                    if len(raw) > MAX_BYTES + 1024:
+                        return web.json_response(err(400, "LETTER_BACKUP_TOO_LARGE"), status=400, headers=CORS_HEADERS(request))
+            else:
+                raw = await request.read()
             if raw:
                 body = json.loads(raw.decode("utf-8")) if raw else {}
                 if not isinstance(body, dict):
@@ -2469,9 +2478,9 @@ def _mailbox_created_at(letter: Mapping[str, object]) -> float:
     return 0.0
 
 
-def _official_history_mailbox_projection() -> list[dict]:
+def _official_history_mailbox_projection(*, strict: bool = False) -> list[dict]:
     projected: list[dict] = []
-    for letter in _legacy_letter_collection():
+    for letter in _legacy_letter_collection(strict=strict):
         metadata = letter.get("metadata")
         offline_pair = is_published_offline_letter_pair(metadata)
         official_history_completed = bool(
@@ -2480,7 +2489,8 @@ def _official_history_mailbox_projection() -> list[dict]:
             and metadata.get(OFFICIAL_HISTORY_PUBLISH_STATUS_KEY)
             == OFFICIAL_HISTORY_PUBLISH_STATUS_COMPLETED
         )
-        if not official_history_completed and not offline_pair:
+        backup = is_letter_backup(metadata)
+        if not official_history_completed and not offline_pair and not backup:
             continue
         projected.append(
             {
@@ -2490,6 +2500,11 @@ def _official_history_mailbox_projection() -> list[dict]:
                     if offline_pair
                     else {}
                 ),
+                **({"created_at": metadata["backup_record"]["created_at"],
+                    "replied_at": metadata["backup_record"]["replied_at"],
+                    "title": metadata["backup_record"]["title"],
+                    "origin": metadata["backup_record"]["origin"],
+                    "reply_mode": "text_letter"} if backup else {}),
                 "letter_status": "COMPLETED",
                 "is_read": 1,
                 "read_only": True,
@@ -2498,14 +2513,14 @@ def _official_history_mailbox_projection() -> list[dict]:
     return projected
 
 
-def _letter_collection(scope: str):
+def _letter_collection(scope: str, *, strict: bool = False):
     if scope == "legacy":
         return _legacy_letter_collection()
     _mark_superseded_failed_retries()
     current = [letter for letter in store.letters if not letter.get("superseded_by")
                and (letter.get("origin") != "proactive" or letter.get("letter_status") == "COMPLETED")]
     return sorted(
-        [*current, *_official_history_mailbox_projection()],
+        [*current, *_official_history_mailbox_projection(strict=strict)],
         key=_mailbox_sort_key,
         reverse=True,
     )
@@ -3246,6 +3261,36 @@ async def route(
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
+    if p in {"/toy/letter/backup/export", "/toy/letter/backup/import"}:
+        if companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED")
+        try:
+            if p.endswith("/export"):
+                if _store_state_error_code:
+                    return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
+                payload = await asyncio.to_thread(export_letter_backup, _letter_collection("current", strict=True))
+                return ok({"status": "READY", "backup": payload})
+            if not _history_memory_admin_gate.acquire(blocking=False):
+                return err(409, "MEMORY_ADMIN_BUSY")
+            async def restore_backup():
+                try:
+                    return await asyncio.to_thread(import_letter_backup, body.get("backup"),
+                        adapter=_legacy_import_adapter(), existing=_letter_collection("current"))
+                finally:
+                    _history_memory_admin_gate.release()
+            operation = asyncio.create_task(restore_backup())
+            _history_import_operations.add(operation)
+            def backup_settled(task):
+                _history_import_operations.discard(task)
+                if not task.cancelled():
+                    task.exception()
+            operation.add_done_callback(backup_settled)
+            return ok(await asyncio.shield(operation))
+        except (ValueError, TypeError, UnicodeError, OverflowError):
+            return err(400, "LETTER_BACKUP_INVALID")
+        except (OSError, sqlite3.Error):
+            return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
+
     if p == "/toy/letter/legacy/local-import":
         global _local_import_task, _local_import_result
         if method == "GET" and query.get("progress") == "1":
@@ -3258,7 +3303,7 @@ async def route(
             if isinstance(body, dict) and body.get("background") is True:
                 _local_import_result = None
                 _update_official_import_progress(status="RUNNING", stage="preflight", total=0, processed=0)
-                _local_import_task = asyncio.create_task(_run_local_import())
+                _local_import_task = asyncio.create_task(_run_local_import(originals_only=body.get("originals_only") is True))
                 return _local_import_snapshot()
         if method == "POST" and not _history_gate_owned:
             gate = _history_memory_admin_gate
@@ -3319,6 +3364,12 @@ async def route(
                     "error_code": "COMPANION_CONFIRMATION_REQUIRED",
                     "retryable": False,
                 })
+            if body.get("originals_only") is True:
+                report = await asyncio.to_thread(apply_offline_letter_pair_recovery_to_adapter, source, adapter=adapter)
+                if report.status != "committed" or report.rejected:
+                    return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
+                return ok({**asdict(report), "status": "APPLIED", "source": "local_backup",
+                           "memory_mode": "originals", "provider_calls": 0})
             preflight_error = _official_history_preflight_error()
             if preflight_error is not None:
                 return err(503, preflight_error, {

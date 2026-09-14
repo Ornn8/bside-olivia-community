@@ -65,9 +65,10 @@ const stateLabels = {available:'AVAILABLE', degraded:'DEGRADED', unavailable:'UN
 const capabilityState = c => c && c.state || 'unavailable';
 const input = {value:''}, list = {replaceChildren(){}}, renderMemories = () => {};
 const MEMORY_PATH = 'memory', STATUS_PATH = 'status';
-let fail = false;
+let fail = false, failStatus = false;
 const requestJson = async path => {
   if (fail) throw new Error('timeout');
+  if (failStatus && path === STATUS_PATH) throw new Error('status timeout');
   return path === MEMORY_PATH ? {memories:[]} : {capabilities:{memory:{state:'degraded'}}};
 };
 '''
@@ -77,6 +78,10 @@ const requestJson = async path => {
   assert.match(summary.textContent, /AVAILABLE/);
   await load();
   assert.match(summary.textContent, /DEGRADED/);
+  failStatus = true;
+  await load();
+  assert.doesNotMatch(resultState.textContent, /无法读取/);
+  failStatus = false;
   fail = true;
   await load();
   assert.match(summary.textContent, /UNAVAILABLE/);

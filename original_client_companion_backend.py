@@ -256,6 +256,22 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
         query: str | None,
         limit: int,
     ) -> tuple[CompanionMemorySummary, ...]:
+        started = time.monotonic()
+        record = {"event": "companion_memory_search" if query else "companion_memory_list",
+                  "status": "available", "recorded_at_ms": int(time.time() * 1000)}
+        try:
+            return self._list_memories(query=query, limit=limit)
+        except Exception as exc:
+            record["status"] = "unavailable"
+            record["error_code"] = (exc.code if isinstance(exc, OriginalClientCompanionBackendError)
+                                    else "COMPANION_MEMORY_UNAVAILABLE")
+            raise
+        finally:
+            record["elapsed_ms"] = min(86_400_000, max(0, int((time.monotonic() - started) * 1000)))
+            with self._status_history_lock:
+                self._status_history.append(record)
+
+    def _list_memories(self, *, query: str | None, limit: int) -> tuple[CompanionMemorySummary, ...]:
         if self._memory_admin is None:
             raise OriginalClientCompanionBackendError(
                 "COMPANION_MEMORY_DISABLED"

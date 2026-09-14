@@ -1075,6 +1075,8 @@ class LocalMemoryAdapter:
                 "source_record_id": str(row["source_record_id"]),
                 "source": str(row["source"]),
                 "created_at": row["occurred_at"] or int(row["imported_at"]),
+                "occurred_at": row["occurred_at"],
+                "imported_at": int(row["imported_at"]),
                 "content": user_content if isinstance(user_content, str) else stored_content,
                 "content_hash": str(row["content_hash"]),
                 "metadata": metadata,

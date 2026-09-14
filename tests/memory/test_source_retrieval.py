@@ -115,3 +115,21 @@ def test_terminal_old_letter_gets_original_index_without_paid_reextraction(tmp_p
     assert result.duplicates == 1
     assert adapter.search_evidence_context('钢琴', user_id='local-user', limit=5)
     assert not any(method == 'add' for method, _ in backend.calls)
+
+
+def test_long_original_still_supplies_detail_with_default_prompt_budget(tmp_path):
+    from tests.memory.test_mem0_memory import FakeMem0, _config
+    from runtime.memory.mem0_memory import Mem0ConversationMemoryAdapter
+    from runtime.memory.companion_memory_context import CompanionMemoryPromptBuilder
+    from runtime.memory.memory_port import NullMemoryPort
+    from runtime.memory.memory_prompt import estimate_memory_tokens
+    backend = FakeMem0()
+    adapter = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+    adapter.index_original_exchange(user_id='local-user', source_id='history:offline:long',
+        user_message='旧钢琴是外婆送我的。' + '那时候我每天都会坐在窗边练习曲子，也会把一天里的小事写下来。' * 20,
+        assistant_message='谢谢你告诉我。', occurred_at=NOW)
+    found = adapter.search_evidence_context('旧钢琴', user_id='local-user', limit=5)
+    assert found
+    prompt = CompanionMemoryPromptBuilder(NullMemoryPort(), adapter).build('旧钢琴')
+    assert '外婆' in prompt.text
+    assert estimate_memory_tokens(prompt.text) <= 1500
