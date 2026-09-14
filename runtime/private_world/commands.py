@@ -297,10 +297,13 @@ class InitializeHistoricalRelationship(PrivateWorldCommand):
 
 @dataclass(frozen=True, kw_only=True)
 class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
-    """Apply one assessed corpus to the two bounded intimacy axes."""
+    """Apply an assessed corpus; optional axes preserve legacy command decoding."""
 
     familiarity: int
     closeness: int
+    trust: int | None = None
+    comfort: int | None = None
+    tension: int | None = None
 
     kind: ClassVar[PrivateWorldCommandKind] = (
         PrivateWorldCommandKind.APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE
@@ -312,6 +315,9 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
             value = getattr(self, field_name)
             if type(value) is not int or not 0 <= value <= 100:
                 raise PrivateWorldCommandError(f"{field_name} is invalid")
+        axes = (self.trust, self.comfort, self.tension)
+        if axes != (None, None, None) and any(type(v) is not int or not 0 <= v <= 100 for v in axes):
+            raise PrivateWorldCommandError("historical assessment axes must be complete")
         if not self.evidence_refs:
             raise PrivateWorldCommandError(
                 "historical relationship evidence is required"
@@ -321,6 +327,8 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
         return {
             "familiarity": self.familiarity,
             "closeness": self.closeness,
+            **({"trust": self.trust, "comfort": self.comfort, "tension": self.tension}
+               if self.trust is not None else {}),
         }
 
 

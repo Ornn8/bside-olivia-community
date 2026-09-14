@@ -764,6 +764,9 @@ def test_server_migration_applies_historical_axes_to_an_existing_private_world(
         version=before.version + 1,
         familiarity=60,
         closeness=36,
+        trust=44,
+        comfort=42,
+        tension=9,
     )
 
     class ExplodingGateway:

@@ -25,7 +25,7 @@ from .memory_port import (
     MemoryPort,
     MemoryRecord,
 )
-from .memory_prompt import MemoryPrompt, MemoryPromptBuilder
+from .memory_prompt import MemoryPrompt, MemoryPromptBuilder, estimate_memory_tokens
 
 
 class _ConversationMemoryView:
@@ -38,9 +38,11 @@ class _ConversationMemoryView:
         memory: ConversationMemoryPort,
         *,
         user_id: str,
+        exclude_source_ids=(),
     ) -> None:
         self.memory = memory
         self.user_id = user_id
+        self.exclude_source_ids = tuple(exclude_source_ids)
 
     def status(self) -> Mapping[str, object]:
         return self.memory.status().to_dict()
@@ -54,10 +56,14 @@ class _ConversationMemoryView:
     ) -> list[MemoryRecord]:
         if domains is not None and CONVERSATION_MEMORY not in domains:
             return []
-        records = self.memory.search_context(
+        search = getattr(self.memory, "search_evidence_context", None)
+        options = {"exclude_source_ids": self.exclude_source_ids} if search is not None else {}
+        search = search or self.memory.search_context
+        records = search(
             query,
             user_id=self.user_id,
             limit=limit,
+            **options,
         )
         return [self._convert(record) for record in records]
 
@@ -77,6 +83,12 @@ class _ConversationMemoryView:
             "current_conversation": True,
         }
         metadata: dict[str, object] = {}
+        if record.metadata.get("verbatim") is True and record.metadata.get("speaker") in {"user", "linli"}:
+            provenance["speaker"] = record.metadata["speaker"]
+            provenance["verbatim"] = True
+            provenance["source"] = "original_text"
+            metadata["verbatim"] = True
+            metadata["speaker"] = record.metadata["speaker"]
         history_actor = record.metadata.get("history_actor")
         if (
             record.source_id.startswith("history:")
@@ -143,6 +155,7 @@ class CompanionMemoryPromptBuilder:
         *,
         user_id: str = "local-user",
         max_results: int = 8,
+        max_tokens: int = 1500,
         current_share: float = 0.6,
         memory_lifecycle: ConversationMemoryLifecycle | None = None,
     ) -> None:
@@ -153,6 +166,7 @@ class CompanionMemoryPromptBuilder:
         if not 0.2 <= float(current_share) <= 0.8:
             raise ValueError("current memory share must be bounded")
         self.archive_memory = archive_memory
+        self.max_tokens = max(0, int(max_tokens))
         self.conversation_memory = conversation_memory
         self.user_id = user_id
         self.max_results = max(1, min(32, int(max_results)))
@@ -160,6 +174,7 @@ class CompanionMemoryPromptBuilder:
         self.memory_lifecycle = memory_lifecycle
         self._fallback = MemoryPromptBuilder(
             archive_memory,
+            max_tokens=self.max_tokens,
             max_results=self.max_results,
             conversation_memory=None,
         )
@@ -202,6 +217,7 @@ class CompanionMemoryPromptBuilder:
         archive_budget = max(0, budget - current_budget)
         archive = MemoryPromptBuilder(
             _LegacyArchiveView(self.archive_memory),
+            max_tokens=int(self.max_tokens * (1 - self.current_share)),
             max_results=self.max_results,
             legacy_budget=archive_budget,
             conversation_budget=0,
@@ -214,7 +230,9 @@ class CompanionMemoryPromptBuilder:
             _ConversationMemoryView(
                 self.conversation_memory,
                 user_id=self.user_id,
+                exclude_source_ids=exclude_source_ids,
             ),
+            max_tokens=max(0, self.max_tokens - estimate_memory_tokens(archive.text) - 1),
             max_results=self.max_results,
             legacy_budget=0,
             conversation_budget=current_budget,
@@ -244,6 +262,7 @@ class CompanionMemoryPromptBuilder:
     ) -> MemoryPrompt:
         return MemoryPromptBuilder(
             _LegacyArchiveView(self.archive_memory),
+            max_tokens=self.max_tokens,
             max_results=self.max_results,
             legacy_budget=budget,
             conversation_budget=0,

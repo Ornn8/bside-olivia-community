@@ -319,6 +319,9 @@ def apply_historical_private_world(
         evidence_refs=evidence_refs,
         familiarity=assessment.familiarity,
         closeness=assessment.closeness,
+        trust=assessment.trust,
+        comfort=assessment.comfort,
+        tension=assessment.tension,
     )
     result = command_service.execute(command)
     status = getattr(result, "status", None)

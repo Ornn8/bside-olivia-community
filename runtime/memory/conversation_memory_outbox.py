@@ -173,12 +173,16 @@ class CanonicalMemoryOutbox:
                 return OutboxScanResult("unavailable", error_code=exc.code)
 
             discovered = delivered = duplicates = pending = ignored = 0
+            indexed = 0
             for row in letters:
                 delivery = _delivery_from_row(row, user_id=self.user_id)
                 if delivery is None:
                     ignored += 1
                     continue
                 discovered += 1
+                index_original = getattr(self.committer, "index_original", None)
+                if index_original is not None and indexed < 20:
+                    indexed += bool(await index_original(delivery))
                 if self._is_terminal(delivery.source_id):
                     duplicates += 1
                     continue

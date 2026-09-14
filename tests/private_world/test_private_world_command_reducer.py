@@ -90,7 +90,7 @@ def test_intimacy_grant_command_is_idempotent_without_a_revoke_path() -> None:
     added = reduce_private_world_command(before, command)
     assert added.delta.reason_code == "INTIMACY_GRANTED"
     assert added.snapshot.intimacy_grants[0].grant_id == command.grant_id
-    assert added.snapshot.closeness == 2
+    assert added.snapshot.closeness == 0  # Permission alone does not supply trust.
     assert added.snapshot.growth_used == 2
 
     duplicate = reduce_private_world_command(added.snapshot, command)
