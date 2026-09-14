@@ -589,6 +589,11 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.search_context(query, user_id=user_id, limit=limit)
 
+    def search_memories(self, query: str, *, user_id: str, limit: int):
+        with self._using_current() as delegate:
+            search = getattr(delegate, "search_memories", delegate.search_context)
+            return search(query, user_id=user_id, limit=limit)
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         with self._using_current() as delegate:
             search = getattr(delegate, "search_evidence_context", None)
@@ -1052,6 +1057,7 @@ class Mem0ConversationMemoryAdapter:
         self._originals = SourceRetrieval(config.data_root / "original-text-index.sqlite3")
         self._evidence_cache: dict[tuple, tuple] = {}
         self._lock = threading.RLock()
+        self._read_request_lock = threading.RLock()
         self._provider_call = BoundedDaemonCall(thread_name="olivia-mem0-read")
         self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write")
         self._write_gate = threading.Lock()
@@ -1225,7 +1231,19 @@ class Mem0ConversationMemoryAdapter:
                 self._evidence_cache[key] = (time.monotonic(), result)
             return result
         except (OSError, sqlite3.Error):
-            return semantic[:limit]
+            return tuple(record for record in semantic if record.source_id not in excluded)[:limit]
+
+    def search_memories(self, query: str, *, user_id: str, limit: int):
+        """Management reads must distinguish failure from an empty result."""
+        if not self._read_request_lock.acquire(timeout=self.config.search_timeout_seconds):
+            raise Mem0AdapterError("MEM0_SEARCH_TIMEOUT")
+        try:
+            records = self.search_context(query, user_id=user_id, limit=limit)
+            if self._last_error_code:
+                raise Mem0AdapterError(self._last_error_code)
+            return records
+        finally:
+            self._read_request_lock.release()
 
     def _read_with_timeout(
         self,
@@ -1233,6 +1251,17 @@ class Mem0ConversationMemoryAdapter:
         *,
         failure_code: str,
     ) -> object | None:
+        # Serialize settle/start as one read request; otherwise another reader
+        # can start between them and manufacture an inflight failure.
+        if not self._read_request_lock.acquire(timeout=self.config.search_timeout_seconds):
+            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
+            return None
+        try:
+            return self._read_with_timeout_serial(operation, failure_code=failure_code)
+        finally:
+            self._read_request_lock.release()
+
+    def _read_with_timeout_serial(self, operation, *, failure_code):
         pending_state, _pending_value = self._provider_call.settle(
             timeout_seconds=self.config.search_timeout_seconds,
         )
@@ -2156,6 +2185,16 @@ class Mem0ConversationMemoryAdapter:
         }
 
     def status(self) -> ConversationMemoryStatus:
+        # A normal overlapping list/search is not an unavailable provider.
+        if not self._read_request_lock.acquire(timeout=self.config.search_timeout_seconds):
+            return ConversationMemoryStatus("unavailable", True, "mem0", "qdrant-local",
+                                            reason_code="MEM0_SEARCH_TIMEOUT")
+        try:
+            return self._serialized_status()
+        finally:
+            self._read_request_lock.release()
+
+    def _serialized_status(self) -> ConversationMemoryStatus:
         if self._write_call.inflight or self._pending_exchange_key is not None:
             # The write owns the provider lock; probing it would manufacture a
             # read timeout and block the outbox's next settlement attempt.

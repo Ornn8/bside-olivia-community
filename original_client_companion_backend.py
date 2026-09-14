@@ -125,9 +125,11 @@ def _integer(value: object, *, code: str, minimum: int = 0) -> int:
     return value
 
 
-def _memory_timestamp(record: ConversationMemoryRecord) -> str:
+def _memory_timestamp(record: ConversationMemoryRecord) -> str | None:
     value = record.created_at or record.occurred_at
-    if value is None or value.tzinfo is None or value.utcoffset() is None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
         raise OriginalClientCompanionBackendError(
             "COMPANION_MEMORY_TIME_UNAVAILABLE"
         )
@@ -265,6 +267,19 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
             record["status"] = "unavailable"
             record["error_code"] = (exc.code if isinstance(exc, OriginalClientCompanionBackendError)
                                     else "COMPANION_MEMORY_UNAVAILABLE")
+            cause = exc
+            for _ in range(8):
+                code = getattr(cause, "code", None)
+                if isinstance(code, str) and code in {
+                    "MEM0_LIST_FAILED", "MEM0_SEARCH_FAILED", "MEM0_SEARCH_TIMEOUT",
+                    "MEMORY_ADMIN_READ_FAILED", "MEMORY_ADMIN_PAUSED", "MEMORY_ADMIN_BUSY",
+                    "MEMORY_ADMIN_CLEAR_PENDING", "MEMORY_ADMIN_AUDIT_UNAVAILABLE",
+                    "MEMORY_ADMIN_UNAVAILABLE", "MEMORY_ADMIN_DISABLED",
+                }:
+                    record["error_code"] = code
+                cause = cause.__cause__ or cause.__context__
+                if cause is None:
+                    break
             raise
         finally:
             record["elapsed_ms"] = min(86_400_000, max(0, int((time.monotonic() - started) * 1000)))

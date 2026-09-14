@@ -295,6 +295,10 @@ from types import SimpleNamespace
 from aiohttp.test_utils import TestClient, TestServer
 import local_server as server
 from original_client_server import create_configured_original_client_server_runtime
+from datetime import datetime, timezone
+from runtime.private_world.life_rhythm import rhythm
+# This checks conversation context, independent of the machine's bath/sleep time.
+server._current_life_rhythm = lambda: rhythm(datetime(2026, 9, 14, 4, tzinfo=timezone.utc), [])
 calls=[]
 class ExternalModel:
     def timeout_seconds_for_scope(self, scope, *, default):

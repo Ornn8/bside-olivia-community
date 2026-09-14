@@ -279,9 +279,9 @@ def test_invalid_provider_records_do_not_gain_invented_fields() -> None:
         memory_admin=UndatedMemory(),
         now=lambda: NOW,
     )
-    with pytest.raises(OriginalClientCompanionBackendError) as error:
-        backend.list_memories(query=None, limit=10)
-    assert error.value.code == "COMPANION_MEMORY_TIME_UNAVAILABLE"
+    records = backend.list_memories(query=None, limit=10)
+    assert len(records) == 1
+    assert records[0].created_at is None
 
     class InvalidWorld(PrivateWorldFixture):
         def snapshot(self):
@@ -312,3 +312,16 @@ def test_adapter_uses_services_instead_of_storage_implementations() -> None:
 
     module_path = Path(module.__file__ or "")
     assert module_path.name == "original_client_companion_backend.py"
+
+
+def test_memory_diagnostic_preserves_allowlisted_nested_reason_only():
+    from runtime.memory.mem0_memory import Mem0AdapterError
+    class FailedRead(MemoryAdminFixture):
+        def list_memories(self, **kwargs):
+            raise RuntimeError('private query must never be logged') from Mem0AdapterError('MEM0_LIST_FAILED')
+    backend = OriginalClientCompanionServiceBackend(memory_admin=FailedRead(), now=lambda: NOW)
+    with pytest.raises(OriginalClientCompanionBackendError):
+        backend.list_memories(query=None, limit=50)
+    event = backend.diagnostic_status_history()[-1]
+    assert event['error_code'] == 'MEM0_LIST_FAILED'
+    assert 'private query' not in str(event)

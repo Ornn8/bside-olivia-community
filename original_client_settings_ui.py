@@ -655,7 +655,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     list.replaceChildren();
     if (!Array.isArray(memories) || memories.length === 0) {
       list.append(
-        text("p", "暂无长期记忆。", "text-text-secondary text-body-m font-regular")
+        text("p", "暂无提取记忆。历史信件原文不计入此列表。", "text-text-secondary text-body-m font-regular")
       );
       return;
     }
@@ -670,7 +670,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         "text-text-body text-body-m font-regular"
       );
       item.append(memoryText);
-      const created = formatTime(memory.created_at);
+      const created = memory.created_at == null ? "时间未知" : formatTime(memory.created_at);
       if (created) {
         item.append(
           text("p", created, "text-text-secondary text-caption-m font-regular")
@@ -957,7 +957,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const updateSummary = (latest) => {
       const count = latest && latest.count;
       const isPaused = latest && latest.reason_code === "MEMORY_ADMIN_PAUSED";
-      summary.textContent = `状态：${isPaused ? "已暂停（不检索、不写入）" : stateLabels[capabilityState(latest)]}${Number.isInteger(count) ? `，共 ${count} 条` : ""}`;
+      summary.textContent = `状态：${isPaused ? "已暂停（不检索、不写入）" : stateLabels[capabilityState(latest)]}${Number.isInteger(count) ? `，提取记忆 ${count} 条` : ""}`;
     };
     updateSummary(capability);
     const controls = document.createElement("div");
@@ -980,14 +980,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     resultState.setAttribute("aria-live", "polite");
     const list = stack();
 
+    let memoryLoadGeneration = 0;
     const load = async () => {
+      const generation = ++memoryLoadGeneration;
+      const query = input.value.trim();
       resultState.textContent = "正在读取长期记忆……";
       list.replaceChildren();
       try {
         const payload = await requestJson(MEMORY_PATH, {
-          query: input.value.trim(),
+          query,
           limit: 50,
         });
+        if (generation !== memoryLoadGeneration) return;
         renderMemories(list, payload.memories, load, resultState);
         try {
           const latestStatus = await requestJson(STATUS_PATH);
@@ -995,12 +999,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             ? latestStatus.capabilities
             : {};
           const latestMemory = latestCapabilities.memory;
+          if (generation !== memoryLoadGeneration) return;
           updateSummary(latestMemory);
         } catch (_statusError) { /* A failed status refresh does not invalidate loaded records. */ }
-        resultState.textContent = input.value.trim()
+        if (generation !== memoryLoadGeneration) return;
+        resultState.textContent = query
           ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
       } catch (_error) {
+        if (generation !== memoryLoadGeneration) return;
         updateSummary({state: "unavailable"});
         const code = _error?.name === "AbortError" ? "MEMORY_READ_TIMEOUT"
           : typeof _error?.code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)

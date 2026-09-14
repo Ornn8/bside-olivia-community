@@ -72,7 +72,8 @@ const requestJson = async path => {
   return path === MEMORY_PATH ? {memories:[]} : {capabilities:{memory:{state:'degraded'}}};
 };
 '''
-    harness += "const updateSummary =" + summary + "\nconst load = async () => {" + load
+    harness += "const updateSummary =" + summary + "\nlet memoryLoadGeneration = 0;\nconst load = async () => {" + load
+
     harness += r'''
 (async () => {
   assert.match(summary.textContent, /AVAILABLE/);

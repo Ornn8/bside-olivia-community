@@ -312,7 +312,8 @@ class ConversationMemoryAdminService:
                 )
             if not isinstance(query, str) or len(query) > 2000:
                 raise ConversationMemoryAdminError("MEMORY_ADMIN_QUERY_INVALID")
-            return self.memory.search_context(
+            search = getattr(self.memory, "search_memories", self.memory.search_context)
+            return search(
                 query.strip(),
                 user_id=self.user_id,
                 limit=min(limit, 100),
