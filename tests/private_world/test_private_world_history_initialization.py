@@ -150,6 +150,29 @@ def _control_common(sequence: int) -> dict[str, object]:
     }
 
 
+def test_full_history_assessment_coordinates_axes_without_granting_stage(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "coordinated.sqlite3")
+    service = PrivateWorldCommandService(ledger)
+    command = replace(_incremental_command(familiarity=80, closeness=80),
+                      trust=40, comfort=35, tension=12)
+    assert service.execute(command).status is CommandExecutionStatus.APPLIED
+    snapshot = ledger.snapshot()
+    assert (snapshot.familiarity, snapshot.trust, snapshot.comfort, snapshot.closeness, snapshot.tension) == (80, 40, 35, 35, 12)
+    assert snapshot.relationship_stage == "unknown"
+    service.execute(command)
+    assert ledger.snapshot() == snapshot
+
+
+def test_history_does_not_lower_existing_live_state(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / "preserved.sqlite3")
+    service = PrivateWorldCommandService(ledger)
+    service.execute(replace(_incremental_command(), trust=50, comfort=50, tension=10))
+    before = ledger.snapshot()
+    service.execute(replace(_incremental_command(2, familiarity=10, closeness=90),
+                            trust=0, comfort=0, tension=0))
+    assert ledger.snapshot() == before
+
+
 def test_assessed_corpus_initializes_only_intimacy_axes_through_sqlite_service(
     tmp_path: Path,
 ) -> None:

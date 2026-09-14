@@ -22,7 +22,7 @@ def exchange(ledger, index, kind, *, day=0, quote=None):
 
 @pytest.mark.parametrize("kind,expected", [
     ("meaningful_exchange", (2, 0, 1, 0)),
-    ("shared_experience", (2, 1, 1, 2)),
+    ("shared_experience", (2, 1, 1, 1)),
 ])
 def test_daily_growth_reaches_ledger_without_granting_permissions(tmp_path, kind, expected):
     ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
@@ -40,9 +40,9 @@ def test_new_growth_is_bounded_and_reopens_after_seven_days(tmp_path):
     for i in range(30):
         exchange(ledger, i, "shared_experience")
     before = ledger.snapshot()
-    assert (before.familiarity, before.trust, before.comfort, before.closeness) == (42, 21, 21, 42)
+    assert (before.familiarity, before.trust, before.comfort, before.closeness) == (42, 21, 21, 21)
     exchange(ledger, 31, "shared_experience", day=7)
-    assert ledger.snapshot().closeness == 44
+    assert ledger.snapshot().closeness == 22
 
 
 def test_same_user_evidence_cannot_grow_again_with_reworded_reply(tmp_path):

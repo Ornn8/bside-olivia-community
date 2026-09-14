@@ -407,13 +407,7 @@ def reduce_private_world(
         updates = {
             "relationship_stage": event.target_stage or "unknown",
         }
-        if event.target_stage != snapshot.relationship_stage:
-            updates.update(
-                {
-                    "closeness": _bounded(snapshot.closeness, 5),
-                    "familiarity": _bounded(snapshot.familiarity, 3),
-                }
-            )
+        # Stage is an explicit relationship fact, not a score reward.
     elif event.kind is ReducerEventKind.INTIMACY_GRANTED:
         grant = event.intimacy_grant
         if grant is None:
@@ -486,6 +480,20 @@ def reduce_private_world(
         updates = {"acknowledged_affection": affection}
         _add_growth_metadata(snapshot, event.occurred_at, updates)
 
+    positive = {field for field in ("familiarity", "trust", "comfort", "closeness")
+                if updates.get(field, getattr(snapshot, field)) > getattr(snapshot, field)}
+    if positive:
+        window, used = _growth_window(snapshot, event.occurred_at)
+        if used >= _WEEKLY_GROWTH_CAP:
+            for field in positive:
+                updates.pop(field, None)
+            reason_code = "GROWTH_CAP_REACHED"
+        elif "growth_used" not in updates:
+            updates.update(growth_window_start=window, growth_used=used + 1)
+        if "closeness" in positive and "closeness" in updates:
+            support = min(updates.get("trust", snapshot.trust), updates.get("comfort", snapshot.comfort))
+            updates["closeness"] = max(snapshot.closeness, min(updates["closeness"], support))
+
     return _apply_updates(
         snapshot,
         updates,
@@ -554,6 +562,13 @@ def reduce_private_world_command(
         return reduce_private_world(snapshot, relationship_event)
 
     if isinstance(command, ApplyHistoricalRelationshipEvidence):
+        if command.trust is not None:
+            # Importing an earlier corpus must not erase newer live state.
+            updates = {field: max(getattr(snapshot, field), getattr(command, field))
+                       for field in ("familiarity", "trust", "comfort", "tension")}
+            updates["closeness"] = max(snapshot.closeness, min(command.closeness, command.trust, command.comfort))
+            return _apply_updates(snapshot, updates, reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
+                                  unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE")
         return _apply_updates(
             snapshot,
             {

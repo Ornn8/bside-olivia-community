@@ -2199,7 +2199,7 @@ def test_timed_out_exchange_can_be_reconciled_to_its_persisted_source(
         source_id="reply:write-timeout:settle",
         user_id="local-user",
     )
-    assert entered.is_set()
+    assert entered.wait(2)
     assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
 
     release.set()

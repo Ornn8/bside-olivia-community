@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -26,6 +27,11 @@ _ESCAPES = {
 }
 _UNESCAPE_RE = re.compile(r"\\u(003C|003E|005B|005C|005D|005F)")
 _AUTO_CONVERSATION_MEMORY = object()
+
+
+def estimate_memory_tokens(text: str) -> int:
+    """Conservative local estimate, not provider billing/tokenizer equivalence."""
+    return math.ceil(sum(0.5 if ord(char) < 128 else len(char.encode("utf-8")) for char in text))
 
 
 class _UnavailableMemoryLifecycle:
@@ -99,6 +105,7 @@ class MemoryPromptBuilder:
         memory: MemoryPort,
         *,
         max_results: int = 8,
+        max_tokens: int = 1500,
         legacy_budget: int = 1200,
         conversation_budget: int = 1200,
         conversation_memory: ConversationMemoryPort | None | object = _AUTO_CONVERSATION_MEMORY,
@@ -106,6 +113,7 @@ class MemoryPromptBuilder:
         memory_lifecycle: object | None = None,
     ) -> None:
         self.memory = memory
+        self.max_tokens = max(0, int(max_tokens))
         self.max_results = max(1, min(32, int(max_results)))
         self.legacy_budget = max(0, int(legacy_budget))
         self.conversation_budget = max(0, int(conversation_budget))
@@ -154,6 +162,7 @@ class MemoryPromptBuilder:
                 self.conversation_memory,
                 user_id=self.conversation_memory_user_id,
                 max_results=self.max_results,
+                max_tokens=self.max_tokens,
                 current_share=_current_share(
                     self.conversation_budget,
                     self.legacy_budget,
@@ -237,7 +246,7 @@ class MemoryPromptBuilder:
                     continue
                 candidate = f"{prefix}{rendered}"
                 final_length = len("\n".join([*lines, *section, candidate, MEMORY_CONTEXT_END]))
-                if final_length > budget:
+                if final_length > budget or estimate_memory_tokens("\n".join([*lines, *section, candidate, MEMORY_CONTEXT_END])) > self.max_tokens:
                     truncated = True
                     break
                 section.append(candidate)
@@ -258,7 +267,7 @@ class MemoryPromptBuilder:
             )
             # Do not turn an empty tiny-budget context into a lone old fact.
             # Prefer this representation only when it retains more whole facts.
-            if len(compact.references) >= 2 and len(compact.references) > len(selected):
+            if estimate_memory_tokens(compact.text) <= self.max_tokens and len(compact.references) >= 2 and len(compact.references) > len(selected):
                 return compact
         if not selected:
             return MemoryPrompt(status=status, truncated=truncated)
@@ -443,6 +452,7 @@ def _provenance(value: Mapping[str, Any]) -> str:
         "kind",
         "origin",
         "speaker",
+        "verbatim",
         "read_only",
         "current_conversation",
     ):

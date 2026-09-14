@@ -231,7 +231,7 @@ def test_intimacy_grant_uses_authorized_atomic_audit_without_values() -> None:
     assert duplicate.status is CommandExecutionStatus.DUPLICATE
     assert repeated_grant.status is CommandExecutionStatus.NOOP
     assert repeated_grant.reason_code == "INTIMACY_ALREADY_GRANTED"
-    assert ledger.current.closeness == 2
+    assert ledger.current.closeness == 0
     assert ledger.current.growth_used == 2
     assert len(ledger.items) == 2
     audit = ledger.items[0].payload

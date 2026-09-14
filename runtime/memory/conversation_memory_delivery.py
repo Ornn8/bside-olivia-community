@@ -161,6 +161,28 @@ class ConversationMemoryDeliveryCommitter:
         self._pending_delivery: CanonicalMemoryDelivery | None = None
         self._completed_deliveries: dict[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult] = {}
         self._commit_lock = asyncio.Lock()
+        self._indexed_originals: set[tuple[str, str]] = set()
+
+    async def index_original(self, delivery):
+        identity = (delivery.user_id, delivery.source_id)
+        if identity in self._indexed_originals:
+            return
+        index = getattr(self.memory, "index_original_exchange", None)
+        if index is None:
+            return
+        def write():
+            operation = lambda: index(user_id=delivery.user_id, source_id=delivery.source_id,
+                user_message=delivery.user_message, assistant_message=delivery.assistant_message,
+                occurred_at=delivery.occurred_at)
+            if self.memory_lifecycle is not None:
+                return self.memory_lifecycle.run_write(operation, occurred_at=delivery.occurred_at)
+            return operation()
+        try:
+            if await asyncio.to_thread(write):
+                self._indexed_originals.add(identity)
+                return True
+        except Exception:
+            pass  # Canonical text remains durable; a later scan can rebuild.
 
     @property
     def delivery_pending(self) -> bool:

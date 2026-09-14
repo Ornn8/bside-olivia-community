@@ -589,6 +589,18 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.search_context(query, user_id=user_id, limit=limit)
 
+    def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
+        with self._using_current() as delegate:
+            search = getattr(delegate, "search_evidence_context", None)
+            if search is None:
+                return delegate.search_context(query, user_id=user_id, limit=limit)
+            return search(query, user_id=user_id, limit=limit, exclude_source_ids=exclude_source_ids)
+
+    def index_original_exchange(self, **kwargs):
+        with self._using_current() as delegate:
+            index = getattr(delegate, "index_original_exchange", None)
+            return index(**kwargs) if index is not None else False
+
     def remember_exchange(self, **kwargs):
         with self._using_current() as delegate:
             return delegate.remember_exchange(**kwargs)
@@ -1026,11 +1038,19 @@ def _record_search_key(
 class Mem0ConversationMemoryAdapter:
     enabled = True
 
+    def index_original_exchange(self, *, user_id, source_id, user_message, assistant_message, occurred_at):
+        self._originals.put(self._normalized_user_id(user_id), source_id,
+                            user_message, assistant_message, occurred_at)
+        return True
+
     def __init__(self, backend: Mem0Backend, config: Mem0Config) -> None:
         if not isinstance(config, Mem0Config) or not config.enabled:
             raise ValueError("an enabled Mem0 config is required")
         self.backend = backend
         self.config = config
+        from .source_retrieval import SourceRetrieval
+        self._originals = SourceRetrieval(config.data_root / "original-text-index.sqlite3")
+        self._evidence_cache: dict[tuple, tuple] = {}
         self._lock = threading.RLock()
         self._provider_call = BoundedDaemonCall(thread_name="olivia-mem0-read")
         self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write")
@@ -1181,6 +1201,31 @@ class Mem0ConversationMemoryAdapter:
         return tuple(
             sorted(records_by_id.values(), key=_record_search_key)
         )[:limit]
+
+    def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
+        user_id = self._normalized_user_id(user_id)
+        if not query.strip() or not 1 <= limit <= 100:
+            return ()
+        excluded = tuple(sorted(exclude_source_ids))
+        try:
+            revision = self._originals.path.stat().st_mtime_ns
+        except OSError:
+            revision = 0
+        key = (user_id, query, limit, excluded, revision)
+        cached = self._evidence_cache.get(key)
+        if cached and time.monotonic() - cached[0] < 30 and not self.operation_pending:
+            return cached[1]
+        semantic = self.search_context(query, user_id=user_id, limit=20)
+        semantic = tuple(replace(record, user_id=user_id) for record in semantic)
+        try:
+            result = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded)
+            if self._last_error_code is None and not self.operation_pending:
+                if len(self._evidence_cache) >= 64:
+                    self._evidence_cache.clear()
+                self._evidence_cache[key] = (time.monotonic(), result)
+            return result
+        except (OSError, sqlite3.Error):
+            return semantic[:limit]
 
     def _read_with_timeout(
         self,
@@ -1432,6 +1477,14 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         origin: str = "user",
     ) -> MemoryWriteResult:
+        self._evidence_cache.clear()
+        try:
+            self._originals.put(self._normalized_user_id(user_id), source_id,
+                                user_message, assistant_message, occurred_at)
+        except (OSError, sqlite3.Error):
+            # Canonical letters are already durable; index failures must not
+            # discard them or prevent independent fact extraction.
+            pass
         if origin == "proactive":
             return self._remember_assistant_only_transaction(
                 assistant_message=assistant_message,
@@ -1967,6 +2020,7 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         source_id: str,
     ) -> ConversationMemoryRecord:
+        self._evidence_cache.clear()
         user_id = self._normalized_user_id(user_id)
         metadata = {
             "source_id": source_id,
@@ -2029,15 +2083,15 @@ class Mem0ConversationMemoryAdapter:
             raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED") from exc
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
+        self._evidence_cache.clear()
         user_id = self._normalized_user_id(user_id)
         if self._write_call.inflight:
             self._last_error_code = "MEM0_DELETE_TIMEOUT"
             return False
         try:
-            if not any(
-                record.memory_id == memory_id
-                for record in self.list_memories(user_id=user_id, limit=1000)
-            ):
+            target = next((record for record in self.list_memories(user_id=user_id, limit=1000)
+                           if record.memory_id == memory_id), None)
+            if target is None:
                 return False
             state, value = self._write_with_timeout(
                 lambda: self.backend.delete(memory_id)
@@ -2048,6 +2102,7 @@ class Mem0ConversationMemoryAdapter:
             if state != "completed" or not _has_delete_acknowledgement(value):
                 self._last_error_code = "MEM0_DELETE_FAILED"
                 return False
+            self._originals.forget(user_id, target.source_id)
             self._last_error_code = None
             return True
         except Mem0AdapterError:
@@ -2057,6 +2112,7 @@ class Mem0ConversationMemoryAdapter:
             return False
 
     def clear_user(self, *, user_id: str) -> int:
+        self._evidence_cache.clear()
         user_id = self._normalized_user_id(user_id)
         if self._write_call.inflight:
             self._last_error_code = "MEM0_CLEAR_TIMEOUT"
@@ -2073,6 +2129,8 @@ class Mem0ConversationMemoryAdapter:
                 self._last_error_code = "MEM0_CLEAR_FAILED"
                 return 0
             audit_path = self.config.data_root / "history-extraction-audit.sqlite3"
+            for alias in self._configured_user_aliases(user_id):
+                self._originals.forget(alias)
             if audit_path.exists():
                 with closing(sqlite3.connect(audit_path)) as connection, connection:
                     for alias in self._configured_user_aliases(user_id):

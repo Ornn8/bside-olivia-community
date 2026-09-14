@@ -49,7 +49,7 @@ def test_intimacy_grant_respects_the_stage_ceiling(
     applied: bool,
     reason_code: str,
 ) -> None:
-    before = PrivateWorldSnapshot(version=3, relationship_stage=stage)
+    before = PrivateWorldSnapshot(version=3, relationship_stage=stage, trust=10, comfort=10)
     grant = _grant(1, tier)
 
     result = reduce_private_world(
@@ -110,11 +110,11 @@ def test_weekly_growth_cap_blocks_only_growth_and_resets_at_seven_days() -> None
             semantic_key="boundary.synthetic-capped",
         ),
     )
-    assert capped.delta.applied is True
+    assert capped.delta.applied is False
     assert capped.delta.reason_code == "GROWTH_CAP_REACHED"
     assert capped.snapshot.familiarity == 21
-    assert capped.snapshot.trust == 22
-    assert capped.snapshot.comfort == 22
+    assert capped.snapshot.trust == 21
+    assert capped.snapshot.comfort == 21
     assert capped.snapshot.growth_used == 21
 
     reset = reduce_private_world(
@@ -160,6 +160,8 @@ def test_growth_can_exactly_fill_the_remaining_weekly_quota() -> None:
     before = PrivateWorldSnapshot(
         relationship_stage="close",
         closeness=8,
+        trust=10,
+        comfort=10,
         growth_window_start=NOW.isoformat(),
         growth_used=19,
     )
@@ -172,6 +174,26 @@ def test_growth_can_exactly_fill_the_remaining_weekly_quota() -> None:
     assert result.delta.reason_code == "INTIMACY_GRANTED"
     assert result.snapshot.closeness == 10
     assert result.snapshot.growth_used == 21
+
+
+def test_repair_at_growth_cap_still_reduces_tension_without_score_growth():
+    before = PrivateWorldSnapshot(trust=30, comfort=30, tension=10,
+                                  growth_window_start=NOW.isoformat(), growth_used=21)
+    result = reduce_private_world(before, _event(ReducerEventKind.REPAIR))
+    assert result.snapshot.trust == result.snapshot.comfort == 30
+    assert result.snapshot.tension == 8
+    assert result.delta.reason_code == "GROWTH_CAP_REACHED"
+
+
+def test_shared_experiences_cannot_run_closeness_ahead_of_trust_and_comfort():
+    snapshot = PrivateWorldSnapshot()
+    for index in range(25):
+        snapshot = reduce_private_world(snapshot, _event(
+            ReducerEventKind.SHARED_EXPERIENCE,
+            occurred_at=NOW + timedelta(hours=index),
+            semantic_key=f"synthetic.experience.{index}")).snapshot
+    assert snapshot.trust == snapshot.comfort == snapshot.closeness == 21
+    assert snapshot.growth_used == 21
 
 
 def test_event_before_the_window_start_keeps_the_existing_window() -> None:
@@ -287,8 +309,8 @@ def test_stage_growth_requires_an_actual_explicit_stage_change() -> None:
         ),
     )
     assert downgraded.snapshot.relationship_stage == "acquaintance"
-    assert downgraded.snapshot.familiarity == 13
-    assert downgraded.snapshot.closeness == 25
+    assert downgraded.snapshot.familiarity == 10
+    assert downgraded.snapshot.closeness == 20
     assert downgraded.snapshot.growth_used == 0
 
 
@@ -466,8 +488,8 @@ def test_growth_scores_remain_bounded_and_window_start_is_utc() -> None:
             basis_event_ids=("basis.bounded",),
         ),
     )
-    assert confirmed.snapshot.familiarity == 100
-    assert confirmed.snapshot.closeness == 100
+    assert confirmed.snapshot.familiarity == 99
+    assert confirmed.snapshot.closeness == 99
 
 
 def test_intimacy_event_payload_is_strictly_exclusive_and_nonzero() -> None:
