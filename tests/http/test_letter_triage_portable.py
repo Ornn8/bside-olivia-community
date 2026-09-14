@@ -108,6 +108,57 @@ def test_spoken_only_video_mode_fails_closed_to_text():
     assert result.music_contexts == ()
 
 
+@pytest.mark.parametrize("mode", ["voice_reply", "singing_video", "voice_song_video"])
+@pytest.mark.parametrize("output", ["explicit_video_output_request", "explicit_audio_output_request"])
+def test_explicit_output_triggers_selected_media_request(mode, output):
+    from letter_triage import explicitly_requested_route
+    from runtime.video_reply_settings import routed_video
+
+    result, gateway = _route(
+        context=RoutingContext(musical_video_available=True, voice_reply_available=True),
+        mode=mode,
+        music_contexts=[output],
+        request_disposition="fulfill",
+    )
+    assert result.status == "completed"
+    assert result.reply_mode == mode
+    assert explicitly_requested_route(result) == mode
+    assert routed_video(mode, result.music_contexts, {mode: True}) == (output == "explicit_video_output_request")
+    assert not routed_video(mode, result.music_contexts, {mode: False})
+    assert len(gateway.requests) == 1
+
+
+@pytest.mark.parametrize("output", ["explicit_video_output_request", "explicit_audio_output_request"])
+@pytest.mark.parametrize("request_context,expected", [
+    ("explicit_voice_reply_request", "voice_reply"),
+    ("explicit_performance_or_adaptation_request", "singing_video"),
+    ("explicit_voice_and_song_request", "voice_song_video"),
+])
+@pytest.mark.parametrize("available", [True, False])
+def test_content_request_precedes_output_format(output, request_context, expected, available):
+    result, _ = _route(
+        context=RoutingContext(musical_video_available=available, voice_reply_available=available),
+        mode="text_letter",
+        music_contexts=[request_context, output],
+        request_disposition="defer",
+    )
+    assert result.status == "completed"
+    assert result.reply_mode == (expected if available else "text_letter")
+    assert result.request_disposition == ("fulfill" if available else "defer")
+
+
+def test_explicit_video_output_still_checks_component_availability():
+    result, _ = _route(
+        context=RoutingContext(musical_video_available=False, voice_reply_available=False),
+        mode="voice_reply",
+        music_contexts=["explicit_video_output_request"],
+        request_disposition="fulfill",
+    )
+    assert result.status == "completed"
+    assert result.reply_mode == "text_letter"
+    assert result.reason_code == "media_components_required"
+
+
 def test_router_offers_three_media_modes_and_text() -> None:
     _, gateway = _route()
 

@@ -299,8 +299,13 @@ def _validated_result(
     voice_explicit = bool({"explicit_voice_reply_request", "explicit_video_reply_request"}.intersection(contexts))
     song_explicit = "explicit_performance_or_adaptation_request" in contexts
     both_explicit = "explicit_voice_and_song_request" in contexts or (voice_explicit and song_explicit)
-    if voice_explicit or song_explicit or both_explicit:
+    output_explicit = bool({"explicit_video_output_request", "explicit_audio_output_request"}.intersection(contexts)) and mode in {
+        "voice_reply", "singing_video", "voice_song_video"
+    }
+    if voice_explicit or song_explicit or both_explicit or output_explicit:
         selected = "voice_song_video" if both_explicit else "singing_video" if song_explicit else "voice_reply"
+        if output_explicit and not (voice_explicit or song_explicit or both_explicit):
+            selected = mode
         available = context.available(selected)
         uses_music = available and selected != "voice_reply"
         return TriageResult(
@@ -449,7 +454,7 @@ def explicitly_requested_route(result: TriageResult) -> str | None:
     song = "explicit_performance_or_adaptation_request" in contexts
     if "explicit_voice_and_song_request" in contexts or (voice and song):
         return "voice_song_video"
-    if not voice and not song and "explicit_video_output_request" in contexts and result.reply_mode in {"voice_reply", "singing_video", "voice_song_video"}:
+    if not voice and not song and contexts & {"explicit_video_output_request", "explicit_audio_output_request"} and result.reply_mode in {"voice_reply", "singing_video", "voice_song_video"}:
         return result.reply_mode
     return "singing_video" if song else "voice_reply" if voice else None
 
