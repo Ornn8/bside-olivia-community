@@ -28,6 +28,7 @@ const document={body,createElement:()=>new Element(),querySelector:selector=>fin
   Object.hasOwn(n.attrs,selector.slice(1,-1)))};
 const text=(tag,value)=>{const e=new Element();e.textContent=value;return e;};
 const button=(label,callback)=>{const e=text('button',label);e.click=callback;return e;};
+const actions=()=>new Element();
 const setButtonsBusy=(buttons,busy)=>buttons.forEach(b=>b.disabled=busy);
 const LOCAL_LETTER_IMPORT_PATH='import';
 let mutations=0, confirmations=0, progressReads=0, release;

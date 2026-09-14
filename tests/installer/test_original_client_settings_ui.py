@@ -309,7 +309,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert "letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
     assert "作为只读历史进入信箱" in BOOTSTRAP_JAVASCRIPT
     assert "不联网" in BOOTSTRAP_JAVASCRIPT
-    assert "requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true})" in BOOTSTRAP_JAVASCRIPT
+    assert "requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true, originals_only: true})" in BOOTSTRAP_JAVASCRIPT
     assert "requestJson(LOCAL_LETTER_IMPORT_PATH)" in BOOTSTRAP_JAVASCRIPT
     assert "payload.inserted" in BOOTSTRAP_JAVASCRIPT
     assert "payload.updated" in BOOTSTRAP_JAVASCRIPT

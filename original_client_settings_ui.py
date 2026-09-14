@@ -291,6 +291,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const controller = new AbortController();
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
+      : path === MEMORY_PATH ? 45000
       : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -446,6 +447,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const timeoutMs = (
       path === VIDEO_REPLY_SETTINGS_PATH
       || path === LOCAL_LETTER_IMPORT_PATH
+      || path.startsWith("/toy/letter/backup/")
     )
       ? 300000
       : 8000;
@@ -471,7 +473,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
-          || path === MEMORY_RETRY_PATH)
+          || path === MEMORY_RETRY_PATH || path.startsWith("/toy/letter/backup/"))
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -987,20 +989,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           limit: 50,
         });
         renderMemories(list, payload.memories, load, resultState);
-        {
+        try {
           const latestStatus = await requestJson(STATUS_PATH);
           const latestCapabilities = latestStatus.capabilities && typeof latestStatus.capabilities === "object"
             ? latestStatus.capabilities
             : {};
           const latestMemory = latestCapabilities.memory;
           updateSummary(latestMemory);
-        }
+        } catch (_statusError) { /* A failed status refresh does not invalidate loaded records. */ }
         resultState.textContent = input.value.trim()
           ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
       } catch (_error) {
         updateSummary({state: "unavailable"});
-        resultState.textContent = "长期记忆暂时无法读取。";
+        const code = _error?.name === "AbortError" ? "MEMORY_READ_TIMEOUT"
+          : typeof _error?.code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)
+            ? _error.code : "COMPANION_READ_UNAVAILABLE";
+        resultState.textContent = `长期记忆暂时无法读取（${code}）。可点击搜索重试。`;
       }
     };
 
@@ -2995,7 +3000,51 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     close.focus();
   };
 
+  const mountLetterBackup = (section) => {
+    const state = text("div", "备份包含双方文字原文、时间和信件类型，不含音视频附件。请自行保管信件内容。", "text-text-secondary text-body-m font-regular");
+    state.setAttribute("aria-live", "polite");
+    const controls = actions();
+    const file = document.createElement("input");
+    file.type = "file"; file.accept = ".json,application/json"; file.hidden = true;
+    file.addEventListener("cancel", event => event.stopPropagation());
+    const save = button("导出信件备份", async () => {
+      setButtonsBusy([save, restore], true);
+      state.textContent = "正在导出信件原文……";
+      try {
+        const result = await requestMutation("/toy/letter/backup/export", {});
+        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1") throw Error("invalid backup");
+        const blob = new Blob([JSON.stringify(result.backup, null, 2)], {type:"application/json;charset=utf-8"});
+        const url = URL.createObjectURL(blob), link = document.createElement("a");
+        link.href = url; link.download = `Olivia-letters-${new Date().toISOString().slice(0,10)}.json`;
+        document.body.append(link); link.click(); link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        state.textContent = `已导出 ${result.backup.letters.length} 封信件，请在下载位置查看。`;
+      } catch (_) { state.textContent = "信件导出失败，请重试。原信件未改变。"; }
+      finally { setButtonsBusy([save, restore], false); }
+    });
+    const restore = button("选择信件备份导入", () => file.click());
+    file.addEventListener("change", async () => {
+      const selected = file.files?.[0]; if (!selected) return;
+      setButtonsBusy([save, restore], true);
+      try {
+        if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
+        const backup = JSON.parse((await selected.text()).replace(/^\uFEFF/, ""));
+        if (backup.schema_version !== "olivia.letters.v1" || !Array.isArray(backup.letters)) throw Error("invalid backup");
+        if (!await confirmAction(`导入备份中的 ${backup.letters.length} 封信件？原文将作为只读历史保存并可供检索，重复信件跳过，不覆盖当前关系。`)) return;
+        state.textContent = "正在保存信件原文，无需等待大模型……";
+        const result = await requestMutation("/toy/letter/backup/import", {backup});
+        if (result.status !== "APPLIED") throw Error("import failed");
+        state.textContent = `已导入 ${result.inserted} 封，重复 ${result.duplicates} 封。正在刷新信箱。`;
+        window.setTimeout(() => window.location.reload(), 800);
+      } catch (_) { state.textContent = "导入未完成。请选择完整的 Olivia 信件备份 JSON（最大 16 MB）；可再次导入，重复信件会跳过。"; }
+      finally { file.value = ""; setButtonsBusy([save, restore], false); }
+    });
+    controls.append(save, restore, file);
+    section.append(text("div", "信件备份", "text-text-body text-title-m"), state, controls);
+  };
+
   const mountLocalLetterImport = (section) => {
+    mountLetterBackup(section);
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const importCopy = document.createElement("div");
@@ -3004,7 +3053,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入本地历史信件", "text-text-body text-label-l"),
-      text("div", "官方服务器已关闭；这里只读取安装时选择的原版游戏目录中的 letter_pairs.json。本地原信和林离的文字回信会作为只读历史进入信箱，并同步长期记忆与关系状态；不联网读取官方服务器、不导入视频，重复记录自动修复或跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "读取安装时选择的原版游戏目录中的 letter_pairs.json。双方文字原文作为只读历史进入信箱并可供检索，不再等待大模型逐封提取；不联网、不导入视频，不覆盖关系状态，重复记录自动修复或跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     let importPending = false;
@@ -3031,7 +3080,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
       const changeCount = preflight.would_insert + preflight.would_update + preflight.would_remove;
-      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件，并同步长期记忆与关系状态？`)) {
+      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？将保留双方原文，不调用大模型或覆盖当前关系。`)) {
         return;
       }
       importButton.textContent = "查看导入进度";
@@ -3041,7 +3090,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         let payload = await requestJson(LOCAL_LETTER_IMPORT_PATH, {progress: "1"});
         if (payload.status !== "RUNNING") {
-          payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true});
+          payload = await requestMutation(LOCAL_LETTER_IMPORT_PATH, {background: true, originals_only: true});
         }
         while (payload.status === "RUNNING") {
           const stages = {preflight: "检查备份", memory: "整理长期记忆", relationship: "整理关系状态"};
@@ -3064,7 +3113,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryWritten = Number.isInteger(migration.written) ? migration.written : 0;
         const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
         const memorySkipped = Number.isInteger(migration.skipped) ? migration.skipped : 0;
-        importState.textContent = `已导入 ${inserted} 封、修复 ${updated} 封、清理重复 ${removed} 封；本次完成记忆提取 ${memoryWritten} 封，已有记忆跳过 ${memoryDuplicates} 封，未提取出记忆 ${memorySkipped} 封。空结果可再次导入重试。正在刷新信箱。`;
+        importState.textContent = payload.memory_mode === "originals"
+          ? `已导入 ${inserted} 封、修复 ${updated} 封、清理重复 ${removed} 封、跳过重复 ${duplicates} 封。双方原文已保存并可供历史检索，无大模型调用。正在刷新信箱。`
+          : `已导入 ${inserted} 封、修复 ${updated} 封；记忆提取 ${memoryWritten} 封，已有记忆 ${memoryDuplicates} 封，未提取 ${memorySkipped} 封。正在刷新信箱。`;
         importButton.textContent = "已完成";
         window.setTimeout(() => {
           try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }

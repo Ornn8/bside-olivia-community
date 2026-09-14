@@ -22,6 +22,21 @@ from private_world_candidates import (
 NOW = datetime(2026, 8, 23, 10, 30, tzinfo=timezone.utc)
 
 
+def test_list_failure_is_recorded_separately_from_available_status():
+    class BrokenRead(MemoryAdminFixture):
+        def list_memories(self, **kwargs):
+            raise RuntimeError('private query and private contents')
+    backend = OriginalClientCompanionServiceBackend(memory_admin=BrokenRead())
+    assert backend.read_status().memory.state == 'available'
+    with pytest.raises(OriginalClientCompanionBackendError):
+        backend.list_memories(query='private search', limit=50)
+    item = backend.diagnostic_status_history()[-1]
+    assert item['event'] == 'companion_memory_search'
+    assert item['status'] == 'unavailable'
+    assert item['error_code'] == 'COMPANION_MEMORY_UNAVAILABLE'
+    assert 'private' not in str(item)
+
+
 def test_status_history_retains_timeout_after_recovery() -> None:
     from dataclasses import replace
     from original_client_server import _diagnostic_source

@@ -32,19 +32,20 @@ class SourceRetrieval:
         return db
 
     def put(self, user, source, user_text, reply_text, stamp):
+        stamp = stamp.isoformat() if stamp is not None else None
         with closing(self.connect()) as db, db:
             if db.execute("SELECT 1 FROM forgotten WHERE user=? AND source=?", (user, source)).fetchone():
                 return
             for actor, text in (("user", user_text), ("linli", reply_text)):
-                previous = db.execute("SELECT text FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
-                if previous and previous[0] == text:
+                previous = db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
+                if previous == (text, stamp):
                     continue
                 db.execute("DELETE FROM chunks WHERE user=? AND source=? AND actor=?", (user, source, actor))
-                db.execute("INSERT OR REPLACE INTO originals VALUES (?,?,?,?,?)", (user, source, actor, stamp.isoformat(), text))
+                db.execute("INSERT OR REPLACE INTO originals VALUES (?,?,?,?,?)", (user, source, actor, stamp, text))
                 # Overlap preserves sentence context; offsets retain exact provenance.
                 for start in range(0, len(text), 280):
                     chunk = text[start:start + 360]
-                    db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp.isoformat(), start, chunk, " ".join(terms(chunk))))
+                    db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
 
     def forget(self, user, source=None):
         with closing(self.connect()) as db, db:
@@ -97,7 +98,7 @@ class SourceRetrieval:
                 spans.append((source, actor, start))
                 digest = hashlib.sha256(f"{user}:{source}:{actor}:{start}".encode()).hexdigest()
                 selected.append(ConversationMemoryRecord(memory_id="original:" + digest, text=text, user_id=user,
-                    source_id=source, score=min(1, scores[key]), occurred_at=datetime.fromisoformat(stamp),
+                    source_id=source, score=min(1, scores[key]), occurred_at=datetime.fromisoformat(stamp) if stamp else None,
                     metadata={"verbatim": True, "speaker": actor, "start": start, "canonical": True,
                               **({"history_actor": actor} if source.startswith("history:") else {}),
                               **({"origin": "proactive"} if source in proactive else {})}))

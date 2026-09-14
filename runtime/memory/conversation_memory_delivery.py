@@ -161,10 +161,10 @@ class ConversationMemoryDeliveryCommitter:
         self._pending_delivery: CanonicalMemoryDelivery | None = None
         self._completed_deliveries: dict[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult] = {}
         self._commit_lock = asyncio.Lock()
-        self._indexed_originals: set[tuple[str, str]] = set()
+        self._indexed_originals: set[tuple[str, str, str | None]] = set()
 
     async def index_original(self, delivery):
-        identity = (delivery.user_id, delivery.source_id)
+        identity = (delivery.user_id, delivery.source_id, getattr(delivery, "content_hash", None))
         if identity in self._indexed_originals:
             return
         index = getattr(self.memory, "index_original_exchange", None)
@@ -175,7 +175,7 @@ class ConversationMemoryDeliveryCommitter:
                 user_message=delivery.user_message, assistant_message=delivery.assistant_message,
                 occurred_at=delivery.occurred_at)
             if self.memory_lifecycle is not None:
-                return self.memory_lifecycle.run_write(operation, occurred_at=delivery.occurred_at)
+                return self.memory_lifecycle.run_write(operation, occurred_at=getattr(delivery, "lifecycle_at", delivery.occurred_at))
             return operation()
         try:
             if await asyncio.to_thread(write):

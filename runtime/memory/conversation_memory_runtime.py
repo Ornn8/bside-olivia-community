@@ -345,6 +345,7 @@ def ensure_conversation_memory_runtime(
                     root / "memory" / "mem0" / "delivery.sqlite3",
                     committer,
                     user_id=user_id,
+                    archive_memory=archive_memory,
                 )
                 _RUNTIME = ConversationMemoryRuntime(
                     outbox,
