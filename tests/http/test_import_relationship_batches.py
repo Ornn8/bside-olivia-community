@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from types import SimpleNamespace
 from private_world_ledger import SQLitePrivateWorldLedger
 from private_world_service import PrivateWorldCommandService
@@ -8,12 +9,16 @@ from runtime.memory.local_memory import LocalMemoryAdapter
 from tests.imports.test_relationship_batches import Gateway
 
 
-def test_backup_route_queues_ordered_relationships_and_reports_progress(tmp_path,monkeypatch):
+@pytest.mark.parametrize('start_mode',['import','startup'])
+def test_backup_route_queues_ordered_relationships_and_reports_progress(tmp_path,monkeypatch,start_mode):
     import local_server as server
     archive=LocalMemoryAdapter(tmp_path/'archive.sqlite3')
     ledger=SQLitePrivateWorldLedger(tmp_path/'world.sqlite3')
     gateway=Gateway()
-    monkeypatch.setattr(server,'_history_relationship_queue',RelationshipBatches(tmp_path/'queue.sqlite3'))
+    monkeypatch.setattr(server,'_history_relationship_queue',
+        RelationshipBatches(tmp_path/'history-relationship.sqlite3') if start_mode=='import' else None)
+    monkeypatch.setattr(server,'_state_root',lambda:tmp_path)
+    monkeypatch.setattr(server,'_start_conversation_memory_initialization',lambda _loop:True)
     monkeypatch.setattr(server,'_history_relationship_task',None)
     monkeypatch.setattr(server,'_legacy_import_adapter',lambda:archive)
     monkeypatch.setattr(server,'memory_adapter',archive)
@@ -28,6 +33,8 @@ def test_backup_route_queues_ordered_relationships_and_reports_progress(tmp_path
         for _ in range(2):
             result=await server.route('POST','/toy/letter/backup/import',{'backup':backup},{},companion_confirmed=True)
             assert result['data']['status']=='APPLIED'
+            if server._history_relationship_task is None:
+                await server._start_conversation_memory(None)
             await server._history_relationship_task
         response=await server.route('GET','/toy/letter/legacy/local-import',{}, {'relationship':'1'})
         assert response['data']['processed']==12 and response['data']['status']=='APPLIED'

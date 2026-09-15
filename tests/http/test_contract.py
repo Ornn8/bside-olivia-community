@@ -158,6 +158,9 @@ def test_http_startup_exposes_core_health_while_mem0_initializes(
     monkeypatch.setattr(local_server, "conversation_memory_runtime_status", current_runtime_status)
     monkeypatch.setattr(local_server, "conversation_memory_reply_readiness_status", current_runtime_status)
     history_calls: list[str] = []
+    # This contract covers the explicitly requested official import gate;
+    # local archive relationship backfill has its own independent lifecycle.
+    monkeypatch.setattr(local_server, "_start_history_relationships", lambda **_kwargs: None)
     monkeypatch.setattr(local_server, "collect_default_official_text_replies", lambda: history_calls.append("collector"))
     monkeypatch.setattr(local_server, "_legacy_import_adapter", lambda: history_calls.append("archive"))
 

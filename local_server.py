@@ -4930,11 +4930,12 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task, _history_relationship_task
+    global _proactive_task, _history_relationship_task, _history_relationship_queue
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)
         _history_relationship_task = None
+    _history_relationship_queue = None
     if _proactive_task is not None:
         _proactive_task.cancel()
         await asyncio.gather(_proactive_task, return_exceptions=True)
