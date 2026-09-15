@@ -8,8 +8,8 @@ def test_backup_buttons_download_and_restore_selected_document():
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js unavailable')
-    source = 'const mountLetterBackup =' + BOOTSTRAP_JAVASCRIPT.split(
-        'const mountLetterBackup =', 1)[1].split('const mountLocalLetterImport =', 1)[0]
+    source = 'const mountHistoryRelationship =' + BOOTSTRAP_JAVASCRIPT.split(
+        'const mountHistoryRelationship =', 1)[1].split('const mountLocalLetterImport =', 1)[0]
     harness = r'''
 const assert=require('node:assert/strict');
 const all=[];
@@ -24,6 +24,7 @@ const document={body:new Element(),createElement:()=>new Element()};
 const text=(tag,value)=>Object.assign(new Element(),{textContent:value});
 const button=(label,callback)=>Object.assign(text('button',label),{click:callback});
 const actions=()=>new Element(),setButtonsBusy=(buttons,busy)=>buttons.forEach(b=>b.disabled=busy);
+const LOCAL_LETTER_IMPORT_PATH='local-import',requestJson=async()=>({status:'APPLIED',processed:0,total:0});
 const window={setTimeout(){},location:{reload(){}}},confirmAction=async()=>true;
 const URL={createObjectURL(value){blob=value;return 'blob:fixture'},revokeObjectURL(){}};
 const backup={schema_version:'olivia.letters.v1',letters:[{content:'line one\nline two',reply_text:'reply'}]};

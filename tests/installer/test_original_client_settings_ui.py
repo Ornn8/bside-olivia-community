@@ -899,6 +899,9 @@ const statusPayload = (status) => ({
   if (endpoint.pathname === "/toy/updates/local/status") {
     return { ok: true, json: async () => ({ status: "READY", version: "0.1.438" }) };
   }
+  if (endpoint.pathname === "/toy/letter/legacy/local-import") {
+    return {ok:true,json:async()=>({data:{status:"APPLIED",processed:0,total:0}})};
+  }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };
 };

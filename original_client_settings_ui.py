@@ -310,7 +310,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ? responseBody.data
         : responseBody;
       const valid = path === LOCAL_LETTER_IMPORT_PATH
-        ? params.progress === "1"
+        ? params.relationship === "1"
+          ? payload && ["PENDING", "RUNNING", "APPLIED", "FAILED", "UNAVAILABLE"].includes(payload.status)
+          : params.progress === "1"
           ? payload && ["IDLE", "RUNNING", "APPLIED", "FAILED", "UNAVAILABLE"].includes(payload.status)
           : payload && payload.status === "READY"
           && Number.isInteger(payload.seen)
@@ -3030,6 +3032,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     close.focus();
   };
 
+  const mountHistoryRelationship = (section) => {
+    const state = text("div", "正在读取历史关系评估进度……", "text-text-secondary text-body-m");
+    const refresh = async () => {
+      try {
+        const result = await requestJson(LOCAL_LETTER_IMPORT_PATH, {relationship:"1"});
+        const count = `${result.processed || 0} / ${result.total || 0} 封`;
+        state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五封评估一次。`
+          : result.status === "FAILED" ? `历史关系评估暂停：${count}。${result.error_code || ""}；已保存的原文不受影响，可重试剩余批次。`
+          : result.status === "PENDING" ? `历史关系等待评估：${count}。请配置可用的大模型后点击重试。`
+          : result.status === "APPLIED" ? `历史关系已评估：${count}。重复信件不重复评估。`
+          : "历史关系评估暂不可用。";
+        if (result.status === "RUNNING" && state.isConnected) window.setTimeout(refresh, 2000);
+      } catch (_) { state.textContent = "暂时无法读取历史关系进度，可点击重试。"; }
+    };
+    const retry = button("评估历史关系 / 重试", async () => {
+      retry.disabled = true;
+      try {
+        await requestMutation("/toy/letter/backup/import", {relationship_retry:true});
+        await refresh();
+      } catch (_) { state.textContent = "暂时无法启动历史关系评估，请重试。"; }
+      finally { retry.disabled = false; }
+    });
+    section.append(text("div", "历史关系", "text-text-body text-title-m"),
+      text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。"), state, retry);
+    void refresh();
+  };
+
   const mountLetterBackup = (section) => {
     const state = text("div", "备份包含双方文字原文、时间和信件类型，不含音视频附件。请自行保管信件内容。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
@@ -3060,7 +3089,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
         const backup = JSON.parse((await selected.text()).replace(/^\uFEFF/, ""));
         if (backup.schema_version !== "olivia.letters.v1" || !Array.isArray(backup.letters)) throw Error("invalid backup");
-        if (!await confirmAction(`导入备份中的 ${backup.letters.length} 封信件？原文将作为只读历史保存并可供检索，重复信件跳过，不覆盖当前关系。`)) return;
+        if (!await confirmAction(`导入备份中的 ${backup.letters.length} 封信件？原文将作为只读历史保存并可供检索，重复信件跳过。随后按顺序每五封调用模型评估关系，消耗模型额度，已有进度会保留。`)) return;
         state.textContent = "正在保存信件原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
@@ -3071,6 +3100,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     controls.append(save, restore, file);
     section.append(text("div", "信件备份", "text-text-body text-title-m"), state, controls);
+    mountHistoryRelationship(section);
   };
 
   const mountLocalLetterImport = (section) => {
@@ -3083,7 +3113,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
       text("div", "导入本地历史信件", "text-text-body text-label-l"),
-      text("div", "读取安装时选择的原版游戏目录中的 letter_pairs.json。双方文字原文作为只读历史进入信箱并可供检索，不再等待大模型逐封提取；不联网、不导入视频，不覆盖关系状态，重复记录自动修复或跳过。", "text-text-secondary text-body-m font-regular"),
+      text("div", "读取安装时选择的原版游戏目录中的 letter_pairs.json。双方原文作为只读历史进入信箱并可供检索，保存原文不联网、不导入视频。随后每五封按顺序调用模型评估关系并消耗额度；重复信件和已完成批次跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
     let importPending = false;
@@ -3110,7 +3140,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const preflight = await refreshLocalBackup();
       if (!preflight) return;
       const changeCount = preflight.would_insert + preflight.would_update + preflight.would_remove;
-      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？将保留双方原文，不调用大模型或覆盖当前关系。`)) {
+      if (!await confirmAction(`确认从本地 letter_pairs.json 写入或修复 ${changeCount} 封只读历史信件？保留双方原文，随后每五封调用模型评估关系并消耗额度，已完成批次跳过。`)) {
         return;
       }
       importButton.textContent = "查看导入进度";
@@ -3144,7 +3174,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const memoryDuplicates = Number.isInteger(migration.duplicates) ? migration.duplicates : 0;
         const memorySkipped = Number.isInteger(migration.skipped) ? migration.skipped : 0;
         importState.textContent = payload.memory_mode === "originals"
-          ? `已导入 ${inserted} 封、修复 ${updated} 封、清理重复 ${removed} 封、跳过重复 ${duplicates} 封。双方原文已保存并可供历史检索，无大模型调用。正在刷新信箱。`
+          ? `已导入 ${inserted} 封、修复 ${updated} 封、清理重复 ${removed} 封、跳过重复 ${duplicates} 封。双方原文已保存；关系评估在后台按五封一批继续。正在刷新信箱。`
           : `已导入 ${inserted} 封、修复 ${updated} 封；记忆提取 ${memoryWritten} 封，已有记忆 ${memoryDuplicates} 封，未提取 ${memorySkipped} 封。正在刷新信箱。`;
         importButton.textContent = "已完成";
         window.setTimeout(() => {

@@ -215,6 +215,43 @@ MEMORY_READY_REPLY_TIMEOUT_SECONDS = 120.0
 _official_import_progress_lock = threading.Lock()
 _local_import_task: asyncio.Task | None = None
 _local_import_result: dict | None = None
+_history_relationship_queue = None
+_history_relationship_task = None
+
+
+def _start_history_relationships(*, retry=False):
+    global _history_relationship_task
+    queue = _history_relationship_queue
+    if queue is None:
+        return
+    if retry:
+        queue.retry()
+    if _history_relationship_task is not None and not _history_relationship_task.done():
+        return
+    async def work():
+        try:
+            from runtime.imports.relationship_batches import archive_exchanges
+            rows = await asyncio.to_thread(_legacy_import_adapter().list_legacy)
+            queue.enqueue(archive_exchanges(rows))
+            if private_world_command_service is not None and _llm_runtime_ready():
+                await queue.run(gateway=letters_adapter.gateway,
+                    persona_policy=letters_adapter.get_persona_policy(),
+                    command_service=private_world_command_service,
+                    snapshot=private_world_port.snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _safe_log('history_relationship_failed', error_code='HISTORY_RELATIONSHIP_FAILED')
+    _history_relationship_task = asyncio.create_task(work())
+
+
+def _history_relationship_status():
+    if _history_relationship_queue is None:
+        return {'status':'UNAVAILABLE','processed':0,'total':0,'batch_size':5}
+    result = _history_relationship_queue.status()
+    if _history_relationship_task is not None and not _history_relationship_task.done():
+        result['status'] = 'RUNNING'
+    return result
 _history_memory_admin_gate = threading.Lock()
 _history_import_operations: set[asyncio.Task] = set()
 
@@ -3265,6 +3302,9 @@ async def route(
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED")
         try:
+            if p.endswith('/import') and body.get('relationship_retry') is True:
+                _start_history_relationships(retry=True)
+                return ok(_history_relationship_status())
             if p.endswith("/export"):
                 if _store_state_error_code:
                     return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
@@ -3285,7 +3325,9 @@ async def route(
                 if not task.cancelled():
                     task.exception()
             operation.add_done_callback(backup_settled)
-            return ok(await asyncio.shield(operation))
+            result = await asyncio.shield(operation)
+            _start_history_relationships()
+            return ok(result)
         except (ValueError, TypeError, UnicodeError, OverflowError):
             return err(400, "LETTER_BACKUP_INVALID")
         except (OSError, sqlite3.Error):
@@ -3293,6 +3335,8 @@ async def route(
 
     if p == "/toy/letter/legacy/local-import":
         global _local_import_task, _local_import_result
+        if method == 'GET' and query.get('relationship') == '1':
+            return ok(_history_relationship_status())
         if method == "GET" and query.get("progress") == "1":
             return _local_import_snapshot()
         if method == "POST" and not _local_import_worker:
@@ -3368,6 +3412,7 @@ async def route(
                 report = await asyncio.to_thread(apply_offline_letter_pair_recovery_to_adapter, source, adapter=adapter)
                 if report.status != "committed" or report.rejected:
                     return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
+                _start_history_relationships()
                 return ok({**asdict(report), "status": "APPLIED", "source": "local_backup",
                            "memory_mode": "originals", "provider_calls": 0})
             preflight_error = _official_history_preflight_error()
@@ -4861,6 +4906,13 @@ def _start_ready_conversation_memory_runtime():
 
 
 async def _start_conversation_memory(_app: web.Application) -> None:
+    global _history_relationship_queue
+    from runtime.imports.relationship_batches import RelationshipBatches
+    try:
+        _history_relationship_queue = RelationshipBatches(_state_root() / 'history-relationship.sqlite3')
+        _start_history_relationships()
+    except (OSError, sqlite3.Error):
+        _safe_log('history_relationship_failed', error_code='HISTORY_RELATIONSHIP_STORAGE_UNAVAILABLE')
     started = _start_conversation_memory_initialization(asyncio.get_running_loop())
     if not started and conversation_memory_adapter.status().status == "available":
         _start_ready_conversation_memory_runtime()
@@ -4878,7 +4930,12 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task
+    global _proactive_task, _history_relationship_task, _history_relationship_queue
+    if _history_relationship_task is not None:
+        _history_relationship_task.cancel()
+        await asyncio.gather(_history_relationship_task, return_exceptions=True)
+        _history_relationship_task = None
+    _history_relationship_queue = None
     if _proactive_task is not None:
         _proactive_task.cancel()
         await asyncio.gather(_proactive_task, return_exceptions=True)
