@@ -184,6 +184,11 @@ class ConversationMemoryDeliveryCommitter:
         except Exception:
             pass  # Canonical text remains durable; a later scan can rebuild.
 
+    async def register_archive_sources(self, user_id, sources):
+        register = getattr(self.memory, "register_archive_sources", None)
+        if callable(register):
+            await asyncio.to_thread(register, user_id=user_id, sources=sources)
+
     @property
     def delivery_pending(self) -> bool:
         """A started provider call still needs to be settled and journaled."""

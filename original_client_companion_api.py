@@ -400,6 +400,35 @@ async def _status(request: web.Request) -> web.Response:
         return _error("COMPANION_READ_UNAVAILABLE", 503, origin=origin)
 
 
+def _original_payload(value, limit):
+    if not isinstance(value, Mapping):
+        raise ValueError("original index response invalid")
+    result = {}
+    for name in ("indexed_letters", "archive_total", "archive_indexed", "archive_removed"):
+        count = value.get(name)
+        if (count is None and name != "indexed_letters") or (type(count) is int and count >= 0):
+            result[name] = count
+        else:
+            raise ValueError("original index count invalid")
+    stamp = value.get("scanned_at")
+    if stamp is not None:
+        _timestamp(stamp, code="ORIGINAL_SCAN_TIME_INVALID")
+    result["scanned_at"] = stamp
+    rows = value.get("originals")
+    if not isinstance(rows, list) or len(rows) > limit:
+        raise ValueError("original index rows invalid")
+    result["originals"] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("speaker") not in {"user", "linli"} or type(row.get("excerpt")) is not bool:
+            raise ValueError("original index row invalid")
+        _identifier(row.get("source_id"), code="ORIGINAL_SOURCE_INVALID")
+        _text(row.get("text"), maximum=4000, code="ORIGINAL_TEXT_INVALID", allow_empty=True)
+        if row.get("created_at") is not None:
+            _timestamp(row["created_at"], code="ORIGINAL_TIME_INVALID")
+        result["originals"].append({key: row.get(key) for key in ("source_id", "speaker", "created_at", "text", "excerpt")})
+    return result
+
+
 async def _memory(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
@@ -419,6 +448,12 @@ async def _memory(request: web.Request) -> web.Response:
                 raise OriginalClientCompanionAPIError(
                     "COMPANION_QUERY_INVALID", status=400
                 ) from exc
+        if request.query.get("collection") == "originals":
+            reader = getattr(_backend(request), "browse_originals", None)
+            if not callable(reader):
+                return _error("ORIGINAL_INDEX_UNAVAILABLE", 503, origin=origin)
+            payload = await asyncio.to_thread(reader, query=query, limit=min(limit, 20))
+            return web.json_response(_original_payload(payload, min(limit, 20)), headers=_headers(origin))
         result = tuple(
             await asyncio.to_thread(
                 _backend(request).list_memories,

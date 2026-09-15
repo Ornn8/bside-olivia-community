@@ -286,6 +286,14 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
             with self._status_history_lock:
                 self._status_history.append(record)
 
+    def browse_originals(self, *, query, limit):
+        if self._memory_admin is None:
+            raise OriginalClientCompanionBackendError("COMPANION_MEMORY_DISABLED")
+        read = getattr(self._memory_admin, "browse_originals", None)
+        if not callable(read):
+            raise OriginalClientCompanionBackendError("ORIGINAL_INDEX_UNAVAILABLE")
+        return read(query=query, limit=limit)
+
     def _list_memories(self, *, query: str | None, limit: int) -> tuple[CompanionMemorySummary, ...]:
         if self._memory_admin is None:
             raise OriginalClientCompanionBackendError(

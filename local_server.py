@@ -2702,7 +2702,7 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
     """Cover generation plus bounded review, rewrite, and recheck stages."""
 
     max_reasoning = (
-        exact_mode == ReplyMode.TEXT_LETTER.value
+        exact_mode != ReplyMode.FUTURE_IM.value
         and supports_scoped_reasoning(LLM_CONFIG)
     )
     generation_timeout = (
@@ -5144,8 +5144,10 @@ async def _run_reply_pipeline_for_letter(
             ),
             max_input_chars=LLM_CONFIG.max_input_chars,
             gateway_scope=(
-                GatewayRequestScope.TEXT_LETTER_MAX_REASONING
-                if exact_mode == ReplyMode.TEXT_LETTER.value
+                (GatewayRequestScope.TEXT_LETTER_MAX_REASONING
+                 if exact_mode == ReplyMode.TEXT_LETTER.value
+                 else GatewayRequestScope.MEDIA_REPLY_LOW_REASONING)
+                if exact_mode != ReplyMode.FUTURE_IM.value
                 and supports_scoped_reasoning(LLM_CONFIG)
                 else None
             ),

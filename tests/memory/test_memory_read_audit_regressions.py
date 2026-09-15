@@ -41,11 +41,26 @@ def test_84_imported_originals_are_searchable_with_zero_extracted_facts(tmp_path
         assert archive.import_legacy_records(rows,atomic=True).duplicates == 84
         outbox=CanonicalMemoryOutbox(tmp_path/'state.json',tmp_path/'outbox.sqlite3',
             ConversationMemoryDeliveryCommitter(memory),archive_memory=archive)
-        for _ in range(5):
+        assert memory.browse_originals(user_id='local-user',query='',limit=20)['archive_total'] is None
+        for step in range(5):
             asyncio.run(outbox.scan_once())
+            progress=memory.browse_originals(user_id='local-user',query='',limit=20)
+            assert progress['archive_total']==84
+            assert progress['archive_indexed']==min(84,(step+1)*20)
         assert memory.status().memory_count == 0
         with sqlite3.connect(memory._originals.path) as db:
             assert db.execute('SELECT COUNT(DISTINCT source) FROM originals').fetchone()[0] == 84
         found=memory.search_evidence_context('detail83',user_id='local-user',limit=5)
         assert any('detail83' in row.text for row in found)
+        admin=ConversationMemoryAdminService(memory,tmp_path/'admin.sqlite3',user_id='local-user')
+        view=admin.browse_originals(query='detail83',limit=20)
+        assert any('detail83' in row['text'] for row in view['originals'])
+        assert admin.list_memories(query='detail83',limit=20)==()
+        assert memory.browse_originals(user_id='another-user',query='detail83',limit=20)['originals']==[]
+        source=view['originals'][0]['source_id']
+        memory._originals.forget('local-user',source)
+        after=admin.browse_originals(query='detail83',limit=20)
+        assert after['originals']==[] and after['archive_removed']==1 and after['archive_indexed']==83
+        memory=Mem0ConversationMemoryAdapter(provider,_config(tmp_path))
+        assert memory.browse_originals(user_id='local-user',query='',limit=20)['archive_removed']==1
         assert not any(method=='add' for method,_ in provider.calls)
