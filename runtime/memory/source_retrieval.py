@@ -97,6 +97,24 @@ class SourceRetrieval:
                 key = (row[0], row[1], row[3])
                 candidates[key] = row
                 scores[key] = 1 / (60 + rank + 1)
+            # Keep both sides of a matching exchange. A user's recollection
+            # alone is not evidence of what the assistant previously replied.
+            paired_sources = set()
+            for rank, row in enumerate(sparse[:5]):
+                source, actor, _, _, _ = row
+                if source in excluded or source in paired_sources:
+                    continue
+                paired_sources.add(source)
+                counterparts = db.execute(
+                    "SELECT source,actor,stamp,start,text FROM chunks WHERE user=? AND source=? AND actor!=? ORDER BY rowid",
+                    (user, source, actor),
+                ).fetchall()
+                counterparts.sort(key=lambda r: -len(set(query_terms).intersection(terms(r[4]))))
+                if counterparts and set(query_terms).intersection(terms(counterparts[0][4])):
+                    counterpart = counterparts[0]
+                    key = (counterpart[0], counterpart[1], counterpart[3])
+                    candidates[key] = counterpart
+                    scores[key] = max(scores.get(key, 0), 1 / (60 + rank + 1.5))
             fallback = []
             for rank, record in enumerate(semantic[:20]):
                 if record.user_id != user or record.source_id in excluded:
@@ -123,6 +141,19 @@ class SourceRetrieval:
                     continue
                 seen_text.add(text)
                 spans.append((source, actor, start))
+                # Bound original excerpts before prompt rendering; otherwise a
+                # long first side consumes the budget and drops its reply.
+                if len(text) > 160:
+                    pieces = list(re.finditer(r'[^。！？\n\r\u2028\u2029]+[。！？\n\r\u2028\u2029]*', text))
+                    if pieces:
+                        best = max(pieces, key=lambda p: len(set(query_terms).intersection(terms(p.group()))))
+                        offset = best.start()
+                        if len(best.group()) > 160:
+                            hits = [best.group().find(term) for term in query_terms if term in best.group()]
+                            offset += max(0, min(hits, default=0) - 40)
+                        end = min(len(text), max(best.end(), offset + 80), offset + 160)
+                        text = text[offset:end]
+                        start += offset
                 digest = hashlib.sha256(f"{user}:{source}:{actor}:{start}".encode()).hexdigest()
                 selected.append(ConversationMemoryRecord(memory_id="original:" + digest, text=text, user_id=user,
                     source_id=source, score=min(1, scores[key]), occurred_at=datetime.fromisoformat(stamp) if stamp else None,

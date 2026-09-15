@@ -104,7 +104,7 @@ def import_letters(payload, *, adapter, existing=()):
     rows = validate_backup(payload)
     seen = {identity(row) for row in export_letters(existing)['letters']} if existing else set()
     records, duplicates = [], 0
-    for row in rows:
+    for position,row in enumerate(rows):
         digest = identity(row)
         if digest in seen:
             duplicates += 1
@@ -114,7 +114,7 @@ def import_letters(payload, *, adapter, existing=()):
             content=json.dumps(row, ensure_ascii=False, sort_keys=True),
             source_record_id='letter-backup:' + digest, source='letter-backup',
             occurred_at=row['created_at'],
-            metadata={'import_kind': KIND, 'backup_record': row,
+            metadata={'import_kind': KIND, 'backup_record': row, 'import_position': position,
                       'user_content': row['content'], 'reply_text': row['reply_text'],
                       'replied_at': row['replied_at']},
         ))

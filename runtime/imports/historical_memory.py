@@ -36,6 +36,7 @@ class HistoricalExchange:
     occurred_at: datetime
     user_message: str
     assistant_message: str
+    timestamp_known: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_record_id, str) or not self.source_record_id.strip():
@@ -158,12 +159,14 @@ async def assess_historical_relationship(
     *,
     gateway: Gateway,
     persona_policy: str,
+    previous_state: Mapping[str, object] | None = None,
+    preserve_order: bool = False,
 ) -> HistoricalRelationshipAssessment:
     """Make one bounded assessment after ordered Mem0 migration has completed."""
 
-    ordered = tuple(
-        sorted(exchanges, key=lambda item: (item.occurred_at, item.source_record_id))
-    )
+    ordered = tuple(exchanges)
+    if not preserve_order:
+        ordered = tuple(sorted(ordered, key=lambda item: (item.occurred_at, item.source_record_id)))
     if not ordered:
         raise ValueError("historical exchanges are required")
     if not isinstance(persona_policy, str) or not persona_policy.strip():
@@ -179,6 +182,7 @@ async def assess_historical_relationship(
         ordered,
         persona_policy,
         max_input_chars=max_input_chars,
+        previous_state=previous_state,
     )
     try:
         response = await gateway.complete(
@@ -235,6 +239,7 @@ def _bounded_assessment_messages(
     persona_policy: str,
     *,
     max_input_chars: int,
+    previous_state: Mapping[str, object] | None = None,
 ) -> tuple[tuple[dict[str, str], ...], frozenset[int]]:
     instruction = (
         "\n\nYou are performing a one-time private relationship-state migration. "
@@ -247,6 +252,14 @@ def _bounded_assessment_messages(
         "closeness/tension from 0 to 100, and evidence_indexes (1-8 unique valid "
         "indexes present below). Prefer conservative values when evidence is ambiguous."
     )
+    if previous_state is not None:
+        instruction += (
+            " This is the next chronological batch of at most five exchanges. "
+            "Continue from previous_state; return the resulting absolute state, not increments. "
+            "Do not award points merely for letter count. Assess reciprocal evidence; "
+            "familiarity, trust, comfort and closeness should develop gradually together. "
+            "Do not infer intimacy or consent. Null dates are unknown, not recent."
+        )
     persona_limit = min(len(persona_policy), max(128, max_input_chars // 4))
     selected = _spaced_indexes(len(ordered), min(len(ordered), 12))
     field_limit = 600
@@ -255,14 +268,15 @@ def _bounded_assessment_messages(
         history = [
             {
                 "index": index + 1,
-                "occurred_at": ordered[index].occurred_at.isoformat(),
+                "occurred_at": ordered[index].occurred_at.isoformat() if ordered[index].timestamp_known else None,
                 "user_letter": ordered[index].user_message[:field_limit],
                 "official_reply": ordered[index].assistant_message[:field_limit],
             }
             for index in selected
         ]
         user_content = json.dumps(
-            {"ordered_exchanges": history},
+            {"ordered_exchanges": history,
+             **({"previous_state": dict(previous_state)} if previous_state is not None else {})},
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -297,12 +311,13 @@ def apply_historical_private_world(
     *,
     assessment: HistoricalRelationshipAssessment,
     command_service: object,
+    preserve_order: bool = False,
 ) -> str:
     """Commit one idempotent migration command after all memory writes succeed."""
 
-    ordered = tuple(
-        sorted(exchanges, key=lambda item: (item.occurred_at, item.source_record_id))
-    )
+    ordered = tuple(exchanges)
+    if not preserve_order:
+        ordered = tuple(sorted(ordered, key=lambda item: (item.occurred_at, item.source_record_id)))
     if not ordered or not isinstance(assessment, HistoricalRelationshipAssessment):
         raise ValueError("historical assessment input is invalid")
     evidence_refs = tuple(
