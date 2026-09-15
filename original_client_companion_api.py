@@ -67,14 +67,15 @@ def _identifier(value: object, *, code: str) -> str:
     return value
 
 
-def _text(value: object, *, maximum: int, code: str, allow_empty: bool = False) -> str:
+def _text(value: object, *, maximum: int, code: str, allow_empty: bool = False, multiline: bool = False) -> str:
     if not isinstance(value, str):
         raise ValueError(code)
     normalized = value.strip()
     if (
         (not normalized and not allow_empty)
         or len(normalized) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        or any((ord(character) < 32 or ord(character) == 127)
+               and not (multiline and character in "\r\n\t") for character in normalized)
     ):
         raise ValueError(code)
     return normalized
@@ -422,7 +423,7 @@ def _original_payload(value, limit):
         if not isinstance(row, Mapping) or row.get("speaker") not in {"user", "linli"} or type(row.get("excerpt")) is not bool:
             raise ValueError("original index row invalid")
         _identifier(row.get("source_id"), code="ORIGINAL_SOURCE_INVALID")
-        _text(row.get("text"), maximum=4000, code="ORIGINAL_TEXT_INVALID", allow_empty=True)
+        _text(row.get("text"), maximum=4000, code="ORIGINAL_TEXT_INVALID", allow_empty=True, multiline=True)
         if row.get("created_at") is not None:
             _timestamp(row["created_at"], code="ORIGINAL_TIME_INVALID")
         result["originals"].append({key: row.get(key) for key in ("source_id", "speaker", "created_at", "text", "excerpt")})
