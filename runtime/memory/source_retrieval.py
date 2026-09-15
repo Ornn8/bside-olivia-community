@@ -29,7 +29,34 @@ class SourceRetrieval:
         db.execute("CREATE TABLE IF NOT EXISTS originals (user TEXT, source TEXT, actor TEXT, stamp TEXT, text TEXT, PRIMARY KEY(user,source,actor))")
         db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(user UNINDEXED, source UNINDEXED, actor UNINDEXED, stamp UNINDEXED, start UNINDEXED, text UNINDEXED, tokens)")
         db.execute("CREATE TABLE IF NOT EXISTS forgotten (user TEXT, source TEXT, PRIMARY KEY(user,source))")
+        db.execute("CREATE TABLE IF NOT EXISTS archive_targets (user TEXT, source TEXT, PRIMARY KEY(user,source))")
+        db.execute("CREATE TABLE IF NOT EXISTS archive_scan (user TEXT PRIMARY KEY, stamp TEXT)")
         return db
+
+    def register_archive(self, user, sources):
+        from datetime import timezone
+        with closing(self.connect()) as db, db:
+            db.execute("DELETE FROM archive_targets WHERE user=?", (user,))
+            db.executemany("INSERT OR IGNORE INTO archive_targets VALUES (?,?)", ((user, source) for source in sources))
+            db.execute("INSERT OR REPLACE INTO archive_scan VALUES (?,?)", (user, datetime.now(timezone.utc).isoformat()))
+
+    def browse(self, user, query, limit):
+        with closing(self.connect()) as db:
+            indexed = db.execute("SELECT COUNT(DISTINCT source) FROM originals WHERE user=?", (user,)).fetchone()[0]
+            scanned = db.execute("SELECT stamp FROM archive_scan WHERE user=?", (user,)).fetchone()
+            total, ready, removed = db.execute("""SELECT COUNT(*),
+                COALESCE(SUM(EXISTS(SELECT 1 FROM originals o WHERE o.user=t.user AND o.source=t.source)),0),
+                COALESCE(SUM(EXISTS(SELECT 1 FROM forgotten f WHERE f.user=t.user AND f.source=t.source)),0)
+                FROM archive_targets t WHERE user=?""", (user,)).fetchone()
+            rows = [] if query else db.execute("SELECT source,actor,stamp,text FROM originals WHERE user=? ORDER BY stamp DESC,source,actor LIMIT ?", (user, limit)).fetchall()
+        if query:
+            records = self.search(query, user, limit=limit)
+            rows = [(r.source_id, r.metadata['speaker'], r.occurred_at.isoformat() if r.occurred_at else None, r.text) for r in records]
+        return {'indexed_letters': indexed, 'archive_total': total if scanned else None,
+                'archive_indexed': ready if scanned else None, 'archive_removed': removed if scanned else None,
+                'scanned_at': scanned[0] if scanned else None,
+                'originals': [{'source_id': s, 'speaker': a, 'created_at': stamp, 'text': text[:4000],
+                               'excerpt': bool(query) or len(text)>4000} for s,a,stamp,text in rows]}
 
     def put(self, user, source, user_text, reply_text, stamp):
         stamp = stamp.isoformat() if stamp is not None else None

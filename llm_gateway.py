@@ -41,6 +41,7 @@ class GatewayRequestScope(str, Enum):
     """Trusted in-process call scope; never serialized into provider request ids."""
 
     TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
+    MEDIA_REPLY_LOW_REASONING = "media_reply_low_reasoning"
     JSON_MAX_REASONING = "json_max_reasoning"
     PERSONAL_CHAT_JSON = "personal_chat_json"
     BACKGROUND_REASONING = "background_reasoning"
@@ -107,11 +108,6 @@ class ProviderProtocolError(GatewayError):
     def __init__(self, detail: str | None = None) -> None:
         super().__init__("PROVIDER_PROTOCOL", retryable=False)
         self.diagnostic_detail = detail
-
-
-class _RetryableProviderProtocolError(ProviderProtocolError):
-    def __init__(self) -> None:
-        GatewayError.__init__(self, "PROVIDER_PROTOCOL", retryable=True)
 
 
 class ProviderEmptyResponse(ProviderProtocolError):
@@ -817,6 +813,7 @@ class OpenAICompatibleAdapter(Gateway):
             supports_scoped_reasoning(self.config)
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
+                GatewayRequestScope.MEDIA_REPLY_LOW_REASONING,
                 GatewayRequestScope.JSON_MAX_REASONING,
                 GatewayRequestScope.PERSONAL_CHAT_JSON,
                 GatewayRequestScope.BACKGROUND_REASONING,
@@ -1171,7 +1168,6 @@ class OpenAICompatibleAdapter(Gateway):
                         if status >= 400:
                             raise ProviderRejected(status)
                         saw_delta = False
-                        saw_reasoning = False
                         index = 0
                         buffered: list[str] = []
                         buffered_chars = 0
@@ -1194,7 +1190,6 @@ class OpenAICompatibleAdapter(Gateway):
                             if terminal_finish_reason is not None:
                                 continue
                             text = _extract_stream_text(data)
-                            saw_reasoning = saw_reasoning or _has_stream_reasoning(data)
                             finish_reason = _extract_finish_reason(data)
                             if text:
                                 saw_delta = True
@@ -1209,8 +1204,7 @@ class OpenAICompatibleAdapter(Gateway):
                                     break
                         outcome = "response"
                         if terminal_finish_reason == "length":
-                            if not saw_delta and saw_reasoning:
-                                raise _RetryableProviderProtocolError()
+                            # Retrying an exhausted output budget repeats billed work.
                             raise ProviderProtocolError()
                         if not saw_delta or not any(part.strip() for part in buffered):
                             raise ProviderProtocolError()
@@ -1395,21 +1389,6 @@ def _extract_stream_text(data: Mapping[str, Any]) -> str:
     if data.get("type") in {"response.output_text.delta", "response.content_part.added"}:
         return _content_to_text(data.get("delta", data.get("text", "")))
     return ""
-
-
-def _has_stream_reasoning(data: Mapping[str, Any]) -> bool:
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return False
-    choice = choices[0]
-    if not isinstance(choice, Mapping):
-        return False
-    delta = choice.get("delta")
-    return (
-        isinstance(delta, Mapping)
-        and isinstance(delta.get("reasoning_content"), str)
-        and bool(delta["reasoning_content"].strip())
-    )
 
 
 def _extract_finish_reason(data: Mapping[str, Any]) -> str | None:

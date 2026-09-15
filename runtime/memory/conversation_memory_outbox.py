@@ -232,6 +232,7 @@ class CanonicalMemoryOutbox:
         except Exception:
             return  # Archive failures must not block canonical delivery; retry next scan.
         indexed = 0
+        deliveries = []
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -251,6 +252,14 @@ class CanonicalMemoryOutbox:
                 user_message=user_text, assistant_message=reply, occurred_at=stamp,
                 lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
                 content_hash=hashlib.sha256(json.dumps([user_text, reply, row.get("occurred_at")], ensure_ascii=False).encode("utf-8")).hexdigest())
+            deliveries.append(delivery)
+        register = getattr(self.committer, "register_archive_sources", None)
+        if callable(register):
+            try:
+                await register(self.user_id, [delivery.source_id for delivery in deliveries])
+            except Exception:
+                pass  # Progress is optional; indexing still proceeds.
+        for delivery in deliveries:
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break

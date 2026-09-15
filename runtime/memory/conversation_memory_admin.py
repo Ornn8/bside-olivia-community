@@ -325,6 +325,15 @@ class ConversationMemoryAdminService:
                 "MEMORY_ADMIN_READ_FAILED"
             ) from exc
 
+    def browse_originals(self, *, query=None, limit=20):
+        self._require_available()
+        if type(limit) is not int or not 1 <= limit <= 50 or (query is not None and (not isinstance(query, str) or len(query)>2000)):
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_QUERY_INVALID")
+        try:
+            return self.memory.browse_originals(user_id=self.user_id, query=(query or '').strip(), limit=limit)
+        except Exception as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_READ_FAILED") from exc
+
     def add(
         self,
         text: str,

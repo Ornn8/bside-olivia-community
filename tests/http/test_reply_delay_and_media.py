@@ -717,11 +717,11 @@ def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
     assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 365.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 905.0
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
     assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 245.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 785.0
 
 
 def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
@@ -745,7 +745,7 @@ def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
 
 
 @pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
-def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning(
+def test_run_reply_pipeline_scopes_letter_generation_for_bounded_reasoning(
     monkeypatch, model,
 ):
     seen = []
@@ -757,6 +757,7 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
 
     config = GatewayConfig(
         provider="openai_compatible",
+        base_url="https://api.deepseek.com" if model.startswith("deepseek") else "https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_style="chat_completions",
         model=model,
         timeout_seconds=180.0,
@@ -780,6 +781,12 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
             ReplyMode.SPOKEN_VIDEO.value,
             idempotency_key="stable",
         )
+        for mode in (ReplyMode.VOICE_REPLY, ReplyMode.SINGING_VIDEO,
+                     ReplyMode.VOICE_SONG_VIDEO, ReplyMode.MUSICAL_VIDEO):
+            await local_server._run_reply_pipeline_for_letter(
+                {"letter_id": mode.value}, "synthetic media request", mode.value,
+                idempotency_key="stable",
+            )
 
     asyncio.run(exercise())
 
@@ -787,10 +794,21 @@ def test_run_reply_pipeline_scopes_only_text_letter_generation_for_max_reasoning
     assert seen[0][0].request_id == "letter-reply:text-fixture"
     assert seen[0][0].idempotency_key == "stable:text-fixture"
     assert seen[0][1] is ReplyMode.TEXT_LETTER
-    assert seen[1][0].gateway_scope is None
+    assert seen[1][0].gateway_scope is GatewayRequestScope.MEDIA_REPLY_LOW_REASONING
     assert seen[1][0].request_id == "letter-reply:video-fixture"
     assert seen[1][0].idempotency_key == "stable:video-fixture"
     assert seen[1][1] is ReplyMode.SPOKEN_VIDEO
+    from llm_gateway import OpenAICompatibleAdapter
+    gateway = OpenAICompatibleAdapter(config)
+    for request, mode in seen:
+        scope = request.gateway_scope
+        assert scope is (GatewayRequestScope.TEXT_LETTER_MAX_REASONING if mode is ReplyMode.TEXT_LETTER
+                         else GatewayRequestScope.MEDIA_REPLY_LOW_REASONING)
+        body = gateway._body([{"role": "user", "content": "synthetic"}], stream=False,
+                             max_reasoning=gateway._uses_max_reasoning(scope), scope=scope)
+        assert body["reasoning_effort"] == ("high" if mode is ReplyMode.TEXT_LETTER else "low")
+        assert body.get("max_tokens", body.get("max_completion_tokens")) == 10000
+        assert local_server._reply_pipeline_timeout_seconds(mode.value) >= 720
 
 
 @pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "deepseek-v4-flash"])

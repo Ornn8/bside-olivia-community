@@ -980,12 +980,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     resultState.setAttribute("aria-live", "polite");
     const list = stack();
 
+    const originals = stack();
+    const originalProgress = text("p", "原文接入状态待查询", "text-text-secondary text-body-m");
     let memoryLoadGeneration = 0;
     const load = async () => {
       const generation = ++memoryLoadGeneration;
       const query = input.value.trim();
       resultState.textContent = "正在读取长期记忆……";
       list.replaceChildren();
+      originals.replaceChildren();
+      requestJson(MEMORY_PATH, {query, limit: 20, collection: "originals"}).then((payload) => {
+        if (generation !== memoryLoadGeneration) return;
+        const total = payload.archive_total;
+        originalProgress.textContent = `已索引 ${payload.indexed_letters} 封信。` + (Number.isInteger(total)
+          ? `历史信件已接入 ${payload.archive_indexed}/${total} 封，已移除 ${payload.archive_removed} 封。`
+          : "历史信件尚未完成扫描，接入总量未知。") + (payload.scanned_at ? ` 扫描时间：${formatTime(payload.scanned_at)}` : "");
+        const rows = Array.isArray(payload.originals) ? payload.originals : [];
+        originals.append(text("p", query ? `原文搜索结果：${rows.length} 个片段（最多显示 5 个）` : "最近接入的原文（最多显示 20 段）", "text-text-secondary text-body-m"));
+        for (const row of rows) {
+          originals.append(text("p", `${row.speaker === "user" ? "用户来信" : "林离回信"} · ${row.created_at ? formatTime(row.created_at) : "时间未知"}${row.excerpt ? " · 节选" : ""}`, "text-text-secondary text-caption-m"));
+          const paragraph = text("p", row.text, "text-text-primary text-body-m");
+          paragraph.style.whiteSpace = "pre-wrap";
+          originals.append(paragraph);
+        }
+        if (!rows.length) originals.append(text("p", query ? "没有匹配的信件原文。" : "暂无已索引原文。", "text-text-secondary text-body-m"));
+      }).catch(() => {
+        if (generation === memoryLoadGeneration) originalProgress.textContent = "原文索引暂时无法读取，请点击搜索重试。";
+      });
       try {
         const payload = await requestJson(MEMORY_PATH, {
           query,
@@ -1004,7 +1025,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         } catch (_statusError) { /* A failed status refresh does not invalidate loaded records. */ }
         if (generation !== memoryLoadGeneration) return;
         resultState.textContent = query
-          ? `搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
+          ? `提取记忆搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
           : "已读取本机长期记忆。";
       } catch (_error) {
         if (generation !== memoryLoadGeneration) return;
@@ -1016,7 +1037,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     };
 
-    const search = button("搜索", load);
+    const search = button("搜索 / 刷新接入进度", load);
     controls.append(input, search);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -1090,7 +1111,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     lifecycleControls.append(toggle, clear, retryWrites);
-    panel.replaceChildren(heading, summary, lifecycleControls, controls, resultState, list);
+    panel.replaceChildren(heading, summary, lifecycleControls, controls,
+      text("h3", "信件原文", "text-text-primary text-body-l"), originalProgress, originals,
+      text("h3", "提取记忆", "text-text-primary text-body-l"), resultState, list);
     await load();
   };
 

@@ -594,6 +594,14 @@ class DeferredConversationMemoryAdapter:
             search = getattr(delegate, "search_memories", delegate.search_context)
             return search(query, user_id=user_id, limit=limit)
 
+    def browse_originals(self, *, user_id, query, limit):
+        with self._using_current() as delegate:
+            return delegate.browse_originals(user_id=user_id, query=query, limit=limit)
+
+    def register_archive_sources(self, *, user_id, sources):
+        with self._using_current() as delegate:
+            return delegate.register_archive_sources(user_id=user_id, sources=sources)
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         with self._using_current() as delegate:
             search = getattr(delegate, "search_evidence_context", None)
@@ -1042,6 +1050,12 @@ def _record_search_key(
 
 class Mem0ConversationMemoryAdapter:
     enabled = True
+
+    def browse_originals(self, *, user_id, query, limit):
+        return self._originals.browse(self._normalized_user_id(user_id), query, limit)
+
+    def register_archive_sources(self, *, user_id, sources):
+        self._originals.register_archive(self._normalized_user_id(user_id), sources)
 
     def index_original_exchange(self, *, user_id, source_id, user_message, assistant_message, occurred_at):
         self._originals.put(self._normalized_user_id(user_id), source_id,

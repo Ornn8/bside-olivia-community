@@ -64,6 +64,7 @@ const capability = {state: 'available', count: 5};
 const stateLabels = {available:'AVAILABLE', degraded:'DEGRADED', unavailable:'UNAVAILABLE'};
 const capabilityState = c => c && c.state || 'unavailable';
 const input = {value:''}, list = {replaceChildren(){}}, renderMemories = () => {};
+const originals={replaceChildren(){},append(){}},originalProgress={},text=()=>({}),formatTime=x=>x;
 const MEMORY_PATH = 'memory', STATUS_PATH = 'status';
 let fail = false, failStatus = false;
 const requestJson = async path => {

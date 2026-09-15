@@ -21,10 +21,12 @@ def reasoning_request_parameters(
         and endpoint.scheme == "https"
         and endpoint.hostname == "api.deepseek.com"
         and endpoint.path.rstrip("/") in {"", "/v1"}
-        and purpose in {"text_letter_max_reasoning", "background_reasoning", "personal_chat_json"}
+        and purpose in {"text_letter_max_reasoning", "media_reply_low_reasoning", "background_reasoning", "personal_chat_json"}
     ):
         # Explicit capability overrides take precedence over task defaults.
         if "reasoning_effort" not in options.get("capabilities", {}):
             parameters["reasoning_effort"] = "high"
         parameters["max_tokens"] = 10000
+    if purpose == "media_reply_low_reasoning" and capabilities.reasoning_effort:
+        parameters["reasoning_effort"] = "low"
     return parameters

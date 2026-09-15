@@ -999,7 +999,7 @@ def test_deepseek_v4_flash_release_stream_hides_reasoning_content(
     assert "private stream chain" not in captured.err
 
 
-def test_stream_retries_protocol_failure_before_visible_text(
+def test_stream_reasoning_length_is_terminal_before_visible_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def exercise():
@@ -1038,22 +1038,22 @@ def test_stream_retries_protocol_failure_before_visible_text(
                     max_retries=1,
                 )
             )
-            deltas = [
-                delta
+            deltas = []
+            with pytest.raises(ProviderProtocolError) as error:
                 async for delta in adapter.stream_scoped(
                     ROOT_MESSAGES,
                     request_id="stream-protocol-retry",
                     scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
-                )
-            ]
+                ):
+                    deltas.append(delta)
+            assert error.value.retryable is False
         return calls, deltas
 
     monkeypatch.setenv("B03_TEST_KEY", "TEST")
     calls, deltas = run(exercise())
 
-    assert calls == 2
-    assert "".join(delta.text for delta in deltas) == "recovered reply"
-    assert deltas[-1].finish_reason == "stop"
+    assert calls == 1
+    assert not deltas
 
 
 def test_stream_visible_text_then_length_is_terminal_without_delivery_or_retry(
