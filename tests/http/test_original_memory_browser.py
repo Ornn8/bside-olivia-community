@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import datetime, timezone
 
 from aiohttp import web
@@ -9,6 +10,33 @@ from original_client_companion_backend import OriginalClientCompanionServiceBack
 from runtime.memory.conversation_memory_admin import ConversationMemoryAdminService
 from runtime.memory.mem0_memory import Mem0ConversationMemoryAdapter
 from tests.memory.test_mem0_memory import FakeMem0, _config
+
+
+def test_multiline_permission_does_not_weaken_other_text_validation():
+    from original_client_companion_api import _text
+    with pytest.raises(ValueError):
+        _text('query\nnext',maximum=100,code='QUERY_INVALID')
+    for character in ('\x00','\x1b','\x7f'):
+        with pytest.raises(ValueError):
+            _text('letter'+character+'text',maximum=100,code='ORIGINAL_TEXT_INVALID',multiline=True)
+
+
+@pytest.mark.parametrize('query', ['', '小离'])
+def test_multiline_original_letter_survives_real_index_and_http(tmp_path, query):
+    memory=Mem0ConversationMemoryAdapter(FakeMem0(),_config(tmp_path))
+    body='小离：\r\n\r\n今天去了咖啡店。\n\t记得那杯开心果拿铁吗？\r\n署名'
+    memory.index_original_exchange(user_id='local-user',source_id='history:multiline',
+        user_message=body,assistant_message='记得。\n下次一起去。',occurred_at=datetime(2026,9,1,tzinfo=timezone.utc))
+    admin=ConversationMemoryAdminService(memory,tmp_path/'admin.sqlite3',user_id='local-user')
+    async def exercise():
+        app=web.Application()
+        mount_original_companion_read_api(app,OriginalClientCompanionServiceBackend(memory_admin=admin),trusted_origins=['https://client.example'])
+        async with TestClient(TestServer(app)) as client:
+            response=await client.get(MEMORY_PATH,params={'collection':'originals','query':query},headers={'Origin':'https://client.example'})
+            assert response.status==200,await response.text()
+            payload=await response.json()
+            assert next(row['text'] for row in payload['originals'] if row['speaker']=='user')==body
+    asyncio.run(exercise())
 
 
 def test_original_search_is_separate_read_only_and_origin_protected(tmp_path):

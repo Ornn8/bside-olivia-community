@@ -2937,6 +2937,10 @@ def test_manifest_append_downloads_only_new_direct_files(
             ),
         ),
         opener=opener,
+        # This test exercises incremental file downloads, not host codecs.
+        readiness_probe=lambda _environment: {
+            "ordinary_missing_dependencies": [], "music_ready": True,
+        },
     )
     monkeypatch.setattr(
         installer,
