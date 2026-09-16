@@ -87,6 +87,21 @@ def test_shared_scene_is_not_uploaded_when_missing(tmp_path):
     asyncio.run(scenario())
 
 
+def test_named_shared_scene_needs_no_local_file(tmp_path):
+    scene = tmp_path / 'scene.mp4'; scene.write_bytes(b'fixture')
+    async def scenario():
+        async with TestServer(build_app(config(scene), tmp_path / 'state')) as server:
+            api = RemoteGeneration(str(server.make_url('/')), 'a' * 32)
+            with pytest.raises(CloudError, match='GPU_SHARED_SCENE_MISSING'):
+                await api.generate('lipsync', {'scene_asset': 'not-deployed'}, tmp_path / 'out.mp4')
+            with pytest.raises(CloudError, match='GPU_TASK_TIMEOUT'):
+                await api.generate('lipsync', {'scene_asset': 'scene-v1', 'audio_asset': 'scene-v1'}, tmp_path / 'out.mp4', timeout=-1)
+            with sqlite3.connect(tmp_path / 'state/tasks.sqlite3') as db:
+                assert db.execute('SELECT count(*) FROM tasks').fetchone()[0] == 1
+                assert db.execute('SELECT count(*) FROM assets').fetchone()[0] == 0
+    asyncio.run(scenario())
+
+
 def test_signed_output_and_expiration(tmp_path):
     scene = tmp_path / 'scene.mp4'; scene.write_bytes(b'fixture')
     root = tmp_path / 'state'; settings = config(scene)

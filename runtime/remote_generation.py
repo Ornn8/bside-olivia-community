@@ -124,6 +124,8 @@ class RemoteGeneration:
         caps = await self.request('capabilities', {})
         if kind not in caps['kinds']: raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
         data = dict(data)
+        if 'scene_asset' in data and data['scene_asset'] not in {a['asset_id'] for a in caps['shared_assets']}:
+            raise CloudError('GPU_SHARED_SCENE_MISSING', 503)
         for field, path in (assets or {}).items():
             with Path(path).open('rb') as source: digest = hashlib.file_digest(source, 'sha256').hexdigest()
             shared = next((a['asset_id'] for a in caps['shared_assets'] if a['sha256'] == digest), None)

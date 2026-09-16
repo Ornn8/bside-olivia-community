@@ -5,7 +5,8 @@ from runtime import remote_pipeline
 from runtime.media.voice_direction import TextOnlyVoicePlan
 
 
-def test_remote_stages_do_not_require_local_models(tmp_path, monkeypatch):
+@pytest.mark.parametrize('no_scene', [True, False])
+def test_remote_stages_do_not_require_local_models(tmp_path, monkeypatch, no_scene):
     from runtime.reply.reply_media import render_reply_audio, render_reply_video
     from runtime.media.ace_cover import generate_cover
     from runtime.media.latentsync_reply import render_latentsync_video
@@ -20,13 +21,16 @@ def test_remote_stages_do_not_require_local_models(tmp_path, monkeypatch):
     render_reply_audio('test', output, tts_config_path=missing,
                        voice_performance_plan=TextOnlyVoicePlan('test'), environment=env)
     render_reply_video('test', output, tts_config_path=missing, visual_config_path=missing, worker_path=missing,
-                       scene_path=missing, environment=env, adaptive_delivery=True)
+                       scene_path=None if no_scene else missing, environment=env, adaptive_delivery=True)
     source = tmp_path / 'source.wav'; source.write_bytes(b'fixture')
     generate_cover(source, output, environment=env)
     render_latentsync_video(missing, source, output, python_path=None, latentsync_root=None, environment=env)
     assert [c[0] for c in calls] == ['tts', 'video', 'cover', 'lipsync']
     assert calls[1][1]['adaptive_delivery'] is True
-    assert calls[3][2]['scene_asset'] == missing
+    assert calls[1][1]['scene_asset'] == 'official-reply-action-base-v1'
+    assert calls[3][1]['scene_asset'] == 'official-performance-lipsync-safe-2950f-v1'
+    assert 'scene_asset' not in calls[1][2]
+    assert 'scene_asset' not in calls[3][2]
 
 
 def test_remote_readiness_uses_server_capabilities(monkeypatch):

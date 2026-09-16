@@ -345,11 +345,10 @@ def render_reply_video(
 ) -> dict[str, object]:
     from runtime.remote_pipeline import enabled, generate
     if enabled(environment):
-        if scene_path is None:
-            raise ReplyMediaError("GPU_SHARED_SCENE_MISSING")
         return generate('video', {'text': text, 'voice_plan': voice_performance_plan.to_dict() if voice_performance_plan else {'reply_text': text},
+                        'scene_asset': 'official-reply-action-base-v1',
                         'adaptive_delivery': adaptive_delivery, 'enforce_content_gate': enforce_content_gate},
-                        output_path, environment=environment, assets={'scene_asset': scene_path})
+                        output_path, environment=environment)
     if scene_path is not None and (
         latentsync_python_path is None
         or latentsync_root is None
