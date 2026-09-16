@@ -140,7 +140,7 @@ class GatewayConfig:
     max_retries: int = 2
     retry_backoff_seconds: float = 0.25
     stream: bool = False
-    max_input_chars: int = 30000
+    max_input_chars: int = 100000
     max_output_chars: int = 10000
     fallback_provider: str = "none"
     persona_file: str = ""
@@ -203,7 +203,7 @@ class GatewayConfig:
                 data.get("retry_backoff_seconds", 0.25), 0.25, 0.0, 30.0
             ),
             stream=_as_bool(data.get("stream", False)),
-            max_input_chars=_bounded_int(data.get("max_input_chars", 30000), 30000, 1, 100000),
+            max_input_chars=_bounded_int(data.get("max_input_chars", 100000), 100000, 1, 100000),
             max_output_chars=_bounded_int(data.get("max_output_chars", 10000), 10000, 1, 100000),
             fallback_provider=str(data.get("fallback_provider", "none") or "none").strip().lower(),
             persona_file=str(data.get("persona_file", "") or ""),
@@ -456,7 +456,11 @@ def load_gateway_config(
             # A malformed local file must disable network I/O rather than
             # turning startup into an opaque exception.
             data = {"provider": "none"}
-    data.update(_env_overlay(environ or os.environ))
+    # Upgrade the previously shipped cost-saving default. Explicit environment
+    # limits still win, including a deliberate 30000-character model limit.
+    if data.get('max_input_chars') in (30000, '30000'):
+        data['max_input_chars'] = 100000
+    data.update(_env_overlay(environ if environ is not None else os.environ))
     return GatewayConfig.from_mapping(data)
 
 

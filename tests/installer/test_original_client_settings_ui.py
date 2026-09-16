@@ -304,7 +304,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert BOOTSTRAP_JAVASCRIPT.count(
         'const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";'
     ) == 1
-    assert "导入本地历史信件" in BOOTSTRAP_JAVASCRIPT
+    assert "从原版目录读取（另一种导入方式）" in BOOTSTRAP_JAVASCRIPT
     assert "官方服务器已关闭" in BOOTSTRAP_JAVASCRIPT
     assert "letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
     assert "作为只读历史进入信箱" in BOOTSTRAP_JAVASCRIPT
@@ -469,7 +469,7 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await Pro
 (async () => {
   await flush();
   const buttons = body.querySelectorAll("button");
-  const importButton = buttons[buttons.length - 1];
+  const importButton = buttons.find((item) => item.textContent === "从原版目录读取");
   if (!importButton) throw new Error("local import button missing");
   if (body.querySelectorAll("span").some((item) => item.textContent === "legacy-summary")) {
     throw new Error("history must be rendered in the mailbox, not settings");

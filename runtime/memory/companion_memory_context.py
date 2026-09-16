@@ -89,6 +89,7 @@ class _ConversationMemoryView:
             provenance["source"] = "original_text"
             metadata["verbatim"] = True
             metadata["speaker"] = record.metadata["speaker"]
+            metadata["complete_original"] = record.metadata.get("complete_original") is True
         history_actor = record.metadata.get("history_actor")
         if (
             record.source_id.startswith("history:")
@@ -154,8 +155,8 @@ class CompanionMemoryPromptBuilder:
         conversation_memory: ConversationMemoryPort,
         *,
         user_id: str = "local-user",
-        max_results: int = 8,
-        max_tokens: int = 1500,
+        max_results: int = 100,
+        max_tokens: int = 300000,
         current_share: float = 0.6,
         memory_lifecycle: ConversationMemoryLifecycle | None = None,
     ) -> None:
@@ -169,7 +170,7 @@ class CompanionMemoryPromptBuilder:
         self.max_tokens = max(0, int(max_tokens))
         self.conversation_memory = conversation_memory
         self.user_id = user_id
-        self.max_results = max(1, min(32, int(max_results)))
+        self.max_results = max(1, min(100, int(max_results)))
         self.current_share = float(current_share)
         self.memory_lifecycle = memory_lifecycle
         self._fallback = MemoryPromptBuilder(
@@ -186,7 +187,7 @@ class CompanionMemoryPromptBuilder:
         max_chars: int | None = None,
         exclude_source_ids: Iterable[str] = (),
     ) -> MemoryPrompt:
-        budget = max(0, int(max_chars if max_chars is not None else 2400))
+        budget = max(0, int(max_chars if max_chars is not None else 30000))
         if budget <= 0 or not isinstance(query, str) or not query.strip():
             return MemoryPrompt(status="disabled")
 
@@ -213,6 +214,15 @@ class CompanionMemoryPromptBuilder:
                     exclude_source_ids=exclude_source_ids,
                 )
 
+        if budget > 2400:
+            current = MemoryPromptBuilder(
+                _ConversationMemoryView(self.conversation_memory, user_id=self.user_id,
+                                        exclude_source_ids=exclude_source_ids),
+                max_tokens=self.max_tokens, max_results=self.max_results,
+                legacy_budget=0, conversation_budget=budget, conversation_memory=None,
+            ).build(query, max_chars=budget, exclude_source_ids=exclude_source_ids)
+            if current.references and any(r.metadata.get('verbatim') for r in current.references):
+                return current
         current_budget = max(0, int(budget * self.current_share))
         archive_budget = max(0, budget - current_budget)
         archive = MemoryPromptBuilder(
@@ -233,7 +243,7 @@ class CompanionMemoryPromptBuilder:
                 exclude_source_ids=exclude_source_ids,
             ),
             max_tokens=max(0, self.max_tokens - estimate_memory_tokens(archive.text) - 1),
-            max_results=self.max_results,
+            max_results=min(8, self.max_results),
             legacy_budget=0,
             conversation_budget=current_budget,
             conversation_memory=None,

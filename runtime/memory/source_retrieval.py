@@ -82,7 +82,9 @@ class SourceRetrieval:
                 db.execute("DELETE FROM originals WHERE user=? AND source=?", (user, item))
                 db.execute("DELETE FROM chunks WHERE user=? AND source=?", (user, item))
 
-    def search(self, query, user, semantic=(), limit=5, exclude_source_ids=()):
+    def search(self, query, user, semantic=(), limit=5, exclude_source_ids=(), expanded=False):
+        if expanded:
+            return self._expanded_search(query, user, semantic, limit, exclude_source_ids)
         excluded = set(exclude_source_ids)
         query_terms = terms(query[:2000])[:64]
         with closing(self.connect()) as db:
@@ -170,3 +172,48 @@ class SourceRetrieval:
                     selected.append(record)
                     seen_text.add(record.text)
             return tuple(selected)
+
+    def _expanded_search(self, query, user, semantic, limit, excluded):
+        """Retrieve per sentence, then return complete paired originals in rounds."""
+        excluded = set(excluded)
+        topics = [part.strip() for part in re.split(r'[。！？?！\n\r\u2028\u2029]+', query) if part.strip()]
+        ranked = []
+        with closing(self.connect()) as db:
+            for topic in topics:
+                words = terms(topic)
+                hits = []
+                # Cover every part of a long sentence without an enormous FTS expression.
+                for start in range(0, len(words), 128):
+                    expression = ' OR '.join('"' + word + '"' for word in words[start:start + 128])
+                    hits.extend(row[0] for row in db.execute(
+                        'SELECT source FROM chunks WHERE tokens MATCH ? AND user=? ORDER BY bm25(chunks),rowid LIMIT 120',
+                        (expression, user)))
+                ranked.append(list(dict.fromkeys(source for source in hits if source not in excluded))[:12])
+            sources = []
+            for rank in range(12):
+                for hits in ranked:
+                    if rank < len(hits) and hits[rank] not in sources:
+                        sources.append(hits[rank])
+            sources.extend(r.source_id for r in semantic if r.user_id == user and r.source_id not in excluded and r.source_id not in sources)
+            result = []
+            proactive = {r.source_id for r in semantic if r.metadata.get('origin') == 'proactive'}
+            for source in sources:
+                if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+                    continue
+                rows = db.execute('SELECT actor,stamp,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC', (user, source)).fetchall()
+                if len(result) + len(rows) > limit:
+                    break  # Keep pairs together.
+                for actor, stamp, text in rows:
+                    result.append(ConversationMemoryRecord(
+                        memory_id='original:' + hashlib.sha256(f'{user}:{source}:{actor}:full'.encode()).hexdigest(),
+                        text=text, user_id=user, source_id=source, score=1 / (1 + len(result)),
+                        occurred_at=datetime.fromisoformat(stamp) if stamp else None,
+                        metadata={'verbatim': True, 'speaker': actor, 'canonical': True, 'complete_original': True,
+                                  **({'origin': 'proactive'} if source in proactive else {}),
+                                  **({'history_actor': actor} if source.startswith('history:') else {})}))
+            present = {r.source_id for r in result}
+            result.extend(r for r in semantic if r.user_id == user and r.source_id not in excluded
+                          and r.source_id not in present
+                          and not db.execute('SELECT 1 FROM originals WHERE user=? AND source=?', (user, r.source_id)).fetchone()
+                          and not db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, r.source_id)).fetchone())
+            return tuple(result[:limit])

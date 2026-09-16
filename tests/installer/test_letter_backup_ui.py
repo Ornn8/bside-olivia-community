@@ -42,7 +42,10 @@ const requestMutation=async(path,body)=>{
  assert.deepEqual(JSON.parse(await blob.text()),backup);
  const file=all.find(x=>x.type==='file');
  file.files=[{size:100,text:async()=>JSON.stringify(backup)}];
- await file.events.change(); assert.deepEqual(imported,backup); assert.equal(file.value,'');
+ await file.events.change(); assert.deepEqual(JSON.parse(imported),backup); assert.equal(file.value,'');
+ const pairs=[{content:'original',reply:'response'}];
+ file.files=[{size:100,text:async()=>JSON.stringify(pairs)}];
+ await file.events.change(); assert.deepEqual(JSON.parse(imported),pairs);
  assert.equal(save.disabled,false);
  imported=null;file.files=[{size:17*1024*1024,text:async()=>{throw Error('must not read oversized file')}}];
  await file.events.change();assert.equal(imported,null);assert.equal(save.disabled,false);

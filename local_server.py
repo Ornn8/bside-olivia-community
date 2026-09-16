@@ -704,6 +704,7 @@ class LetterAdapter:
             else MemoryPromptBuilder(
                 self.memory_port,
                 conversation_memory=conversation_memory,
+                max_results=100, max_tokens=300000, conversation_budget=100000,
             )
         )
 
@@ -802,27 +803,32 @@ class LetterAdapter:
         user_content = content + ("\n\n" + context if context else "")
         loaded = load_persona(self.persona_v2_path)
         reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
-        memory_context = self._build_memory_prompt(
-            content,
-            max_chars=min(
-                self.config.max_input_chars,
-                self._memory_context_limit(),
-            ),
-        )
-        history = (
-            (UntrustedFragment("memory.references", memory_context.text),)
-            if memory_context.text
-            else ()
-        )
-        return assemble_persona(
-            loaded.snapshot,
-            reply_context,
+        recent = self.recent_letter_fragments(content)
+        evidence = self.daily_life_fragments(content)
+        options = dict(
+            snapshot=loaded.snapshot,
+            context=reply_context,
             user_input=user_content,
             max_units=self.config.max_input_chars,
-            history=(*history, *self.recent_letter_fragments(content)),
-            evidence_summaries=self.daily_life_fragments(content),
+            evidence_summaries=evidence,
             relationship_expression_enabled=loaded.snapshot.status == "READY",
-        ).to_messages()
+        )
+        baseline = assemble_persona(history=recent, **options)
+        available = max(0, self.config.max_input_chars - len(baseline.system_content)
+                        - len(baseline.user_content) - 256)
+        if self._memory_context_limit() == 0:
+            self._build_memory_prompt(content, max_chars=0)
+            return baseline.to_messages()
+        # Account for JSON escaping in the final assembly, not just raw memory text.
+        while available > 0:
+            memory_context = self._build_memory_prompt(content, max_chars=available)
+            if not memory_context.text:
+                break
+            result = assemble_persona(history=(UntrustedFragment('memory.references', memory_context.text), *recent), **options)
+            if 'history.memory.references' in result.budget_report.included_ids:
+                return result.to_messages()
+            available = available * 3 // 4
+        return baseline.to_messages()
 
     def daily_life_fragments(self, content: str) -> tuple[UntrustedFragment, ...]:
         if self.daily_life is None:
@@ -873,23 +879,10 @@ class LetterAdapter:
         return self.memory_prompt_builder.build(content, max_chars=max_chars)
 
     def _memory_context_limit(self) -> int:
-        """Keep Mem0 and Archive prompt budgets independently bounded."""
-
-        candidates = (
-            getattr(getattr(self.conversation_memory, "config", None), "context_max_chars", None),
-            getattr(self.memory_port, "context_max_chars", 2400),
-            2400,
-        )
-        for value in candidates:
-            if isinstance(value, bool):
-                continue
-            try:
-                limit = int(value)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= limit <= 10_000:
-                return limit
-        return 2400
+        """Use the request capacity rather than a separate cost-saving memory cap."""
+        if getattr(getattr(self.conversation_memory, 'config', None), 'context_max_chars', None) == 0:
+            return 0
+        return self.config.max_input_chars
 
     def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False) -> ReplyContext:
         try:
@@ -2593,6 +2586,7 @@ def _bind_memory_adapter(adapter: MemoryPort) -> None:
         else MemoryPromptBuilder(
             adapter,
             conversation_memory=conversation_memory,
+            max_results=100, max_tokens=300000, conversation_budget=100000,
         )
     )
 
