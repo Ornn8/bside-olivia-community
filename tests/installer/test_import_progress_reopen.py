@@ -43,7 +43,7 @@ const window={setTimeout:(callback,ms)=>{if(ms===2000)release=callback;},locatio
     harness += source + r'''
 (async()=>{
   const section=new Element();body.append(section);mountLocalLetterImport(section);
-  const entry=find(section,n=>n.textContent==='导入本地备份');
+  const entry=find(section,n=>n.textContent==='从原版目录读取');
   const running=entry.click();
   for(let i=0;i<12;i++)await Promise.resolve();
   let modal=document.querySelector('[data-olivia-local-import-progress]');

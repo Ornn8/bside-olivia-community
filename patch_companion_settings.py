@@ -551,7 +551,8 @@ def _verify_archive(
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "导入本地历史信件",
+        "const mountLocalLetterImport =",
+        "const mountLetterBackup =",
         "new MutationObserver",
         "replaceChildren",
     )

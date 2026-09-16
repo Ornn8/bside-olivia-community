@@ -105,7 +105,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "删除",
         "暂停长期记忆",
         "恢复长期记忆",
-        "导入本地历史信件",
+        "从原版目录读取",
     ):
         assert visible_text in bootstrap
     for hidden_artifact in (
