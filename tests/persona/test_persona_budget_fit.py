@@ -108,10 +108,10 @@ def test_release_persona_fits_default_budget() -> None:
     )
 
     assert loaded.snapshot.status == "READY"
-    assert GatewayConfig().max_input_chars == 30_000
-    assert config.max_input_chars == 30_000
+    assert GatewayConfig().max_input_chars == 100_000
+    assert config.max_input_chars == 100_000
     invalid = GatewayConfig.from_mapping({"max_input_chars": "invalid"})
-    assert invalid.max_input_chars == 30_000
+    assert invalid.max_input_chars == 100_000
     assert assembled.budget_report.dropped_ids == ()
 
 

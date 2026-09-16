@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v33"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v34"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -3081,26 +3081,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_) { state.textContent = "信件导出失败，请重试。原信件未改变。"; }
       finally { setButtonsBusy([save, restore], false); }
     });
-    const restore = button("选择信件备份导入", () => file.click());
+    const restore = button("选择文件导入", () => file.click());
     file.addEventListener("change", async () => {
       const selected = file.files?.[0]; if (!selected) return;
       setButtonsBusy([save, restore], true);
       try {
         if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
-        const backup = JSON.parse((await selected.text()).replace(/^\uFEFF/, ""));
-        if (backup.schema_version !== "olivia.letters.v1" || !Array.isArray(backup.letters)) throw Error("invalid backup");
-        if (!await confirmAction(`导入备份中的 ${backup.letters.length} 封信件？原文将作为只读历史保存并可供检索，重复信件跳过。随后按顺序每五封调用模型评估关系，消耗模型额度，已有进度会保留。`)) return;
+        const backup = (await selected.text()).replace(/^\uFEFF/, "");
+        if (!await confirmAction("导入所选文件中的信件？支持原版 letter_pairs.json 和 Olivia 导出的信件备份，自动识别格式。双方原文进入信箱并可检索，重复信件跳过；随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
         state.textContent = "正在保存信件原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
         state.textContent = `已导入 ${result.inserted} 封，重复 ${result.duplicates} 封。正在刷新信箱。`;
         window.setTimeout(() => window.location.reload(), 800);
-      } catch (_) { state.textContent = "导入未完成。请选择完整的 Olivia 信件备份 JSON（最大 16 MB）；可再次导入，重复信件会跳过。"; }
+      } catch (_) { state.textContent = "导入未完成。请选择完整的 letter_pairs.json 或 Olivia 导出的信件备份（最大 16 MB）；可再次导入，重复信件会跳过。"; }
       finally { file.value = ""; setButtonsBusy([save, restore], false); }
     });
     controls.append(save, restore, file);
-    section.append(text("div", "信件备份", "text-text-body text-title-m"), state, controls);
-    mountHistoryRelationship(section);
+    section.append(text("div", "导入与导出信件", "text-text-body text-title-m"),
+      text("p", "已有 JSON 文件或换电脑恢复：点“选择文件导入”。没有单独保存文件：可在下方从原版目录读取。两种方式导入到同一个信箱，无需各导入一次。"), state, controls);
   };
 
   const mountLocalLetterImport = (section) => {
@@ -3112,7 +3111,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const importState = text("div", "", "text-text-secondary text-caption-m font-regular");
     importState.setAttribute("aria-live", "polite");
     importCopy.append(
-      text("div", "导入本地历史信件", "text-text-body text-label-l"),
+      text("div", "从原版目录读取（另一种导入方式）", "text-text-body text-label-l"),
       text("div", "读取安装时选择的原版游戏目录中的 letter_pairs.json。双方原文作为只读历史进入信箱并可供检索，保存原文不联网、不导入视频。随后每五封按顺序调用模型评估关系并消耗额度；重复信件和已完成批次跳过。", "text-text-secondary text-body-m font-regular"),
       importState
     );
@@ -3132,7 +3131,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         return null;
       }
     };
-    const importButton = button("导入本地备份", async () => {
+    const importButton = button("从原版目录读取", async () => {
       if (importPending) {
         showLocalImportProgress(importState, importCopy);
         return;
@@ -3199,10 +3198,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     importRow.append(importCopy, importButton);
-    section.append(
-      text("div", "历史信件", "text-text-body text-title-m"),
-      importRow
-    );
+    section.append(importRow);
+    mountHistoryRelationship(section);
   };
 
   const mountShell = () => {

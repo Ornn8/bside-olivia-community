@@ -130,6 +130,6 @@ def test_long_original_still_supplies_detail_with_default_prompt_budget(tmp_path
         assistant_message='谢谢你告诉我。', occurred_at=NOW)
     found = adapter.search_evidence_context('旧钢琴', user_id='local-user', limit=5)
     assert found
-    prompt = CompanionMemoryPromptBuilder(NullMemoryPort(), adapter).build('旧钢琴')
+    prompt = CompanionMemoryPromptBuilder(NullMemoryPort(), adapter, max_tokens=1500).build('旧钢琴', max_chars=2400)
     assert '外婆' in prompt.text
     assert estimate_memory_tokens(prompt.text) <= 1500

@@ -1238,7 +1238,7 @@ class Mem0ConversationMemoryAdapter:
         semantic = self.search_context(query, user_id=user_id, limit=20)
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
         try:
-            result = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded)
+            result = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)
             if self._last_error_code is None and not self.operation_pending:
                 if len(self._evidence_cache) >= 64:
                     self._evidence_cache.clear()

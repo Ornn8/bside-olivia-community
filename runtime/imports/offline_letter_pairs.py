@@ -206,6 +206,10 @@ def offline_letter_pair_exchanges(
 
 def _parse_source(path: Path) -> tuple[bytes, tuple[tuple[str, str], ...]]:
     raw = path.read_bytes()
+    return parse_offline_letter_pair_bytes(raw)
+
+
+def parse_offline_letter_pair_bytes(raw: bytes) -> tuple[bytes, tuple[tuple[str, str], ...]]:
     if len(raw) > _MAX_SOURCE_BYTES:
         raise ValueError("OFFLINE_LETTER_SOURCE_TOO_LARGE")
     try:

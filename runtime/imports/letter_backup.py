@@ -101,6 +101,20 @@ def validate_backup(payload):
 def import_letters(payload, *, adapter, existing=()):
     # Validate the entire document before the first write. Re-exported imports
     # retain their original record identity; repeated backups do not duplicate.
+    raw = None
+    if isinstance(payload, str):
+        raw = payload.encode('utf-8')
+        if len(raw) > MAX_BYTES:
+            raise ValueError('LETTER_BACKUP_TOO_LARGE')
+        payload = json.loads(payload.lstrip('\ufeff'), strict=False)
+    if isinstance(payload, list):
+        from .offline_letter_pairs import parse_offline_letter_pair_bytes, _build_records
+        raw, pairs = parse_offline_letter_pair_bytes(raw or json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+        result = adapter.import_legacy_records(_build_records(raw, pairs), atomic=True)
+        if result.rolled_back or result.rejected:
+            raise ValueError('LETTER_BACKUP_WRITE_FAILED')
+        return {'status': 'APPLIED', 'seen': len(pairs), 'inserted': result.inserted,
+                'duplicates': result.duplicates, 'memory_mode': 'originals', 'provider_calls': 0}
     rows = validate_backup(payload)
     seen = {identity(row) for row in export_letters(existing)['letters']} if existing else set()
     records, duplicates = [], 0
@@ -110,9 +124,13 @@ def import_letters(payload, *, adapter, existing=()):
             duplicates += 1
             continue
         seen.add(digest)
+        offline = bool(re.fullmatch(r'offline-letter-pairs:[0-9a-f]{64}:\d{6}', row['source_id']))
+        if offline:
+            from .offline_letter_pairs import _pair_archive_content
         records.append(LegacyLetter(
-            content=json.dumps(row, ensure_ascii=False, sort_keys=True),
-            source_record_id='letter-backup:' + digest, source='letter-backup',
+            content=(_pair_archive_content((row['content'], row['reply_text'])) if offline
+                     else json.dumps(row, ensure_ascii=False, sort_keys=True)),
+            source_record_id=row['source_id'] if offline else 'letter-backup:' + digest, source='letter-backup',
             occurred_at=row['created_at'],
             metadata={'import_kind': KIND, 'backup_record': row, 'import_position': position,
                       'user_content': row['content'], 'reply_text': row['reply_text'],

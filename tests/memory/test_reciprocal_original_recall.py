@@ -15,7 +15,7 @@ def test_ring_question_keeps_both_speakers_inside_existing_prompt_budget(tmp_pat
             '我记得那次散步。'+'别的事情以后再说。'*30,None)
     archive=LocalMemoryAdapter(tmp_path/'archive.sqlite3')
     try:
-        prompt=CompanionMemoryPromptBuilder(archive,memory).build('你还记得我们的戒指吗？')
+        prompt=CompanionMemoryPromptBuilder(archive,memory).build('你还记得我们的戒指吗？', max_chars=2400)
         assert len(prompt.text)<=2400
         assert any(r.provenance.get('speaker')=='user' and '戒指' in r.text for r in prompt.references)
         assert any(r.provenance.get('speaker')=='linli' and '银色戒指' in r.text for r in prompt.references)
